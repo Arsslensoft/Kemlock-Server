@@ -2,7 +2,9 @@ name: gitleaks
 
 # Secret scanning of the commits a pull request adds, with gitleaks' default rules. It backs up
 # GitHub's own secret scanning and push protection (tools/repo-settings.sh turns those on).
-# GITLEAKS_LICENSE is only needed for organisation accounts; this repository is a personal one.
+# gitleaks-action needs a paid licence for organisation repositories, so this runs the free
+# gitleaks CLI, a release downloaded and checked against its published sha256. The findings are
+# redacted, and uploaded as code scanning results where the token may (not on a fork's pull request).
 # A false positive goes in a .gitleaksignore file (its fingerprint) rather than a disabled rule.
 
 on:
@@ -16,18 +18,53 @@ concurrency:
   group: gitleaks-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # The release to run, and the sha256 of its linux x64 archive, from gitleaks_<version>_checksums.txt
+  # of that release.
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
 jobs:
   scan:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
-      pull-requests: write # a comment on the pull request naming the leak
+      security-events: write # upload the SARIF
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/gitleaks"
+          tar --extract --gzip --file "$RUNNER_TEMP/$archive" --directory "$RUNNER_TEMP/gitleaks" gitleaks
+          echo "$RUNNER_TEMP/gitleaks" >> "$GITHUB_PATH"
+      # A pull request: the commits it adds to its base. A manual run: the whole history.
+      - name: Scan the commits
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          opts=(--all)
+          if [ -n "$BASE" ]; then
+            opts=("$BASE..$HEAD")
+          fi
+          gitleaks git --redact --no-banner --verbose \
+            --report-format sarif --report-path gitleaks.sarif \
+            --log-opts="${opts[*]}" .
+      - name: Upload the findings
+        # Not on a fork or Dependabot pull request: its token cannot write code scanning results.
+        # The failed scan and its log are what the author sees there.
+        if: ${{ always() && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) && hashFiles('**/gitleaks.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
