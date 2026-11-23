@@ -1,0 +1,33 @@
+name: gitleaks
+
+# Secret scanning of the commits a pull request adds, with gitleaks' default rules. It backs up
+# GitHub's own secret scanning and push protection (tools/repo-settings.sh turns those on).
+# GITLEAKS_LICENSE is only needed for organisation accounts; this repository is a personal one.
+# A false positive goes in a .gitleaksignore file (its fingerprint) rather than a disabled rule.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitleaks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write # a comment on the pull request naming the leak
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

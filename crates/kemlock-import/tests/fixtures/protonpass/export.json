@@ -1,0 +1,267 @@
+{
+  "version": "1.19.0",
+  "userId": "user-0001",
+  "encrypted": false,
+  "vaults": {
+    "share-personal": {
+      "name": "Personal",
+      "description": "Made-up fixture data",
+      "display": { "color": 1, "icon": 2 },
+      "items": [
+        {
+          "itemId": "item-login",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Example Mail", "note": "Recovery on paper", "itemUuid": "u1" },
+            "extraFields": [
+              { "fieldName": "Security question", "type": "text", "data": { "content": "first pet" } },
+              { "fieldName": "Backup code", "type": "hidden", "data": { "content": "1234-5678" } },
+              { "fieldName": "Second factor", "type": "totp", "data": { "totpUri": "otpauth://totp/Extra?secret=KRSXG5CTMVRXEZLU" } },
+              { "fieldName": "Joined", "type": "timestamp", "data": { "timestamp": "2020-01-02T03:04:05Z" } }
+            ],
+            "type": "login",
+            "content": {
+              "itemEmail": "ada@example.com",
+              "itemUsername": "ada",
+              "password": "correct-horse-1",
+              "urls": ["https://mail.example.com", "https://mail2.example.com"],
+              "totpUri": "otpauth://totp/Mail:ada?secret=JBSWY3DPEHPK3PXP&issuer=Mail",
+              "passkeys": [
+                {
+                  "keyId": "k1",
+                  "content": "AAAA",
+                  "domain": "https://passkey.example",
+                  "rpId": "passkey.example",
+                  "rpName": "Passkey Example",
+                  "userName": "ada",
+                  "userDisplayName": "Ada",
+                  "userId": "AQID",
+                  "createTime": 1700000000
+                }
+              ]
+            }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000000,
+          "modifyTime": 1700000100,
+          "pinned": true
+        },
+        {
+          "itemId": "item-alias",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Newsletter alias", "note": "", "itemUuid": "u2" },
+            "extraFields": [],
+            "type": "alias",
+            "content": {}
+          },
+          "state": 1,
+          "aliasEmail": "news.abc123@passmail.example",
+          "contentFormatVersion": 6,
+          "createTime": 1700000001,
+          "modifyTime": 1700000001,
+          "pinned": false
+        },
+        {
+          "itemId": "item-note",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Safe combination", "note": "Left 10, right 22, left 5", "itemUuid": "u3" },
+            "extraFields": [
+              { "fieldName": "Where", "type": "text", "data": { "content": "study" } }
+            ],
+            "type": "note",
+            "content": {}
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000002,
+          "modifyTime": 1700000002,
+          "pinned": false
+        },
+        {
+          "itemId": "item-card",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Everyday Visa", "note": "", "itemUuid": "u4" },
+            "extraFields": [],
+            "type": "creditCard",
+            "content": {
+              "cardholderName": "Ada Lovelace",
+              "cardType": 1,
+              "number": "4111 1111 1111 1111",
+              "verificationNumber": "123",
+              "expirationDate": "2029-05",
+              "pin": "4321"
+            }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000003,
+          "modifyTime": 1700000003,
+          "pinned": false
+        },
+        {
+          "itemId": "item-identity",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Ada, home", "note": "", "itemUuid": "u5" },
+            "extraFields": [],
+            "type": "identity",
+            "content": {
+              "fullName": "Ada Augusta King Lovelace",
+              "email": "ada@example.com",
+              "phoneNumber": "+44 20 7946 0000",
+              "company": "Analytical Engines Ltd",
+              "birthdate": "1815-12-10",
+              "organization": "Analytical Engines Ltd",
+              "streetAddress": "12 St James's Square",
+              "floor": "3",
+              "county": "Westminster",
+              "city": "London",
+              "stateOrProvince": "England",
+              "zipOrPostalCode": "SW1Y 4JH",
+              "countryOrRegion": "GB",
+              "socialSecurityNumber": "123-45-6789",
+              "passportNumber": "X1234567",
+              "licenseNumber": "LOVEL 801215 A99AA",
+              "website": "https://example.com",
+              "extraPersonalDetails": [
+                { "fieldName": "Nickname", "type": "text", "data": { "content": "Countess" } }
+              ],
+              "extraSections": [
+                {
+                  "sectionName": "Other",
+                  "sectionFields": [
+                    { "fieldName": "Blood type", "type": "text", "data": { "content": "A+" } }
+                  ]
+                }
+              ]
+            }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000004,
+          "modifyTime": 1700000004,
+          "pinned": false
+        },
+        {
+          "itemId": "item-ssh",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Laptop key", "note": "", "itemUuid": "u6" },
+            "extraFields": [],
+            "type": "sshKey",
+            "content": {
+              "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+              "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake ada@laptop",
+              "fingerprint": "SHA256:fakefingerprint",
+              "sections": [
+                {
+                  "sectionName": "Host",
+                  "sectionFields": [
+                    { "fieldName": "Host", "type": "text", "data": { "content": "git.example.org" } }
+                  ]
+                }
+              ]
+            }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000005,
+          "modifyTime": 1700000005,
+          "pinned": false
+        },
+        {
+          "itemId": "item-custom",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Server rack", "note": "Basement", "itemUuid": "u7" },
+            "extraFields": [
+              { "fieldName": "Asset tag", "type": "text", "data": { "content": "R-42" } }
+            ],
+            "type": "custom",
+            "content": {
+              "sections": [
+                {
+                  "sectionName": "Network",
+                  "sectionFields": [
+                    { "fieldName": "Gateway", "type": "text", "data": { "content": "10.0.0.1" } },
+                    { "fieldName": "Console password", "type": "hidden", "data": { "content": "rack-secret" } }
+                  ]
+                }
+              ]
+            }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000006,
+          "modifyTime": 1700000006,
+          "pinned": false
+        },
+        {
+          "itemId": "item-wifi",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Home Wi-Fi", "note": "", "itemUuid": "u8" },
+            "extraFields": [],
+            "type": "wifi",
+            "content": { "ssid": "HomeNet", "password": "wifi-pass", "security": 2 }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000007,
+          "modifyTime": 1700000007,
+          "pinned": false
+        },
+        {
+          "itemId": "item-trashed",
+          "shareId": "share-personal",
+          "data": {
+            "metadata": { "name": "Old forum", "note": "", "itemUuid": "u9" },
+            "extraFields": [],
+            "type": "login",
+            "content": { "itemUsername": "old", "password": "old-pass", "urls": ["https://forum.example"], "passkeys": [] }
+          },
+          "state": 2,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000008,
+          "modifyTime": 1700000008,
+          "pinned": false
+        }
+      ]
+    },
+    "share-work": {
+      "name": "Work",
+      "description": "",
+      "display": { "color": 3, "icon": 4 },
+      "items": [
+        {
+          "itemId": "item-work",
+          "shareId": "share-work",
+          "data": {
+            "metadata": { "name": "Ticketing", "note": "", "itemUuid": "u10" },
+            "extraFields": [],
+            "type": "login",
+            "content": { "itemEmail": "ada@work.example", "itemUsername": "", "password": "work-pass", "urls": ["tickets.example.org"], "passkeys": [] }
+          },
+          "state": 1,
+          "aliasEmail": null,
+          "contentFormatVersion": 6,
+          "createTime": 1700000009,
+          "modifyTime": 1700000009,
+          "pinned": false
+        }
+      ]
+    }
+  }
+}

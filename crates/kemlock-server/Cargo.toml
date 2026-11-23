@@ -1,0 +1,64 @@
+[package]
+name = "kemlock-server"
+description = "Kemlock Server: configuration, wiring and the HTTP server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "kemlock_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "kemlock-server"
+path = "src/main.rs"
+
+[features]
+# Serves the web vault from ../../web/dist, embedded in the binary. Run `npm run build` in web/
+# first: without the feature the Rust workspace builds with no web/dist at all.
+web = ["dep:rust-embed"]
+# The FIPS build: `kemlock-crypto/fips` (see its Cargo.toml and `docker/fips/overlay.sh`). The server
+# checks the module at start and refuses to run when it is not in FIPS mode.
+fips = ["kemlock-crypto/fips"]
+
+[dependencies]
+axum.workspace = true
+kemlock-api-admin = { path = "../kemlock-api-admin" }
+kemlock-api-bw = { path = "../kemlock-api-bw" }
+kemlock-api-fed = { path = "../kemlock-api-fed" }
+kemlock-api-kem.workspace = true
+kemlock-app.workspace = true
+kemlock-backup = { path = "../kemlock-backup" }
+kemlock-blob = { path = "../kemlock-blob" }
+kemlock-crypto = { workspace = true, features = ["aws-lc"] }
+kemlock-domain.workspace = true
+kemlock-identity = { path = "../kemlock-identity" }
+kemlock-federation = { path = "../kemlock-federation" }
+kemlock-notify = { path = "../kemlock-notify" }
+kemlock-store-sql.workspace = true
+kemlock-vaultwarden = { path = "../kemlock-vaultwarden" }
+rust-embed = { version = "8.14.0", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3.27.0"
+thiserror.workspace = true
+time.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+toml.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+age = "0.11.2"
+kemlock-domain.workspace = true
+# The Vaultwarden fixture builder of kemlock-vaultwarden's tests (a SQLite database made by
+# running Vaultwarden's migrations) is shared with the migration test.
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tower.workspace = true
+
+[lints]
+workspace = true

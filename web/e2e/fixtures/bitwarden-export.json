@@ -1,0 +1,54 @@
+{
+  "encrypted": false,
+  "folders": [
+    { "id": "f1", "name": "Journey folder" }
+  ],
+  "items": [
+    {
+      "id": "i1",
+      "organizationId": null,
+      "folderId": "f1",
+      "type": 1,
+      "reprompt": 0,
+      "name": "Journey Mail",
+      "notes": null,
+      "favorite": false,
+      "login": {
+        "uris": [{ "match": null, "uri": "https://mail.journey-import.example" }],
+        "username": "import@example.org",
+        "password": "synthetic-pass-1",
+        "totp": null
+      },
+      "collectionIds": null
+    },
+    {
+      "id": "i2",
+      "organizationId": null,
+      "folderId": "f1",
+      "type": 1,
+      "reprompt": 0,
+      "name": "Journey Bank",
+      "notes": null,
+      "favorite": false,
+      "login": {
+        "uris": [{ "match": null, "uri": "https://bank.journey-import.example" }],
+        "username": "import@example.org",
+        "password": "synthetic-pass-2",
+        "totp": null
+      },
+      "collectionIds": null
+    },
+    {
+      "id": "i3",
+      "organizationId": null,
+      "folderId": null,
+      "type": 2,
+      "reprompt": 0,
+      "name": "Journey Note",
+      "notes": "A synthetic note for the import journey.",
+      "favorite": false,
+      "secureNote": { "type": 0 },
+      "collectionIds": null
+    }
+  ]
+}

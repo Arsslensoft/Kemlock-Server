@@ -1,0 +1,51 @@
+name: stale
+
+# Gentle housekeeping: an issue or pull request with no activity for 60 days gets a note and a
+# label, and is closed 21 days after that if nobody answers. Anything labelled `security`,
+# `pinned`, `help wanted` or `good first issue`, anything assigned, and anything on a milestone is
+# left alone. Closing is never final: a reply reopens the conversation.
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: stale
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          days-before-stale: 60
+          days-before-close: 21
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: security,pinned,help wanted,good first issue
+          exempt-pr-labels: security,pinned,dependencies
+          exempt-all-assignees: true
+          exempt-all-milestones: true
+          exempt-draft-pr: true
+          remove-stale-when-updated: true
+          operations-per-run: 60
+          stale-issue-message: >-
+            This issue has had no activity for 60 days, so it is marked stale. If it still
+            matters, a comment keeps it open; otherwise it closes in 21 days. Thank you for the
+            report.
+          stale-pr-message: >-
+            This pull request has had no activity for 60 days, so it is marked stale. If you are
+            still working on it, a comment or a push keeps it open; otherwise it closes in 21
+            days. You can reopen it whenever you are ready.
+          close-issue-message: >-
+            Closed for lack of activity. Comment to reopen it if it still applies.
+          close-pr-message: >-
+            Closed for lack of activity. Reopen it whenever you pick it up again.

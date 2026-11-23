@@ -1,0 +1,134 @@
+# syntax=docker/dockerfile:1.18
+#
+# Kemlock Server, FIPS image: linux/amd64 and linux/arm64, aws-lc-rs pinned to 1.17.x on its FIPS
+# module (the AWS-LC FIPS module, built from source by aws-lc-fips-sys) through kemlock-crypto's
+# `fips` cargo feature.
+#
+#   docker buildx build -f docker/Dockerfile.fips -t kemlock-server:fips .     (native, per architecture)
+#
+# How the build is switched without changing the main manifest or lockfile. The workspace asks for
+# aws-lc-rs 1.19 and no FIPS feature on every build. This Dockerfile copies the repository into the
+# build container and runs docker/fips/overlay.sh there, which in that copy (1) rewrites the one
+# `aws-lc-rs = ...` line to `=1.17.x` with default features off, so the non-FIPS aws-lc-sys isn't
+# built beside the module, (2) adds `features = ["fips"]` to the workspace's kemlock-crypto line,
+# and (3) runs `cargo update -p aws-lc-rs --precise 1.17.x` to move the copy's Cargo.lock to match.
+# The repository's Cargo.toml and Cargo.lock never change. The lock difference is kept in the image
+# (/usr/share/kemlock/fips-overlay.diff) and the release.
+#
+# What the `fips` feature does, and doesn't (kemlock-crypto's crate docs and docs/crypto.md, "Crypto
+# library", say the same):
+#  - aws-lc-rs on the FIPS module serves what the module certifies: ML-KEM encapsulation,
+#    AES-256-GCM, HKDF, HMAC, SHA-2, Ed25519 and ECDSA P-256.
+#  - aws-lc-rs 1.17's FIPS build has no ML-DSA (its `pqdsa` module is compiled out under `fips`), so
+#    the feature routes ML-DSA-65 to RustCrypto's ml-dsa. Neither module's certificate lists
+#    ML-DSA, so it is unvalidated in any build (design, Security). ML-KEM seed expansion and
+#    decapsulation (aws-lc-rs can't do them on any release) run on RustCrypto's ml-kem too, so a
+#    `kx1` private key is used outside the module; OPAQUE's SHA-512 and Argon2id are outside it.
+#  - kemlock-crypto refuses to compile if its `fips` feature is on without aws-lc-rs's FIPS
+#    module, or beside its `rustcrypto` feature, so none of this can degrade silently.
+#
+# The trade-off, stated plainly: the FIPS image is built from a lockfile that differs from the one
+# main is tested with, in aws-lc-rs, aws-lc-sys's replacement aws-lc-fips-sys and whatever cargo has
+# to move with them. CI must run the test suite against the overlaid lock too (release.yml does,
+# for every crate but the WebAssembly one, which needs the RustCrypto backend `fips` forbids), or
+# the image ships code nobody ran. release.yml builds the image only when the repository variable
+# KEMLOCK_FIPS_IMAGE is "true".
+#
+# It is built on glibc, not musl: AWS-LC's FIPS validation names glibc Linux as the operating
+# environment, and the validated build is the dynamic-libc one. So this image is the exception
+# to "one static binary": its runtime base is distroless cc (glibc, no shell).
+
+ARG RUST_IMAGE=rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea
+ARG GO_IMAGE=golang:1.25-bookworm@sha256:3b4a11519ad929d1e1d261a12cff056f0c85b735253d7d861346b9c6f8b36437
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+
+FROM ${GO_IMAGE} AS go
+
+FROM ${NODE_IMAGE} AS web
+ARG WITH_WEB=auto
+ARG SOURCE_DATE_EPOCH=0
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} NODE_ENV=production
+RUN --mount=type=bind,source=.,target=/src,rw \
+    --mount=type=cache,target=/root/.npm \
+    set -eu; \
+    mkdir -p /out; \
+    if [ "${WITH_WEB}" != "false" ] && [ -f /src/web/package-lock.json ]; then \
+      cd /src/web; \
+      npm ci --include=dev --ignore-scripts --no-audit --no-fund; \
+      npm run build; \
+      cp -a dist/. /out/; \
+    elif [ "${WITH_WEB}" = "true" ]; then \
+      echo "WITH_WEB=true but web/package-lock.json is missing" >&2; exit 1; \
+    fi
+
+FROM ${RUST_IMAGE} AS build
+ARG TARGETARCH
+ARG AWS_LC_RS_VERSION=1.17.4
+ARG SOURCE_DATE_EPOCH=0
+ARG WEB_DIST_DIR=web/dist
+# The commit the binary reports on /kem/v1/config and links the source to (AGPL-3.0 section 13).
+# The build context has no .git, so the caller passes it; empty leaves it out.
+ARG KEMLOCK_GIT_COMMIT=
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} TZ=UTC KEMLOCK_GIT_COMMIT=${KEMLOCK_GIT_COMMIT} PATH=/usr/local/go/bin:${PATH}
+# aws-lc-fips-sys needs CMake, Go and Perl to build the module. Go comes from the pinned image.
+RUN set -eu; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends cmake perl; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=go /usr/local/go /usr/local/go
+WORKDIR /src
+COPY . .
+COPY --from=web /out/ /src/${WEB_DIST_DIR}/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/cache/target,id=kemlock-fips-target-${TARGETARCH} \
+    set -eux; \
+    export CARGO_TARGET_DIR=/cache/target CARGO_INCREMENTAL=0 \
+           CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+           CARGO_PROFILE_RELEASE_STRIP=symbols \
+           RUSTFLAGS="--remap-path-prefix=/src=/kemlock --remap-path-prefix=/usr/local/cargo=/cargo --remap-path-prefix=/usr/local/rustup=/rustup"; \
+    sh docker/fips/overlay.sh "${AWS_LC_RS_VERSION}" /out; \
+    features=""; \
+    if [ -f "/src/${WEB_DIST_DIR}/index.html" ]; then features="--features kemlock-server/web"; fi; \
+    cargo build --release --locked -p kemlock-server -p kemlock-cli ${features}; \
+    cp /cache/target/release/kemlock-server /cache/target/release/kemlock-cli /out/; \
+    mkdir -p /rootfs/data
+
+FROM scratch AS binaries
+COPY --from=build /out/kemlock-server /out/kemlock-cli /
+
+# The licence notices the image carries (/usr/share/doc/kemlock-server). THIRD-PARTY-NOTICES.txt is
+# generated, not committed: release.yml runs tools/third-party-notices.sh before the build, and a
+# local `docker build` needs the same first. The `binaries` target does not need it. The text is
+# made from the main lockfile with --all-features, which lists the FIPS overlay's crates too; the
+# overlay may pin other aws-lc-rs / aws-lc-fips-sys versions, whose licence texts are the same.
+FROM ${NODE_IMAGE} AS notices
+WORKDIR /src
+COPY LICENSE NOTICE ./
+# A glob, so a missing file is caught by the check below with a message instead of a COPY error.
+COPY THIRD-PARTY-NOTICES.tx[t] ./
+RUN set -eu; \
+    test -s THIRD-PARTY-NOTICES.txt || { \
+      echo "THIRD-PARTY-NOTICES.txt is missing: run tools/third-party-notices.sh before docker build" >&2; \
+      exit 1; }; \
+    mkdir -p /out; \
+    cp LICENSE NOTICE THIRD-PARTY-NOTICES.txt /out/
+
+FROM ${RUNTIME_IMAGE} AS image
+LABEL org.opencontainers.image.title="Kemlock Server (FIPS)" \
+      org.opencontainers.image.description="Kemlock Server built on the AWS-LC FIPS module (aws-lc-rs 1.17.x)" \
+      org.opencontainers.image.source="https://github.com/arsslensoft/kemlock-server" \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
+COPY --from=build /out/kemlock-server /usr/local/bin/
+COPY --from=notices /out/ /usr/share/doc/kemlock-server/
+COPY --from=build /out/fips-overlay.diff /out/fips-tree.txt /out/fips-features.txt /usr/share/kemlock/
+COPY --from=build --chown=65532:65532 /rootfs/data /data
+ENV DATA_FOLDER=/data
+WORKDIR /data
+VOLUME ["/data"]
+USER 65532:65532
+EXPOSE 8080
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["/usr/local/bin/kemlock-server", "healthcheck"]
+ENTRYPOINT ["/usr/local/bin/kemlock-server"]

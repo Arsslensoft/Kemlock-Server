@@ -1,0 +1,50 @@
+[package]
+name = "kemlock-import-wasm"
+description = "The web vault's import worker: kemlock-import behind wasm-bindgen, files read and exports written in the browser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# wasm-opt runs from web/scripts/build-wasm.sh, so wasm-pack leaves it alone.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
+
+[dependencies]
+kemlock-import = { path = "../kemlock-import" }
+# The export's salt and IVs. getrandom 0.4 draws from `crypto.getRandomValues` on
+# wasm32-unknown-unknown only with its `wasm_js` feature.
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen = "0.2.130"
+zeroize.workspace = true
+
+# In the browser kemlock-import needs rPGP's clock and random source for Proton Pass's encrypted
+# export. Native builds (the tests, the CLI) go without.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+kemlock-import = { path = "../kemlock-import", features = ["wasm"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { workspace = true, features = ["wasm_js"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]
+js-sys = "0.3.107"
+wasm-bindgen-test = "0.3.80"
+
+# The workspace lints, except that `unsafe_code` is denied rather than forbidden: wasm-bindgen's
+# generated glue is unsafe, and src/wasm.rs allows that and nothing else.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"

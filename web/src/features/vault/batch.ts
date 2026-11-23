@@ -1,0 +1,74 @@
+// Seals several items and writes them in one `items:batch` call, all or none: a merge's kept item
+// and its trashed twin either both change or neither does. It follows saveItem (vault.ts) step for
+// step; only the write differs.
+import type { ItemDto } from '@/api/types';
+import { encodeB64 } from '@/lib/b64url';
+import {
+  type ItemData,
+  type SaveInput,
+  type VaultDeps,
+  type VaultItem,
+  type VaultStore,
+  sealFor,
+  spaceOf,
+} from './vault';
+
+/** Up to 500 saves, written atomically. Every `existing` item must be at the revision it was read at. */
+export async function saveBatch(
+  deps: VaultDeps,
+  store: VaultStore,
+  inputs: SaveInput[],
+): Promise<VaultItem[]> {
+  const now = (deps.now?.() ?? new Date()).toISOString();
+  const newId = deps.newId ?? (() => globalThis.crypto.randomUUID());
+  const saved: VaultItem[] = [];
+  const writes: Array<{ expectedRevision: number | null; item: ItemDto }> = [];
+  for (const input of inputs) {
+    const { existing } = input;
+    const id = existing?.id ?? newId();
+    const revision = existing ? existing.revision + 1 : 1;
+    const owner = existing?.owner ?? input.owner;
+    const data: ItemData = { ...(existing?.data ?? {}), ...input.fields, updatedAt: now };
+    for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
+    const collectionId = existing?.collectionId ?? input.collectionId;
+    const sealed = await sealFor(deps.crypto, {
+      id,
+      owner,
+      kind: input.kind,
+      revision,
+      json: JSON.stringify(data),
+      collectionId,
+    });
+    const inCollection = spaceOf(owner) !== null && collectionId ? { collectionId } : {};
+    writes.push({
+      expectedRevision: existing ? existing.revision : null,
+      item: {
+        id,
+        owner,
+        kind: input.kind,
+        format: 'kem1',
+        revision,
+        keyVersion: sealed.keyVersion,
+        ciphertext: encodeB64(sealed.ciphertext),
+        itemKey: encodeB64(sealed.itemKey),
+        deleted: false,
+        ...inCollection,
+      },
+    });
+    saved.push({
+      id,
+      owner,
+      kind: input.kind,
+      revision,
+      keyVersion: sealed.keyVersion,
+      ...inCollection,
+      data,
+      sizes: { ciphertext: sealed.ciphertext.length, itemKey: sealed.itemKey.length },
+    });
+  }
+  for (let i = 0; i < writes.length; i += 500) {
+    await deps.api.putBatch({ writes: writes.slice(i, i + 500) });
+  }
+  for (const item of saved) store.items.set(item.id, item);
+  return saved;
+}

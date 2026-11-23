@@ -1,0 +1,53 @@
+# git-cliff (https://git-cliff.org) turns the Conventional Commits since the previous tag into the
+# release notes (.github/workflows/release.yml, job `notes`). Types and scopes are the ones in
+# CLAUDE.md. Preview locally: `git cliff --unreleased`.
+
+[changelog]
+header = ""
+footer = ""
+trim = true
+body = """
+{%- macro remote_url() -%}
+  https://github.com/Arsslensoft/Kemlock-Server
+{%- endmacro -%}
+
+{% if version -%}
+## {{ version | trim_start_matches(pat="v") }} ({{ timestamp | date(format="%Y-%m-%d") }})
+{% else -%}
+## Unreleased
+{% endif -%}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim | upper_first }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}\
+  {% if commit.breaking %}**BREAKING** {% endif %}{{ commit.message | upper_first }} \
+  ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))\
+{% endfor %}
+{% endfor %}
+"""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+protect_breaking_commits = true
+filter_commits = false
+tag_pattern = "v?[0-9]+\.[0-9]+\.[0-9]+.*"
+sort_commits = "oldest"
+topo_order = false
+
+commit_parsers = [
+  # Not for the notes: the release bump, merge commits and the repository's own housekeeping.
+  { message = "^chore\(release\)", skip = true },
+  { message = "^chore\((deps|docker)\)", group = "<!-- 7 -->Dependencies" },
+  { message = "^ci", group = "<!-- 8 -->Build and CI" },
+  { message = "^chore", group = "<!-- 9 -->Maintenance" },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactoring" },
+  { message = "^test", group = "<!-- 4 -->Tests" },
+  { message = "^docs", group = "<!-- 5 -->Documentation" },
+  { message = "^revert", group = "<!-- 6 -->Reverts" },
+  { message = "^(build|style)", group = "<!-- 9 -->Maintenance" },
+]

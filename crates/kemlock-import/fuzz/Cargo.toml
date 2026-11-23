@@ -1,0 +1,153 @@
+[package]
+name = "kemlock-import-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+kemlock-import = { path = ".." }
+
+# Its own workspace, as cargo-fuzz wants: the fuzz crate is built with sanitizers and is not part
+# of the main workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "bitwarden"
+path = "fuzz_targets/bitwarden.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bitwarden_csv"
+path = "fuzz_targets/bitwarden_csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "chrome"
+path = "fuzz_targets/chrome.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "csv"
+path = "fuzz_targets/csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dashlane"
+path = "fuzz_targets/dashlane.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "detect"
+path = "fuzz_targets/detect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encstring"
+path = "fuzz_targets/encstring.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "enpass"
+path = "fuzz_targets/enpass.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "firefox"
+path = "fuzz_targets/firefox.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kdbx"
+path = "fuzz_targets/kdbx.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "keeper"
+path = "fuzz_targets/keeper.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "lastpass"
+path = "fuzz_targets/lastpass.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nordpass"
+path = "fuzz_targets/nordpass.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "onepassword"
+path = "fuzz_targets/onepassword.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "onepassword_csv"
+path = "fuzz_targets/onepassword_csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protonpass"
+path = "fuzz_targets/protonpass.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "roboform"
+path = "fuzz_targets/roboform.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "safari"
+path = "fuzz_targets/safari.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zip"
+path = "fuzz_targets/zip.rs"
+test = false
+doc = false
+bench = false

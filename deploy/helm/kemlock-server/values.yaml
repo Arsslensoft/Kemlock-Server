@@ -1,0 +1,145 @@
+# Kemlock Server chart. Two shapes:
+#
+#   One replica on SQLite (the default): a PersistentVolumeClaim holds /data.
+#
+#   Several replicas: PostgreSQL (database.url) and S3-compatible storage for attachments,
+#   because a local folder can't be shared; and one server key for all of them (serverKey).
+#   The chart refuses replicaCount > 1 without them.
+
+# How many pods. Above 1 needs database.type=postgres, blob.type=s3 and serverKey.existingSecret.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/arsslensoft/kemlock-server
+  # Empty means the chart's appVersion. Pin a digest in production: tag: "1.4.2@sha256:...".
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# DOMAIN: the address clients use. Required: DPoP proofs are checked against it.
+domain: ""
+signupsAllowed: false
+logLevel: info
+# text or json
+logFormat: text
+
+# Real client addresses behind an ingress controller: the header to trust, and the addresses it
+# is trusted from (the controller's pod or node network). Rate limits count by this address.
+ipHeader: ""
+trustedProxies: []
+
+database:
+  # sqlite: the file is in the PVC. postgres: set url or existingSecret.
+  type: sqlite
+  # postgres://user:password@host:5432/kemlock. Stored in a Secret the chart makes; prefer
+  # existingSecret for anything real.
+  url: ""
+  existingSecret: ""
+  existingSecretKey: url
+
+# The server key unseals the server's secrets and must be the same on every replica. Empty on a
+# single replica: the server makes server.key in /data on first start (back it up apart from the
+# data). With several replicas, make a Secret holding the key (hex or base64url) and name it here.
+serverKey:
+  existingSecret: ""
+  existingSecretKey: server-key
+
+blob:
+  # local: attachments in /data (one replica). s3: S3-compatible storage; its settings go in
+  # extraEnv until the blob adapter's variable names are fixed.
+  type: local
+
+persistence:
+  # SQLite and local attachments need it. With PostgreSQL and S3 it can be turned off (an
+  # emptyDir then holds /data, for the server key and scratch files).
+  enabled: true
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 5Gi
+  annotations: {}
+
+# More environment, as name/value pairs or full EnvVar objects.
+extraEnv: []
+# - name: KEMLOCK_LOW_MEMORY
+#   value: "true"
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  # ingress-nginx: WebSockets pass; raise the body limit to the file limit and the read timeout
+  # so idle sockets stay open.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 1g
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: vault.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # - secretName: vault-example-com-tls
+  #   hosts: [vault.example.com]
+
+# /alive is liveness (the process serves requests); /health is readiness (it also checks the
+# database, migrations and file storage).
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 2
+  liveness:
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    memory: 256Mi
+
+# The image runs as 65532 on a read-only root filesystem and writes only /data and /tmp.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+priorityClassName: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podDisruptionBudget:
+  # Only with replicaCount > 1.
+  enabled: false
+  minAvailable: 1

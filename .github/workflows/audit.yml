@@ -1,0 +1,76 @@
+name: audit
+
+# Design, Security, Rust: cargo-audit runs on every push and nightly against main and the last
+# release tag, so an advisory published after a release still opens an issue. cargo-deny in ci.yml
+# also checks advisories, but only for the commit it runs on.
+
+on:
+  push:
+  schedule:
+    - cron: "43 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
+
+jobs:
+  push:
+    # Fails the push when Cargo.lock holds a crate with a known vulnerability.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
+  nightly:
+    # main and the newest stable release tag. A new advisory opens an issue labelled `security`,
+    # once (tools/audit-issues.sh); the run fails too, so it shows in the Actions tab.
+    if: github.event_name != 'push'
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [main, latest-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Check out the ref
+        id: ref
+        run: |
+          if [ "${{ matrix.target }}" = main ]; then
+            ref=main
+          else
+            ref="$(git tag --list --sort=-v:refname | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          fi
+          if [ -z "$ref" ]; then
+            echo "No release tag yet."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git checkout --detach "$ref"
+          echo "name=$ref" >> "$GITHUB_OUTPUT"
+      - if: steps.ref.outputs.skip != 'true'
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-audit
+      - if: steps.ref.outputs.skip != 'true'
+        env:
+          REF_NAME: ${{ steps.ref.outputs.name }}
+        run: tools/audit-issues.sh "$REF_NAME"

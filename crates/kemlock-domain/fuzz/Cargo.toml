@@ -1,0 +1,27 @@
+[package]
+name = "kemlock-domain-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+kemlock-domain = { path = ".." }
+
+# Its own workspace, as cargo-fuzz wants: the fuzz crate is built with sanitizers and is not part
+# of the main workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "sync_cursor"
+path = "fuzz_targets/sync_cursor.rs"
+test = false
+doc = false
+bench = false

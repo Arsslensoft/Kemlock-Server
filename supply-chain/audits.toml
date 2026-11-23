@@ -1,0 +1,3 @@
+# cargo-vet audits file: Kemlock's own audits. Add one with `cargo vet certify`.
+
+[audits]

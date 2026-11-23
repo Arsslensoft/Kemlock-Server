@@ -1,0 +1,3 @@
+collections,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp
+"Shared,Family",login,Shared site,,,0,https://shared.example,team,s3cret,
+Family,login,Family site,,,0,https://f.example,fam,pw,

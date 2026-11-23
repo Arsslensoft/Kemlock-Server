@@ -1,0 +1,87 @@
+name: Feature request
+description: Suggest a change or addition to Kemlock Server.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Kemlock Server follows a settled design (see the README and `docs/`). A request that departs
+        from it, from Vaultwarden's answers on the Bitwarden API or from the byte formats in
+        `docs/crypto.md` needs a good reason. If you are not sure it fits, start in
+        [Discussions](https://github.com/Arsslensoft/Kemlock-Server/discussions).
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you request
+      options:
+        - label: I searched the existing issues and discussions.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can you not do today, or what is hard? Describe the need, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release or the image tag you use, if you have one.
+    validations:
+      required: false
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker
+        - Binary
+        - Built from source
+        - Not relevant
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - SQLite
+        - PostgreSQL
+        - MySQL
+        - Not relevant
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Kemlock app
+        - Bitwarden app
+        - Amethystora Vault
+        - Web vault
+        - Admin console
+        - Not relevant
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would be willing to send a pull request for this.
+          required: false

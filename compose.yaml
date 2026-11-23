@@ -1,0 +1,22 @@
+# Kemlock Server on Docker Compose. See docs/self-hosting.md.
+#
+#   docker compose up -d
+#   docker compose logs kemlock     # the one-time setup code is printed on the first run
+#
+# Vaultwarden's image listens on port 80 as root; this one runs as non-root on 8080, so the
+# container side of an old port mapping changes. The port is bound to loopback for a reverse
+# proxy on the same host (deploy/proxy/ has examples for Caddy, Traefik, nginx and HAProxy).
+services:
+  kemlock:
+    image: ghcr.io/arsslensoft/kemlock-server:1
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DOMAIN: https://vault.example.com
+      SIGNUPS_ALLOWED: "false"
+    volumes:
+      - ./kemlock-data:/data
+    ports:
+      - 127.0.0.1:8080:8080

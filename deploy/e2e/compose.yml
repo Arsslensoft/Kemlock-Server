@@ -1,0 +1,26 @@
+# The identity provider the single sign-on journey signs in through: Keycloak with the realm in
+# realm-kemlock.json already imported (a client "kemlock", a user, a group). The Playwright run is
+# web/playwright.sso.config.ts; web/README.md and deploy/e2e/server.env say how to start the server
+# against it.
+#
+#   docker compose -f deploy/e2e/compose.yml up -d
+#   docker compose -f deploy/e2e/compose.yml down -v
+#
+# Keycloak takes about half a minute to start; the journey waits for the realm's discovery document.
+#
+# Keycloak answers on http://localhost:8180 both to the browser and to the server, because the
+# server runs on the host (or with --network host). KC_HOSTNAME pins the issuer to that address so
+# the ID token's `iss` is the one the server was told in SSO_AUTHORITY.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8180
+      KC_HTTP_ENABLED: "true"
+    ports:
+      - 127.0.0.1:8180:8080
+    volumes:
+      - ./realm-kemlock.json:/opt/keycloak/data/import/realm-kemlock.json:ro

@@ -1,0 +1,56 @@
+[package]
+name = "kemlock-federation"
+description = "Kemlock Server federation: signed descriptors, the post-quantum peer session, pairing and replication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# The test-vector generator (`kemlock-fed-vectors`): it seeds kemlock-crypto's random source and runs
+# `kx1` and `sig1` on its RustCrypto backend (`kemlock_crypto::software`), the one that is reproducible.
+vectors = ["kemlock-crypto/vectors", "dep:serde_json", "dep:hex"]
+
+[[bin]]
+name = "kemlock-fed-vectors"
+path = "src/bin/kemlock-fed-vectors.rs"
+required-features = ["vectors"]
+
+[dependencies]
+aws-lc-rs.workspace = true
+bytes = "1.12.2"
+futures-core = "0.3.34"
+futures-util = { version = "0.3.34", default-features = false, features = ["std", "sink"] }
+kemlock-app.workspace = true
+kemlock-crypto = { workspace = true, features = ["aws-lc"] }
+kemlock-domain.workspace = true
+pakery-cpace = "0.6.2"
+pakery-crypto = { version = "0.6.2", features = ["cpace"] }
+rand_core = "0.10.1"
+# The outbound client. TLS is the transport only (the session is sealed inside it), so the
+# provider is named in code and webpki roots are enough.
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+subtle.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-tungstenite = { version = "0.29.0", features = ["connect", "rustls-tls-webpki-roots"] }
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+webpki-roots = "1.0.12"
+zeroize.workspace = true
+
+hex = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+hex.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

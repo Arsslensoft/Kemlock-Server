@@ -1,0 +1,10 @@
+images:
+  image:
+    repository: ghcr.io/arsslensoft/kemlock-server
+    tag: "1"
+
+consts:
+  kemlock_container_name: kemlock
+  # The port the image listens on, as a non-root user.
+  container_port: 8080
+  data_path: /data

@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["src/api/wire.check.ts", "src/api/types.ts", "src/api/schema.gen.d.ts"],
+  "exclude": []
+}

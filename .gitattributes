@@ -1,0 +1,20 @@
+# LF everywhere, even in a checkout with core.autocrlf set: the server
+# builds in Linux containers and its releases are rebuilt byte for byte,
+# so a Windows line ending in a source file, script or lockfile would
+# change the build or stop it.
+* text=auto eol=lf
+
+# Fixtures other apps and versions wrote, which the tests compare byte
+# for byte: never convert them.
+**/fixtures/** -text
+
+# Binary files as they are.
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.ttf binary
+*.wasm binary
+*.zip binary
+*.sqlite3 binary
+*.db binary

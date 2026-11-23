@@ -1,0 +1,111 @@
+{
+  "realm": "kemlock",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "groups": [
+    {
+      "name": "kemlock-staff",
+      "path": "/kemlock-staff"
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "kemlock",
+      "name": "Kemlock Server",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "kemlock-e2e-secret",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:18081/*",
+        "http://127.0.0.1:18081/*",
+        "http://localhost:18080/*",
+        "http://127.0.0.1:18080/*"
+      ],
+      "webOrigins": [
+        "+"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "sam.rivera",
+      "email": "sam@example.co",
+      "emailVerified": true,
+      "firstName": "Sam",
+      "lastName": "Rivera",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "sso-user-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kemlock-staff"
+      ]
+    },
+    {
+      "username": "new.user",
+      "email": "new.user@example.co",
+      "emailVerified": true,
+      "firstName": "New",
+      "lastName": "User",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "sso-user-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kemlock-staff"
+      ]
+    },
+    {
+      "username": "proto.user",
+      "email": "proto.user@example.co",
+      "emailVerified": true,
+      "firstName": "Proto",
+      "lastName": "User",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "sso-user-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kemlock-staff"
+      ]
+    }
+  ]
+}

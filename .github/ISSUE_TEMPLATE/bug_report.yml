@@ -1,0 +1,98 @@
+name: Bug report
+description: Something in Kemlock Server does not work as it should.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If this is a security problem, **stop** and use a
+        [private security advisory](https://github.com/Arsslensoft/Kemlock-Server/security/advisories/new)
+        instead. For questions, use [Discussions](https://github.com/Arsslensoft/Kemlock-Server/discussions).
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you report
+      options:
+        - label: I searched the existing issues and discussions.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed secrets, setup codes, tokens and vault data from everything below.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release or the image tag, for example 1.4.2 or testing.
+      placeholder: "1.4.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker (ghcr.io image)
+        - Docker (another registry mirror)
+        - Binary
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Database
+      options:
+        - SQLite
+        - PostgreSQL
+        - MySQL
+    validations:
+      required: true
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Kemlock app
+        - Bitwarden app
+        - Amethystora Vault
+        - Web vault
+        - Admin console
+        - Another server (federation)
+        - Not a client (the server itself)
+    validations:
+      required: true
+  - type: input
+    id: client-version
+    attributes:
+      label: Client version and platform
+      description: For example Kemlock 0.9 on Android 15, or Bitwarden 2025.x on iOS.
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and configuration
+      description: The server log around the problem, and the settings that matter, with secrets removed. Set LOG_LEVEL=debug if it helps.
+      render: text
+    validations:
+      required: false

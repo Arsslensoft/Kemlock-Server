@@ -1,0 +1,20 @@
+apiVersion: v2
+name: kemlock-server
+description: Kemlock Server, the self-hosted vault server for Kemlock, Amethystora Vault and Bitwarden apps
+type: application
+# The chart's version moves with its templates; appVersion is the image tag used when
+# image.tag is empty. Release CI sets both from the git tag.
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/arsslensoft/kemlock-server
+sources:
+  - https://github.com/arsslensoft/kemlock-server
+keywords:
+  - password-manager
+  - vault
+  - vaultwarden
+  - bitwarden
+maintainers:
+  - name: Kemlock
+    url: https://github.com/arsslensoft

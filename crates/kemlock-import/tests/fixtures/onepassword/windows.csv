@@ -1,0 +1,5 @@
+"UUID","TITLE","USERNAME","PASSWORD","URL","URLS","EMAIL","SCOPE","AUTOSUBMIT","TAGS","NOTES","1: CARDHOLDER NAME","2: NUMBER","3: VERIFICATION NUMBER","4: EXPIRY DATE","NAME 1: FIRST NAME","NAME 2: INITIAL","NAME 3: LAST NAME","ADDRESS 1: ADDRESS","INTERNET 1: USERNAME","INTERNET 2: EMAIL","SECTION 1: EXTRA","EXTRA 1: SECRET"
+"aaaa","Example Login","ada","pw-one","https://login.example.com","https://login.example.com
+https://alt.example.com","","Default","Default","work","a login note","","","","","","","","","","","Extra","tok-123"
+"bbbb","Test Card","","","","","","Default","Default","","","Ada Lovelace","4111111111111111","123","5/1/2029 12:00 AM","","","","","","","",""
+"cccc","Identity Item","","","","","","Default","Default","","","","","","","Ada","K","Lovelace","1 Main St","ada99","ada@example.com","",""

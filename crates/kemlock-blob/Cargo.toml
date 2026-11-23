@@ -1,0 +1,25 @@
+[package]
+name = "kemlock-blob"
+description = "Kemlock Server's file storage: a local folder or an S3-compatible bucket, by random blob id"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes = "1.12.2"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+kemlock-app.workspace = true
+kemlock-domain.workspace = true
+object_store = { version = "0.14.2", default-features = false, features = ["fs", "aws"] }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

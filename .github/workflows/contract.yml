@@ -1,0 +1,252 @@
+name: contract
+
+# Workstream B's gate: Bitwarden apps and Amethystora pass. The contract suite and both apps' own
+# tests run against a kemlock-server that is started with Bitwarden compatibility on; the official
+# Bitwarden CLI logs in, syncs, creates, edits and deletes. On every change to the Bitwarden API.
+#
+# Arsslensoft/Kemlock and Arsslensoft/amethystora are public, so they are checked out with no
+# secret.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/kemlock-api-bw/**"
+      - "crates/kemlock-contract-tests/**"
+      - "crates/kemlock-server/**"
+      - "crates/kemlock-store-sql/**"
+      - "crates/kemlock-app/**"
+      - "crates/kemlock-domain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/contract.yml"
+  pull_request:
+    paths:
+      - "crates/kemlock-api-bw/**"
+      - "crates/kemlock-contract-tests/**"
+      - "crates/kemlock-server/**"
+      - "crates/kemlock-store-sql/**"
+      - "crates/kemlock-app/**"
+      - "crates/kemlock-domain/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/contract.yml"
+  workflow_dispatch:
+  schedule:
+    # Weekly, the suite against a real Vaultwarden 1.37.5: it is how the tests themselves are checked
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contract-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # What the apps' own tests ran on when their fixtures were made
+  KEMLOCK_BW_FLUTTER: 3.47.7
+  KEMLOCK_BW_CLI: 2026.6.0
+
+jobs:
+  suite:
+    # The contract tests: the real kemlock-server in the test process, on an ephemeral port, with a
+    # temporary SQLite database. Includes the test that waits a minute for a download token to end.
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test -p kemlock-contract-tests --locked -- --include-ignored
+
+  server:
+    # One release build of the server, which the jobs below start with their own DOMAIN
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --locked -p kemlock-server
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kemlock-server
+          path: target/release/kemlock-server
+          if-no-files-found: error
+          retention-days: 3
+
+  kemlock-app:
+    # The Kemlock app's own server tests, which are written for Vaultwarden: sign in with a code and
+    # a security key, the revision date, an update that keeps every value, the stale check, the
+    # trash, and (with BW_CLI) the official CLI and Kemlock taking each other's items. The app
+    # accepts https only, so socat ends TLS in front of the server, with a certificate it pins.
+    needs: server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: Arsslensoft/Kemlock
+          path: app
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kemlock-server
+          path: bin
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.KEMLOCK_BW_FLUTTER }}
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
+      - run: sudo apt-get update && sudo apt-get install --yes socat
+      - name: Start the server and https in front of it
+        run: |
+          chmod +x bin/kemlock-server
+          bash crates/kemlock-contract-tests/scripts/start-server.sh \
+            "$PWD/bin/kemlock-server" https://localhost:8443 8080 "$RUNNER_TEMP/kemlock-data"
+          bash crates/kemlock-contract-tests/scripts/tls-front.sh "$RUNNER_TEMP/tls" 8443 8080
+      - run: flutter pub get --enforce-lockfile
+        working-directory: app/mobile
+      - name: flutter test test/vaultwarden_server
+        working-directory: app/mobile
+        env:
+          VAULTWARDEN_URL: https://localhost:8443
+          NODE_EXTRA_CA_CERTS: ${{ runner.temp }}/tls/cert.pem
+        run: |
+          VAULTWARDEN_PIN="$(cat "$RUNNER_TEMP/tls/fingerprint.txt")"
+          BW_CLI="$(command -v bw)"
+          export VAULTWARDEN_PIN BW_CLI
+          flutter test test/vaultwarden_server
+      - name: The server's log
+        if: failure()
+        run: cat "$RUNNER_TEMP/kemlock-data/server.log" || true
+
+  amethystora:
+    # Amethystora Vault's own test against the server instead of its pinned Vaultwarden container.
+    # It finds the server at http://127.0.0.1:8080 (the ADDRESS constant of
+    # apps/vault-net/tests/vaultwarden.rs), which its rules allow as plain http because it is
+    # loopback and the crate has the plain-http-for-tests feature, and wants DOMAIN to be that
+    # address. The login-limit test needs the server's own default limits, so it runs alone against
+    # a server started with them. `bw_a_` and `bw_c_` are two halves of a script that needs the CLI
+    # between them (vault-tools/vwbw.sh); the CLI job below covers the CLI.
+    needs: server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: Arsslensoft/amethystora
+          path: amethystora
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kemlock-server
+          path: bin
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: amethystora/apps
+      - run: sudo apt-get update && sudo apt-get install --yes libssl-dev pkg-config
+      - name: Start the server on 127.0.0.1:8080
+        run: |
+          chmod +x bin/kemlock-server
+          bash crates/kemlock-contract-tests/scripts/start-server.sh \
+            "$PWD/bin/kemlock-server" http://127.0.0.1:8080 8080 "$RUNNER_TEMP/kemlock-data"
+      - name: cargo test -p amethystora-vault-net --test vaultwarden
+        working-directory: amethystora/apps
+        run: |
+          cargo test -p amethystora-vault-net --test vaultwarden --features plain-http-for-tests \
+            -- --ignored --test-threads=1 \
+            --skip a_thousand_items_each_way --skip too_many_logins --skip bw_a_ --skip bw_c_
+      - name: Restart the server with its default login limits
+        run: |
+          kill "$(cat "$RUNNER_TEMP/kemlock-data/server.pid")" || true
+          sleep 2
+          bash crates/kemlock-contract-tests/scripts/start-server.sh \
+            "$PWD/bin/kemlock-server" http://127.0.0.1:8080 8080 "$RUNNER_TEMP/kemlock-data-limits" default-limits
+      - name: The login limit
+        working-directory: amethystora/apps
+        run: |
+          cargo test -p amethystora-vault-net --test vaultwarden --features plain-http-for-tests \
+            -- --ignored --test-threads=1 too_many_logins
+      - name: The server's log
+        if: failure()
+        run: cat "$RUNNER_TEMP"/kemlock-data*/server.log || true
+
+  bitwarden-cli:
+    # The Bitwarden CLI 2026.6.0: login, sync, create, edit, delete
+    needs: server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kemlock-server
+          path: bin
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
+      - name: Start the server on 127.0.0.1:8080
+        run: |
+          chmod +x bin/kemlock-server
+          bash crates/kemlock-contract-tests/scripts/start-server.sh \
+            "$PWD/bin/kemlock-server" http://127.0.0.1:8080 8080 "$RUNNER_TEMP/kemlock-data"
+      - name: bw login, sync, create, edit, delete
+        env:
+          SERVER_URL: http://127.0.0.1:8080
+          BW_CLI: bw
+        run: node crates/kemlock-contract-tests/scripts/bw-cli.mjs
+      - name: The server's log
+        if: failure()
+        run: cat "$RUNNER_TEMP/kemlock-data/server.log" || true
+
+  vaultwarden:
+    # The suite against a real Vaultwarden 1.37.5, which checks the tests themselves: where this
+    # fails and the Bitwarden API agrees with Vaultwarden's own source, the test is wrong. Manual
+    # and weekly, not on every change.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    services:
+      vaultwarden:
+        image: vaultwarden/server:1.37.5
+        ports:
+          - 8081:80
+        env:
+          DOMAIN: http://localhost:8081
+          SIGNUPS_ALLOWED: "true"
+          SIGNUPS_VERIFY: "false"
+          DISABLE_ICON_DOWNLOAD: "true"
+          LOGIN_RATELIMIT_SECONDS: "1"
+          LOGIN_RATELIMIT_MAX_BURST: "100000"
+          UNAUTHENTICATED_RATELIMIT_SECONDS: "1"
+          UNAUTHENTICATED_RATELIMIT_MAX_BURST: "100000"
+        options: >-
+          --health-cmd "/healthcheck.sh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 24
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: cargo test -p kemlock-contract-tests, against Vaultwarden
+        env:
+          KEMLOCK_CONTRACT_URL: http://localhost:8081
+          KEMLOCK_CONTRACT_VAULTWARDEN: "1"
+        run: cargo test -p kemlock-contract-tests --locked -- --include-ignored

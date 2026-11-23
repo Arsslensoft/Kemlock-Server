@@ -1,0 +1,50 @@
+name: dependency review
+
+# What a pull request adds or bumps in Cargo.lock and web/package-lock.json (and the workflows'
+# actions): fails on a known vulnerability of high severity or worse, and on a runtime licence off
+# the allow-list. The list is deny.toml's [licenses] allow-list plus what the web vault needs
+# (tools/check-web-licenses.sh): keep the three in step.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # the summary comment, only when the review fails
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          allow-licenses: >-
+            AGPL-3.0-only,
+            Apache-2.0,
+            Apache-2.0 WITH LLVM-exception,
+            MIT,
+            MIT-0,
+            BSD-2-Clause,
+            BSD-3-Clause,
+            ISC,
+            Zlib,
+            Unicode-3.0,
+            CC0-1.0,
+            OpenSSL,
+            MPL-2.0,
+            CDLA-Permissive-2.0,
+            0BSD,
+            OFL-1.1,
+            Unlicense

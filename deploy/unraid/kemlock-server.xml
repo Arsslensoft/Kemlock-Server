@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Community Apps template for Kemlock Server. Submit it to the Community Applications
+  repository, or add this file's raw URL under Docker > Add Container > Template repositories.
+  It points at the official image and only sets what the image needs.
+-->
+<Container version="2">
+  <Name>kemlock-server</Name>
+  <Repository>ghcr.io/arsslensoft/kemlock-server:1</Repository>
+  <Registry>https://github.com/arsslensoft/kemlock-server/pkgs/container/kemlock-server</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/arsslensoft/kemlock-server/issues</Support>
+  <Project>https://github.com/arsslensoft/kemlock-server</Project>
+  <Overview>Self-hosted password vault server for Kemlock, Amethystora Vault and Bitwarden apps. One small static binary, SQLite by default, post-quantum key exchange and OPAQUE sign-in. Reads Vaultwarden's settings, so a Vaultwarden data folder can be mounted as /data to migrate.&#xD;
+&#xD;
+First start: there is no admin token. The server prints a one-time setup code in its log (click the container, then Logs); its setup page asks for that code before it makes the first admin account.&#xD;
+&#xD;
+Put it behind a reverse proxy with TLS (Nginx Proxy Manager, SWAG, Caddy or Traefik) and set Domain to the public address: DPoP proofs are checked against it. WebSocket routes are /notifications/hub and /kem/v1/live.</Overview>
+  <Category>Security: Tools: Network:Web</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/arsslensoft/kemlock-server/main/deploy/unraid/kemlock-server.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/arsslensoft/kemlock-server/main/deploy/unraid/kemlock-server.png</Icon>
+  <!-- The image runs as a non-root user on a read-only root filesystem. Unraid's appdata belongs
+       to nobody:users (99:100), so the container runs as that user to write /data. -->
+  <ExtraParams>--read-only --user 99:100 --cap-drop=ALL --security-opt=no-new-privileges:true --tmpfs /tmp</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web port" Target="8080" Default="8080" Mode="tcp" Description="The API, the web vault and both WebSocket routes, on one port." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/kemlock-server" Mode="rw" Description="The database, server.key, attachments and backups. Back up server.key apart from the data." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/kemlock-server</Config>
+  <Config Name="Domain" Target="DOMAIN" Default="" Mode="" Description="The public address clients use, such as https://vault.example.com. Required behind a proxy." Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Allow sign-ups" Target="SIGNUPS_ALLOWED" Default="false" Mode="" Description="Let anyone who can reach the server make an account. Off after the first admin exists." Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+  <Config Name="Log level" Target="LOG_LEVEL" Default="info" Mode="" Description="error, warn, info, debug or trace." Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
+  <Config Name="Client IP header" Target="IP_HEADER" Default="" Mode="" Description="Behind a proxy, the header that carries the client address, such as X-Forwarded-For." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Trusted proxies" Target="KEMLOCK_TRUSTED_PROXIES" Default="" Mode="" Description="Comma-separated proxy addresses the client IP header is trusted from, such as your proxy container's IP." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Database URL" Target="DATABASE_URL" Default="" Mode="" Description="Empty uses SQLite in /data. Or postgres://user:password@host/kemlock." Type="Variable" Display="advanced" Required="false" Mask="true"/>
+</Container>

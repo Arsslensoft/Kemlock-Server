@@ -1,0 +1,53 @@
+[package]
+name = "kemlock-api-kem-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+kemlock-api-kem = { path = ".." }
+kemlock-app = { path = "../../kemlock-app" }
+kemlock-crypto = { path = "../../kemlock-crypto" }
+kemlock-domain = { path = "../../kemlock-domain" }
+serde_json = "1.0.154"
+time = "0.3.55"
+
+# Its own workspace, as cargo-fuzz wants: the fuzz crate is built with sanitizers and is not part
+# of the main workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "sync_batch"
+path = "fuzz_targets/sync_batch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "item_dto"
+path = "fuzz_targets/item_dto.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpop"
+path = "fuzz_targets/dpop.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jws"
+path = "fuzz_targets/jws.rs"
+test = false
+doc = false
+bench = false

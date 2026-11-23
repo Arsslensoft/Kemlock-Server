@@ -1,0 +1,33 @@
+[package]
+name = "kemlock-identity"
+description = "OpenID Connect relying party and DNS domain proof for Kemlock Server's SSO"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kemlock-app.workspace = true
+# HMAC-SHA1 (Yubico's signatures, Duo's Auth API) and SHA-512/256 and HMAC-SHA512 (Duo's tokens).
+aws-lc-rs.workspace = true
+# Yubico and Duo are called over HTTPS. Named apart because `openidconnect` re-exports 0.12 as
+# `reqwest` (see `lib.rs`); this is the 0.13 the rest of the workspace uses.
+reqwest13 = { package = "reqwest", version = "0.13.5", default-features = false, features = ["form", "rustls"] }
+# The fake provider in `testing` signs ES256 tokens with kemlock-crypto and serves them with axum;
+# the server's gate test and this crate's tests both use it.
+axum.workspace = true
+kemlock-crypto = { workspace = true, features = ["aws-lc"] }
+# `accept-string-booleans`: some providers send `email_verified` as the string "true".
+openidconnect = { version = "4.1.0", features = ["accept-string-booleans"] }
+hickory-resolver = "0.26.3"
+serde_json.workspace = true
+time.workspace = true
+tokio.workspace = true
+url.workspace = true
+# The WebAuthn relying party: registration and sign-in ceremonies (attestation "none", ES256, ES384
+# and RS256). Used below its `WebauthnCore`, so each ceremony chooses its own user verification.
+webauthn-rs-core = "0.6.2"
+
+[lints]
+workspace = true

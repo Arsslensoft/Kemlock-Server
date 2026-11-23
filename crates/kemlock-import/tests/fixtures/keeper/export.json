@@ -1,0 +1,77 @@
+{
+  "shared_folders": [
+    {"uid": "sf1", "path": "Team\\Ops", "manage_users": true, "manage_records": true, "can_edit": true, "can_share": true}
+  ],
+  "records": [
+    {
+      "uid": "u1", "title": "Example Site", "$type": "login", "notes": "A note",
+      "login": "ada@example.com", "password": "pw-1", "login_url": "https://example.com",
+      "last_modified": 1600000000,
+      "custom_fields": {
+        "$oneTimeCode::1": "otpauth://totp/Example:ada?secret=JBSWY3DPEHPK3PXP",
+        "$url:Staging:1": ["https://staging.example.com", "staging2.example.com"],
+        "Account number": "12345",
+        "$pinCode::1": "4321",
+        "$date:Renewal:1": 1700000000000,
+        "$host:Server:1": {"hostName": "db.example.com", "port": "5432"},
+        "$securityQuestion::1": [{"question": "First pet?", "answer": "Rex"}]
+      },
+      "folders": [{"folder": "Personal\\Sites"}, {"shared_folder": "Team\\Ops"}]
+    },
+    {
+      "title": "Visa", "$type": "bankCard", "login": "u", "password": "p",
+      "custom_fields": {
+        "$text:cardholderName": "Ada Lovelace",
+        "$paymentCard:1": {"cardNumber": "4111111111111111", "cardExpirationDate": "05/2029", "cardSecurityCode": "123"},
+        "$pinCode:1": "9999",
+        "$oneTimeCode:1": "JBSWY3DPEHPK3PXP"
+      }
+    },
+    {
+      "title": "Licence", "$type": "driverLicense",
+      "custom_fields": {
+        "$accountNumber:dlNumber:1": "D1234",
+        "$name:1": {"first": "Grace", "middle": "B", "last": "Hopper"},
+        "$birthDate:1": "631152000000",
+        "$expirationDate:1": "1893456000000"
+      }
+    },
+    {
+      "title": "SSN", "$type": "ssnCard",
+      "custom_fields": {
+        "$accountNumber:identityNumber:1": "123-45-6789",
+        "$name:1": {"first": "Ada", "last": "Lovelace"}
+      }
+    },
+    {
+      "title": "Passport", "$type": "passport",
+      "custom_fields": {
+        "$accountNumber:passportNumber:1": "P7654321",
+        "$name:1": {"first": "Ada", "last": "Lovelace"},
+        "$expirationDate:1": "1893456000000",
+        "$date:dateIssued:1": "1577836800000"
+      }
+    },
+    {
+      "title": "Deploy key", "$type": "sshKeys", "login": "deploy", "password": "passphrase!",
+      "custom_fields": {
+        "$keyPair:1": {
+          "publicKey": "ssh-ed25519 AAAAFAKE deploy",
+          "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKE\n-----END OPENSSH PRIVATE KEY-----"
+        },
+        "$host:1": {"hostName": "git.example.com", "port": "22"}
+      }
+    },
+    {"title": "Broken key", "$type": "sshKeys", "password": "pp", "custom_fields": {}},
+    {"title": "Just a note", "notes": "hello"},
+    {
+      "uid": "u9", "title": "Server login", "login": "root", "password": "x",
+      "references": {"$addressRef::1": ["u10"]}
+    },
+    {
+      "uid": "u10", "title": "Office",
+      "custom_fields": {"$address:address:1": {"street1": "1 Main St", "city": "Springfield"}}
+    },
+    7
+  ]
+}

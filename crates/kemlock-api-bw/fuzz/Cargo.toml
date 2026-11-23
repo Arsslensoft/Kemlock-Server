@@ -1,0 +1,48 @@
+[package]
+name = "kemlock-api-bw-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+kemlock-api-bw = { path = "..", features = ["fuzzing"] }
+
+# Its own workspace, as cargo-fuzz wants: the fuzz crate is built with sanitizers and is not part
+# of the main workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cipher_request"
+path = "fuzz_targets/cipher_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stored_cipher"
+path = "fuzz_targets/stored_cipher.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "enc_string"
+path = "fuzz_targets/enc_string.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_version"
+path = "fuzz_targets/client_version.rs"
+test = false
+doc = false
+bench = false

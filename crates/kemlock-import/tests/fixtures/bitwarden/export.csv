@@ -1,0 +1,6 @@
+folder,favorite,type,name,notes,fields,reprompt,login_uri,login_username,login_password,login_totp
+Work/Projects,1,login,Example Mail,,"pin: 1234
+a: b: c",0,"https://mail.example.com,alt.example.com",ada,pw-now,otpauth://totp/Mail:ada?secret=JBSWY3DPEHPK3PXP
+,0,login,Plain,,,0,,bob,pw2,
+,0,note,Wi-Fi note,"line one
+line two",,0,,,,

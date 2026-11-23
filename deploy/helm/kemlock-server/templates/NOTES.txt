@@ -1,0 +1,21 @@
+Kemlock Server {{ default .Chart.AppVersion .Values.image.tag }} is installing at {{ .Values.domain }}.
+
+First admin: there is no admin token. On its first start the server prints a one-time setup
+code in its log; its setup page asks for it before it makes the first admin account:
+
+  kubectl logs deploy/{{ include "kemlock.fullname" . }} | grep -i "setup code"
+
+{{- if eq .Values.database.type "sqlite" }}
+
+SQLite: this is one replica on one volume. Back up the volume, and keep /data/server.key apart
+from the backups: a restore needs it to unseal the server's secrets.
+{{- end }}
+{{- if not .Values.ingress.enabled }}
+
+No ingress was made. Reach it from your machine with:
+
+  kubectl port-forward svc/{{ include "kemlock.fullname" . }} 8080:{{ .Values.service.port }}
+
+and put TLS in front of it before real use: DPoP proofs and sign-in need the address in
+`domain`.
+{{- end }}

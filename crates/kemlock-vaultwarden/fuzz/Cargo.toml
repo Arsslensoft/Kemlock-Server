@@ -1,0 +1,49 @@
+[package]
+name = "kemlock-vaultwarden-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4.13"
+kemlock-vaultwarden = { path = ".." }
+serde_json = "1.0.154"
+
+# Its own workspace, as cargo-fuzz wants: the fuzz crate is built with sanitizers and is not part
+# of the main workspace.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "cipher_json"
+path = "fuzz_targets/cipher_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "settings"
+path = "fuzz_targets/settings.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "two_step"
+path = "fuzz_targets/two_step.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "times"
+path = "fuzz_targets/times.rs"
+test = false
+doc = false
+bench = false

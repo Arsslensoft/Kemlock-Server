@@ -1,0 +1,35 @@
+# Traefik v3 in front of Kemlock, with the router and service as container labels.
+# WebSocket upgrades pass by default; Traefik sends X-Forwarded-For.
+services:
+  traefik:
+    image: traefik:v3.5
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=you@example.com
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports: ["80:80", "443:443"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./letsencrypt:/letsencrypt
+
+  kemlock:
+    image: ghcr.io/arsslensoft/kemlock-server:1
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      DOMAIN: https://vault.example.com
+      IP_HEADER: X-Forwarded-For
+      KEMLOCK_TRUSTED_PROXIES: 172.18.0.2 # Traefik's address on this network
+    volumes: [./kemlock-data:/data]
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.kemlock.rule=Host(`vault.example.com`)
+      - traefik.http.routers.kemlock.entrypoints=websecure
+      - traefik.http.routers.kemlock.tls.certresolver=le
+      - traefik.http.services.kemlock.loadbalancer.server.port=8080

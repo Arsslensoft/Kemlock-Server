@@ -1,0 +1,65 @@
+kemlock-import
+==============
+
+kemlock-import is licensed AGPL-3.0-only, like the rest of Kemlock Server (see ../../LICENSE).
+
+Parts of it are ported from the importers of Bitwarden's clients,
+https://github.com/bitwarden/clients, directory libs/importer/src/importers, at commit
+f9c68e008ba91dc19edf519305a82d3a994a7baa (21 November 2026). Those sources are
+Copyright (C) Bitwarden Inc. and licensed under the GNU General Public License, version 3
+(the repository's default licence: LICENSE.txt there says the Bitwarden License covers only
+bitwarden_license/, and libs/importer is not in it). The GPL-3.0 permits combining its code into
+an AGPL-3.0 work; the combined crate is distributed under the AGPL-3.0, and the GPL-3.0 notice
+and attribution below stay with the ported code. Each ported file begins with a comment naming
+its Bitwarden source files and this commit. The ports are rewrites in Rust, adapted to Kemlock's
+neutral batch (cards, identities, keys, folders and shared vaults are Kemlock kinds), not
+transliterations; they keep Bitwarden's field mappings and quirks where those are the format's
+behaviour.
+
+Rust file                      Bitwarden source (libs/importer/src/importers/...)
+-----------------------------  ---------------------------------------------------------------
+src/util.rs                    base-importer.ts; keeper/keeper-importer.ts (addField)
+src/builder.rs                 base-importer.ts (processFolder)
+src/chrome.rs                  chrome-csv-importer.ts
+src/safari.rs                  safari-csv-importer.ts
+src/firefox.rs                 firefox-csv-importer.ts
+src/bitwarden.rs               bitwarden/bitwarden-json-importer.ts
+                               bitwarden/bitwarden-encrypted-json-importer.ts
+                               bitwarden/bitwarden-password-protected-importer.ts
+                               bitwarden/password-protected-kdf-config.ts
+src/bitwarden_csv.rs           bitwarden/bitwarden-csv-importer.ts
+src/bitwarden_export.rs        (the writer; Bitwarden's exporters, libs/tools/export/vault-export/
+                               vault-export-core/src/services/base-vault-export.service.ts,
+                               individual-vault-export.service.ts, and the models under
+                               libs/common/src/models/export/)
+src/lastpass.rs                lastpass/lastpass-csv-importer.ts
+src/onepassword.rs             onepassword/onepassword-1pux-importer.ts
+                               onepassword/types/onepassword-1pux-importer-types.ts
+src/onepassword_csv.rs         onepassword/onepassword-csv-importer.ts
+                               onepassword/onepassword-mac-csv-importer.ts
+                               onepassword/onepassword-win-csv-importer.ts
+src/dashlane.rs                dashlane/dashlane-csv-importer.ts
+                               dashlane/types/dashlane-csv-types.ts
+src/nordpass.rs                nordpass-csv-importer.ts
+src/keeper.rs                  keeper/keeper-json-importer.ts
+                               keeper/keeper-importer.ts
+                               keeper/types/keeper-json-types.ts
+src/protonpass.rs              protonpass/protonpass-json-importer.ts
+                               protonpass/protonpass-import-utils.ts
+                               protonpass/types/protonpass-json-type.ts
+src/enpass.rs                  enpass/enpass-json-importer.ts
+                               enpass/types/enpass-json-type.ts
+src/roboform.rs                roboform-csv-importer.ts
+
+Not ported from Bitwarden (written for Kemlock): src/model.rs, context.rs, limits.rs, error.rs,
+csv.rs (a Papa Parse-compatible reader), zip.rs, bwcrypto.rs (the KDF and EncString format of
+password-protected exports, as Bitwarden's clients define them), passkey.rs, detect.rs, and
+src/kdbx.rs (a wrapper over the keepass crate).
+
+Dependencies with their own licences (all MIT or Apache-2.0 and checked by cargo-deny in CI):
+  keepass 0.17 (MIT, sseemayer/keepass-rs), for KDBX 3.1 and 4.
+  pgp 0.21 (rPGP; MIT or Apache-2.0), for Proton Pass's passphrase-encrypted exports.
+  RustCrypto crates (aes, cbc, hmac, hkdf, sha2, argon2), miniz_oxide, base64, serde.
+
+Bitwarden's source is read from the public repository; the fixtures under tests/fixtures are made
+up for this crate and hold no real personal data.

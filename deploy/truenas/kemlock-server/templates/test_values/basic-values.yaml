@@ -1,0 +1,24 @@
+kemlock:
+  domain: https://vault.example.com
+  signups_allowed: false
+  ip_header: ""
+  trusted_proxies: ""
+  additional_envs: []
+
+network:
+  host_network: false
+  web_port:
+    bind_mode: published
+    port_number: 31080
+
+storage:
+  data:
+    type: ix_volume
+    ix_volume_config:
+      dataset_name: data
+      create_host_path: true
+
+resources:
+  limits:
+    cpus: 2
+    memory: 512

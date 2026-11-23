@@ -1,0 +1,38 @@
+[package]
+name = "kemlock-import"
+description = "Reads the exports of other password managers into one neutral batch; native in the CLI, WebAssembly in the web vault"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+# WebAssembly in a browser: rPGP's browser clock and random source.
+wasm = ["pgp/wasm"]
+
+[dependencies]
+aes = "0.9.4"
+argon2.workspace = true
+base64 = "0.23.1"
+cbc = { version = "0.2.1", features = ["alloc"] }
+hkdf.workspace = true
+hmac.workspace = true
+# KDBX 3.1 and 4 (MIT; sseemayer/keepass-rs). It runs its own key derivation, so `kdbx` reads the
+# file's KDF settings first and refuses a cost over the limits.
+keepass = "0.17.0"
+miniz_oxide = "0.9.1"
+# OpenPGP, for Proton Pass's encrypted export. No bzip2: it needs a C compiler.
+pgp = { version = "0.21.1", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The tests write KDBX 4 files with the same reader's writer.
+keepass = { version = "0.17.0", features = ["save_kdbx4"] }

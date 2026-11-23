@@ -1,0 +1,566 @@
+//! The admin routes of federation and the public pairing routes, over in-memory servers.
+
+use axum::Router;
+use axum::body::{Body, to_bytes};
+use axum::http::request::Parts;
+use axum::http::{Method, Request, StatusCode, header};
+use kemlock_api_fed::{AdminActor, AdminGate, AdminState, GateRefusal, admin_router, pair_router};
+use kemlock_app::federation_view::BoxFut;
+use kemlock_domain::{ServerId, UserId};
+use kemlock_federation::memory::MemoryStore;
+use kemlock_federation::message::{Request as FedRequest, Response as FedResponse};
+use kemlock_federation::ports::Peer;
+use kemlock_federation::testing::identity;
+use kemlock_federation::{
+    Channel, Connector, FedError, Federation, PairingLink, Pairings, PeerRunner, Replica, Suite,
+    unix_now,
+};
+use serde_json::{Value, json};
+use std::sync::Arc;
+use tower::ServiceExt as _;
+
+/// A connector that never connects: these tests don't run the job.
+struct NoConnector;
+
+struct NoChannel;
+
+impl Channel for NoChannel {
+    async fn call(&mut self, _request: &FedRequest) -> Result<FedResponse, FedError> {
+        Err(FedError::Remote("no session in these tests".to_owned()))
+    }
+}
+
+impl Connector for NoConnector {
+    type Chan = NoChannel;
+
+    async fn connect(&self, _peer: &Peer) -> Result<NoChannel, FedError> {
+        Err(FedError::Remote("no session in these tests".to_owned()))
+    }
+
+    async fn close(&self, _channel: NoChannel) -> Result<(), FedError> {
+        Ok(())
+    }
+}
+
+/// A pairing link with nobody at the other end.
+struct Dead;
+
+impl PairingLink for Dead {
+    fn start(&self, _address: &str, _message: Vec<u8>) -> BoxFut<'_, Result<Vec<u8>, FedError>> {
+        Box::pin(async { Err(FedError::Remote("nobody there".to_owned())) })
+    }
+
+    fn finish(
+        &self,
+        _address: &str,
+        _initiator: ServerId,
+        _message: Vec<u8>,
+    ) -> BoxFut<'_, Result<(), FedError>> {
+        Box::pin(async { Err(FedError::Remote("nobody there".to_owned())) })
+    }
+}
+
+/// A pairing link that hands the messages straight to another server's hub.
+struct Loop(Arc<Pairings<MemoryStore>>);
+
+impl PairingLink for Loop {
+    fn start(&self, _address: &str, message: Vec<u8>) -> BoxFut<'_, Result<Vec<u8>, FedError>> {
+        Box::pin(async move { self.0.respond(&message, unix_now()) })
+    }
+
+    fn finish(
+        &self,
+        _address: &str,
+        initiator: ServerId,
+        message: Vec<u8>,
+    ) -> BoxFut<'_, Result<(), FedError>> {
+        Box::pin(async move { self.0.finish(initiator, &message, unix_now()) })
+    }
+}
+
+/// Lets a request through when it carries `x-admin`; it is fresh when it also carries `x-fresh`, and
+/// has a step-up token when it carries `x-step-up`.
+struct Gate;
+
+impl AdminGate for Gate {
+    fn authorize<'a>(&'a self, parts: &'a Parts) -> BoxFut<'a, Result<AdminActor, GateRefusal>> {
+        Box::pin(async move {
+            if !parts.headers.contains_key("x-admin") {
+                return Err(GateRefusal {
+                    status: StatusCode::UNAUTHORIZED,
+                    detail: "send x-admin",
+                });
+            }
+            Ok(AdminActor {
+                user: UserId::random(),
+                fresh: parts.headers.contains_key("x-fresh"),
+                step_up: parts.headers.contains_key("x-step-up"),
+            })
+        })
+    }
+}
+
+struct Env {
+    app: Router,
+    replica: Arc<Replica<MemoryStore>>,
+    pairings: Arc<Pairings<MemoryStore>>,
+}
+
+fn env(seed: u8, link: Arc<dyn PairingLink>) -> Env {
+    let id = identity(seed, unix_now(), &Suite::IMPLEMENTED);
+    let replica = Arc::new(Replica::new(MemoryStore::new(id.server), Arc::new(id)));
+    let pairings = Arc::new(Pairings::new(replica.clone(), link));
+    let runner = Arc::new(PeerRunner::new(
+        replica.clone(),
+        NoConnector,
+        format!("test-{seed}"),
+    ));
+    let federation = Federation::new(replica.clone(), runner, pairings.clone());
+    let app = admin_router(AdminState {
+        federation,
+        gate: Arc::new(Gate),
+    })
+    .merge(pair_router(pairings.clone()));
+    Env {
+        app,
+        replica,
+        pairings,
+    }
+}
+
+async fn call(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        builder = builder.header(*name, *value);
+    }
+    let body = body.map_or_else(Body::empty, |v| Body::from(v.to_string()));
+    let response = app
+        .clone()
+        .oneshot(builder.body(body).expect("a request"))
+        .await
+        .expect("a response");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("a body");
+    (status, headers, bytes.to_vec())
+}
+
+/// An admin with a step-up token, which every write needs.
+async fn admin(
+    app: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let (status, _, bytes) = call(
+        app,
+        method,
+        uri,
+        body,
+        &[("x-admin", "1"), ("x-step-up", "1")],
+    )
+    .await;
+    let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, value)
+}
+
+#[tokio::test]
+async fn without_the_gate_nothing_is_served() {
+    let e = env(1, Arc::new(Dead));
+    let (status, headers, bytes) =
+        call(&e.app, Method::GET, "/admin/v1/federation", None, &[]).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("application/problem+json")
+    );
+    let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+    assert_eq!(problem["type"], "urn:kemlock:problem:unauthorized");
+    for (method, uri) in [
+        (Method::GET, "/admin/v1/federation/peers"),
+        (Method::POST, "/admin/v1/federation/pairing/code"),
+        (Method::GET, "/admin/v1/federation/vaults"),
+        (Method::GET, "/admin/v1/federation/offers"),
+    ] {
+        let (status, _, _) = call(&e.app, method, uri, None, &[]).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn the_overview_and_the_peer_list_answer() {
+    let e = env(1, Arc::new(Dead));
+    let (status, overview) = admin(&e.app, Method::GET, "/admin/v1/federation", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        overview["server"]["serverId"],
+        e.replica.server_id().0.to_string()
+    );
+    assert_eq!(overview["server"]["operator"], "Operator 1");
+    assert_eq!(overview["peers"], json!([]));
+    assert_eq!(overview["vaults"], json!([]));
+    let (status, peers) = admin(&e.app, Method::GET, "/admin/v1/federation/peers", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(peers, json!([]));
+}
+
+#[tokio::test]
+async fn the_code_route_shows_a_displayable_code() {
+    let e = env(1, Arc::new(Dead));
+    let (status, body) = admin(
+        &e.app,
+        Method::POST,
+        "/admin/v1/federation/pairing/code",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let code = body["code"].as_str().expect("a code");
+    assert_eq!(code.len(), 14);
+    assert_eq!(code.matches('-').count(), 2);
+    assert!(body["expiresAt"].as_u64().expect("a time") > unix_now());
+    assert!(e.pairings.code_waiting(unix_now()));
+}
+
+#[tokio::test]
+async fn two_servers_pair_through_their_admin_routes() {
+    let b = env(2, Arc::new(Dead));
+    let a = env(1, Arc::new(Loop(b.pairings.clone())));
+    let (_, code) = admin(
+        &b.app,
+        Method::POST,
+        "/admin/v1/federation/pairing/code",
+        None,
+    )
+    .await;
+    let (status, awaiting) = admin(
+        &a.app,
+        Method::POST,
+        "/admin/v1/federation/pairing",
+        Some(json!({"address": "http://b.example.org", "code": code["code"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{awaiting}");
+    assert_eq!(awaiting["peerId"], b.replica.server_id().0.to_string());
+    assert_eq!(awaiting["otherOrganisation"], true);
+    assert_eq!(
+        awaiting["identityKey"],
+        hex::encode(b.replica.identity().public.as_bytes()),
+        "the key the pairing would pin"
+    );
+    assert_eq!(awaiting["side"], "typed");
+    assert_eq!(awaiting["fingerprint"].as_array().expect("words").len(), 6);
+
+    // B sees A waiting with the same six words.
+    let (_, theirs) = admin(&b.app, Method::GET, "/admin/v1/federation/pairings", None).await;
+    assert_eq!(theirs.as_array().expect("a list").len(), 1);
+    assert_eq!(theirs[0]["fingerprint"], awaiting["fingerprint"]);
+    assert_eq!(theirs[0]["side"], "showed");
+
+    // Another organisation needs the three acknowledgements.
+    let a_path = format!(
+        "/admin/v1/federation/pairings/{}/confirm",
+        b.replica.server_id().0
+    );
+    let (status, _) = admin(
+        &a.app,
+        Method::POST,
+        &a_path,
+        Some(json!({"fingerprintMatches": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let ack = json!({"metadata": true, "deletion": true, "crossBorder": true, "by": "admin"});
+    let (status, peer) = admin(
+        &a.app,
+        Method::POST,
+        &a_path,
+        Some(json!({"fingerprintMatches": true, "acknowledgement": ack})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{peer}");
+    assert_eq!(peer["id"], b.replica.server_id().0.to_string());
+    assert_eq!(peer["fingerprint"], awaiting["fingerprint"]);
+
+    let b_path = format!(
+        "/admin/v1/federation/pairings/{}/confirm",
+        a.replica.server_id().0
+    );
+    let (status, _) = admin(
+        &b.app,
+        Method::POST,
+        &b_path,
+        Some(json!({"fingerprintMatches": true, "acknowledgement": ack})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, peers) = admin(&a.app, Method::GET, "/admin/v1/federation/peers", None).await;
+    assert_eq!(peers.as_array().expect("a list").len(), 1);
+    assert_eq!(peers[0]["state"], "paired");
+    assert_eq!(
+        peers[0]["identityKey"],
+        hex::encode(b.replica.identity().public.as_bytes()),
+        "the pinned key"
+    );
+    assert_eq!(peers[0]["switches"], json!({"send": false, "pull": false}));
+    let (_, left) = admin(&a.app, Method::GET, "/admin/v1/federation/pairings", None).await;
+    assert_eq!(left, json!([]));
+}
+
+#[tokio::test]
+async fn a_wrong_code_is_a_bare_400_and_uses_the_code_up() {
+    let b = env(2, Arc::new(Dead));
+    let a = env(1, Arc::new(Loop(b.pairings.clone())));
+    let (_, code) = admin(
+        &b.app,
+        Method::POST,
+        "/admin/v1/federation/pairing/code",
+        None,
+    )
+    .await;
+    let wrong = "0000-0000-0000";
+    assert_ne!(code["code"], wrong);
+    let (status, problem) = admin(
+        &a.app,
+        Method::POST,
+        "/admin/v1/federation/pairing",
+        Some(json!({"address": "http://b.example.org", "code": wrong})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(problem["type"], "urn:kemlock:problem:pairing-failed");
+    assert!(problem.get("detail").is_none());
+    // The one attempt is gone: the right code no longer works.
+    let (status, _) = admin(
+        &a.app,
+        Method::POST,
+        "/admin/v1/federation/pairing",
+        Some(json!({"address": "http://b.example.org", "code": code["code"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, awaiting) = admin(&b.app, Method::GET, "/admin/v1/federation/pairings", None).await;
+    assert_eq!(awaiting, json!([]));
+}
+
+#[tokio::test]
+async fn the_public_pairing_routes_refuse_with_a_bare_400() {
+    let e = env(1, Arc::new(Dead));
+    for (uri, body) in [
+        ("/fed/v1/pair/start", "garbage"),
+        ("/fed/v1/pair/finish?initiator=not-a-uuid", "garbage"),
+        (
+            "/fed/v1/pair/finish?initiator=00000000-0000-0000-0000-000000000000",
+            "garbage",
+        ),
+        ("/fed/v1/pair/finish", "garbage"),
+    ] {
+        let response = e
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .body(Body::from(body))
+                    .expect("a request"),
+            )
+            .await
+            .expect("a response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let bytes = to_bytes(response.into_body(), 1 << 16)
+            .await
+            .expect("a body");
+        let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+        assert_eq!(problem["status"], 400);
+        assert!(problem.get("detail").is_none(), "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn the_public_pairing_routes_are_rate_limited() {
+    let e = env(1, Arc::new(Dead));
+    let mut last = StatusCode::OK;
+    for _ in 0..25 {
+        let response = e
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/fed/v1/pair/start")
+                    .body(Body::from("x"))
+                    .expect("a request"),
+            )
+            .await
+            .expect("a response");
+        last = response.status();
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn promotion_needs_a_fresh_check() {
+    let e = env(1, Arc::new(Dead));
+    let owner = format!("user:{}", uuid::Uuid::new_v4());
+    let uri = format!("/admin/v1/federation/vaults/{owner}/promote");
+    let (status, _, bytes) = call(&e.app, Method::POST, &uri, None, &[("x-admin", "1")]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+    assert_eq!(problem["type"], "urn:kemlock:problem:fresh-check-needed");
+    // With a fresh check it gets as far as the vault, which this server doesn't hold.
+    let (status, _, _) = call(
+        &e.app,
+        Method::POST,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_policy_names_paired_replicas_and_a_good_owner() {
+    let e = env(1, Arc::new(Dead));
+    let owner = format!("user:{}", uuid::Uuid::new_v4());
+    let uri = format!("/admin/v1/federation/vaults/{owner}");
+    // A replica this server isn't paired with.
+    let (status, _) = admin(
+        &e.app,
+        Method::PUT,
+        &uri,
+        Some(json!({"policy": "federated", "replicas": [uuid::Uuid::new_v4()]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Federated with no replica.
+    let (status, _) = admin(
+        &e.app,
+        Method::PUT,
+        &uri,
+        Some(json!({"policy": "federated", "replicas": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Unknown policy, unknown field, bad owner.
+    let (status, _) = admin(&e.app, Method::PUT, &uri, Some(json!({"policy": "both"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = admin(
+        &e.app,
+        Method::PUT,
+        &uri,
+        Some(json!({"policy": "local", "extra": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = admin(
+        &e.app,
+        Method::PUT,
+        "/admin/v1/federation/vaults/team:nope",
+        Some(json!({"policy": "local"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Local is the default and is accepted.
+    let (status, vault) = admin(&e.app, Method::PUT, &uri, Some(json!({"policy": "local"}))).await;
+    assert_eq!(status, StatusCode::OK, "{vault}");
+    assert_eq!(vault["policy"], "local");
+    assert_eq!(vault["isHome"], true);
+    let (_, vaults) = admin(&e.app, Method::GET, "/admin/v1/federation/vaults", None).await;
+    assert_eq!(vaults.as_array().expect("a list").len(), 1);
+}
+
+#[tokio::test]
+async fn log_switches_and_revoking_need_a_known_peer() {
+    let e = env(1, Arc::new(Dead));
+    let id = uuid::Uuid::new_v4();
+    let (status, _) = admin(
+        &e.app,
+        Method::PUT,
+        &format!("/admin/v1/federation/peers/{id}/logs"),
+        Some(json!({"send": true, "pull": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = admin(
+        &e.app,
+        Method::DELETE,
+        &format!("/admin/v1/federation/peers/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = admin(
+        &e.app,
+        Method::DELETE,
+        &format!("/admin/v1/federation/pairings/{id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn every_federation_write_asks_for_a_step_up_token() {
+    let e = env(1, Arc::new(Dead));
+    let id = uuid::Uuid::new_v4();
+    let owner = format!("user:{}", uuid::Uuid::new_v4());
+    let base = "/admin/v1/federation";
+    let ack = json!({"metadata": true, "deletion": true, "crossBorder": true, "by": "admin"});
+    for (method, uri, body) in [
+        (
+            Method::POST,
+            format!("{base}/pairing"),
+            Some(json!({"address": "http://b.example.org", "code": "x"})),
+        ),
+        (
+            Method::POST,
+            format!("{base}/pairings/{id}/confirm"),
+            Some(json!({"fingerprintMatches": true, "acknowledgement": ack})),
+        ),
+        (Method::DELETE, format!("{base}/pairings/{id}"), None),
+        (
+            Method::PUT,
+            format!("{base}/peers/{id}/logs"),
+            Some(json!({"send": true, "pull": false})),
+        ),
+        (Method::POST, format!("{base}/peers/{id}/revoke"), None),
+        (Method::POST, format!("{base}/peers/{id}/unpair"), None),
+        (Method::DELETE, format!("{base}/peers/{id}"), None),
+        (
+            Method::PUT,
+            format!("{base}/vaults/{owner}"),
+            Some(json!({"policy": "local"})),
+        ),
+        (Method::POST, format!("{base}/offers/{owner}/accept"), None),
+        (Method::POST, format!("{base}/offers/{owner}/decline"), None),
+    ] {
+        // A fresh sign-in is not a step-up token.
+        for headers in [
+            &[("x-admin", "1")][..],
+            &[("x-admin", "1"), ("x-fresh", "1")][..],
+        ] {
+            let (status, _, bytes) =
+                call(&e.app, method.clone(), &uri, body.clone(), headers).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+            let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+            assert_eq!(
+                problem["type"], "urn:kemlock:problem:step-up-required",
+                "{method} {uri}"
+            );
+        }
+    }
+}

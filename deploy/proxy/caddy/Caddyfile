@@ -1,0 +1,7 @@
+# Caddy gets and renews the certificate itself. KEMLOCK_HOST defaults to the public name; CI sets
+# it to `http://:80` to test without TLS.
+{$KEMLOCK_HOST:vault.example.com} {
+	# WebSocket upgrades (/notifications/hub, /kem/v1/live) pass by default, and Caddy sends
+	# X-Forwarded-For to the upstream.
+	reverse_proxy kemlock:8080
+}

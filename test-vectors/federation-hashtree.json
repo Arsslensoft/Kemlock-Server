@@ -1,0 +1,63 @@
+{
+  "cases": [
+    {
+      "bucket_digests": {
+        "0": "84ca195c316ca4823e6ad05debd86de4c4b6d1d151ec99c5e0719f9f819bb346",
+        "127": "9e68d61679c5300813ce9cebd49d90d57ba03e7bed69fa435167ee494f12f015",
+        "255": "21e618c08be96a6899cabd980d963033d586ae2ddedc108dd6e8525b0ec6aa91"
+      },
+      "empty_root": "f0230ae30fed591e9fa15d5c239d576a1c3c2bd0c1e963494a9609d295003142",
+      "leaves": [
+        {
+          "digest": "f0d98e94c573235724115df1832c37ef4a3779f8831b6f55434c1a4e7c5821f4",
+          "item_id": "00010101010101010101010101010101",
+          "versions": [
+            {
+              "change": "010101010101010101010101010101010000000000000001",
+              "revision": 1
+            }
+          ]
+        },
+        {
+          "digest": "4979c3973175c3f5e5c10a2dc7af083350d57cc8ed073966087dde2e471a1ef3",
+          "item_id": "00020202020202020202020202020202",
+          "versions": [
+            {
+              "change": "010101010101010101010101010101010000000000000005",
+              "revision": 2
+            },
+            {
+              "change": "020202020202020202020202020202020000000000000003",
+              "revision": 2
+            }
+          ]
+        },
+        {
+          "digest": "35792b40c47121988b84af4f84f76e1ebb6433b4e655c4c3a461eed95735633a",
+          "item_id": "7f030303030303030303030303030303",
+          "versions": [
+            {
+              "change": "020202020202020202020202020202020000000000000009",
+              "revision": 4
+            }
+          ]
+        },
+        {
+          "digest": "7754ce469bd9c4d3e8b3a1a313dc8035344a3deecd53bcd102dbf5001c6e7657",
+          "item_id": "ff040404040404040404040404040404",
+          "versions": [
+            {
+              "change": "01010101010101010101010101010101000000000000000c",
+              "revision": 1
+            }
+          ]
+        }
+      ],
+      "name": "four-items-in-three-buckets",
+      "root": "c8af5374774e7cc07891b6f6cc43bd9199c261cc25f257a03cf18585f76bb0c2"
+    }
+  ],
+  "description": "Hash-tree summaries: a leaf per item over the versions held, 256 buckets keyed by the item id's first byte, and a root. Only the buckets that hold leaves are listed; an empty bucket's digest is SHA-256(label || u8(index)), and the root hashes all 256.",
+  "format": "federation-hashtree",
+  "version": 1
+}

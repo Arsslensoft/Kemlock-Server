@@ -1,0 +1,50 @@
+# Podman Quadlet unit for Kemlock Server, rootless.
+#
+#   mkdir -p ~/.config/containers/systemd
+#   cp kemlock.container kemlock-data.volume ~/.config/containers/systemd/
+#   systemctl --user daemon-reload
+#   systemctl --user start kemlock
+#   loginctl enable-linger "$USER"        # keep it running after logout
+#
+# The first run prints a one-time setup code: journalctl --user -u kemlock
+
+[Unit]
+Description=Kemlock Server
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+Image=ghcr.io/arsslensoft/kemlock-server:1
+ContainerName=kemlock
+AutoUpdate=registry
+PublishPort=127.0.0.1:8080:8080
+
+# A named volume takes the image's /data, which belongs to the container's user (65532).
+Volume=kemlock-data.volume:/data
+
+Environment=DOMAIN=https://vault.example.com
+Environment=SIGNUPS_ALLOWED=false
+# Behind a proxy on this host, so real client addresses reach the rate limits:
+# Environment=IP_HEADER=X-Forwarded-For
+# Environment=KEMLOCK_TRUSTED_PROXIES=10.0.2.2
+# The server key, from a Podman secret instead of /data/server.key:
+# Secret=kemlock-server-key,type=env,target=KEMLOCK_SERVER_KEY
+
+ReadOnly=true
+DropCapability=ALL
+NoNewPrivileges=true
+
+# Podman ignores the image's HEALTHCHECK for OCI images; this is the same command.
+HealthCmd=/usr/local/bin/kemlock-server healthcheck
+HealthInterval=30s
+HealthTimeout=5s
+HealthRetries=3
+HealthStartPeriod=20s
+Notify=healthy
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

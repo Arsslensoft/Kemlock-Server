@@ -1,0 +1,36 @@
+/* The about page, and the source and about links under the sign-in and setup cards. */
+.about-list {
+  display: grid;
+  grid-template-columns: minmax(96px, 30%) 1fr;
+  gap: 10px 16px;
+  margin: 0;
+}
+.about-list dt {
+  font-size: 13px;
+  color: var(--muted);
+}
+.about-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.about-list a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+/* The source and about links under the sign-in and setup cards. */
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 20px;
+  font-size: 13px;
+}
+.legal-links a {
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.legal-links a:hover {
+  color: var(--text);
+}

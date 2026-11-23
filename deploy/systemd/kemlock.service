@@ -1,0 +1,58 @@
+# systemd unit for the static kemlock-server binary (also what the .deb and .rpm packages install).
+#
+#   useradd --system --home-dir /var/lib/kemlock --shell /usr/sbin/nologin kemlock
+#   install -m 0755 kemlock-server kemlock-cli /usr/local/bin/
+#   install -m 0644 kemlock.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now kemlock
+#
+# Settings go in /etc/kemlock/kemlock.env (Vaultwarden's names, such as DOMAIN, plus KEMLOCK_*).
+# The first run prints a one-time setup code: journalctl -u kemlock
+
+[Unit]
+Description=Kemlock Server
+Documentation=https://github.com/arsslensoft/kemlock-server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kemlock
+Group=kemlock
+EnvironmentFile=-/etc/kemlock/kemlock.env
+Environment=DATA_FOLDER=/var/lib/kemlock
+ExecStart=/usr/local/bin/kemlock-server
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# The server writes only to its data folder.
+StateDirectory=kemlock
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/kemlock
+ReadWritePaths=/var/lib/kemlock
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

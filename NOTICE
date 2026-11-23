@@ -1,0 +1,92 @@
+Kemlock Server
+==============
+
+Kemlock Server is licensed AGPL-3.0-only (see LICENSE). This file lists the third-party material
+that is shipped in this repository as files (not as Cargo or npm dependencies, whose licences
+cargo-deny checks against deny.toml), with each item's licence and attribution.
+
+1. EFF large word list
+   Files:       crates/kemlock-domain/src/unlock/eff_large_wordlist.txt, and its copy
+                web/src/lib/eff_large_wordlist.txt (bundled into the web vault by
+                web/src/lib/approvalPhrase.ts)
+   Source:      https://www.eff.org/dice (https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt)
+   Author:      Electronic Frontier Foundation
+   Licence:     Creative Commons Attribution 3.0 United States (CC BY 3.0 US),
+                https://creativecommons.org/licenses/by/3.0/us/
+   Attribution: "EFF's Long Wordlist" by the Electronic Frontier Foundation, licensed CC BY 3.0 US.
+   Changes:     the dice numbers in front of each word are removed; the 7,776 words are otherwise
+                unchanged (SHA-256 in docs/crypto.md). Both copies hold the same words (they have
+                the same SHA-256). It is used for the device-approval phrase.
+
+2. Public Suffix List
+   File:        test-vectors/public_suffix_list.dat
+   Source:      https://publicsuffix.org/list/public_suffix_list.dat (the file's header names the
+                version and commit)
+   Authors:     the Public Suffix List maintainers and contributors (Mozilla Foundation and others)
+   Licence:     Mozilla Public License 2.0 (MPL-2.0), https://mozilla.org/MPL/2.0/
+   Changes:     none; the file is an unmodified snapshot, so its MPL-2.0 terms apply to that file
+                only. It is not CC0, unlike the rest of test-vectors/ (see test-vectors/LICENSE).
+
+3. Vaultwarden 1.37.5 migration SQL
+   Files:       crates/kemlock-vaultwarden/tests/fixtures/vaultwarden-1.37.5/migrations/
+   Source:      https://github.com/dani-garcia/vaultwarden/tree/1.37.5/migrations/sqlite
+   Authors:     Daniel Garcia and the Vaultwarden contributors
+   Licence:     GNU Affero General Public License, version 3 (AGPL-3.0), the licence of this
+                repository
+   Changes:     none; the files are copied unchanged. See the NOTICE.md beside them.
+
+4. Bitwarden importers
+   Files:       the ports listed in crates/kemlock-import/NOTICE
+   Source:      https://github.com/bitwarden/clients, libs/importer/src/importers
+   Authors:     Bitwarden Inc.
+   Licence:     GNU General Public License, version 3 (GPL-3.0), combined into this AGPL-3.0 work
+                as the GPL-3.0 section 13 permits. The crate's NOTICE names every source file,
+                the commit the ports were made from and what was written for Kemlock instead.
+   Changes:     rewrites in Rust, adapted to Kemlock's import model.
+
+5. Bitwarden global equivalent domains
+   File:        crates/kemlock-api-bw/src/global_domains.json (compiled into the server binary by
+                crates/kemlock-api-bw/src/domains.rs)
+   Source:      https://github.com/dani-garcia/vaultwarden/blob/1.37.5/src/static/global_domains.json
+                (Vaultwarden's copy of the list that started in bitwarden/server)
+   Authors:     Daniel Garcia and the Vaultwarden contributors; Bitwarden Inc.
+   Licence:     GNU Affero General Public License, version 3 (AGPL-3.0), the licence of this
+                repository
+   Changes:     none; the file is an unmodified copy of Vaultwarden 1.37.5's.
+
+6. Vaultwarden 1.37.5 source code
+   Files:       the Rust ported from Vaultwarden's, each named in a header comment in the file:
+                - crates/kemlock-api-bw/src/sends.rs, from src/api/core/sends.rs (the handler and
+                  helper structure, the update order, and the constants SEND_INACCESSIBLE_MSG and
+                  SIZE_525_MB)
+                - crates/kemlock-api-bw/src/cipher.rs, from src/db/models/cipher.rs
+                  (Cipher::to_json), src/api/core/ciphers.rs (update_cipher_from_data) and
+                  src/util.rs (lcase_first, process_json_key, get_display_size)
+                - crates/kemlock-vaultwarden/src/cipher_json.rs, from src/db/models/cipher.rs
+                  (Cipher::to_json) and src/util.rs (lcase_first, process_json_key)
+                - crates/kemlock-vaultwarden/src/vwtime.rs (display_size), from src/util.rs
+                  (get_display_size)
+                - crates/kemlock-app/src/two_step/data.rs (EmailData, obscure_email), from
+                  src/api/core/two_factor/email.rs (EmailTokenData, obscure_email)
+                - crates/kemlock-api-bw/src/identity.rs (check_is_some and the grant dispatch in
+                  token()), from src/api/identity.rs (login)
+   Source:      https://github.com/dani-garcia/vaultwarden/tree/1.37.5 (the paths above are
+                relative to it)
+   Authors:     Daniel Garcia and the Vaultwarden contributors
+   Licence:     GNU Affero General Public License, version 3 (AGPL-3.0; Vaultwarden's Cargo.toml
+                says AGPL-3.0-only), the licence of this repository
+   Changes:     rewritten onto Kemlock's model (its stores, ports and error types, no Rocket or
+                Diesel); the parts named keep Vaultwarden's structure and behaviour.
+
+Everything else in the repository is Kemlock Server's own work under AGPL-3.0-only, except the
+CC0-1.0 test vectors in test-vectors/ (item 2 is the one exception there). Behaviour that matches
+Vaultwarden's on the wire, outside the files named in item 6, is written independently.
+
+Trademarks
+----------
+
+Bitwarden(R) is a registered trademark of Bitwarden Inc. Bitwarden is a trademark or registered
+trademark of Bitwarden, Inc. in the United States and/or other countries. Vaultwarden is a project
+by Daniel Garcia and its contributors. Kemlock is not affiliated with, endorsed by or sponsored by
+Bitwarden Inc. or the Vaultwarden project; the names are used only to say which apps and servers
+Kemlock works with.

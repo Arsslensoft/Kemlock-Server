@@ -1,0 +1,169 @@
+/*
+ * Design tokens, taken from the design canvas (Kemlock Server, dark and light pages).
+ * Dark is the canvas's own theme; light follows the system unless data-theme says otherwise.
+ * Type is Geist and Geist Mono. Radii: 6 chip, 10 icon button, 12 field, 14 button, 16 and 18
+ * card, 24 auth card, 999 pill.
+ */
+:root {
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --bg: #0a0b0d;
+  --surface: #131417;
+  --raised: #1a1c20;
+  --raised-hover: #22252a;
+  --tile: #1f2227;
+  --sunken: #0f1013;
+  --switch-off: #2a2d33;
+  --text: #f3f4f6;
+  --text-2: #c9ccd1;
+  --muted: #9ba0a8;
+  --faint: #868b93;
+
+  --accent: #5aa9ff;
+  --accent-hover: #7dbbff;
+  --accent-ink: #051220;
+  --accent-text: #8ec3ff;
+  --accent-link: #5aa9ff;
+  --accent-wash: rgba(90, 169, 255, 0.07);
+  --accent-wash-strong: rgba(90, 169, 255, 0.14);
+  --accent-line: rgba(90, 169, 255, 0.25);
+  --accent-line-strong: rgba(90, 169, 255, 0.5);
+
+  --warn: #ffa24c;
+  --warn-text: #ffbe80;
+  --warn-text-strong: #ffd3a8;
+  --warn-wash: rgba(255, 162, 76, 0.07);
+  --warn-line: rgba(255, 162, 76, 0.38);
+
+  /* The canvas draws one destructive button (Empty trash); these are its colours. */
+  --danger: #ff6b5e;
+  --danger-text: #ff9a90;
+  --danger-wash: rgba(255, 107, 94, 0.08);
+  --danger-line: rgba(255, 107, 94, 0.4);
+
+  --border: rgba(255, 255, 255, 0.07);
+  --border-input: rgba(255, 255, 255, 0.12);
+  --border-button: rgba(255, 255, 255, 0.1);
+  --hover-wash: rgba(255, 255, 255, 0.05);
+  --header-bg: var(--bg);
+  --chip-on-bg: #f3f4f6;
+  --chip-on-text: #0a0b0d;
+  --focus: #8ec3ff;
+  --shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  --radius-chip: 6px;
+  --radius-icon: 10px;
+  --radius-field: 12px;
+  --radius-button: 14px;
+  --radius-card: 18px;
+  --radius-auth: 24px;
+  --radius-pill: 999px;
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --bg: #f4f4f1;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --raised-hover: #f0f0ec;
+  --tile: #eeeeea;
+  --sunken: #f0f0ec;
+  --switch-off: #c9ccd1;
+  --text: #0d0e10;
+  --text-2: #2e3238;
+  --muted: #50555d;
+  --faint: #686c74;
+
+  --accent: #1f6feb;
+  --accent-hover: #1559c7;
+  --accent-ink: #ffffff;
+  --accent-text: #1559c7;
+  --accent-link: #1f6feb;
+  --accent-wash: rgba(31, 111, 235, 0.07);
+  --accent-wash-strong: rgba(31, 111, 235, 0.1);
+  --accent-line: rgba(31, 111, 235, 0.28);
+  --accent-line-strong: rgba(31, 111, 235, 0.55);
+
+  --warn: #c2620a;
+  --warn-text: #9a4a06;
+  --warn-text-strong: #7a3a04;
+  --warn-wash: rgba(194, 98, 10, 0.07);
+  --warn-line: rgba(194, 98, 10, 0.4);
+
+  --danger: #c9372c;
+  --danger-text: #b02a20;
+  --danger-wash: rgba(201, 55, 44, 0.06);
+  --danger-line: rgba(201, 55, 44, 0.45);
+
+  --border: rgba(12, 13, 16, 0.08);
+  --border-input: rgba(12, 13, 16, 0.14);
+  --border-button: rgba(12, 13, 16, 0.14);
+  --hover-wash: rgba(12, 13, 16, 0.05);
+  --header-bg: #ffffff;
+  --chip-on-bg: #0d0e10;
+  --chip-on-text: #ffffff;
+  --focus: #1f6feb;
+  --shadow: 0 12px 40px rgba(12, 13, 16, 0.16);
+
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --bg: #f4f4f1;
+    --surface: #ffffff;
+    --raised: #ffffff;
+    --raised-hover: #f0f0ec;
+    --tile: #eeeeea;
+    --sunken: #f0f0ec;
+    --switch-off: #c9ccd1;
+    --text: #0d0e10;
+    --text-2: #2e3238;
+    --muted: #50555d;
+    --faint: #686c74;
+
+    --accent: #1f6feb;
+    --accent-hover: #1559c7;
+    --accent-ink: #ffffff;
+    --accent-text: #1559c7;
+    --accent-link: #1f6feb;
+    --accent-wash: rgba(31, 111, 235, 0.07);
+    --accent-wash-strong: rgba(31, 111, 235, 0.1);
+    --accent-line: rgba(31, 111, 235, 0.28);
+    --accent-line-strong: rgba(31, 111, 235, 0.55);
+
+    --warn: #c2620a;
+    --warn-text: #9a4a06;
+    --warn-text-strong: #7a3a04;
+    --warn-wash: rgba(194, 98, 10, 0.07);
+    --warn-line: rgba(194, 98, 10, 0.4);
+
+    --danger: #c9372c;
+    --danger-text: #b02a20;
+    --danger-wash: rgba(201, 55, 44, 0.06);
+    --danger-line: rgba(201, 55, 44, 0.45);
+
+    --border: rgba(12, 13, 16, 0.08);
+    --border-input: rgba(12, 13, 16, 0.14);
+    --border-button: rgba(12, 13, 16, 0.14);
+    --hover-wash: rgba(12, 13, 16, 0.05);
+    --header-bg: #ffffff;
+    --chip-on-bg: #0d0e10;
+    --chip-on-text: #ffffff;
+    --focus: #1f6feb;
+    --shadow: 0 12px 40px rgba(12, 13, 16, 0.16);
+
+    color-scheme: light;
+  }
+}

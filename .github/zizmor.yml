@@ -1,0 +1,10 @@
+# zizmor's configuration (https://docs.zizmor.sh/configuration/).
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # The SLSA generator is a reusable workflow that verifies its own ref: it must be called
+        # by release tag, never by commit (https://github.com/slsa-framework/slsa-github-generator).
+        slsa-framework/slsa-github-generator/*: ref-pin
+        # Everything else is pinned to a full commit SHA, with the version in a comment.
+        "*": hash-pin

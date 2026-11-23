@@ -1,0 +1,48 @@
+name: dependabot auto-merge
+
+# Approves and queues a Dependabot pull request for squash merge when it is a patch or minor
+# update. GitHub then merges it once the required checks (ci-ok, DCO) pass; a major update waits
+# for a person.
+#
+# A plain pull_request trigger, as GitHub documents for Dependabot: a Dependabot pull request's
+# run gets the permissions below, so no pull_request_target (and its write token on untrusted
+# code) is needed. It only runs for Dependabot, never checks out the pull request's code, and
+# reads only Dependabot's own metadata, passed through the environment.
+# Needs the repository setting "Allow GitHub Actions to create and approve pull requests" and
+# "Allow auto-merge" (tools/repo-settings.sh sets both).
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # enable auto-merge
+      pull-requests: write # approve
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Approve and auto-merge a patch or minor update
+        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL"
+      - name: A major update needs a person
+        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
+        run: echo "::notice::Major update, left for a maintainer"

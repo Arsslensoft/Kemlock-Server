@@ -1,0 +1,33 @@
+# Fill lib_version and lib_version_hash with the catalog's current library when copying this
+# folder into the apps catalog; its tooling checks them.
+app_version: "1.0.0"
+capabilities: []
+categories:
+  - security
+description: >-
+  Kemlock Server is a self-hosted vault server for Kemlock, Amethystora Vault and Bitwarden
+  apps: one small static binary, SQLite by default, post-quantum key exchange and OPAQUE
+  sign-in. It reads Vaultwarden's settings, so a Vaultwarden data folder can be mounted to
+  migrate.
+home: https://github.com/arsslensoft/kemlock-server
+host_mounts: []
+lib_version: 2.1.0
+lib_version_hash: ""
+maintainers:
+  - email: maintainers@example.invalid
+    name: Kemlock
+    url: https://github.com/arsslensoft
+name: kemlock-server
+run_as_context:
+  - description: Kemlock Server runs as a non-root user and writes only to its data folder.
+    gid: 568
+    group_name: kemlock
+    uid: 568
+    user_name: kemlock
+screenshots: []
+sources:
+  - https://github.com/arsslensoft/kemlock-server
+  - https://github.com/arsslensoft/kemlock-server/pkgs/container/kemlock-server
+title: Kemlock Server
+train: community
+version: 1.0.0

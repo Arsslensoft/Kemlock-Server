@@ -1,0 +1,19 @@
+{
+  "about.title": "About Kemlock Server",
+  "about.lede": "A self-hosted vault server for Kemlock, Amethystora Vault and Bitwarden apps.",
+  "about.version": "Version",
+  "about.commit": "Commit",
+  "about.licence": "Licence",
+  "about.license": "Licensed under {license}",
+  "about.sourceRow": "Source",
+  "about.source": "Source code",
+  "about.sourceHint": "The source of the version running here, which section 13 of the AGPL offers to everyone who uses this server.",
+  "about.documents": "Documents",
+  "about.thirdParty": "Third-party notices",
+  "about.notices": "Notices",
+  "about.notAffiliated": "Not affiliated with Bitwarden Inc. or Vaultwarden. Bitwarden is a trademark of Bitwarden Inc.",
+  "about.loading": "Reading what this server says about itself",
+  "about.link": "About",
+  "about.nav": "About this server",
+  "about.back": "Back"
+}

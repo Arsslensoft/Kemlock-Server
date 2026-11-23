@@ -1,0 +1,78 @@
+# Labels by the paths a pull request changes (actions/labeler, .github/workflows/labeler.yml).
+# A pull request gets every label whose paths it touches. tools/repo-settings.sh creates the labels.
+
+rust:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/**"
+          - "Cargo.toml"
+          - "Cargo.lock"
+          - "rust-toolchain.toml"
+          - "deny.toml"
+
+web:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "web/**"
+
+crypto:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/kemlock-crypto/**"
+          - "crates/kemlock-wasm/**"
+          - "docs/crypto.md"
+          - "test-vectors/**"
+
+api:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/kemlock-api-*/**"
+          - "crates/kemlock-contract-tests/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "README.md"
+          - "SECURITY.md"
+          - "**/*.md"
+
+docker:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docker/**"
+          - ".dockerignore"
+          - "compose.yaml"
+
+deploy:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "deploy/**"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "tools/**"
+          - "cliff.toml"
+          - ".coderabbit.yaml"
+          - ".editorconfig"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/tests/**"
+          - "crates/kemlock-contract-tests/**"
+          - "web/e2e/**"
+          - "web/e2e-sso/**"
+          - "**/*.test.ts"
+          - "**/*.test.tsx"
+          - "perf/**"
+          - "**/fuzz/**"
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Cargo.lock"
+          - "web/package-lock.json"
+          - "supply-chain/**"

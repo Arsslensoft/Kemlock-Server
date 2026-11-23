@@ -1,0 +1,33 @@
+url,username,password,totp,extra,name,grouping,fav
+https://example.com,ada,pw1,JBSWY3DPEHPK3PXP,site note,Example,Work\Sub,1
+http://sn,,,,"NoteType:Credit Card
+Name on Card:Ada Lovelace
+Type:Visa
+Number:4111111111111111
+Security Code:123
+Start Date:January,2020
+Expiration Date:June,2029
+Notes:card note
+second line",Visa note,(none),0
+http://sn,,,,"NoteType:Address
+Title:Ms
+First Name:Ada
+Last Name:Lovelace
+Address 1:1 St
+City / Town:London
+Zip / Postal Code:N1
+Country:GB
+Email Address:ada@example.com
+Phone:555",Home,Personal,0
+http://sn,,,,"NoteType:Passport
+Name:Ada Augusta Lovelace
+Country:GB
+Number:P1
+Date of Birth:December,10,1815
+Expiration Date:June,20,2035",Passport,(none),0
+http://sn,,,,"NoteType:Bank Account
+Bank Name:ACME
+Account Number:12345
+Notes:n",Bank,(none),0
+http://sn,,,,"just a note
+more",Plain note,(none),0

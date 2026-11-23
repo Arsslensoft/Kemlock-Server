@@ -1,0 +1,93 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[workspace.dependencies]
+# Our crates. Dependencies point inward: web -> app -> domain; adapters -> app.
+kemlock-domain = { path = "crates/kemlock-domain" }
+kemlock-app = { path = "crates/kemlock-app" }
+kemlock-crypto = { path = "crates/kemlock-crypto", default-features = false }
+kemlock-store-sql = { path = "crates/kemlock-store-sql" }
+kemlock-api-kem = { path = "crates/kemlock-api-kem" }
+kemlock-server = { path = "crates/kemlock-server" }
+
+# Domain
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+uuid = { version = "1.29.3", features = ["v4", "v7", "serde"] }
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
+
+# Crypto: aws-lc-rs natively, RustCrypto in WebAssembly, opaque-ke for OPAQUE
+aws-lc-rs = { version = "1.19.0", features = ["unstable"] }
+ml-kem = "0.3.4"
+ml-dsa = "0.1.2"
+x25519-dalek = { version = "3.0.0", features = ["static_secrets"] }
+ed25519-dalek = "3.0.0"
+aes-gcm = "0.11.1"
+hkdf = "0.13.0"
+hmac = "0.13.0"
+sha2 = "0.11.1"
+sha3 = "0.12.0"
+argon2 = "0.6.0"
+opaque-ke = { version = "4.0.1", default-features = false, features = ["ristretto255", "serde"] }
+zeroize = { version = "1.9.2", features = ["derive"] }
+subtle = "2.6.1"
+hex = "0.4.3"
+p256 = { version = "0.14.0", features = ["ecdsa"] }
+sha1 = "0.11.0"
+getrandom = "0.4.3"
+# opaque-ke 4 is built on rand_core 0.6 and digest 0.10, so these two old lines stay beside the new ones.
+rand_core_06 = { package = "rand_core", version = "0.6.4" }
+rand_chacha = "0.3.1"
+sha2-opaque = { package = "sha2", version = "0.10.9" }
+
+# Store
+sea-orm = { version = "2.0.4", default-features = false, features = ["macros", "with-uuid", "with-time", "runtime-tokio-rustls", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+sea-orm-migration = { version = "2.0.4", default-features = false, features = ["runtime-tokio-rustls", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+
+# Web
+axum = { version = "0.8.9", features = ["ws", "macros"] }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net", "fs"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.7.1", features = ["trace", "timeout", "limit", "request-id", "compression-zstd", "compression-br", "compression-gzip"] }
+utoipa = { version = "6.0.0", features = ["axum_extras", "uuid", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+toml = "1.2.2"
+url = "2"
+
+# The release build is what the image and the release archives ship.
+#
+# strip and lto cut the binary the most; codegen-units = 1 lets LTO see the whole program.
+# opt-level 3 stays here (the Docker build asks for "s" through CARGO_PROFILE_RELEASE_OPT_LEVEL,
+# see docker/Dockerfile), so a local `cargo build --release`, the perf runs and the WebAssembly
+# build, where ML-DSA and ML-KEM run in the browser, keep full speed.
+#
+# panic stays "unwind" on purpose: kemlock-import catches a panic inside the KDBX parser
+# (catch_unwind) so one bad file is an import error, and tokio and hyper turn a panic in a
+# request task into a failed request instead of ending the server. "abort" would end the process.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"

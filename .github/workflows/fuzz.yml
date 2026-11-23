@@ -1,0 +1,118 @@
+name: fuzz
+
+# Design, Security, Rust: cargo-fuzz targets every parser of untrusted bytes. Each pull request runs
+# every target briefly; a nightly run goes longer, from the same seeds (each crate's fuzz/seed.sh,
+# made from its tests/fixtures) and from the corpus the earlier nightly runs grew.
+#
+# Every crate below has a fuzz/ folder that is its own Cargo workspace (cargo-fuzz wants that, and
+# the sanitizers don't belong in the main build). To fuzz another crate, add it to the matrix.
+
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "11 1 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Seconds per target"
+        default: "600"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Seconds per target: 20 on a pull request, 5 minutes nightly, or what a manual run asks for.
+  FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '20' || github.event.inputs.seconds || '300' }}
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - kemlock-backup
+          - kemlock-api-bw
+          - kemlock-api-kem
+          - kemlock-blob
+          - kemlock-crypto
+          - kemlock-domain
+          - kemlock-federation
+          - kemlock-import
+          - kemlock-vaultwarden
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # The repository pins a stable toolchain; the sanitizers need nightly, which `cargo +nightly`
+      # picks below.
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: cargo-fuzz
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xxd
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: crates/${{ matrix.crate }}/fuzz
+          key: ${{ matrix.crate }}
+
+      # The corpus the nightly runs grew. A pull request only reads it; the nightly run saves it.
+      - name: Restore the corpus
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: crates/${{ matrix.crate }}/fuzz/corpus
+          key: fuzz-corpus-${{ matrix.crate }}-none
+          restore-keys: fuzz-corpus-${{ matrix.crate }}-
+      - name: Restore and keep the corpus
+        if: github.event_name != 'pull_request'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: crates/${{ matrix.crate }}/fuzz/corpus
+          key: fuzz-corpus-${{ matrix.crate }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.crate }}-
+
+      # The fuzz workspace has no lockfile of its own: start from the repository's, so it builds
+      # the same versions as the server.
+      - name: Use the locked versions
+        run: cp Cargo.lock crates/${{ matrix.crate }}/fuzz/Cargo.lock
+
+      - name: Seed the corpus from the fixtures
+        run: |
+          if [ -f crates/${{ matrix.crate }}/fuzz/seed.sh ]; then
+            bash crates/${{ matrix.crate }}/fuzz/seed.sh
+          fi
+
+      - name: Run every target
+        working-directory: crates/${{ matrix.crate }}
+        run: |
+          failed=0
+          for target in $(cargo +nightly fuzz list); do
+            echo "::group::$target ($FUZZ_SECONDS s)"
+            if ! cargo +nightly fuzz run "$target" -- \
+              -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096 -timeout=20; then
+              echo "::error title=fuzz::${{ matrix.crate }} target $target found a crash"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+      - name: Keep the crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-artifacts-${{ matrix.crate }}
+          path: crates/${{ matrix.crate }}/fuzz/artifacts
+          if-no-files-found: ignore

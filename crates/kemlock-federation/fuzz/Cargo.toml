@@ -1,0 +1,85 @@
+[package]
+name = "kemlock-federation-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kemlock-federation = { path = ".." }
+
+# Not a member of the repository's workspace: cargo-fuzz builds it on its own.
+[workspace]
+
+[[bin]]
+name = "cbor"
+path = "fuzz_targets/cbor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "descriptor"
+path = "fuzz_targets/descriptor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_messages"
+path = "fuzz_targets/handshake_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "handshake_respond"
+path = "fuzz_targets/handshake_respond.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "message"
+path = "fuzz_targets/message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "change"
+path = "fuzz_targets/change.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "home"
+path = "fuzz_targets/home.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairing"
+path = "fuzz_targets/pairing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire"
+path = "fuzz_targets/wire.rs"
+test = false
+doc = false
+bench = false

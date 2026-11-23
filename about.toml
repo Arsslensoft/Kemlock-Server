@@ -1,0 +1,34 @@
+# cargo-about: the licence texts of the Rust crates linked into the binaries, for
+# THIRD-PARTY-NOTICES.txt (tools/third-party-notices.sh, rendered with about.hbs).
+#
+#   cargo install --locked --version 0.9.3 cargo-about
+#   cargo about generate --workspace --all-features --locked --fail about.hbs
+#
+# Most of the licences in deny.toml require their text to travel with binary copies, so every
+# release archive and image ships the result. `accepted` is deny.toml's allow-list, in the same
+# order: a crate whose licence expression this list cannot satisfy fails the run, as it fails
+# cargo-deny.
+accepted = [
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "OpenSSL",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "0BSD",
+]
+
+# Crates that are only compiled or only tested are not in the binaries.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# Our own crates (publish = false) are covered by LICENSE, not listed here.
+private = { ignore = true }

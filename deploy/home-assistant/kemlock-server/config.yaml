@@ -1,0 +1,35 @@
+name: Kemlock Server
+# Release CI sets this to the Kemlock Server version the add-on is built from.
+version: "1.0.0"
+slug: kemlock-server
+description: Self-hosted vault server for Kemlock, Amethystora Vault and Bitwarden apps
+url: https://github.com/arsslensoft/kemlock-server
+arch:
+  - aarch64
+  - amd64
+  - armv7
+startup: services
+boot: auto
+# The database is a SQLite file under /data: stop the add-on while a backup is taken so the file
+# is consistent.
+backup: cold
+ports:
+  8080/tcp: 8080
+ports_description:
+  8080/tcp: The API, the web vault and both WebSocket routes. Put a reverse proxy with TLS in front.
+watchdog: http://[HOST]:[PORT:8080]/alive
+options:
+  domain: ""
+  signups_allowed: false
+  log_level: info
+schema:
+  # The public address clients use, such as https://vault.example.com. Required.
+  domain: str
+  signups_allowed: bool
+  log_level: list(error|warn|info|debug|trace)
+  # Behind a proxy: the header that carries the client address, and the proxy addresses it is
+  # trusted from (comma-separated).
+  ip_header: str?
+  trusted_proxies: str?
+  # Empty uses SQLite in the add-on's data folder.
+  database_url: password?

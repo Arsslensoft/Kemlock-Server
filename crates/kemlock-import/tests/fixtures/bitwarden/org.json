@@ -1,0 +1,50 @@
+{
+  "encrypted": false,
+  "collections": [
+    {
+      "id": "c1",
+      "organizationId": "o1",
+      "name": "Shared logins",
+      "externalId": null
+    },
+    {
+      "id": "c2",
+      "organizationId": "o1",
+      "name": "Family",
+      "externalId": null
+    }
+  ],
+  "items": [
+    {
+      "id": "o-i1",
+      "organizationId": "o1",
+      "folderId": null,
+      "type": 1,
+      "name": "Shared site",
+      "login": {
+        "uris": [
+          {
+            "match": null,
+            "uri": "https://shared.example"
+          }
+        ],
+        "username": "team",
+        "password": "s3cret"
+      },
+      "collectionIds": [
+        "c1",
+        "c2"
+      ]
+    },
+    {
+      "id": "o-i2",
+      "organizationId": "o1",
+      "type": 2,
+      "name": "Family note",
+      "notes": "hello",
+      "collectionIds": [
+        "c2"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,261 @@
+/* Extras of the admin console screens: what components.css doesn't have. Tokens only. */
+.tag.bad {
+  background: var(--danger-wash);
+  border-color: var(--danger-line);
+  color: var(--danger-text);
+}
+.tag.mute {
+  background: transparent;
+  color: var(--muted);
+}
+
+.adm-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: 20px;
+  align-items: start;
+}
+.adm-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+.adm-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: 14px;
+}
+.adm-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.adm-toolbar .grow {
+  flex: 1 1 320px;
+}
+.adm-invite {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+.adm-invite .field {
+  min-width: 260px;
+}
+.adm-pad {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.adm-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+}
+.adm-head h2,
+.adm-head h3 {
+  flex: 1;
+  margin: 0;
+}
+.adm-cell-sub {
+  font-size: 13px;
+  color: var(--muted);
+}
+.adm-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.adm-row-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.adm-switchrow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.adm-switchrow > :first-child {
+  flex: 1;
+}
+
+/* Words and fingerprints. */
+.words {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  letter-spacing: 0.02em;
+  overflow-wrap: anywhere;
+}
+.fp {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.adm-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  min-width: 0;
+}
+.adm-box.bad {
+  border-color: var(--danger-line);
+}
+
+/* Definition lists in the security cards. */
+.kv {
+  display: grid;
+  grid-template-columns: minmax(110px, 30%) 1fr;
+  gap: 10px 16px;
+  margin: 0;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+}
+.kv dt {
+  font-size: 13px;
+  color: var(--muted);
+}
+.kv dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.adm-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--switch-off);
+  margin-top: 6px;
+  overflow: hidden;
+}
+.adm-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.adm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.adm-list > li {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.adm-list > li > div {
+  flex: 1;
+  min-width: 0;
+}
+.adm-list time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 56px;
+}
+
+.adm-steps {
+  list-style: none;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+}
+.adm-steps li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+.adm-steps li[aria-current='step'] {
+  color: var(--text);
+  font-weight: 600;
+}
+.adm-steps .b {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border-input);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.adm-steps li[aria-current='step'] .b {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.adm-banner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--warn-line);
+  background: var(--warn-wash);
+}
+.adm-banner.bad {
+  border-color: var(--danger-line);
+  background: var(--danger-wash);
+}
+.adm-banner p {
+  margin: 0;
+}
+
+.adm-suite {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+}
+.adm-suite.off {
+  opacity: 0.7;
+}
+.adm-suite .grow {
+  flex: 1;
+  min-width: 0;
+}
+.adm-ord {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: var(--tile);
+}
+
+.adm-code {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  letter-spacing: 0.08em;
+}
+.adm-copy {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  margin: 0;
+}

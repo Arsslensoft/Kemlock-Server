@@ -1,0 +1,125 @@
+/* The account screens: spaces, devices and account security. Built on the tokens and the
+   shared classes (.card, .row, .tag, .tbl, .notice); only what they don't have is here. */
+
+.acct-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr));
+  gap: 20px;
+  align-items: start;
+}
+.acct-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+
+/* A fingerprint or a phrase to compare out loud. */
+.phrase {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  letter-spacing: 0.02em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.fp {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.7;
+  letter-spacing: 0.04em;
+  padding: 12px 14px;
+  border-radius: var(--radius-button);
+  background: var(--sunken);
+  border: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+
+.confirm-panel {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-wash);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.confirm-panel h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.confirm-panel p {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.approval {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-wash);
+  padding: 20px;
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.approval .body {
+  flex: 1 1 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.approval h2 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.approval p {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.inline-form {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+.inline-form .field {
+  flex: 1 1 200px;
+}
+.perm-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.perm-list label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.panel-body {
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tag.off {
+  color: var(--muted);
+}
+.tag.bad {
+  background: var(--danger-wash);
+  border-color: var(--danger-line);
+  color: var(--danger-text);
+}
+
+.card-head h2 {
+  flex: 1;
+}
+.tile.faint {
+  opacity: 0.8;
+}

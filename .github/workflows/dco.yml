@@ -1,0 +1,64 @@
+name: dco
+
+# Developer Certificate of Origin (https://developercertificate.org): every commit in a pull request
+# carries a `Signed-off-by: Name <email>` line that matches its author (`git commit -s`). Bot
+# authors (Dependabot) are skipped. A small script instead of a third-party action, so there is
+# nothing to trust or to pin. The job is named `DCO`: that is the status check the ruleset
+# requires (tools/repo-settings.sh).
+#
+# To fix a pull request: `git rebase --signoff origin/main` and push with --force-with-lease.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dco-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    name: DCO
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Every commit is signed off by its author
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          failed=0
+          # Merge commits carry no change of their own; the commits they merge are checked.
+          for sha in $(git rev-list --no-merges "$BASE_SHA..$HEAD_SHA"); do
+            author="$(git log -1 --format='%an <%ae>' "$sha")"
+            case "$author" in
+              *"[bot]"*) echo "skip   ${sha:0:10} (bot: $author)"; continue ;;
+            esac
+            if git log -1 --format=%B "$sha" | tr -d '\r' \
+                 | grep -Fixq "Signed-off-by: $author"; then
+              echo "ok     ${sha:0:10} $author"
+            else
+              echo "::error title=DCO::${sha:0:10} has no 'Signed-off-by: $author' line"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            {
+              echo "### DCO check failed"
+              echo
+              echo "Every commit needs a \`Signed-off-by:\` line matching its author. Add it with"
+              # The backticks are Markdown for the step summary, not a command substitution.
+              # shellcheck disable=SC2016
+              echo '`git rebase --signoff origin/main`, then `git push --force-with-lease`.'
+              echo "See https://developercertificate.org"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

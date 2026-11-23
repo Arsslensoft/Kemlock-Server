@@ -1,0 +1,26 @@
+{# Rendered by the apps catalog's Python library (ix_lib). The helper names follow the catalog's
+   current library; check them against its version when copying this folder in. #}
+{% set tpl = ix_lib.base.render.Render(values) %}
+
+{% set c = tpl.add_container(values.consts.kemlock_container_name, "image") %}
+{% do c.set_user(values.run_as.user, values.run_as.group) %}
+{% do c.healthcheck.set_custom_test("/usr/local/bin/kemlock-server healthcheck") %}
+{% do c.remove_devices() %}
+
+{% do c.environment.add_env("DOMAIN", values.kemlock.domain) %}
+{% do c.environment.add_env("DATA_FOLDER", values.consts.data_path) %}
+{% do c.environment.add_env("ROCKET_PORT", values.consts.container_port) %}
+{% do c.environment.add_env("SIGNUPS_ALLOWED", values.kemlock.signups_allowed | string | lower) %}
+{% if values.kemlock.ip_header %}
+{% do c.environment.add_env("IP_HEADER", values.kemlock.ip_header) %}
+{% endif %}
+{% if values.kemlock.trusted_proxies %}
+{% do c.environment.add_env("KEMLOCK_TRUSTED_PROXIES", values.kemlock.trusted_proxies) %}
+{% endif %}
+{% do c.environment.add_user_envs(values.kemlock.additional_envs) %}
+
+{% do c.add_storage(values.consts.data_path, values.storage.data) %}
+
+{% do c.add_port(values.network.web_port, {"container_port": values.consts.container_port}) %}
+
+{{ tpl.render() | tojson }}

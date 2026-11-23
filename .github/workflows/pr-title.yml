@@ -1,0 +1,68 @@
+name: pr title
+
+# The squash-merged commit takes the pull request's title, and the release notes (cliff.toml) are
+# written from commit subjects, so the title follows Conventional Commits like every commit does
+# (CLAUDE.md, Commits): `type(scope): what the change does`, lowercase after the colon.
+
+# pull_request, not pull_request_target: checking a title needs no write token.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  title:
+    name: conventional title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read # read the title; this workflow never checks out the pull request
+    steps:
+      - uses: amannn/action-semantic-pull-request@c5e23b7e584519ee15caa684cf60d056aa9f035f # v6.1.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            test
+            chore
+            docs
+            refactor
+            revert
+            ci
+          scopes: |
+            domain
+            app
+            crypto
+            store
+            blob
+            identity
+            notify
+            federation
+            api
+            bitwarden
+            admin
+            web
+            import
+            client
+            cli
+            server
+            sync
+            sso
+            docker
+            ci
+            deps
+            docs
+          requireScope: false
+          # `Feat: Add x` and `feat(web): Add x` are refused: the first letter after the colon is
+          # lowercase, as in every commit of this repository.
+          subjectPattern: ^[a-z0-9].*[^.]$
+          subjectPatternError: >-
+            The subject "{subject}" must start with a lowercase letter or digit and have no
+            trailing period, like every commit (CLAUDE.md, Commits).

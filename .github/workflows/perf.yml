@@ -1,0 +1,110 @@
+name: perf
+
+# Design, Performance targets, Harness:
+#   - every pull request runs a short suite on CI's amd64 and arm64 runners and compares it with
+#     main's last run on the same runner type: a p95 more than 10% worse, or a missed size or
+#     memory target, fails the build;
+#   - the full suite runs nightly and before each release on the self-hosted VPS, and a
+#     missed target blocks the release. That rig does not exist yet: the `rigs` job runs only when
+#     the repository variable PERF_RIGS is "true".
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+      - "[0-9]+.[0-9]+.[0-9]+*"
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  OHA_VERSION: v1.17.0
+
+jobs:
+  short:
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Runner type -> the design's rig column: arm64 stands in for the Pi, amd64 for the VPS.
+          - { os: ubuntu-24.04, arch: amd64, rig: vps }
+          - { os: ubuntu-24.04-arm, arch: arm64, rig: pi }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Build the server, the CLI and the load generator
+        run: cargo build --release --locked -p kemlock-server -p kemlock-cli -p kemlock-loadgen
+      - uses: grafana/setup-k6-action@c47136d33d365efbeb9ae7266908b5dcf98cdece # v1.3.0
+      - name: Install oha
+        run: |
+          curl -fsSL -o oha "https://github.com/hatoo/oha/releases/download/${OHA_VERSION}/oha-linux-${{ matrix.arch }}"
+          chmod +x oha
+          sudo mv oha /usr/local/bin/oha
+      # Main's last run on this runner type. A pull request reads the default branch's cache.
+      - name: Restore main's last result
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: perf/baseline
+          key: perf-baseline-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: perf-baseline-${{ matrix.arch }}-
+      - name: Run the short suite
+        run: perf/run.sh --profile ci --rig ${{ matrix.rig }}
+      - name: Compare with main (fails at more than 10% worse, or a missed size or memory target)
+        run: node perf/compare.mjs perf/results/summary.json perf/baseline/summary.json --threshold 0.10
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: perf-${{ matrix.arch }}
+          path: perf/results/*.json
+      # Main's result becomes the next baseline, saved whether or not this run passed.
+      - name: Keep this result as the baseline
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('perf/results/summary.json') != ''
+        run: mkdir -p perf/baseline && cp perf/results/summary.json perf/baseline/summary.json
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always() && github.ref == 'refs/heads/main' && hashFiles('perf/results/summary.json') != ''
+        with:
+          path: perf/baseline
+          key: perf-baseline-${{ matrix.arch }}-${{ github.sha }}
+
+  # The full suite, with the design's absolute targets enforced, on the real rigs.
+  rigs:
+    if: vars.PERF_RIGS == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 2 vCPU, 4 GB, PostgreSQL 14 on the same host.
+          - { rig: vps, runner: kemlock-vps, database_url: "postgres://kemlock:kemlock@127.0.0.1/kemlock" }
+    runs-on: [self-hosted, linux, "${{ matrix.runner }}"]
+    timeout-minutes: 90
+    env:
+      ENFORCE: "1"
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - run: cargo build --release --locked -p kemlock-server -p kemlock-cli -p kemlock-loadgen
+      - name: Run the full suite
+        run: |
+          perf/run.sh --profile full --rig ${{ matrix.rig }} \
+            ${{ matrix.database_url != '' && format('--database-url {0}', matrix.database_url) || '' }}
+      - name: Check size and memory targets and the unchanged-sync answers
+        run: node perf/compare.mjs perf/results/summary.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: perf-full-${{ matrix.rig }}
+          path: perf/results/*.json

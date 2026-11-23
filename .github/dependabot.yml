@@ -1,0 +1,97 @@
+# Dependabot: weekly version updates, minor and patch grouped into one pull request per ecosystem,
+# a major version on its own. Security updates are not grouped (the `groups` below apply to
+# version updates only), so a fix for an advisory is one small pull request, opened at once.
+# A new release waits a week (cooldown) before a version update proposes it, which gives
+# a malicious or broken release time to be pulled; security updates ignore the cooldown.
+# Patch and minor pull requests merge by themselves once CI passes (dependabot-auto-merge.yml).
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, rust]
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: "ci"
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
+  # The base images are pinned by digest in docker/Dockerfile (and Dockerfile.fips): Dependabot
+  # moves the tag and the digest together.
+  - package-ecosystem: docker
+    directories:
+      - /docker
+      - /deploy/home-assistant/kemlock-server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(docker)"
+    cooldown:
+      default-days: 7
+    groups:
+      docker-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+
+  # The end-to-end Keycloak (deploy/e2e) and the single sign-on gate: images the tests run against,
+  # not shipped. Their realm exports are made for one Keycloak major, so only minor and patch.
+  - package-ecosystem: docker-compose
+    directories:
+      - /deploy/e2e
+      - /tools/sso-gate
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(docker)"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      compose-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]

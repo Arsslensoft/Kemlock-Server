@@ -1,0 +1,13 @@
+# The same router and service for Traefik's file provider (CI uses this one, on the plain entry
+# point). Load it with --providers.file.filename=/etc/traefik/dynamic.yml.
+http:
+  routers:
+    kemlock:
+      rule: Host(`vault.example.com`) || PathPrefix(`/`)
+      entryPoints: [web]
+      service: kemlock
+  services:
+    kemlock:
+      loadBalancer:
+        servers:
+          - url: http://kemlock:8080

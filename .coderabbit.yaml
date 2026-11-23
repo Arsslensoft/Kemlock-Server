@@ -1,0 +1,95 @@
+# CodeRabbit (https://docs.coderabbit.ai/getting-started/configure-coderabbit): install the
+# CodeRabbit GitHub App on this repository for it to take effect.
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+tone_instructions: >-
+  Be direct and specific. Point at the line, say what breaks and how to fix it. No praise, no
+  restating the diff.
+early_access: false
+
+reviews:
+  # The stricter profile: it raises more, which suits a password manager's server.
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: true
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+    ignore_title_keywords:
+      - WIP
+      - DO NOT MERGE
+  path_filters:
+    - "!**/Cargo.lock"
+    - "!web/package-lock.json"
+    - "!supply-chain/**"
+    - "!test-vectors/**"
+    - "!**/fixtures/**"
+    - "!**/*.min.js"
+  path_instructions:
+    - path: "crates/**"
+      instructions: |
+        Security-sensitive code: this server holds encrypted vaults and the keys' public halves, and
+        sign-in, so review strictly.
+        - Crypto (crates/kemlock-crypto, anything touching keys, nonces, KDFs, OPAQUE, DPoP, tokens):
+          flag any nonce reuse, any key or secret that is logged, formatted with Debug, compared
+          with `==` instead of constant time, or not zeroized on drop; any new primitive, parameter
+          or format change; any `unwrap`/`expect`/indexing that a hostile input can reach; any
+          `unsafe`. Randomness comes from the system CSPRNG only.
+        - Parsers of untrusted bytes must be bounded (length, depth, allocation) and must not panic.
+        - Authorization: every route checks who the caller is and that the object is theirs; check
+          for missing checks, IDOR, and answers that differ in a way that leaks existence.
+        - Dependencies point inward only (domain <- app <- adapters <- api crates <- binaries);
+          domain has no I/O.
+        - The Bitwarden API (kemlock-api-bw) answers exactly as Vaultwarden does, quirks included:
+          a "fix" that changes a response shape or status is a compatibility break unless the
+          contract tests are changed with a reason.
+        - Errors must not leak internals to the client; secrets never appear in logs or errors.
+        - New or changed behaviour needs a test; a fix needs its regression test.
+    - path: "crates/kemlock-crypto/**"
+      instructions: |
+        The highest-risk code in the repository. Treat every change as a security change. Check
+        against docs/crypto.md: algorithm choices, domain-separation labels, byte layouts, lengths
+        and versions must match it exactly, and test vectors in test-vectors/ must still pass
+        unchanged (they are generated, never edited by hand).
+    - path: "docs/crypto.md"
+      instructions: |
+        This is a byte-format contract shared with the Kemlock app and other clients, not prose.
+        Any change to a layout, length, label, algorithm or version is a wire-format change: ask
+        whether existing data still decodes, whether the other implementations (the app, the
+        WebAssembly module, test-vectors/) change in the same pull request, and whether a version
+        byte or migration is needed. Check the tables are internally consistent (offsets add up,
+        lengths match the examples).
+    - path: "web/**"
+      instructions: |
+        React and TypeScript web vault and admin console, served with a strict CSP, Trusted Types,
+        COOP/COEP.
+        - No `dangerouslySetInnerHTML`, `eval`, inline script or style, or `innerHTML`; a Worker URL
+          goes through `scriptUrl()` in src/lib/trusted-types.ts.
+        - Keys and decrypted data stay in the crypto worker (src/crypto-port.ts is the only
+          interface); never put secrets in React state that is logged, in localStorage, in URLs or
+          in query caches that persist.
+        - Accessibility: every screen is checked with axe; flag missing labels, focus handling and
+          colour-only meaning. Strings go through react-intl.
+        - Keep the sign-in bundle within the 250 KiB budget (web/scripts/check-budget.ts); flag a
+          heavy new dependency.
+    - path: "docker/**"
+      instructions: |
+        The release image: base images pinned by digest, tools by checksum, builds reproducible
+        (SOURCE_DATE_EPOCH, --locked, remapped paths). Flag anything that is unpinned, adds a
+        shell or package manager to the final image, or runs as root.
+    - path: ".github/**"
+      instructions: |
+        CI and release automation that signs the images. Every third-party action pinned to a full
+        commit SHA with a version comment; least-privilege `permissions`; no untrusted input in a
+        `run:` script (pass it through env); no pull_request_target that checks out pull request
+        code.
+
+chat:
+  auto_reply: true

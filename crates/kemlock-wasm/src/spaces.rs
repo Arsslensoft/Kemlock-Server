@@ -1,0 +1,593 @@
+//! A space's keys and names, inside the unlocked session.
+//!
+//! A space has one random 32-byte space key per key version, and each of its collections one random
+//! 32-byte collection key per key version (`docs/crypto.md`: the server holds each sealed to the
+//! members who may have it, as a `kx1` sealed box under context `"space-key"` or
+//! `"collection-key"`). Nothing here leaves this module as a key: only boxes and ciphertexts do.
+//!
+//! **What a box is bound to.** The box's `aad` names what the key is for, so a server can't serve
+//! one space's (or collection's) box as another's to a member who holds both:
+//!
+//! ```text
+//! space-key:      aad = space id (16) ‖ u32be(space key version) ‖ recipient account id (16)
+//! collection-key: aad = space id (16) ‖ collection id (16) ‖ u32be(collection key version)
+//!                       ‖ recipient account id (16)
+//! ```
+//!
+//! **Names.** The names of a space, its collections and its groups are encrypted under the space
+//! key, which `docs/crypto.md` states but does not lay out. They use the `kem1` envelope on a
+//! child key of the space key, so no new construction is added:
+//!
+//! ```text
+//! name key   = HKDF(ikm = space key, salt = absent, info = "kemlock/v1/space-name", L = 32)
+//! ciphertext = kem1.seal_item(name key, id = the space's, collection's or group's id,
+//!                             revision = the space key version, kind = "space-name",
+//!                             "collection-name" or "group-name", owner = space:<space id>,
+//!                             json = the name's UTF-8)
+//! ```
+//!
+//! So a name opens only under the space, id, kind and key version it was sealed with, and a rename
+//! under the same key version is a fresh nonce, not a new key.
+
+use std::collections::HashMap;
+
+use kemlock_crypto::{
+    kem1,
+    keys::{ITEM_WRAP_LABEL, SecretKey},
+    kx1,
+    owner::Owner,
+    sealed_box::{self, context},
+};
+use zeroize::Zeroizing;
+
+use crate::{
+    error::Error,
+    session::{SealedItem, SealedItemRef, Session},
+};
+
+/// The label of the space key's child that encrypts names.
+pub(crate) const NAME_KEY_LABEL: &str = "kemlock/v1/space-name";
+
+/// An encrypted name must fit `kemlock-domain`'s 4 KiB sealed-name limit.
+const MAX_SEALED_NAME_LEN: usize = 4096;
+/// What sealing adds to a name: a 12-byte nonce and a 16-byte tag.
+const SEAL_OVERHEAD: usize = 28;
+
+/// What a name names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NameKind {
+    Space,
+    Collection,
+    Group,
+}
+
+impl NameKind {
+    pub(crate) fn parse(text: &str) -> Result<NameKind, Error> {
+        match text {
+            "space" => Ok(NameKind::Space),
+            "collection" => Ok(NameKind::Collection),
+            "group" => Ok(NameKind::Group),
+            _ => Err(Error::Invalid),
+        }
+    }
+
+    /// The `kem1` kind the name is sealed under.
+    fn item_kind(self) -> &'static str {
+        match self {
+            NameKind::Space => "space-name",
+            NameKind::Collection => "collection-name",
+            NameKind::Group => "group-name",
+        }
+    }
+}
+
+/// The space and collection keys this unlock holds, by id and key version. Every key is wiped when
+/// it drops (`SecretKey`), so `lock` wipes them with the rest of the session.
+#[derive(Default)]
+pub(crate) struct SpaceKeys {
+    spaces: HashMap<([u8; 16], u32), SecretKey>,
+    collections: HashMap<([u8; 16], [u8; 16], u32), SecretKey>,
+}
+
+impl SpaceKeys {
+    fn space(&self, space: &[u8; 16], version: u32) -> Result<&SecretKey, Error> {
+        self.spaces.get(&(*space, version)).ok_or(Error::Invalid)
+    }
+
+    /// The space key of the newest version held.
+    fn newest_space(&self, space: &[u8; 16]) -> Result<(u32, &SecretKey), Error> {
+        self.spaces
+            .iter()
+            .filter(|((id, _), _)| id == space)
+            .max_by_key(|((_, version), _)| *version)
+            .map(|((_, version), key)| (*version, key))
+            .ok_or(Error::Invalid)
+    }
+
+    /// The collection key of exactly this version.
+    fn collection(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        version: u32,
+    ) -> Result<&SecretKey, Error> {
+        self.collections
+            .get(&(*space, *collection, version))
+            .ok_or(Error::Invalid)
+    }
+
+    /// The collection key of the newest version held.
+    fn newest_collection(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+    ) -> Result<(u32, &SecretKey), Error> {
+        self.collections
+            .iter()
+            .filter(|((s, c, _), _)| s == space && c == collection)
+            .max_by_key(|((_, _, version), _)| *version)
+            .map(|((_, _, version), key)| (*version, key))
+            .ok_or(Error::Invalid)
+    }
+}
+
+/// The `aad` of a space key's box: the space, the key version and the recipient.
+pub(crate) fn space_key_aad(space: &[u8; 16], version: u32, recipient: &[u8; 16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(36);
+    out.extend_from_slice(space);
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(recipient);
+    out
+}
+
+/// The `aad` of a collection key's box: the space, the collection, the key version and the
+/// recipient.
+pub(crate) fn collection_key_aad(
+    space: &[u8; 16],
+    collection: &[u8; 16],
+    version: u32,
+    recipient: &[u8; 16],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(52);
+    out.extend_from_slice(space);
+    out.extend_from_slice(collection);
+    out.extend_from_slice(&version.to_be_bytes());
+    out.extend_from_slice(recipient);
+    out
+}
+
+/// A new space's names and sealed keys, all sealed to its maker.
+pub(crate) struct NewSpace {
+    pub(crate) name: Vec<u8>,
+    pub(crate) sealed_space_key: Vec<u8>,
+    pub(crate) collection: NewCollection,
+}
+
+/// A new collection's name and its key sealed to its maker.
+pub(crate) struct NewCollection {
+    pub(crate) name: Vec<u8>,
+    pub(crate) sealed_key: Vec<u8>,
+}
+
+/// The first key version of a collection: a collection's key has versions of its own, not its
+/// space's.
+const FIRST_COLLECTION_KEY_VERSION: u32 = 1;
+
+/// The first key version of a space.
+const FIRST_SPACE_KEY_VERSION: u32 = 1;
+
+fn seal_name_under(
+    space_key: &SecretKey,
+    space: &[u8; 16],
+    version: u32,
+    kind: NameKind,
+    id: &[u8; 16],
+    name: &str,
+) -> Result<Vec<u8>, Error> {
+    if name.len() + SEAL_OVERHEAD > MAX_SEALED_NAME_LEN {
+        return Err(Error::Invalid);
+    }
+    let key = space_key.child(NAME_KEY_LABEL)?;
+    Ok(kem1::seal_item(
+        &key,
+        id,
+        u64::from(version),
+        kind.item_kind(),
+        &Owner::space(*space),
+        name.as_bytes(),
+    )?)
+}
+
+fn key_from(plain: &[u8]) -> Result<SecretKey, Error> {
+    let bytes: &[u8; 32] = plain.try_into().map_err(|_| Error::Invalid)?;
+    Ok(SecretKey::from_bytes(bytes))
+}
+
+impl Session {
+    /// A fresh space key and first collection key (both version 1), the names of both under the
+    /// space key, and each key sealed to the unlocked account's own `kx1` key. Both keys are kept
+    /// for sealing to members. Refused for a space already held.
+    pub(crate) fn new_space(
+        &mut self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        space_name: &str,
+        collection_name: &str,
+    ) -> Result<NewSpace, Error> {
+        let unlocked = self.unlocked_mut()?;
+        let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        if unlocked.spaces.newest_space(space).is_ok() {
+            return Err(Error::Invalid);
+        }
+        let own_public = kx_private.public_key()?;
+        let own_id = unlocked.account_id;
+
+        let space_key = SecretKey::generate();
+        let collection_key = SecretKey::generate();
+        let version = FIRST_SPACE_KEY_VERSION;
+        let made = NewSpace {
+            name: seal_name_under(
+                &space_key,
+                space,
+                version,
+                NameKind::Space,
+                space,
+                space_name,
+            )?,
+            sealed_space_key: sealed_box::seal(
+                &own_public,
+                context::SPACE_KEY,
+                &space_key_aad(space, version, &own_id),
+                space_key.as_bytes(),
+            )?,
+            collection: NewCollection {
+                name: seal_name_under(
+                    &space_key,
+                    space,
+                    version,
+                    NameKind::Collection,
+                    collection,
+                    collection_name,
+                )?,
+                sealed_key: sealed_box::seal(
+                    &own_public,
+                    context::COLLECTION_KEY,
+                    &collection_key_aad(space, collection, version, &own_id),
+                    collection_key.as_bytes(),
+                )?,
+            },
+        };
+        unlocked.spaces.spaces.insert((*space, version), space_key);
+        unlocked
+            .spaces
+            .collections
+            .insert((*space, *collection, version), collection_key);
+        Ok(made)
+    }
+
+    /// Opens the space key sealed to this account and keeps it for `space` at `key_version`.
+    pub(crate) fn open_space(
+        &mut self,
+        space: &[u8; 16],
+        key_version: u32,
+        sealed: &[u8],
+    ) -> Result<(), Error> {
+        let unlocked = self.unlocked_mut()?;
+        let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        let plain = sealed_box::open(
+            kx_private,
+            context::SPACE_KEY,
+            &space_key_aad(space, key_version, &unlocked.account_id),
+            sealed,
+        )?;
+        let key = key_from(&plain)?;
+        unlocked.spaces.spaces.insert((*space, key_version), key);
+        Ok(())
+    }
+
+    /// Opens a collection key sealed to this account and keeps it.
+    pub(crate) fn open_collection(
+        &mut self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        key_version: u32,
+        sealed: &[u8],
+    ) -> Result<(), Error> {
+        let unlocked = self.unlocked_mut()?;
+        let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        let plain = sealed_box::open(
+            kx_private,
+            context::COLLECTION_KEY,
+            &collection_key_aad(space, collection, key_version, &unlocked.account_id),
+            sealed,
+        )?;
+        let key = key_from(&plain)?;
+        unlocked
+            .spaces
+            .collections
+            .insert((*space, *collection, key_version), key);
+        Ok(())
+    }
+
+    /// Decrypts a name. Fails for another space, id, kind or key version than it was sealed with.
+    pub(crate) fn open_name(
+        &self,
+        space: &[u8; 16],
+        key_version: u32,
+        kind: NameKind,
+        id: &[u8; 16],
+        ciphertext: &[u8],
+    ) -> Result<String, Error> {
+        let unlocked = self.unlocked()?;
+        let key = unlocked
+            .spaces
+            .space(space, key_version)?
+            .child(NAME_KEY_LABEL)?;
+        let plain: Zeroizing<Vec<u8>> = kem1::open_item(
+            &key,
+            id,
+            u64::from(key_version),
+            kind.item_kind(),
+            &Owner::space(*space),
+            ciphertext,
+        )?;
+        String::from_utf8(plain.to_vec()).map_err(|_| Error::Invalid)
+    }
+
+    /// Encrypts a name under the space key of `key_version`.
+    pub(crate) fn seal_name(
+        &self,
+        space: &[u8; 16],
+        key_version: u32,
+        kind: NameKind,
+        id: &[u8; 16],
+        name: &str,
+    ) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let key = unlocked.spaces.space(space, key_version)?;
+        seal_name_under(key, space, key_version, kind, id, name)
+    }
+
+    /// Seals an item of a space's collection. The item key is wrapped under the
+    /// `"kemlock/v1/item-wrap"` child of the newest key held of that collection, so only a member
+    /// granted the collection opens it; the wrap is bound to the item, the owner `space:<id>` and
+    /// the collection key's version, which is the `key_version` the item carries.
+    pub(crate) fn seal_space_item(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        id: &[u8; 16],
+        kind: &str,
+        revision: u64,
+        json: &[u8],
+    ) -> Result<SealedItem, Error> {
+        let unlocked = self.unlocked()?;
+        let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
+        let wrap = key.child(ITEM_WRAP_LABEL)?;
+        let owner = Owner::space(*space);
+        let item_key = SecretKey::generate();
+        let ciphertext = kem1::seal_item(&item_key, id, revision, kind, &owner, json)?;
+        let wrapped = kem1::wrap_item_key(&wrap, &item_key, id, &owner, version)?;
+        Ok(SealedItem {
+            ciphertext,
+            item_key: wrapped,
+            key_version: version,
+        })
+    }
+
+    /// Opens an item of a space's collection with the collection key of the version it says.
+    pub(crate) fn open_space_item(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        item: &SealedItemRef<'_>,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        if *item.owner != Owner::space(*space) {
+            return Err(Error::Invalid);
+        }
+        let unlocked = self.unlocked()?;
+        let version = item.key_version.ok_or(Error::Invalid)?;
+        let wrap = unlocked
+            .spaces
+            .collection(space, collection, version)?
+            .child(ITEM_WRAP_LABEL)?;
+        let item_key = kem1::unwrap_item_key(&wrap, item.item_key, item.id, item.owner, version)?;
+        Ok(kem1::open_item(
+            &item_key,
+            item.id,
+            item.revision,
+            item.kind,
+            item.owner,
+            item.ciphertext,
+        )?)
+    }
+
+    /// A new collection: a fresh key sealed to the maker, and its name under the newest space key
+    /// held. The key is kept for sealing to the members the collection is granted to.
+    pub(crate) fn new_collection(
+        &mut self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        name: &str,
+    ) -> Result<NewCollection, Error> {
+        let unlocked = self.unlocked_mut()?;
+        let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        let (version, space_key) = unlocked.spaces.newest_space(space)?;
+        if unlocked.spaces.collections.contains_key(&(
+            *space,
+            *collection,
+            FIRST_COLLECTION_KEY_VERSION,
+        )) {
+            return Err(Error::Invalid);
+        }
+        let own_public = kx_private.public_key()?;
+        let key = SecretKey::generate();
+        let made = NewCollection {
+            name: seal_name_under(
+                space_key,
+                space,
+                version,
+                NameKind::Collection,
+                collection,
+                name,
+            )?,
+            sealed_key: sealed_box::seal(
+                &own_public,
+                context::COLLECTION_KEY,
+                &collection_key_aad(
+                    space,
+                    collection,
+                    FIRST_COLLECTION_KEY_VERSION,
+                    &unlocked.account_id,
+                ),
+                key.as_bytes(),
+            )?,
+        };
+        unlocked
+            .spaces
+            .collections
+            .insert((*space, *collection, FIRST_COLLECTION_KEY_VERSION), key);
+        Ok(made)
+    }
+
+    /// The newest space key held, sealed to a member's `kx1` key; `recipient_id` is their account
+    /// id. The box is bound to the space, the key's version and the recipient.
+    pub(crate) fn seal_space_key_to(
+        &self,
+        space: &[u8; 16],
+        recipient_kx1: &[u8],
+        recipient_id: &[u8; 16],
+    ) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let (version, key) = unlocked.spaces.newest_space(space)?;
+        let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
+        Ok(sealed_box::seal(
+            &public,
+            context::SPACE_KEY,
+            &space_key_aad(space, version, recipient_id),
+            key.as_bytes(),
+        )?)
+    }
+
+    /// The newest key held of a collection, sealed to a member's `kx1` key.
+    pub(crate) fn seal_collection_key_to(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        recipient_kx1: &[u8],
+        recipient_id: &[u8; 16],
+    ) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
+        let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
+        Ok(sealed_box::seal(
+            &public,
+            context::COLLECTION_KEY,
+            &collection_key_aad(space, collection, version, recipient_id),
+            key.as_bytes(),
+        )?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Everything that touches `kx1` runs in WebAssembly (src/tests.rs); these are the parts that
+    // do not.
+
+    #[test]
+    fn name_kinds_are_the_three_the_page_names() {
+        assert_eq!(NameKind::parse("space"), Ok(NameKind::Space));
+        assert_eq!(NameKind::parse("collection"), Ok(NameKind::Collection));
+        assert_eq!(NameKind::parse("group"), Ok(NameKind::Group));
+        for bad in ["", "Space", "folder", "space-name"] {
+            assert_eq!(NameKind::parse(bad), Err(Error::Invalid), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn name_kinds_are_valid_kem1_kinds_and_differ() {
+        let kinds =
+            [NameKind::Space, NameKind::Collection, NameKind::Group].map(NameKind::item_kind);
+        for kind in kinds {
+            assert!(kem1::is_valid_kind(kind), "{kind}");
+        }
+        assert_ne!(kinds[0], kinds[1]);
+        assert_ne!(kinds[1], kinds[2]);
+        assert_ne!(kinds[0], kinds[2]);
+    }
+
+    #[test]
+    fn a_locked_session_holds_no_space_keys() {
+        let mut session = Session::new();
+        let id = [1u8; 16];
+        assert_eq!(
+            session.new_space(&id, &id, "a", "b").map(|_| ()),
+            Err(Error::Locked)
+        );
+        assert_eq!(session.open_space(&id, 1, &[0; 1661]), Err(Error::Locked));
+        assert_eq!(
+            session.open_collection(&id, &id, 1, &[0; 1661]),
+            Err(Error::Locked)
+        );
+        assert_eq!(
+            session.open_name(&id, 1, NameKind::Space, &id, &[0; 40]),
+            Err(Error::Locked)
+        );
+        assert_eq!(
+            session.seal_name(&id, 1, NameKind::Space, &id, "a"),
+            Err(Error::Locked)
+        );
+        assert_eq!(
+            session.new_collection(&id, &id, "a").map(|_| ()),
+            Err(Error::Locked)
+        );
+        assert_eq!(
+            session.seal_space_key_to(&id, &[0; 1600], &id),
+            Err(Error::Locked)
+        );
+        assert_eq!(
+            session.seal_collection_key_to(&id, &id, &[0; 1600], &id),
+            Err(Error::Locked)
+        );
+    }
+
+    #[test]
+    fn box_aads_bind_the_space_collection_version_and_recipient() {
+        let (s, c, r) = ([1u8; 16], [2u8; 16], [3u8; 16]);
+        let space = space_key_aad(&s, 7, &r);
+        assert_eq!(space.len(), 36);
+        assert_eq!(&space[..16], &s);
+        assert_eq!(&space[16..20], &[0, 0, 0, 7]);
+        assert_eq!(&space[20..], &r);
+        let collection = collection_key_aad(&s, &c, 7, &r);
+        assert_eq!(collection.len(), 52);
+        assert_eq!(&collection[..16], &s);
+        assert_eq!(&collection[16..32], &c);
+        assert_eq!(&collection[32..36], &[0, 0, 0, 7]);
+        assert_eq!(&collection[36..], &r);
+        assert_ne!(space_key_aad(&s, 8, &r), space);
+        assert_ne!(space_key_aad(&[9; 16], 7, &r), space);
+        assert_ne!(collection_key_aad(&s, &[9; 16], 7, &r), collection);
+    }
+
+    #[test]
+    fn the_newest_key_wins() {
+        let mut keys = SpaceKeys::default();
+        let space = [1u8; 16];
+        assert!(keys.newest_space(&space).is_err());
+        for version in [3u32, 1, 2] {
+            keys.spaces.insert(
+                (space, version),
+                SecretKey::from_bytes(&[u8::try_from(version).expect("small"); 32]),
+            );
+        }
+        let (version, key) = keys.newest_space(&space).expect("a key");
+        assert_eq!(version, 3);
+        assert_eq!(key.as_bytes(), &[3; 32]);
+        assert!(keys.newest_space(&[2; 16]).is_err());
+        assert!(keys.space(&space, 2).is_ok());
+        assert!(keys.space(&space, 4).is_err());
+    }
+}

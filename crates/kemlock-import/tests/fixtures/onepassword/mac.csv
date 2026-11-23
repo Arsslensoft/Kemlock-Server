@@ -1,0 +1,5 @@
+"Title","Type","Username","Password","URL","Notes","Created Date","Modified Date","cardholder name(cardholder)","number(ccnum)","verification number(cvv)","expiry date(expiry)","first name(firstname)","initial(initial)","last name(lastname)","default phone(defphone)","email(email)","company(company)","Scope","Tags","UUID"
+"Mac Login","Login","bob","pw-two","https://mac.example.org","note one","1600000000","1600000100","","","","","","","","","","","Default","","m1"
+"Mac Card","Credit Card","","","","","","","Bob Builder","5555555555554444","321","05/2030","","","","","","","Default","","m2"
+"Mac Identity","Identity","","","","","","","","","","","Bob","Q","Builder","555-0100","bob@example.com","Acme","Default","","m3"
+"Mac Note","Secure Note","","","","just text","","","","","","","","","","","","","Default","","m4"

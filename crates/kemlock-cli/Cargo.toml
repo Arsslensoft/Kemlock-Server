@@ -1,0 +1,30 @@
+[package]
+name = "kemlock-cli"
+description = "kemlock-cli: migrate, healthcheck, backup, restore, reset-admin, import-vaultwarden"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kemlock-cli"
+path = "src/main.rs"
+
+[dependencies]
+kemlock-crypto = { workspace = true, features = ["aws-lc"] }
+kemlock-server.workspace = true
+kemlock-store-sql.workspace = true
+# Not a workspace dependency yet: the root manifest is the merge session's to edit.
+kemlock-vaultwarden = { path = "../kemlock-vaultwarden" }
+time.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+# The binary test builds a Vaultwarden data folder with the fixture builder of
+# kemlock-vaultwarden's tests, and reads the result back through the store.
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tempfile = "3.27.0"
+
+[lints]
+workspace = true

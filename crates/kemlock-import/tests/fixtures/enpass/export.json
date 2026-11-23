@@ -1,0 +1,64 @@
+{
+  "folders": [
+    {"uuid": "f1", "title": "Personal", "parent_uuid": "", "updated_at": 1, "icon": "x"},
+    {"uuid": "f2", "title": "Banking", "parent_uuid": "f1", "updated_at": 1, "icon": "x"},
+    {"uuid": "f3", "title": "  ", "parent_uuid": "", "updated_at": 1, "icon": "x"},
+    {"uuid": "f4", "title": "Hidden child", "parent_uuid": "f3", "updated_at": 1, "icon": "x"}
+  ],
+  "items": [
+    {
+      "uuid": "i1", "title": "Example", "favorite": 1, "archived": 0, "trashed": 0,
+      "folders": ["f2"], "createdAt": 1600000000, "updated_at": 1600000100,
+      "template_type": "login.default", "category": "login", "note": "Some note  \n",
+      "fields": [
+        {"type": "username", "label": "Username", "value": "ada@example.com", "sensitive": 0},
+        {"type": "password", "label": "Password", "value": "pw1", "sensitive": 1},
+        {"type": "url", "label": "Website", "value": "https://example.com"},
+        {"type": "url", "label": "Website", "value": "example.org"},
+        {"type": "totp", "label": "TOTP", "value": "JBSWY3DPEHPK3PXP", "sensitive": 1},
+        {"type": "text", "label": "Recovery", "value": "abc", "sensitive": 1},
+        {"type": "section", "label": "Extra", "value": ""},
+        {"type": "pin", "label": "PIN", "value": "1234", "sensitive": 1}
+      ]
+    },
+    {
+      "uuid": "i2", "title": "App", "favorite": 0, "trashed": 0, "folders": [],
+      "template_type": "login.default", "note": "",
+      "fields": [
+        {"type": "username", "label": "Username", "value": "bob"},
+        {"type": "password", "label": "Password", "value": "x", "sensitive": 1},
+        {"type": ".Android#", "label": "App", "value": "android://aGFzaA==@com.example.app/"}
+      ]
+    },
+    {
+      "uuid": "i3", "title": "Visa", "favorite": 0, "trashed": 0, "folders": ["nope"],
+      "template_type": "creditcard.default",
+      "fields": [
+        {"type": "ccName", "label": "Cardholder", "value": "Ada Lovelace"},
+        {"type": "ccType", "label": "Type", "value": "Visa"},
+        {"type": "ccNumber", "label": "Number", "value": "4111 1111 1111 1111", "sensitive": 1},
+        {"type": "ccCvc", "label": "CVC", "value": "123", "sensitive": 1},
+        {"type": "ccExpiry", "label": "Expiry", "value": "05/29"},
+        {"type": "ccPin", "label": "PIN", "value": "9999", "sensitive": 1},
+        {"type": "ccBankname", "label": "Bank", "value": "Example Bank"}
+      ]
+    },
+    {
+      "uuid": "i4", "title": "Plain note", "favorite": 0, "trashed": 0,
+      "template_type": "note.default", "note": "Just text", "fields": []
+    },
+    {
+      "uuid": "i5", "title": "Old account", "favorite": 0, "trashed": 1,
+      "template_type": "login.default",
+      "fields": [{"type": "username", "label": "Username", "value": "old"}]
+    },
+    {
+      "uuid": "i6", "title": "Me", "favorite": 0, "trashed": 0,
+      "template_type": "identity.default",
+      "fields": [
+        {"type": "section", "label": "Name", "value": ""},
+        {"type": "text", "label": "First name", "value": "Ada"}
+      ]
+    }
+  ]
+}

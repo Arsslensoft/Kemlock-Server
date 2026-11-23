@@ -1,0 +1,25 @@
+# Keycloak with the `kemlock` realm, for the scripted SSO gate (tools/sso-gate/run.sh).
+#
+# The realm has a confidential client `kemlock` (secret `kemlock-gate-secret`, PKCE S256 required,
+# redirect `https://kemlock.test/kem/v1/auth/sso/callback`), a user `ada` (email verified, in the
+# group /eng) and a user `mallory` (email not verified). The browser never reaches kemlock.test:
+# the test takes the redirect itself.
+#
+#   docker compose -f tools/sso-gate/docker-compose.yml up -d
+#   curl http://localhost:8180/realms/kemlock/.well-known/openid-configuration
+name: kemlock-sso-gate
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./realm-kemlock.json:/opt/keycloak/data/import/realm-kemlock.json:ro

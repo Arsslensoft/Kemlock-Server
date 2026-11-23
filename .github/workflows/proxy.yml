@@ -1,0 +1,29 @@
+name: proxy examples
+
+on:
+  push:
+    branches: [main]
+    paths: [deploy/proxy/**, .github/workflows/proxy.yml]
+  pull_request:
+    paths: [deploy/proxy/**, .github/workflows/proxy.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proxy-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  websocket:
+    # Each example opens a WebSocket through its proxy to a stand-in upstream (design, Networking).
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        proxy: [caddy, traefik, nginx, haproxy]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - run: bash deploy/proxy/test/run.sh ${{ matrix.proxy }}

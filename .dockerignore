@@ -1,0 +1,11 @@
+# The build context is the repository root; keep it small and keep local state out of the image.
+.git
+.github
+.claude
+**/target
+target
+perf/results
+web/node_modules
+web/dist
+**/*.sqlite3
+**/.env
