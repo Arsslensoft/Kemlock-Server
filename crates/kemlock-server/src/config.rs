@@ -528,6 +528,66 @@ mod tests {
     }
 
     #[test]
+    fn no_browser_extension_is_allowed_by_default() {
+        assert!(config(&[], None).expect("valid").browser_extension_ids.is_empty());
+        assert!(
+            config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", "  ")], None)
+                .expect("valid")
+                .browser_extension_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn browser_extension_ids_are_a_comma_list_in_lower_case() {
+        let c = config(
+            &[(
+                "KEMLOCK_BROWSER_EXTENSION_IDS",
+                "abcdefghijklmnopabcdefghijklmnop, 0123ABCD ,,0123abcd",
+            )],
+            None,
+        )
+        .expect("valid");
+        assert_eq!(
+            c.browser_extension_ids,
+            vec!["abcdefghijklmnopabcdefghijklmnop", "0123abcd"]
+        );
+    }
+
+    #[test]
+    fn browser_extension_ids_come_from_the_file_when_the_environment_has_none() {
+        let from_file = config(&[], Some("browser_extension_ids = [\"abc123\"]\n")).expect("valid");
+        assert_eq!(from_file.browser_extension_ids, vec!["abc123"]);
+        let env_wins = config(
+            &[("KEMLOCK_BROWSER_EXTENSION_IDS", "def456")],
+            Some("browser_extension_ids = [\"abc123\"]\n"),
+        )
+        .expect("valid");
+        assert_eq!(env_wins.browser_extension_ids, vec!["def456"]);
+    }
+
+    #[test]
+    fn a_browser_extension_id_that_could_widen_the_allowlist_is_refused() {
+        let long = "a".repeat(65);
+        for bad in [
+            "evil.example",
+            "a/b",
+            "https://abc.chromiumapp.org/",
+            "abc@evil",
+            "a b",
+            "*",
+            long.as_str(),
+        ] {
+            let error = config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", bad)], None)
+                .expect_err("refused");
+            assert!(
+                error.to_string().contains("KEMLOCK_BROWSER_EXTENSION_IDS"),
+                "{bad}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn trusted_proxies_are_a_comma_list() {
         let c = config(
             &[("KEMLOCK_TRUSTED_PROXIES", "10.0.0.1, 192.168.1.2")],
