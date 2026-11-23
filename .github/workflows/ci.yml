@@ -306,5 +306,5 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$NEEDS" | jq -r 'to_entries[] | "(.key): (.value.result)"'
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$NEEDS" | jq -e 'all(.[]; .result == "success")' >/dev/null
