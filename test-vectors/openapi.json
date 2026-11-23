@@ -840,6 +840,14 @@
               "null"
             ]
           },
+          "deviceType": {
+            "description": "With `kind` `\"kemlock-browser\"`: the browser, numbered as Bitwarden numbers its device\ntypes: 2 Chrome, 3 Firefox, 5 Edge. The server adds the browser's name to the device's name\nwhen it isn't there. Refused with any other kind.",
+            "format": "int32",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "id": {
             "description": "The id the device kept from an earlier sign-in; omit it on the first.",
             "format": "uuid",
@@ -849,7 +857,7 @@
             ]
           },
           "kind": {
-            "description": "`\"kemlock-android\"`, `\"kemlock-ios\"`, `\"kemlock-web\"`, `\"kemlock-cli\"`, `\"amethystora\"`,\n`\"bitwarden\"` or `\"other\"`.",
+            "description": "`\"kemlock-android\"`, `\"kemlock-ios\"`, `\"kemlock-web\"`, `\"kemlock-browser\"` (the browser\nextension), `\"kemlock-cli\"`, `\"amethystora\"`, `\"bitwarden\"` or `\"other\"`.",
             "type": [
               "string",
               "null"
@@ -1273,7 +1281,7 @@
         "additionalProperties": false,
         "properties": {
           "protection": {
-            "description": "`\"secure-enclave\"`, `\"keystore\"`, `\"web-crypto\"` or `\"software\"`.",
+            "description": "`\"secure-enclave\"`, `\"keystore\"`, `\"web-crypto\"`, `\"browser\"` or `\"software\"`.",
             "type": "string"
           },
           "wrappedKey": {
@@ -1869,7 +1877,7 @@
         "additionalProperties": false,
         "properties": {
           "protection": {
-            "description": "`\"secure-enclave\"`, `\"keystore\"`, `\"web-crypto\"` or `\"software\"`.",
+            "description": "`\"secure-enclave\"`, `\"keystore\"`, `\"web-crypto\"`, `\"browser\"` or `\"software\"`.",
             "type": "string"
           },
           "wrappedKey": {
@@ -4028,6 +4036,13 @@
           "challenge": {
             "description": "The unpadded base64url SHA-256 of a PKCE verifier the device keeps.",
             "type": "string"
+          },
+          "kind": {
+            "description": "What the device is, as in the sign-in's `device.kind`. Only `\"kemlock-browser\"` changes\nanything: that device may also give its extension's redirect address,\n`https://<id>.chromiumapp.org/` or `https://<hash>.extensions.allizom.org/` with the path\n`/` or `/sso`, when the server's `KEMLOCK_BROWSER_EXTENSION_IDS` names that extension. `finish`\nthen needs that kind of device.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "redirect": {
             "description": "Where the browser trip ends: `kemlock://sso` (the default), or a path on this server.",
@@ -16613,6 +16628,102 @@
         ],
         "tags": [
           "sync"
+        ]
+      }
+    },
+    "/kem/v1/webauthn": {
+      "get": {
+        "operationId": "doc_webauthn_page",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A static HTML page a client that is not a page of this server (the browser extension) opens to ask for a passkey or security key, with the PRF extension, for this server's relying party. It takes the request in the URL fragment (`options`, `state`, `redirect` or `extension`, `prf`) and answers only an extension redirect address, or opener, named by `KEMLOCK_BROWSER_EXTENSION_IDS`"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/kem/v1/webauthn/connector.js": {
+      "get": {
+        "operationId": "doc_webauthn_script",
+        "responses": {
+          "200": {
+            "content": {
+              "text/javascript": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The connector page's script, which the page's policy allows as its only script"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "auth"
         ]
       }
     }
