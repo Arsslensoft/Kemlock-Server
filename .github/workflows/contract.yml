@@ -103,7 +103,9 @@ jobs:
         with:
           channel: stable
           flutter-version: ${{ env.KEMLOCK_BW_FLUTTER }}
-          cache: true
+          # No cache: with cache: true the action calls actions/cache by tag, which this repository
+          # refuses (every action must be pinned to a commit).
+          cache: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
