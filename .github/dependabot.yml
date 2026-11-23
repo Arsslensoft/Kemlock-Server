@@ -27,6 +27,21 @@ updates:
         applies-to: version-updates
         update-types: [minor, patch]
 
+  # The OpenAPI type generator (web/tools/gen-api), kept apart from web/ because openapi-typescript
+  # accepts TypeScript 5 only: TypeScript majors wait until it takes them.
+  - package-ecosystem: npm
+    directory: /web/tools/gen-api
+    ignore:
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
   - package-ecosystem: npm
     directories:
       - /web
