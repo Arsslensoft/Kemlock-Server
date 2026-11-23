@@ -43,7 +43,7 @@ const SETS = {
 } as const;
 
 /** A uniform random integer in [0, max): rejection sampling over the secure random source. */
-export function randomBelow(max: number, random: (buffer: Uint32Array) => void = fill): number {
+export function randomBelow(max: number, random: (buffer: Uint32Array<ArrayBuffer>) => void = fill): number {
   const limit = Math.floor(0x1_0000_0000 / max) * max;
   const buffer = new Uint32Array(1);
   for (;;) {
@@ -53,14 +53,16 @@ export function randomBelow(max: number, random: (buffer: Uint32Array) => void =
   }
 }
 
-function fill(buffer: Uint32Array): void {
+// getRandomValues takes a view of a plain ArrayBuffer, never a SharedArrayBuffer (TypeScript 7
+// tells the two apart), which is what every caller here makes with `new Uint32Array(n)`.
+function fill(buffer: Uint32Array<ArrayBuffer>): void {
   globalThis.crypto.getRandomValues(buffer);
 }
 
 /** Made in this browser from its secure random source; at least one of each chosen kind. */
 export function generatePassword(
   options: GeneratorOptions = DEFAULT_GENERATOR,
-  random?: (buffer: Uint32Array) => void,
+  random?: (buffer: Uint32Array<ArrayBuffer>) => void,
 ): string {
   const chosen = (Object.keys(SETS) as Array<keyof typeof SETS>).filter((k) => options[k]);
   if (chosen.length === 0) return '';
