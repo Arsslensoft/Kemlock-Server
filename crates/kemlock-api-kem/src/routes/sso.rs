@@ -217,8 +217,7 @@ fn method_name(method: TwoFactorMethod) -> &'static str {
 // Handlers
 
 fn config<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(api: &Api<S, P, K>) -> SsoConfig {
-    SsoConfig::new(&api.config.domain)
-        .with_browser_extensions(&api.config.browser_extension_ids)
+    SsoConfig::new(&api.config.domain).with_browser_extensions(&api.config.browser_extension_ids)
 }
 
 /// `POST /kem/v1/auth/sso/start`: the provider's address for a device to open in the system

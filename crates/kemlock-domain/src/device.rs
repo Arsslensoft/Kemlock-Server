@@ -88,7 +88,11 @@ mod tests {
         for other in [0, 1, 4, 6, 9, 10, 12, -2] {
             assert_eq!(browser_name(other), None, "{other}");
         }
-        assert!(BROWSER_DEVICE_TYPES.iter().all(|t| browser_name(*t).is_some()));
+        assert!(
+            BROWSER_DEVICE_TYPES
+                .iter()
+                .all(|t| browser_name(*t).is_some())
+        );
     }
 
     #[test]

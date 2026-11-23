@@ -91,7 +91,10 @@ mod tests {
 
     #[test]
     fn the_page_carries_the_allowlist() {
-        let page = render(&["abcdefghijklmnopabcdefghijklmnop".to_owned(), "0a1b".to_owned()]);
+        let page = render(&[
+            "abcdefghijklmnopabcdefghijklmnop".to_owned(),
+            "0a1b".to_owned(),
+        ]);
         assert!(page.contains(
             "<meta name=\"kemlock-extension-ids\" content=\"abcdefghijklmnopabcdefghijklmnop,0a1b\">"
         ));

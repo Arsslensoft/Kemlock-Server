@@ -303,7 +303,11 @@ mod tests {
         let mut a = account();
         a.devices[0].kind = DeviceKind::KemlockBrowser;
         let back = MemberAccount::from_payload(&a.to_payload()).expect("a payload");
-        assert!(back.devices.iter().any(|d| d.kind == DeviceKind::KemlockBrowser));
+        assert!(
+            back.devices
+                .iter()
+                .any(|d| d.kind == DeviceKind::KemlockBrowser)
+        );
     }
 
     #[test]

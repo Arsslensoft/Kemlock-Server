@@ -16,7 +16,11 @@ async fn the_page_is_html_with_its_script_as_a_file_of_its_own() {
     assert_eq!(reply.content_type(), "text/html; charset=utf-8");
     let page = String::from_utf8(reply.body.clone()).expect("UTF-8");
     assert!(page.starts_with("<!doctype html>"));
-    assert_eq!(page.matches("<script").count(), 1, "one script, and it has a src");
+    assert_eq!(
+        page.matches("<script").count(),
+        1,
+        "one script, and it has a src"
+    );
     assert!(page.contains("<script src=\"/kem/v1/webauthn/connector.js\"></script>"));
     assert!(!page.contains("<style"), "no inline style");
     assert!(!page.contains("{{"), "the placeholder is filled in");
@@ -33,7 +37,14 @@ async fn the_page_needs_no_login_and_sets_the_hardening_headers() {
     assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
     assert!(csp.contains("connect-src 'none'"), "{csp}");
     assert!(csp.contains("require-trusted-types-for 'script'"), "{csp}");
-    for forbidden in ["unsafe-inline", "unsafe-eval", "http:", "https:", "data:", "*"] {
+    for forbidden in [
+        "unsafe-inline",
+        "unsafe-eval",
+        "http:",
+        "https:",
+        "data:",
+        "*",
+    ] {
         assert!(!csp.contains(forbidden), "{forbidden} in {csp}");
     }
     assert_eq!(reply.header("x-content-type-options"), Some("nosniff"));
@@ -91,7 +102,10 @@ async fn the_connector_has_no_other_methods_and_unknown_paths_stay_not_found() {
         .post("/kem/v1/webauthn", serde_json::json!({}))
         .await;
     assert!(
-        matches!(reply.status, StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND),
+        matches!(
+            reply.status,
+            StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_FOUND
+        ),
         "{}",
         reply.status
     );

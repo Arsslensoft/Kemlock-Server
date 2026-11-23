@@ -46,7 +46,10 @@ impl SsoConfig {
     /// The same, allowing the redirect addresses of these browser extensions to `KemlockBrowser`
     /// devices.
     pub fn with_browser_extensions(mut self, ids: &[String]) -> Self {
-        self.browser_extension_ids = ids.iter().map(|id| id.trim().to_ascii_lowercase()).collect();
+        self.browser_extension_ids = ids
+            .iter()
+            .map(|id| id.trim().to_ascii_lowercase())
+            .collect();
         self
     }
 
@@ -109,7 +112,11 @@ impl SsoConfig {
             .strip_suffix(CHROMIUM_REDIRECT_HOST)
             .or_else(|| host.strip_suffix(FIREFOX_REDIRECT_HOST));
         id.is_some_and(|id| {
-            !id.is_empty() && self.browser_extension_ids.iter().any(|allowed| allowed == id)
+            !id.is_empty()
+                && self
+                    .browser_extension_ids
+                    .iter()
+                    .any(|allowed| allowed == id)
         })
     }
 }
@@ -194,7 +201,10 @@ mod tests {
             format!("https://{FIREFOX_HASH}.extensions.allizom.org/"),
             format!("https://{FIREFOX_HASH}.extensions.allizom.org/sso"),
         ] {
-            assert!(c.redirect_allowed_for(&ok, DeviceKind::KemlockBrowser), "{ok}");
+            assert!(
+                c.redirect_allowed_for(&ok, DeviceKind::KemlockBrowser),
+                "{ok}"
+            );
         }
         // What every device may do, a browser device may too.
         assert!(c.redirect_allowed_for("kemlock://sso", DeviceKind::KemlockBrowser));
@@ -223,7 +233,9 @@ mod tests {
         }
         // A blank entry in the list matches no address.
         let blank = config().with_browser_extensions(&[String::new()]);
-        assert!(!blank.redirect_allowed_for("https://.chromiumapp.org/", DeviceKind::KemlockBrowser));
+        assert!(
+            !blank.redirect_allowed_for("https://.chromiumapp.org/", DeviceKind::KemlockBrowser)
+        );
     }
 
     #[test]

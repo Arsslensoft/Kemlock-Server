@@ -276,7 +276,10 @@ impl DeviceDto {
                         "deviceType is 2, 3 or 5 and goes with kind \"kemlock-browser\"",
                     )
                 })?;
-            if !name.to_ascii_lowercase().contains(&browser.to_ascii_lowercase()) {
+            if !name
+                .to_ascii_lowercase()
+                .contains(&browser.to_ascii_lowercase())
+            {
                 name = format!("{}, {browser}", name.trim_end());
             }
         }

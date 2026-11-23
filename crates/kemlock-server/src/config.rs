@@ -529,7 +529,12 @@ mod tests {
 
     #[test]
     fn no_browser_extension_is_allowed_by_default() {
-        assert!(config(&[], None).expect("valid").browser_extension_ids.is_empty());
+        assert!(
+            config(&[], None)
+                .expect("valid")
+                .browser_extension_ids
+                .is_empty()
+        );
         assert!(
             config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", "  ")], None)
                 .expect("valid")
@@ -578,8 +583,8 @@ mod tests {
             "*",
             long.as_str(),
         ] {
-            let error = config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", bad)], None)
-                .expect_err("refused");
+            let error =
+                config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", bad)], None).expect_err("refused");
             assert!(
                 error.to_string().contains("KEMLOCK_BROWSER_EXTENSION_IDS"),
                 "{bad}: {error}"

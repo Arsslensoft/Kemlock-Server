@@ -74,7 +74,10 @@ mod tests {
             assert_eq!(KeyProtection::parse(p.as_str()), Some(p));
         }
         assert_eq!(KeyProtection::parse("tpm"), None);
-        assert_eq!(KeyProtection::parse("browser"), Some(KeyProtection::Browser));
+        assert_eq!(
+            KeyProtection::parse("browser"),
+            Some(KeyProtection::Browser)
+        );
         assert_eq!(KeyProtection::Browser.as_str(), "browser");
         // The extension's key is not the web vault's.
         assert_ne!(KeyProtection::Browser, KeyProtection::WebCrypto);
