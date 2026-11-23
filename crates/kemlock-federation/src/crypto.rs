@@ -67,27 +67,34 @@ mod primitives {
         software::{exchange, signing},
     };
 
-    pub fn kem_generate() -> Result<(PrivateKey, PublicKey), Error> {
+    pub(super) fn kem_generate() -> Result<(PrivateKey, PublicKey), Error> {
         exchange::generate()
     }
 
-    pub fn kem_public(private: &PrivateKey) -> Result<PublicKey, Error> {
+    pub(super) fn kem_public(private: &PrivateKey) -> Result<PublicKey, Error> {
         exchange::public_key(private)
     }
 
-    pub fn kem_encapsulate(public: &PublicKey) -> Result<(Ciphertext, SharedSecret), Error> {
+    pub(super) fn kem_encapsulate(public: &PublicKey) -> Result<(Ciphertext, SharedSecret), Error> {
         exchange::encapsulate(public)
     }
 
-    pub fn kem_decapsulate(private: &PrivateKey, ciphertext: &[u8]) -> Result<SharedSecret, Error> {
+    pub(super) fn kem_decapsulate(
+        private: &PrivateKey,
+        ciphertext: &[u8],
+    ) -> Result<SharedSecret, Error> {
         exchange::decapsulate(private, ciphertext)
     }
 
-    pub fn sign_public(key: &sig1::SigningKey) -> Result<sig1::PublicKey, Error> {
+    pub(super) fn sign_public(key: &sig1::SigningKey) -> Result<sig1::PublicKey, Error> {
         signing::public_key(key)
     }
 
-    pub fn sign(key: &sig1::SigningKey, context: &str, message: &[u8]) -> Result<Vec<u8>, Error> {
+    pub(super) fn sign(
+        key: &sig1::SigningKey,
+        context: &str,
+        message: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         signing::sign(key, context, message)
     }
 }

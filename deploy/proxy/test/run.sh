@@ -37,7 +37,7 @@ case "$proxy" in
       -v "$dir/nginx/kemlock.conf":/etc/nginx/conf.d/default.conf:ro nginx:1 >/dev/null ;;
   haproxy)
     docker run -d --name "$net-proxy" --network "$net" --network-alias proxy \
-      -v "$dir/haproxy/haproxy.cfg":/usr/local/etc/haproxy/haproxy.cfg:ro haproxy:3 >/dev/null ;;
+      -v "$dir/haproxy/haproxy.cfg":/usr/local/etc/haproxy/haproxy.cfg:ro haproxy:3.2 >/dev/null ;;
   *) echo "unknown proxy: $proxy" >&2; exit 2 ;;
 esac
 

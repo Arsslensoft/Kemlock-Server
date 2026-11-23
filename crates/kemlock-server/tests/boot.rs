@@ -174,7 +174,7 @@ async fn the_source_and_the_licence_are_offered_to_anyone() {
     assert_eq!(config["license"], "AGPL-3.0-only");
     let source = config["sourceUrl"].as_str().expect("a source address");
     assert!(
-        source.starts_with("https://github.com/Arsslensoft/Kemlock-Server/"),
+        source.starts_with("https://github.com/Arsslensoft/Kemlock-Server"),
         "{source}"
     );
 

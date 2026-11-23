@@ -31,6 +31,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # cargo-fuzz builds for the triple it was itself built for, and install-action installs its musl
+  # binary, whose default target is x86_64-unknown-linux-musl: the sanitizers refuse a static libc
+  # and that target is not installed, so every build failed. Name the host triple.
+  FUZZ_TARGET: x86_64-unknown-linux-gnu
   # Seconds per target: 20 on a pull request, 5 minutes nightly, or what a manual run asks for.
   FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '20' || github.event.inputs.seconds || '300' }}
 
@@ -94,13 +98,19 @@ jobs:
             bash crates/${{ matrix.crate }}/fuzz/seed.sh
           fi
 
+      # A build that fails is a broken workflow or harness, not a crash a target found: build every
+      # target first, so the two read differently.
+      - name: Build every target
+        working-directory: crates/${{ matrix.crate }}
+        run: cargo +nightly fuzz build --target "$FUZZ_TARGET"
+
       - name: Run every target
         working-directory: crates/${{ matrix.crate }}
         run: |
           failed=0
           for target in $(cargo +nightly fuzz list); do
             echo "::group::$target ($FUZZ_SECONDS s)"
-            if ! cargo +nightly fuzz run "$target" -- \
+            if ! cargo +nightly fuzz run --target "$FUZZ_TARGET" "$target" -- \
               -max_total_time="$FUZZ_SECONDS" -rss_limit_mb=4096 -timeout=20; then
               echo "::error title=fuzz::${{ matrix.crate }} target $target found a crash"
               failed=1

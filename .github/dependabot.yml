@@ -18,6 +18,10 @@ updates:
       prefix: "chore(deps)"
     cooldown:
       default-days: 7
+    ignore:
+      # age 0.12 pulls a pre-release ml-kem whose kem crate clashes with ours (Cargo.toml).
+      - dependency-name: age
+        versions: [">=0.12"]
     groups:
       cargo-minor-patch:
         applies-to: version-updates
@@ -81,6 +85,10 @@ updates:
     directories:
       - /deploy/e2e
       - /tools/sso-gate
+    # Wait after a release before proposing it, as the other ecosystems do (zizmor
+    # dependabot-cooldown).
+    cooldown:
+      default-days: 7
     schedule:
       interval: weekly
       day: monday

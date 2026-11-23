@@ -47,6 +47,8 @@ env:
   CARGO_TERM_COLOR: always
   # What the apps' own tests ran on when their fixtures were made
   KEMLOCK_BW_FLUTTER: 3.47.7
+  # Its linux archive's sha256, from the release index
+  KEMLOCK_BW_FLUTTER_SHA256: af7455f540df951184c7953fbe3cf884766e7541dacf8571f9f582db03dd6230
   KEMLOCK_BW_CLI: 2026.6.0
 
 jobs:
@@ -99,15 +101,23 @@ jobs:
         with:
           name: kemlock-server
           path: bin
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          channel: stable
-          flutter-version: ${{ env.KEMLOCK_BW_FLUTTER }}
-          cache: true
+      # Flutter from its official release archive, checked against the sha256 the release index
+      # (storage.googleapis.com/flutter_infra_release/releases/releases_linux.json) lists. Not
+      # subosito/flutter-action: it calls actions/cache by tag, which this repository refuses.
+      - name: Install Flutter
+        run: |
+          set -euo pipefail
+          archive="flutter_linux_${KEMLOCK_BW_FLUTTER}-stable.tar.xz"
+          curl --fail --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/$archive" \
+            "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/$archive"
+          echo "$KEMLOCK_BW_FLUTTER_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar --extract --xz --file "$RUNNER_TEMP/$archive" --directory "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
+      - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}" # zizmor: ignore[adhoc-packages] the client under test, at the exact version in KEMLOCK_BW_CLI
       - run: sudo apt-get update && sudo apt-get install --yes socat
       - name: Start the server and https in front of it
         run: |
@@ -139,9 +149,17 @@ jobs:
     # address. The login-limit test needs the server's own default limits, so it runs alone against
     # a server started with them. `bw_a_` and `bw_c_` are two halves of a script that needs the CLI
     # between them (vault-tools/vwbw.sh); the CLI job below covers the CLI.
+    #
+    # The vault crates call ML-KEM-1024 through the openssl crate, which needs libcrypto 3.5 or
+    # later (PKey::private_key_from_seed). The runner has 3.0, so the job runs in the Fedora image
+    # Amethystora itself builds on, named by digest like its own pkg templates do.
     needs: server
     runs-on: ubuntu-24.04
+    container:
+      image: registry.fedoraproject.org/fedora-toolbox:45@sha256:e9fbbc53d58a88e2c931fe8e4a562e6d8cc2b680773bd7b4806d70797e9da7b1
     steps:
+      - name: Install the build tools
+        run: dnf --assumeyes install git cargo rust gcc openssl-devel pkgconf-pkg-config
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
@@ -154,11 +172,9 @@ jobs:
         with:
           name: kemlock-server
           path: bin
-      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: amethystora/apps
-      - run: sudo apt-get update && sudo apt-get install --yes libssl-dev pkg-config
       - name: Start the server on 127.0.0.1:8080
         run: |
           chmod +x bin/kemlock-server
@@ -186,7 +202,9 @@ jobs:
         run: cat "$RUNNER_TEMP"/kemlock-data*/server.log || true
 
   bitwarden-cli:
-    # The Bitwarden CLI 2026.6.0: login, sync, create, edit, delete
+    # The Bitwarden CLI 2026.6.0: login, sync, create, edit, delete. The CLI refuses http even on
+    # loopback ("Insecure URL not allowed"), so socat ends TLS in front of the server, and Node
+    # trusts the certificate that tls-front.sh made.
     needs: server
     runs-on: ubuntu-24.04
     steps:
@@ -200,15 +218,18 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
-      - name: Start the server on 127.0.0.1:8080
+      - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}" # zizmor: ignore[adhoc-packages] the client under test, at the exact version in KEMLOCK_BW_CLI
+      - run: sudo apt-get update && sudo apt-get install --yes socat
+      - name: Start the server and https in front of it
         run: |
           chmod +x bin/kemlock-server
           bash crates/kemlock-contract-tests/scripts/start-server.sh \
-            "$PWD/bin/kemlock-server" http://127.0.0.1:8080 8080 "$RUNNER_TEMP/kemlock-data"
+            "$PWD/bin/kemlock-server" https://localhost:8443 8080 "$RUNNER_TEMP/kemlock-data"
+          bash crates/kemlock-contract-tests/scripts/tls-front.sh "$RUNNER_TEMP/tls" 8443 8080
       - name: bw login, sync, create, edit, delete
         env:
-          SERVER_URL: http://127.0.0.1:8080
+          SERVER_URL: https://localhost:8443
+          NODE_EXTRA_CA_CERTS: ${{ runner.temp }}/tls/cert.pem
           BW_CLI: bw
         run: node crates/kemlock-contract-tests/scripts/bw-cli.mjs
       - name: The server's log
