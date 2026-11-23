@@ -113,7 +113,9 @@ the VPS column), SQLite, and `compare.mjs` checks it against main's last run:
 
 - a p95 more than 10% worse (sign-in, unchanged sync, the sync and put mix, delta 100, full
   sync, fan-out, cold start) fails the build;
-- a missed size or memory target (idle RSS, peak RSS under load, binary size) fails the build;
+- a missed size or memory target (idle RSS, peak RSS under load, binary size) is shown and listed,
+  not enforced: the pull request runs on a shared runner (`compare.mjs --advisory-targets`), and
+  the `rigs` job enforces them on the VPS;
 - an unchanged sync that does not answer 304, or a failed sign-in, fails the build.
 
 The absolute latency targets are enforced where they mean something: `ENFORCE=1` turns the k6

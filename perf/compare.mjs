@@ -1,12 +1,16 @@
 // Folds a run's result files into one summary, and compares a summary with main's last one.
 //
 //   node perf/compare.mjs --summarize perf/results > perf/results/summary.json
-//   node perf/compare.mjs perf/results/summary.json baseline/summary.json [--threshold 0.10]
+//   node perf/compare.mjs perf/results/summary.json baseline/summary.json [--threshold 0.10] [--advisory-targets]
 //
 // The CI rule (design, Performance targets): a p95 more than 10% worse than main's last run on the
 // same runner type, or a missed size or memory target, fails the build. Memory and size targets
 // are absolute; latencies are relative here (the absolute latency targets are enforced by the
-// k6 thresholds when ENFORCE=1, on the Pi and the VPS).
+// k6 thresholds when ENFORCE=1, on the VPS).
+//
+// --advisory-targets is for the pull request run on a shared runner, which is not the VPS the
+// size and memory targets are set for: a missed target is shown in the table and listed in the
+// summary, and does not fail the run. The `rigs` job runs without it.
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -68,10 +72,11 @@ const RELATIVE = [
   'fullsync_p95_ms', 'fullsync_first_byte_p95_ms', 'nudge_p95_ms', 'cold_start_ms',
 ];
 
-function compare(currentFile, baselineFile, threshold) {
+function compare(currentFile, baselineFile, threshold, advisoryTargets = false) {
   const current = JSON.parse(readFileSync(currentFile, 'utf8'));
   const baseline = baselineFile && existsSync(baselineFile) ? JSON.parse(readFileSync(baselineFile, 'utf8')) : null;
   const failures = [];
+  const advisories = [];
   const rows = [];
 
   const limits = ABSOLUTE[current.rig] ?? ABSOLUTE.vps;
@@ -79,8 +84,8 @@ function compare(currentFile, baselineFile, threshold) {
     const value = current.metrics[key];
     if (value === undefined) continue;
     const ok = value <= max;
-    rows.push([key, value, `<= ${max}`, ok ? 'ok' : 'MISSED']);
-    if (!ok) failures.push(`${key} is ${value}, the target is ${max}`);
+    rows.push([key, value, `<= ${max}`, ok ? 'ok' : advisoryTargets ? 'MISSED (advisory)' : 'MISSED']);
+    if (!ok) (advisoryTargets ? advisories : failures).push(`${key} is ${value}, the target is ${max}`);
   }
   if ((current.metrics.sync0_not_304 ?? 0) > 0) {
     failures.push(`${current.metrics.sync0_not_304} unchanged syncs did not answer 304`);
@@ -108,8 +113,9 @@ function compare(currentFile, baselineFile, threshold) {
     `|---|---|---|---|`,
     ...rows.map((r) => `| ${r.join(' | ')} |`),
   ].join('\n');
-  const verdict = failures.length === 0 ? 'No target missed and no p95 worse than the threshold.' : failures.map((f) => `- ${f}`).join('\n');
-  const report = `### Performance (${current.rig}, ${current.profile})\n\n${table}\n\n${verdict}\n${baseline ? '' : '\nNo baseline from main yet: relative checks were skipped.\n'}`;
+  const verdict = failures.length === 0 ? 'Nothing enforced here failed.' : failures.map((f) => `- ${f}`).join('\n');
+  const advisory = advisories.length === 0 ? '' : `\nTargets missed, shown and not enforced on this runner:\n${advisories.map((f) => `- ${f}`).join('\n')}\n`;
+  const report = `### Performance (${current.rig}, ${current.profile})\n\n${table}\n\n${verdict}\n${advisory}${baseline ? '' : '\nNo baseline from main yet: relative checks were skipped.\n'}`;
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`);
   return failures.length === 0 ? 0 : 1;
@@ -126,5 +132,5 @@ if (args[0] === '--summarize') {
     console.error('usage: compare.mjs <summary.json> [baseline summary.json] [--threshold 0.10]');
     process.exit(2);
   }
-  process.exit(compare(files[0], files[1], threshold));
+  process.exit(compare(files[0], files[1], threshold, args.includes('--advisory-targets')));
 }

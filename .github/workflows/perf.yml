@@ -2,10 +2,11 @@ name: perf
 
 # Design, Performance targets, Harness:
 #   - every pull request runs a short suite on CI's amd64 runner and compares it with main's last
-#     run: a p95 more than 10% worse, or a missed size or memory target, fails the build;
-#   - the full suite runs nightly and before each release on the self-hosted VPS, and a
-#     missed target blocks the release. That rig does not exist yet: the `rigs` job runs only when
-#     the repository variable PERF_RIGS is "true".
+#     run: a p95 more than 10% worse fails the build. The size and memory targets are reported
+#     there, not enforced: a shared runner is not the VPS they are set for;
+#   - the full suite, with every target enforced, runs nightly and on demand (workflow_dispatch,
+#     before a release) on the self-hosted VPS. Never on a push or a pull request: that rig does
+#     not exist yet, so the `rigs` job is skipped unless the repository variable PERF_RIGS is "true".
 
 on:
   pull_request:
@@ -60,8 +61,8 @@ jobs:
           restore-keys: perf-baseline-${{ matrix.arch }}-
       - name: Run the short suite
         run: perf/run.sh --profile ci --rig ${{ matrix.rig }}
-      - name: Compare with main (fails at more than 10% worse, or a missed size or memory target)
-        run: node perf/compare.mjs perf/results/summary.json perf/baseline/summary.json --threshold 0.10
+      - name: Compare with main (fails at more than 10% worse; size and memory targets are shown only)
+        run: node perf/compare.mjs perf/results/summary.json perf/baseline/summary.json --threshold 0.10 --advisory-targets
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -79,7 +80,7 @@ jobs:
 
   # The full suite, with the design's absolute targets enforced, on the real rigs.
   rigs:
-    if: vars.PERF_RIGS == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag')
+    if: vars.PERF_RIGS == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     strategy:
       fail-fast: false
       matrix:
