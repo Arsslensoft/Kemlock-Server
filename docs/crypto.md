@@ -126,7 +126,7 @@ Only the device that made it ever opens it: the server stores it as an opaque bl
 client reads it. So its inner format belongs to each platform, as long as:
 
 - the blob starts with `u8(1)` and a platform byte (`0x01` Secure Enclave, `0x02` Android Keystore,
-  `0x03` WebCrypto), so a device can tell its own format from another version's;
+  `0x03` WebCrypto, `0x04` a browser extension's WebCrypto key), so a device can tell its own format from another version's;
 - the wrapping key is non-extractable and never leaves the device's key store;
 - where the platform's AEAD takes associated data, it is
   `"kemlock/v1/root-wrap/device" ‖ account id (16) ‖ device id (16) ‖ u32be(key version)`.
@@ -135,6 +135,12 @@ For WebCrypto (`0x03`) it is pinned as `u8(1) ‖ u8(3) ‖ AES-256-GCM(non-extr
 nonce, root key, that aad)`, with the AES-GCM output as `nonce(12) ‖ ciphertext ‖ tag(16)` and the
 `aad` as given above. The web vault keeps that key in IndexedDB as a key object, in the crypto
 worker, which is also the only place the root key is ever in JavaScript for this copy.
+
+The Kemlock browser extension's copy (`0x04`, protection `browser`) has the same layout as
+WebCrypto's, with `0x04` as the platform byte, so the
+web vault never opens the extension's copy and the extension never opens the web vault's. Its
+wrapping key is a non-extractable key kept in the extension's IndexedDB, which pages and content
+scripts can't read.
 
 ### Keys of an account that has no password
 
