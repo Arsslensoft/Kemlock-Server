@@ -5,7 +5,7 @@ import { CopyButton } from '@/ui/CopyButton';
 import { Notice } from '@/ui/Notice';
 import '@/styles/account.css';
 import { timeAgo } from '../vault/kinds';
-import { type ApprovalRow, isKemlockApp } from './devicesModel';
+import { type ApprovalRow, deviceKindLabelId, isKemlockApp } from './devicesModel';
 import type { Described } from './errors';
 
 export interface DevicesViewProps {
@@ -156,6 +156,7 @@ export function DevicesView({
               <Tile kemlock={isKemlockApp(device.kind)}>{(device.name[0] ?? '?').toUpperCase()}</Tile>
               <div className="grow">
                 <div>{device.name}</div>
+                <div className="hint">{t(deviceKindLabelId(device.kind))}</div>
                 <div className="hint">
                   {device.lastSeenAt
                     ? t('devices.lastSync', { ago: timeAgo(device.lastSeenAt, now) })
