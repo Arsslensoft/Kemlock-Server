@@ -26,9 +26,9 @@ export function integrityPlugin(): Plugin {
         } catch {
           return; // not an HTML build
         }
-        const stamped = html.replace(/<(?:script|link)\b[^>]*>/g, (tag) => {
+        const stamped = html.replace(/<(?:script|link)\b[^>]*>/gi, (tag) => {
           if (tag.includes(' integrity=')) return tag;
-          const file = /\b(?:src|href)="\/?([^"]+)"/.exec(tag)?.[1];
+          const file = /\b(?:src|href)="\/?([^"]+)"/i.exec(tag)?.[1];
           if (!file?.startsWith('assets/')) return tag;
           const digest = createHash('sha384').update(readFileSync(join(dir, file))).digest('base64');
           return tag.replace(/\s*\/?>$/, (end) => ` integrity="sha384-${digest}"${end}`);
