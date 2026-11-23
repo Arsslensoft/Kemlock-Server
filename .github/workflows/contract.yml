@@ -47,6 +47,8 @@ env:
   CARGO_TERM_COLOR: always
   # What the apps' own tests ran on when their fixtures were made
   KEMLOCK_BW_FLUTTER: 3.47.7
+  # Its linux archive's sha256, from the release index
+  KEMLOCK_BW_FLUTTER_SHA256: af7455f540df951184c7953fbe3cf884766e7541dacf8571f9f582db03dd6230
   KEMLOCK_BW_CLI: 2026.6.0
 
 jobs:
@@ -99,13 +101,19 @@ jobs:
         with:
           name: kemlock-server
           path: bin
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
-        with:
-          channel: stable
-          flutter-version: ${{ env.KEMLOCK_BW_FLUTTER }}
-          # No cache: with cache: true the action calls actions/cache by tag, which this repository
-          # refuses (every action must be pinned to a commit).
-          cache: false
+      # Flutter from its official release archive, checked against the sha256 the release index
+      # (storage.googleapis.com/flutter_infra_release/releases/releases_linux.json) lists. Not
+      # subosito/flutter-action: it calls actions/cache by tag, which this repository refuses.
+      - name: Install Flutter
+        run: |
+          set -euo pipefail
+          archive="flutter_linux_${KEMLOCK_BW_FLUTTER}-stable.tar.xz"
+          curl --fail --silent --show-error --location --retry 3 --output "$RUNNER_TEMP/$archive" \
+            "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/$archive"
+          echo "$KEMLOCK_BW_FLUTTER_SHA256  $RUNNER_TEMP/$archive" | sha256sum --check --strict
+          tar --extract --xz --file "$RUNNER_TEMP/$archive" --directory "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/flutter/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter/bin/flutter" --version
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
