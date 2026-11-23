@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.18
 #
-# Kemlock Server: one static musl binary per architecture on a distroless static base.
+# Kemlock Server: one static musl binary per architecture on a scratch base.
 #
 #   docker buildx build -f docker/Dockerfile --platform linux/amd64,linux/arm64 -t kemlock-server .
 #   docker buildx build -f docker/Dockerfile --target binaries --output type=local,dest=out .
@@ -20,7 +20,8 @@
 
 ARG RUST_IMAGE=rust:1.100.0-bookworm@sha256:ade39a710ef85f3506cffcfec3e8a24ba090badef1dff2fb798f71d878833fea
 ARG NODE_IMAGE=node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
-ARG RUNTIME_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
+# Only a source of files for the runtime root filesystem, never a base: see the `rootfs` stage.
+ARG ROOTFS_SOURCE_IMAGE=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 
 # ---------------------------------------------------------------------------------------------
 # The two WebAssembly modules the web vault loads (web/scripts/build-wasm.sh): wasm-pack and
@@ -146,9 +147,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     if [ -f "/src/${WEB_DIST_DIR}/index.html" ]; then features="--features kemlock-server/web"; fi; \
     cargo zigbuild --release --locked --target "${rust_target}" -p kemlock-server -p kemlock-cli ${features}; \
     mkdir -p /out; \
-    cp "/cache/target/${rust_target}/release/kemlock-server" "/cache/target/${rust_target}/release/kemlock-cli" /out/; \
-    # An empty /data to copy into the final image with the right owner: distroless has no shell.
-    mkdir -p /rootfs/data
+    cp "/cache/target/${rust_target}/release/kemlock-server" "/cache/target/${rust_target}/release/kemlock-cli" /out/;
 
 # `--target binaries` writes just the executables, one folder per platform: what the release
 # archives and tools/verify.sh use, built by the same stage as the image.
@@ -172,15 +171,44 @@ RUN set -eu; \
     cp LICENSE NOTICE THIRD-PARTY-NOTICES.txt /out/
 
 # ---------------------------------------------------------------------------------------------
-# What every image shares. Distroless static is scratch plus CA roots, tzdata and a nonroot user
-# (65532).
+# The root filesystem every image starts from, the same for all eight platforms. The base is
+# `scratch`, not distroless static: distroless publishes no 386, arm/v6 or riscv64 image, so a
+# build for those fails with "no match for platform in manifest". The binary is static musl, so it
+# needs only what distroless static adds to an empty image and the server uses:
+#   - the CA bundle (/etc/ssl/certs/ca-certificates.crt): reqwest verifies TLS (OIDC providers,
+#     webhooks, federation, SMTP) with the platform verifier, which reads the system roots;
+#   - /etc/passwd and /etc/group with the nonroot user (65532), so the user and its home resolve;
+#   - /tmp, mode 1777, and /home/nonroot, for what expects them under a read-only root;
+#   - /data, owned by 65532, which a new named volume copies its owner from.
+# The three files are copied from the digest-pinned distroless static image, so they are what it
+# ships. They are the same for every architecture, so they are read from the build host's variant
+# of that image and nothing runs under QEMU. Left out: tzdata (nothing in the server reads the
+# local time zone) and /etc/nsswitch.conf (musl does not read it).
 # ---------------------------------------------------------------------------------------------
-FROM ${RUNTIME_IMAGE} AS base
+FROM --platform=$BUILDPLATFORM ${ROOTFS_SOURCE_IMAGE} AS distroless
+
+FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS rootfs
+ARG SOURCE_DATE_EPOCH=0
+COPY --from=distroless /etc/ssl/certs/ca-certificates.crt /rootfs/etc/ssl/certs/ca-certificates.crt
+COPY --from=distroless /etc/passwd /etc/group /rootfs/etc/
+RUN set -eu; \
+    test -s /rootfs/etc/ssl/certs/ca-certificates.crt; \
+    grep -q '^nonroot:x:65532:65532:' /rootfs/etc/passwd; \
+    mkdir -p /rootfs/tmp /rootfs/home/nonroot /rootfs/data; \
+    chmod 1777 /rootfs/tmp; \
+    chmod 0700 /rootfs/home/nonroot; \
+    chown 65532:65532 /rootfs/home/nonroot /rootfs/data; \
+    find /rootfs -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
+# ---------------------------------------------------------------------------------------------
+# What every image shares.
+# ---------------------------------------------------------------------------------------------
+FROM scratch AS base
+COPY --from=rootfs /rootfs/ /
 LABEL org.opencontainers.image.title="Kemlock Server" \
       org.opencontainers.image.description="Self-hosted vault server for Kemlock, Amethystora Vault and Bitwarden apps" \
       org.opencontainers.image.source="https://github.com/arsslensoft/kemlock-server" \
       org.opencontainers.image.licenses="AGPL-3.0-only"
-COPY --from=build --chown=65532:65532 /rootfs/data /data
 # The licence texts the binary and the web vault require to travel with them.
 COPY --from=notices /out/ /usr/share/doc/kemlock-server/
 # Everything the server writes is under /data (database, server.key, attachments, backups), so
