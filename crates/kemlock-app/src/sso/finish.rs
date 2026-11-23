@@ -28,7 +28,7 @@ use crate::sso::ports::{
 };
 use crate::sso::rules::map_groups;
 use crate::sso::state::{PURPOSE_CODE, SsoCode, open_value};
-use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
+use kemlock_domain::{AccountMode, DeviceKind, Email, KdfParams, Role, User, UserId};
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 
@@ -108,6 +108,11 @@ where
         }
         let challenge = b64url::encode(&self.sessions.env.sha256(input.verifier.as_bytes()));
         if !constant_time_eq(&challenge, &code.app_challenge) {
+            return Err(SsoError::Unauthorized);
+        }
+        // A sign-in that began as the browser extension's ends as its device, with the kind it
+        // began with: the redirect it was allowed is not for any other.
+        if code.browser && input.device.kind != DeviceKind::KemlockBrowser {
             return Err(SsoError::Unauthorized);
         }
 

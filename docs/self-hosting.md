@@ -28,7 +28,8 @@ TrueNAS).
 Set `DOMAIN` to the address clients use, for example `https://vault.example.com`. Sign-in proofs
 are checked against it. Settings use Vaultwarden's names (`DOMAIN`, `DATABASE_URL`,
 `SIGNUPS_ALLOWED`, `DATA_FOLDER`, `LOG_LEVEL`, `ROCKET_ADDRESS`, `ROCKET_PORT`, `IP_HEADER`), plus
-`KEMLOCK_TRUSTED_PROXIES`, `KEMLOCK_LOG_FORMAT` and `KEMLOCK_SERVER_KEY`. A Vaultwarden setting
+`KEMLOCK_TRUSTED_PROXIES`, `KEMLOCK_LOG_FORMAT`, `KEMLOCK_BROWSER_EXTENSION_IDS` (see below) and
+`KEMLOCK_SERVER_KEY`. A Vaultwarden setting
 Kemlock has no use for, such as `ADMIN_TOKEN`, is logged once as ignored.
 
 The web vault and `/kem/v1/config` offer every user the source of the version running, and anyone
@@ -49,6 +50,24 @@ and `EMAIL_ATTEMPTS_LIMIT` as in Vaultwarden). YubiKeys need `YUBICO_CLIENT_ID` 
 Duo keys of its own uses `DUO_HOST`, `DUO_IKEY` and `DUO_SKEY`. These are read from the environment
 and then from `config.json` in the data folder, so a Vaultwarden data folder that was configured in
 its admin page carries them over.
+
+### Browser extension sign-in (`KEMLOCK_BROWSER_EXTENSION_IDS`)
+
+Single sign-on for the Kemlock browser extension ends at the extension's own address, which only
+that extension can read: Chrome and Edge give it `https://<extension id>.chromiumapp.org/`, Firefox
+`https://<hash>.extensions.allizom.org/`. The server hands a sign-in code to that address only for
+an extension you name, because any other installed extension could otherwise read the code. Set
+`KEMLOCK_BROWSER_EXTENSION_IDS` (or `browser_extension_ids` in `kemlock.toml`) to the
+comma-separated ids of the extensions your people use, for example
+`KEMLOCK_BROWSER_EXTENSION_IDS=abcdefghijklmnopabcdefghijklmnop,0123456789abcdef0123456789abcdef01234567`:
+a Chrome or Edge extension's id, and for Firefox the hash its redirect address starts with. It is empty by default, so no extension
+may until you set it. Letters and digits only; the server refuses to start on anything else.
+
+An address is accepted only when it is exactly `https://<id>.chromiumapp.org/` or
+`https://<hash>.extensions.allizom.org/` with the path `/` or `/sso`, the id is on the list, and
+the sign-in began as a `kemlock-browser` device, which `finish` then requires too. The setting is
+read at start and is not in the admin console. Sign-in with a passkey or a security key from the
+extension runs on the server's own page, `/kem/v1/webauthn`, which needs no setting.
 
 ## Mail, push and live sync
 

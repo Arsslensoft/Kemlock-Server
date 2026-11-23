@@ -147,6 +147,7 @@ impl App {
             },
             trusted_proxies,
             ip_header: None,
+            browser_extension_ids: Vec::new(),
         };
         let secrets = ApiSecrets {
             prelogin: [9u8; 32],

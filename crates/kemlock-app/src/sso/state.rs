@@ -32,6 +32,10 @@ pub(crate) struct SsoState {
     pub(crate) redirect: String,
     /// The thumbprint of the DPoP key that signed `start`.
     pub(crate) jkt: String,
+    /// `start` said the device is the Kemlock browser extension: its redirect may be an
+    /// extension's, and `finish` must see that kind of device.
+    #[serde(default)]
+    pub(crate) browser: bool,
 }
 
 /// What `finish` needs, from the callback.
@@ -45,6 +49,9 @@ pub(crate) struct SsoCode {
     pub(crate) nonce: String,
     pub(crate) app_challenge: String,
     pub(crate) jkt: String,
+    /// Carried from `SsoState::browser`.
+    #[serde(default)]
+    pub(crate) browser: bool,
 }
 
 /// Seals `value` and encodes it as unpadded base64url, for a URL.
@@ -111,6 +118,7 @@ mod tests {
             app_state: "s".into(),
             redirect: "kemlock://sso".into(),
             jkt: "j".into(),
+            browser: false,
         }
     }
 

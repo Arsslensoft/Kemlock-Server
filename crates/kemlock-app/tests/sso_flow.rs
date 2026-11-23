@@ -13,7 +13,7 @@ use kemlock_app::sso::{
     SsoError, SsoFinish, SsoLogout, SsoSettings, SsoSignedIn, SsoStart, StartInput,
 };
 use kemlock_app::{AppError, SecondStepInput, SignedIn, b64url};
-use kemlock_domain::{Email, SpaceId, User, UserId};
+use kemlock_domain::{DeviceKind, Email, SpaceId, User, UserId};
 use sso_fakes::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -139,6 +139,7 @@ impl Sso {
             app_state: APP_STATE.to_owned(),
             redirect: "kemlock://sso".to_owned(),
             jkt: JKT.to_owned(),
+            device_kind: DeviceKind::Other,
         }
     }
 
