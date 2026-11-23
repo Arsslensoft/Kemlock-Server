@@ -57,7 +57,7 @@ sha1 = "0.11.0"
 getrandom = "0.4.3"
 # opaque-ke 4 is built on rand_core 0.6 and digest 0.10, so these two old lines stay beside the new ones.
 rand_core_06 = { package = "rand_core", version = "0.6.4" }
-rand_chacha = "0.3.1"
+rand_chacha = "0.10.0"
 sha2-opaque = { package = "sha2", version = "0.10.9" }
 
 # Store
