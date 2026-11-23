@@ -1,0 +1,26 @@
+# Advisories OSV (and OpenSSF Scorecard, which reads this file) reports that do not affect Kemlock
+# Server. The same ids, with the same reasons, are in .cargo/audit.toml and deny.toml.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2023-0071"
+reason = "rsa Marvin attack: the server only verifies RSA signatures (openidconnect, webauthn); pgp decrypts client-side on the user's own file. No fixed rsa reaches these crates."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0387"
+reason = "crypto-bigint 0.5 timing: reached only through pgp in the client-side importer; pgp 0.21.1 is the newest release."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0374"
+reason = "basic-toml unmaintained; no fixed release and no known vulnerability."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0543"
+reason = "chrono unmaintained; no fixed release and no known vulnerability."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0542"
+reason = "humantime unmaintained; no fixed release and no known vulnerability."
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0173"
+reason = "proc-macro-error2 unmaintained; no fixed release and no known vulnerability."
