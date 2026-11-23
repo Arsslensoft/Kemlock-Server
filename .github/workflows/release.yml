@@ -695,12 +695,18 @@ jobs:
             case "$f" in *.sigstore.json) continue ;; esac
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
-      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
-        with:
-          files: dist/*
-          body_path: notes/RELEASE_NOTES.md
-          generate_release_notes: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+      # The runner has the GitHub CLI; an action for this would be one more thing with write access
+      # to the release.
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          flags=(--verify-tag --notes-file notes/RELEASE_NOTES.md)
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" dist/* "${flags[@]}"
 
   # SLSA Build L3 provenance for the files in SHA256SUMS; it attaches itself to the release.
   provenance-binaries:
