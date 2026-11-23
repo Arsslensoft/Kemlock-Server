@@ -38,16 +38,27 @@ variables
 color
 catch_errors
 
-# The release archive for this machine: kemlock-<version>-<target>.tar.gz (see release.yml).
-kemlock_asset() {
-  case "$(uname -m)" in
-  x86_64 | amd64) echo "kemlock-*-x86_64-unknown-linux-musl.tar.gz" ;;
-  aarch64 | arm64) echo "kemlock-*-aarch64-unknown-linux-musl.tar.gz" ;;
-  *)
-    msg_error "No ${APP} release binary for $(uname -m)"
+# Downloads the latest release and checks its SHA-256 against that release's SHA256SUMS, with the
+# helper the install script wrote (kemlock-fetch-release). Nothing is stopped or replaced until it
+# passes; if it fails, the running version stays.
+kemlock_stage_release() {
+  KEMLOCK_STAGE="$(mktemp -d)"
+  msg_info "Downloading and verifying the release"
+  if ! KEMLOCK_VERSION="$(/usr/local/bin/kemlock-fetch-release "$KEMLOCK_STAGE")"; then
+    rm -rf "$KEMLOCK_STAGE"
+    msg_error "The release could not be downloaded or did not match SHA256SUMS; the running version is unchanged"
     exit 1
-    ;;
-  esac
+  fi
+  msg_ok "Verified ${APP} ${KEMLOCK_VERSION} (SHA-256 checked)"
+}
+
+# With the service stopped: puts the verified binaries in place.
+kemlock_swap_binaries() {
+  install -m 0755 "$KEMLOCK_STAGE/kemlock-server" /opt/kemlock-server/bin/kemlock-server
+  install -m 0755 "$KEMLOCK_STAGE/kemlock-cli" /opt/kemlock-server/bin/kemlock-cli
+  rm -rf "$KEMLOCK_STAGE"
+  # check_for_gh_release compares against this file.
+  echo "$KEMLOCK_VERSION" >"$HOME/.kemlock-server"
 }
 
 update_deb_based() {
@@ -57,17 +68,15 @@ update_deb_based() {
   fi
 
   if check_for_gh_release "kemlock-server" "Arsslensoft/Kemlock-Server"; then
+    kemlock_stage_release
+
     msg_info "Stopping Service"
     systemctl stop kemlock-server
     msg_ok "Stopped Service"
 
-    if ! fetch_and_deploy_gh_release "kemlock-server" "Arsslensoft/Kemlock-Server" "prebuild" "latest" "/opt/kemlock-server/bin" "$(kemlock_asset)"; then
-      systemctl start kemlock-server
-      msg_error "Update failed, the previous version is still installed"
-      exit 1
-    fi
-    chown -R root:root /opt/kemlock-server/bin
-    chmod 0755 /opt/kemlock-server/bin/kemlock-server
+    msg_info "Updating ${APP} to ${KEMLOCK_VERSION}"
+    kemlock_swap_binaries
+    msg_ok "Updated ${APP} to ${KEMLOCK_VERSION}"
 
     msg_info "Starting Service"
     systemctl start kemlock-server
@@ -91,17 +100,15 @@ update_alpine() {
   fi
 
   if check_for_gh_release "kemlock-server" "Arsslensoft/Kemlock-Server"; then
+    kemlock_stage_release
+
     msg_info "Stopping Service"
     rc-service kemlock-server stop -q
     msg_ok "Stopped Service"
 
-    if ! fetch_and_deploy_gh_release "kemlock-server" "Arsslensoft/Kemlock-Server" "prebuild" "latest" "/opt/kemlock-server/bin" "$(kemlock_asset)"; then
-      rc-service kemlock-server start -q
-      msg_error "Update failed, the previous version is still installed"
-      exit 1
-    fi
-    chown -R root:root /opt/kemlock-server/bin
-    chmod 0755 /opt/kemlock-server/bin/kemlock-server
+    msg_info "Updating ${APP} to ${KEMLOCK_VERSION}"
+    kemlock_swap_binaries
+    msg_ok "Updated ${APP} to ${KEMLOCK_VERSION}"
 
     msg_info "Starting Service"
     rc-service kemlock-server start -q

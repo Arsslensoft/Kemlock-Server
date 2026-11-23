@@ -29,57 +29,81 @@ container_ip() {
   echo "$ip"
 }
 
-# Downloads the latest release for this machine, checks it against SHA256SUMS and puts
-# kemlock-server and kemlock-cli in /opt/kemlock-server/bin. The release assets are
-# kemlock-<version>-<target>.tar.gz and SHA256SUMS (.github/workflows/release.yml), each with a
-# cosign bundle (<file>.sigstore.json). The cosign signature is not checked here: cosign is in no
-# Debian 13 package, and verifying needs network access to Sigstore. docs/self-hosting.md has the
-# command for checking it by hand.
+# Writes /usr/local/bin/kemlock-fetch-release, which the install below and the update script
+# (ct/kemlock-server.sh) both use, so a release is verified the same way each time: it downloads the
+# latest release archive for this machine and SHA256SUMS, checks the SHA-256, unpacks into the
+# directory it is given and prints the version. It exits non-zero, touching nothing else, if
+# anything fails. The release assets are kemlock-<version>-<target>.tar.gz and SHA256SUMS
+# (.github/workflows/release.yml), each with a cosign bundle (<file>.sigstore.json). The cosign
+# signature is not checked: cosign is in no Debian 13 package, and verifying needs network access
+# to Sigstore. docs/self-hosting.md has the command for checking it by hand.
+write_fetch_helper() {
+  cat <<'EOT' >/usr/local/bin/kemlock-fetch-release
+#!/bin/sh
+# Usage: kemlock-fetch-release STAGE_DIR   (prints the version; Kemlock Server's release verifier)
+set -eu
+REPO="Arsslensoft/Kemlock-Server"
+stage="${1:?usage: kemlock-fetch-release STAGE_DIR}"
+case "$(uname -m)" in
+x86_64 | amd64) target="x86_64-unknown-linux-musl" ;;
+aarch64 | arm64) target="aarch64-unknown-linux-musl" ;;
+*)
+  echo "no Kemlock Server release binary for $(uname -m)" >&2
+  exit 1
+  ;;
+esac
+# /releases/latest redirects to /releases/tag/<tag>; that needs no API call, so no rate limit.
+tag="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
+tag="${tag##*/}"
+case "$tag" in
+v[0-9]*.[0-9]*.[0-9]* | [0-9]*.[0-9]*.[0-9]*) ;;
+*)
+  echo "no release of ${REPO} found" >&2
+  exit 1
+  ;;
+esac
+version="${tag#v}"
+asset="kemlock-${version}-${target}.tar.gz"
+base="https://github.com/${REPO}/releases/download/${tag}"
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL -o "${tmp}/${asset}" "${base}/${asset}"
+curl -fsSL -o "${tmp}/SHA256SUMS" "${base}/SHA256SUMS"
+expected="$(awk -v a="$asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/SHA256SUMS")"
+actual="$(sha256sum "${tmp}/${asset}" | awk '{print $1}')"
+if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+  echo "SHA-256 of ${asset} does not match SHA256SUMS" >&2
+  exit 1
+fi
+mkdir -p "${tmp}/unpacked"
+tar -xzf "${tmp}/${asset}" -C "${tmp}/unpacked"
+cp -R "${tmp}"/unpacked/kemlock-*/. "$stage"/
+echo "$version"
+EOT
+  chmod 0755 /usr/local/bin/kemlock-fetch-release
+}
+
 install_release() {
-  local target tag version asset base tmp expected actual f
-  case "$(uname -m)" in
-  x86_64 | amd64) target="x86_64-unknown-linux-musl" ;;
-  aarch64 | arm64) target="aarch64-unknown-linux-musl" ;;
-  *)
-    msg_error "No Kemlock Server release binary for $(uname -m)"
-    exit 1
-    ;;
-  esac
-
+  local stage version f
+  write_fetch_helper
   msg_info "Downloading Kemlock Server"
-  # /releases/latest redirects to /releases/tag/<tag>; it needs no API call, so no rate limit.
-  tag="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/${REPO}/releases/latest")"
-  tag="${tag##*/}"
-  if [[ ! "$tag" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-    msg_error "No release of ${REPO} found"
-    exit 1
-  fi
-  version="${tag#v}"
-  asset="kemlock-${version}-${target}.tar.gz"
-  base="https://github.com/${REPO}/releases/download/${tag}"
-  tmp="$(mktemp -d)"
-  curl -fsSL -o "${tmp}/${asset}" "${base}/${asset}"
-  curl -fsSL -o "${tmp}/SHA256SUMS" "${base}/SHA256SUMS"
-
-  expected="$(awk -v a="$asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/SHA256SUMS")"
-  actual="$(sha256sum "${tmp}/${asset}" | awk '{print $1}')"
-  if [[ -z "$expected" || "$expected" != "$actual" ]]; then
-    rm -rf "$tmp"
-    msg_error "SHA-256 of ${asset} does not match SHA256SUMS"
+  stage="$(mktemp -d)"
+  if ! version="$(/usr/local/bin/kemlock-fetch-release "$stage")"; then
+    rm -rf "$stage"
+    msg_error "Could not download and verify Kemlock Server"
     exit 1
   fi
   msg_ok "Downloaded Kemlock Server ${version} (SHA-256 checked)"
 
   msg_info "Installing Kemlock Server"
-  tar -xzf "${tmp}/${asset}" -C "$tmp"
   install -d -m 0755 "${APP_DIR}/bin"
-  install -m 0755 "${tmp}"/kemlock-*/kemlock-server "${APP_DIR}/bin/kemlock-server"
-  install -m 0755 "${tmp}"/kemlock-*/kemlock-cli "${APP_DIR}/bin/kemlock-cli"
+  install -m 0755 "${stage}/kemlock-server" "${APP_DIR}/bin/kemlock-server"
+  install -m 0755 "${stage}/kemlock-cli" "${APP_DIR}/bin/kemlock-cli"
   install -d -m 0755 /usr/share/doc/kemlock-server
   for f in LICENSE NOTICE THIRD-PARTY-NOTICES.txt; do
-    [[ ! -f "${tmp}"/kemlock-*/"$f" ]] || install -m 0644 "${tmp}"/kemlock-*/"$f" /usr/share/doc/kemlock-server/
+    [[ ! -f "${stage}/$f" ]] || install -m 0644 "${stage}/$f" /usr/share/doc/kemlock-server/
   done
-  rm -rf "$tmp"
+  rm -rf "$stage"
   # check_for_gh_release in the update script compares against this file.
   echo "$version" >"$HOME/.kemlock-server"
   msg_ok "Installed Kemlock Server ${version}"

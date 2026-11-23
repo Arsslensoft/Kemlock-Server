@@ -95,10 +95,11 @@ The code is valid until the server restarts; a restart before setup makes a new 
 ## Update
 
 Type `update` in the container's console. The update script checks the latest release against
-`~/.kemlock-server`, stops the service, deploys the new binary with community-scripts'
-`fetch_and_deploy_gh_release` into `/opt/kemlock-server/bin`, starts the service, and upgrades
-Caddy. The data is not touched, and the server copies its SQLite file before a migration. Note that
-the helper downloads over HTTPS from GitHub but does not check `SHA256SUMS`; the first install does.
+`~/.kemlock-server`, downloads the release archive and `SHA256SUMS` with `kemlock-fetch-release`
+(the helper the install script writes to `/usr/local/bin`, the same one the install uses), and checks
+the SHA-256. Only then does it stop the service, replace the binaries, start the service and upgrade
+Caddy. If the check fails, nothing is touched and the running version stays. The data is not
+touched, and the server copies its SQLite file before a migration.
 
 ## Submitting it upstream
 
