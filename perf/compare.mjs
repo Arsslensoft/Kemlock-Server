@@ -60,7 +60,6 @@ function summarize(dir) {
 
 // Absolute size and memory targets, by rig (the design's table). Always enforced.
 const ABSOLUTE = {
-  pi: { idle_rss_mib: 20, load_peak_rss_mib: 64, binary_mib: 25 },
   vps: { idle_rss_mib: 28, load_peak_rss_mib: 160, binary_mib: 25 },
 };
 // Relative: these may not be more than the threshold worse than the baseline.

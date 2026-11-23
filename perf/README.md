@@ -14,7 +14,7 @@ neither can: OPAQUE sign-ins, and the DPoP proofs every authenticated request ca
 | `k6/standard.js` | The standard load: 14 delta syncs a second, 4 puts a second, 200 WebSockets (x10 on the VPS) |
 | `k6/delta100.js` | Delta sync with 100 changed items, zstd requested |
 | `k6/full-sync.js` | Full sync of 5,000 items, page by page |
-| `k6/fanout.js` | WebSocket fan-out: 1,000 sockets (5,000 on the VPS), last nudge after a put |
+| `k6/fanout.js` | WebSocket fan-out: 5,000 sockets, last nudge after a put |
 | `run.sh` | Starts a server, runs everything, writes `results/*.json` and `summary.json` |
 | `compare.mjs` | Folds the results into `summary.json`; compares with main's last run (fails at more than 10% worse p95, or a missed size or memory target) |
 
@@ -28,7 +28,7 @@ proxy.
 ```bash
 cargo build --release -p kemlock-server -p kemlock-cli -p kemlock-loadgen
 perf/run.sh --profile ci                  # 60 s of load, every pull request
-perf/run.sh --profile full --rig pi       # 10 minutes, nightly and before a release
+perf/run.sh --profile full --rig vps      # 10 minutes, nightly and before a release
 ```
 
 Or by hand:
@@ -42,7 +42,7 @@ LG="target/release/kemlock-loadgen --ip-header X-Forwarded-For"
 $LG seed --accounts 100 --items 500 --out accounts.json
 $LG serve --accounts accounts.json &                    # the proof service, on 127.0.0.1:9099
 $LG signin --accounts accounts.json --rate 2 --duration-secs 600 --out signin.json &
-k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=pi -e DURATION=10m perf/k6/standard.js
+k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=vps -e DURATION=10m perf/k6/standard.js
 ```
 
 The server's sign-in and registration limits count per client address (10 a minute and 10 an
@@ -59,7 +59,7 @@ five minutes), so it goes through the signing proxy:
 $LG serve --accounts accounts.json --proxy-listen 127.0.0.1:9100 --proxy-account 0 &
 cursor=$(jq -r '.accounts[0].cursor' accounts.json)
 
-# Unchanged sync: must answer 304 without a database read. Target p50 2 ms, p95 8 ms on the Pi.
+# Unchanged sync: must answer 304 without a database read. Target p50 1 ms, p95 5 ms on the VPS.
 oha -z 30s -c 16 --no-tui "http://127.0.0.1:9100/kem/v1/sync?since=$cursor"
 oha -z 30s -c 16 --no-tui --output-format json "http://127.0.0.1:9100/kem/v1/sync?since=$cursor" > oha-sync0.json
 ```
@@ -67,7 +67,7 @@ oha -z 30s -c 16 --no-tui --output-format json "http://127.0.0.1:9100/kem/v1/syn
 The proxy adds one loopback hop, a fraction of a millisecond, and each run is compared with
 main's last run on the same machine, which cancels it. Read absolute numbers with that in mind.
 
-Attachments: 256 MiB each way into and out of the local folder, at least 50 MB/s on the Pi and
+Attachments: 256 MiB each way into and out of the local folder, at least
 100 MB/s on the VPS, with the server's RSS sampled during the run and at most 1 MiB buffered per
 transfer. The attachment routes are not in `/kem/v1` yet (the `kemlock-blob` adapter adds them),
 so the paths below are placeholders; use the ones its OpenAPI document lists.
@@ -109,8 +109,7 @@ samples is the server's.
 ## The CI rule
 
 `.github/workflows/perf.yml`. Every pull request runs the short suite on `ubuntu-24.04` (amd64,
-the VPS column) and `ubuntu-24.04-arm` (arm64, the Pi column), SQLite on both, and
-`compare.mjs` checks it against main's last run on the same runner type:
+the VPS column), SQLite, and `compare.mjs` checks it against main's last run:
 
 - a p95 more than 10% worse (sign-in, unchanged sync, the sync and put mix, delta 100, full
   sync, fan-out, cold start) fails the build;
@@ -118,9 +117,10 @@ the VPS column) and `ubuntu-24.04-arm` (arm64, the Pi column), SQLite on both, a
 - an unchanged sync that does not answer 304, or a failed sign-in, fails the build.
 
 The absolute latency targets are enforced where they mean something: `ENFORCE=1` turns the k6
-thresholds into the design's table (set by the `rigs` job on the Pi 4 and the VPS, nightly and
-before each release, once `PERF_RIGS=true` and the runners exist). Shared CI runners are noisy, so
-a pull request is held to "no worse than main", not to the Pi's numbers.
+thresholds into the design's table (set by the `rigs` job on the VPS, nightly and
+before each release, once `PERF_RIGS=true` and the runner exists). Shared CI runners are noisy, so
+a pull request is held to "no worse than main", not to the VPS's numbers. There is no Raspberry Pi
+target.
 
 ## Known limits of this first version
 

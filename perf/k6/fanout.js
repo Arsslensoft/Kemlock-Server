@@ -1,11 +1,11 @@
-// WebSocket fan-out: N sockets on one account (the Pi's 1,000, the VPS's 5,000) and one put every
+// WebSocket fan-out: N sockets on one account (the VPS's 5,000) and one put every
 // PERIOD ms. The putter sends at a wall-clock boundary (a multiple of PERIOD), and each socket
 // records how long after that boundary its "sync now" arrived. That is the time from the put's
 // start to the nudge, so it includes the put's own latency: an upper bound on the design's "time
-// from the put's response to the last 'sync now'" (put p95 is 25 ms on the Pi). All k6 VUs share
+// from the put's response to the last 'sync now'" (put p95 is 20 ms on the VPS). All k6 VUs share
 // one machine and one clock.
 //
-//   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=pi -e SOCKETS=1000 perf/k6/fanout.js
+//   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=vps -e SOCKETS=5000 perf/k6/fanout.js
 import exec from 'k6/execution';
 import ws from 'k6/ws';
 import { check, sleep } from 'k6';

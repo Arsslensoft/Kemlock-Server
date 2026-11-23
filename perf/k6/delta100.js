@@ -2,7 +2,7 @@
 // since the cursor from before it, so the delta is exactly those 100 items. zstd is asked for, as a
 // real client does; the cursor is read from the ETag so the body needs no decoding.
 //
-//   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=pi perf/k6/delta100.js
+//   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=vps perf/k6/delta100.js
 import exec from 'k6/execution';
 import { check } from 'k6';
 import {

@@ -7,7 +7,7 @@
 //
 //   kemlock-loadgen seed --accounts 100 --items 500 --out accounts.json
 //   kemlock-loadgen serve --accounts accounts.json &
-//   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=pi -e DURATION=10m perf/k6/standard.js
+//   k6 run -e ACCOUNTS=$PWD/accounts.json -e RIG=vps -e DURATION=10m perf/k6/standard.js
 import exec from 'k6/execution';
 import ws from 'k6/ws';
 import { check } from 'k6';

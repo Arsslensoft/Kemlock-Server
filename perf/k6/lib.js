@@ -10,16 +10,16 @@
 //                 through a proxy)
 //   SIDECAR_URL   kemlock-loadgen serve, default http://127.0.0.1:9099
 //   ACCOUNTS      the accounts file `kemlock-loadgen seed` wrote (absolute path)
-//   RIG           pi or vps: which column of the design's targets table to use
+//   RIG           vps: which column of the design's targets table to use
 //   ENFORCE       1 to fail the run on a missed target (nightly and release runs on the rigs);
 //                 otherwise thresholds are loose and only make k6 compute the percentiles
-//   SCALE         1 for the Pi; 10 for the VPS ("ten times that")
+//   SCALE         10 for the VPS ("ten times the standard load"); 1 for the bare standard load
 import http from 'k6/http';
 import { SharedArray } from 'k6/data';
 
 export const BASE = (__ENV.BASE_URL || 'http://127.0.0.1:8080').replace(/\/$/, '');
 export const SIDECAR = (__ENV.SIDECAR_URL || 'http://127.0.0.1:9099').replace(/\/$/, '');
-export const RIG = __ENV.RIG || 'pi';
+export const RIG = __ENV.RIG || 'vps';
 export const ENFORCE = __ENV.ENFORCE === '1';
 export const SCALE = Number(__ENV.SCALE || (RIG === 'vps' ? 10 : 1));
 export const OUT = __ENV.RESULTS_DIR || '.';
@@ -37,7 +37,6 @@ export const ITEMS_PER_ACCOUNT = accounts[0].itemIds.length;
 
 // The design's targets table, by rig: [p50, p95] in milliseconds.
 const TARGETS = {
-  pi: { sync0: [2, 8], delta100: [20, 60], fullsync: [500, 1000], put: [8, 25], nudge: [null, 100] },
   vps: { sync0: [1, 5], delta100: [10, 30], fullsync: [200, 400], put: [6, 20], nudge: [null, 100] },
 };
 

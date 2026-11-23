@@ -4,7 +4,7 @@
 //
 // Seed an account with 5,000 items first:
 //   kemlock-loadgen seed --accounts 4 --items 5000 --prefix big --out big.json
-//   k6 run -e ACCOUNTS=$PWD/big.json -e RIG=pi perf/k6/full-sync.js
+//   k6 run -e ACCOUNTS=$PWD/big.json -e RIG=vps perf/k6/full-sync.js
 import exec from 'k6/execution';
 import { check } from 'k6';
 import { Trend } from 'k6/metrics';

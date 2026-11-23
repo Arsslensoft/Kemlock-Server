@@ -2,7 +2,6 @@
 # Runs the performance suite against a freshly started server and writes JSON results.
 #
 #   perf/run.sh --profile ci                 # the short suite every pull request runs
-#   perf/run.sh --profile full --rig pi      # the nightly and release suite, on the Pi 4
 #   perf/run.sh --profile full --rig vps --database-url postgres://kemlock:kemlock@127.0.0.1/kemlock
 #
 # Needs release builds of kemlock-server, kemlock-cli and kemlock-loadgen (--bin, default
@@ -27,7 +26,7 @@ while [ $# -gt 0 ]; do
     *) echo "unknown flag: $1" >&2; exit 2 ;;
   esac
 done
-[ -n "$rig" ] || case "$(uname -m)" in aarch64|arm64|armv7l) rig=pi ;; *) rig=vps ;; esac
+[ -n "$rig" ] || rig=vps
 
 here="$(cd "$(dirname "$0")" && pwd)"
 bin="$(cd "$bin" && pwd)"
