@@ -16,7 +16,7 @@
     "test": "vitest run",
     "e2e": "playwright test",
     "e2e:sso": "playwright test -c playwright.sso.config.ts",
-    "gen:api": "tsx scripts/gen-api.ts && tsc -p tsconfig.wire.json",
+    "gen:api": "npm --prefix tools/gen-api ci --no-audit --no-fund && tsx tools/gen-api/gen-api.ts && tsc -p tsconfig.wire.json",
     "budget": "tsx scripts/check-budget.ts",
     "notices": "node scripts/third-party-notices.mjs"
   },
@@ -47,7 +47,6 @@
     "@vitejs/plugin-react": "6.3.0",
     "intl-messageformat": "12.2.0",
     "jsdom": "31.0.1",
-    "openapi-typescript": "7.13.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2",
     "vite": "8.3.8",
