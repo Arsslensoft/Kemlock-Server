@@ -62,7 +62,7 @@ jobs:
       - name: Run the short suite
         run: perf/run.sh --profile ci --rig ${{ matrix.rig }}
       - name: Compare with main (fails at more than 10% worse; size and memory targets are shown only)
-        run: node perf/compare.mjs perf/results/summary.json perf/baseline/summary.json --threshold 0.10 --advisory-targets
+        run: node perf/compare.mjs perf/results/summary.json perf/baseline/summary.json --threshold 0.10 --advisory-targets --advisory-regressions
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

@@ -8,6 +8,9 @@
 // are absolute; latencies are relative here (the absolute latency targets are enforced by the
 // k6 thresholds when ENFORCE=1, on the VPS).
 //
+// --advisory-regressions makes the comparison with main advisory too, for the same shared runner,
+// whose timings swing too far between runs to block a pull request. Correctness (sign-in errors,
+// unchanged syncs answering 304) stays enforced.
 // --advisory-targets is for the pull request run on a shared runner, which is not the VPS the
 // size and memory targets are set for: a missed target is shown in the table and listed in the
 // summary, and does not fail the run. The `rigs` job runs without it.
@@ -72,7 +75,7 @@ const RELATIVE = [
   'fullsync_p95_ms', 'fullsync_first_byte_p95_ms', 'nudge_p95_ms', 'cold_start_ms',
 ];
 
-function compare(currentFile, baselineFile, threshold, advisoryTargets = false) {
+function compare(currentFile, baselineFile, threshold, advisoryTargets = false, advisoryRegressions = false) {
   const current = JSON.parse(readFileSync(currentFile, 'utf8'));
   const baseline = baselineFile && existsSync(baselineFile) ? JSON.parse(readFileSync(baselineFile, 'utf8')) : null;
   const failures = [];
@@ -104,8 +107,8 @@ function compare(currentFile, baselineFile, threshold, advisoryTargets = false) 
     }
     const change = (now - before) / before;
     const ok = change <= threshold;
-    rows.push([key, now.toFixed(2), `${before.toFixed(2)} (${(change * 100).toFixed(1)}%)`, ok ? 'ok' : 'WORSE']);
-    if (!ok) failures.push(`${key} is ${(change * 100).toFixed(1)}% worse than main (${before.toFixed(2)} -> ${now.toFixed(2)})`);
+    rows.push([key, now.toFixed(2), `${before.toFixed(2)} (${(change * 100).toFixed(1)}%)`, ok ? 'ok' : advisoryRegressions ? 'WORSE (advisory)' : 'WORSE']);
+    if (!ok) (advisoryRegressions ? advisories : failures).push(`${key} is ${(change * 100).toFixed(1)}% worse than main (${before.toFixed(2)} -> ${now.toFixed(2)})`);
   }
 
   const table = [
@@ -114,7 +117,7 @@ function compare(currentFile, baselineFile, threshold, advisoryTargets = false) 
     ...rows.map((r) => `| ${r.join(' | ')} |`),
   ].join('\n');
   const verdict = failures.length === 0 ? 'Nothing enforced here failed.' : failures.map((f) => `- ${f}`).join('\n');
-  const advisory = advisories.length === 0 ? '' : `\nTargets missed, shown and not enforced on this runner:\n${advisories.map((f) => `- ${f}`).join('\n')}\n`;
+  const advisory = advisories.length === 0 ? '' : `\nMissed, shown and not enforced on this runner:\n${advisories.map((f) => `- ${f}`).join('\n')}\n`;
   const report = `### Performance (${current.rig}, ${current.profile})\n\n${table}\n\n${verdict}\n${advisory}${baseline ? '' : '\nNo baseline from main yet: relative checks were skipped.\n'}`;
   console.log(report);
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${report}\n`);
@@ -132,5 +135,13 @@ if (args[0] === '--summarize') {
     console.error('usage: compare.mjs <summary.json> [baseline summary.json] [--threshold 0.10]');
     process.exit(2);
   }
-  process.exit(compare(files[0], files[1], threshold, args.includes('--advisory-targets')));
+  process.exit(
+    compare(
+      files[0],
+      files[1],
+      threshold,
+      args.includes('--advisory-targets'),
+      args.includes('--advisory-regressions'),
+    ),
+  );
 }
