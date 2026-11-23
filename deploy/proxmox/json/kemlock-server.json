@@ -1,0 +1,59 @@
+{
+  "name": "Kemlock Server",
+  "slug": "kemlock-server",
+  "categories": [
+    6
+  ],
+  "date_created": "2026-11-23",
+  "type": "ct",
+  "updateable": true,
+  "privileged": false,
+  "interface_port": 8443,
+  "documentation": "https://github.com/Arsslensoft/Kemlock-Server/blob/main/docs/self-hosting.md",
+  "website": "https://github.com/Arsslensoft/Kemlock-Server",
+  "logo": "https://raw.githubusercontent.com/Arsslensoft/Kemlock-Server/main/.github/assets/kemlock-icon.svg",
+  "config_path": "/opt/kemlock-server/.env",
+  "description": "Kemlock Server is a self-hosted password manager written in Rust and shipped as one static binary with a built-in web vault. It answers the Bitwarden API as Vaultwarden does, so the Kemlock, Amethystora Vault and Bitwarden apps connect to it.",
+  "install_methods": [
+    {
+      "type": "default",
+      "script": "ct/kemlock-server.sh",
+      "resources": {
+        "cpu": 1,
+        "ram": 1024,
+        "hdd": 4,
+        "os": "debian",
+        "version": "13"
+      }
+    },
+    {
+      "type": "alpine",
+      "script": "ct/kemlock-server.sh",
+      "resources": {
+        "cpu": 1,
+        "ram": 512,
+        "hdd": 2,
+        "os": "alpine",
+        "version": "3.24"
+      }
+    }
+  ],
+  "default_credentials": {
+    "username": null,
+    "password": null
+  },
+  "notes": [
+    {
+      "text": "First-run setup works only over HTTPS or from localhost. Caddy serves https://<container-ip>:8443 with a certificate from its own local CA, so the browser warns once. For production put a real certificate or reverse proxy in front and set DOMAIN in /opt/kemlock-server/.env.",
+      "type": "warning"
+    },
+    {
+      "text": "There is no admin token. On its first start the server logs a one-time setup code that the setup page asks for: journalctl -u kemlock-server | grep -i 'setup code' (Alpine: grep -i 'setup code' /var/log/kemlock-server.log). A restart before setup makes a new code.",
+      "type": "info"
+    },
+    {
+      "text": "If the container's IP address changes, update DOMAIN in /opt/kemlock-server/.env and the site address in /etc/caddy/Caddyfile, then restart kemlock-server and caddy. A reserved or static address avoids this.",
+      "type": "info"
+    }
+  ]
+}
