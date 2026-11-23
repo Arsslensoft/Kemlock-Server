@@ -188,7 +188,9 @@ jobs:
         run: cat "$RUNNER_TEMP"/kemlock-data*/server.log || true
 
   bitwarden-cli:
-    # The Bitwarden CLI 2026.6.0: login, sync, create, edit, delete
+    # The Bitwarden CLI 2026.6.0: login, sync, create, edit, delete. The CLI refuses http even on
+    # loopback ("Insecure URL not allowed"), so socat ends TLS in front of the server, and Node
+    # trusts the certificate that tls-front.sh made.
     needs: server
     runs-on: ubuntu-24.04
     steps:
@@ -203,14 +205,17 @@ jobs:
         with:
           node-version: 24
       - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}"
-      - name: Start the server on 127.0.0.1:8080
+      - run: sudo apt-get update && sudo apt-get install --yes socat
+      - name: Start the server and https in front of it
         run: |
           chmod +x bin/kemlock-server
           bash crates/kemlock-contract-tests/scripts/start-server.sh \
-            "$PWD/bin/kemlock-server" http://127.0.0.1:8080 8080 "$RUNNER_TEMP/kemlock-data"
+            "$PWD/bin/kemlock-server" https://localhost:8443 8080 "$RUNNER_TEMP/kemlock-data"
+          bash crates/kemlock-contract-tests/scripts/tls-front.sh "$RUNNER_TEMP/tls" 8443 8080
       - name: bw login, sync, create, edit, delete
         env:
-          SERVER_URL: http://127.0.0.1:8080
+          SERVER_URL: https://localhost:8443
+          NODE_EXTRA_CA_CERTS: ${{ runner.temp }}/tls/cert.pem
           BW_CLI: bw
         run: node crates/kemlock-contract-tests/scripts/bw-cli.mjs
       - name: The server's log
