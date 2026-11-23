@@ -372,6 +372,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_browser_extension_is_named_as_such_in_the_device_facts() {
+        let mut notice = device("Kemlock for browsers, Firefox");
+        notice.device_kind = DeviceKind::KemlockBrowser;
+        let facts = device_facts(&notice);
+        assert!(facts.contains("App: Kemlock for browsers\n"), "{facts}");
+        assert!(!facts.contains("web vault"));
+    }
+
     fn emergency_notice(event: EmergencyEvent, kind: EmergencyKind) -> Notice {
         Notice::Emergency(EmergencyNotice {
             to: email(),

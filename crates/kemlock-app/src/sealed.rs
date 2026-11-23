@@ -206,6 +206,21 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_extensions_challenge_keeps_its_kind() {
+        for kind in [DeviceKind::KemlockBrowser, DeviceKind::KemlockWeb] {
+            let c = Challenge {
+                expires_at: 5,
+                user: UserId::random(),
+                device: DeviceId::random(),
+                device_name: "Kemlock for browsers, Chrome".into(),
+                device_kind: kind,
+                jkt: "abc".into(),
+            };
+            assert_eq!(Challenge::decode(&c.encode()), Some(c));
+        }
+    }
+
+    #[test]
     fn challenge_round_trips_and_refuses_truncation() {
         let c = Challenge {
             expires_at: 5,

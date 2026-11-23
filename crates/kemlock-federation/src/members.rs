@@ -299,6 +299,14 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_device_keeps_its_kind_in_the_payload() {
+        let mut a = account();
+        a.devices[0].kind = DeviceKind::KemlockBrowser;
+        let back = MemberAccount::from_payload(&a.to_payload()).expect("a payload");
+        assert!(back.devices.iter().any(|d| d.kind == DeviceKind::KemlockBrowser));
+    }
+
+    #[test]
     fn an_account_without_a_name_round_trips() {
         let mut a = account();
         a.name = None;

@@ -144,6 +144,7 @@ mod tests {
             DeviceKind::KemlockAndroid,
             DeviceKind::KemlockIos,
             DeviceKind::KemlockWeb,
+            DeviceKind::KemlockBrowser,
             DeviceKind::KemlockCli,
             DeviceKind::Amethystora,
             DeviceKind::Bitwarden,
@@ -151,6 +152,12 @@ mod tests {
         ] {
             assert_eq!(kind_from(kind_str(kind)), Ok(kind));
         }
+        // The extension and the web vault are stored apart, and the name fits the column.
+        assert_eq!(kind_str(DeviceKind::KemlockBrowser), "kemlock-browser");
+        assert_ne!(
+            kind_str(DeviceKind::KemlockBrowser),
+            kind_str(DeviceKind::KemlockWeb)
+        );
         assert!(kind_from("toaster").is_err());
     }
 
