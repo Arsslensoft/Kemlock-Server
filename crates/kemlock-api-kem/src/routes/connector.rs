@@ -84,3 +84,46 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_page_carries_the_allowlist() {
+        let page = render(&["abcdefghijklmnopabcdefghijklmnop".to_owned(), "0a1b".to_owned()]);
+        assert!(page.contains(
+            "<meta name=\"kemlock-extension-ids\" content=\"abcdefghijklmnopabcdefghijklmnop,0a1b\">"
+        ));
+        assert!(!page.contains(IDS_PLACEHOLDER));
+    }
+
+    #[test]
+    fn an_empty_allowlist_is_an_empty_attribute() {
+        assert!(render(&[]).contains("name=\"kemlock-extension-ids\" content=\"\""));
+    }
+
+    #[test]
+    fn a_value_that_could_leave_the_attribute_is_dropped() {
+        let page = render(&["\"><script>x</script>".to_owned(), "ok1".to_owned()]);
+        assert!(page.contains("content=\"ok1\""));
+        assert!(!page.contains("<script>x"));
+    }
+
+    #[test]
+    fn the_page_has_no_inline_script_or_style() {
+        let page = render(&[]);
+        assert_eq!(page.matches("<script").count(), 1);
+        assert!(page.contains("<script src=\"/kem/v1/webauthn/connector.js\"></script>"));
+        assert!(!page.contains("<style"));
+        assert!(!page.contains(" style="));
+        assert!(!page.contains(" onclick="));
+    }
+
+    #[test]
+    fn the_policy_allows_no_inline_script() {
+        assert!(CONNECTOR_CSP.contains("script-src 'self';"));
+        assert!(!CONNECTOR_CSP.contains("unsafe-inline"));
+        assert!(!CONNECTOR_CSP.contains("unsafe-eval"));
+    }
+}
