@@ -11,10 +11,27 @@ pub enum DeviceKind {
     KemlockAndroid,
     KemlockIos,
     KemlockWeb,
+    /// The Kemlock browser extension, not the web vault: the Devices screen tells them apart.
+    KemlockBrowser,
     KemlockCli,
     Amethystora,
     Bitwarden,
     Other,
+}
+
+/// The device types Bitwarden numbers the browser extensions by, which the Kemlock extension
+/// sends at sign-in: Chrome 2, Firefox 3 and Edge 5.
+pub const BROWSER_DEVICE_TYPES: [i32; 3] = [2, 3, 5];
+
+/// The browser a Kemlock extension runs in, from the device type it sends; `None` for any other
+/// number.
+pub fn browser_name(device_type: i32) -> Option<&'static str> {
+    match device_type {
+        2 => Some("Chrome"),
+        3 => Some("Firefox"),
+        5 => Some("Edge"),
+        _ => None,
+    }
 }
 
 /// A device. Its tokens are bound to its DPoP key, so a token copied off it is useless elsewhere.

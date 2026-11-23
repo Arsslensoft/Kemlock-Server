@@ -134,6 +134,7 @@ fn kind_code(kind: DeviceKind) -> u8 {
         DeviceKind::Amethystora => 5,
         DeviceKind::Bitwarden => 6,
         DeviceKind::Other => 7,
+        DeviceKind::KemlockBrowser => 8,
     }
 }
 
@@ -146,6 +147,7 @@ fn kind_from_code(code: u8) -> Option<DeviceKind> {
         5 => DeviceKind::Amethystora,
         6 => DeviceKind::Bitwarden,
         7 => DeviceKind::Other,
+        8 => DeviceKind::KemlockBrowser,
         _ => return None,
     })
 }

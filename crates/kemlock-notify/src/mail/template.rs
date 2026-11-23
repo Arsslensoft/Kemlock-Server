@@ -83,6 +83,7 @@ fn kind_label(kind: DeviceKind) -> &'static str {
         DeviceKind::KemlockAndroid => "Kemlock for Android",
         DeviceKind::KemlockIos => "Kemlock for iOS",
         DeviceKind::KemlockWeb => "Kemlock web vault",
+        DeviceKind::KemlockBrowser => "Kemlock for browsers",
         DeviceKind::KemlockCli => "Kemlock command line",
         DeviceKind::Amethystora => "Amethystora Vault",
         DeviceKind::Bitwarden => "a Bitwarden app",
