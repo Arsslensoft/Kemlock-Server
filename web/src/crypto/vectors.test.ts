@@ -13,8 +13,13 @@ import { fileURLToPath } from 'node:url';
 
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { createDispatcher, type Dispatcher } from './protocol';
+import { codeOf, createDispatcher, type Dispatcher } from './protocol';
 import type { WasmFactory } from './wasm';
+
+/** The dispatcher passes on what the module threw, a plain `Error` whose message is the code; the
+ * worker's `codeOf` turns it into the code a `CryptoError` carries. This is that code, or
+ * `resolved` when the call did not fail. */
+const rejectCode = (call: Promise<unknown>): Promise<string> => call.then(() => 'resolved', codeOf);
 
 const loaders = import.meta.glob('./pkg/kemlock_wasm.js');
 const built = Object.keys(loaders).length > 0;
@@ -83,7 +88,7 @@ describe.skipIf(!built)('the WebAssembly module', () => {
       { memoryKib: 65536, iterations: 3, parallelism: 17, salt },
       { memoryKib: 2 * 1024 * 1024, iterations: 3, parallelism: 4, salt },
     ]) {
-      await expect(dispatch('masterKey', ['password', kdf])).rejects.toMatchObject({ code: 'invalid' });
+      await expect(rejectCode(dispatch('masterKey', ['password', kdf]))).resolves.toBe('invalid');
     }
   });
 
@@ -95,10 +100,10 @@ describe.skipIf(!built)('the WebAssembly module', () => {
     const login = await dispatch('opaqueLoginStart', [master]);
     expect(Buffer.from(login.request, 'base64url')).toHaveLength(96);
     // A response that is not the server's is refused, and the state is spent.
-    await expect(dispatch('opaqueLoginFinish', [login.state, master, 'AAAA'])).rejects.toMatchObject({ code: 'invalid' });
-    await expect(dispatch('opaqueLoginFinish', [login.state, master, 'AAAA'])).rejects.toMatchObject({ code: 'invalid' });
+    await expect(rejectCode(dispatch('opaqueLoginFinish', [login.state, master, 'AAAA']))).resolves.toBe('invalid');
+    await expect(rejectCode(dispatch('opaqueLoginFinish', [login.state, master, 'AAAA']))).resolves.toBe('invalid');
     await dispatch('lock', []);
-    await expect(dispatch('opaqueLoginStart', [master])).rejects.toMatchObject({ code: 'invalid' });
+    await expect(rejectCode(dispatch('opaqueLoginStart', [master]))).resolves.toBe('invalid');
   });
 
   it('enrols TOTP with a 160-bit secret and a key URI', async () => {
@@ -109,14 +114,14 @@ describe.skipIf(!built)('the WebAssembly module', () => {
     );
     const known = await dispatch('totpUri', ['jbsw y3dp ehpk 3pxp']);
     expect(known.secret).toBe('JBSWY3DPEHPK3PXP');
-    await expect(dispatch('totpUri', ['MZXW6YQ='])).rejects.toMatchObject({ code: 'invalid' });
+    await expect(rejectCode(dispatch('totpUri', ['MZXW6YQ=']))).resolves.toBe('invalid');
   });
 
   it('refuses item work while locked', async () => {
     await dispatch('lock', []);
     const address = { id: '00010203-0405-0607-0809-0a0b0c0d0e0f', owner: 'user:00010203-0405-0607-0809-0a0b0c0d0e0f', kind: 'login', revision: 1 };
-    await expect(dispatch('sealItem', [{ ...address, json: '{}' }])).rejects.toMatchObject({ code: 'locked' });
-    await expect(dispatch('openItem', [{ ...address, ciphertext: 'AAAA', itemKey: 'AAAA' }])).rejects.toMatchObject({ code: 'locked' });
+    await expect(rejectCode(dispatch('sealItem', [{ ...address, json: '{}' }]))).resolves.toBe('locked');
+    await expect(rejectCode(dispatch('openItem', [{ ...address, ciphertext: 'AAAA', itemKey: 'AAAA' }]))).resolves.toBe('locked');
   });
 });
 
@@ -142,13 +147,15 @@ describe.skipIf(!built)('the sharing and space operations of the real module', (
     await dispatch('lock', []);
     const bundle = b64url((vectors('bundle')[0] as Vector).bundle);
     const kx1 = Buffer.from(bundle, 'base64url').subarray(37, 37 + 1600).toString('base64url');
-    await expect(dispatch('sealRootKey', [kx1, 'emergency-access', 'AAAAAAAAAAAAAAAAAAAAAA'])).rejects.toMatchObject({
-      code: 'locked',
-    });
-    await expect(dispatch('signStatement', ['AAAA', 'confirm'])).rejects.toMatchObject({ code: 'locked' });
     await expect(
-      dispatch('newSpace', [{ spaceId: space, collectionId: space, spaceName: 'a', collectionName: 'b' }]),
-    ).rejects.toMatchObject({ code: 'locked' });
+      rejectCode(dispatch('sealRootKey', [kx1, 'emergency-access', 'AAAAAAAAAAAAAAAAAAAAAA'])),
+    ).resolves.toBe('locked');
+    await expect(rejectCode(dispatch('signStatement', ['AAAA', 'confirm']))).resolves.toBe('locked');
+    await expect(
+      rejectCode(
+        dispatch('newSpace', [{ spaceId: space, collectionId: space, spaceName: 'a', collectionName: 'b' }]),
+      ),
+    ).resolves.toBe('locked');
   });
 
   it('verifies a confirmation as false when its parts are not a confirmation', async () => {
