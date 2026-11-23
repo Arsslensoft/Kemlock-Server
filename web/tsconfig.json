@@ -24,10 +24,9 @@
       "vite/client",
       "node"
     ],
-    "baseUrl": ".",
     "paths": {
       "@/*": [
-        "src/*"
+        "./src/*"
       ]
     }
   },
