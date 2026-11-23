@@ -49,7 +49,6 @@ env:
   KEMLOCK_BW_FLUTTER: 3.47.7
   # Its linux archive's sha256, from the release index
   KEMLOCK_BW_FLUTTER_SHA256: af7455f540df951184c7953fbe3cf884766e7541dacf8571f9f582db03dd6230
-  KEMLOCK_BW_CLI: 2026.6.0
 
 jobs:
   suite:
@@ -117,7 +116,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}" # zizmor: ignore[adhoc-packages] the client under test, at the exact version in KEMLOCK_BW_CLI
+      # The Bitwarden CLI, from crates/kemlock-contract-tests/bw-cli: package-lock.json pins it and
+      # its dependencies by hash, and Dependabot proposes new versions. No install script runs.
+      - name: Install the Bitwarden CLI
+        working-directory: crates/kemlock-contract-tests/bw-cli
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - run: sudo apt-get update && sudo apt-get install --yes socat
       - name: Start the server and https in front of it
         run: |
@@ -202,9 +207,9 @@ jobs:
         run: cat "$RUNNER_TEMP"/kemlock-data*/server.log || true
 
   bitwarden-cli:
-    # The Bitwarden CLI 2026.6.0: login, sync, create, edit, delete. The CLI refuses http even on
-    # loopback ("Insecure URL not allowed"), so socat ends TLS in front of the server, and Node
-    # trusts the certificate that tls-front.sh made.
+    # The Bitwarden CLI (the version in bw-cli/package.json): login, sync, create, edit, delete.
+    # The CLI refuses http even on loopback ("Insecure URL not allowed"), so socat ends TLS in
+    # front of the server, and Node trusts the certificate that tls-front.sh made.
     needs: server
     runs-on: ubuntu-24.04
     steps:
@@ -218,7 +223,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}" # zizmor: ignore[adhoc-packages] the client under test, at the exact version in KEMLOCK_BW_CLI
+      # The Bitwarden CLI, from crates/kemlock-contract-tests/bw-cli: package-lock.json pins it and
+      # its dependencies by hash, and Dependabot proposes new versions. No install script runs.
+      - name: Install the Bitwarden CLI
+        working-directory: crates/kemlock-contract-tests/bw-cli
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
       - run: sudo apt-get update && sudo apt-get install --yes socat
       - name: Start the server and https in front of it
         run: |

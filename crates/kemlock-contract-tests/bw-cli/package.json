@@ -1,0 +1,10 @@
+{
+  "name": "kemlock-contract-bw-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Bitwarden CLI the contract workflow runs as a client against the server, pinned by package-lock.json. Dependabot proposes new versions.",
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "@bitwarden/cli": "2026.6.0"
+  }
+}

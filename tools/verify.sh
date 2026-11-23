@@ -8,9 +8,9 @@
 #   tools/verify.sh v1.4.2 --source .       # build from this checkout (at that tag) instead of cloning
 #
 # The rebuild uses what the release used (design, Security: Reproducible builds):
-#   - docker/Dockerfile, whose Rust, Node and distroless images are named by digest, whose Zig
-#     tarball is checked by SHA-256 and whose cargo-zigbuild is pinned, so the C toolchain aws-lc
-#     needs is the same one;
+#   - docker/Dockerfile, whose Rust and Node images (and the files copied into its scratch runtime
+#     image) are named by digest, whose Zig tarball is checked by SHA-256 and whose cargo-zigbuild
+#     is pinned, so the C toolchain aws-lc needs is the same one;
 #   - `cargo build --locked`, `--remap-path-prefix` and fat LTO with one codegen unit, set in the
 #     Dockerfile;
 #   - SOURCE_DATE_EPOCH, the tag's commit time, for the web bundle;
