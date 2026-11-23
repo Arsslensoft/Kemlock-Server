@@ -1,0 +1,18 @@
+# Advisories cargo audit reports that do not affect Kemlock Server, each with why. deny.toml's
+# [advisories] ignore list holds the same ids. Review this list when a dependency in it updates.
+[advisories]
+ignore = [
+    # rsa: Marvin attack, key recovery by timing RSA *decryption*. The server never decrypts
+    # with RSA: openidconnect and webauthn only verify RSA signatures (ID tokens, attestations).
+    # The one decryption path is pgp in kemlock-import, which runs in the user's own browser on
+    # their own export file, with no remote party to time it. No fixed rsa reaches these crates.
+    "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5: non-constant-time operations. Reached only through pgp's elliptic
+    # curves in kemlock-import, client-side as above; pgp 0.21.1 is the newest release.
+    "RUSTSEC-2026-0387",
+    # Unmaintained, no fixed release; no known vulnerability. Replace when a dependency moves off.
+    "RUSTSEC-2026-0374", # basic-toml
+    "RUSTSEC-2026-0543", # chrono
+    "RUSTSEC-2026-0542", # humantime
+    "RUSTSEC-2026-0173", # proc-macro-error2
+]
