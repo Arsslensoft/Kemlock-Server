@@ -178,6 +178,113 @@ mod tests {
         }
     }
 
+    const CHROME_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+    const FIREFOX_HASH: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn with_extensions() -> SsoConfig {
+        config().with_browser_extensions(&[CHROME_ID.to_owned(), FIREFOX_HASH.to_owned()])
+    }
+
+    #[test]
+    fn a_browser_device_may_use_the_redirect_of_an_extension_on_the_list() {
+        let c = with_extensions();
+        for ok in [
+            format!("https://{CHROME_ID}.chromiumapp.org/"),
+            format!("https://{CHROME_ID}.chromiumapp.org/sso"),
+            format!("https://{FIREFOX_HASH}.extensions.allizom.org/"),
+            format!("https://{FIREFOX_HASH}.extensions.allizom.org/sso"),
+        ] {
+            assert!(c.redirect_allowed_for(&ok, DeviceKind::KemlockBrowser), "{ok}");
+        }
+        // What every device may do, a browser device may too.
+        assert!(c.redirect_allowed_for("kemlock://sso", DeviceKind::KemlockBrowser));
+        assert!(c.redirect_allowed_for(
+            "https://vault.example.org/sso-done",
+            DeviceKind::KemlockBrowser
+        ));
+    }
+
+    #[test]
+    fn no_extension_is_allowed_until_the_admin_names_it() {
+        let nobody = config();
+        let other =
+            config().with_browser_extensions(&["ponmlkjihgfedcbaponmlkjihgfedcba".to_owned()]);
+        let address = format!("https://{CHROME_ID}.chromiumapp.org/");
+        assert!(!nobody.redirect_allowed_for(&address, DeviceKind::KemlockBrowser));
+        assert!(!other.redirect_allowed_for(&address, DeviceKind::KemlockBrowser));
+        // An id is matched whole: a longer or shorter one is another extension.
+        let c = with_extensions();
+        for id in [CHROME_ID[1..].to_owned(), format!("{CHROME_ID}a")] {
+            let address = format!("https://{id}.chromiumapp.org/");
+            assert!(
+                !c.redirect_allowed_for(&address, DeviceKind::KemlockBrowser),
+                "{id}"
+            );
+        }
+        // A blank entry in the list matches no address.
+        let blank = config().with_browser_extensions(&[String::new()]);
+        assert!(!blank.redirect_allowed_for("https://.chromiumapp.org/", DeviceKind::KemlockBrowser));
+    }
+
+    #[test]
+    fn only_a_browser_device_may_use_an_extensions_redirect() {
+        let c = with_extensions();
+        let address = format!("https://{CHROME_ID}.chromiumapp.org/");
+        for kind in [
+            DeviceKind::KemlockAndroid,
+            DeviceKind::KemlockIos,
+            DeviceKind::KemlockWeb,
+            DeviceKind::KemlockCli,
+            DeviceKind::Amethystora,
+            DeviceKind::Bitwarden,
+            DeviceKind::Other,
+        ] {
+            assert!(!c.redirect_allowed_for(&address, kind), "{kind:?}");
+        }
+        assert!(!c.redirect_allowed(&address));
+    }
+
+    #[test]
+    fn an_extensions_redirect_is_matched_exactly() {
+        let c = with_extensions();
+        let host = format!("{CHROME_ID}.chromiumapp.org");
+        let firefox = format!("{FIREFOX_HASH}.extensions.allizom.org");
+        for bad in [
+            // The scheme.
+            format!("http://{host}/"),
+            format!("chrome-extension://{CHROME_ID}/"),
+            format!("//{host}/"),
+            // The host: another label, another suffix, a look-alike, a user, a port.
+            format!("https://evil.{host}/"),
+            format!("https://{host}.evil.example/"),
+            format!("https://{CHROME_ID}.example.org/"),
+            format!("https://{CHROME_ID}-x.chromiumapp.org/"),
+            format!("https://{CHROME_ID}chromiumapp.org/"),
+            format!("https://evil.example@{host}/"),
+            format!("https://{host}@evil.example/"),
+            format!("https://{host}:8443/"),
+            format!("https://{}.chromiumapp.org/", CHROME_ID.to_uppercase()),
+            format!("https://{CHROME_ID}.extensions.allizom.org.evil.example/"),
+            // The path, query and fragment.
+            format!("https://{host}"),
+            format!("https://{host}/other"),
+            format!("https://{host}//evil.example"),
+            format!("https://{host}/sso/"),
+            format!("https://{host}/sso/extra"),
+            format!("https://{host}/?next=https://evil.example"),
+            format!("https://{host}/#frag"),
+            format!("https://{host}/ "),
+            format!("https://{host}\\@evil.example/"),
+            format!("https://{firefox}/other"),
+            format!("https://{firefox}.evil.example/"),
+        ] {
+            assert!(
+                !c.redirect_allowed_for(&bad, DeviceKind::KemlockBrowser),
+                "{bad:?}"
+            );
+        }
+    }
+
     #[test]
     fn challenges_are_32_byte_base64url() {
         assert!(valid_challenge(&b64url::encode(&[1u8; 32])));

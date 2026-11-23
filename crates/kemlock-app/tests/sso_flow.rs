@@ -12,7 +12,7 @@ use kemlock_app::sso::{
     CallbackInput, FinishInput, GroupRule, LogoutOutcome, SpaceRole, SsoCallback, SsoConfig,
     SsoError, SsoFinish, SsoLogout, SsoSettings, SsoSignedIn, SsoStart, StartInput,
 };
-use kemlock_app::{AppError, SecondStepInput, SignedIn, b64url};
+use kemlock_app::{AppError, DeviceInfo, SecondStepInput, SignedIn, b64url};
 use kemlock_domain::{DeviceKind, Email, SpaceId, User, UserId};
 use sso_fakes::*;
 use std::sync::Arc;
@@ -452,6 +452,142 @@ async fn finish_needs_the_phones_verifier() {
         "the provider's code wasn't spent"
     );
     assert!(sso.world.store.user_by_email("ada@example.org").is_none());
+}
+
+const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+const EXTENSION_REDIRECT: &str = "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/";
+
+impl Sso {
+    /// The same server, told which extensions are the admin's.
+    fn with_extensions(mut self, ids: &[&str]) -> Self {
+        let ids: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+        self.config = self.config.with_browser_extensions(&ids);
+        self
+    }
+
+    fn browser_start(&self, kind: DeviceKind) -> StartInput {
+        StartInput {
+            redirect: EXTENSION_REDIRECT.to_owned(),
+            device_kind: kind,
+            ..self.start_input()
+        }
+    }
+
+    /// The server's redirect for a sign-in that began with `start`.
+    fn redirect_after(&self, state: String) -> Result<String, SsoError> {
+        self.callback().execute(CallbackInput {
+            state,
+            code: Some("provider-code-1".to_owned()),
+            error: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_browser_extension_gets_its_code_at_its_own_address() {
+    let sso = Sso::new().with_extensions(&[EXTENSION_ID]);
+    sso.start()
+        .execute(sso.browser_start(DeviceKind::KemlockBrowser))
+        .await
+        .expect("an extension on the list may start");
+    let state = sso.provider.last_request().expect("asked").state;
+    let redirect = sso.redirect_after(state).expect("callback");
+    assert!(
+        redirect.starts_with(&format!("{EXTENSION_REDIRECT}?code=")),
+        "{redirect}"
+    );
+    assert!(
+        redirect.ends_with(&format!("&state={APP_STATE}")),
+        "{redirect}"
+    );
+
+    // And the browser device finishes the sign-in with that code.
+    let mut input = sso.finish_input(code_of(&redirect));
+    input.device = DeviceInfo {
+        kind: DeviceKind::KemlockBrowser,
+        ..input.device
+    };
+    let signed_in = sso.finish().execute(input).await.expect("signed in");
+    assert!(matches!(signed_in.outcome, SignedIn::Tokens(_)));
+}
+
+#[tokio::test]
+async fn an_extension_not_on_the_list_gets_no_code() {
+    for sso in [
+        Sso::new(),
+        Sso::new().with_extensions(&["ponmlkjihgfedcbaponmlkjihgfedcba"]),
+    ] {
+        assert!(matches!(
+            sso.start()
+                .execute(sso.browser_start(DeviceKind::KemlockBrowser))
+                .await,
+            Err(SsoError::Invalid(_))
+        ));
+        assert!(
+            sso.provider.last_request().is_none(),
+            "the provider wasn't asked"
+        );
+    }
+}
+
+#[tokio::test]
+async fn only_a_browser_device_may_start_at_an_extensions_address() {
+    let sso = Sso::new().with_extensions(&[EXTENSION_ID]);
+    for kind in [
+        DeviceKind::Other,
+        DeviceKind::KemlockWeb,
+        DeviceKind::KemlockAndroid,
+        DeviceKind::Bitwarden,
+    ] {
+        assert!(
+            matches!(
+                sso.start().execute(sso.browser_start(kind)).await,
+                Err(SsoError::Invalid(_))
+            ),
+            "{kind:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_sign_in_that_began_as_the_extensions_finishes_only_as_its_device() {
+    let sso = Sso::new().with_extensions(&[EXTENSION_ID]);
+    sso.start()
+        .execute(sso.browser_start(DeviceKind::KemlockBrowser))
+        .await
+        .expect("start");
+    let state = sso.provider.last_request().expect("asked").state;
+    let redirect = sso.redirect_after(state).expect("callback");
+    for kind in [DeviceKind::Other, DeviceKind::KemlockWeb] {
+        let mut input = sso.finish_input(code_of(&redirect));
+        input.device = DeviceInfo {
+            kind,
+            ..input.device
+        };
+        assert_eq!(
+            sso.finish().execute(input).await,
+            Err(SsoError::Unauthorized),
+            "{kind:?}"
+        );
+    }
+    assert_eq!(sso.provider.exchanges(), 0);
+}
+
+#[tokio::test]
+async fn the_callback_checks_the_extensions_address_again() {
+    // The state was sealed while the extension was on the list; the admin took it off since.
+    let before = Sso::new().with_extensions(&[EXTENSION_ID]);
+    before
+        .start()
+        .execute(before.browser_start(DeviceKind::KemlockBrowser))
+        .await
+        .expect("start");
+    let state = before.provider.last_request().expect("asked").state;
+    let after = Sso {
+        config: SsoConfig::new("https://kemlock.test"),
+        ..before
+    };
+    assert_eq!(after.redirect_after(state), Err(SsoError::BadState));
 }
 
 #[tokio::test]
