@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STATE_FILE, type E2EState } from './state';
+import { STATE_ENV, type E2EState } from './state';
 
 const ANSI = /\u001b\[[0-9;]*m/g;
 
@@ -21,6 +21,11 @@ function defaultBinary(): string {
 }
 
 export default async function globalSetup(): Promise<() => Promise<void>> {
+  // The state file goes in a directory only this user can open, not a fixed name in the temp dir.
+  const stateDir = mkdtempSync(join(tmpdir(), 'kemlock-e2e-state-'));
+  process.env[STATE_ENV] = join(stateDir, 'state.json');
+  const dropState = (): void => rmSync(stateDir, { recursive: true, force: true });
+
   const external = process.env['BASE_URL'] ?? process.env['E2E_BASE_URL'];
   if (external) {
     // The journeys that make the admin need the code of a fresh server; the SSO journey does not.
@@ -28,7 +33,7 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       baseURL: external.replace(/\/+$/, ''),
       setupCode: process.env['E2E_SETUP_CODE'] ?? '',
     });
-    return async () => undefined;
+    return async () => dropState();
   }
 
   const binary = process.env['KEMLOCK_BIN'] ?? defaultBinary();
@@ -86,9 +91,10 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     child.removeAllListeners('exit');
     child.kill();
     rmSync(data, { recursive: true, force: true });
+    dropState();
   };
 }
 
 function writeState(state: Pick<E2EState, 'baseURL' | 'setupCode'>): void {
-  writeFileSync(STATE_FILE, `${JSON.stringify(state)}\n`);
+  writeFileSync(process.env[STATE_ENV] as string, `${JSON.stringify(state)}\n`);
 }

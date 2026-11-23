@@ -1,8 +1,6 @@
 // What the journeys hand to each other: global setup writes the setup code, the setup journey
 // adds the authenticator secret of the admin it makes, and the vault journey reads both.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 export interface E2EState {
   baseURL: string;
@@ -12,7 +10,18 @@ export interface E2EState {
   totpStep?: number;
 }
 
-export const STATE_FILE = join(tmpdir(), 'kemlock-e2e-state.json');
+/**
+ * Global setup makes a private directory with mkdtemp (mode 0700) and puts the state file's path in
+ * this variable; the workers it starts inherit it. A fixed name in the shared temp directory would
+ * let another local user pre-create or read the file, which holds the setup code and TOTP secret.
+ */
+export const STATE_ENV = 'KEMLOCK_E2E_STATE_FILE';
+
+export function stateFile(): string {
+  const file = process.env[STATE_ENV];
+  if (!file) throw new Error(`${STATE_ENV} is not set: global setup has not run`);
+  return file;
+}
 
 export const ADMIN = {
   name: 'Sam Rivera',
@@ -21,9 +30,9 @@ export const ADMIN = {
 };
 
 export function readState(): E2EState {
-  return JSON.parse(readFileSync(STATE_FILE, 'utf8')) as E2EState;
+  return JSON.parse(readFileSync(stateFile(), 'utf8')) as E2EState;
 }
 
 export function saveState(patch: Partial<E2EState>): void {
-  writeFileSync(STATE_FILE, `${JSON.stringify({ ...readState(), ...patch })}\n`);
+  writeFileSync(stateFile(), `${JSON.stringify({ ...readState(), ...patch })}\n`);
 }
