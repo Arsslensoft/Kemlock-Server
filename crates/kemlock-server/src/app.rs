@@ -182,6 +182,7 @@ where
         },
         trusted_proxies: config.trusted_proxies.clone(),
         ip_header: config.ip_header.clone(),
+        browser_extension_ids: config.browser_extension_ids.clone(),
     };
     let api = Api::new(
         store.clone(),

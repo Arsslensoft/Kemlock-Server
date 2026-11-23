@@ -13,6 +13,7 @@ use crate::sso::error::SsoError;
 use crate::sso::model::AuthorizationRequest;
 use crate::sso::ports::{OidcProvider, SsoSettingsRepo};
 use crate::sso::state::{PURPOSE_STATE, SsoState, seal_value};
+use kemlock_domain::DeviceKind;
 
 #[derive(Debug)]
 pub struct SsoStart<R, O, S, E> {
@@ -29,10 +30,14 @@ pub struct StartInput {
     pub challenge: String,
     /// The phone's own `state`, handed back on the redirect so it can tell its own sign-in.
     pub app_state: String,
-    /// Where the browser trip ends: `kemlock://sso`, or a path on this server.
+    /// Where the browser trip ends: `kemlock://sso`, a path on this server, or for a browser
+    /// extension its own redirect address.
     pub redirect: String,
     /// The thumbprint of the DPoP key that signed the request. `finish` must be signed by it.
     pub jkt: String,
+    /// What the device says it is. `KemlockBrowser` may end the trip at an allowlisted
+    /// extension's redirect address, and no other kind may.
+    pub device_kind: DeviceKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -53,7 +58,10 @@ impl<R: SsoSettingsRepo, O: OidcProvider, S: SecretSeal, E: Platform> SsoStart<R
                 "state must be 16 to 256 URL-safe characters",
             ));
         }
-        if !self.config.redirect_allowed(&input.redirect) {
+        if !self
+            .config
+            .redirect_allowed_for(&input.redirect, input.device_kind)
+        {
             return Err(SsoError::Invalid("the redirect isn't allowed"));
         }
         let settings = self
@@ -78,6 +86,7 @@ impl<R: SsoSettingsRepo, O: OidcProvider, S: SecretSeal, E: Platform> SsoStart<R
                 app_state: input.app_state,
                 redirect: input.redirect,
                 jkt: input.jkt,
+                browser: input.device_kind == DeviceKind::KemlockBrowser,
             },
         );
         let authorization_url = self

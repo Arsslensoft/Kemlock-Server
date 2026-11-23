@@ -61,6 +61,11 @@ where
     Router::new()
         .route("/kem/v1/config", get(A::<S, P, K>::handle_config))
         .route("/kem/v1/openapi.json", get(A::<S, P, K>::handle_openapi))
+        .route("/kem/v1/webauthn", get(A::<S, P, K>::handle_webauthn_page))
+        .route(
+            "/kem/v1/webauthn/connector.js",
+            get(A::<S, P, K>::handle_webauthn_script),
+        )
         .route(
             "/kem/v1/setup/verify",
             post(A::<S, P, K>::handle_setup_verify),

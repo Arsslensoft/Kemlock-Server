@@ -103,6 +103,9 @@ pub struct ApiConfig {
     pub trusted_proxies: Vec<IpAddr>,
     /// `IP_HEADER`: the header naming the client behind a trusted proxy.
     pub ip_header: Option<String>,
+    /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions that may take an
+    /// SSO code at their own redirect address. Empty by default: any other extension gets none.
+    pub browser_extension_ids: Vec<String>,
 }
 
 /// Secrets derived from `server.key` that the API itself needs.

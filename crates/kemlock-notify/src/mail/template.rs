@@ -83,6 +83,7 @@ fn kind_label(kind: DeviceKind) -> &'static str {
         DeviceKind::KemlockAndroid => "Kemlock for Android",
         DeviceKind::KemlockIos => "Kemlock for iOS",
         DeviceKind::KemlockWeb => "Kemlock web vault",
+        DeviceKind::KemlockBrowser => "Kemlock for browsers",
         DeviceKind::KemlockCli => "Kemlock command line",
         DeviceKind::Amethystora => "Amethystora Vault",
         DeviceKind::Bitwarden => "a Bitwarden app",
@@ -369,6 +370,15 @@ mod tests {
             ip: "203.0.113.0".to_owned(),
             at: datetime!(2026-11-23 10:05 +01:00),
         }
+    }
+
+    #[test]
+    fn a_browser_extension_is_named_as_such_in_the_device_facts() {
+        let mut notice = device("Kemlock for browsers, Firefox");
+        notice.device_kind = DeviceKind::KemlockBrowser;
+        let facts = device_facts(&notice);
+        assert!(facts.contains("App: Kemlock for browsers\n"), "{facts}");
+        assert!(!facts.contains("web vault"));
     }
 
     fn emergency_notice(event: EmergencyEvent, kind: EmergencyKind) -> Notice {

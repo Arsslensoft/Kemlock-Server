@@ -79,6 +79,7 @@ fn kind_name(kind: DeviceKind) -> &'static str {
         DeviceKind::KemlockAndroid => "kemlock-android",
         DeviceKind::KemlockIos => "kemlock-ios",
         DeviceKind::KemlockWeb => "kemlock-web",
+        DeviceKind::KemlockBrowser => "kemlock-browser",
         DeviceKind::KemlockCli => "kemlock-cli",
         DeviceKind::Amethystora => "amethystora",
         DeviceKind::Bitwarden => "bitwarden",
@@ -91,6 +92,7 @@ fn kind_from(name: &str) -> DeviceKind {
         "kemlock-android" => DeviceKind::KemlockAndroid,
         "kemlock-ios" => DeviceKind::KemlockIos,
         "kemlock-web" => DeviceKind::KemlockWeb,
+        "kemlock-browser" => DeviceKind::KemlockBrowser,
         "kemlock-cli" => DeviceKind::KemlockCli,
         "amethystora" => DeviceKind::Amethystora,
         "bitwarden" => DeviceKind::Bitwarden,
@@ -294,6 +296,18 @@ mod tests {
         let mut reversed = a.clone();
         reversed.devices.reverse();
         assert_eq!(reversed.to_payload(), a.to_payload());
+    }
+
+    #[test]
+    fn a_browser_device_keeps_its_kind_in_the_payload() {
+        let mut a = account();
+        a.devices[0].kind = DeviceKind::KemlockBrowser;
+        let back = MemberAccount::from_payload(&a.to_payload()).expect("a payload");
+        assert!(
+            back.devices
+                .iter()
+                .any(|d| d.kind == DeviceKind::KemlockBrowser)
+        );
     }
 
     #[test]

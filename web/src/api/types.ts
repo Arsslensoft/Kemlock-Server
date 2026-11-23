@@ -89,6 +89,7 @@ export type DeviceKind =
   | 'kemlock-android'
   | 'kemlock-ios'
   | 'kemlock-web'
+  | 'kemlock-browser'
   | 'kemlock-cli'
   | 'amethystora'
   | 'bitwarden'

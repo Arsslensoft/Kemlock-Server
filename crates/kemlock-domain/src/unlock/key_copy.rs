@@ -18,6 +18,10 @@ pub enum KeyProtection {
     WebCrypto,
     /// A key kept sealed in the vault, for a phone without hardware keys.
     Software,
+    /// A non-extractable WebCrypto key in a browser extension's IndexedDB, which the page and the
+    /// content scripts can't reach. Apart from `WebCrypto` so the Devices screen can tell the
+    /// extension's key from the web vault's.
+    Browser,
 }
 
 impl KeyProtection {
@@ -27,6 +31,7 @@ impl KeyProtection {
             KeyProtection::Keystore => "keystore",
             KeyProtection::WebCrypto => "web-crypto",
             KeyProtection::Software => "software",
+            KeyProtection::Browser => "browser",
         }
     }
 
@@ -36,6 +41,7 @@ impl KeyProtection {
             "keystore" => KeyProtection::Keystore,
             "web-crypto" => KeyProtection::WebCrypto,
             "software" => KeyProtection::Software,
+            "browser" => KeyProtection::Browser,
             _ => return None,
         })
     }
@@ -63,10 +69,18 @@ mod tests {
             KeyProtection::Keystore,
             KeyProtection::WebCrypto,
             KeyProtection::Software,
+            KeyProtection::Browser,
         ] {
             assert_eq!(KeyProtection::parse(p.as_str()), Some(p));
         }
         assert_eq!(KeyProtection::parse("tpm"), None);
+        assert_eq!(
+            KeyProtection::parse("browser"),
+            Some(KeyProtection::Browser)
+        );
+        assert_eq!(KeyProtection::Browser.as_str(), "browser");
+        // The extension's key is not the web vault's.
+        assert_ne!(KeyProtection::Browser, KeyProtection::WebCrypto);
     }
 
     #[test]

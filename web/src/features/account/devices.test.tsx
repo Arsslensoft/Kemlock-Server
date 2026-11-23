@@ -8,7 +8,14 @@ import { encodeB64, fromUtf8, decodeB64 } from '@/lib/b64url';
 import { renderWithIntl } from '@/test/render';
 import { fakeSharingCrypto } from '@/test/fake-space-crypto';
 import { DevicesView, type DevicesViewProps } from './DevicesView';
-import { type ApprovalRow, approveRequest, isKemlockApp, loadApprovals, otherDevices } from './devicesModel';
+import {
+  type ApprovalRow,
+  approveRequest,
+  deviceKindLabelId,
+  isKemlockApp,
+  loadApprovals,
+  otherDevices,
+} from './devicesModel';
 
 const KEY = new Uint8Array(1600).fill(7);
 
@@ -83,6 +90,14 @@ describe('device helpers', () => {
     expect(isKemlockApp('kemlock-ios')).toBe(true);
     expect(isKemlockApp('bitwarden')).toBe(false);
     expect(isKemlockApp('amethystora')).toBe(false);
+    expect(isKemlockApp('kemlock-browser')).toBe(true);
+  });
+
+  it('give the extension and the web vault each their own label', () => {
+    expect(deviceKindLabelId('kemlock-browser')).toBe('devices.kind.kemlockBrowser');
+    expect(deviceKindLabelId('kemlock-web')).toBe('devices.kind.kemlockWeb');
+    expect(deviceKindLabelId('kemlock-browser')).not.toBe(deviceKindLabelId('kemlock-web'));
+    expect(deviceKindLabelId('other')).toBe('devices.kind.other');
   });
 
   it('list the other devices, newest sync first', () => {
@@ -210,6 +225,30 @@ describe('DevicesView', () => {
     expect(props.onSignOut).toHaveBeenCalledWith(device);
     await user.click(screen.getByRole('button', { name: 'Sign out everywhere else' }));
     expect(props.onSignOutOthers).toHaveBeenCalled();
+  });
+
+  it('names the extension "Kemlock for browsers" and the web vault apart from it', () => {
+    const device = (id: string, name: string, kind: DeviceEntryDto['kind']): DeviceEntryDto => ({
+      id,
+      name,
+      kind,
+      createdAt: '2026-10-01T00:00:00Z',
+      lastSeenAt: '2026-11-22T09:01:00Z',
+      current: false,
+      trusted: false,
+    });
+    view({
+      others: [
+        device('e1', 'Kemlock, Firefox', 'kemlock-browser'),
+        device('w1', 'Web vault, Firefox', 'kemlock-web'),
+      ],
+    });
+    const extension = screen.getByText('Kemlock, Firefox').closest('.row') as HTMLElement;
+    expect(within(extension).getByText('Kemlock for browsers')).toBeInTheDocument();
+    expect(within(extension).getByText('Kemlock API')).toBeInTheDocument();
+    const web = screen.getByText('Web vault, Firefox').closest('.row') as HTMLElement;
+    expect(within(web).getByText('Kemlock web vault')).toBeInTheDocument();
+    expect(within(web).queryByText('Kemlock for browsers')).toBeNull();
   });
 
   it('says plainly when the server has no device list', () => {

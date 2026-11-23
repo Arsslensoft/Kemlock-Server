@@ -134,6 +134,7 @@ fn kind_code(kind: DeviceKind) -> u8 {
         DeviceKind::Amethystora => 5,
         DeviceKind::Bitwarden => 6,
         DeviceKind::Other => 7,
+        DeviceKind::KemlockBrowser => 8,
     }
 }
 
@@ -146,6 +147,7 @@ fn kind_from_code(code: u8) -> Option<DeviceKind> {
         5 => DeviceKind::Amethystora,
         6 => DeviceKind::Bitwarden,
         7 => DeviceKind::Other,
+        8 => DeviceKind::KemlockBrowser,
         _ => return None,
     })
 }
@@ -201,6 +203,21 @@ mod tests {
         assert_eq!(LoginState::decode(&bytes), Some(s));
         bytes.push(0);
         assert_eq!(LoginState::decode(&bytes), None);
+    }
+
+    #[test]
+    fn a_browser_extensions_challenge_keeps_its_kind() {
+        for kind in [DeviceKind::KemlockBrowser, DeviceKind::KemlockWeb] {
+            let c = Challenge {
+                expires_at: 5,
+                user: UserId::random(),
+                device: DeviceId::random(),
+                device_name: "Kemlock for browsers, Chrome".into(),
+                device_kind: kind,
+                jkt: "abc".into(),
+            };
+            assert_eq!(Challenge::decode(&c.encode()), Some(c));
+        }
     }
 
     #[test]

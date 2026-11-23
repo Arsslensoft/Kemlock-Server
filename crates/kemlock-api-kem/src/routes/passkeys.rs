@@ -42,7 +42,7 @@ use kemlock_app::ports::TokenSigner;
 use kemlock_app::sso::{MembershipFacts, RequireSso};
 use kemlock_app::{AppError, DeviceInfo, Sessions, TokenPair, b64url};
 use kemlock_crypto::hash;
-use kemlock_domain::{DeviceId, DeviceKind, Passkey, PasskeyId, PrfWrap};
+use kemlock_domain::{Passkey, PasskeyId, PrfWrap};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -454,10 +454,8 @@ where
             challenge,
             response,
             device: DeviceInfo {
-                id: request.device.id.map(DeviceId),
-                name: request.device.name,
-                kind: request.device.kind.unwrap_or(DeviceKind::Other),
                 bitwarden_identifier: None,
+                ..request.device.into_info()?
             },
             jkt: proof.jkt,
         })

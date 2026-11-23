@@ -126,7 +126,22 @@ impl App {
         App::build(signups_allowed, trusted_proxies, LiveHub::new())
     }
 
+    /// An app whose admin named these browser extensions (`KEMLOCK_BROWSER_EXTENSION_IDS`).
+    pub(crate) fn with_extension_ids(ids: &[&str]) -> App {
+        let ids = ids.iter().map(|id| (*id).to_owned()).collect();
+        App::build_with(false, Vec::new(), LiveHub::new(), ids)
+    }
+
     fn build(signups_allowed: bool, trusted_proxies: Vec<std::net::IpAddr>, hub: LiveHub) -> App {
+        App::build_with(signups_allowed, trusted_proxies, hub, Vec::new())
+    }
+
+    fn build_with(
+        signups_allowed: bool,
+        trusted_proxies: Vec<std::net::IpAddr>,
+        hub: LiveHub,
+        browser_extension_ids: Vec<String>,
+    ) -> App {
         let env = FakeEnv::new();
         let clock = env.clock.clone();
         let crypto = TestCrypto {
@@ -147,6 +162,7 @@ impl App {
             },
             trusted_proxies,
             ip_header: None,
+            browser_extension_ids,
         };
         let secrets = ApiSecrets {
             prelogin: [9u8; 32],

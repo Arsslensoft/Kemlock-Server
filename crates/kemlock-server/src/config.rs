@@ -6,14 +6,16 @@
 //! Read: `DOMAIN`, `DATABASE_URL`, `DATA_FOLDER`, `ROCKET_ADDRESS`, `ROCKET_PORT`,
 //! `SIGNUPS_ALLOWED`, `LOG_LEVEL` and `IP_HEADER` from Vaultwarden; `KEMLOCK_CONFIG` (the TOML
 //! file, default `<DATA_FOLDER>/kemlock.toml`), `KEMLOCK_LOG_FORMAT` (`text` or `json`),
-//! `KEMLOCK_TRUSTED_PROXIES` (comma-separated addresses), `KEMLOCK_SOURCE_URL` (where the source
+//! `KEMLOCK_TRUSTED_PROXIES` (comma-separated addresses), `KEMLOCK_BROWSER_EXTENSION_IDS`
+//! (comma-separated ids of the Kemlock browser extensions that may take an SSO code),
+//! `KEMLOCK_SOURCE_URL` (where the source
 //! of the running code is offered, see `source`) and `KEMLOCK_SERVER_KEY` (see `keys`) of
 //! Kemlock's own. A Vaultwarden name with no use here, such as `ADMIN_TOKEN`, is listed in
 //! [`Config::ignored`] so it can be logged once.
 //!
 //! The TOML file uses the lower-case names without the `KEMLOCK_` prefix: `domain`,
 //! `database_url`, `data_folder`, `address` (or `rocket_address`), `port` (or `rocket_port`),
-//! `signups_allowed`, `log_level`, `log_format`, `trusted_proxies`, `ip_header` and `source_url`.
+//! `signups_allowed`, `log_level`, `log_format`, `trusted_proxies`, `ip_header`, `browser_extension_ids` and `source_url`.
 
 use kemlock_app::admin::settings::DEFINITIONS;
 use serde::Deserialize;
@@ -80,6 +82,10 @@ pub struct Config {
     pub trusted_proxies: Vec<IpAddr>,
     /// `IP_HEADER`.
     pub ip_header: Option<String>,
+    /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions whose redirect
+    /// addresses (`https://<id>.chromiumapp.org/`, `https://<hash>.extensions.allizom.org/`) a
+    /// `KemlockBrowser` device may use for SSO, lower case. Default empty: none may.
+    pub browser_extension_ids: Vec<String>,
     /// `KEMLOCK_SOURCE_URL`: where the Corresponding Source of the code this server runs can be
     /// had, when it isn't the project's own (AGPL-3.0 section 13). `None` offers the project's
     /// repository at the commit or release this build is from (see `source`).
@@ -114,6 +120,7 @@ struct FileConfig {
     log_format: Option<String>,
     trusted_proxies: Option<Vec<String>>,
     ip_header: Option<String>,
+    browser_extension_ids: Option<Vec<String>>,
     source_url: Option<String>,
 }
 
@@ -150,6 +157,29 @@ fn parse_proxies<'a>(items: impl IntoIterator<Item = &'a str>) -> Result<Vec<IpA
             })
         })
         .collect()
+}
+
+/// `KEMLOCK_BROWSER_EXTENSION_IDS`: extension ids, each 1 to 64 letters and digits (a Chrome id is 32
+/// letters, a Firefox hash 40 hex digits), so a dot, a slash or a scheme can't widen what they
+/// allow. Lower-cased, deduplicated, blanks skipped.
+fn parse_extension_ids<'a>(
+    items: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<String>, ConfigError> {
+    let mut ids: Vec<String> = Vec::new();
+    for item in items.into_iter().map(str::trim).filter(|s| !s.is_empty()) {
+        if item.len() > 64 || !item.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(ConfigError::Bad {
+                name: "KEMLOCK_BROWSER_EXTENSION_IDS",
+                expected: "a list of extension ids (letters and digits)",
+                value: item.to_owned(),
+            });
+        }
+        let id = item.to_ascii_lowercase();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 /// `KEMLOCK_SOURCE_URL`: an `http://` or `https://` address with no blanks or control characters,
@@ -297,6 +327,15 @@ impl Config {
             Some(value) => parse_proxies(value.split(','))?,
             None => parse_proxies(file.trusted_proxies.iter().flatten().map(String::as_str))?,
         };
+        let browser_extension_ids = match lookup(env, "KEMLOCK_BROWSER_EXTENSION_IDS") {
+            Some(value) => parse_extension_ids(value.split(','))?,
+            None => parse_extension_ids(
+                file.browser_extension_ids
+                    .iter()
+                    .flatten()
+                    .map(String::as_str),
+            )?,
+        };
         let source_url = lookup(env, "KEMLOCK_SOURCE_URL")
             .or(file.source_url.filter(|v| !v.trim().is_empty()))
             .map(|value| parse_source_url(&value))
@@ -324,6 +363,7 @@ impl Config {
             server_key: lookup(env, "KEMLOCK_SERVER_KEY"),
             trusted_proxies,
             ip_header: lookup(env, "IP_HEADER").or(file.ip_header),
+            browser_extension_ids,
             source_url,
             ignored,
             config_file: None,
@@ -485,6 +525,71 @@ mod tests {
             config(&[], Some("port = [")),
             Err(ConfigError::Toml { .. })
         ));
+    }
+
+    #[test]
+    fn no_browser_extension_is_allowed_by_default() {
+        assert!(
+            config(&[], None)
+                .expect("valid")
+                .browser_extension_ids
+                .is_empty()
+        );
+        assert!(
+            config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", "  ")], None)
+                .expect("valid")
+                .browser_extension_ids
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn browser_extension_ids_are_a_comma_list_in_lower_case() {
+        let c = config(
+            &[(
+                "KEMLOCK_BROWSER_EXTENSION_IDS",
+                "abcdefghijklmnopabcdefghijklmnop, 0123ABCD ,,0123abcd",
+            )],
+            None,
+        )
+        .expect("valid");
+        assert_eq!(
+            c.browser_extension_ids,
+            vec!["abcdefghijklmnopabcdefghijklmnop", "0123abcd"]
+        );
+    }
+
+    #[test]
+    fn browser_extension_ids_come_from_the_file_when_the_environment_has_none() {
+        let from_file = config(&[], Some("browser_extension_ids = [\"abc123\"]\n")).expect("valid");
+        assert_eq!(from_file.browser_extension_ids, vec!["abc123"]);
+        let env_wins = config(
+            &[("KEMLOCK_BROWSER_EXTENSION_IDS", "def456")],
+            Some("browser_extension_ids = [\"abc123\"]\n"),
+        )
+        .expect("valid");
+        assert_eq!(env_wins.browser_extension_ids, vec!["def456"]);
+    }
+
+    #[test]
+    fn a_browser_extension_id_that_could_widen_the_allowlist_is_refused() {
+        let long = "a".repeat(65);
+        for bad in [
+            "evil.example",
+            "a/b",
+            "https://abc.chromiumapp.org/",
+            "abc@evil",
+            "a b",
+            "*",
+            long.as_str(),
+        ] {
+            let error =
+                config(&[("KEMLOCK_BROWSER_EXTENSION_IDS", bad)], None).expect_err("refused");
+            assert!(
+                error.to_string().contains("KEMLOCK_BROWSER_EXTENSION_IDS"),
+                "{bad}: {error}"
+            );
+        }
     }
 
     #[test]

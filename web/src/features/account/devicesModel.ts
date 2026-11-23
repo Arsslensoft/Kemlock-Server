@@ -2,6 +2,7 @@
 // worked out here from its one-time public key; the server's `phrase` is never shown.
 import type { DeviceEntryDto, DevicesApi, PendingApprovalDto } from '@/api/devices';
 import type { DeviceKind } from '@/api/types';
+import type { MessageId } from '@/i18n';
 import { approvalPhrase } from '@/lib/approvalPhrase';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { uuidBytes } from '@/sharing/bundle';
@@ -70,7 +71,35 @@ export async function approveRequest(
 
 /** Whether a device speaks the Kemlock API (the others use the Bitwarden one). */
 export function isKemlockApp(kind: DeviceKind): boolean {
-  return kind === 'kemlock-android' || kind === 'kemlock-ios' || kind === 'kemlock-web' || kind === 'kemlock-cli';
+  return (
+    kind === 'kemlock-android' ||
+    kind === 'kemlock-ios' ||
+    kind === 'kemlock-web' ||
+    kind === 'kemlock-browser' ||
+    kind === 'kemlock-cli'
+  );
+}
+
+/** The message that names what kind of app a device is, for the devices list. */
+export function deviceKindLabelId(kind: DeviceKind): MessageId {
+  switch (kind) {
+    case 'kemlock-android':
+      return 'devices.kind.kemlockAndroid';
+    case 'kemlock-ios':
+      return 'devices.kind.kemlockIos';
+    case 'kemlock-web':
+      return 'devices.kind.kemlockWeb';
+    case 'kemlock-browser':
+      return 'devices.kind.kemlockBrowser';
+    case 'kemlock-cli':
+      return 'devices.kind.kemlockCli';
+    case 'amethystora':
+      return 'devices.kind.amethystora';
+    case 'bitwarden':
+      return 'devices.kind.bitwarden';
+    default:
+      return 'devices.kind.other';
+  }
 }
 
 /** The devices other than this one, newest sync first. */

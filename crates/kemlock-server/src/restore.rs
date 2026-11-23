@@ -380,6 +380,7 @@ pub async fn restore_check(
         server_key: None,
         trusted_proxies: Vec::new(),
         ip_header: None,
+        browser_extension_ids: Vec::new(),
         source_url: None,
         ignored: Vec::new(),
         config_file: None,

@@ -48,7 +48,7 @@ export interface ApprovalListResponse {
   approvals: PendingApprovalDto[];
 }
 
-export type KeyProtection = 'secure-enclave' | 'keystore' | 'web-crypto' | 'software';
+export type KeyProtection = 'secure-enclave' | 'keystore' | 'web-crypto' | 'browser' | 'software';
 
 export interface KeyCopyRequest {
   wrappedKey: string;

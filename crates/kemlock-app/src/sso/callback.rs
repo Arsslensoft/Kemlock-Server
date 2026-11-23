@@ -7,6 +7,7 @@ use crate::ports::{Clock, SecretSeal};
 use crate::sso::config::SsoConfig;
 use crate::sso::error::SsoError;
 use crate::sso::state::{PURPOSE_CODE, PURPOSE_STATE, SsoCode, SsoState, open_value, seal_value};
+use kemlock_domain::DeviceKind;
 
 #[derive(Debug)]
 pub struct SsoCallback<S, E> {
@@ -51,7 +52,12 @@ impl<S: SecretSeal, E: Clock> SsoCallback<S, E> {
         }
         // The redirect was checked at `start`, and sealing keeps it from being swapped; check
         // again anyway, since it is where a code is sent.
-        if !self.config.redirect_allowed(&state.redirect) {
+        let kind = if state.browser {
+            DeviceKind::KemlockBrowser
+        } else {
+            DeviceKind::Other
+        };
+        if !self.config.redirect_allowed_for(&state.redirect, kind) {
             return Err(SsoError::BadState);
         }
 
@@ -74,6 +80,7 @@ impl<S: SecretSeal, E: Clock> SsoCallback<S, E> {
                 nonce: state.nonce,
                 app_challenge: state.app_challenge,
                 jkt: state.jkt,
+                browser: state.browser,
             };
             format!(
                 "code={}&state={}",

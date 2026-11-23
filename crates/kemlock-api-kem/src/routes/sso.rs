@@ -34,6 +34,7 @@ use kemlock_app::sso::{
     SsoFinish, SsoLogout, SsoRepos, SsoStart, StartInput,
 };
 use kemlock_app::{Sessions, SignedIn, TokenPair};
+use kemlock_domain::DeviceKind;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -77,6 +78,13 @@ pub(crate) struct StartRequest {
     pub state: String,
     /// Where the browser trip ends: `kemlock://sso` (the default), or a path on this server.
     pub redirect: Option<String>,
+    /// What the device is, as in the sign-in's `device.kind`. Only `"kemlock-browser"` changes
+    /// anything: that device may also give its extension's redirect address,
+    /// `https://<id>.chromiumapp.org/` or `https://<hash>.extensions.allizom.org/` with the path
+    /// `/` or `/sso`, when the server's `KEMLOCK_BROWSER_EXTENSION_IDS` names that extension. `finish`
+    /// then needs that kind of device.
+    #[schema(value_type = Option<String>)]
+    pub kind: Option<DeviceKind>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -209,7 +217,7 @@ fn method_name(method: TwoFactorMethod) -> &'static str {
 // Handlers
 
 fn config<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(api: &Api<S, P, K>) -> SsoConfig {
-    SsoConfig::new(&api.config.domain)
+    SsoConfig::new(&api.config.domain).with_browser_extensions(&api.config.browser_extension_ids)
 }
 
 /// `POST /kem/v1/auth/sso/start`: the provider's address for a device to open in the system
@@ -242,6 +250,7 @@ where
         app_state: request.state,
         redirect: request.redirect.unwrap_or_else(|| APP_REDIRECT.to_owned()),
         jkt: proof.jkt,
+        device_kind: request.kind.unwrap_or(DeviceKind::Other),
     })
     .await?;
     Ok(Json(StartResponse {

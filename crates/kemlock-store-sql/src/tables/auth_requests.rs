@@ -59,6 +59,7 @@ fn kind_str(kind: DeviceKind) -> &'static str {
         DeviceKind::KemlockAndroid => "kemlock-android",
         DeviceKind::KemlockIos => "kemlock-ios",
         DeviceKind::KemlockWeb => "kemlock-web",
+        DeviceKind::KemlockBrowser => "kemlock-browser",
         DeviceKind::KemlockCli => "kemlock-cli",
         DeviceKind::Amethystora => "amethystora",
         DeviceKind::Bitwarden => "bitwarden",
@@ -71,6 +72,7 @@ fn kind_from(s: &str) -> Result<DeviceKind, StoreError> {
         "kemlock-android" => Ok(DeviceKind::KemlockAndroid),
         "kemlock-ios" => Ok(DeviceKind::KemlockIos),
         "kemlock-web" => Ok(DeviceKind::KemlockWeb),
+        "kemlock-browser" => Ok(DeviceKind::KemlockBrowser),
         "kemlock-cli" => Ok(DeviceKind::KemlockCli),
         "amethystora" => Ok(DeviceKind::Amethystora),
         "bitwarden" => Ok(DeviceKind::Bitwarden),
@@ -142,6 +144,7 @@ mod tests {
             DeviceKind::KemlockAndroid,
             DeviceKind::KemlockIos,
             DeviceKind::KemlockWeb,
+            DeviceKind::KemlockBrowser,
             DeviceKind::KemlockCli,
             DeviceKind::Amethystora,
             DeviceKind::Bitwarden,
@@ -149,6 +152,12 @@ mod tests {
         ] {
             assert_eq!(kind_from(kind_str(kind)), Ok(kind));
         }
+        // The extension and the web vault are stored apart, and the name fits the column.
+        assert_eq!(kind_str(DeviceKind::KemlockBrowser), "kemlock-browser");
+        assert_ne!(
+            kind_str(DeviceKind::KemlockBrowser),
+            kind_str(DeviceKind::KemlockWeb)
+        );
         assert!(kind_from("toaster").is_err());
     }
 

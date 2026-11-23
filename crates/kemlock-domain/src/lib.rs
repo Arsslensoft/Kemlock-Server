@@ -28,7 +28,7 @@ pub use attachment::{
 };
 pub use change::{BadCursor, ChangeId, Hlc, VersionVector};
 pub use dedup::{DedupTag, Dismissal, DismissalId, DuplicateGroup, MatchingSettings, TagSet};
-pub use device::{Device, DeviceKind};
+pub use device::{BROWSER_DEVICE_TYPES, Device, DeviceKind, browser_name};
 pub use ids::{DeviceId, ItemId, ServerId, SpaceId, UserId};
 pub use item::{
     Item, ItemDraft, ItemError, ItemFormat, ItemKind, ItemLimits, ItemWrite, Revision, Sealed,
