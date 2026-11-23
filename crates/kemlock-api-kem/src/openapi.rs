@@ -188,6 +188,20 @@ fn doc_config() {}
 fn doc_openapi() {}
 
 #[utoipa::path(
+    get, path = "/kem/v1/webauthn", tag = "auth",
+    responses((status = 200, description = "A static HTML page a client that is not a page of this server (the browser extension) opens to ask for a passkey or security key, with the PRF extension, for this server's relying party. It takes the request in the URL fragment (`options`, `state`, `redirect` or `extension`, `prf`) and answers only an extension redirect address, or opener, named by `KEMLOCK_BROWSER_EXTENSION_IDS`", body = String, content_type = "text/html"))
+)]
+#[allow(dead_code)]
+fn doc_webauthn_page() {}
+
+#[utoipa::path(
+    get, path = "/kem/v1/webauthn/connector.js", tag = "auth",
+    responses((status = 200, description = "The connector page's script, which the page's policy allows as its only script", body = String, content_type = "text/javascript"))
+)]
+#[allow(dead_code)]
+fn doc_webauthn_script() {}
+
+#[utoipa::path(
     post, path = "/kem/v1/setup/verify", tag = "setup",
     request_body = SetupVerifyRequest,
     responses(
@@ -416,7 +430,7 @@ fn doc_live() {}
         description = "The Kemlock API: OPAQUE sign-in, DPoP-bound tokens, items and sync, attachments, trusted devices, emergency access, single sign-on and spaces. Errors are RFC 9457 problem details."
     ),
     paths(
-        doc_config, doc_openapi, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
+        doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
         doc_register_start, doc_register_finish, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
         doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live

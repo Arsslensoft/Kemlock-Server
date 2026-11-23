@@ -3,6 +3,7 @@
 
 pub(crate) mod account;
 mod auth;
+pub(crate) mod connector;
 pub(crate) mod contract;
 mod contract_crypto;
 pub(crate) mod devices;
