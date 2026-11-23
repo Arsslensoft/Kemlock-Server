@@ -83,7 +83,7 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - name: Install cargo-about
-        run: cargo install --locked --version 0.9.3 cargo-about
+        run: cargo install --locked --version 0.9.3 --features cli cargo-about
       - name: Install the web vault's runtime packages
         run: |
           set -euo pipefail

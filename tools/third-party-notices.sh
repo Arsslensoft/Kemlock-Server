@@ -4,7 +4,7 @@
 # and NOTICE (the MIT, BSD, Apache-2.0, ISC and OFL licences require their text to accompany
 # binary copies); the server serves it at /THIRD-PARTY-NOTICES.txt.
 #
-#   cargo install --locked --version 0.9.3 cargo-about     # once; CARGO_ABOUT_VERSION below
+#   cargo install --locked --version 0.9.3 --features cli cargo-about     # once; CARGO_ABOUT_VERSION below
 #   (cd web && npm ci --omit=dev --ignore-scripts)          # the web licence texts are read from node_modules
 #   tools/third-party-notices.sh
 #
@@ -23,7 +23,7 @@ die() { echo "third-party-notices: $*" >&2; exit 1; }
 command -v cargo >/dev/null || die "cargo is needed"
 command -v node >/dev/null || die "node is needed"
 cargo about --version >/dev/null 2>&1 \
-  || die "cargo-about is needed: cargo install --locked --version $CARGO_ABOUT_VERSION cargo-about"
+  || die "cargo-about is needed: cargo install --locked --version $CARGO_ABOUT_VERSION --features cli cargo-about"
 found="$(cargo about --version | awk '{print $2}')"
 [ "$found" = "$CARGO_ABOUT_VERSION" ] \
   || echo "third-party-notices: warning: cargo-about $found, pinned $CARGO_ABOUT_VERSION" >&2
