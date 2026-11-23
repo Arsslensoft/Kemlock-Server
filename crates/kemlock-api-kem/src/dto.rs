@@ -240,10 +240,14 @@ pub struct DeviceDto {
     /// The id the device kept from an earlier sign-in; omit it on the first.
     pub id: Option<Uuid>,
     pub name: String,
-    /// `"kemlock-android"`, `"kemlock-ios"`, `"kemlock-web"`, `"kemlock-cli"`, `"amethystora"`,
-    /// `"bitwarden"` or `"other"`.
+    /// `"kemlock-android"`, `"kemlock-ios"`, `"kemlock-web"`, `"kemlock-browser"` (the browser
+    /// extension), `"kemlock-cli"`, `"amethystora"`, `"bitwarden"` or `"other"`.
     #[schema(value_type = Option<String>)]
     pub kind: Option<kemlock_domain::DeviceKind>,
+    /// With `kind` `"kemlock-browser"`: the browser, numbered as Bitwarden numbers its device
+    /// types: 2 Chrome, 3 Firefox, 5 Edge. The server adds the browser's name to the device's name
+    /// when it isn't there. Refused with any other kind.
+    pub device_type: Option<i32>,
     /// The identifier this phone sends the Bitwarden API as `deviceIdentifier`, when it signs in
     /// there too. The device then has the id the Bitwarden API makes from it, so the phone is one
     /// device on both APIs, and `id` is ignored. 1 to 256 bytes, exactly as the Bitwarden API got
@@ -261,10 +265,25 @@ impl DeviceDto {
                 "bitwardenDeviceIdentifier must be 1 to 256 bytes",
             ));
         }
+        let kind = self.kind.unwrap_or(DeviceKind::Other);
+        let mut name = self.name;
+        if let Some(device_type) = self.device_type {
+            let browser = (kind == DeviceKind::KemlockBrowser)
+                .then(|| kemlock_domain::browser_name(device_type))
+                .flatten()
+                .ok_or_else(|| {
+                    Problem::bad_request(
+                        "deviceType is 2, 3 or 5 and goes with kind \"kemlock-browser\"",
+                    )
+                })?;
+            if !name.to_ascii_lowercase().contains(&browser.to_ascii_lowercase()) {
+                name = format!("{}, {browser}", name.trim_end());
+            }
+        }
         Ok(DeviceInfo {
             id: self.id.map(DeviceId),
-            name: self.name,
-            kind: self.kind.unwrap_or(DeviceKind::Other),
+            name,
+            kind,
             bitwarden_identifier: self.bitwarden_device_identifier,
         })
     }

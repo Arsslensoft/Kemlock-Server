@@ -191,7 +191,7 @@ pub(crate) struct AccountKeysResponse {
 pub(crate) struct EnrolDeviceCopy {
     /// The root key wrapped by a key only this device holds, base64url, 1 to 1,024 bytes.
     pub(crate) wrapped_key: String,
-    /// `"secure-enclave"`, `"keystore"`, `"web-crypto"` or `"software"`.
+    /// `"secure-enclave"`, `"keystore"`, `"web-crypto"`, `"browser"` or `"software"`.
     #[schema(value_type = String)]
     pub(crate) protection: KeyProtection,
 }
