@@ -42,6 +42,9 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace crates (publish = false) name each other by path, which has no version to pin.
+# Every registry dependency still needs one.
+allow-wildcard-paths = true
 # One copy of each primitive we rely on: a second version of a crypto crate
 # means two implementations to audit.
 deny = [
