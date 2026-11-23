@@ -104,7 +104,7 @@ jobs:
           channel: stable
           flutter-version: ${{ env.KEMLOCK_BW_FLUTTER }}
           cache: true
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
@@ -197,7 +197,7 @@ jobs:
         with:
           name: kemlock-server
           path: bin
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
       - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
