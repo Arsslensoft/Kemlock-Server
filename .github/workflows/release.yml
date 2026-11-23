@@ -482,6 +482,8 @@ jobs:
       actions: read
       id-token: write
       packages: write
+    # The SLSA generator must be called by its release tag, not a commit SHA: the builder identity
+    # in the provenance is the tag, and slsa-verifier rejects a SHA. So this is the one tag here.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
     with:
       image: ghcr.io/arsslensoft/kemlock-server
@@ -706,6 +708,8 @@ jobs:
       actions: read
       id-token: write
       contents: write
+    # The SLSA generator must be called by its release tag, not a commit SHA: the builder identity
+    # in the provenance is the tag, and slsa-verifier rejects a SHA. So this is the one tag here.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
     with:
       base64-subjects: ${{ needs.assets.outputs.hashes }}
