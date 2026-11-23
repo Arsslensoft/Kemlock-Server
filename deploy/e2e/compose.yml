@@ -13,7 +13,7 @@
 # the ID token's `iss` is the one the server was told in SSO_AUTHORITY.
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:26.4
+    image: quay.io/keycloak/keycloak:26.8
     command: ["start-dev", "--import-realm"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
