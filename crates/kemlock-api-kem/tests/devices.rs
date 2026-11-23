@@ -525,3 +525,106 @@ async fn the_openapi_document_names_the_new_routes() {
     assert!(json["paths"]["/kem/v1/sync"]["get"].is_object());
     assert!(json["components"]["schemas"]["ApprovalRequestBody"].is_object());
 }
+
+// ---------------------------------------------------------------------------------------------
+// the browser extension's device kind and key protection
+
+#[tokio::test]
+async fn the_extension_is_a_device_of_its_own_kind_named_for_its_browser() {
+    let (app, open, session) = open_device().await;
+    for (device_type, browser) in [(2, "Chrome"), (3, "Firefox"), (5, "Edge")] {
+        let asked = app
+            .client()
+            .post(
+                "/kem/v1/auth/device/request",
+                json!({
+                    "email": EMAIL,
+                    "publicKey": b64(&[9u8; 1600]),
+                    "device": {"name": "Kemlock", "kind": "kemlock-browser", "deviceType": device_type},
+                }),
+            )
+            .await;
+        assert_eq!(asked.status, StatusCode::CREATED, "{:?}", asked.json());
+        let listed = open
+            .get_authed("/kem/v1/devices/approvals", &session.access_token)
+            .await
+            .json();
+        let entry = listed["approvals"]
+            .as_array()
+            .expect("approvals")
+            .iter()
+            .find(|e| e["id"] == asked.json()["requestId"])
+            .expect("the request is listed")
+            .clone();
+        assert_eq!(entry["deviceKind"], "kemlock-browser");
+        assert_eq!(entry["deviceName"], format!("Kemlock, {browser}"));
+    }
+}
+
+#[tokio::test]
+async fn the_browser_is_not_added_twice_to_a_name_that_has_it() {
+    let (app, open, session) = open_device().await;
+    let asked = app
+        .client()
+        .post(
+            "/kem/v1/auth/device/request",
+            json!({
+                "email": EMAIL,
+                "publicKey": b64(&[9u8; 1600]),
+                "device": {"name": "Kemlock for browsers, firefox", "kind": "kemlock-browser", "deviceType": 3},
+            }),
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::CREATED);
+    let listed = open
+        .get_authed("/kem/v1/devices/approvals", &session.access_token)
+        .await
+        .json();
+    assert_eq!(
+        listed["approvals"][0]["deviceName"],
+        "Kemlock for browsers, firefox"
+    );
+}
+
+#[tokio::test]
+async fn a_device_type_goes_only_with_the_browser_kind_and_a_browser_number() {
+    let (app, _open, _session) = open_device().await;
+    for device in [
+        json!({"name": "Web", "kind": "kemlock-web", "deviceType": 2}),
+        json!({"name": "Anything", "deviceType": 3}),
+        json!({"name": "Kemlock", "kind": "kemlock-browser", "deviceType": 4}),
+        json!({"name": "Kemlock", "kind": "kemlock-browser", "deviceType": 0}),
+        json!({"name": "Kemlock", "kind": "kemlock-browser", "deviceType": 9}),
+    ] {
+        let reply = app
+            .client()
+            .post(
+                "/kem/v1/auth/device/request",
+                json!({"email": EMAIL, "publicKey": b64(&[9u8; 1600]), "device": device}),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{device}");
+    }
+}
+
+#[tokio::test]
+async fn the_browser_protection_is_kept_and_shown_back() {
+    let (_app, open, session) = open_device().await;
+    let token = &session.access_token;
+    let put = open
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(token),
+                body: Some(json!({"wrappedKey": b64(&[0xc4u8; 93]), "protection": "browser"})),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+    let got = open.get_authed("/kem/v1/devices/key-copy", token).await;
+    assert_eq!(got.status, StatusCode::OK);
+    assert_eq!(got.json()["protection"], "browser");
+    assert_eq!(got.json()["wrappedKey"], b64(&[0xc4u8; 93]));
+}

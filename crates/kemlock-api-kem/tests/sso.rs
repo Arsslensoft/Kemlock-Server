@@ -28,7 +28,10 @@ struct Sso {
 }
 
 fn sso() -> Sso {
-    let app = App::new(false);
+    sso_on(App::new(false))
+}
+
+fn sso_on(app: App) -> Sso {
     let repos = FakeSsoRepos::default();
     let mut settings = SsoSettings::new(ISSUER, "kemlock", app.crypto.now());
     settings.set_client_secret(&app.crypto, "s3cret");
@@ -140,6 +143,9 @@ fn session_of(reply: &Reply) -> Session {
     assert_eq!(json["status"], "signed_in", "{json}");
     Session::from_tokens(&json["tokens"])
 }
+
+const EXTENSION_ID: &str = "abcdefghijklmnopabcdefghijklmnop";
+const EXTENSION_REDIRECT: &str = "https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/";
 
 // ---------------------------------------------------------------------------------------------
 // start
@@ -573,4 +579,116 @@ fn the_sso_openapi_document_names_the_four_routes() {
         assert!(paths[path][method].is_object(), "{method} {path}");
     }
     assert_eq!(paths.len(), 4);
+}
+
+// ---------------------------------------------------------------------------------------------
+// the browser extension
+
+fn browser_start_body(sso: &Sso, kind: &str) -> Value {
+    json!({
+        "challenge": sso.challenge(),
+        "state": APP_STATE,
+        "redirect": EXTENSION_REDIRECT,
+        "kind": kind,
+    })
+}
+
+#[tokio::test]
+async fn a_browser_extension_on_the_list_signs_in_through_its_own_address() {
+    let sso = sso_on(App::with_extension_ids(&[EXTENSION_ID]));
+    let client = sso.device();
+    let started = client
+        .post(
+            "/kem/v1/auth/sso/start",
+            browser_start_body(&sso, "kemlock-browser"),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.json());
+
+    let redirected = sso.browser(&client, "provider-code-1").await;
+    assert_eq!(redirected.status, StatusCode::SEE_OTHER);
+    let location = redirected.header("location").expect("a Location header");
+    assert!(
+        location.starts_with(&format!("{EXTENSION_REDIRECT}?code=")),
+        "{location}"
+    );
+    assert_eq!(redirected.header("cache-control"), Some("no-store"));
+    assert_eq!(redirected.header("referrer-policy"), Some("no-referrer"));
+
+    let finished = client
+        .post(
+            "/kem/v1/auth/sso/finish",
+            json!({
+                "code": code_of(location),
+                "verifier": sso.verifier,
+                "device": {"name": "Kemlock", "kind": "kemlock-browser", "deviceType": 2},
+            }),
+        )
+        .await;
+    assert_eq!(finished.status, StatusCode::OK, "{:?}", finished.json());
+    assert_eq!(finished.json()["status"], "signed_in");
+}
+
+#[tokio::test]
+async fn an_extension_the_admin_did_not_name_gets_no_sso_code() {
+    for app in [
+        App::new(false),
+        App::with_extension_ids(&["ponmlkjihgfedcbaponmlkjihgfedcba"]),
+    ] {
+        let sso = sso_on(app);
+        let client = sso.device();
+        let reply = client
+            .post(
+                "/kem/v1/auth/sso/start",
+                browser_start_body(&sso, "kemlock-browser"),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{:?}", reply.json());
+        assert_eq!(reply.problem(), "invalid-request");
+        assert!(sso.provider.last_request().is_none());
+    }
+}
+
+#[tokio::test]
+async fn only_a_browser_device_may_start_at_an_extensions_address() {
+    let sso = sso_on(App::with_extension_ids(&[EXTENSION_ID]));
+    let client = sso.device();
+    for body in [
+        json!({"challenge": sso.challenge(), "state": APP_STATE, "redirect": EXTENSION_REDIRECT}),
+        browser_start_body(&sso, "kemlock-web"),
+        browser_start_body(&sso, "kemlock-android"),
+        browser_start_body(&sso, "other"),
+    ] {
+        let reply = client.post("/kem/v1/auth/sso/start", body.clone()).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    assert!(sso.provider.last_request().is_none());
+}
+
+#[tokio::test]
+async fn a_browser_sign_in_is_not_finished_by_another_kind_of_device() {
+    let sso = sso_on(App::with_extension_ids(&[EXTENSION_ID]));
+    let client = sso.device();
+    let started = client
+        .post(
+            "/kem/v1/auth/sso/start",
+            browser_start_body(&sso, "kemlock-browser"),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK);
+    let redirected = sso.browser(&client, "provider-code-1").await;
+    let code = code_of(redirected.header("location").expect("a Location header"));
+    for device in [
+        json!({"name": "Web", "kind": "kemlock-web"}),
+        json!({"name": "Pixel", "kind": "kemlock-android"}),
+        json!({"name": "Something"}),
+    ] {
+        let reply = client
+            .post(
+                "/kem/v1/auth/sso/finish",
+                json!({"code": code, "verifier": sso.verifier, "device": device}),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "{device}");
+    }
 }
