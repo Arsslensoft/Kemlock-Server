@@ -1,0 +1,27 @@
+# CodeQL configuration for .github/workflows/codeql.yml.
+#
+# Test, fuzz and tooling code uses fixed passwords, salts, keys and nonces on purpose: known-answer
+# vectors, fixtures and deterministic fuzz inputs are the point of them, and none of it is built
+# into the server. Scanning it only buries real findings (rust/hard-coded-cryptographic-value),
+# so these paths are left out of the results.
+#
+# What a path filter cannot reach is `#[cfg(test)]` modules inside crates/*/src; those alerts are
+# dismissed in the Security tab as "used in tests".
+name: kemlock codeql config
+
+paths-ignore:
+  # Integration tests, benchmarks and fuzz targets of every crate.
+  - crates/*/tests/**
+  - crates/*/benches/**
+  - crates/*/fuzz/**
+  # The test-vector generator and checker (feature `vectors`) and the backend self-test.
+  - crates/kemlock-crypto/src/vectors/**
+  - crates/kemlock-crypto/src/backend/tests.rs
+  - test-vectors/**
+  # Tooling that only runs against a test server: the Vaultwarden contract suite and the load
+  # generator.
+  - crates/kemlock-contract-tests/**
+  - crates/kemlock-loadgen/**
+  # Browser journeys and the proxy's test client.
+  - web/e2e/**
+  - deploy/proxy/test/**
