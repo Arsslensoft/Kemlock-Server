@@ -4,7 +4,7 @@
 # The official image is distroless (no shell), and an add-on needs a shell to turn its options
 # (/data/options.json) into settings. Its binaries are static, so this takes them from the
 # official image by version and runs them under the base image's s6 and bashio.
-ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.22
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.22@sha256:1967b25b597a43fa46ce3eef5267b525e946d559d0b397c60af717dde15a2696
 ARG KEMLOCK_VERSION=1
 
 FROM ghcr.io/arsslensoft/kemlock-server:${KEMLOCK_VERSION} AS kemlock
