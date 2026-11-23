@@ -107,7 +107,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
+      - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}"
       - run: sudo apt-get update && sudo apt-get install --yes socat
       - name: Start the server and https in front of it
         run: |
@@ -200,7 +200,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      - run: npm install --global @bitwarden/cli@${{ env.KEMLOCK_BW_CLI }}
+      - run: npm install --global "@bitwarden/cli@${KEMLOCK_BW_CLI}"
       - name: Start the server on 127.0.0.1:8080
         run: |
           chmod +x bin/kemlock-server
