@@ -10,7 +10,6 @@ import { copyText } from '@/lib/clipboard';
 import { Button } from '@/ui/Button';
 import { Icon, Logo } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
-import { SourceLink } from '@/ui/SourceLink';
 import '@/styles/about.css';
 import { formatSize } from './Send';
 import {
@@ -69,7 +68,6 @@ function Frame({ children }: { children: ReactNode }) {
       <p className="hint">{t('sendAccess.footer')}</p>
       {/* Outside the router (Root renders this page on its own), so a plain link, not LegalLinks. */}
       <nav className="legal-links" aria-label={t('about.nav')}>
-        <SourceLink />
         <a href="/about">{t('about.link')}</a>
       </nav>
     </div>
