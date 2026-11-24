@@ -130,3 +130,12 @@ describe('importItems', () => {
     expect(store.items.size).toBe(500);
   });
 });
+
+describe('saveBatch stamps', () => {
+  it('writes the entry id as the item id and updatedAt in epoch ms', async () => {
+    const { deps, store } = setup();
+    const [saved] = await saveBatch(deps, store, [{ kind: 'note', owner: OWNER, fields: { name: 'N' } }]);
+    expect(saved?.data?.id).toBe(saved?.id);
+    expect(saved?.data?.updatedAt).toBe(NOW.getTime());
+  });
+});

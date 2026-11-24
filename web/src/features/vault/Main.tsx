@@ -1,3 +1,4 @@
+import { isFavorite } from './favorite';
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
 import { useMemo } from 'react';
 import { useT } from '@/i18n';
@@ -49,7 +50,7 @@ export default function Main() {
     () =>
       active
         .filter((item) => (kind ? item.kind === kind : true))
-        .filter((item) => (fav ? item.data?.favorite === true : true))
+        .filter((item) => (fav ? isFavorite(item) : true))
         .filter((item) => matches(item, q))
         .sort((a, b) => itemName(a).localeCompare(itemName(b))),
     [active, kind, fav, q],
