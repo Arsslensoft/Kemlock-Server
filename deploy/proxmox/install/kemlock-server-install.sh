@@ -282,10 +282,22 @@ depend() {
 
 start_pre() {
   checkpath -f -m 0640 -o kemlock:kemlock /var/log/kemlock-server.log
-  # The settings are in /opt/kemlock-server/.env, the same file the Debian unit reads.
-  set -a
-  . /opt/kemlock-server/.env
-  set +a
+  # The settings are in /opt/kemlock-server/.env, the same file the Debian unit reads, and read
+  # as systemd's EnvironmentFile reads it: KEY=value lines, # comments, one pair of quotes around
+  # a value taken off. Never sourced, so a space, a $ or a backtick in a password is just text.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | '#'* | ';'*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    [ "$key" != "$line" ] || continue
+    key=$(printf '%s' "$key" | tr -d '[:space:]')
+    case "$key" in '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;; esac
+    case "$value" in
+      \"*\") value=${value#\"}; value=${value%\"} ;;
+      \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+    export "$key=$value"
+  done </opt/kemlock-server/.env
 }
 EOT
   chmod +x /etc/init.d/kemlock-server
