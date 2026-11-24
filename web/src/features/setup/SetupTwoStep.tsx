@@ -1,12 +1,14 @@
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
+import { Radio, RadioGroup } from 'react-aria-components';
 import { api, session } from '@/app/services';
 import { useRich, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { AuthPage } from '@/ui/AuthPage';
 import { CodeForm } from '@/ui/CodeForm';
 import { CopyButton } from '@/ui/CopyButton';
+import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import { QrCode } from '@/ui/QrCode';
 import { SetupSteps } from '@/ui/SetupSteps';
@@ -15,6 +17,42 @@ import { setupMemory } from './memory';
 /** `KQ7M4XZP...` -> `KQ7M 4XZP ...`, which is easier to type from a screen. */
 export function groupSecret(secret: string): string {
   return secret.replace(/\s+/g, '').replace(/(.{4})/g, '$1 ').trim();
+}
+
+export type TwoStepWay = 'totp' | 'key';
+
+/** The two ways to a second step, as cards. Takes no router or network. */
+export function TwoStepChoice({ value, onChange }: { value: TwoStepWay; onChange: (way: TwoStepWay) => void }) {
+  const t = useT();
+  return (
+    <RadioGroup
+      aria-label={t('setup.twoStep.way')}
+      value={value}
+      onChange={(way) => onChange(way as TwoStepWay)}
+      className="opts"
+    >
+      <div className="grid">
+        <Radio value="totp" className="opt">
+          <span className="box">
+            <Icon name="check" />
+          </span>
+          <span>
+            <span className="t">{t('setup.twoStep.app')}</span>
+            <span className="hint">{t('setup.twoStep.appHint')}</span>
+          </span>
+        </Radio>
+        <Radio value="key" className="opt">
+          <span className="box">
+            <Icon name="check" />
+          </span>
+          <span>
+            <span className="t">{t('setup.twoStep.key')}</span>
+            <span className="hint">{t('setup.twoStep.keyHint')}</span>
+          </span>
+        </Radio>
+      </div>
+    </RadioGroup>
+  );
 }
 
 export default function SetupTwoStep() {
@@ -32,6 +70,7 @@ export default function SetupTwoStep() {
     retry: false,
     refetchOnWindowFocus: false,
   });
+  const [way, setWay] = useState<TwoStepWay>('totp');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<ReturnType<typeof describeError>>();
 
@@ -63,29 +102,7 @@ export default function SetupTwoStep() {
         <p className="lede">{t('setup.twoStep.lede')}</p>
       </div>
 
-      <fieldset className="opts">
-        <legend className="sr">{t('setup.twoStep.way')}</legend>
-        <div className="grid">
-          <div className="opt" data-selected="true">
-            <span className="box">
-              <span />
-            </span>
-            <span>
-              <span className="t">{t('setup.twoStep.app')}</span>
-              <span className="hint">{t('setup.twoStep.appHint')}</span>
-            </span>
-          </div>
-          <div className="opt" data-disabled="true">
-            <span className="box">
-              <span />
-            </span>
-            <span>
-              <span className="t">{t('setup.twoStep.key')}</span>
-              <span className="hint">{t('setup.twoStep.keyHint')}</span>
-            </span>
-          </div>
-        </div>
-      </fieldset>
+      <TwoStepChoice value={way} onChange={setWay} />
 
       {enrol.isError ? (
         <Notice tone="error" live>
@@ -93,7 +110,7 @@ export default function SetupTwoStep() {
         </Notice>
       ) : null}
 
-      {enrol.data ? (
+      {way !== 'totp' ? null : enrol.data ? (
         <section className="scan" aria-labelledby="h-scan">
           <h2 id="h-scan" className="sr">
             {t('setup.twoStep.scanTitle')}
