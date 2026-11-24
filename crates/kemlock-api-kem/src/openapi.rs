@@ -11,7 +11,8 @@ use crate::dto::{
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
     PreloginResponse, RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest,
     RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse, SetupVerifyRequest,
-    SetupVerifyResponse, SignInResponse, SsoOffer, SyncBody, SyncResponse, TagOutcomeDto,
+    ServerBasicsDto, SetupFinishRequest, SetupVerifyResponse, SignInResponse, SsoOffer, SyncBody,
+    SyncResponse, TagOutcomeDto,
     TaggedBatchRequest, TaggedBatchResponse, TaggedBatchWriteDto, TokenResponse,
     TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
 };
@@ -217,8 +218,10 @@ fn doc_setup_verify() {}
 #[utoipa::path(
     post, path = "/kem/v1/setup/finish", tag = "setup",
     security(("dpop" = [])),
+    request_body = Option<SetupFinishRequest>,
     responses(
-        (status = 204, description = "Setup is closed for good"),
+        (status = 204, description = "Setup is closed for good, and the server basics (when sent) are saved as settings"),
+        (status = 400, description = "A server basic is not valid; setup stays open", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "The admin has no confirmed two-step method yet", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -436,7 +439,8 @@ fn doc_live() {}
         doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
-        ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, EmailRequest, KdfDto,
+        ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,
+        ServerBasicsDto, EmailRequest, KdfDto,
         PreloginResponse, MethodsResponse, SsoOffer, RegisterStartRequest, RegisterStartResponse,
         RegisterFinishRequest, RegisterFinishResponse, OpaqueStartRequest, OpaqueStartResponse,
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,

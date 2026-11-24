@@ -2,7 +2,9 @@
 
 use super::guard;
 use super::view::MaybeView;
-use crate::dto::{ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, VaultServersDto};
+use crate::dto::{
+    ConfigResponse, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, VaultServersDto,
+};
 use crate::extract::{Authed, Body, ClientIp, SecureConnection};
 use crate::openapi::{ApiDoc, CommonAnswers};
 use crate::problem::Problem;
@@ -11,8 +13,9 @@ use crate::state::{Api, Crypto, Store};
 use axum::Json;
 use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
+use kemlock_app::admin::{NoEnv, Settings, SettingsRepo};
 use kemlock_app::ports::TokenSigner;
-use kemlock_app::{AppError, SetupPhase};
+use kemlock_app::{AppError, SetupPhase, save_basics};
 use kemlock_domain::Owner;
 use utoipa::{Modify, OpenApi};
 
@@ -149,12 +152,36 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         }))
     }
 
-    /// `POST /kem/v1/setup/finish`: closes setup, for the admin who has a two-step method.
+}
+
+impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
+    /// `POST /kem/v1/setup/finish`: closes setup, for the admin who has a two-step method. The
+    /// body is optional; with `basics` the server basics are saved as settings, once setup is
+    /// closed, so only the admin setup waits for can write them. They are checked first, so a
+    /// bad value stops the request before setup closes.
     pub(crate) async fn handle_setup_finish(
         State(api): State<Self>,
         authed: Authed,
+        body: Body,
     ) -> Result<StatusCode, Problem> {
+        let changes = if body.0.iter().all(u8::is_ascii_whitespace) {
+            None
+        } else {
+            let request: SetupFinishRequest = body.json()?;
+            request
+                .basics
+                .map(|basics| basics.into_basics()?.changes())
+                .transpose()?
+        };
         api.finish_setup().execute(authed.actor.user).await?;
+        if let Some(changes) = changes {
+            let settings = Settings {
+                repo: api.store.clone(),
+                seal: api.crypto.clone(),
+                env: NoEnv,
+            };
+            save_basics(&settings, &changes).await?;
+        }
         Ok(StatusCode::NO_CONTENT)
     }
 }
