@@ -111,7 +111,10 @@ export default function NewItem() {
     void navigate({ to: '/vault/$itemId', params: { itemId: result.id } });
   }
 
-  const target = collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where);
+  // A contact is one person's own statement: it stays in the account's own vault.
+  const target = kind === 'contact'
+    ? undefined
+    : collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where);
   const owner = target ? `space:${target.spaceId}` : `user:${session.getState().userId ?? ''}`;
   const collectionId = target?.collectionId;
   const heldIn = item?.collectionId
@@ -164,7 +167,7 @@ export default function NewItem() {
             : t('newItem.where.inSpace')}
         </p>
       ) : null}
-      {!editing && collections.data && collections.data.length > 0 ? (
+      {!editing && kind !== 'contact' && collections.data && collections.data.length > 0 ? (
         <div className="field">
           <label htmlFor="item-where">{t('newItem.where')}</label>
           <select id="item-where" value={where} onChange={(event) => setWhere(event.target.value)}>
