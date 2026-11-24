@@ -1128,3 +1128,32 @@ async fn a_code_that_was_never_asked_for_is_not_found_and_a_server_without_mail_
     );
     assert!(fx.mailbox.protected_codes().is_empty());
 }
+
+#[tokio::test]
+async fn asking_for_another_setup_code_keeps_the_wrong_entries_so_far() {
+    let fx = Fx::new();
+    let user = fx.user().await.id;
+    let address = "mfa@example.org";
+
+    fx.steps().email_begin(user, address).await.expect("sent");
+    for _ in 0..2 {
+        assert_eq!(
+            fx.steps().email_confirm(user, address, "000000x").await,
+            Err(AppError::Unauthorized)
+        );
+    }
+    // Asking again must not give the three tries back: one more wrong entry ends the code.
+    fx.steps().email_begin(user, address).await.expect("sent");
+    assert_eq!(
+        fx.steps().email_confirm(user, address, "000000x").await,
+        Err(AppError::Unauthorized)
+    );
+    assert!(
+        fx.steps()
+            .email_confirm(user, address, &fx.mailbox.last_code())
+            .await
+            .is_err(),
+        "the code was used up by the wrong entries, even the right one is refused"
+    );
+    assert_eq!(fx.steps().email_address(user).await, Ok(None));
+}
