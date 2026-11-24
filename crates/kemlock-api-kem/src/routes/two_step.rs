@@ -77,7 +77,7 @@ impl<R> std::fmt::Debug for TwoStepRuntime<R> {
 pub(crate) struct StepChallengeRequest {
     /// The sealed challenge the password step answered with.
     pub(crate) challenge: String,
-    /// The client's kind, which Duo's redirect page needs: `web` (the default), `browser`,
+    /// The client's kind, which Duo's redirect page needs: `web` (the default), `b.any(|row| row.enabled)ser`,
     /// `desktop`, `mobile` or `cli`. Send the same when the prompt is answered.
     pub(crate) client: Option<String>,
 }
@@ -499,12 +499,12 @@ where
     step(api, runtime).two_step
 }
 
-/// A session alone may not turn a second step on beside another one (the rule of an authenticator
-/// app and of security keys): a stolen session could swap it for one it controls.
-async fn refuse_beside_other<S, P, K>(
+/// A session alone may not turn a second step on while any is on, this method's own included: a
+/// stolen session could swap a Duo integration, a YubiKey id or an address for ones it controls.
+/// Replacing is removing (with a fresh proof) and then adding.
+async fn refuse_while_on<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
-    own: TwoFactorMethod,
 ) -> Result<(), Problem>
 where
     S: Store,
@@ -593,7 +593,7 @@ where
 {
     let request: EmailBeginRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
-    refuse_beside_other(&api, authed.actor.user, TwoFactorMethod::Email).await?;
+    refuse_while_on(&api, authed.actor.user).await?;
     two_step_of(&api, &runtime)
         .email_begin(authed.actor.user, &request.address)
         .await?;
@@ -656,7 +656,7 @@ where
 {
     let request: YubikeySetRequest = body.json()?;
     limit_setup(&api, &authed, "yubikey-setup")?;
-    refuse_beside_other(&api, authed.actor.user, TwoFactorMethod::YubiKey).await?;
+    refuse_while_on(&api, authed.actor.user).await?;
     let data = two_step_of(&api, &runtime)
         .yubikey_set(authed.actor.user, &request.otps, request.nfc)
         .await?;
@@ -702,7 +702,7 @@ where
 {
     let request: DuoSetRequest = body.json()?;
     limit_setup(&api, &authed, "duo-setup")?;
-    refuse_beside_other(&api, authed.actor.user, TwoFactorMethod::Duo).await?;
+    refuse_while_on(&api, authed.actor.user).await?;
     let custom = match (request.host, request.client_id, request.client_secret) {
         (None, None, None) => None,
         (host, ik, sk) => Some(DuoKeys {
