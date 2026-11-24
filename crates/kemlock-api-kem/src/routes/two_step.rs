@@ -906,7 +906,7 @@ where
 }
 
 /// The same `DPoP-Nonce` header every other `/kem/v1` response carries.
-async fn nonce_header<S, P, K>(
+pub(crate) async fn nonce_header<S, P, K>(
     State(api): State<Api<S, P, K>>,
     request: Request,
     next: Next,

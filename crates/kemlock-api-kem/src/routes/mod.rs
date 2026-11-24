@@ -17,6 +17,7 @@ pub(crate) mod new_device;
 pub(crate) mod passkeys;
 pub(crate) mod policies;
 pub(crate) mod push;
+pub(crate) mod recovery_kit;
 pub(crate) mod sends;
 mod server;
 pub(crate) mod space_chain;
