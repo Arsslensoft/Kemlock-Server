@@ -1036,3 +1036,114 @@ async fn the_new_routes_are_in_the_openapi_document() {
         assert!(doc["paths"][path][method].is_object(), "{method} {path}");
     }
 }
+
+#[tokio::test]
+async fn a_second_step_is_added_beside_another_after_a_fresh_proof_that_works_once() {
+    let rig = rig();
+    let (device, session) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let user = UserId(uuid::Uuid::parse_str(&session.user_id).expect("a UUID"));
+    // A YubiKey is on already.
+    rig.app
+        .store
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::YubiKey,
+            sealed_secret: rig
+                .app
+                .crypto
+                .seal(PURPOSE_YUBIKEY, br#"{"keys":["cccccccccccc"],"nfc":false}"#),
+            enabled: true,
+            created_at: rig.app.clock.now(),
+        })
+        .await
+        .expect("the row is stored");
+
+    // Mailing the first code turns nothing on, so it needs no proof.
+    let begun = rig
+        .authed(
+            &device,
+            "POST",
+            &format!("{FACTOR}/email"),
+            token,
+            Some(json!({"address": "mfa@example.org"})),
+        )
+        .await;
+    assert_eq!(begun.status, StatusCode::NO_CONTENT, "{:?}", begun.json());
+    let (_, code) = rig.mailbox.last();
+    let confirm = format!("{FACTOR}/email/confirm");
+    let body = |proof: Option<&str>| match proof {
+        Some(proof) => json!({"address": "mfa@example.org", "code": code, "proof": proof}),
+        None => json!({"address": "mfa@example.org", "code": code}),
+    };
+
+    // No proof, and a wrong one: refused, and nothing is on.
+    let bare = rig
+        .authed(&device, "POST", &confirm, token, Some(body(None)))
+        .await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
+    let wrong = rig
+        .authed(&device, "POST", &confirm, token, Some(body(Some("000000"))))
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST, "{:?}", wrong.json());
+    let shown = rig.authed(&device, "GET", SETUP, token, None).await;
+    assert_eq!(shown.json()["email"], Value::Null);
+    assert!(rig.mailbox.changes().is_empty());
+
+    // The mailed proof adds it.
+    let asked = rig
+        .authed(&device, "POST", &format!("{FACTOR}/proof"), token, None)
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT, "{:?}", asked.json());
+    let proof = rig.mailbox.last_proof();
+    let added = rig
+        .authed(&device, "POST", &confirm, token, Some(body(Some(&proof))))
+        .await;
+    assert_eq!(added.status, StatusCode::NO_CONTENT, "{:?}", added.json());
+    let shown = rig.authed(&device, "GET", SETUP, token, None).await;
+    assert_eq!(shown.json()["email"], "mfa@example.org");
+    assert_eq!(shown.json()["yubikey"]["keys"], json!(["cccccccccccc"]));
+    assert_eq!(rig.mailbox.changes(), vec![("email", true)]);
+    assert!(rig.actions().contains(&"account.two_step_added"));
+
+    // The proof is spent: it adds nothing else (Duo here), and a missing one is refused too.
+    let duo = format!("{FACTOR}/duo");
+    let replayed = rig
+        .authed(&device, "PUT", &duo, token, Some(json!({"proof": proof})))
+        .await;
+    assert_eq!(replayed.status, StatusCode::BAD_REQUEST, "{:?}", replayed.json());
+    // A fresh one adds Duo (the server's keys) beside both.
+    rig.app.clock.advance(time::Duration::seconds(31));
+    let asked = rig
+        .authed(&device, "POST", &format!("{FACTOR}/proof"), token, None)
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let added = rig
+        .authed(
+            &device,
+            "PUT",
+            &duo,
+            token,
+            Some(json!({"proof": rig.mailbox.last_proof()})),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::OK, "{:?}", added.json());
+    assert_eq!(rig.mailbox.changes(), vec![("email", true), ("duo", true)]);
+
+    // A method that is on is not replaced, proof or not: remove it first.
+    rig.app.clock.advance(time::Duration::seconds(31));
+    let asked = rig
+        .authed(&device, "POST", &format!("{FACTOR}/proof"), token, None)
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let replaced = rig
+        .authed(
+            &device,
+            "PUT",
+            &format!("{FACTOR}/yubikey"),
+            token,
+            Some(json!({"otps": [OTP], "proof": rig.mailbox.last_proof()})),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::CONFLICT, "{:?}", replaced.json());
+}
