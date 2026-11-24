@@ -893,13 +893,23 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
 
     // ---- the old home returns and is fenced ----
     fabric.set_down(a.id, false);
-    // First visit: B tells A of the promotion (its offer of the vault is refused until A has it).
+    // First visit: B tells A of the promotion. A is the home it takes the vault from, so A holds
+    // the promotion for its own admin instead of applying it: a replica can't take a vault over.
     b.visit(&a).await;
     let at_a = VaultRepo::get_vault(a.store(), owner)
         .await
         .expect("a read")
         .expect("the vault");
+    assert_eq!((at_a.home, at_a.epoch), (a.id, 1), "A waits for its admin");
+    assert!(at_a.held_demotion.is_some(), "A holds the promotion");
+    // A's admin accepts it (the HTTP route asks for a fresh check).
+    let at_a = a
+        .facade
+        .accept_demotion(owner)
+        .await
+        .expect("A's admin accepts");
     assert_eq!((at_a.home, at_a.epoch), (b.id, 2), "A took the promotion");
+    assert!(at_a.held_demotion.is_none());
     assert_eq!(at_a.replicas, vec![c.id, a.id]);
     // Second visit: B pulls what A wrote while it was cut off. The home-only write is of an older
     // epoch, so it is kept for the admins and applied nowhere.
@@ -1168,7 +1178,12 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
         1,
         "A still believes it is the home"
     );
+    // B tells A of the promotion; A holds it until its admin accepts it.
     b.visit(&a).await;
+    a.facade
+        .accept_demotion(vault)
+        .await
+        .expect("A's admin accepts");
     let RunOutcome::Done(statuses) = b.visit(&a).await else {
         panic!("a run");
     };

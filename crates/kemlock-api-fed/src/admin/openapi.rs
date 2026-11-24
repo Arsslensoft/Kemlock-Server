@@ -12,8 +12,8 @@ use super::console::{
     PeerSecurityDto, SelfDto, ShareableDto, SuiteChoice, SuiteRowDto, SuiteSettingDto, SuitesBody,
 };
 use super::{
-    AckDto, AwaitingDto, KeyChangeDto, OfferDto, OverviewDto, PeerDto, PromotionDto, PulledDto,
-    ServerDto, StatusDto, SwitchesDto, VaultDto, VaultStatusDto,
+    AckDto, AwaitingDto, HeldDemotionDto, KeyChangeDto, OfferDto, OverviewDto, PeerDto,
+    PromotionDto, PulledDto, ServerDto, StatusDto, SwitchesDto, VaultDto, VaultStatusDto,
 };
 use serde::Serialize;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
@@ -127,6 +127,46 @@ doc!(
             status = 200,
             description = "This server is the vault's home now",
             body = PromotionDto
+        ),
+        (
+            status = 403,
+            description = "No fresh check",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
+    doc_accept_demotion,
+    post,
+    path = "/admin/v1/federation/vaults/{owner}/demotion",
+    tag = "federation",
+    security(("dpop" = [])),
+    params(
+        (
+            "owner" = String,
+            Path,
+            description = "`user:<uuid>` or `space:<uuid>`"
+        ),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A step-up token; it counts as the fresh check, as a recent sign-in does"
+        ),
+    ),
+    responses(
+        (
+            status = 200,
+            description = "The server named in the held promotion is the vault's home now, and \
+                           this server its last replica",
+            body = VaultDto
+        ),
+        (
+            status = 400,
+            description = "No promotion waits for this vault, or it no longer fits the vault",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
         ),
         (
             status = 403,
@@ -399,7 +439,8 @@ doc!(
         version = "1.0.0"
     ),
     paths(
-        doc_openapi, doc_overview, doc_peers, doc_promote, doc_shareable, doc_check,
+        doc_openapi, doc_overview, doc_peers, doc_promote, doc_accept_demotion, doc_shareable,
+        doc_check,
         doc_consistency, doc_peer_security, doc_peer_descriptor, doc_self, doc_self_kem_rotation,
         doc_self_identity_rotation, doc_self_suites, doc_mismatch, doc_keep_blocking
     ),
@@ -408,7 +449,7 @@ doc!(
         SwitchesDto, StatusDto, VaultStatusDto, PulledDto, PromotionDto, KeyChangeDto,
         ShareableDto, PeerCheckDto, ConsistencyDto, ComparisonDto, PeerSecurityDto, DescriptorDto,
         KemDto, SuiteRowDto, SelfDto, SuiteSettingDto, SuitesBody, SuiteChoice, MismatchDto,
-        PausedDto
+        PausedDto, HeldDemotionDto
     )),
     modifiers(&SecurityAddon)
 )]

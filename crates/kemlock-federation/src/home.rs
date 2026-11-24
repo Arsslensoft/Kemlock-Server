@@ -65,6 +65,10 @@ pub struct VaultFederation {
     pub replicas: Vec<ServerId>,
     /// The signed promotion record that made the current epoch, if any.
     pub promotion: Option<Vec<u8>>,
+    /// A promotion another server signed that would make it the home of a vault this server is
+    /// the home of. It is held, not applied, until this server's own admin accepts it: otherwise
+    /// any replica could take a vault over, and as its home erase this server's copy.
+    pub held_demotion: Option<Vec<u8>>,
 }
 
 impl VaultFederation {
@@ -77,6 +81,7 @@ impl VaultFederation {
             epoch: 1,
             replicas: Vec::new(),
             promotion: None,
+            held_demotion: None,
         }
     }
 
@@ -89,6 +94,7 @@ impl VaultFederation {
             epoch: 1,
             replicas,
             promotion: None,
+            held_demotion: None,
         }
     }
 
@@ -208,6 +214,12 @@ impl PromotionRecord {
     }
 }
 
+/// The fields of a signed promotion, without checking the signature: for showing a held demotion,
+/// whose signature was checked when it arrived and is checked again when it is accepted.
+pub fn peek_promotion(envelope: &[u8]) -> Result<PromotionRecord> {
+    PromotionRecord::from_body(&Signed::decode(envelope)?.body)
+}
+
 /// Parses a signed promotion and checks the new home's signature with the key `keys` holds.
 pub fn open_promotion(envelope: &[u8], keys: &dyn KeyDirectory) -> Result<PromotionRecord> {
     let signed = Signed::decode(envelope)?;
@@ -272,6 +284,7 @@ pub fn apply_promotion(
         epoch: record.epoch,
         replicas: record.replicas.clone(),
         promotion: None,
+        held_demotion: None,
     })
 }
 

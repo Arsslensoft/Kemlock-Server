@@ -138,6 +138,8 @@ export interface WireVault {
   /** Versions waiting to reach the vault's other servers, counted to a limit. */
   waitingChanges: number;
   waitingNote: string | null;
+  /** A promotion another server signed to become this vault's home, waiting for this server's admin. */
+  heldDemotion?: { newHome: string; epoch: number; issuedAt: number } | null;
 }
 
 export interface WireOffer {
@@ -360,6 +362,9 @@ function vaultOf(vault: WireVault): FedVault {
     waitingChanges: vault.waitingChanges,
     waitingNote: vault.waitingNote,
     request: null,
+    heldDemotion: vault.heldDemotion
+      ? { newHomeId: vault.heldDemotion.newHome, epoch: vault.heldDemotion.epoch, at: vault.heldDemotion.issuedAt }
+      : null,
   };
 }
 
