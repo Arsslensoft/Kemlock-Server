@@ -149,3 +149,77 @@ export async function readPastedSshKey(text: string): Promise<SshMaterial | unde
     return undefined;
   }
 }
+
+/** Bytes of the public key material of a v4 key of this algorithm, from `at`; undefined if unknown. */
+function publicLength(algo: number, b: Uint8Array, at: number): number | undefined {
+  const mpi = (p: number) => 2 + Math.ceil((((b[p] ?? 0) << 8) | (b[p + 1] ?? 0)) / 8);
+  switch (algo) {
+    case 1:
+    case 2:
+    case 3:
+      return mpi(at) + mpi(at + mpi(at));
+    case 16:
+      return mpi(at) + mpi(at + mpi(at)) + mpi(at + mpi(at) + mpi(at + mpi(at)));
+    case 17: {
+      let n = 0;
+      for (let i = 0; i < 4; i += 1) n += mpi(at + n);
+      return n;
+    }
+    case 18: {
+      const oid = 1 + (b[at] ?? 0);
+      const m = mpi(at + oid);
+      return oid + m + 1 + (b[at + oid + m] ?? 0);
+    }
+    case 19:
+    case 22: {
+      const oid = 1 + (b[at] ?? 0);
+      return oid + mpi(at + oid);
+    }
+    case 25:
+    case 27:
+      return 32;
+    case 26:
+      return 56;
+    case 28:
+      return 57;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Whether the secret key packet that opens a binary transferable secret key (base64) is locked by
+ * a passphrase: its S2K usage octet is not zero. undefined when the packet cannot be read.
+ */
+export function pgpSecretProtected(base64: string): boolean | undefined {
+  try {
+    const b = fromB64(base64);
+    const head = b[0] ?? 0;
+    let tag: number;
+    let at: number;
+    if ((head & 0x40) !== 0) {
+      tag = head & 0x3f;
+      const l = b[1] ?? 0;
+      at = l < 192 ? 2 : l < 224 ? 3 : l === 255 ? 6 : 2;
+    } else {
+      tag = (head >> 2) & 0xf;
+      at = 1 + [1, 2, 4][head & 3]!;
+    }
+    if (tag !== 5) return undefined;
+    const version = b[at];
+    if (version === 4) {
+      const algo = b[at + 5] ?? 0;
+      const n = publicLength(algo, b, at + 6);
+      const usage = n === undefined ? undefined : b[at + 6 + n];
+      return usage === undefined ? undefined : usage !== 0;
+    }
+    if (version === 6) {
+      const n = ((b[at + 6] ?? 0) * 2 ** 24) + ((b[at + 7] ?? 0) << 16) + ((b[at + 8] ?? 0) << 8) + (b[at + 9] ?? 0);
+      const usage = b[at + 10 + n];
+      return usage === undefined ? undefined : usage !== 0;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}

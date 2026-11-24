@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useT } from '@/i18n';
 import { Field } from '@/ui/fields';
-import { pgpHalves } from './keyMaterial';
+import { pgpHalves, pgpSecretProtected } from './keyMaterial';
 import { FormActions, type KeyFormProps } from './shared';
 import type { ItemData, VaultItem } from '../vault';
 import { itemName } from '../vault';
@@ -45,6 +45,8 @@ export function pgpKeyFields(values: PgpKeyValues, editing: boolean): ItemData |
     algorithm: 'pgp',
     private: halves.private,
     public: halves.public,
+    // A passphrase on the private half: its S2K usage octet is not zero.
+    protected: pgpSecretProtected(halves.private) ? true : undefined,
     origin: 'imported',
   };
 }

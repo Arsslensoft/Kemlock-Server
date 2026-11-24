@@ -6,7 +6,7 @@ import { CertificateForm, certificateDefaults, certificateFields, certificatePem
 import { ContactForm, contactDefaults, contactFields } from './ContactForm';
 import { PgpKeyForm, pgpKeyDefaults, pgpKeyFields } from './PgpKeyForm';
 import { SshKeyForm, sshKeyDefaults, sshKeyFields } from './SshKeyForm';
-import { generateEd25519, readPastedSshKey } from './keyMaterial';
+import { generateEd25519, pgpSecretProtected, readPastedSshKey } from './keyMaterial';
 import { fromB64, pemBlocks, pgpHalves, sshAlgorithmOf, toB64 } from './keyMaterial';
 import { type VaultItem, saveItem, VaultStore } from '../vault';
 import { crypto as fakeCrypto } from '@/test/fake-crypto';
@@ -162,6 +162,17 @@ describe('the forms', () => {
 });
 
 describe('key reading', () => {
+  it('reads a PGP secret key packet\'s S2K usage as the protected flag', () => {
+    // v4, ed25519 (27): tag 5 new format, version, created(4), algo, 32 public bytes, usage.
+    const packet = (usage: number) =>
+      toB64(Uint8Array.from([0xc5, 40, 4, 0, 0, 0, 1, 27, ...new Array(32).fill(7), usage, 0]));
+    expect(pgpSecretProtected(packet(0))).toBe(false);
+    expect(pgpSecretProtected(packet(254))).toBe(true);
+    expect(pgpSecretProtected(BODY)).toBeUndefined();
+    const fields = pgpKeyFields({ ...pgpKeyDefaults(), name: 'k', armor: PRIVATE.replace(BODY, packet(254)) }, false);
+    expect(fields?.['protected']).toBe(true);
+  });
+
   it('generates an Ed25519 key and reads it back when pasted', async () => {
     const made = await generateEd25519();
     expect(made.algorithm).toBe('ed25519');
