@@ -16,6 +16,7 @@
 //!   the link key, because it belongs in a URL's fragment;
 //! - `approval`: a new device's one-time key and the root key an approval seals to it;
 //! - `prf`: the passkey PRF wrap of the root key;
+//! - `kit`: the Recovery Kit, a 2-of-3 split of a key that wraps the root key;
 //! - `sharing`: sealing the root key, the member confirmation and a released emergency key;
 //! - `spaces`: a space's keys and their encrypted names;
 //! - `b64`, `ids`, `totp`, `error`: small pieces of both.
@@ -28,6 +29,7 @@ mod approval;
 mod b64;
 mod error;
 mod ids;
+mod kit;
 mod prf;
 mod sends;
 mod session;
