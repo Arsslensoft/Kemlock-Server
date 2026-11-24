@@ -77,3 +77,24 @@ export function createPasskeySignInApi(http: Http) {
 }
 
 export type PasskeySignInApi = ReturnType<typeof createPasskeySignInApi>;
+
+export interface SecurityKeysDto {
+  enabled: boolean;
+  keys: { id: number; name: string }[];
+}
+
+/**
+ * A security key as a second step (`POST /kem/v1/account/two-factor/webauthn` and `.../confirm`):
+ * unlike a passkey it makes a two-factor method, which first-run setup needs for the admin.
+ */
+export function createSecurityKeyApi(http: Pick<Api, 'request'>) {
+  const path = '/kem/v1/account/two-factor/webauthn';
+  return {
+    creationOptions: () =>
+      http.request<{ options: Record<string, unknown> }>({ method: 'POST', path }).then((r) => r.options),
+    confirm: (name: string, credential: Record<string, unknown>) =>
+      http.request<SecurityKeysDto>({ method: 'POST', path: `${path}/confirm`, body: { name, credential } }),
+  };
+}
+
+export type SecurityKeyApi = ReturnType<typeof createSecurityKeyApi>;
