@@ -107,8 +107,9 @@ debug build reads `web/dist` from disk, which is the development override.
 
 Built and wired to the server: sign-in (password, SSO, a passkey, an approval from another device,
 also from the unlock screen) and setup (with a security key or passkey), the vault with the item
-forms for logins, notes, one-time codes, backup codes, cards and identities, the Trash, Sends,
-spaces, import and export, duplicates, health, devices and approvals,
+forms for every kind (logins, notes, one-time codes, backup codes, cards, identities, SSH keys, PGP
+keys, certificates and contacts), the Trash, Sends, spaces, import and export, duplicates, health,
+devices and approvals,
 account security (an authenticator app, emergency contacts) and the admin console (users and
 invitations, event log, settings, SSO, migration, federation).
 
@@ -118,8 +119,9 @@ Not built, or not working yet:
   Kit route and `docs/crypto.md` does not yet describe the pieces.
 - Passkeys, security keys, YubiKey, Duo, an emailed code and the Recovery Kit as second steps in
   Account security. The server serves them; the screens list them as "Later".
-- Items other than logins, notes, one-time codes, backup codes, cards and identities open as
-  read-only detail.
+- Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
+  (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
+  its key.
 - First-run "Server basics" are kept in the browser and listed on the last setup screen; the
   server does not take them there. They are set in the admin Settings.
 - Where each vault lives (`src/api/placement.ts`): the server has no placement route, so the

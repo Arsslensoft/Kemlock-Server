@@ -1,9 +1,30 @@
 import type { MessageId } from '@/i18n';
 import type { IconName } from '@/ui/Icon';
 
-export type EditableKind = 'login' | 'note' | 'otp' | 'backup-codes' | 'card' | 'identity';
+export type EditableKind =
+  | 'login'
+  | 'note'
+  | 'otp'
+  | 'backup-codes'
+  | 'card'
+  | 'identity'
+  | 'ssh-key'
+  | 'pgp-key'
+  | 'certificate'
+  | 'contact';
 
-export const EDITABLE_KINDS: EditableKind[] = ['login', 'note', 'otp', 'backup-codes', 'card', 'identity'];
+export const EDITABLE_KINDS: EditableKind[] = [
+  'login',
+  'note',
+  'otp',
+  'backup-codes',
+  'card',
+  'identity',
+  'ssh-key',
+  'pgp-key',
+  'certificate',
+  'contact',
+];
 
 const KIND_LABELS: Record<string, MessageId> = {
   login: 'kind.login',
@@ -39,7 +60,7 @@ export function kindIcon(kind: string): IconName {
 }
 
 export function isEditable(kind: string): kind is EditableKind {
-  return EDITABLE_KINDS.includes(kind as EditableKind);
+  return (EDITABLE_KINDS as string[]).includes(kind);
 }
 
 /** The letter on an item's tile. */

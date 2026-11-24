@@ -73,7 +73,13 @@ export function Field<T extends FieldValues>({
     .filter(Boolean)
     .join(' ');
   const input = multiline ? (
-    <TextArea ref={field.ref} placeholder={placeholder} />
+    <TextArea
+      ref={field.ref}
+      placeholder={placeholder}
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
+    />
   ) : (
     <Input ref={field.ref} placeholder={placeholder} spellCheck={false} />
   );
