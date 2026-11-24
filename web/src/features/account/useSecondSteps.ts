@@ -5,7 +5,7 @@ import { useT } from '@/i18n';
 import { passkeysAvailable } from '@/lib/passkey';
 import type { SecondStepsProps } from './SecondStepsCard';
 import { useRun } from './useRun';
-import { createSecurityKey } from './webauthn-register';
+import { createSecurityKey } from '@/lib/webauthn';
 
 const stepsApi = createSecondStepsApi(api);
 
