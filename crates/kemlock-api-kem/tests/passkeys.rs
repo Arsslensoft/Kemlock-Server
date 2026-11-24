@@ -790,11 +790,14 @@ fn the_openapi_document_names_the_routes() {
         ("/kem/v1/account/passkeys/{id}", "delete"),
         ("/kem/v1/account/passkeys/{id}/prf", "put"),
         ("/kem/v1/account/two-factor/webauthn", "post"),
+        ("/kem/v1/account/two-factor/webauthn", "get"),
+        ("/kem/v1/account/two-factor/webauthn/{slot}", "delete"),
         ("/kem/v1/account/two-factor/webauthn/confirm", "post"),
         ("/kem/v1/auth/two-factor/webauthn/options", "post"),
         ("/kem/v1/auth/two-factor/webauthn", "post"),
     ] {
         assert!(paths[path][method].is_object(), "{method} {path}");
     }
-    assert_eq!(paths.len(), 10);
+    // Eleven paths: the {slot} one is the security keys' removal.
+    assert_eq!(paths.len(), 11);
 }
