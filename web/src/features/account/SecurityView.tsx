@@ -9,6 +9,7 @@ import '@/styles/account.css';
 import { EmergencyCard, type EmergencyCardProps } from './EmergencyCard';
 import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
+import { RecoveryKitCard, type RecoveryKitProps } from './RecoveryKitCard';
 import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
 import type { Described } from './errors';
 
@@ -19,6 +20,8 @@ export interface TotpState {
   enrol: TotpEnrolResponse |  passkeys?: PasskeysCardProps | undefined;
   /** The emailed code, YubiKeys, Duo, security keys and the recovery code; omitted, they read "Later". */
   secondSteps?: SecondStepsProps | undefined;
+  /** The Recovery Kit: make, make again, remove. */
+  recoveryKit?: RecoveryKitProps | undefined;
 }
 
 export interface SecurityViewProps {
@@ -55,6 +58,7 @@ export function SecurityView({
   emergency,
   passkeys,
   secondSteps,
+  recoveryKit,
 }: SecurityViewProps) {
   const t = useT();
   const totpOn = methods?.includes('totp') ?? false;
@@ -164,6 +168,7 @@ export function SecurityView({
             ) : null}
             {passkeys ? <PasskeysCard {...passkeys} /> : null}
             {secondSteps ? <SecondStepsCard {...secondSteps} /> : null}
+            {recoveryKit ? <RecoveryKitCard {...recoveryKit} /> : null}
             {later.map((method) => (
               <div className="row" key={method}>
                 <div className="grow">
@@ -186,7 +191,7 @@ export function SecurityView({
                 <p className="hint">{t('security.notBuilt.lede')}</p>
               </div>
             </div>
-            {(['kit', 'apiKey', 'delete'] as const).map((item) => (
+            {(['apiKey', 'delete'] as const).map((item) => (
               <div className="row" key={item}>
                 <div className="grow">
                   <div>{t(`security.notBuilt.${item}`)}</div>

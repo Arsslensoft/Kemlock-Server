@@ -7,12 +7,14 @@ import { api, hostOf, session, configQuery } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { useT } from '@/i18n';
 import { vaultCrypto } from '@/crypto-port';
-import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
-import { createPasskey, passkeysAvailable } from '@/lib/passkey';
+import { decodeB64 } from '@/lib/b64url';
+import { passkeysAvailable } from '@/lib/passkey';
+import { registerPasskey } from '@/lib/webauthn';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
 import { confirmEmergencyContact } from './emergencyModel';
+import { useRecoveryKit } from './useRecoveryKit';
 import { useRun } from './useRun';
 import { useSecondSteps } from './useSecondSteps';
 import { SecurityView, type TotpState } from './SecurityView';
@@ -40,6 +42,7 @@ export default function Security() {
   const totpRun = useRun();
   const { run, pending, error } = useRun();
   const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes);
+  const recoveryKit = useRecoveryKit();
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
 
@@ -76,9 +79,10 @@ export default function Security() {
       host={hostOf(config.data?.domain)}
       methods={methods}
       totp={totp}
-      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy}
-      error={error ?? passkeyRun.error ?? secondSteps.error}
+      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy || recoveryKit.props.busy}
+      error={error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error}
       secondSteps={secondSteps.props}
+      recoveryKit={recoveryKit.props}
       totpError={totpRun.error}
       onStartTotp={() => {
         setTotp({ open: true, enrol: undefined });
@@ -100,19 +104,9 @@ export default function Security() {
               passkeys: passkeys.data,
               busy: passkeyRun.pending,
               onAdd: () =>
-                void changePasskeys(async () => {
-                  const options = await passkeysApi.creationOptions();
-                  const made = await createPasskey(options);
-                  // With a PRF output the passkey also keeps a wrap of the root key, which opens
-                  // the vault at sign-in; without one it only proves who is asking.
-                  let prf: { wrappedKey: string; keyVersion: number } | undefined;
-                  if (made.prfOutput) {
-                    const wrap = await vaultCrypto.prfWrapRoot(made.prfOutput, made.credentialId);
-                    prf = { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
-                    wipe(made.prfOutput);
-                  }
-                  return passkeysApi.register(t('security.passkeys.defaultName'), made.credential, prf);
-                }),
+                void changePasskeys(() =>
+                  registerPasskey({ passkeys: passkeysApi, crypto: vaultCrypto }, t('security.passkeys.defaultName')),
+                ),
               onRemove: (id) => void changePasskeys(() => passkeysApi.remove(id).then(() => true)),
             }
           : undefined

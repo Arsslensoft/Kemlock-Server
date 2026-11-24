@@ -106,17 +106,18 @@ debug build reads `web/dist` from disk, which is the development override.
 ## What is not here yet
 
 Built and wired to the server: sign-in (password, SSO, a passkey, an approval from another device,
-also from the unlock screen) and setup (with a security key or passkey), the vault with the item
+also from the unlock screen, or with 2 of the 3 pieces of a Recovery Kit) and setup (with a security key or passkey), the vault with the item
 forms for every kind (logins, notes, one-time codes, backup codes, cards, identities, SSH keys, PGP
 keys, certificates and contacts), the Trash, Sends, spaces, import and export, duplicates, health,
 devices and approvals, account security (an authenticator app, passkeys, security keys, YubiKey,
-Duo, an emailed code, the recovery code, emergency contacts) and the admin console (users and
+Duo, an emailed code, the recovery code, the Recovery Kit, emergency contacts) and the admin console (users and
 invitations, event log, settings, SSO, migration, federation).
 
 Not built, or not working yet:
 
-- The Recovery Kit (any 2 of 3 pieces of the root key), in Account security and on the unlock
-  screen: the key worker has no call that splits the root key, and the page must never hold it.
+- Scanning a Recovery Kit piece needs the browser's `BarcodeDetector` (Chromium, Safari); elsewhere
+  the pieces are typed or pasted. The kit is made and opened in the key worker, so the page never
+  holds the root key (docs/crypto.md, "The Recovery Kit").
 - Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
   (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
   its key.

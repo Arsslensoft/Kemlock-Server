@@ -120,6 +120,58 @@ The credential id is the raw WebAuthn credential id bytes.
 `prf-wrap.json` pins the salt, wrap key, aad and wrapped key; `private-keys.json` does the same for
 the sealed private keys above.
 
+### The Recovery Kit
+
+The Recovery Kit opens the vault without the master password: a random 32-byte **kit key** is split
+into 3 pieces, any 2 of which rebuild it, and the root key is wrapped under the kit key. The split
+and the wrap happen inside the key worker (`kemlock-wasm`); the page shows the pieces once and never
+holds the root key.
+
+The pieces are the Kemlock app's, byte for byte (`recovery_shares.dart`, `shamir.dart`):
+
+```
+piece = "BMCKIT1-" ‖ kit id ‖ "-" ‖ needed ‖ made ‖ index ‖ "-" ‖ share ‖ "-" ‖ check
+```
+
+- The kit id is 5 random bytes as 8 base32 characters; it ties the pieces of one kit together.
+- `needed`, `made` and `index` are one digit each (`2`, `3`, `1` to `3`); a kit has at most 9 pieces.
+- The share is the kit key's Shamir share, 32 bytes as 52 base32 characters. Base32 is RFC 4648's
+  upper-case alphabet without padding; bits past the last whole byte are dropped when reading.
+- The check is the first 4 base32 characters of `SHA-256` of the text before it (UTF-8).
+- A piece is read in any case, with or without spaces. For print it is shown with the share in
+  groups of four, and as a QR code of the plain text.
+
+Shamir's secret sharing runs over GF(2^8) with the AES polynomial `x^8 + x^4 + x^3 + x + 1` and
+generator 3. Each byte of the key is the constant term of its own random polynomial of degree
+`needed - 1`; piece `i` holds the polynomials' values at `x = i`. Rebuilding interpolates at 0.
+
+The root key's wrap is a passkey PRF wrap with its own labels:
+
+```
+wrap key = HKDF(ikm = kit key (32), salt = absent, info = "kemlock/v1/kit-wrap" ‖ lp(kit id), L = 32)
+aad      = "kemlock/v1/root-wrap/kit" ‖ account id (16) ‖ u32be(key version) ‖ lp(kit id)
+wrapped  = AES-256-GCM(wrap key, nonce, root key, aad)       nonce(12) ‖ ciphertext(64) ‖ tag(16)
+```
+
+The server keeps only the kit id, the key version, when the kit was made and the wrap. It never sees
+a piece, the kit key or the root key. The wrap is also the verifier: a wrong kit key fails the AEAD
+tag, so the worker knows whether the pieces it was given are right, and a kit made for an earlier key
+version does not open (`GET /kem/v1/account/recovery-kit` says whether the kit is `current`).
+Regenerating makes a new kit id and key and replaces the stored wrap, so every old piece stops
+working. Pieces are not recoverable: lose 2 of 3 and the kit is gone; make a new one while signed in.
+
+The routes (all need a session; the changes need the fresh proof of `POST /kem/v1/account/two-factor/proof`,
+as turning a second step off does):
+
+| Route | |
+|---|---|
+| `GET /kem/v1/account/recovery-kit` | The kit's id, key version, time and wrap, or 404. |
+| `POST /kem/v1/account/recovery-kit` | Creates the first kit; 409 when there is one. |
+| `PUT /kem/v1/account/recovery-kit` | Regenerates: replaces the kit, with `proof`. |
+| `DELETE /kem/v1/account/recovery-kit` | Removes it, with `proof`. |
+
+Each change writes an `account.recovery_kit_created`, `_regenerated` or `_removed` event.
+
 ### The trusted-device copy of the root key
 
 Only the device that made it ever opens it: the server stores it as an opaque blob, and no other

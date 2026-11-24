@@ -40,7 +40,9 @@ use axum::{Extension, Json, Router};
 use kemlock_app::notices::{Notice, Notices, TwoStepChangedNotice};
 
 use kemlock_app::passkeys::ChallengeRepo;
-use kemlock_app::ports::{Clock, TokenSigner, TwoFactorMethod, TwoFactorRepo};
+use kemlock_app::ports::{
+    Clock, SecretSeal, TokenSigner, TwoFactorMethod, TwoFactorRepo, UserRepo,
+};
 use kemlock_app::two_step::{
     Duo, DuoKeys, DuoStatus, NoDuo, NoYubico, ProtectedError, TwoStep, TwoStepInput,
     TwoStepSettings, TwoStepSignIn, Yubico,
@@ -582,7 +584,38 @@ where
     }
 }
 
-/// Checks the mailed code, and uses it up. A wrong code counts against the account.
+/// Whether `proof` is a current code of the account's authenticator app, or its recovery code
+/// (kept, not spent: it is a proof here, not a recovery).
+async fn second_step_proof<S, P, K>(api: &Api<S, P, K>, user: kemlock_domain::UserId, proof: &str) -> bool
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let entered = proof.replace(' ', "");
+    if entered.is_empty() {
+        return false;
+    }
+    if let Ok(factors) = TwoFactorRepo::list(&api.store, user).await {
+        let totp = factors
+            .into_iter()
+            .find(|f| f.method == TwoFactorMethod::Totp && f.enabled);
+        if let Some(factor) = totp
+            && let Ok(secret) = api
+                .crypto
+                .open(kemlock_app::sealed::PURPOSE_TOTP, &factor.sealed_secret)
+            && u64::try_from(api.now()).is_ok_and(|now| kemlock_crypto::totp::verify(&secret, &entered, now))
+        {
+            return true;
+        }
+    }
+    if let Ok(Some(held)) = api.recovery_codes().show(user).await {
+        return hash::ct_eq(entered.to_lowercase().as_bytes(), held.to_lowercase().as_bytes());
+    }
+    false
+}
+
+/// Checks the proof, and uses a mailed code up. A wrong proof counts against the account.
 pub(crate) async fn require_proof<S, P, K, R>(
     api: &Api<S, P, K>,
     steps: &TwoStep<S, P, P, R>,
@@ -601,6 +634,11 @@ where
         .second_step
         .blocked(&account, now)
         .map_err(rate_limited)?;
+    // Without mail, a current code of the authenticator app or the account's recovery code proves
+    // it just as well; neither is spent here, so revoking never needs the mail to work.
+    if second_step_proof(api, user, proof).await {
+        return Ok(());
+    }
     match steps.protected_validate(user, proof.trim(), true).await {
         Ok(()) => Ok(()),
         Err(error) => {
@@ -906,7 +944,7 @@ where
 }
 
 /// The same `DPoP-Nonce` header every other `/kem/v1` response carries.
-async fn nonce_header<S, P, K>(
+pub(crate) async fn nonce_header<S, P, K>(
     State(api): State<Api<S, P, K>>,
     request: Request,
     next: Next,

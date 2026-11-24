@@ -43,6 +43,7 @@ pub mod push;
 pub mod put_batch;
 pub mod put_item;
 pub mod quota;
+pub mod recovery_kit;
 pub mod refresh;
 pub mod reset_admin;
 pub mod register;

@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { useT } from '@/i18n';
 import type { ServerBasicsValues } from '@/lib/schemas';
 import { AuthPage } from '@/ui/AuthPage';
-import { Button, buttonClass } from '@/ui/Button';
+import { buttonClass } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { SetupSteps } from '@/ui/SetupSteps';
 import { setupMemory } from './memory';
@@ -88,12 +88,11 @@ export default function SetupDone() {
           <h2 id="h-kit">{t('setup.done.kit.title')}</h2>
           <p>{t('setup.done.kit.body')}</p>
           <div className="actions">
-            <Button variant="primary" isDisabled>
+            <Link to="/security" className={buttonClass({ variant: 'primary' })}>
               {t('setup.done.kit.make')}
-            </Button>
-            <Link to="/security">{t('setup.done.kit.later')}</Link>
+            </Link>
+            <Link to="/vault">{t('setup.done.kit.later')}</Link>
           </div>
-          <p className="hint">{t('setup.server.needsApi')}</p>
         </div>
       </section>
 

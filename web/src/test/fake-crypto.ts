@@ -192,6 +192,41 @@ export const crypto: CryptoPort = {
     }
     return utf8(`root:${accountId}`);
   },
+  async kitMake() {
+    calls.push('kitMake');
+    if (locked) throw new Error('the vault is locked');
+    const pieces = ['A', 'B', 'C'].map((c, i) => `BMCKIT1-FAKEKIT2-23${i + 1}-${c.repeat(52)}-ABCD`);
+    return { kitId: 'FAKEKIT2', pieces, wrappedKey: utf8(JSON.stringify(['kit', 'FAKEKIT2'])), keyVersion: 1 };
+  },
+  async kitReadPiece(text) {
+    calls.push('kitReadPiece');
+    const parts = text.replace(/s+/g, '').toUpperCase().split('-');
+    if (parts.length !== 5 || parts[0] !== 'BMCKIT1') return { problem: 'format' };
+    if (parts[4] !== 'ABCD') return { problem: 'checksum' };
+    const digits = parts[2] ?? '';
+    return { kitId: parts[1] ?? '', threshold: Number(digits[0]), shares: Number(digits[1]), index: Number(digits[2]) };
+  },
+  async kitCheckPieces(pieces) {
+    calls.push('kitCheckPieces');
+    const ids = new Set<string>();
+    const indexes = new Set<string>();
+    for (const piece of pieces) {
+      const parts = piece.replace(/s+/g, '').toUpperCase().split('-');
+      ids.add(parts[1] ?? '');
+      indexes.add(parts[2] ?? '');
+    }
+    if (ids.size > 1) return { problem: 'other-kit' };
+    if (indexes.size < pieces.length) return { problem: 'duplicate' };
+    return {};
+  },
+  async kitOpenRoot(pieces, kitId, accountId, keyVersion, wrapped) {
+    calls.push('kitOpenRoot');
+    const [label, id] = JSON.parse(fromUtf8(wrapped)) as [string, string];
+    if (pieces.length < 2 || label !== 'kit' || id !== kitId || keyVersion < 1) {
+      throw new Error('the pieces do not open this kit');
+    }
+    return utf8(`root:${accountId}`);
+  },
   async newSsoAccount(accountId) {
     calls.push('newSsoAccount');
     locked = false;

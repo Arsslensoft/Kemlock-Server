@@ -166,7 +166,8 @@ describe('SecurityView', () => {
 
   it('says plainly what is not built yet', () => {
     security();
-    expect(screen.getByText('Recovery Kit')).toBeInTheDocument();
+    expect(screen.getByText('API key')).toBeInTheDocument();
+    expect(screen.queryByText('Recovery Kit')).not.toBeInTheDocument();
     expect(screen.getByText('Delete account')).toBeInTheDocument();
   });
 });

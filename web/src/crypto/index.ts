@@ -151,6 +151,11 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     prfWrapRoot: (prfOutput, credentialId) => call('prfWrapRoot', [prfOutput, credentialId]),
     prfOpenRoot: (prfOutput, credentialId, accountId, keyVersion, wrapped) =>
       call('prfOpenRoot', [prfOutput, credentialId, accountId, keyVersion, wrapped]),
+    kitMake: () => call('kitMake', []),
+    kitReadPiece: (text) => call('kitReadPiece', [text]),
+    kitCheckPieces: (pieces) => call('kitCheckPieces', [pieces]),
+    kitOpenRoot: (pieces, kitId, accountId, keyVersion, wrapped) =>
+      call('kitOpenRoot', [pieces, kitId, accountId, keyVersion, wrapped]),
     unlockWithRoot: (accountId, root, options) => call('unlockWithRoot', [accountId, root, options]),
     sealSpaceItem: (input) => call('sealSpaceItem', [input]),
     openSpaceItem: (input) => call('openSpaceItem', [input]),

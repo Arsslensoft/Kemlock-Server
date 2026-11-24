@@ -30,6 +30,7 @@ mod policies;
 mod privacy;
 mod push;
 mod recovery;
+mod recovery_kits;
 mod sends;
 mod space_chain;
 mod space_recovery;

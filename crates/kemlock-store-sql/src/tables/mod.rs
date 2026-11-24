@@ -34,6 +34,7 @@ pub(crate) mod passkeys;
 pub(crate) mod pending_erasures;
 pub(crate) mod policies;
 pub(crate) mod push_tokens;
+pub(crate) mod recovery_kits;
 pub(crate) mod refresh_tokens;
 pub(crate) mod revoked_families;
 pub(crate) mod sends;

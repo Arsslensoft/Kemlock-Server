@@ -123,3 +123,43 @@
 .tile.faint {
   opacity: 0.8;
 }
+
+/* The Recovery Kit's pieces: one card each, and only they print. */
+.kit-pieces {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.kit-piece {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 12px;
+  border: 1px solid var(--line, currentColor);
+  border-radius: 8px;
+  break-inside: avoid;
+}
+.kit-text {
+  overflow-wrap: anywhere;
+  font-size: 0.85em;
+}
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .kit-sheet,
+  .kit-sheet * {
+    visibility: visible;
+  }
+  .kit-sheet {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+  }
+  .kit-noprint {
+    display: none !important;
+  }
+}
