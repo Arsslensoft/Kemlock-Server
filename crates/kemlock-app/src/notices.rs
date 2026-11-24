@@ -49,6 +49,18 @@ pub struct TwoStepRecoveredNotice {
     pub at: OffsetDateTime,
 }
 
+/// A second step of the account was turned on or off from a signed-in device. The mail tells the
+/// owner, so a change they didn't make doesn't go unnoticed. It names the method, nothing more.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TwoStepChangedNotice {
+    pub to: Email,
+    pub at: OffsetDateTime,
+    /// `email`, `yubikey`, `duo` or `security-key`.
+    pub method: &'static str,
+    /// Turned on (true) or off (false).
+    pub on: bool,
+}
+
 /// The one-time code of a protected action (exporting the vault, deleting the account, showing the
 /// recovery code) when the person asked for a code instead of giving the master password. Never
 /// logged.
@@ -80,6 +92,8 @@ pub enum Notice {
     ProtectedAction(ProtectedActionNotice),
     /// The recovery code switched the account's two-step login off.
     TwoStepRecovered(TwoStepRecoveredNotice),
+    /// A second step was turned on or off.
+    TwoStepChanged(TwoStepChangedNotice),
 }
 
 impl Notice {
@@ -93,6 +107,7 @@ impl Notice {
             Notice::TwoStepCode(_) => "two-step-code",
             Notice::ProtectedAction(_) => "protected-action",
             Notice::TwoStepRecovered(_) => "two-step-recovered",
+            Notice::TwoStepChanged(_) => "two-step-changed",
         }
     }
 }

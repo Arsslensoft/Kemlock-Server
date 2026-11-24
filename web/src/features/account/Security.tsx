@@ -14,6 +14,7 @@ import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
 import { confirmEmergencyContact } from './emergencyModel';
 import { useRun } from './useRun';
+import { useSecondSteps } from './useSecondSteps';
 import { SecurityView, type TotpState } from './SecurityView';
 
 const emergencyApi = createEmergencyApi(api);
@@ -26,17 +27,19 @@ export default function Security() {
   const state = useSessionState(session);
   const config = useQuery(configQuery);
   const email = state.email ?? '';
-  const methods = useQuery({
+  const twoStepList = useQuery({
     queryKey: ['security', 'methods', email],
-    queryFn: () => twoStepApi.list().then(enabledMethods),
+    queryFn: () => twoStepApi.list(),
     enabled: email !== '',
   });
+  const methods = twoStepList.data ? enabledMethods(twoStepList.data) : undefined;
   const passkeys = useQuery({ queryKey: ['security', 'passkeys'], queryFn: () => passkeysApi.list() });
   const passkeyRun = useRun();
   const overview = useQuery({ queryKey: ['security', 'emergency'], queryFn: () => emergencyApi.overview() });
   const [totp, setTotp] = useState<TotpState>({ open: false, enrol: undefined });
   const totpRun = useRun();
   const { run, pending, error } = useRun();
+  const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes);
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
 
@@ -71,10 +74,11 @@ export default function Security() {
     <SecurityView
       email={email}
       host={hostOf(config.data?.domain)}
-      methods={methods.data}
+      methods={methods}
       totp={totp}
-      busy={pending || totpRun.pending || passkeyRun.pending}
-      error={error ?? passkeyRun.error}
+      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy}
+      error={error ?? passkeyRun.error ?? secondSteps.error}
+      secondSteps={secondSteps.props}
       totpError={totpRun.error}
       onStartTotp={() => {
         setTotp({ open: true, enrol: undefined });

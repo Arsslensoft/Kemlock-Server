@@ -365,7 +365,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         }
     }
 
-    fn sessions(&self) -> Sessions<S, S, K, P, S, S> {
+    pub(crate) fn sessions(&self) -> Sessions<S, S, K, P, S, S> {
         Sessions {
             devices: self.store.clone(),
             tokens: self.store.clone(),

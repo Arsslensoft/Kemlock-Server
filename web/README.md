@@ -109,16 +109,14 @@ Built and wired to the server: sign-in (password, SSO, a passkey, an approval fr
 also from the unlock screen) and setup (with a security key or passkey), the vault with the item
 forms for every kind (logins, notes, one-time codes, backup codes, cards, identities, SSH keys, PGP
 keys, certificates and contacts), the Trash, Sends, spaces, import and export, duplicates, health,
-devices and approvals,
-account security (an authenticator app, emergency contacts) and the admin console (users and
+devices and approvals, account security (an authenticator app, passkeys, security keys, YubiKey,
+Duo, an emailed code, the recovery code, emergency contacts) and the admin console (users and
 invitations, event log, settings, SSO, migration, federation).
 
 Not built, or not working yet:
 
-- Unlock with the Recovery Kit (2 of 3 pieces): the button is drawn and off. The server has no Recovery
-  Kit route and `docs/crypto.md` does not yet describe the pieces.
-- Passkeys, security keys, YubiKey, Duo, an emailed code and the Recovery Kit as second steps in
-  Account security. The server serves them; the screens list them as "Later".
+- The Recovery Kit (any 2 of 3 pieces of the root key), in Account security and on the unlock
+  screen: the key worker has no call that splits the root key, and the page must never hold it.
 - Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
   (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
   its key.

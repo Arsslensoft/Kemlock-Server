@@ -68,8 +68,21 @@ where
             .map_err(|_| AppError::Invalid("the email address isn't valid"))?;
         self.two_factor.remove(user, TwoFactorMethod::Email).await?;
         let now = self.env.now();
+        // Asking for a new code does not give back the wrong entries the last one used: they carry
+        // over while that code is still good, so a code can't be guessed at by asking again.
+        let carried = self
+            .challenges
+            .take_challenge(user, ChallengeKind::EmailSetup, now)
+            .await?
+            .and_then(|s| open::<EmailData, _>(&self.seal, PURPOSE_EMAIL_SETUP, &s))
+            .filter(|earlier| {
+                now.unix_timestamp() - earlier.token_sent <= self.email_lifetime().whole_seconds()
+            })
+            .map_or(0, |earlier| earlier.attempts);
         let code = numeric_code(&self.env, self.settings.email_token_size);
-        let data = EmailData::new(address.to_owned(), Some(code.clone()), now.unix_timestamp());
+        let mut data =
+            EmailData::new(address.to_owned(), Some(code.clone()), now.unix_timestamp());
+        data.attempts = carried;
         self.challenges
             .put_challenge(
                 user,

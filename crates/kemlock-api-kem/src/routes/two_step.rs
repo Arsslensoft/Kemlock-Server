@@ -16,7 +16,10 @@
 //! `.../webauthn`. The routes need ports the rest of the API doesn't (the mail sender, Yubico,
 //! Duo and the stored challenges), so the router is built apart, from the API state and a
 //! [`TwoStepRuntime`], and merged into the main router by the server: see [`two_step_router`].
-//! Setting a method up is the Bitwarden API's (`/api/two-factor/...`), where the web vault does it.
+//! A signed-in device sets a method up at `/kem/v1/account/two-factor/{email,yubikey,duo}` and
+//! reads what it set up at `GET /kem/v1/account/two-step/setup`; a session alone may not add a
+//! method beside another one that is on. The Bitwarden API's `/api/two-factor/...` does the same
+//! for its clients, behind the master password.
 
 use super::auth::token_response;
 use super::guard;
@@ -32,12 +35,16 @@ use axum::extract::{Request, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
-use kemlock_app::notices::Notices;
+use kemlock_app::notices::{Notice, Notices, TwoStepChangedNotice};
+
 use kemlock_app::passkeys::ChallengeRepo;
-use kemlock_app::ports::{TokenSigner, TwoFactorMethod, TwoFactorRepo};
-use kemlock_app::two_step::{Duo, TwoStep, TwoStepInput, TwoStepSettings, TwoStepSignIn, Yubico};
+use kemlock_app::ports::{Clock, TokenSigner, TwoFactorMethod, TwoFactorRepo, UserRepo};
+use kemlock_app::two_step::{
+    Duo, DuoKeys, DuoStatus, NoDuo, NoYubico, ProtectedError, TwoStep, TwoStepInput,
+    TwoStepSettings, TwoStepSignIn, Yubico,
+};
 use kemlock_app::{AppError, Sessions, b64url};
 use kemlock_crypto::hash;
 use serde::{Deserialize, Serialize};
@@ -72,7 +79,7 @@ impl<R> std::fmt::Debug for TwoStepRuntime<R> {
 pub(crate) struct StepChallengeRequest {
     /// The sealed challenge the password step answered with.
     pub(crate) challenge: String,
-    /// The client's kind, which Duo's redirect page needs: `web` (the default), `browser`,
+    /// The client's kind, which Duo's redirect page needs: `web` (the default), `b.any(|row| row.enabled)ser`,
     /// `desktop`, `mobile` or `cli`. Send the same when the prompt is answered.
     pub(crate) client: Option<String>,
 }
@@ -410,6 +417,494 @@ where
     }))
 }
 
+// ---------------------------------------------------------------------------------------------
+// Setting a method up, from a signed-in device
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EmailBeginRequest {
+    /// Where the codes go; a first one is mailed to it.
+    pub(crate) address: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EmailConfirmRequest {
+    pub(crate) address: String,
+    /// The code that was mailed.
+    pub(crate) code: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct YubikeySetRequest {
+    /// One OTP per key (or, for a key already checked, its 12-character public id); at most five.
+    pub(crate) otps: Vec<String>,
+    /// Whether the keys are read over NFC.
+    #[serde(default)]
+    pub(crate) nfc: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DuoSetRequest {
+    /// The account's own Duo integration; leave out all three to use the server's.
+    pub(crate) host: Option<String>,
+    pub(crate) client_id: Option<String>,
+    pub(crate) client_secret: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct YubikeyShown {
+    /// The public ids of the registered keys.
+    pub(crate) keys: Vec<String>,
+    pub(crate) nfc: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DuoShown {
+    /// `own` for the account's keys, `server` for the server's integration.
+    pub(crate) integration: &'static str,
+    /// The Duo host, when the account uses its own keys.
+    pub(crate) host: Option<String>,
+}
+
+/// What the account has set up beyond the list: never a secret. The address, the public ids of
+/// YubiKeys and the host of a Duo integration.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TwoStepSetupResponse {
+    /// The address codes go to, when the method is on.
+    pub(crate) email: Option<String>,
+    pub(crate) yubikey: Option<YubikeyShown>,
+    pub(crate) duo: Option<DuoShown>,
+    /// Whether this server can mail a code.
+    pub(crate) email_offered: bool,
+    /// Whether this server can check a YubiKey OTP.
+    pub(crate) yubikey_offered: bool,
+    /// Whether this server has a Duo integration an account can use without keys of its own.
+    pub(crate) duo_server_keys: bool,
+}
+
+fn two_step_of<S, P, K, R>(
+    api: &Api<S, P, K>,
+    runtime: &TwoStepRuntime<R>,
+) -> TwoStep<S, P, P, R>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    step(api, runtime).two_step
+}
+
+/// A session alone may not turn a second step on while any is on, this method's own included: a
+/// stolen session could swap a Duo integration, a YubiKey id or an address for ones it controls.
+/// Replacing is removing (with a fresh proof) and then adding.
+async fn refuse_while_on<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let other = TwoFactorRepo::list(&api.store, user)
+        .await
+        .map_err(AppError::from)?
+        .iter()
+        .any(|row| row.enabled && row.method != own);
+    if other {
+        return Err(AppError::Duplicate.into());
+    }
+    Ok(())
+}
+
+fn limit_setup<S, P, K>(api: &Api<S, P, K>, authed: &Authed, what: &str) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let now = api.now();
+    guard(&api.limits.sign_in, &ip_key(authed.ip), now)?;
+    guard(
+        &api.limits.sign_in,
+        &format!("{what}:{}", authed.actor.user),
+        now,
+    )
+}
+
+/// What proves it is the account's owner at a keyboard who turns a second step off, not only a
+/// session: the one-time code mailed by `POST /kem/v1/account/two-factor/proof`, as Vaultwarden
+/// takes a mailed code for the master password (`PasswordOrOtpData`).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ProofRequest {
+    /// The code that was mailed; it works once.
+    pub(crate) proof: String,
+}
+
+fn proof_error(e: ProtectedError) -> Problem {
+    match e {
+        ProtectedError::App(error) => error.into(),
+        ProtectedError::Disabled => AppError::Invalid("this server can't mail a code").into(),
+        ProtectedError::Wait(_) => AppError::Invalid(
+            "a code was sent a moment ago: wait 30 seconds before asking for another",
+        )
+        .into(),
+        _ => AppError::Invalid("the code is wrong or has run out: ask for another").into(),
+    }
+}
+
+/// The steps a proof is checked with where the router holds no [`TwoStepRuntime`] (the security
+/// keys'): the code's state is the same, the limits are the defaults.
+pub(crate) fn proof_steps<S, P, K, R>(api: &Api<S, P, K>, challenges: R) -> TwoStep<S, P, P, R>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    TwoStep {
+        two_factor: api.store.clone(),
+        seal: api.crypto.clone(),
+        env: api.crypto.clone(),
+        challenges,
+        notices: Notices::default(),
+        yubico: Arc::new(NoYubico),
+        duo: Arc::new(NoDuo),
+        settings: TwoStepSettings::default(),
+    }
+}
+
+/// Checks the mailed code, and uses it up. A wrong code counts against the account.
+pub(crate) async fn require_proof<S, P, K, R>(
+    api: &Api<S, P, K>,
+    steps: &TwoStep<S, P, P, R>,
+    user: kemlock_domain::UserId,
+    proof: &str,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    let now = api.now();
+    let account = format!("2fa:{user}");
+    api.limits
+        .second_step
+        .blocked(&account, now)
+        .map_err(rate_limited)?;
+    match steps.protected_validate(user, proof.trim(), true).await {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            api.limits.second_step.fail(&account, now);
+            Err(proof_error(error))
+        }
+    }
+}
+
+/// `POST /kem/v1/account/two-factor/proof`: mails the code that proves the owner, for turning a
+/// second step off.
+async fn handle_proof_request<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    limit_setup(&api, &authed, "proof")?;
+    let user = api
+        .store
+        .by_id(authed.actor.user)
+        .await
+        .map_err(AppError::from)?
+        .ok_or(AppError::Unauthorized)?;
+    two_step_of(&api, &runtime)
+        .protected_request(&user)
+        .await
+        .map_err(proof_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Records that a second step was turned on or off, and tells the owner by mail. Neither can fail
+/// the call: what they describe has happened.
+pub(crate) async fn announce_change<S, P, K>(
+    api: &Api<S, P, K>,
+    authed: &Authed,
+    method: &'static str,
+    on: bool,
+) where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let sessions = api.sessions();
+    sessions
+        .record(
+            if on {
+                "account.two_step_added"
+            } else {
+                "account.two_step_removed"
+            },
+            authed.actor.user,
+            Some(authed.actor.device),
+        )
+        .await;
+    if let Ok(Some(user)) = api.store.by_id(authed.actor.user).await {
+        api.hub
+            .notices()
+            .send(Notice::TwoStepChanged(TwoStepChangedNotice {
+                to: user.email,
+                at: Clock::now(&sessions.env),
+                method,
+                on,
+            }))
+            .await;
+    }
+}
+
+/// `GET /kem/v1/account/two-step/setup`.
+async fn handle_setup_show<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+) -> Result<Json<TwoStepSetupResponse>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    limit_setup(&api, &authed, "two-step-setup")?;
+    let user = authed.actor.user;
+    let steps = two_step_of(&api, &runtime);
+    let email = steps.email_address(user).await?;
+    let yubikey = steps.yubikey_keys(user).await?.map(|data| YubikeyShown {
+        keys: data.keys,
+        nfc: data.nfc,
+    });
+    let duo = match steps.duo_status(user).await? {
+        DuoStatus::Global(_) => Some(DuoShown {
+            integration: "server",
+            host: None,
+        }),
+        DuoStatus::User(keys) => Some(DuoShown {
+            integration: "own",
+            host: Some(keys.host),
+        }),
+        DuoStatus::Disabled { .. } => None,
+    };
+    Ok(Json(TwoStepSetupResponse {
+        email,
+        yubikey,
+        duo,
+        email_offered: runtime.settings.email_enabled,
+        yubikey_offered: runtime.settings.yubico_enabled,
+        duo_server_keys: runtime.settings.duo_global.is_some(),
+    }))
+}
+
+/// `POST /kem/v1/account/two-factor/email`: mails a first code to the address.
+async fn handle_email_begin<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    let request: EmailBeginRequest = body.json()?;
+    limit_setup(&api, &authed, "email-setup")?;
+    refuse_while_on(&api, authed.actor.user).await?;
+    // Each code mailed counts, 5 in 15 minutes: the route can't be used to fill a mailbox.
+    let issued = format!("email-setup-codes:{}", authed.actor.user);
+    let now = api.now();
+    api.limits.second_step.blocked(&issued, now).map_err(rate_limited)?;
+    api.limits.second_step.fail(&issued, now);
+    two_step_of(&api, &runtime)
+        .email_begin(authed.actor.user, &request.address)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /kem/v1/account/two-factor/email/confirm`: turns the method on with the mailed code.
+async fn handle_email_confirm<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    let request: EmailConfirmRequest = body.json()?;
+    limit_setup(&api, &authed, "email-setup")?;
+    // Another method may have been turned on since the code was asked for.
+    refuse_while_on(&api, authed.actor.user).await?;
+    two_step_of(&api, &runtime)
+        .email_confirm(authed.actor.user, &request.address, &request.code)
+        .await?;
+    api.recovery_codes().ensure(authed.actor.user).await?;
+    announce_change(&api, &authed, "email", true).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /kem/v1/account/two-factor/email`.
+async fn handle_email_off<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    limit_setup(&api, &authed, "email-setup")?;
+    let request: ProofRequest = body.json()?;
+    require_proof(&api, &two_step_of(&api, &runtime), authed.actor.user, &request.proof).await?;
+    two_step_of(&api, &runtime)
+        .email_disable(authed.actor.user)
+        .await?;
+    announce_change(&api, &authed, "email", false).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /kem/v1/account/two-factor/yubikey`: the account's keys, replacing any it had.
+async fn handle_yubikey_set<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<Json<YubikeyShown>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    let request: YubikeySetRequest = body.json()?;
+    limit_setup(&api, &authed, "yubikey-setup")?;
+    refuse_while_on(&api, authed.actor.user).await?;
+    let data = two_step_of(&api, &runtime)
+        .yubikey_set(authed.actor.user, &request.otps, request.nfc)
+        .await?;
+    api.recovery_codes().ensure(authed.actor.user).await?;
+    announce_change(&api, &authed, "yubikey", true).await;
+    Ok(Json(YubikeyShown {
+        keys: data.keys,
+        nfc: data.nfc,
+    }))
+}
+
+/// `DELETE /kem/v1/account/two-factor/yubikey`: the method and all its keys.
+async fn handle_yubikey_off<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    limit_setup(&api, &authed, "yubikey-setup")?;
+    let request: ProofRequest = body.json()?;
+    require_proof(&api, &two_step_of(&api, &runtime), authed.actor.user, &request.proof).await?;
+    two_step_of(&api, &runtime)
+        .yubikey_remove(authed.actor.user)
+        .await?;
+    announce_change(&api, &authed, "yubikey", false).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `PUT /kem/v1/account/two-factor/duo`: Duo on, with the keys given (checked with Duo) or the
+/// server's.
+async fn handle_duo_set<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<Json<DuoShown>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    let request: DuoSetRequest = body.json()?;
+    limit_setup(&api, &authed, "duo-setup")?;
+    refuse_while_on(&api, authed.actor.user).await?;
+    let custom = match (request.host, request.client_id, request.client_secret) {
+        (None, None, None) => None,
+        (host, ik, sk) => Some(DuoKeys {
+            host: host.unwrap_or_default(),
+            ik: ik.unwrap_or_default(),
+            sk: sk.unwrap_or_default(),
+        }),
+    };
+    let status = two_step_of(&api, &runtime)
+        .duo_set(authed.actor.user, custom)
+        .await?;
+    api.recovery_codes().ensure(authed.actor.user).await?;
+    announce_change(&api, &authed, "duo", true).await;
+    Ok(Json(match status {
+        DuoStatus::User(keys) => DuoShown {
+            integration: "own",
+            host: Some(keys.host),
+        },
+        _ => DuoShown {
+            integration: "server",
+            host: None,
+        },
+    }))
+}
+
+/// `DELETE /kem/v1/account/two-factor/duo`.
+async fn handle_duo_off<S, P, K, R>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<TwoStepRuntime<R>>>,
+    authed: Authed,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    limit_setup(&api, &authed, "duo-setup")?;
+    let request: ProofRequest = body.json()?;
+    require_proof(&api, &two_step_of(&api, &runtime), authed.actor.user, &request.proof).await?;
+    two_step_of(&api, &runtime)
+        .duo_remove(authed.actor.user)
+        .await?;
+    announce_change(&api, &authed, "duo", false).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// The same `DPoP-Nonce` header every other `/kem/v1` response carries.
 async fn nonce_header<S, P, K>(
     State(api): State<Api<S, P, K>>,
@@ -467,6 +962,30 @@ where
             post(handle_recovery::<S, P, K>),
         )
         .route("/kem/v1/account/two-step", get(handle_list::<S, P, K>))
+        .route(
+            "/kem/v1/account/two-step/setup",
+            get(handle_setup_show::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/proof",
+            post(handle_proof_request::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/email",
+            post(handle_email_begin::<S, P, K, R>).delete(handle_email_off::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/email/confirm",
+            post(handle_email_confirm::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/yubikey",
+            put(handle_yubikey_set::<S, P, K, R>).delete(handle_yubikey_off::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/duo",
+            put(handle_duo_set::<S, P, K, R>).delete(handle_duo_off::<S, P, K, R>),
+        )
         .layer(Extension(Arc::new(runtime)))
         .layer(middleware::from_fn_with_state(
             api.clone(),
@@ -569,6 +1088,106 @@ fn doc_recovery() {}
 #[allow(dead_code)]
 fn doc_list() {}
 
+#[utoipa::path(
+    get, path = "/kem/v1/account/two-step/setup", tag = "account",
+    security(("dpop" = [])),
+    responses(
+        (status = 200, description = "What the account set up: the address, the YubiKey ids, the Duo integration, and what the server offers", body = TwoStepSetupResponse),
+        (status = 401, description = "No valid access token", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_setup_show() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/account/two-factor/email", tag = "account",
+    security(("dpop" = [])),
+    request_body = EmailBeginRequest,
+    responses(
+        (status = 204, description = "A first code was mailed to the address"),
+        (status = 400, description = "Not an address, or the server can't mail codes", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "Another second step is on: a session alone may not add one beside it", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_email_begin() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/account/two-factor/email/confirm", tag = "account",
+    security(("dpop" = [])),
+    request_body = EmailConfirmRequest,
+    responses(
+        (status = 204, description = "The method is on"),
+        (status = 401, description = "Wrong address or code", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_email_confirm() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/account/two-factor/proof", tag = "account",
+    security(("dpop" = [])),
+    responses(
+        (status = 204, description = "A one-time code was mailed to the account's address"),
+        (status = 400, description = "The server can't mail, or a code was sent a moment ago", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_proof_request() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/account/two-factor/email", tag = "account",
+    security(("dpop" = [])),
+    request_body = ProofRequest,
+    responses((status = 204, description = "The method is off"))
+)]
+#[allow(dead_code)]
+fn doc_email_off() {}
+
+#[utoipa::path(
+    put, path = "/kem/v1/account/two-factor/yubikey", tag = "account",
+    security(("dpop" = [])),
+    request_body = YubikeySetRequest,
+    responses(
+        (status = 200, description = "The keys, replacing any the account had", body = YubikeyShown),
+        (status = 400, description = "An OTP Yubico did not accept, or Yubico is not set up", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "Another second step is on", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_yubikey_set() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/account/two-factor/yubikey", tag = "account",
+    security(("dpop" = [])),
+    request_body = ProofRequest,
+    responses((status = 204, description = "The method and its keys are gone"))
+)]
+#[allow(dead_code)]
+fn doc_yubikey_off() {}
+
+#[utoipa::path(
+    put, path = "/kem/v1/account/two-factor/duo", tag = "account",
+    security(("dpop" = [])),
+    request_body = DuoSetRequest,
+    responses(
+        (status = 200, description = "Duo is on", body = DuoShown),
+        (status = 400, description = "Keys Duo did not accept, or no server keys to use", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "Another second step is on", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_duo_set() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/account/two-factor/duo", tag = "account",
+    security(("dpop" = [])),
+    request_body = ProofRequest,
+    responses((status = 204, description = "The method is off"))
+)]
+#[allow(dead_code)]
+fn doc_duo_off() {}
+
 /// The OpenAPI paths of the emailed-code, YubiKey and Duo routes, for the server to merge into
 /// `/kem/v1/openapi.json`.
 #[derive(Debug, OpenApi)]
@@ -580,7 +1199,16 @@ fn doc_list() {}
         doc_yubikey,
         doc_duo,
         doc_recovery,
-        doc_list
+        doc_list,
+        doc_setup_show,
+        doc_proof_request,
+        doc_email_begin,
+        doc_email_confirm,
+        doc_email_off,
+        doc_yubikey_set,
+        doc_yubikey_off,
+        doc_duo_set,
+        doc_duo_off
     ),
     components(schemas(
         ProblemDoc,
@@ -589,7 +1217,15 @@ fn doc_list() {}
         StepCodeRequest,
         TwoStepMethodEntry,
         TwoStepListResponse,
-        TokenResponse
+        TokenResponse,
+        TwoStepSetupResponse,
+        ProofRequest,
+        YubikeyShown,
+        DuoShown,
+        EmailBeginRequest,
+        EmailConfirmRequest,
+        YubikeySetRequest,
+        DuoSetRequest
     ))
 )]
 pub struct TwoStepApiDoc;
