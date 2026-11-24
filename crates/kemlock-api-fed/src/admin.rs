@@ -444,6 +444,21 @@ struct VaultDto {
     /// Versions waiting to reach the vault's other servers, counted to a limit.
     waiting_changes: u64,
     waiting_note: Option<String>,
+    /// Another server signed a promotion that would make it this vault's home. It waits for this
+    /// server's admin (`POST …/vaults/{owner}/demotion`); until then the vault doesn't sync.
+    held_demotion: Option<HeldDemotionDto>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HeldDemotionDto {
+    /// The server that would become the home.
+    #[schema(value_type = String)]
+    new_home: ServerId,
+    /// The epoch it would start.
+    epoch: u64,
+    /// When it signed the promotion, in Unix seconds.
+    issued_at: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -636,6 +651,15 @@ fn settings_dto(settings: &VaultFederation, is_home: bool) -> VaultDto {
         size_bytes: None,
         waiting_changes: 0,
         waiting_note: None,
+        held_demotion: settings
+            .held_demotion
+            .as_deref()
+            .and_then(|record| kemlock_federation::home::peek_promotion(record).ok())
+            .map(|p| HeldDemotionDto {
+                new_home: p.new_home,
+                epoch: p.epoch,
+                issued_at: p.issued_at,
+            }),
     }
 }
 
@@ -1154,6 +1178,21 @@ where
     }))
 }
 
+async fn accept_demotion<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(owner): Path<String>,
+) -> Result<Json<VaultDto>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let owner = parse_owner(&owner)?;
+    require_fresh(&actor)?;
+    let next = state.federation.accept_demotion(owner).await?;
+    Ok(Json(settings_dto(&next, false)))
+}
+
 async fn offers<S, C>(
     State(state): State<AdminState<S, C>>,
     _admin: Admin,
@@ -1248,6 +1287,10 @@ where
         .route(
             &format!("{BASE}/vaults/{{owner}}/promote"),
             post(promote::<S, C>),
+        )
+        .route(
+            &format!("{BASE}/vaults/{{owner}}/demotion"),
+            post(accept_demotion::<S, C>),
         )
         .route(
             &format!("{BASE}/vaults/{{owner}}/events"),

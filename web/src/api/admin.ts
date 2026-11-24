@@ -457,6 +457,11 @@ export interface FedVault {
   waitingChanges: number;
   waitingNote: string | null;
   request: { by: string; at: number } | null;
+  /**
+   * Another server signed a promotion that would make it this vault's home. It waits for this
+   * server's admin, and the vault doesn't sync until then (absent from servers that predate it).
+   */
+  heldDemotion?: { newHomeId: string; epoch: number; at: number } | null;
 }
 
 export interface ConsistencyEntry {
@@ -847,6 +852,13 @@ export function createAdminApi(api: AdminTransport) {
      */
     promote: (owner: string, _request: PromoteRequest, grant?: string) =>
       post<{ record: string }>(`/federation/vaults/${encodeURIComponent(owner)}/promote`, undefined, grant),
+    /**
+     * `POST /admin/v1/federation/vaults/{owner}/demotion` (no body): lets the server whose
+     * promotion is held become the home of a vault this server is the home of. Needs a fresh
+     * check or a step-up token.
+     */
+    acceptDemotion: (owner: string, grant?: string) =>
+      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
     /** `PUT /admin/v1/federation/vaults/{owner} { policy, replicas }`: a vault's policy at its home. */
     setVaultPolicy: (
       owner: string,

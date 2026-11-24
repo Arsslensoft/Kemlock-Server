@@ -31,6 +31,8 @@ export interface FederationViewProps {
   onPromote: (vault: FedVault, homeIsDown: boolean) => void;
   onAccept: (vault: FedVault) => void;
   onDecline: (vault: FedVault) => void;
+  /** Hands the home of a vault this server is the home of to the server whose promotion waits. */
+  onAcceptDemotion?: (vault: FedVault) => void;
   labelsOf?: LabelsOf;
   busy?: boolean;
   error?: unknown;
@@ -46,6 +48,7 @@ export function FederationView({
   onPromote,
   onAccept,
   onDecline,
+  onAcceptDemotion,
   labelsOf,
   busy,
   error,
@@ -294,7 +297,14 @@ export function FederationView({
                     </td>
                     <td className="mono">{vault.sizeBytes === null ? '—' : bytes(vault.sizeBytes)}</td>
                     <td>
-                      {vault.request ? (
+                      {vault.heldDemotion ? (
+                        <>
+                          <div>{t('admin.fed.demotion.asks', { peer: nameOf(vault.heldDemotion.newHomeId) })}</div>
+                          <div className="adm-cell-sub">
+                            {t('admin.fed.demotion.sub')} · {relative(vault.heldDemotion.at, now)}
+                          </div>
+                        </>
+                      ) : vault.request ? (
                         <>
                           <div>{t('admin.fed.asks')}</div>
                           <div className="adm-cell-sub">
@@ -307,6 +317,19 @@ export function FederationView({
                     </td>
                     <td>
                       <div className="adm-row-actions">
+                        {vault.heldDemotion && onAcceptDemotion ? (
+                          <Button
+                            size="small"
+                            isDisabled={busy}
+                            aria-label={t('admin.fed.demotion.accept.of', {
+                              name,
+                              peer: nameOf(vault.heldDemotion.newHomeId),
+                            })}
+                            onPress={() => onAcceptDemotion(vault)}
+                          >
+                            {t('admin.fed.demotion.accept')}
+                          </Button>
+                        ) : null}
                         {vault.federated && !homeHere && !vault.request ? (
                           <Button
                             size="small"
@@ -468,6 +491,10 @@ export default function Federation() {
     mutationFn: (vault: FedVault) => guard((grant) => admin.declineFederation(vault.id, grant)),
     onSuccess: refresh,
   });
+  const demotion = useMutation({
+    mutationFn: (vault: FedVault) => guard((grant) => admin.acceptDemotion(vault.id, grant)),
+    onSuccess: refresh,
+  });
   if (overview.isPending) return <Loading />;
   if (!overview.data) return <ErrorNotice error={overview.error} />;
   return (
@@ -481,11 +508,23 @@ export default function Federation() {
         onPromote={(vault, homeIsDown) => promote.mutate({ vault, homeIsDown })}
         onAccept={(vault) => accept.mutate(vault)}
         onDecline={(vault) => decline.mutate(vault)}
+        onAcceptDemotion={(vault) => demotion.mutate(vault)}
         busy={
-          logs.isPending || check.isPending || consistency.isPending || promote.isPending || accept.isPending
+          logs.isPending ||
+          check.isPending ||
+          consistency.isPending ||
+          promote.isPending ||
+          accept.isPending ||
+          demotion.isPending
         }
         error={
-          logs.error ?? check.error ?? consistency.error ?? promote.error ?? accept.error ?? decline.error
+          logs.error ??
+          check.error ??
+          consistency.error ??
+          promote.error ??
+          accept.error ??
+          decline.error ??
+          demotion.error
         }
       />
       {dialog}

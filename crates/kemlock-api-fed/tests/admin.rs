@@ -433,6 +433,27 @@ async fn promotion_needs_a_fresh_check() {
 }
 
 #[tokio::test]
+async fn accepting_a_demotion_needs_a_fresh_check_and_a_held_promotion() {
+    let e = env(1, Arc::new(Dead));
+    let owner = format!("user:{}", uuid::Uuid::new_v4());
+    let uri = format!("/admin/v1/federation/vaults/{owner}/demotion");
+    let (status, _, bytes) = call(&e.app, Method::POST, &uri, None, &[("x-admin", "1")]).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+    assert_eq!(problem["type"], "urn:kemlock:problem:fresh-check-needed");
+    // With a fresh check it gets as far as the vault, which this server doesn't hold.
+    let (status, _, _) = call(
+        &e.app,
+        Method::POST,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn a_policy_names_paired_replicas_and_a_good_owner() {
     let e = env(1, Arc::new(Dead));
     let owner = format!("user:{}", uuid::Uuid::new_v4());

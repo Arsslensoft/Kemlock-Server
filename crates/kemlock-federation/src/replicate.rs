@@ -458,6 +458,22 @@ impl<S: FedStore> Replica<S> {
                     return Err(FedError::Refused("the peer is not in the vault's set"));
                 }
                 let mut next = home::apply_promotion(&current, &promotion)?;
+                // A promotion that takes the home away from this server waits for this server's
+                // admin. Applied at once, any replica (or anyone holding its key) could make
+                // itself the home of every vault it holds, and then, as the home, erase this
+                // server's copy.
+                if current.home == self.server_id() {
+                    if current.held_demotion.as_deref() != Some(record.as_slice()) {
+                        let held = VaultFederation {
+                            held_demotion: Some(record.clone()),
+                            ..current
+                        };
+                        self.store.put_vault(&held).await?;
+                    }
+                    return Err(FedError::Refused(
+                        "this server is the vault's home: its admin must accept the promotion",
+                    ));
+                }
                 next.promotion = Some(record.clone());
                 self.store.put_vault(&next).await?;
                 Ok(answer(Response::Ack))
@@ -817,6 +833,28 @@ impl<S: FedStore> Replica<S> {
         Ok(signed)
     }
 
+    /// Applies the promotion held for `vault` (see [`VaultFederation::held_demotion`]): another
+    /// server becomes its home and this one a replica, last in the order. The caller has checked
+    /// the admin with a fresh passkey or password. The record is checked again as it was when it
+    /// arrived: signed by the new home, for the next epoch, from this server as the home.
+    pub async fn accept_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        let current = self
+            .store
+            .get_vault(vault)
+            .await?
+            .ok_or(FedError::UnknownVault)?;
+        let record = current
+            .held_demotion
+            .clone()
+            .ok_or(FedError::Refused("no promotion waits for this vault"))?;
+        let keys = self.directory().await?;
+        let promotion = home::open_promotion(&record, &keys)?;
+        let mut next = home::apply_promotion(&current, &promotion)?;
+        next.promotion = Some(record);
+        self.store.put_vault(&next).await?;
+        Ok(next)
+    }
+
     /// Sends a signed promotion record to a peer.
     pub async fn announce<C: Channel>(&self, channel: &mut C, record: Vec<u8>) -> Result<()> {
         match channel.call(&Request::Promote { record }).await? {
@@ -1098,7 +1136,13 @@ mod tests {
             remote: &t.a,
             caller: t.b.server_id(),
         };
-        t.b.announce(&mut to_a, promotion).await.expect("announce");
+        // A is the home it would take the vault from: it holds the promotion for its admin.
+        t.b.announce(&mut to_a, promotion)
+            .await
+            .expect_err("held, not applied");
+        t.a.accept_demotion(t.vault)
+            .await
+            .expect("A's admin accepts");
         let at_a =
             t.a.store
                 .get_vault(t.vault)
@@ -1137,6 +1181,88 @@ mod tests {
         let held = t.b.store.quarantined(t.vault).await.expect("quarantined");
         assert_eq!(held.len(), 1);
         assert_eq!(held[0].record.index, 2);
+    }
+
+    #[tokio::test]
+    async fn a_replica_that_promotes_itself_cant_take_the_vault_or_erase_the_homes_copy() {
+        let t = two().await;
+        let a_id = t.a.server_id();
+        let b_id = t.b.server_id();
+        // B signs a promotion that makes it the home, as a compromised replica could, unasked.
+        let promotion = t.b.promote(t.vault, NOW).await.expect("promote");
+        let mut to_a = Direct {
+            remote: &t.a,
+            caller: b_id,
+        };
+        let refused = t.b.announce(&mut to_a, promotion.clone()).await;
+        assert!(
+            matches!(&refused, Err(FedError::Remote(d)) if d.contains("admin must accept")),
+            "{refused:?}"
+        );
+        // A is still the home, at epoch 1, and holds the record for its admin.
+        let at_a =
+            t.a.store
+                .get_vault(t.vault)
+                .await
+                .expect("get")
+                .expect("vault");
+        assert_eq!((at_a.home, at_a.epoch), (a_id, 1));
+        assert_eq!(at_a.held_demotion.as_deref(), Some(promotion.as_slice()));
+        // So B, not A's home, can't have A erase its copy.
+        let answer = to_a
+            .call(&Request::Erase { vault: t.vault })
+            .await
+            .expect("an answer");
+        assert!(matches!(answer, Response::Error { .. }), "{answer:?}");
+        assert!(
+            t.a.store.get_vault(t.vault).await.expect("get").is_some(),
+            "A's copy stays"
+        );
+        // The same record again changes nothing.
+        let again = t.b.announce(&mut to_a, promotion).await;
+        assert!(again.is_err());
+        let at_a =
+            t.a.store
+                .get_vault(t.vault)
+                .await
+                .expect("get")
+                .expect("vault");
+        assert_eq!(at_a.home, a_id);
+    }
+
+    #[tokio::test]
+    async fn accepting_a_demotion_needs_one_held_and_checks_it_again() {
+        let t = two().await;
+        // Nothing held: nothing to accept.
+        assert!(t.a.accept_demotion(t.vault).await.is_err());
+        // A held record that was tampered with fails its signature when accepted.
+        let promotion = t.b.promote(t.vault, NOW).await.expect("promote");
+        let mut to_a = Direct {
+            remote: &t.a,
+            caller: t.b.server_id(),
+        };
+        t.b.announce(&mut to_a, promotion.clone())
+            .await
+            .expect_err("held");
+        let mut tampered =
+            t.a.store
+                .get_vault(t.vault)
+                .await
+                .expect("get")
+                .expect("vault");
+        let mut bad = promotion.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 1;
+        tampered.held_demotion = Some(bad);
+        t.a.store.put_vault(&tampered).await.expect("put");
+        assert!(t.a.accept_demotion(t.vault).await.is_err());
+        let at_a =
+            t.a.store
+                .get_vault(t.vault)
+                .await
+                .expect("get")
+                .expect("vault");
+        assert_eq!(at_a.home, t.a.server_id(), "still the home");
     }
 
     #[tokio::test]
@@ -1179,10 +1305,13 @@ mod tests {
                 .expect("publish"),
             Some(true)
         );
-        // A learns of the promotion. It can no longer make records.
+        // A learns of the promotion and its admin accepts it. It can no longer make records.
         t.b.announce(&mut from_a, promotion)
             .await
-            .expect("announce");
+            .expect_err("held for A's admin");
+        t.a.accept_demotion(t.vault)
+            .await
+            .expect("A's admin accepts");
         assert_eq!(
             t.a.publish_home_record(t.vault, "k", entity(4))
                 .await
