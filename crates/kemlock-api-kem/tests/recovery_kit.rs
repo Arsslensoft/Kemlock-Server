@@ -9,11 +9,12 @@ use axum::Router;
 use axum::http::StatusCode;
 use common::{App, Client, Reply, Req, Session, register_and_sign_in};
 use kemlock_api_kem::testing::DpopSigner;
-use kemlock_api_kem::{RecoveryKitApiDoc, recovery_kit_router};
-use kemlock_app::notices::{BoxFuture, Notice, Outbox};
+use kemlock_api_kem::{RecoveryKitApiDoc, TwoStepRuntime, recovery_kit_router, two_step_router};
+use kemlock_app::notices::{BoxFuture, Notice, Notices, Outbox};
 use kemlock_app::passkeys::{ChallengeKind, ChallengeRepo};
 use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
+use kemlock_app::two_step::{NoDuo, NoYubico, TwoStepSettings};
 use kemlock_crypto::recovery_kit::{WRAPPED_LEN, make_kit};
 use kemlock_domain::{RecoveryKit, UserId};
 use passkey_fakes::FakePasskeys;
@@ -128,11 +129,27 @@ struct Rig {
 }
 
 fn rig() -> Rig {
+    rig_with(true)
+}
+
+/// The kit routes beside the second-step routes, which serve the proof the changes take.
+fn rig_with(email_enabled: bool) -> Rig {
     let mailbox = Mailbox::default();
     let app = App::mailing(true, Arc::new(mailbox.clone()));
+    let runtime = TwoStepRuntime {
+        challenges: FakePasskeys::default(),
+        notices: Notices::with_outbox(Arc::new(mailbox.clone())),
+        yubico: Arc::new(NoYubico),
+        duo: Arc::new(NoDuo),
+        settings: TwoStepSettings {
+            email_enabled,
+            ..TwoStepSettings::default()
+        },
+    };
     let router = app
         .router
         .clone()
+        .merge(two_step_router(app.api.clone(), runtime))
         .merge(recovery_kit_router(app.api.clone(), Repos::default()));
     Rig {
         app,
@@ -393,18 +410,7 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
     use kemlock_app::ports::SecretSeal;
     use kemlock_app::two_step::{PURPOSE_RECOVERY, RecoveryCodeRepo};
     // No mail at all: the proof request is refused, and revoking must still work.
-    let mailbox = Mailbox::default();
-    let app = App::mailing(false, Arc::new(mailbox));
-    let router = app
-        .router
-        .clone()
-        .merge(recovery_kit_router(app.api.clone(), Repos::default()));
-    let rig = Rig {
-        app,
-        router,
-        mailbox: Mailbox::default(),
-        calls: AtomicUsize::new(0),
-    };
+    let rig = rig_with(false);
     let (device, session, user) = rig.plain().await;
     let token = session.access_token.as_str();
     let asked = rig.authed(&device, "POST", PROOF, token, None).await;
