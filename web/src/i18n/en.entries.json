@@ -1,5 +1,5 @@
 {
-  "error.otpSecret": "That isn't a valid secret. Use the letters A to Z and the digits 2 to 7.",
+  "error.otpSecret": "That isn't a valid secret: at least 16 letters A to Z and digits 2 to 7.",
   "error.number": "Enter a whole number in range.",
   "error.cardNumber": "A card number is up to 19 digits; spaces and dashes are fine.",
   "error.cardExpiry": "Use month and year, like 05/29.",

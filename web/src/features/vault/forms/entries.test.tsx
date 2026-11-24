@@ -188,3 +188,16 @@ describe('timeAgo', () => {
     expect(timeAgo('2026-11-24T10:00:00Z', now)).toBe('2 hours ago');
   });
 });
+
+describe('secret length', () => {
+  it('refuses a secret under 16 characters', async () => {
+    const onSubmit = vi.fn();
+    renderWithIntl(<OtpForm initial={otpDefaults()} onSubmit={onSubmit} onCancel={vi.fn()} submitLabel="Save" />);
+    const user = userEvent.setup({ delay: null });
+    await user.type(screen.getByLabelText('Issuer'), 'GitHub');
+    await user.type(screen.getByLabelText('Secret key'), 'JBSWY3DP');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/at least 16/, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+});

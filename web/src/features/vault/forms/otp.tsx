@@ -18,7 +18,7 @@ export const otpSchema = z
   .object({
     issuer: z.string().trim().max(200, 'error.tooLong'),
     label: z.string().trim().max(200, 'error.tooLong'),
-    secret: z.string().refine((v) => /^[A-Z2-7]+=*$/.test(normaliseSecret(v)), 'error.otpSecret'),
+    secret: z.string().refine((v) => /^[A-Z2-7]{16,}=*$/.test(normaliseSecret(v)), 'error.otpSecret'),
     type: z.enum(['totp', 'hotp', 'steam']),
     algorithm: z.enum(['SHA1', 'SHA256', 'SHA512']),
     digits: wholeNumber(5, 10),
