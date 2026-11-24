@@ -133,7 +133,7 @@ where
     K: TokenSigner + Clone + 'static,
     R: RecoveryKitRepo + ChallengeRepo + Clone + 'static,
 {
-    guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    guard(&api.limits.proof, &ip_key(authed.ip), api.now())?;
     let view = kits(&api, &repos)
         .show(authed.actor.user)
         .await?

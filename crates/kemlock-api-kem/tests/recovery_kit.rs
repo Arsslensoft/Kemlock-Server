@@ -476,3 +476,30 @@ async fn a_bad_replacement_or_a_missing_kit_does_not_spend_the_proof() {
         .await;
     assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.json());
 }
+
+#[tokio::test]
+async fn reading_the_kit_is_not_held_to_the_sign_in_limit() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(rig.kit_body(user).await))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED);
+    // The unlock screen and the card read it from one address, far over 10 a minute.
+    let peer = SocketAddr::from(([10, 9, 9, 9], 40_000));
+    for n in 0..25 {
+        let reply = device
+            .send(
+                "GET",
+                KIT,
+                Req {
+                    access_token: Some(token),
+                    peer: Some(peer),
+                    ..Req::default()
+                },
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "read {n}");
+    }
+}
