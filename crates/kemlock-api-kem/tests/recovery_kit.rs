@@ -353,3 +353,88 @@ async fn the_routes_need_a_session_and_are_in_the_openapi_document() {
         assert!(methods.contains(&method), "{method} is documented");
     }
 }
+
+/// The account's authenticator app, set up the way the move from Vaultwarden writes it.
+async fn turn_totp_on(rig: &Rig, user: UserId, secret: &[u8]) {
+    use kemlock_app::ports::{Clock, SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo};
+    rig.app
+        .store
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::Totp,
+            sealed_secret: rig.app.crypto.seal(kemlock_app::sealed::PURPOSE_TOTP, secret),
+            enabled: true,
+            created_at: rig.app.clock.now(),
+        })
+        .await
+        .expect("the row is stored");
+}
+
+#[tokio::test]
+async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_is_off() {
+    use kemlock_app::ports::SecretSeal;
+    use kemlock_app::two_step::{PURPOSE_RECOVERY, RecoveryCodeRepo};
+    // No mail at all: the proof request is refused, and revoking must still work.
+    let mailbox = Mailbox::default();
+    let app = App::mailing(false, Arc::new(mailbox));
+    let router = app
+        .router
+        .clone()
+        .merge(recovery_kit_router(app.api.clone(), Repos::default()));
+    let rig = Rig {
+        app,
+        router,
+        mailbox: Mailbox::default(),
+        calls: AtomicUsize::new(0),
+    };
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let asked = rig.authed(&device, "POST", PROOF, token, None).await;
+    assert!(asked.status.is_client_error(), "mail is off");
+
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(rig.kit_body(user).await))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED);
+
+    // A wrong code of the app does nothing.
+    let secret = b"12345678901234567890";
+    turn_totp_on(&rig, user, secret).await;
+    let wrong = rig
+        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": "000000"})))
+        .await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
+
+    // The recovery code proves it, and is kept: it is a proof here, not a recovery.
+    let code = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    rig.app
+        .store
+        .put_recovery_code_if_absent(
+            user,
+            &rig.app.crypto.seal(PURPOSE_RECOVERY, code.as_bytes()),
+            time::OffsetDateTime::now_utc(),
+        )
+        .await
+        .expect("a code");
+    let spaced = "abcd efgh ijkl mnop qrst uvwx yz23 4567";
+    let by_code = rig
+        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": spaced})))
+        .await;
+    assert_eq!(by_code.status, StatusCode::NO_CONTENT, "{:?}", by_code.json());
+    assert!(
+        rig.app.store.recovery_code(user).await.expect("read").is_some(),
+        "the recovery code is not spent"
+    );
+
+    // A current code of the authenticator app proves it too.
+    let again = rig
+        .authed(&device, "POST", KIT, token, Some(rig.kit_body(user).await))
+        .await;
+    assert_eq!(again.status, StatusCode::CREATED);
+    let now = u64::try_from(rig.app.now()).expect("a time");
+    let current = kemlock_crypto::totp::code_at(secret, now);
+    let by_app = rig
+        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": current})))
+        .await;
+    assert_eq!(by_app.status, StatusCode::NO_CONTENT, "{:?}", by_app.json());
+}

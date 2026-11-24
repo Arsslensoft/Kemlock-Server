@@ -11,7 +11,8 @@
 //! The key worker makes the kit, so the pieces never leave the browser and the server keeps only
 //! the non-secret record. The wrap is also the verifier: only the right pieces open it. Replacing
 //! or removing the kit takes the same fresh proof turning a second step off does (the code mailed
-//! by `POST /kem/v1/account/two-factor/proof`), so a stolen session can't swap the kit for one it
+//! by `POST /kem/v1/account/two-factor/proof`, or, with mail off, a current code of the authenticator
+//! app or the recovery code), so a stolen session can't swap the kit for one it
 //! holds the pieces of, and each change writes an event. The routes need a store that keeps kits,
 //! so they have a router of their own: see [`recovery_kit_router`].
 
