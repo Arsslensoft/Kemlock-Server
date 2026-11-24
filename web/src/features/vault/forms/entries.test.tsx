@@ -56,7 +56,6 @@ describe('OtpForm', () => {
       period: 30,
     });
     expect(fields['counter']).toBeUndefined();
-    expect(typeof fields['id']).toBe('string');
     expect(typeof fields['addedAt']).toBe('number');
   });
 
@@ -172,5 +171,11 @@ describe('itemName', () => {
     expect(itemName(item('otp', { issuer: 'GitHub', label: 'sam' }))).toBe('GitHub: sam');
     expect(itemName(item('backup-codes', { serviceName: 'Google' }))).toBe('Google');
     expect(itemName(item('card', {}))).toBe('card');
+  });
+});
+
+describe('entry id', () => {
+  it('does not set an entry id of its own; saveItem uses the item id', () => {
+    expect(otpFields({ ...otpDefaults(), issuer: 'G', secret: 'JBSWY3DPEHPK3PXP' })['id']).toBeUndefined();
   });
 });

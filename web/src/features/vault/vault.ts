@@ -36,6 +36,23 @@ export interface VaultItem {
 
 export const TRASH_DAYS = 30;
 
+/**
+ * The plaintext of a saved item: the entry's own `id` is the item's id (kemlock-core reads an item
+ * only when `kmItemId(json.id)` is the item's id, and a UUID maps to itself), then what the item
+ * held, then the form's fields, stamped with `updatedAt` in epoch ms.
+ */
+export function sealedData(existing: VaultItem | undefined, id: string, fields: ItemData, now: Date): ItemData {
+  const data: ItemData = {
+    ...(typeof existing?.data?.id === 'string' && existing.data.id !== '' ? {} : { id }),
+    ...(existing?.data ?? {}),
+    ...fields,
+    updatedAt: now.toISOString(),
+  };
+  // A cleared optional field is removed, not kept as an empty string.
+  for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
+  return data;
+}
+
 export class VaultStore {
   readonly items = new Map<string, VaultItem>();
   cursor: string | undefined;
@@ -251,13 +268,7 @@ export async function saveItem(
   const id = existing?.id ?? (deps.newId ?? (() => globalThis.crypto.randomUUID()))();
   const revision = existing ? existing.revision + 1 : 1;
   const owner = existing?.owner ?? input.owner;
-  const data: ItemData = {
-    ...(existing?.data ?? {}),
-    ...input.fields,
-    updatedAt: (deps.now?.() ?? new Date()).toISOString(),
-  };
-  // A cleared optional field is removed, not kept as an empty string.
-  for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
+  const data = sealedData(existing, id, input.fields, deps.now?.() ?? new Date());
   const collectionId = existing?.collectionId ?? input.collectionId;
   const sealed = await sealFor(deps.crypto, {
     id,

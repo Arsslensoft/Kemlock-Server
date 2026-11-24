@@ -42,10 +42,10 @@ export function Actions({
   );
 }
 
-/** The entry id and `addedAt` (epoch ms) a new entry carries; an edit keeps the ones it has. */
-export function entryBase(existing?: VaultItem): { id?: string; addedAt?: number } {
+/** The `addedAt` (epoch ms) a new entry carries; an edit keeps its own. The entry `id` is the item's, set by `saveItem`. */
+export function entryBase(existing?: VaultItem): { addedAt?: number } {
   if (existing) return {};
-  return { id: globalThis.crypto.randomUUID(), addedAt: Date.now() };
+  return { addedAt: Date.now() };
 }
 
 export function str(data: VaultItem['data'] | undefined, key: string): string {

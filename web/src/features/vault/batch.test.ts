@@ -130,3 +130,11 @@ describe('importItems', () => {
     expect(store.items.size).toBe(500);
   });
 });
+
+describe('saveBatch ids', () => {
+  it('writes the entry id as the item id', async () => {
+    const { deps, store } = setup();
+    const [saved] = await saveBatch(deps, store, [{ kind: 'note', owner: OWNER, fields: { name: 'N' } }]);
+    expect(saved?.data?.id).toBe(saved?.id);
+  });
+});
