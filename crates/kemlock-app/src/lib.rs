@@ -44,6 +44,7 @@ pub mod put_batch;
 pub mod put_item;
 pub mod quota;
 pub mod refresh;
+pub mod reset_admin;
 pub mod register;
 pub mod sealed;
 pub mod sends;
