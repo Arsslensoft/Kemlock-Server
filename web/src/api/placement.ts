@@ -3,7 +3,7 @@
 // `GET /kem/v1/placement` answers from the federation state: the servers of the account's own
 // vault and its spaces (home first), and the apps that use this server. A server that federates
 // none of them answers 404 and the web vault shows nothing, which is right for a single server.
-// The server does not yet know a peer is down (`status` is always `online`), keeps no waiting
+// The server does not yet know a peer is down (`status` is always `unknown`), keeps no waiting
 // changes (`pending` is null; cancelling one answers 404), and has no place or name for a server
 // beyond the host of its address.
 import type { Api } from './client';
@@ -19,7 +19,8 @@ export interface PlacementServer {
   place?: string | null;
   /** Its position in the vault's set: the home first, then the replicas in order. */
   role: ServerRole;
-  status: 'online' | 'offline';
+  /** `unknown` when the server has no way to tell (a single server never has to). */
+  status: 'online' | 'offline' | 'unknown';
   /** ISO time it went offline, while it is. */
   offlineSince?: string | null;
   /** The apps of this vault are on it right now. */

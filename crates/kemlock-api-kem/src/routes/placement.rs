@@ -30,7 +30,8 @@ pub(crate) struct PlacementServerDto {
     place: Option<String>,
     /// `home` or `replica`.
     role: &'static str,
-    /// `online`: this server has no liveness probe of its peers yet.
+    /// `unknown`: this server has no liveness probe of its peers yet, so it never says online or
+    /// offline.
     status: &'static str,
     offline_since: Option<String>,
     /// The apps of this vault are on it right now.
@@ -85,7 +86,7 @@ impl PlacementDto {
                             name: server.name,
                             place: None,
                             role: server.role.as_str(),
-                            status: "online",
+                            status: "unknown",
                             offline_since: None,
                             in_use: server.in_use,
                         })

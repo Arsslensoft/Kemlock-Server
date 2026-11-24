@@ -576,7 +576,7 @@ async fn placement_lists_the_accounts_federated_vault_and_its_apps() {
     assert_eq!(vault["id"], "me");
     assert_eq!(vault["servers"][0]["role"], "home");
     assert_eq!(vault["servers"][0]["name"], "nas.example.org");
-    assert_eq!(vault["servers"][0]["status"], "online");
+    assert_eq!(vault["servers"][0]["status"], "unknown");
     assert_eq!(vault["servers"][0]["inUse"], false);
     assert_eq!(vault["servers"][1]["id"], replica);
     assert_eq!(vault["servers"][1]["role"], "replica");

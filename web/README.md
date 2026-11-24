@@ -122,7 +122,7 @@ Not built, or not working yet:
   configuration.
 - Where each vault lives (`src/api/placement.ts`): `GET /kem/v1/placement` is served from the
   federation state. A single server answers 404 and the failover banner and storage page show
-  nothing. A server is named by the host of its address, and every peer shows as online, because
+  nothing. A server is named by the host of its address, and every peer's status is `unknown`, because
   the server does not probe its peers yet, so the banner does not appear on its own. Waiting
   changes are not kept per vault, so there is nothing to cancel.
 

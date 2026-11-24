@@ -7,7 +7,7 @@
 //! answer is `None`.
 //!
 //! What this server cannot know it does not say: a server's name is the host of its address, its
-//! place is not in its descriptor, and a peer is shown `online` because this server has no
+//! place is not in its descriptor, and a peer's status is `unknown` because this server has no
 //! liveness probe of a peer yet (a failed handshake is not recorded), so `offline_since` stays
 //! empty. A space has no name the server can read, so it is named by its short id. Waiting
 //! changes (`pending`) are not kept per vault yet.
