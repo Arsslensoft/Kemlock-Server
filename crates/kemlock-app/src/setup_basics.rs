@@ -118,6 +118,19 @@ impl ServerBasics {
     }
 }
 
+/// Drops the changes whose setting the environment sets: the operator's value wins and the
+/// console shows it read-only, so setup neither saves nor trips over it.
+pub fn without_env_set<E: EnvSettings>(
+    mut changes: BTreeMap<String, Change>,
+    env: &E,
+) -> BTreeMap<String, Change> {
+    changes.retain(|key, _| {
+        settings::definition(key)
+            .is_none_or(|d| env.get(d.env).is_none_or(|v| v.trim().is_empty()))
+    });
+    changes
+}
+
 /// Saves the basics through the settings store the admin console uses. `changes` come from
 /// [`ServerBasics::changes`]; all are stored or none.
 pub async fn save_basics<R: SettingsRepo, S: SecretSeal, E: EnvSettings>(
@@ -200,6 +213,15 @@ mod tests {
         assert!(b.changes().is_err());
     }
 
+
+    #[test]
+    fn settings_the_environment_sets_are_left_out() {
+        let changes = basics(JoinPolicy::Anyone).changes().expect("valid");
+        let env = settings::FnEnv(|name: &str| (name == "SIGNUPS_ALLOWED").then(|| "false".into()));
+        let kept = without_env_set(changes, &env);
+        assert!(!kept.contains_key("signups_allowed"));
+        assert!(kept.contains_key("invitations_allowed"));
+    }
     #[test]
     fn join_words_parse() {
         assert_eq!(JoinPolicy::parse("anyone"), Some(JoinPolicy::Anyone));

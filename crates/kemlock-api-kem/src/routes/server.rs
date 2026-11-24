@@ -13,9 +13,9 @@ use crate::state::{Api, Crypto, Store};
 use axum::Json;
 use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
-use kemlock_app::admin::{NoEnv, Settings, SettingsRepo};
+use kemlock_app::admin::{FnEnv, Settings, SettingsRepo};
 use kemlock_app::ports::TokenSigner;
-use kemlock_app::{AppError, SetupPhase, save_basics};
+use kemlock_app::{AppError, SetupPhase, save_basics, without_env_set};
 use kemlock_domain::Owner;
 use utoipa::{Modify, OpenApi};
 
@@ -183,10 +183,12 @@ impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
                 Some(_) => return Err(AppError::Forbidden.into()),
                 None => return Err(kemlock_domain::SetupError::AlreadyDone.into()),
             }
+            let env = FnEnv(|name: &str| std::env::var(name).ok());
+            let changes = without_env_set(changes, &env);
             let settings = Settings {
                 repo: api.store.clone(),
                 seal: api.crypto.clone(),
-                env: NoEnv,
+                env,
             };
             save_basics(&settings, &changes).await?;
         }
