@@ -30,8 +30,8 @@ fn any_two_of_three_pieces_rebuild_the_key() {
 fn one_piece_is_not_enough_and_gives_no_key() {
     let (_, _, pieces) = make_kit(2, 3).expect("a kit");
     let all = parsed(&pieces);
-    assert_eq!(rebuild_key(&all[..1]).unwrap_err(), PieceProblem::NotEnough);
-    assert_eq!(rebuild_key(&[]).unwrap_err(), PieceProblem::NotEnough);
+    assert_eq!(rebuild_key(&all[..1]).expect_err("one piece"), PieceProblem::NotEnough);
+    assert_eq!(rebuild_key(&[]).expect_err("no pieces"), PieceProblem::NotEnough);
 }
 
 #[test]
@@ -40,11 +40,11 @@ fn pieces_of_two_kits_or_the_same_piece_twice_are_refused() {
     let (_, _, two) = make_kit(2, 3).expect("another kit");
     let (one, two) = (parsed(&one), parsed(&two));
     assert_eq!(
-        rebuild_key(&[one[0].clone(), two[1].clone()]).unwrap_err(),
+        rebuild_key(&[one[0].clone(), two[1].clone()]).expect_err("two kits"),
         PieceProblem::OtherKit
     );
     assert_eq!(
-        rebuild_key(&[one[0].clone(), one[0].clone()]).unwrap_err(),
+        rebuild_key(&[one[0].clone(), one[0].clone()]).expect_err("a repeat"),
         PieceProblem::Duplicate
     );
 }
@@ -86,7 +86,7 @@ fn a_mistyped_piece_fails_its_check() {
     let at = 21;
     chars[at] = if chars[at] == 'A' { 'B' } else { 'A' };
     let typo: String = chars.into_iter().collect();
-    assert_eq!(parse_piece(&typo).unwrap_err(), PieceProblem::Checksum);
+    assert_eq!(parse_piece(&typo).expect_err("a typo"), PieceProblem::Checksum);
 }
 
 #[test]
@@ -99,7 +99,7 @@ fn text_that_is_not_a_piece_is_a_format_problem() {
         "BMCKIT1-AAAAAAA1-231-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-AAAA",
     ] {
         assert_eq!(
-            parse_piece(text).unwrap_err(),
+            parse_piece(text).expect_err("not a piece"),
             PieceProblem::Format,
             "{text:?}"
         );
