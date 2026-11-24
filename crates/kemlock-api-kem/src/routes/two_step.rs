@@ -6,7 +6,7 @@
 //! - `POST /kem/v1/auth/two-factor/email`, `.../yubikey` and `.../duo` answer the second step with
 //!   the emailed code, a YubiKey OTP, or `<code>|<state>` from Duo, and answer tokens.
 //! - `POST /kem/v1/auth/two-factor/recovery` answers the second step with the account's recovery
-//!   code (shown at `GET /kem/v1/account/two-factor/recovery-code`): every method goes off, the code
+//!   code (shown at `POST /kem/v1/account/two-factor/recovery-code`, behind a fresh proof): every method goes off, the code
 //!   is spent, and the answer is tokens.
 //!
 //! `GET /kem/v1/account/two-step` lists the signed-in account's own second steps: each method it
@@ -583,21 +583,67 @@ where
     require_proof(api, steps, user, proof).await
 }
 
-/// As [`require_proof_to_add`] where the router holds no store for mailed codes (the authenticator
-/// app's): only what can be checked without one proves it, so the recovery code (or a code of an
-/// authenticator app that is on already, which a first one never has).
-pub(crate) async fn require_local_proof_to_add<S, P, K>(
+/// How a route on the main router checks a mailed proof: [`two_step_router`] registers the store of
+/// codes it holds with the API state.
+pub(crate) trait MailedProof: std::fmt::Debug + Send + Sync {
+    fn check(
+        &self,
+        user: kemlock_domain::UserId,
+        proof: String,
+        recovery: bool,
+    ) -> kemlock_app::notices::BoxFuture<'_, Result<(), Problem>>;
+}
+
+struct Mailed<S, P, K, R> {
+    api: std::sync::Weak<crate::state::Inner<S, P, K>>,
+    challenges: R,
+}
+
+impl<S, P, K, R> std::fmt::Debug for Mailed<S, P, K, R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mailed").finish_non_exhaustive()
+    }
+}
+
+impl<S, P, K, R> MailedProof for Mailed<S, P, K, R>
+where
+    S: Store + Send + Sync,
+    P: Crypto + Send + Sync,
+    K: TokenSigner + Clone + Send + Sync + 'static,
+    R: ChallengeRepo + Clone + Send + Sync + 'static,
+{
+    fn check(
+        &self,
+        user: kemlock_domain::UserId,
+        proof: String,
+        recovery: bool,
+    ) -> kemlock_app::notices::BoxFuture<'_, Result<(), Problem>> {
+        Box::pin(async move {
+            let Some(api) = Api::upgrade(&self.api) else {
+                return Err(AppError::Unauthorized.into());
+            };
+            let steps = proof_steps(&api, self.challenges.clone());
+            check_proof(&api, &steps, user, proof.trim(), recovery).await
+        })
+    }
+}
+
+/// Checks a proof from a route that has no store of mailed codes of its own: through the one
+/// [`two_step_router`] registered when it is merged, else only an authenticator code (and the
+/// recovery code, when `recovery`) proves it.
+pub(crate) async fn require_proof_via_api<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
-    proof: Option<&str>,
+    proof: &str,
+    recovery: bool,
 ) -> Result<(), Problem>
 where
     S: Store,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
 {
-    if methods_on(api, user).await?.is_empty() {
-        return Ok(());
+    if let Some(mailed) = api.proofs.get() {
+        return mailed.check(user, proof.to_owned(), recovery).await;
     }
     let now = api.now();
     let account = format!("2fa:{user}");
@@ -605,15 +651,54 @@ where
         .second_step
         .blocked(&account, now)
         .map_err(rate_limited)?;
-    let proof = proof
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .ok_or(AppError::Invalid(PROOF_NEEDED))?;
-    if second_step_proof(api, user, proof).await {
+    if second_step_proof(api, user, proof, recovery).await {
         return Ok(());
     }
     api.limits.second_step.fail(&account, now);
     Err(AppError::Invalid("the code is wrong or has run out: ask for another").into())
+}
+
+/// [`require_proof_to_add`] for the authenticator app, which is confirmed on the main router.
+pub(crate) async fn require_proof_to_add_via_api<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+    own: Option<TwoFactorMethod>,
+    proof: Option<&str>,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let on = methods_on(api, user).await?;
+    if on.is_empty() {
+        return Ok(());
+    }
+    if own.is_some_and(|method| on.contains(&method)) {
+        return Err(AppError::Duplicate.into());
+    }
+    let proof = proof
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or(AppError::Invalid(PROOF_NEEDED))?;
+    require_proof_via_api(api, user, proof, true).await
+}
+
+/// Showing the recovery code takes a proof that is not the recovery code.
+pub(crate) async fn require_proof_for_recovery_code<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+    proof: &str,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    if proof.trim().is_empty() {
+        return Err(AppError::Invalid("a fresh proof is needed to show the recovery code").into());
+    }
+    require_proof_via_api(api, user, proof, false).await
 }
 
 fn limit_setup<S, P, K>(api: &Api<S, P, K>, authed: &Authed, what: &str) -> Result<(), Problem>
@@ -675,11 +760,13 @@ where
 }
 
 /// Whether `proof` is a current, unused code of the account's authenticator app (spent by this
-/// call), or its recovery code (kept, not spent: it is a proof here, not a recovery).
+/// call), or, when `recovery`, the account's recovery code (kept, not spent: it is a proof here,
+/// not a recovery). Reading the recovery code itself must not accept the recovery code.
 async fn second_step_proof<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
     proof: &str,
+    recovery: bool,
 ) -> bool
 where
     S: Store,
@@ -712,7 +799,7 @@ where
             }
         }
     }
-    if let Ok(Some(held)) = api.recovery_codes().show(user).await {
+    if recovery && let Ok(Some(held)) = api.recovery_codes().show(user).await {
         return hash::ct_eq(
             entered.to_lowercase().as_bytes(),
             held.to_lowercase().as_bytes(),
@@ -734,6 +821,23 @@ where
     K: TokenSigner + Clone + 'static,
     R: ChallengeRepo + Clone + 'static,
 {
+    check_proof(api, steps, user, proof, true).await
+}
+
+/// [`require_proof`], with the recovery code accepted or not (`recovery`).
+async fn check_proof<S, P, K, R>(
+    api: &Api<S, P, K>,
+    steps: &TwoStep<S, P, P, R>,
+    user: kemlock_domain::UserId,
+    proof: &str,
+    recovery: bool,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
     let now = api.now();
     let account = format!("2fa:{user}");
     api.limits
@@ -743,7 +847,7 @@ where
     // Without mail, a current code of the authenticator app or the account's recovery code proves
     // it just as well. A TOTP code is spent here (it works once); the recovery code is kept. Neither
     // needs the mail to work.
-    if second_step_proof(api, user, proof).await {
+    if second_step_proof(api, user, proof, recovery).await {
         return Ok(());
     }
     match steps.protected_validate(user, proof.trim(), true).await {
@@ -1131,11 +1235,17 @@ where
 /// ```
 pub fn two_step_router<S, P, K, R>(api: Api<S, P, K>, runtime: TwoStepRuntime<R>) -> Router
 where
-    S: Store,
-    P: Crypto,
-    K: TokenSigner + Clone + 'static,
-    R: ChallengeRepo + Clone + 'static,
+    S: Store + Send + Sync,
+    P: Crypto + Send + Sync,
+    K: TokenSigner + Clone + Send + Sync + 'static,
+    R: ChallengeRepo + Clone + Send + Sync + 'static,
 {
+    // The authenticator app and the recovery code are on the main router, which has no store of
+    // mailed codes: they check one through this.
+    let _ = api.proofs.set(Arc::new(Mailed {
+        api: api.downgrade(),
+        challenges: runtime.challenges.clone(),
+    }));
     Router::new()
         .route(
             "/kem/v1/auth/two-factor/email/send",

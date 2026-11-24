@@ -423,6 +423,16 @@ pub struct TotpConfirmRequest {
     pub proof: Option<String>,
 }
 
+/// Asks for the account's recovery code.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoveryCodeRequest {
+    /// A fresh proof that is not the recovery code itself: a code mailed by
+    /// `POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not
+    /// needed while the account holds no recovery code.
+    pub proof: Option<String>,
+}
+
 /// The account's two-step recovery code.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

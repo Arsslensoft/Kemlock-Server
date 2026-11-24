@@ -109,7 +109,7 @@ where
         )
         .route(
             "/kem/v1/account/two-factor/recovery-code",
-            get(A::<S, P, K>::handle_recovery_code),
+            post(A::<S, P, K>::handle_recovery_code),
         )
         .merge(crate::routes::devices::router::<S, P, K>())
         .merge(crate::routes::emergency::router::<S, P, K>())

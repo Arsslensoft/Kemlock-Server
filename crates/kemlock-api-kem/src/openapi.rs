@@ -9,7 +9,7 @@
 use crate::dto::{
     ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
-    PreloginResponse, RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest,
+    PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest,
     RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse, ServerBasicsDto,
     SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse, SsoOffer,
     SyncBody, SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse,
@@ -335,10 +335,12 @@ fn doc_totp_enrol() {}
 fn doc_totp_confirm() {}
 
 #[utoipa::path(
-    get, path = "/kem/v1/account/two-factor/recovery-code", tag = "account",
+    post, path = "/kem/v1/account/two-factor/recovery-code", tag = "account",
     security(("dpop" = [])),
+    request_body = RecoveryCodeRequest,
     responses(
-        (status = 200, description = "The recovery code (null before the account's first second step, or once it was spent)", body = RecoveryCodeResponse),
+        (status = 200, description = "The recovery code (null before the account's first second step, or once it was spent). While the account holds one, the request carries a fresh `proof` that is not the recovery code: a mailed code or a current code of the authenticator app", body = RecoveryCodeResponse),
+        (status = 400, description = "The account holds a code and the proof is missing, wrong or has run out", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 429, description = "Too many asks", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -444,7 +446,7 @@ fn doc_live() {}
         PreloginResponse, MethodsResponse, SsoOffer, RegisterStartRequest, RegisterStartResponse,
         RegisterFinishRequest, RegisterFinishResponse, OpaqueStartRequest, OpaqueStartResponse,
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,
-        TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeResponse, ItemDto,
+        TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeRequest, RecoveryCodeResponse, ItemDto,
         ItemWriteDto, ItemWriteAnswerDto, TaggedBatchWriteDto, TaggedBatchRequest, TagOutcomeDto,
         TaggedBatchResponse, SyncBody, SyncResponse
     )),

@@ -1248,3 +1248,59 @@ async fn a_request_that_fails_its_own_checks_does_not_spend_the_proof() {
         .await;
     assert_eq!(added.status, StatusCode::NO_CONTENT, "{:?}", added.json());
 }
+
+#[tokio::test]
+async fn an_authenticator_app_is_added_beside_another_step_with_a_mailed_proof() {
+    let rig = rig();
+    let (device, session) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let user = UserId(uuid::Uuid::parse_str(&session.user_id).expect("a UUID"));
+    rig.app
+        .store
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::YubiKey,
+            sealed_secret: rig
+                .app
+                .crypto
+                .seal(PURPOSE_YUBIKEY, br#"{"keys":["cccccccccccc"],"nfc":false}"#),
+            enabled: true,
+            created_at: rig.app.clock.now(),
+        })
+        .await
+        .expect("the row is stored");
+    let enrol = rig
+        .authed(&device, "POST", &format!("{FACTOR}/totp"), token, None)
+        .await;
+    assert_eq!(enrol.status, StatusCode::OK, "{:?}", enrol.json());
+    let secret = enrol.json()["secret"].as_str().expect("a secret").to_owned();
+    let confirm = format!("{FACTOR}/totp/confirm");
+    let code = common::totp_now(&rig.app, &secret);
+
+    let bare = rig
+        .authed(&device, "POST", &confirm, token, Some(json!({"code": code})))
+        .await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
+    let asked = rig
+        .authed(&device, "POST", &format!("{FACTOR}/proof"), token, None)
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let added = rig
+        .authed(
+            &device,
+            "POST",
+            &confirm,
+            token,
+            Some(json!({"code": code, "proof": rig.mailbox.last_proof()})),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::NO_CONTENT, "{:?}", added.json());
+    let listed = rig.authed(&device, "GET", "/kem/v1/account/two-step", token, None).await;
+    assert!(
+        listed.json()["methods"]
+            .as_array()
+            .is_some_and(|m| m.iter().any(|e| e["method"] == "totp" && e["enabled"] == true)),
+        "{:?}",
+        listed.json()
+    );
+}

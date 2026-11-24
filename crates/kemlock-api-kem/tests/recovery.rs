@@ -109,8 +109,10 @@ impl Rig {
     }
 }
 
-async fn recovery_code(client: &Client, session: &Session) -> Reply {
-    client.get_authed(CODE, &session.access_token).await
+/// Asks for the code; the account's proof is not the recovery code (that is for sign-in).
+async fn recovery_code(client: &Client, session: &Session, proof: Option<&str>) -> Reply {
+    let body = proof.map_or_else(|| json!({}), |proof| json!({"proof": proof}));
+    client.post_authed(CODE, &session.access_token, body).await
 }
 
 #[tokio::test]
@@ -119,10 +121,13 @@ async fn confirming_the_authenticator_makes_a_recovery_code_a_signed_in_device_c
     let first = rig.device();
     let session = register_and_sign_in(&first, EMAIL).await;
     // No second step yet, so no code; and no bearer token, no answer.
-    let none = recovery_code(&first, &session).await;
+    let none = recovery_code(&first, &session, None).await;
     assert_eq!(none.status, StatusCode::OK, "{:?}", none.json());
     assert_eq!(none.json(), json!({"code": null}));
-    assert_eq!(first.get(CODE).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        first.post(CODE, json!({})).await.status,
+        StatusCode::UNAUTHORIZED
+    );
 
     // Enrolling alone makes none: the code comes when the app proves it was set up.
     let enrol = first
@@ -140,7 +145,7 @@ async fn confirming_the_authenticator_makes_a_recovery_code_a_signed_in_device_c
         .expect("a secret")
         .to_owned();
     assert_eq!(
-        recovery_code(&first, &session).await.json(),
+        recovery_code(&first, &session, None).await.json(),
         json!({"code": null})
     );
     first
@@ -151,8 +156,19 @@ async fn confirming_the_authenticator_makes_a_recovery_code_a_signed_in_device_c
         )
         .await;
 
-    let shown = recovery_code(&first, &session).await.json();
-    let code = shown["code"].as_str().expect("a code");
+    // A session alone can't read it: the code proves removals and additions.
+    let bare = recovery_code(&first, &session, None).await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
+    let shown = recovery_code(&first, &session, Some(&totp_now(&rig.app, &secret)))
+        .await
+        .json();
+    let code = shown["code"].as_str().expect("a code").to_owned();
+    // The recovery code is no proof that it may be shown, and an authenticator code works once.
+    let by_code = recovery_code(&first, &session, Some(&code)).await;
+    assert_eq!(by_code.status, StatusCode::BAD_REQUEST, "{:?}", by_code.json());
+    let replayed = recovery_code(&first, &session, Some(&totp_now(&rig.app, &secret))).await;
+    assert_eq!(replayed.status, StatusCode::BAD_REQUEST, "{:?}", replayed.json());
+    let code = code.as_str();
     assert_eq!(code.len(), 32, "{code}");
     assert!(
         code.bytes()
@@ -164,8 +180,10 @@ async fn confirming_the_authenticator_makes_a_recovery_code_a_signed_in_device_c
 #[tokio::test]
 async fn the_recovery_code_answers_the_second_step_switches_the_methods_off_and_is_spent() {
     let rig = rig();
-    let (first, session, _secret) = rig.account_with_authenticator().await;
-    let code = recovery_code(&first, &session).await.json()["code"]
+    let (first, session, secret) = rig.account_with_authenticator().await;
+    let code = recovery_code(&first, &session, Some(&totp_now(&rig.app, &secret)))
+        .await
+        .json()["code"]
         .as_str()
         .expect("a code")
         .to_owned();
@@ -204,7 +222,7 @@ async fn the_recovery_code_answers_the_second_step_switches_the_methods_off_and_
         .await;
     assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
     assert_eq!(
-        recovery_code(&device, &second).await.json(),
+        recovery_code(&device, &second, None).await.json(),
         json!({"code": null})
     );
     let again = sign_in_reply(&rig.device(), EMAIL, test_device()).await;
