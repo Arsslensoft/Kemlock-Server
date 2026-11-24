@@ -185,6 +185,23 @@ async fn setup_code_to_first_admin_to_synced_item() {
             "{key}"
         );
     }
+    // Once setup is closed, nobody can write basics through it.
+    let late = client
+        .send(
+            "POST",
+            "/kem/v1/setup/finish",
+            Req {
+                access_token: Some(&session.access_token),
+                body: Some(json!({"basics": {"join": "invite"}})),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(late.status, StatusCode::CONFLICT);
+    assert_eq!(
+        app.store.saved_setting("setting.signups_allowed").as_deref(),
+        Some("true")
+    );
     let reopened = client
         .post("/kem/v1/setup/verify", json!({"code": "AAAA-AAAA-AAAA"}))
         .await;

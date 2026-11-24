@@ -157,9 +157,9 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
 
 impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     /// `POST /kem/v1/setup/finish`: closes setup, for the admin who has a two-step method. The
-    /// body is optional; with `basics` the server basics are saved as settings, once setup is
-    /// closed, so only the admin setup waits for can write them. They are checked first, so a
-    /// bad value stops the request before setup closes.
+    /// body is optional; with `basics` the server basics are saved as settings first, and only for
+    /// the admin setup waits for, so a failed save leaves setup open to retry. They are checked
+    /// before either, so a bad value changes nothing.
     pub(crate) async fn handle_setup_finish(
         State(api): State<Self>,
         authed: Authed,
@@ -174,8 +174,15 @@ impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
                 .map(|basics| basics.into_basics()?.changes())
                 .transpose()?
         };
-        api.finish_setup().execute(authed.actor.user).await?;
+        let user = authed.actor.user;
         if let Some(changes) = changes {
+            // Only the account setup waits for may write them; they are saved before setup
+            // closes, so a store failure leaves setup open to retry (saving is idempotent).
+            match api.setup.pending() {
+                Some(pending) if pending == user => {}
+                Some(_) => return Err(AppError::Forbidden.into()),
+                None => return Err(kemlock_domain::SetupError::AlreadyDone.into()),
+            }
             let settings = Settings {
                 repo: api.store.clone(),
                 seal: api.crypto.clone(),
@@ -183,6 +190,7 @@ impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
             };
             save_basics(&settings, &changes).await?;
         }
+        api.finish_setup().execute(user).await?;
         Ok(StatusCode::NO_CONTENT)
     }
 }
