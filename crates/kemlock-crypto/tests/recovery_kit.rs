@@ -2,12 +2,15 @@
 
 use kemlock_crypto::keys::RootKey;
 use kemlock_crypto::recovery_kit::{
-    KIT_KEY_LEN, KitPiece, PieceProblem, WRAPPED_LEN, display_piece, is_kit_id, make_kit,
-    open, parse_piece, piece_text, rebuild_key, seal,
+    KIT_KEY_LEN, KitPiece, PieceProblem, WRAPPED_LEN, display_piece, is_kit_id, make_kit, open,
+    parse_piece, piece_text, rebuild_key, seal,
 };
 
 fn parsed(pieces: &[String]) -> Vec<KitPiece> {
-    pieces.iter().map(|p| parse_piece(p).expect("a piece")).collect()
+    pieces
+        .iter()
+        .map(|p| parse_piece(p).expect("a piece"))
+        .collect()
 }
 
 #[test]
@@ -64,8 +67,14 @@ fn a_piece_has_the_apps_text_shape() {
 fn a_piece_reads_in_any_case_with_or_without_spaces() {
     let (_, _, pieces) = make_kit(2, 3).expect("a kit");
     let plain = parse_piece(&pieces[0]).expect("a piece");
-    assert_eq!(parse_piece(&pieces[0].to_lowercase()).expect("lower"), plain);
-    assert_eq!(parse_piece(&display_piece(&pieces[0])).expect("grouped"), plain);
+    assert_eq!(
+        parse_piece(&pieces[0].to_lowercase()).expect("lower"),
+        plain
+    );
+    assert_eq!(
+        parse_piece(&display_piece(&pieces[0])).expect("grouped"),
+        plain
+    );
     assert_eq!(piece_text(&plain), pieces[0]);
 }
 
@@ -89,7 +98,11 @@ fn text_that_is_not_a_piece_is_a_format_problem() {
         "BMCKIT1-AAAAAAAA-231-TOOSHORT-AAAA",
         "BMCKIT1-AAAAAAA1-231-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA-AAAA",
     ] {
-        assert_eq!(parse_piece(text).unwrap_err(), PieceProblem::Format, "{text:?}");
+        assert_eq!(
+            parse_piece(text).unwrap_err(),
+            PieceProblem::Format,
+            "{text:?}"
+        );
     }
 }
 
@@ -120,14 +133,32 @@ fn the_wrap_opens_for_nothing_else() {
     let account = [3u8; 16];
     let wrapped = seal(&key, &id, &root, &account, 2).expect("a wrap");
     let other_key = [9u8; KIT_KEY_LEN];
-    assert!(open(&other_key, &id, &wrapped, &account, 2).is_err(), "another key");
-    assert!(open(&key, "AAAAAAAA", &wrapped, &account, 2).is_err(), "another kit");
-    assert!(open(&key, &id, &wrapped, &[4u8; 16], 2).is_err(), "another account");
-    assert!(open(&key, &id, &wrapped, &account, 3).is_err(), "another key version");
+    assert!(
+        open(&other_key, &id, &wrapped, &account, 2).is_err(),
+        "another key"
+    );
+    assert!(
+        open(&key, "AAAAAAAA", &wrapped, &account, 2).is_err(),
+        "another kit"
+    );
+    assert!(
+        open(&key, &id, &wrapped, &[4u8; 16], 2).is_err(),
+        "another account"
+    );
+    assert!(
+        open(&key, &id, &wrapped, &account, 3).is_err(),
+        "another key version"
+    );
     let mut altered = wrapped.clone();
     altered[20] ^= 1;
-    assert!(open(&key, &id, &altered, &account, 2).is_err(), "an altered byte");
-    assert!(open(&key, &id, &wrapped[1..], &account, 2).is_err(), "a short wrap");
+    assert!(
+        open(&key, &id, &altered, &account, 2).is_err(),
+        "an altered byte"
+    );
+    assert!(
+        open(&key, &id, &wrapped[1..], &account, 2).is_err(),
+        "a short wrap"
+    );
 }
 
 #[test]

@@ -80,8 +80,7 @@ where
             })
             .map_or(0, |earlier| earlier.attempts);
         let code = numeric_code(&self.env, self.settings.email_token_size);
-        let mut data =
-            EmailData::new(address.to_owned(), Some(code.clone()), now.unix_timestamp());
+        let mut data = EmailData::new(address.to_owned(), Some(code.clone()), now.unix_timestamp());
         data.attempts = carried;
         self.challenges
             .put_challenge(

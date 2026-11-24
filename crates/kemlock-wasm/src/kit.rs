@@ -131,7 +131,13 @@ mod tests {
         );
         assert!(
             session
-                .kit_open_root(&[pieces[2].clone(), pieces[0].clone()], &kit_id, &[1; 16], 1, &wrapped)
+                .kit_open_root(
+                    &[pieces[2].clone(), pieces[0].clone()],
+                    &kit_id,
+                    &[1; 16],
+                    1,
+                    &wrapped
+                )
                 .is_ok()
         );
     }
@@ -150,6 +156,9 @@ mod tests {
             check_set(&[one[0].clone(), one[0].to_lowercase()]),
             Err(PieceProblem::Duplicate)
         );
-        assert_eq!(check_set(&["nonsense".to_owned()]), Err(PieceProblem::Format));
+        assert_eq!(
+            check_set(&["nonsense".to_owned()]),
+            Err(PieceProblem::Format)
+        );
     }
 }

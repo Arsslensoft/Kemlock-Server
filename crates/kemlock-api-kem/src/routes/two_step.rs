@@ -490,10 +490,7 @@ pub(crate) struct TwoStepSetupResponse {
     pub(crate) duo_server_keys: bool,
 }
 
-fn two_step_of<S, P, K, R>(
-    api: &Api<S, P, K>,
-    runtime: &TwoStepRuntime<R>,
-) -> TwoStep<S, P, P, R>
+fn two_step_of<S, P, K, R>(api: &Api<S, P, K>, runtime: &TwoStepRuntime<R>) -> TwoStep<S, P, P, R>
 where
     S: Store,
     P: Crypto,
@@ -586,7 +583,11 @@ where
 
 /// Whether `proof` is a current code of the account's authenticator app, or its recovery code
 /// (kept, not spent: it is a proof here, not a recovery).
-async fn second_step_proof<S, P, K>(api: &Api<S, P, K>, user: kemlock_domain::UserId, proof: &str) -> bool
+async fn second_step_proof<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+    proof: &str,
+) -> bool
 where
     S: Store,
     P: Crypto,
@@ -604,13 +605,17 @@ where
             && let Ok(secret) = api
                 .crypto
                 .open(kemlock_app::sealed::PURPOSE_TOTP, &factor.sealed_secret)
-            && u64::try_from(api.now()).is_ok_and(|now| kemlock_crypto::totp::verify(&secret, &entered, now))
+            && u64::try_from(api.now())
+                .is_ok_and(|now| kemlock_crypto::totp::verify(&secret, &entered, now))
         {
             return true;
         }
     }
     if let Ok(Some(held)) = api.recovery_codes().show(user).await {
-        return hash::ct_eq(entered.to_lowercase().as_bytes(), held.to_lowercase().as_bytes());
+        return hash::ct_eq(
+            entered.to_lowercase().as_bytes(),
+            held.to_lowercase().as_bytes(),
+        );
     }
     false
 }
@@ -772,7 +777,10 @@ where
     // Each code mailed counts, 5 in 15 minutes: the route can't be used to fill a mailbox.
     let issued = format!("email-setup-codes:{}", authed.actor.user);
     let now = api.now();
-    api.limits.second_step.blocked(&issued, now).map_err(rate_limited)?;
+    api.limits
+        .second_step
+        .blocked(&issued, now)
+        .map_err(rate_limited)?;
     api.limits.second_step.fail(&issued, now);
     two_step_of(&api, &runtime)
         .email_begin(authed.actor.user, &request.address)
@@ -820,7 +828,13 @@ where
 {
     limit_setup(&api, &authed, "email-setup")?;
     let request: ProofRequest = body.json()?;
-    require_proof(&api, &two_step_of(&api, &runtime), authed.actor.user, &request.proof).await?;
+    require_proof(
+        &api,
+        &two_step_of(&api, &runtime),
+        authed.actor.user,
+        &request.proof,
+    )
+    .await?;
     two_step_of(&api, &runtime)
         .email_disable(authed.actor.user)
         .await?;
@@ -870,7 +884,13 @@ where
 {
     limit_setup(&api, &authed, "yubikey-setup")?;
     let request: ProofRequest = body.json()?;
-    require_proof(&api, &two_step_of(&api, &runtime), authed.actor.user, &request.proof).await?;
+    require_proof(
+        &api,
+        &two_step_of(&api, &runtime),
+        authed.actor.user,
+        &request.proof,
+    )
+    .await?;
     two_step_of(&api, &runtime)
         .yubikey_remove(authed.actor.user)
         .await?;
@@ -935,7 +955,13 @@ where
 {
     limit_setup(&api, &authed, "duo-setup")?;
     let request: ProofRequest = body.json()?;
-    require_proof(&api, &two_step_of(&api, &runtime), authed.actor.user, &request.proof).await?;
+    require_proof(
+        &api,
+        &two_step_of(&api, &runtime),
+        authed.actor.user,
+        &request.proof,
+    )
+    .await?;
     two_step_of(&api, &runtime)
         .duo_remove(authed.actor.user)
         .await?;

@@ -89,9 +89,9 @@ where
         // After the role changes: if the process dies in between, the next run finds the marker
         // and finishes the job.
         self.settings.delete_setting(MARKER_KEY).await?;
-        let promoted = target
-            .as_ref()
-            .map_or(String::new(), |u| format!(", {} promoted", u.email.as_str()));
+        let promoted = target.as_ref().map_or(String::new(), |u| {
+            format!(", {} promoted", u.email.as_str())
+        });
         self.events
             .record_admin_event(AdminEvent {
                 actor: None,

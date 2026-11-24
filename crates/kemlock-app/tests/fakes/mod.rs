@@ -1339,7 +1339,10 @@ impl FakeStore {
 }
 
 impl kemlock_app::admin::SettingsRepo for FakeStore {
-    async fn settings_with_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>, StoreError> {
+    async fn settings_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
         Ok(self
             .lock()
             .settings
@@ -1350,7 +1353,9 @@ impl kemlock_app::admin::SettingsRepo for FakeStore {
     }
 
     async fn put_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
-        self.lock().settings.insert(key.to_owned(), value.to_owned());
+        self.lock()
+            .settings
+            .insert(key.to_owned(), value.to_owned());
         Ok(())
     }
 

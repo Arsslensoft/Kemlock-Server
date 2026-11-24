@@ -649,7 +649,13 @@ async fn an_emailed_code_is_set_up_with_the_code_and_turned_off_only_with_a_proo
 
     // A wrong code does not turn it on.
     let begun = rig
-        .authed(&device, "POST", &uri, token, Some(json!({"address": "mfa@example.org"})))
+        .authed(
+            &device,
+            "POST",
+            &uri,
+            token,
+            Some(json!({"address": "mfa@example.org"})),
+        )
         .await;
     assert_eq!(begun.status, StatusCode::NO_CONTENT);
     let wrong = rig
@@ -686,7 +692,13 @@ async fn an_emailed_code_is_set_up_with_the_code_and_turned_off_only_with_a_proo
 
     // It can not be re-pointed while it is on, nor turned off with a session alone.
     let repoint = rig
-        .authed(&device, "POST", &uri, token, Some(json!({"address": "thief@example.org"})))
+        .authed(
+            &device,
+            "POST",
+            &uri,
+            token,
+            Some(json!({"address": "thief@example.org"})),
+        )
         .await;
     assert_eq!(repoint.status, StatusCode::CONFLICT);
     let shown = rig.authed(&device, "GET", SETUP, token, None).await;
@@ -702,7 +714,13 @@ async fn an_emailed_code_is_set_up_with_the_code_and_turned_off_only_with_a_proo
         bare.status
     );
     let guess = rig
-        .authed(&device, "DELETE", &uri, token, Some(json!({"proof": "123456"})))
+        .authed(
+            &device,
+            "DELETE",
+            &uri,
+            token,
+            Some(json!({"proof": "123456"})),
+        )
         .await;
     assert_eq!(guess.status, StatusCode::BAD_REQUEST);
     let shown = rig.authed(&device, "GET", SETUP, token, None).await;
@@ -715,7 +733,13 @@ async fn an_emailed_code_is_set_up_with_the_code_and_turned_off_only_with_a_proo
     assert_eq!(asked.status, StatusCode::NO_CONTENT, "{:?}", asked.json());
     let proof = rig.mailbox.last_proof();
     let off = rig
-        .authed(&device, "DELETE", &uri, token, Some(json!({"proof": proof})))
+        .authed(
+            &device,
+            "DELETE",
+            &uri,
+            token,
+            Some(json!({"proof": proof})),
+        )
         .await;
     assert_eq!(off.status, StatusCode::NO_CONTENT, "{:?}", off.json());
     let shown = rig.authed(&device, "GET", SETUP, token, None).await;
@@ -726,9 +750,19 @@ async fn an_emailed_code_is_set_up_with_the_code_and_turned_off_only_with_a_proo
     );
     assert!(rig.actions().contains(&"account.two_step_removed"));
     let again = rig
-        .authed(&device, "DELETE", &uri, token, Some(json!({"proof": proof})))
+        .authed(
+            &device,
+            "DELETE",
+            &uri,
+            token,
+            Some(json!({"proof": proof})),
+        )
         .await;
-    assert_eq!(again.status, StatusCode::BAD_REQUEST, "a proof is good once");
+    assert_eq!(
+        again.status,
+        StatusCode::BAD_REQUEST,
+        "a proof is good once"
+    );
 }
 
 #[tokio::test]
@@ -753,7 +787,11 @@ async fn a_second_step_is_not_added_while_another_is_on() {
     let session = Session::from_tokens(&signed.json());
     let token = session.access_token.as_str();
     for (method, uri, body) in [
-        ("POST", format!("{FACTOR}/email"), json!({"address": "a@b.example"})),
+        (
+            "POST",
+            format!("{FACTOR}/email"),
+            json!({"address": "a@b.example"}),
+        ),
         ("PUT", format!("{FACTOR}/duo"), json!({})),
         ("PUT", format!("{FACTOR}/yubikey"), json!({"otps": [OTP]})),
     ] {
@@ -861,18 +899,36 @@ async fn yubikeys_are_checked_with_yubico_and_removed_only_with_a_proof() {
     let uri = format!("{FACTOR}/yubikey");
 
     let rejected = rig
-        .authed(&device, "PUT", &uri, token, Some(json!({"otps": ["x".repeat(44)]})))
+        .authed(
+            &device,
+            "PUT",
+            &uri,
+            token,
+            Some(json!({"otps": ["x".repeat(44)]})),
+        )
         .await;
     assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
     let set = rig
-        .authed(&device, "PUT", &uri, token, Some(json!({"otps": [OTP], "nfc": true})))
+        .authed(
+            &device,
+            "PUT",
+            &uri,
+            token,
+            Some(json!({"otps": [OTP], "nfc": true})),
+        )
         .await;
     assert_eq!(set.status, StatusCode::OK, "{:?}", set.json());
     assert_eq!(set.json(), json!({"keys": [&OTP[..12]], "nfc": true}));
     assert_eq!(rig.mailbox.changes(), vec![("yubikey", true)]);
 
     let bare = rig
-        .authed(&device, "DELETE", &uri, token, Some(json!({"proof": "000000"})))
+        .authed(
+            &device,
+            "DELETE",
+            &uri,
+            token,
+            Some(json!({"proof": "000000"})),
+        )
         .await;
     assert_eq!(bare.status, StatusCode::BAD_REQUEST);
     let asked = rig
@@ -918,7 +974,11 @@ async fn duo_keys_must_be_on_duos_own_api_host_and_are_removed_only_with_a_proof
         assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{host}");
     }
     let shown = rig.authed(&device, "GET", SETUP, token, None).await;
-    assert_eq!(shown.json()["duo"], Value::Null, "a refused host sets nothing up");
+    assert_eq!(
+        shown.json()["duo"],
+        Value::Null,
+        "a refused host sets nothing up"
+    );
 
     let own = rig
         .authed(
@@ -942,7 +1002,13 @@ async fn duo_keys_must_be_on_duos_own_api_host_and_are_removed_only_with_a_proof
     assert!(!body.contains("sekret"), "the secret is not echoed");
 
     let bare = rig
-        .authed(&device, "DELETE", &uri, token, Some(json!({"proof": "000000"})))
+        .authed(
+            &device,
+            "DELETE",
+            &uri,
+            token,
+            Some(json!({"proof": "000000"})),
+        )
         .await;
     assert_eq!(bare.status, StatusCode::BAD_REQUEST);
     rig.authed(&device, "POST", &format!("{FACTOR}/proof"), token, None)
@@ -957,10 +1023,7 @@ async fn duo_keys_must_be_on_duos_own_api_host_and_are_removed_only_with_a_proof
         )
         .await;
     assert_eq!(off.status, StatusCode::NO_CONTENT, "{:?}", off.json());
-    assert_eq!(
-        rig.mailbox.changes(),
-        vec![("duo", true), ("duo", false)]
-    );
+    assert_eq!(rig.mailbox.changes(), vec![("duo", true), ("duo", false)]);
 }
 
 #[tokio::test]

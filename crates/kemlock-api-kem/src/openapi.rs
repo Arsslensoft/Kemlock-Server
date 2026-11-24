@@ -10,11 +10,10 @@ use crate::dto::{
     ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
     PreloginResponse, RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest,
-    RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse, SetupVerifyRequest,
-    ServerBasicsDto, SetupFinishRequest, SetupVerifyResponse, SignInResponse, SsoOffer, SyncBody,
-    SyncResponse, TagOutcomeDto,
-    TaggedBatchRequest, TaggedBatchResponse, TaggedBatchWriteDto, TokenResponse,
-    TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
+    RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse, ServerBasicsDto,
+    SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse, SsoOffer,
+    SyncBody, SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse,
+    TaggedBatchWriteDto, TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
 };
 use serde::Serialize;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};

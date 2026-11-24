@@ -565,7 +565,10 @@ async fn placement_lists_the_accounts_federated_vault_and_its_apps() {
     // The replica is the server answering: the test app's domain.
     servers.servers[1].address = format!("{DOMAIN}/");
     let replica = servers.servers[1].server.0.to_string();
-    view.late_vaults.lock().expect("lock").insert(owner, servers);
+    view.late_vaults
+        .lock()
+        .expect("lock")
+        .insert(owner, servers);
 
     let reply = client
         .get_authed("/kem/v1/placement", &session.access_token)

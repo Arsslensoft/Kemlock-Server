@@ -153,7 +153,6 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             expires_in: (grant.expires_at - api.crypto.now()).whole_seconds().max(0),
         }))
     }
-
 }
 
 impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {

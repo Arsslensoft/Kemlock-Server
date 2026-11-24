@@ -7,9 +7,9 @@
 //! address, push, where files go, backups) is not a saved setting: the address is the server's
 //! `DOMAIN`, and the rest is set by the operator's environment.
 
+use crate::admin::AdminError;
 use crate::admin::ports::SettingsRepo;
 use crate::admin::settings::{self, Change, EnvSettings, Settings};
-use crate::admin::AdminError;
 use crate::error::AppError;
 use crate::ports::SecretSeal;
 use std::collections::BTreeMap;
@@ -125,8 +125,7 @@ pub fn without_env_set<E: EnvSettings>(
     env: &E,
 ) -> BTreeMap<String, Change> {
     changes.retain(|key, _| {
-        settings::definition(key)
-            .is_none_or(|d| env.get(d.env).is_none_or(|v| v.trim().is_empty()))
+        settings::definition(key).is_none_or(|d| env.get(d.env).is_none_or(|v| v.trim().is_empty()))
     });
     changes
 }
@@ -212,7 +211,6 @@ mod tests {
         b.mail_port = "99999".into();
         assert!(b.changes().is_err());
     }
-
 
     #[test]
     fn settings_the_environment_sets_are_left_out() {

@@ -327,14 +327,20 @@ fn two_step_changed(notice: &TwoStepChangedNotice, brand: &Branding) -> Rendered
         _ => "a security key",
     };
     let verb = if notice.on { "turned on" } else { "turned off" };
-    let lead = format!("On {}, {what} was {verb} as a second step of your account.", when(notice.at));
+    let lead = format!(
+        "On {}, {what} was {verb} as a second step of your account.",
+        when(notice.at)
+    );
     let body = Body::new(&[
         &lead,
         "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
     ]);
     finish(
         notice.to.as_str(),
-        format!("A second step was {verb} on your {} account", brand.app_name),
+        format!(
+            "A second step was {verb} on your {} account",
+            brand.app_name
+        ),
         &body,
         brand,
     )
@@ -606,7 +612,10 @@ mod tests {
             }),
             &brand(),
         );
-        assert_eq!(r.subject, "A second step was turned off on your Kemlock account");
+        assert_eq!(
+            r.subject,
+            "A second step was turned off on your Kemlock account"
+        );
         assert!(r.text.contains("Duo was turned off"), "{}", r.text);
         assert!(r.text.contains("2026-11-26 09:05 UTC"));
     }

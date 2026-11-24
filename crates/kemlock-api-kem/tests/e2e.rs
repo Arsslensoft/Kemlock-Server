@@ -180,7 +180,9 @@ async fn setup_code_to_first_admin_to_synced_item() {
         ("smtp_from", "ops@example.org"),
     ] {
         assert_eq!(
-            app.store.saved_setting(&format!("setting.{key}")).as_deref(),
+            app.store
+                .saved_setting(&format!("setting.{key}"))
+                .as_deref(),
             Some(value),
             "{key}"
         );
@@ -199,7 +201,9 @@ async fn setup_code_to_first_admin_to_synced_item() {
         .await;
     assert_eq!(late.status, StatusCode::CONFLICT);
     assert_eq!(
-        app.store.saved_setting("setting.signups_allowed").as_deref(),
+        app.store
+            .saved_setting("setting.signups_allowed")
+            .as_deref(),
         Some("true")
     );
     let reopened = client

@@ -80,7 +80,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
                         Some(email) => promote = Some(email.clone()),
                         None => return Err("--promote needs an email".to_owned()),
                     },
-                    _ => return Err("reset-admin takes only --yes and --promote <email>".to_owned()),
+                    _ => {
+                        return Err("reset-admin takes only --yes and --promote <email>".to_owned());
+                    }
                 }
             }
             Ok(Command::ResetAdmin { yes, promote })
@@ -280,18 +282,29 @@ mod tests {
         assert_eq!(parse(&args(&["--help"])), Ok(Command::Help));
         assert_eq!(
             parse(&args(&["reset-admin"])),
-            Ok(Command::ResetAdmin { yes: false, promote: None })
+            Ok(Command::ResetAdmin {
+                yes: false,
+                promote: None
+            })
         );
         assert_eq!(
             parse(&args(&["reset-admin", "--yes"])),
-            Ok(Command::ResetAdmin { yes: true, promote: None })
+            Ok(Command::ResetAdmin {
+                yes: true,
+                promote: None
+            })
         );
     }
 
     #[test]
     fn reset_admin_parses_promote() {
         assert_eq!(
-            parse(&args(&["reset-admin", "--promote", "a@example.org", "--yes"])),
+            parse(&args(&[
+                "reset-admin",
+                "--promote",
+                "a@example.org",
+                "--yes"
+            ])),
             Ok(Command::ResetAdmin {
                 yes: true,
                 promote: Some("a@example.org".to_owned())

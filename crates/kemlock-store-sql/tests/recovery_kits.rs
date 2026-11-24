@@ -40,7 +40,9 @@ async fn kits(store: &SqlStore) {
     assert_eq!(store.recovery_kit(sam).await, Ok(None));
     assert_eq!(store.remove_recovery_kit(sam).await, Ok(false));
     assert_eq!(
-        store.replace_recovery_kit(sam, &kit("AAAAAAAA", 1, 1)).await,
+        store
+            .replace_recovery_kit(sam, &kit("AAAAAAAA", 1, 1))
+            .await,
         Ok(false),
         "nothing to replace"
     );
@@ -60,7 +62,9 @@ async fn kits(store: &SqlStore) {
     );
 
     assert_eq!(
-        store.replace_recovery_kit(sam, &kit("CCCCCCCC", 3, 2)).await,
+        store
+            .replace_recovery_kit(sam, &kit("CCCCCCCC", 3, 2))
+            .await,
         Ok(true)
     );
     assert_eq!(

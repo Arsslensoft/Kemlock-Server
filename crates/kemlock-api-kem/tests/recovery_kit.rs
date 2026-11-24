@@ -289,12 +289,21 @@ async fn a_kit_is_made_read_replaced_with_a_proof_and_removed_with_a_proof() {
     let spent = rig
         .authed(&device, "DELETE", KIT, token, Some(json!({"proof": proof})))
         .await;
-    assert_eq!(spent.status, StatusCode::BAD_REQUEST, "a proof is good once");
+    assert_eq!(
+        spent.status,
+        StatusCode::BAD_REQUEST,
+        "a proof is good once"
+    );
     let proof = rig.proof(&device, token).await;
     let removed = rig
         .authed(&device, "DELETE", KIT, token, Some(json!({"proof": proof})))
         .await;
-    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.json());
+    assert_eq!(
+        removed.status,
+        StatusCode::NO_CONTENT,
+        "{:?}",
+        removed.json()
+    );
     let gone = rig.authed(&device, "GET", KIT, token, None).await;
     assert_eq!(gone.status, StatusCode::NOT_FOUND);
     assert!(rig.actions().contains(&"account.recovery_kit_removed"));
@@ -308,7 +317,10 @@ async fn a_malformed_kit_is_refused_and_nothing_is_kept() {
     let good = rig.kit_body(user).await;
 
     for (name, body) in [
-        ("an id that is not base32", with(good.clone(), "kitId", json!("abc"))),
+        (
+            "an id that is not base32",
+            with(good.clone(), "kitId", json!("abc")),
+        ),
         (
             "a short wrap",
             with(
@@ -323,7 +335,12 @@ async fn a_malformed_kit_is_refused_and_nothing_is_kept() {
         ),
     ] {
         let reply = rig.authed(&device, "POST", KIT, token, Some(body)).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{name}: {:?}", reply.json());
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{name}: {:?}",
+            reply.json()
+        );
     }
     let none = rig.authed(&device, "GET", KIT, token, None).await;
     assert_eq!(none.status, StatusCode::NOT_FOUND);
@@ -337,9 +354,7 @@ async fn the_routes_need_a_session_and_are_in_the_openapi_document() {
         rig.app.clock.clone(),
         DpopSigner::es256(),
     );
-    let reply = anonymous
-        .send("GET", KIT, Req::default())
-        .await;
+    let reply = anonymous.send("GET", KIT, Req::default()).await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
 
     let document = serde_json::to_value(RecoveryKitApiDoc::openapi()).expect("a document");
@@ -362,7 +377,10 @@ async fn turn_totp_on(rig: &Rig, user: UserId, secret: &[u8]) {
         .put(&TwoFactor {
             user,
             method: TwoFactorMethod::Totp,
-            sealed_secret: rig.app.crypto.seal(kemlock_app::sealed::PURPOSE_TOTP, secret),
+            sealed_secret: rig
+                .app
+                .crypto
+                .seal(kemlock_app::sealed::PURPOSE_TOTP, secret),
             enabled: true,
             created_at: rig.app.clock.now(),
         })
@@ -401,7 +419,13 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
     let secret = b"12345678901234567890";
     turn_totp_on(&rig, user, secret).await;
     let wrong = rig
-        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": "000000"})))
+        .authed(
+            &device,
+            "DELETE",
+            KIT,
+            token,
+            Some(json!({"proof": "000000"})),
+        )
         .await;
     assert_eq!(wrong.status, StatusCode::BAD_REQUEST);
 
@@ -418,11 +442,27 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
         .expect("a code");
     let spaced = "abcd efgh ijkl mnop qrst uvwx yz23 4567";
     let by_code = rig
-        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": spaced})))
+        .authed(
+            &device,
+            "DELETE",
+            KIT,
+            token,
+            Some(json!({"proof": spaced})),
+        )
         .await;
-    assert_eq!(by_code.status, StatusCode::NO_CONTENT, "{:?}", by_code.json());
+    assert_eq!(
+        by_code.status,
+        StatusCode::NO_CONTENT,
+        "{:?}",
+        by_code.json()
+    );
     assert!(
-        rig.app.store.recovery_code(user).await.expect("read").is_some(),
+        rig.app
+            .store
+            .recovery_code(user)
+            .await
+            .expect("read")
+            .is_some(),
         "the recovery code is not spent"
     );
 
@@ -434,7 +474,13 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
     let now = u64::try_from(rig.app.now()).expect("a time");
     let current = kemlock_crypto::totp::code_at(secret, now);
     let by_app = rig
-        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": current})))
+        .authed(
+            &device,
+            "DELETE",
+            KIT,
+            token,
+            Some(json!({"proof": current})),
+        )
         .await;
     assert_eq!(by_app.status, StatusCode::NO_CONTENT, "{:?}", by_app.json());
 }
@@ -453,7 +499,13 @@ async fn a_bad_replacement_or_a_missing_kit_does_not_spend_the_proof() {
     assert_eq!(none.status, StatusCode::NOT_FOUND);
     let good = rig.kit_body(user).await;
     let none = rig
-        .authed(&device, "PUT", KIT, token, Some(with(good.clone(), "proof", json!(proof))))
+        .authed(
+            &device,
+            "PUT",
+            KIT,
+            token,
+            Some(with(good.clone(), "proof", json!(proof))),
+        )
         .await;
     assert_eq!(none.status, StatusCode::NOT_FOUND);
 
@@ -465,14 +517,26 @@ async fn a_bad_replacement_or_a_missing_kit_does_not_spend_the_proof() {
     // A malformed replacement is refused before the proof is looked at.
     let bad = with(rig.kit_body(user).await, "keyVersion", json!(99));
     let refused = rig
-        .authed(&device, "PUT", KIT, token, Some(with(bad, "proof", json!(proof))))
+        .authed(
+            &device,
+            "PUT",
+            KIT,
+            token,
+            Some(with(bad, "proof", json!(proof))),
+        )
         .await;
     assert_eq!(refused.status, StatusCode::BAD_REQUEST);
 
     // The same proof still works for a good one.
     let next = rig.kit_body(user).await;
     let replaced = rig
-        .authed(&device, "PUT", KIT, token, Some(with(next, "proof", json!(proof))))
+        .authed(
+            &device,
+            "PUT",
+            KIT,
+            token,
+            Some(with(next, "proof", json!(proof))),
+        )
         .await;
     assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.json());
 }

@@ -20,8 +20,8 @@
 //! [`passkeys_router`].
 
 use super::guard;
-use super::two_step::{ProofRequest, announce_change, proof_steps, require_proof};
 use super::new_device::announce;
+use super::two_step::{ProofRequest, announce_change, proof_steps, require_proof};
 use crate::dto::{DeviceDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
 use crate::openapi::ProblemDoc;

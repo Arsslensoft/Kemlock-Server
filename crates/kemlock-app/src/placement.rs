@@ -155,7 +155,10 @@ mod tests {
 
     #[test]
     fn host_of_drops_scheme_port_path_and_userinfo() {
-        assert_eq!(host_of("https://VPS.example.net:8443/x?y"), "vps.example.net");
+        assert_eq!(
+            host_of("https://VPS.example.net:8443/x?y"),
+            "vps.example.net"
+        );
         assert_eq!(host_of("http://u:p@home.lan"), "home.lan");
         assert_eq!(host_of("vault.example.org"), "vault.example.org");
         assert_eq!(host_of("https://[::1]:8080/"), "[::1]");
@@ -163,7 +166,13 @@ mod tests {
 
     #[test]
     fn addresses_match_ignoring_case_and_a_trailing_slash() {
-        assert!(same_address("https://Vault.example.org/", "https://vault.example.org"));
-        assert!(!same_address("https://a.example.org", "https://b.example.org"));
+        assert!(same_address(
+            "https://Vault.example.org/",
+            "https://vault.example.org"
+        ));
+        assert!(!same_address(
+            "https://a.example.org",
+            "https://b.example.org"
+        ));
     }
 }

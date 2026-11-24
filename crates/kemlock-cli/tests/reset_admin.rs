@@ -84,7 +84,10 @@ async fn it_refuses_without_yes_and_resets_with_it() {
     assert!(printed.contains("second@example.org"), "{printed}");
     let store = SqlStore::connect(&url(data.path())).await.expect("opens");
     assert_eq!(UserRepo::count_admins(&store).await.expect("count"), 0);
-    assert_eq!(FirstAdminRepo::first_admin(&store).await.expect("marker"), None);
+    assert_eq!(
+        FirstAdminRepo::first_admin(&store).await.expect("marker"),
+        None
+    );
     let kept = UserRepo::by_id(&store, first.id).await.expect("by id");
     assert_eq!(kept.map(|u| u.role), Some(Role::User));
     store.close().await.expect("closes");

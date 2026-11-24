@@ -4,10 +4,10 @@
 mod common;
 
 use common::{memory, unique_email, user};
+use kemlock_app::FirstAdminRepo;
 use kemlock_app::admin::{AdminEventRepo, EventFilter};
 use kemlock_app::ports::{Clock, UserRepo};
 use kemlock_app::reset_admin::{ACTION, ResetAdmin};
-use kemlock_app::FirstAdminRepo;
 use kemlock_domain::Role;
 use time::OffsetDateTime;
 use time::macros::datetime;
@@ -61,7 +61,10 @@ async fn reset_admin_demotes_every_admin_clears_the_marker_and_logs_it() {
         .expect("the account stays");
     assert_eq!(kept.role, Role::User);
     assert_eq!(kept.email, first.email);
-    assert_eq!(FirstAdminRepo::first_admin(&store).await.expect("marker"), None);
+    assert_eq!(
+        FirstAdminRepo::first_admin(&store).await.expect("marker"),
+        None
+    );
 
     let events = store
         .query_events(
@@ -126,7 +129,13 @@ async fn promote_hands_the_role_to_an_account_with_two_step_and_changes_nothing_
     assert_eq!(demoted, vec![old.email.as_str().to_owned()]);
     let after = |id| {
         let store = store.clone();
-        async move { UserRepo::by_id(&store, id).await.expect("by id").expect("kept").role }
+        async move {
+            UserRepo::by_id(&store, id)
+                .await
+                .expect("by id")
+                .expect("kept")
+                .role
+        }
     };
     assert_eq!(after(heir.id).await, Role::Admin);
     assert_eq!(after(old.id).await, Role::User);
