@@ -17,11 +17,7 @@ export interface TotpState {
   /** The enrolment panel is open. */
   open: boolean;
   /** The secret and URI, once the server has made them. */
-  enrol: TotpEnrolResponse |  passkeys?: PasskeysCardProps | undefined;
-  /** The emailed code, YubiKeys, Duo, security keys and the recovery code; omitted, they read "Later". */
-  secondSteps?: SecondStepsProps | undefined;
-  /** The Recovery Kit: make, make again, remove. */
-  recoveryKit?: RecoveryKitProps | undefined;
+  enrol: TotpEnrolResponse | undefined;
 }
 
 export interface SecurityViewProps {
@@ -39,6 +35,10 @@ export interface SecurityViewProps {
   emergency: EmergencyCardProps;
   /** The account's passkeys; omitted where passkeys are not offered. */
   passkeys?: PasskeysCardProps | undefined;
+  /** The emailed code, YubiKeys, Duo, security keys and the recovery code; omitted, they read "Later". */
+  secondSteps?: SecondStepsProps | undefined;
+  /** The Recovery Kit: make, make again, remove. */
+  recoveryKit?: RecoveryKitProps | undefined;
 }
 
 /** The methods drawn as "Later" where the screen is given no way to set them up. */
