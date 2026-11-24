@@ -147,7 +147,7 @@ jobs:
           context: .
           file: docker/Dockerfile
           # Cross-compiled on the runner with Zig, so no platform is built under emulation.
-          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6,linux/386,linux/ppc64le,linux/s390x,linux/riscv64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6,linux/386,linux/ppc64le,linux/riscv64
           build-args: |
             SOURCE_DATE_EPOCH=${{ needs.plan.outputs.epoch }}
             KEMLOCK_GIT_COMMIT=${{ github.sha }}
@@ -173,7 +173,6 @@ jobs:
           - { platform: linux/arm/v6, arch: arm, required: true }
           - { platform: linux/386, arch: "386", required: false }
           - { platform: linux/ppc64le, arch: ppc64le, required: false }
-          - { platform: linux/s390x, arch: s390x, required: false }
           - { platform: linux/riscv64, arch: riscv64, required: false }
     steps:
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -516,7 +515,7 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx build -f docker/Dockerfile --target binaries \
-            --platform linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6,linux/386,linux/ppc64le,linux/s390x,linux/riscv64 \
+            --platform linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6,linux/386,linux/ppc64le,linux/riscv64 \
             --build-arg SOURCE_DATE_EPOCH="$EPOCH" --build-arg WITH_WEB="$WITH_WEB" \
             --build-arg KEMLOCK_GIT_COMMIT="$GITHUB_SHA" \
             --output type=local,dest=bin .
@@ -527,7 +526,6 @@ jobs:
             [linux_arm_v6]=arm-unknown-linux-musleabihf
             [linux_386]=i686-unknown-linux-musl
             [linux_ppc64le]=powerpc64le-unknown-linux-musl
-            [linux_s390x]=s390x-unknown-linux-musl
             [linux_riscv64]=riscv64gc-unknown-linux-musl
           )
           mkdir -p dist
