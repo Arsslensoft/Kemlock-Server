@@ -161,7 +161,8 @@ where
     /// Puts back the setup code a [`TwoStep::email_check`] took, when what came after it (the
     /// proof) was refused: the entry was right, so it isn't counted against the code.
     pub async fn email_retry(&self, user: UserId, checked: &EmailChecked) -> Result<(), AppError> {
-        let sent = OffsetDateTime::from_unix_timestamp(checked.data.token_sent).unwrap_or(checked.now);
+        let sent =
+            OffsetDateTime::from_unix_timestamp(checked.data.token_sent).unwrap_or(checked.now);
         self.challenges
             .put_challenge(
                 user,

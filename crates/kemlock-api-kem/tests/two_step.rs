@@ -1273,12 +1273,21 @@ async fn an_authenticator_app_is_added_beside_another_step_with_a_mailed_proof()
         .authed(&device, "POST", &format!("{FACTOR}/totp"), token, None)
         .await;
     assert_eq!(enrol.status, StatusCode::OK, "{:?}", enrol.json());
-    let secret = enrol.json()["secret"].as_str().expect("a secret").to_owned();
+    let secret = enrol.json()["secret"]
+        .as_str()
+        .expect("a secret")
+        .to_owned();
     let confirm = format!("{FACTOR}/totp/confirm");
     let code = common::totp_now(&rig.app, &secret);
 
     let bare = rig
-        .authed(&device, "POST", &confirm, token, Some(json!({"code": code})))
+        .authed(
+            &device,
+            "POST",
+            &confirm,
+            token,
+            Some(json!({"code": code})),
+        )
         .await;
     assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
     let asked = rig
@@ -1295,11 +1304,13 @@ async fn an_authenticator_app_is_added_beside_another_step_with_a_mailed_proof()
         )
         .await;
     assert_eq!(added.status, StatusCode::NO_CONTENT, "{:?}", added.json());
-    let listed = rig.authed(&device, "GET", "/kem/v1/account/two-step", token, None).await;
+    let listed = rig
+        .authed(&device, "GET", "/kem/v1/account/two-step", token, None)
+        .await;
     assert!(
-        listed.json()["methods"]
-            .as_array()
-            .is_some_and(|m| m.iter().any(|e| e["method"] == "totp" && e["enabled"] == true)),
+        listed.json()["methods"].as_array().is_some_and(|m| m
+            .iter()
+            .any(|e| e["method"] == "totp" && e["enabled"] == true)),
         "{:?}",
         listed.json()
     );

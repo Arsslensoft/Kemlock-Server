@@ -4,10 +4,10 @@ use super::guard;
 use super::new_device::announce;
 use crate::dto::{
     EmailRequest, KdfDto, MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest,
-    OpaqueStartResponse, PreloginResponse, RecoveryCodeResponse, RefreshRequest,
-    RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
-    SignInResponse, SsoOffer, TokenResponse, RecoveryCodeRequest, TotpConfirmRequest, TotpEnrolResponse,
-    TwoFactorRequest, decode,
+    OpaqueStartResponse, PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse,
+    RefreshRequest, RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest,
+    RegisterStartResponse, SignInResponse, SsoOffer, TokenResponse, TotpConfirmRequest,
+    TotpEnrolResponse, TwoFactorRequest, decode,
 };
 use crate::extract::{Authed, Body, ClientIp, Proof, SecureConnection};
 use crate::problem::{Problem, rate_limited};

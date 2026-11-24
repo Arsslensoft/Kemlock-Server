@@ -165,9 +165,19 @@ async fn confirming_the_authenticator_makes_a_recovery_code_a_signed_in_device_c
     let code = shown["code"].as_str().expect("a code").to_owned();
     // The recovery code is no proof that it may be shown, and an authenticator code works once.
     let by_code = recovery_code(&first, &session, Some(&code)).await;
-    assert_eq!(by_code.status, StatusCode::BAD_REQUEST, "{:?}", by_code.json());
+    assert_eq!(
+        by_code.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        by_code.json()
+    );
     let replayed = recovery_code(&first, &session, Some(&totp_now(&rig.app, &secret))).await;
-    assert_eq!(replayed.status, StatusCode::BAD_REQUEST, "{:?}", replayed.json());
+    assert_eq!(
+        replayed.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        replayed.json()
+    );
     let code = code.as_str();
     assert_eq!(code.len(), 32, "{code}");
     assert!(
