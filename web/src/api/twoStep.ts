@@ -123,9 +123,14 @@ export function createSecondStepsApi(http: SetupHttp) {
         body: { proof },
       }),
 
-    /** The account's recovery code, or null when it has none (or has spent it). */
-    recoveryCode: () =>
-      http.request<{ code: string | null }>({ method: 'GET', path: `${factor}/recovery-code` }).then((r) => r.code),
+    /**
+     * The account's recovery code, or null when it has none (or has spent it). `proof` is a fresh
+     * proof that is not the recovery code itself: a mailed code or an authenticator code.
+     */
+    recoveryCode: (proof: string) =>
+      http
+        .request<{ code: string | null }>({ method: 'POST', path: `${factor}/recovery-code`, body: { proof } })
+        .then((r) => r.code),
   };
 }
 

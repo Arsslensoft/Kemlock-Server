@@ -55,7 +55,7 @@ export function useSecondSteps(hasRecoveryCode: boolean | undefined, totpOn = fa
       yubikeyOff: (proof) => change(() => stepsApi.yubikeyOff(proof)),
       duoSet: (input, proof) => change(() => stepsApi.duoSet(input, proof)),
       duoOff: (proof) => change(() => stepsApi.duoOff(proof)),
-      showRecoveryCode: () => run(() => stepsApi.recoveryCode()),
+      showRecoveryCode: (proof) => run(() => stepsApi.recoveryCode(proof)),
     },
   };
   return { props, error };

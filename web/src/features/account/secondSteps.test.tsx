@@ -55,13 +55,13 @@ describe('the second-steps API', () => {
     await steps.securityKeyRemove(2, '731904');
     await steps.proofRequest();
     await steps.emailOff('731904');
-    await steps.recoveryCode();
+    await steps.recoveryCode('731904');
     expect(request.mock.calls.map(([c]) => `${c.method} ${c.path}`)).toEqual([
       'GET /kem/v1/account/two-step/setup',
       'PUT /kem/v1/account/two-factor/yubikey',
       'PUT /kem/v1/account/two-factor/duo',
       'DELETE /kem/v1/account/two-factor/webauthn/2',
-      'GET /kem/v1/account/two-factor/recovery-code',
+      'POST /kem/v1/account/two-factor/recovery-code',
     ]);
     expect(send.mock.calls.map(([c]) => `${c.method} ${c.path}`)).toEqual([
       'POST /kem/v1/account/two-factor/email',
@@ -72,6 +72,7 @@ describe('the second-steps API', () => {
     expect(request.mock.calls[3]?.[0]).toMatchObject({ body: { proof: '731904' } });
     expect(send.mock.calls[3]?.[0]).toMatchObject({ body: { proof: '731904' } });
     expect(request.mock.calls[2]?.[0]).toMatchObject({ body: {} });
+    expect(request.mock.calls[4]?.[0]).toMatchObject({ body: { proof: '731904' } });
   });
 });
 
@@ -240,7 +241,13 @@ describe('SecondStepsCard', () => {
     expect(screen.queryByTestId('recovery-code')).not.toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Show the code' }));
-    expect(props.actions.showRecoveryCode).toHaveBeenCalled();
+    // The code proves removals, so it is not shown before a fresh proof: one is mailed first.
+    expect(props.actions.askProof).toHaveBeenCalledTimes(1);
+    expect(props.actions.showRecoveryCode).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Show the code' })).toBeDisabled();
+    await user.type(screen.getByLabelText('The code from the email'), '731904');
+    await user.click(screen.getByRole('button', { name: 'Show the code' }));
+    expect(props.actions.showRecoveryCode).toHaveBeenCalledWith('731904');
     expect(await screen.findByText('ABCD EFGH 2345 6723 ABCD EFGH 2345 6723')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Hide the code' }));
     expect(screen.queryByTestId('recovery-code')).not.toBeInTheDocument();

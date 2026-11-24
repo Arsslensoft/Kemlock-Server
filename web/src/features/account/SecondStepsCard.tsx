@@ -34,7 +34,7 @@ export interface SecondStepsProps {
     duoSet: (keys: DuoKeysInput | null, proof?: string) => Done;
     duoOff: (proof: string) => Done;
     /** The recovery code, or null when the account has none; undefined when the call failed. */
-    showRecoveryCode: () => Promise<string | null | undefined>;
+    showRecoveryCode: (proof: string) => Promise<string | null | undefined>;
   };
 }
 
@@ -167,7 +167,12 @@ export function SecondStepsCard({
           </div>
         </form>
       ) : null}
-      <RecoveryRows has={loading ? undefined : hasRecoveryCode} busy={busy} onShow={actions.showRecoveryCode} />
+      <RecoveryRows
+        has={loading ? undefined : hasRecoveryCode}
+        busy={busy}
+        onAskProof={askProof}
+        onShow={actions.showRecoveryCode}
+      />
       <p className="hint">{t('security.secondSteps.beside')}</p>
     </>
   );
@@ -561,14 +566,19 @@ function EmailRows({
 function RecoveryRows({
   has,
   busy,
+  onAskProof,
   onShow,
 }: {
   has: boolean | undefined;
   busy: boolean;
-  onShow: () => Promise<string | null | undefined>;
+  onAskProof: () => void;
+  onShow: (proof: string) => Promise<string | null | undefined>;
 }) {
   const t = useT();
   const [code, setCode] = useState<string | null | undefined>(undefined);
+  // The code proves removals and additions, so showing it asks for a fresh proof first.
+  const [asking, setAsking] = useState(false);
+  const [proof, setProof] = useState('');
   return (
     <>
       <div className="row">
@@ -577,12 +587,46 @@ function RecoveryRows({
           <div className="hint">{t('security.method.recovery.hint')}</div>
         </div>
         <Tag on={has} />
-        {has && code === undefined ? (
-          <Button size="small" isDisabled={busy} onPress={() => void onShow().then(setCode)}>
+        {has && code === undefined && !asking ? (
+          <Button
+            size="small"
+            isDisabled={busy}
+            onPress={() => {
+              setAsking(true);
+              setProof('');
+              onAskProof();
+            }}
+          >
             {t('security.recovery.show')}
           </Button>
         ) : null}
       </div>
+      {asking ? (
+        <form
+          className="panel-body"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void onShow(proof.trim()).then((shown) => {
+              if (shown === undefined) return;
+              setCode(shown);
+              setAsking(false);
+              setProof('');
+            });
+          }}
+        >
+          <p className="hint">{t('security.recovery.proof')}</p>
+          <TextInput label={t('security.proof.code')} value={proof} onChange={setProof} mono required />
+          <div className="actions">
+            <Button type="submit" variant="primary" isDisabled={busy || proof.trim() === ''}>
+              {t('security.recovery.show')}
+            </Button>
+            <Button isDisabled={busy} onPress={onAskProof}>
+              {t('security.proof.again')}
+            </Button>
+            <Button onPress={() => setAsking(false)}>{t('action.cancel')}</Button>
+          </div>
+        </form>
+      ) : null}
       {code ? (
         <div className="panel-body" data-testid="recovery-code">
           <p className="hint">{t('security.recovery.keep')}</p>

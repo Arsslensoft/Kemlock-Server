@@ -86,6 +86,8 @@ export default function Security() {
       totpError={totpRun.error}
       onStartTotp={() => {
         setTotp({ open: true, enrol: undefined });
+        // Beside another second step that is on, adding the app asks for a mailed code too.
+        if (methods?.some((m) => m !== 'totp')) void secondSteps.props.actions.askProof();
         void totpRun.run(() => api.totpEnrol()).then((enrol) => {
           if (enrol) setTotp({ open: true, enrol });
         });
