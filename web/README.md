@@ -107,14 +107,15 @@ debug build reads `web/dist` from disk, which is the development override.
 
 Built and wired to the server: sign-in and setup, the vault with the item forms for logins and
 notes, the Trash, Sends, spaces, import and export, duplicates, health, devices and approvals,
-account security (an authenticator app, emergency contacts) and the admin console (users and
+account security (an authenticator app, passkeys, security keys, YubiKey, Duo, an emailed code, the
+recovery code, emergency contacts) and the admin console (users and
 invitations, event log, settings, SSO, migration, federation).
 
 Not built, or not working yet:
 
 - Sign-in with SSO, a passkey or an approval from a phone: the buttons are drawn, and say so.
-- Passkeys, security keys, YubiKey, Duo, an emailed code and the Recovery Kit as second steps in
-  Account security. The server serves them; the screens list them as "Later".
+- The Recovery Kit (any 2 of 3 pieces of the root key) in Account security: the key worker has no
+  call that splits the root key, and the page must never hold it. The row says "Later".
 - Items other than logins and notes open as read-only detail.
 - First-run "Server basics" are kept in the browser and listed on the last setup screen; the
   server does not take them there. They are set in the admin Settings.
