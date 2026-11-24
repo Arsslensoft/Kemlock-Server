@@ -9,7 +9,7 @@ use crate::tokens::RegisterVerifyClaims;
 use axum::http::StatusCode;
 use kemlock_app::AppError;
 use kemlock_app::admin::{InviteGate, InviteTicket};
-use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwUserKeyIdRepo};
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::ports::{StoreError, TwoFactorRepo, UserRepo};
 use kemlock_crypto::hash;
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};

@@ -19,7 +19,10 @@ async fn a_client_reports_the_user_key_id_once_and_sync_gives_it_back() {
     // None yet: sync leaves it out, which is what makes a client report it.
     let (_, synced) = h.json("GET", "/api/sync", Some(&ada), None).await;
     let decryption = &synced["userDecryption"];
-    assert!(decryption.get("masterPasswordUnlock").is_some(), "{decryption}");
+    assert!(
+        decryption.get("masterPasswordUnlock").is_some(),
+        "{decryption}"
+    );
     assert!(decryption.get("userKeyId").is_none(), "{decryption}");
     let (_, before) = h
         .json("GET", "/api/accounts/revision-date", Some(&ada), None)
@@ -47,7 +50,10 @@ async fn a_client_reports_the_user_key_id_once_and_sync_gives_it_back() {
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body.to_string().contains("User key id is already set."), "{body}");
+    assert!(
+        body.to_string().contains("User key id is already set."),
+        "{body}"
+    );
     let (_, synced) = h.json("GET", "/api/sync", Some(&ada), None).await;
     assert_eq!(synced["userDecryption"]["userKeyId"], ID);
 }

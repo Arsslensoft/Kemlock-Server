@@ -81,7 +81,7 @@ mod tests {
             name: None,
             mode: AccountMode::KemlockOnly,
             role: Role::User,
-            kdf: KdfParams::new_account([1; 16]),
+            kdf: KdfParams::new_account(Uuid::new_v4().into_bytes()),
             opaque_record: None,
             wrapped_root_key: vec![2; 92],
             public_bundle: vec![3; 100],
