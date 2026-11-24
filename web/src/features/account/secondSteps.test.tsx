@@ -75,6 +75,80 @@ describe('the second-steps API', () => {
   });
 });
 
+describe('adding a second step beside one that is on', () => {
+  it('sends the proof only when one is given', async () => {
+    type Call = { method: string; path: string; body?: unknown };
+    const request = vi.fn(async (_call: Call) => ({ keys: [], enabled: false }));
+    const send = vi.fn(async (_call: Call) => undefined);
+    const steps = createSecondStepsApi({ request, send } as never);
+    await steps.emailConfirm('a@b.co', '123456', '731904');
+    await steps.emailConfirm('a@b.co', '123456');
+    await steps.yubikeySet(['x'], false, '731904');
+    await steps.duoSet(null, '731904');
+    await steps.duoSet({ host: 'h', clientId: 'i', clientSecret: 's' }, '731904');
+    await steps.securityKeyConfirm('Key', { id: 'c' }, '731904');
+    expect(send.mock.calls[0]?.[0].body).toEqual({ address: 'a@b.co', code: '123456', proof: '731904' });
+    expect(send.mock.calls[1]?.[0].body).toEqual({ address: 'a@b.co', code: '123456' });
+    expect(request.mock.calls[0]?.[0].body).toEqual({ otps: ['x'], nfc: false, proof: '731904' });
+    expect(request.mock.calls[1]?.[0].body).toEqual({ proof: '731904' });
+    expect(request.mock.calls[2]?.[0].body).toEqual({ host: 'h', clientId: 'i', clientSecret: 's', proof: '731904' });
+    expect(request.mock.calls[3]?.[0].body).toEqual({ name: 'Key', credential: { id: 'c' }, proof: '731904' });
+  });
+
+  it('asks for the proof, mails it, and sends it with the code that turns the email method on', async () => {
+    const props = card({ setup: { ...setupOff, yubikey: { keys: ['cccccccccccc'], nfc: false } } });
+    const user = userEvent.setup();
+    // The Set up buttons are, in order: Duo, email (YubiKey is on).
+    await user.click(screen.getAllByRole('button', { name: 'Set up' })[1] as HTMLElement);
+    await user.type(screen.getByLabelText('Address for the codes'), 'sam@example.co');
+    await user.click(screen.getByRole('button', { name: 'Send a code' }));
+    await vi.waitFor(() => expect(props.actions.askProof).toHaveBeenCalledTimes(1));
+    // Two fields share the label: the code that was mailed to the address, then the proof.
+    const fields = await screen.findAllByLabelText('The code from the email');
+    expect(fields).toHaveLength(2);
+    await user.type(fields[0] as HTMLElement, '482913');
+    expect(screen.getByRole('button', { name: 'Turn on' })).toBeDisabled();
+    await user.type(fields[1] as HTMLElement, '731904');
+    await user.click(screen.getByRole('button', { name: 'Turn on' }));
+    expect(props.actions.emailConfirm).toHaveBeenCalledWith('sam@example.co', '482913', '731904');
+  });
+
+  it('does not ask for a proof when no second step is on', async () => {
+    const props = card();
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole('button', { name: 'Set up' })[1] as HTMLElement);
+    expect(props.actions.askProof).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText('The code from the email')).not.toBeInTheDocument();
+  });
+
+  it('holds the Duo save back until the proof is typed, then sends it', async () => {
+    const props = card({ setup: { ...setupOff, email: 'sam@example.co', duoServerKeys: true } });
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole('button', { name: 'Set up' })[1] as HTMLElement);
+    expect(props.actions.askProof).toHaveBeenCalledTimes(1);
+    const save = screen.getByRole('button', { name: /Use the server/ });
+    expect(save).toBeDisabled();
+    await user.type(screen.getByLabelText('The code from the email'), '731904');
+    await user.click(screen.getByRole('button', { name: /Use the server/ }));
+    expect(props.actions.duoSet).toHaveBeenCalledWith(null, '731904');
+  });
+
+  it('counts an authenticator app that is on as a second step', async () => {
+    const props = card({ totpOn: true });
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole('button', { name: 'Set up' })[0] as HTMLElement);
+    expect(props.actions.askProof).toHaveBeenCalledTimes(1);
+    await user.type(screen.getByLabelText('Key 1'), 'ccccccccccccdefghijklmnopqrstuvwxyzabcdefghi');
+    await user.type(screen.getByLabelText('The code from the email'), '731904');
+    await user.click(screen.getByRole('button', { name: 'Save the keys' }));
+    expect(props.actions.yubikeySet).toHaveBeenCalledWith(
+      ['ccccccccccccdefghijklmnopqrstuvwxyzabcdefghi', '', '', '', ''],
+      false,
+      '731904',
+    );
+  });
+});
+
 describe('SecondStepsCard', () => {
   it('registers a security key under a name and lists it with a way to remove it', async () => {
     const props = card({ securityKeys: [{ id: 3, name: 'Desk key' }] });
