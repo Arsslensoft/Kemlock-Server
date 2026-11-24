@@ -12,6 +12,7 @@ name = "kemlock-cli"
 path = "src/main.rs"
 
 [dependencies]
+kemlock-app.workspace = true
 kemlock-crypto = { workspace = true, features = ["aws-lc"] }
 kemlock-server.workspace = true
 kemlock-store-sql.workspace = true
@@ -21,10 +22,12 @@ time.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+kemlock-domain.workspace = true
 # The binary test builds a Vaultwarden data folder with the fixture builder of
 # kemlock-vaultwarden's tests, and reads the result back through the store.
 sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite"] }
 tempfile = "3.27.0"
+uuid.workspace = true
 
 [lints]
 workspace = true

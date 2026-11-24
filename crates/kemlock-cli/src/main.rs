@@ -18,7 +18,8 @@ usage: kemlock-cli <command>
 commands:
   migrate        apply pending database migrations, then exit
   healthcheck    ask the local server's /alive and exit 0 if it answers 200, else 1
-  reset-admin    start over with a new first admin (needs --yes; not available yet)
+  reset-admin    start over with a new first admin: demotes every admin, then the next start
+                 prints a new setup code (needs --yes)
   import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]
                  move in from Vaultwarden: prints a dry-run plan; --apply writes it to the server
                  move in from Vaultwarden: prints a dry-run plan; --apply writes (see below)
@@ -130,11 +131,20 @@ fn redact(url: &str) -> String {
     }
 }
 
-fn reset_admin(yes: bool) -> u8 {
+/// The time, from the system clock.
+struct SystemClock;
+
+impl kemlock_app::ports::Clock for SystemClock {
+    fn now(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::now_utc()
+    }
+}
+
+async fn reset_admin(config: &Config, yes: bool) -> u8 {
     println!(
-        "reset-admin would remove the admin role from every account, close setup's finished \
-         state and print a new setup code at the server's next start, so a new first admin can \
-         be made. Accounts, vaults and devices stay as they are."
+        "reset-admin removes the admin role from every account and the first-admin marker, so \
+         the server prints a new setup code at its next start and a new first admin can be made. \
+         Accounts, vaults and devices stay as they are."
     );
     if !yes {
         eprintln!(
@@ -142,12 +152,43 @@ fn reset_admin(yes: bool) -> u8 {
         );
         return 2;
     }
-    eprintln!(
-        "kemlock-cli: reset-admin isn't implemented yet. The admin console and the store's \
-         settings it needs come in a later release; until then, restore from a backup or ask on \
-         the project's issue tracker."
-    );
-    1
+    let store = match kemlock_store_sql::SqlStore::connect(&config.database_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("kemlock-cli: can't open the database: {e}");
+            return 1;
+        }
+    };
+    let reset = kemlock_app::reset_admin::ResetAdmin {
+        users: store.clone(),
+        admins: store.clone(),
+        events: store.clone(),
+        settings: store.clone(),
+        clock: SystemClock,
+    };
+    let result = reset.execute().await;
+    let _ = store.close().await;
+    match result {
+        Ok(demoted) if demoted.is_empty() => {
+            println!("no account was an admin; setup will open at the server's next start");
+            0
+        }
+        Ok(demoted) => {
+            for email in &demoted {
+                println!("no longer an admin: {email}");
+            }
+            println!(
+                "done. Restart the server: it prints a new setup code in its log. Sessions that \
+                 are open keep their tokens until they expire, but no longer reach the admin \
+                 console."
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("kemlock-cli: reset-admin failed: {e}");
+            1
+        }
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -181,7 +222,7 @@ async fn main() -> ExitCode {
     match command {
         Command::Migrate => migrate(&config).await,
         Command::Healthcheck => healthcheck(&config),
-        Command::ResetAdmin { yes } => ExitCode::from(reset_admin(yes)),
+        Command::ResetAdmin { yes } => ExitCode::from(reset_admin(&config, yes).await),
         Command::Backup(args) => {
             ExitCode::from(backup_cmd::run_backup_command(&config, args).await)
         }
@@ -249,11 +290,5 @@ mod tests {
             "sqlite://data/db.sqlite3?mode=rwc"
         );
         assert_eq!(redact("sqlite::memory:"), "sqlite::memory:");
-    }
-
-    #[test]
-    fn reset_admin_refuses_without_yes_and_says_not_yet_with_it() {
-        assert_eq!(reset_admin(false), 2);
-        assert_eq!(reset_admin(true), 1);
     }
 }
