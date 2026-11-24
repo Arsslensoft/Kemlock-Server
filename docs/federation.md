@@ -730,6 +730,4 @@ document at `/admin/v1/federation/openapi.json`.
 
 ## Not built yet
 
-- Send files;
-- the console screens themselves (the server side is above); promotion and identity rotation accept
-  a step-up token or a sign-in in the last five minutes.
+- Send files.
