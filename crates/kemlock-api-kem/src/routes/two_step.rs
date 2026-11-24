@@ -37,9 +37,10 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
-use kemlock_app::notices::Notices;
+use kemlock_app::notices::{Notice, Notices, TwoStepChangedNotice};
+
 use kemlock_app::passkeys::ChallengeRepo;
-use kemlock_app::ports::{TokenSigner, TwoFactorMethod, TwoFactorRepo, UserRepo};
+use kemlock_app::ports::{Clock, TokenSigner, TwoFactorMethod, TwoFactorRepo, UserRepo};
 use kemlock_app::two_step::{
     Duo, DuoKeys, DuoStatus, NoDuo, NoYubico, ProtectedError, TwoStep, TwoStepInput,
     TwoStepSettings, TwoStepSignIn, Yubico,
@@ -636,6 +637,43 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Records that a second step was turned on or off, and tells the owner by mail. Neither can fail
+/// the call: what they describe has happened.
+pub(crate) async fn announce_change<S, P, K>(
+    api: &Api<S, P, K>,
+    authed: &Authed,
+    method: &'static str,
+    on: bool,
+) where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let sessions = api.sessions();
+    sessions
+        .record(
+            if on {
+                "account.two_step_added"
+            } else {
+                "account.two_step_removed"
+            },
+            authed.actor.user,
+            Some(authed.actor.device),
+        )
+        .await;
+    if let Ok(Some(user)) = api.store.by_id(authed.actor.user).await {
+        api.hub
+            .notices()
+            .send(Notice::TwoStepChanged(TwoStepChangedNotice {
+                to: user.email,
+                at: Clock::now(&sessions.env),
+                method,
+                on,
+            }))
+            .await;
+    }
+}
+
 /// `GET /kem/v1/account/two-step/setup`.
 async fn handle_setup_show<S, P, K, R>(
     State(api): State<Api<S, P, K>>,
@@ -725,6 +763,7 @@ where
         .email_confirm(authed.actor.user, &request.address, &request.code)
         .await?;
     api.recovery_codes().ensure(authed.actor.user).await?;
+    announce_change(&api, &authed, "email", true).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -747,6 +786,7 @@ where
     two_step_of(&api, &runtime)
         .email_disable(authed.actor.user)
         .await?;
+    announce_change(&api, &authed, "email", false).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -770,6 +810,7 @@ where
         .yubikey_set(authed.actor.user, &request.otps, request.nfc)
         .await?;
     api.recovery_codes().ensure(authed.actor.user).await?;
+    announce_change(&api, &authed, "yubikey", true).await;
     Ok(Json(YubikeyShown {
         keys: data.keys,
         nfc: data.nfc,
@@ -795,6 +836,7 @@ where
     two_step_of(&api, &runtime)
         .yubikey_remove(authed.actor.user)
         .await?;
+    announce_change(&api, &authed, "yubikey", false).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -827,6 +869,7 @@ where
         .duo_set(authed.actor.user, custom)
         .await?;
     api.recovery_codes().ensure(authed.actor.user).await?;
+    announce_change(&api, &authed, "duo", true).await;
     Ok(Json(match status {
         DuoStatus::User(keys) => DuoShown {
             integration: "own",
@@ -858,6 +901,7 @@ where
     two_step_of(&api, &runtime)
         .duo_remove(authed.actor.user)
         .await?;
+    announce_change(&api, &authed, "duo", false).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

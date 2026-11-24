@@ -20,7 +20,7 @@
 //! [`passkeys_router`].
 
 use super::guard;
-use super::two_step::{ProofRequest, proof_steps, require_proof};
+use super::two_step::{ProofRequest, announce_change, proof_steps, require_proof};
 use super::new_device::announce;
 use crate::dto::{DeviceDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
@@ -699,6 +699,7 @@ where
         )
         .await
         .map_err(AppError::from)?;
+    announce_change(&api, &authed, "security-key", true).await;
     Ok(Json(SecurityKeysResponse::from_list(list)))
 }
 
@@ -752,6 +753,7 @@ where
     let list = security_keys(&api, &runtime)
         .remove(authed.actor.user, slot)
         .await?;
+    announce_change(&api, &authed, "security-key", false).await;
     Ok(Json(SecurityKeysResponse::from_list(list)))
 }
 
