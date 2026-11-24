@@ -14,7 +14,8 @@ export type ItemData = {
   name?: string;
   notes?: string;
   favorite?: boolean;
-  updatedAt?: string;
+  /** Epoch ms, as the Kemlock app writes it; older web saves hold an ISO string. */
+  updatedAt?: string | number;
   /** Set while the item is in the Trash; the item is removed for good 30 days later. */
   trashedAt?: string;
   [field: string]: unknown;
@@ -46,7 +47,7 @@ export function sealedData(existing: VaultItem | undefined, id: string, fields: 
     ...(typeof existing?.data?.id === 'string' && existing.data.id !== '' ? {} : { id }),
     ...(existing?.data ?? {}),
     ...fields,
-    updatedAt: now.toISOString(),
+    updatedAt: now.getTime(),
   };
   // A cleared optional field is removed, not kept as an empty string.
   for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];

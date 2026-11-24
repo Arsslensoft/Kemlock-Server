@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import type { VaultItem } from '../vault';
+import { timeAgo } from '../kinds';
 import { itemName } from '../vault';
 import { BackupCodesForm, backupCodesDefaults, backupCodesFields, parseCodes } from './backupCodes';
 import { CardForm, cardDefaults, cardFields, parseCardExpiry } from './card';
@@ -177,5 +178,13 @@ describe('itemName', () => {
 describe('entry id', () => {
   it('does not set an entry id of its own; saveItem uses the item id', () => {
     expect(otpFields({ ...otpDefaults(), issuer: 'G', secret: 'JBSWY3DPEHPK3PXP' })['id']).toBeUndefined();
+  });
+});
+
+describe('timeAgo', () => {
+  it('reads epoch ms as well as legacy ISO strings', () => {
+    const now = new Date('2026-11-24T12:00:00Z');
+    expect(timeAgo(now.getTime() - 2 * 3600 * 1000, now)).toBe('2 hours ago');
+    expect(timeAgo('2026-11-24T10:00:00Z', now)).toBe('2 hours ago');
   });
 });

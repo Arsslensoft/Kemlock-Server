@@ -77,7 +77,7 @@ const UNITS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
 
 /** "2 hours ago", from an ISO date. Empty when the date is missing or unreadable. */
 export function timeAgo(iso: unknown, now: Date = new Date()): string {
-  if (typeof iso !== 'string') return '';
+  if (typeof iso !== 'string' && typeof iso !== 'number') return '';
   const then = new Date(iso);
   if (Number.isNaN(then.getTime())) return '';
   const seconds = Math.round((then.getTime() - now.getTime()) / 1000);
