@@ -13,6 +13,7 @@ import { CodeForm } from '@/ui/CodeForm';
 import { Icon, type IconName } from '@/ui/Icon';
 import { afterSignIn } from './afterSignIn';
 import { PasswordForm } from './PasswordForm';
+import { kitAccount } from './kitUnlock';
 import { RecoveryKitUnlock } from './RecoveryKitUnlock';
 import { type SignInStatus, createSignIn } from './signIn';
 
@@ -55,6 +56,8 @@ export default function Unlock() {
   const { next } = route.useSearch();
   const state = useSessionState(session);
   const email = state.email ?? '';
+  // The kit opens one account's vault: wait until the session knows which, never ask with ''.
+  const kitUser = kitAccount(state.userId);
   const signIn = useMemo(
     () => createSignIn({ api, crypto: vaultCrypto, session, device: thisDevice }),
     [],
@@ -85,9 +88,9 @@ export default function Unlock() {
         <h1>{t('unlock.title')}</h1>
         <p className="lede">{t('unlock.lede', { email })}</p>
       </div>
-      {useKit ? (
+      {useKit && kitUser ? (
         <RecoveryKitUnlock
-          accountId={state.userId ?? ''}
+          accountId={kitUser}
           onBack={() => setUseKit(false)}
           onUnlocked={() => {
             const target = safeNext(next);
@@ -122,7 +125,7 @@ export default function Unlock() {
           hint={t('unlock.approveHint')}
           onPress={() => void navigate({ to: '/sign-in/device', search: { email, next } })}
         />
-        <Way icon="key" title={t('unlock.kit')} hint={t('unlock.kitHint')} onPress={() => setUseKit(true)} />
+        <Way icon="key" title={t('unlock.kit')} hint={t('unlock.kitHint')} onPress={kitUser ? () => setUseKit(true) : undefined} />
       </div>
       <p className="hint">
         <Link

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSession } from '@/app/session';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import { crypto as fake, fakeCalls, resetFakeCrypto } from '@/test/fake-crypto';
-import { checkPieces, newestOnly, unlockWithKit } from './kitUnlock';
+import { checkPieces, kitAccount, newestOnly, unlockWithKit } from './kitUnlock';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const piece = (n: number, id = 'FAKEKIT2', check = 'ABCD') => `BMCKIT1-${id}-23${n}-${'A'.repeat(52)}-${check}`;
@@ -88,5 +88,14 @@ describe('newestOnly', () => {
     const run = newestOnly();
     expect(await run(async () => 'only')).toBe('only');
     expect(await run(async () => 'next')).toBe('next');
+  });
+});
+
+describe('kitAccount', () => {
+  it('is the signed-in account, and nothing before the session knows it', () => {
+    expect(kitAccount(USER)).toBe(USER);
+    expect(kitAccount('')).toBeUndefined();
+    expect(kitAccount(null)).toBeUndefined();
+    expect(kitAccount(undefined)).toBeUndefined();
   });
 });

@@ -103,3 +103,8 @@ export function newestOnly() {
     return mine === latest ? result : undefined;
   };
 }
+
+/** The account the kit unlocks: only a signed-in account has one, never an empty id. */
+export function kitAccount(userId: string | null | undefined): string | undefined {
+  return userId ? userId : undefined;
+}
