@@ -1089,6 +1089,13 @@
               "string",
               "null"
             ]
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -1254,6 +1261,13 @@
           "code": {
             "description": "The code that was mailed.",
             "type": "string"
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3433,6 +3447,20 @@
         ],
         "type": "object"
       },
+      "RecoveryCodeRequest": {
+        "additionalProperties": false,
+        "description": "Asks for the account's recovery code.",
+        "properties": {
+          "proof": {
+            "description": "A fresh proof that is not the recovery code itself: a code mailed by\n`POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not\nneeded while the account holds no recovery code.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "RecoveryCodeResponse": {
         "description": "The account's two-step recovery code.",
         "properties": {
@@ -3853,6 +3881,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when a second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -4706,6 +4741,13 @@
         "properties": {
           "code": {
             "type": "string"
+          },
+          "proof": {
+            "description": "The recovery code, when another second step is on already: a session alone may add the\nfirst step, and a fresh proof is needed beside one that is on.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -4988,6 +5030,13 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -6433,7 +6482,7 @@
                 }
               }
             },
-            "description": "Keys Duo did not accept, or no server keys to use"
+            "description": "Keys Duo did not accept, no server keys to use, or a second step is on and the fresh proof is missing or wrong"
           },
           "401": {
             "content": {
@@ -6467,7 +6516,7 @@
                 }
               }
             },
-            "description": "Another second step is on"
+            "description": "The Duo method is on already: remove it (with a proof), then add it"
           },
           "429": {
             "content": {
@@ -6645,7 +6694,7 @@
                 }
               }
             },
-            "description": "Another second step is on: a session alone may not add one beside it"
+            "description": "The email method is on already: remove it (with a proof), then add it"
           },
           "429": {
             "content": {
@@ -6701,7 +6750,17 @@
         },
         "responses": {
           "204": {
-            "description": "The method is on"
+            "description": "The method is on. With another second step on, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "A second step is on and no proof came, or the proof is wrong or has run out"
           },
           "401": {
             "content": {
@@ -6712,6 +6771,16 @@
               }
             },
             "description": "Wrong address or code"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The email method is on already"
           },
           "429": {
             "content": {
@@ -6833,8 +6902,18 @@
       }
     },
     "/kem/v1/account/two-factor/recovery-code": {
-      "get": {
+      "post": {
         "operationId": "doc_recovery_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -6844,7 +6923,17 @@
                 }
               }
             },
-            "description": "The recovery code (null before the account's first second step, or once it was spent)"
+            "description": "The recovery code (null before the account's first second step, or once it was spent). While the account holds one, the request carries a fresh `proof` that is not the recovery code: a mailed code or a current code of the authenticator app"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account holds a code and the proof is missing, wrong or has run out"
           },
           "401": {
             "content": {
@@ -6993,7 +7082,17 @@
         },
         "responses": {
           "204": {
-            "description": "The method is enabled"
+            "description": "The method is enabled. With another second step on, the request carries the recovery code as `proof`"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Another second step is on and the proof is missing or wrong"
           },
           "401": {
             "content": {
@@ -7157,16 +7256,6 @@
               }
             }
           },
-          "409": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDoc"
-                }
-              }
-            },
-            "description": "An authenticator app is on: a session alone can't add a second step beside it"
-          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -7228,7 +7317,7 @@
                 }
               }
             },
-            "description": "The key is registered and the method is on"
+            "description": "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)"
           },
           "400": {
             "content": {
@@ -7238,7 +7327,7 @@
                 }
               }
             },
-            "description": "The answer wasn't accepted or no registration is in progress"
+            "description": "The answer wasn't accepted, no registration is in progress, or a second step is on and the fresh proof is missing or wrong"
           },
           "401": {
             "content": {
@@ -7523,7 +7612,7 @@
                 }
               }
             },
-            "description": "An OTP Yubico did not accept, or Yubico is not set up"
+            "description": "An OTP Yubico did not accept, Yubico is not set up, or a second step is on and the fresh proof is missing or wrong"
           },
           "401": {
             "content": {
@@ -7557,7 +7646,7 @@
                 }
               }
             },
-            "description": "Another second step is on"
+            "description": "The YubiKey method is on already: remove it (with a proof), then add it"
           },
           "429": {
             "content": {
