@@ -498,6 +498,22 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
         )
         .await;
     assert_eq!(by_app.status, StatusCode::NO_CONTENT, "{:?}", by_app.json());
+
+    // The code works once: the same step is refused the second time (as at sign-in).
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(rig.kit_body(user).await))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED);
+    let replayed = rig
+        .authed(
+            &device,
+            "DELETE",
+            KIT,
+            token,
+            Some(json!({"proof": current})),
+        )
+        .await;
+    assert_eq!(replayed.status, StatusCode::BAD_REQUEST, "{:?}", replayed.json());
 }
 
 #[tokio::test]

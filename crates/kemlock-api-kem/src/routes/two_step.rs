@@ -579,8 +579,8 @@ where
     }
 }
 
-/// Whether `proof` is a current code of the account's authenticator app, or its recovery code
-/// (kept, not spent: it is a proof here, not a recovery).
+/// Whether `proof` is a current, unused code of the account's authenticator app (spent by this
+/// call), or its recovery code (kept, not spent: it is a proof here, not a recovery).
 async fn second_step_proof<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
@@ -603,10 +603,18 @@ where
             && let Ok(secret) = api
                 .crypto
                 .open(kemlock_app::sealed::PURPOSE_TOTP, &factor.sealed_secret)
-            && u64::try_from(api.now())
-                .is_ok_and(|now| kemlock_crypto::totp::verify(&secret, &entered, now))
+            && let Some(step) = u64::try_from(api.now())
+                .ok()
+                .and_then(|now| kemlock_crypto::totp::verify_step(&secret, &entered, now))
         {
-            return true;
+            // A code works once, as at sign-in: the step is kept per account, so a code seen
+            // over a shoulder or in a log proves nothing for the rest of its window.
+            if TwoFactorRepo::accept_totp_step(&api.store, user, step)
+                .await
+                .unwrap_or(false)
+            {
+                return true;
+            }
         }
     }
     if let Ok(Some(held)) = api.recovery_codes().show(user).await {
@@ -638,7 +646,8 @@ where
         .blocked(&account, now)
         .map_err(rate_limited)?;
     // Without mail, a current code of the authenticator app or the account's recovery code proves
-    // it just as well; neither is spent here, so revoking never needs the mail to work.
+    // it just as well. A TOTP code is spent here (it works once); the recovery code is kept. Neither
+    // needs the mail to work.
     if second_step_proof(api, user, proof).await {
         return Ok(());
     }
