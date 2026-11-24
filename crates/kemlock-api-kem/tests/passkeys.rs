@@ -699,7 +699,7 @@ async fn the_second_step_refuses_another_device_key_a_wrong_key_and_a_made_up_ch
 }
 
 #[tokio::test]
-async fn a_session_alone_cannot_add_a_security_key_beside_an_authenticator_app() {
+async fn a_security_key_beside_an_authenticator_app_needs_a_proof() {
     let pk = pk();
     let (d1, s1) = pk.signed_in("sam@example.org").await;
     let token = Some(s1.access_token.as_str());
@@ -726,7 +726,7 @@ async fn a_session_alone_cannot_add_a_security_key_beside_an_authenticator_app()
         confirmed.json()
     );
 
-    let refused = pk
+    let started = pk
         .call(
             &d1,
             "POST",
@@ -735,7 +735,18 @@ async fn a_session_alone_cannot_add_a_security_key_beside_an_authenticator_app()
             None,
         )
         .await;
-    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.json());
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.json());
+    let options = started.json()["options"].clone();
+    let refused = pk
+        .call(
+            &d1,
+            "POST",
+            "/kem/v1/account/two-factor/webauthn/confirm",
+            token,
+            Some(json!({"name": "Yubi", "credential": authenticator().create(&options)})),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
 }
 
 #[tokio::test]

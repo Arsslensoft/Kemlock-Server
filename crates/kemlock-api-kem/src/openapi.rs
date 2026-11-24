@@ -326,7 +326,8 @@ fn doc_totp_enrol() {}
     security(("dpop" = [])),
     request_body = TotpConfirmRequest,
     responses(
-        (status = 204, description = "The method is enabled"),
+        (status = 204, description = "The method is enabled. With another second step on, the request carries the recovery code as `proof`"),
+        (status = 400, description = "Another second step is on and the proof is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong code", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]

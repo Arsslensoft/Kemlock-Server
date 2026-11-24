@@ -766,7 +766,7 @@ async fn an_emailed_code_is_set_up_with_the_code_and_turned_off_only_with_a_proo
 }
 
 #[tokio::test]
-async fn a_second_step_is_not_added_while_another_is_on() {
+async fn a_second_step_beside_another_needs_a_proof_and_a_method_is_not_replaced() {
     let rig = rig();
     rig.account_with(
         TwoFactorMethod::YubiKey,
@@ -786,22 +786,14 @@ async fn a_second_step_is_not_added_while_another_is_on() {
     assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
     let session = Session::from_tokens(&signed.json());
     let token = session.access_token.as_str();
-    for (method, uri, body) in [
-        (
-            "POST",
-            format!("{FACTOR}/email"),
-            json!({"address": "a@b.example"}),
-        ),
-        ("PUT", format!("{FACTOR}/duo"), json!({})),
-        ("PUT", format!("{FACTOR}/yubikey"), json!({"otps": [OTP]})),
+    // Duo is a second method: without a proof it is refused; the YubiKey method is on, so
+    // replacing it is refused (409) even with one.
+    for (method, uri, body, status) in [
+        ("PUT", format!("{FACTOR}/duo"), json!({}), StatusCode::BAD_REQUEST),
+        ("PUT", format!("{FACTOR}/yubikey"), json!({"otps": [OTP]}), StatusCode::CONFLICT),
     ] {
         let refused = rig.authed(&device, method, &uri, token, Some(body)).await;
-        assert_eq!(
-            refused.status,
-            StatusCode::CONFLICT,
-            "{method} {uri}: {:?}",
-            refused.json()
-        );
+        assert_eq!(refused.status, status, "{method} {uri}: {:?}", refused.json());
     }
     let shown = rig.authed(&device, "GET", SETUP, token, None).await;
     assert_eq!(
@@ -809,10 +801,11 @@ async fn a_second_step_is_not_added_while_another_is_on() {
         json!(["cccccccccccc"]),
         "replacing was refused"
     );
+    assert_eq!(shown.json()["duo"], Value::Null, "no Duo without a proof");
 }
 
 #[tokio::test]
-async fn the_emailed_code_is_refused_when_another_step_came_on_in_between() {
+async fn the_emailed_code_needs_a_proof_when_another_step_came_on_in_between() {
     let rig = rig();
     let (device, session) = rig.plain().await;
     let token = session.access_token.as_str();
@@ -853,7 +846,7 @@ async fn the_emailed_code_is_refused_when_another_step_came_on_in_between() {
         .await;
     assert_eq!(
         confirmed.status,
-        StatusCode::CONFLICT,
+        StatusCode::BAD_REQUEST,
         "{:?}",
         confirmed.json()
     );

@@ -17,8 +17,9 @@
 //! Duo and the stored challenges), so the router is built apart, from the API state and a
 //! [`TwoStepRuntime`], and merged into the main router by the server: see [`two_step_router`].
 //! A signed-in device sets a method up at `/kem/v1/account/two-factor/{email,yubikey,duo}` and
-//! reads what it set up at `GET /kem/v1/account/two-step/setup`; a session alone may not add a
-//! method beside another one that is on. The Bitwarden API's `/api/two-factor/...` does the same
+//! reads what it set up at `GET /kem/v1/account/two-step/setup`. A session alone may add the first
+//! step; beside one that is on, the request that turns the method on carries a fresh `proof`, the
+//! one a removal takes, and a method that is on already is refused (remove it, then add it) The Bitwarden API's `/api/two-factor/...` does the same
 //! for its clients, behind the master password.
 
 use super::auth::token_response;
@@ -433,6 +434,8 @@ pub(crate) struct EmailConfirmRequest {
     pub(crate) address: String,
     /// The code that was mailed.
     pub(crate) code: String,
+    /// A fresh proof, as a removal takes: needed when another second step is on already.
+    pub(crate) proof: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -443,6 +446,8 @@ pub(crate) struct YubikeySetRequest {
     /// Whether the keys are read over NFC.
     #[serde(default)]
     pub(crate) nfc: bool,
+    /// A fresh proof, as a removal takes: needed when another second step is on already.
+    pub(crate) proof: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -452,6 +457,8 @@ pub(crate) struct DuoSetRequest {
     pub(crate) host: Option<String>,
     pub(crate) client_id: Option<String>,
     pub(crate) client_secret: Option<String>,
+    /// A fresh proof, as a removal takes: needed when another second step is on already.
+    pub(crate) proof: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -498,27 +505,115 @@ where
     step(api, runtime).two_step
 }
 
-/// A session alone may not turn a second step on while any is on, this method's own included: a
-/// stolen session could swap a Duo integration, a YubiKey id or an address for ones it controls.
-/// Replacing is removing (with a fresh proof) and then adding.
-async fn refuse_while_on<S, P, K>(
+/// Replacing a method that is on is removing it (with a fresh proof) and then adding it, so
+/// asking for it again is refused (409): a stolen session can't swap a Duo integration, a YubiKey
+/// id or an address for ones it controls.
+async fn refuse_if_on<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
+    method: TwoFactorMethod,
 ) -> Result<(), Problem>
 where
     S: Store,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
 {
-    let other = TwoFactorRepo::list(&api.store, user)
+    let own = TwoFactorRepo::list(&api.store, user)
         .await
         .map_err(AppError::from)?
         .iter()
-        .any(|row| row.enabled);
-    if other {
+        .any(|row| row.enabled && row.method == method);
+    if own {
         return Err(AppError::Duplicate.into());
     }
     Ok(())
+}
+
+/// The methods that are on, and whether `own` is one of them.
+async fn methods_on<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+) -> Result<Vec<TwoFactorMethod>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    Ok(TwoFactorRepo::list(&api.store, user)
+        .await
+        .map_err(AppError::from)?
+        .into_iter()
+        .filter(|row| row.enabled)
+        .map(|row| row.method)
+        .collect())
+}
+
+const PROOF_NEEDED: &str = "a fresh proof is needed to add a second step beside one that is on";
+
+/// What lets a method be turned on. With no method on, a session alone may add the first step.
+/// With one or more on, the request must carry a fresh proof, the one a removal takes (a mailed
+/// code, a current code of the authenticator app, or the recovery code), so a stolen session
+/// can't add a step it controls beside the owner's. `own`, when it is on, is refused first (409).
+///
+/// Call it after the request is checked and last before the change: a proof is spent here.
+pub(crate) async fn require_proof_to_add<S, P, K, R>(
+    api: &Api<S, P, K>,
+    steps: &TwoStep<S, P, P, R>,
+    user: kemlock_domain::UserId,
+    own: Option<TwoFactorMethod>,
+    proof: Option<&str>,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: ChallengeRepo + Clone + 'static,
+{
+    let on = methods_on(api, user).await?;
+    if on.is_empty() {
+        return Ok(());
+    }
+    if own.is_some_and(|method| on.contains(&method)) {
+        return Err(AppError::Duplicate.into());
+    }
+    let proof = proof
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or(AppError::Invalid(PROOF_NEEDED))?;
+    require_proof(api, steps, user, proof).await
+}
+
+/// As [`require_proof_to_add`] where the router holds no store for mailed codes (the authenticator
+/// app's): only what can be checked without one proves it, so the recovery code (or a code of an
+/// authenticator app that is on already, which a first one never has).
+pub(crate) async fn require_local_proof_to_add<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+    proof: Option<&str>,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    if methods_on(api, user).await?.is_empty() {
+        return Ok(());
+    }
+    let now = api.now();
+    let account = format!("2fa:{user}");
+    api.limits
+        .second_step
+        .blocked(&account, now)
+        .map_err(rate_limited)?;
+    let proof = proof
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .ok_or(AppError::Invalid(PROOF_NEEDED))?;
+    if second_step_proof(api, user, proof).await {
+        return Ok(());
+    }
+    api.limits.second_step.fail(&account, now);
+    Err(AppError::Invalid("the code is wrong or has run out: ask for another").into())
 }
 
 fn limit_setup<S, P, K>(api: &Api<S, P, K>, authed: &Authed, what: &str) -> Result<(), Problem>
@@ -780,7 +875,8 @@ where
 {
     let request: EmailBeginRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
-    refuse_while_on(&api, authed.actor.user).await?;
+    // Mailing a code turns nothing on: the proof is asked for when the code is entered.
+    refuse_if_on(&api, authed.actor.user, TwoFactorMethod::Email).await?;
     // Each code mailed counts, 5 in 15 minutes: the route can't be used to fill a mailbox.
     let issued = format!("email-setup-codes:{}", authed.actor.user);
     let now = api.now();
@@ -810,8 +906,17 @@ where
 {
     let request: EmailConfirmRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
-    // Another method may have been turned on since the code was asked for.
-    refuse_while_on(&api, authed.actor.user).await?;
+    // Checked before the proof is spent: an address that can't be one fails first.
+    kemlock_domain::Email::parse(request.address.trim())
+        .map_err(|_| AppError::Invalid("the email address isn't valid"))?;
+    require_proof_to_add(
+        &api,
+        &two_step_of(&api, &runtime),
+        authed.actor.user,
+        Some(TwoFactorMethod::Email),
+        request.proof.as_deref(),
+    )
+    .await?;
     two_step_of(&api, &runtime)
         .email_confirm(authed.actor.user, &request.address, &request.code)
         .await?;
@@ -864,7 +969,17 @@ where
 {
     let request: YubikeySetRequest = body.json()?;
     limit_setup(&api, &authed, "yubikey-setup")?;
-    refuse_while_on(&api, authed.actor.user).await?;
+    if request.otps.iter().all(|otp| otp.trim().is_empty()) {
+        return Err(AppError::Invalid("A key is required.").into());
+    }
+    require_proof_to_add(
+        &api,
+        &two_step_of(&api, &runtime),
+        authed.actor.user,
+        Some(TwoFactorMethod::YubiKey),
+        request.proof.as_deref(),
+    )
+    .await?;
     let data = two_step_of(&api, &runtime)
         .yubikey_set(authed.actor.user, &request.otps, request.nfc)
         .await?;
@@ -921,7 +1036,6 @@ where
 {
     let request: DuoSetRequest = body.json()?;
     limit_setup(&api, &authed, "duo-setup")?;
-    refuse_while_on(&api, authed.actor.user).await?;
     let custom = match (request.host, request.client_id, request.client_secret) {
         (None, None, None) => None,
         (host, ik, sk) => Some(DuoKeys {
@@ -930,6 +1044,19 @@ where
             sk: sk.unwrap_or_default(),
         }),
     };
+    if let Some(keys) = &custom {
+        if !keys.is_complete() {
+            return Err(AppError::Invalid("the Duo host and keys are all required").into());
+        }
+    }
+    require_proof_to_add(
+        &api,
+        &two_step_of(&api, &runtime),
+        authed.actor.user,
+        Some(TwoFactorMethod::Duo),
+        request.proof.as_deref(),
+    )
+    .await?;
     let status = two_step_of(&api, &runtime)
         .duo_set(authed.actor.user, custom)
         .await?;
@@ -1177,7 +1304,7 @@ fn doc_setup_show() {}
     responses(
         (status = 204, description = "A first code was mailed to the address"),
         (status = 400, description = "Not an address, or the server can't mail codes", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "Another second step is on: a session alone may not add one beside it", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "The email method is on already: remove it (with a proof), then add it", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -1188,7 +1315,9 @@ fn doc_email_begin() {}
     security(("dpop" = [])),
     request_body = EmailConfirmRequest,
     responses(
-        (status = 204, description = "The method is on"),
+        (status = 204, description = "The method is on. With another second step on, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)"),
+        (status = 400, description = "A second step is on and no proof came, or the proof is wrong or has run out", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "The email method is on already", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong address or code", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -1221,8 +1350,8 @@ fn doc_email_off() {}
     request_body = YubikeySetRequest,
     responses(
         (status = 200, description = "The keys, replacing any the account had", body = YubikeyShown),
-        (status = 400, description = "An OTP Yubico did not accept, or Yubico is not set up", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "Another second step is on", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "An OTP Yubico did not accept, Yubico is not set up, or a second step is on and the fresh proof is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "The YubiKey method is on already: remove it (with a proof), then add it", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -1243,8 +1372,8 @@ fn doc_yubikey_off() {}
     request_body = DuoSetRequest,
     responses(
         (status = 200, description = "Duo is on", body = DuoShown),
-        (status = 400, description = "Keys Duo did not accept, or no server keys to use", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "Another second step is on", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "Keys Duo did not accept, no server keys to use, or a second step is on and the fresh proof is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "The Duo method is on already: remove it (with a proof), then add it", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]

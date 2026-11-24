@@ -172,7 +172,7 @@ impl Fx {
     ) -> KeyList {
         let options = self
             .keys()
-            .start_registration(user, false)
+            .start_registration(user)
             .await
             .expect("registration starts");
         self.keys()
@@ -905,7 +905,7 @@ async fn slots_are_one_to_five_and_a_chosen_slot_replaces_its_key() {
 
     let options = fx
         .keys()
-        .start_registration(user, false)
+        .start_registration(user)
         .await
         .expect("options");
     for slot in [0, 6] {
@@ -929,7 +929,7 @@ async fn an_account_has_at_most_five_security_keys() {
             .await;
     }
     assert_eq!(
-        fx.keys().start_registration(user, false).await,
+        fx.keys().start_registration(user).await,
         Err(AppError::Invalid(
             "an account may have at most five security keys"
         ))
@@ -944,7 +944,7 @@ async fn the_same_security_key_twice_is_refused() {
     fx.register_key(user, None, "Yubi", b"yubi").await;
     let options = fx
         .keys()
-        .start_registration(user, false)
+        .start_registration(user)
         .await
         .expect("options");
     assert_eq!(
@@ -961,7 +961,7 @@ async fn a_security_key_registration_answer_that_is_wrong_uses_its_challenge_up(
     let user = fx.user(EMAIL).await;
     let options = fx
         .keys()
-        .start_registration(user, false)
+        .start_registration(user)
         .await
         .expect("options");
     let wrong = registration_answer(&json!({"challenge": "not it"}), b"yubi");
@@ -1000,33 +1000,6 @@ async fn removing_keys_empties_the_list_and_switches_the_method_off() {
         }
     );
     assert!(fx.world.store.two_factor_of(user).is_empty());
-}
-
-#[tokio::test]
-async fn a_session_alone_may_not_add_a_key_beside_an_authenticator_app() {
-    let fx = Fx::new();
-    let user = fx.user(EMAIL).await;
-    fx.world
-        .enrol_totp()
-        .execute(user)
-        .await
-        .expect("enrolment");
-    let code = totp_code(&fx.world, user);
-    fx.world
-        .confirm_totp()
-        .execute(user, &code)
-        .await
-        .expect("confirmed");
-
-    assert_eq!(
-        fx.keys().start_registration(user, true).await,
-        Err(AppError::Duplicate)
-    );
-    // Bitwarden's routes have checked the master password: that is not a session alone.
-    fx.keys()
-        .start_registration(user, false)
-        .await
-        .expect("allowed");
 }
 
 #[tokio::test]

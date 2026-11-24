@@ -418,6 +418,9 @@ pub struct TotpEnrolResponse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TotpConfirmRequest {
     pub code: String,
+    /// The recovery code, when another second step is on already: a session alone may add the
+    /// first step, and a fresh proof is needed beside one that is on.
+    pub proof: Option<String>,
 }
 
 /// The account's two-step recovery code.

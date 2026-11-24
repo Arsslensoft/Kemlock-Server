@@ -360,6 +360,13 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             &format!("totp:{}", authed.actor.user),
             now,
         )?;
+        // Beside another second step that is on, the recovery code proves it is the owner.
+        super::two_step::require_local_proof_to_add(
+            &api,
+            authed.actor.user,
+            request.proof.as_deref(),
+        )
+        .await?;
         api.confirm_totp()
             .execute(authed.actor.user, &request.code)
             .await?;
