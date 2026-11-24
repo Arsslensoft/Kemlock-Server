@@ -23,8 +23,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  # On main only the newest merge publishes `edge`: a newer push cancels the older run. A tag
+  # release (its own ref) and a manual run are never cancelled.
+  group: release-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
 env:
   GHCR_IMAGE: ghcr.io/arsslensoft/kemlock-server
