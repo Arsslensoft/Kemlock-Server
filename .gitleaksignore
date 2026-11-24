@@ -1,0 +1,9 @@
+# Test fixtures gitleaks' default rules read as secrets (see .github/workflows/gitleaks.yml).
+# One fingerprint per finding: <commit>:<file>:<rule>:<line in that commit>.
+
+# A made-up authenticator secret (KQ7M4XZPABCD) in the second-step proof tests.
+09fbf6f239e2a2d0c9c89af505e9974d8d139e39:web/src/features/account/security.test.tsx:generic-api-key:162
+09fbf6f239e2a2d0c9c89af505e9974d8d139e39:web/src/features/account/security.test.tsx:generic-api-key:172
+
+# A PEM template around a key the test generates in memory; no key is committed.
+e2fb27b148d9a7e878b4a215362329dd42683a73:web/src/features/vault/forms/keyForms.test.tsx:private-key:168
