@@ -358,8 +358,13 @@ export async function emptyTrash(
 
 /** What to show for an item that has no readable name. */
 export function itemName(item: VaultItem): string {
-  const name = item.data?.name;
-  return typeof name === 'string' && name !== '' ? name : item.kind;
+  const data = item.data;
+  const name = data?.name;
+  if (typeof name === 'string' && name !== '') return name;
+  // The app's one-time codes and backup codes have no `name`: an issuer and account, a service.
+  const text = (key: string) => (typeof data?.[key] === 'string' ? (data[key] as string) : '');
+  const code = [text('issuer'), text('label')].filter((part) => part !== '').join(': ');
+  return code || text('serviceName') || item.kind;
 }
 
 export function loginOf(item: VaultItem): { username: string; password: string; urls: string[] } {
