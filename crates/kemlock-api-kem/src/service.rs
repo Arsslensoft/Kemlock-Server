@@ -57,6 +57,7 @@ where
         spaces,
     };
     let manifests = crate::routes::manifests::router(env.clone());
+    let placement = crate::routes::placement::router(env.clone());
     let items = crate::routes::items::router(env);
     type A<S, P, K> = Api<S, P, K>;
     Router::new()
@@ -123,5 +124,6 @@ where
         // The item routes answer with the nonce header themselves; the fallback stays the main
         // router's.
         .merge(items)
+        .merge(placement)
         .merge(manifests)
 }
