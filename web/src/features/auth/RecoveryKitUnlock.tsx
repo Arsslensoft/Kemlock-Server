@@ -7,7 +7,7 @@ import { useT } from '@/i18n';
 import { type Described, describeError } from '@/lib/errors';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
-import { type PieceCheck, checkPieces, unlockWithKit } from './kitUnlock';
+import { type PieceCheck, checkPieces, newestOnly, unlockWithKit } from './kitUnlock';
 
 const kitApi = createRecoveryKitApi(api);
 
@@ -107,12 +107,18 @@ export function RecoveryKitUnlock({
   const [scanning, setScanning] = useState<number | null>(null);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<Described | undefined>();
+  // One check at a time counts: the newest, so a slow answer about older text is dropped.
+  const newest = useRef(newestOnly());
+  // The text as typed, which a check that is still running must not be built on.
+  const typed = useRef(texts);
 
   async function enter(index: number, text: string) {
-    const next = texts.map((old, i) => (i === index ? text : old));
+    const next = typed.current.map((old, i) => (i === index ? text : old));
+    typed.current = next;
     setTexts(next);
     setFailure(undefined);
-    const result = await checkPieces(vaultCrypto, next);
+    const result = await newest.current(() => checkPieces(vaultCrypto, next));
+    if (!result) return;
     setChecks(result.each);
     setTogether(result.together);
   }

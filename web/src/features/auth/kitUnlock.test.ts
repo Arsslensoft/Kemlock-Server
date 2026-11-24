@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSession } from '@/app/session';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import { crypto as fake, fakeCalls, resetFakeCrypto } from '@/test/fake-crypto';
-import { checkPieces, unlockWithKit } from './kitUnlock';
+import { checkPieces, newestOnly, unlockWithKit } from './kitUnlock';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const piece = (n: number, id = 'FAKEKIT2', check = 'ABCD') => `BMCKIT1-${id}-23${n}-${'A'.repeat(52)}-${check}`;
@@ -70,5 +70,23 @@ describe('unlockWithKit', () => {
     expect(result).toEqual({ status: 'wrong' });
     expect(fakeCalls).not.toContain('unlockWithRoot');
     expect(session.getState().status).not.toBe('unlocked');
+  });
+});
+
+describe('newestOnly', () => {
+  it('drops the answer of a check that a newer one overtook', async () => {
+    const run = newestOnly();
+    let release: (value: string) => void = () => undefined;
+    const slow = run(() => new Promise<string>((resolve) => (release = resolve)));
+    const fast = run(async () => 'new');
+    expect(await fast).toBe('new');
+    release('old');
+    expect(await slow).toBeUndefined();
+  });
+
+  it('keeps the answer when nothing newer started', async () => {
+    const run = newestOnly();
+    expect(await run(async () => 'only')).toBe('only');
+    expect(await run(async () => 'next')).toBe('next');
   });
 });

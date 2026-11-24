@@ -89,3 +89,17 @@ export async function unlockWithKit(
   deps.session.unlocked();
   return { status: 'unlocked' };
 }
+
+/**
+ * Runs checks one after another from the typing, keeping only the newest: a check that was
+ * started before another and ends after it resolves to `undefined`, so a slow answer about
+ * what was typed a moment ago never overwrites the answer about what is there now.
+ */
+export function newestOnly() {
+  let latest = 0;
+  return async function run<T>(check: () => Promise<T>): Promise<T | undefined> {
+    const mine = ++latest;
+    const result = await check();
+    return mine === latest ? result : undefined;
+  };
+}
