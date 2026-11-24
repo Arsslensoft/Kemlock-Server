@@ -34,7 +34,13 @@ export function useRecoveryKit() {
         setMismatch(false);
         clearError();
       },
-      askProof: async () => (await run(() => kitApi.proofRequest().then(() => true))) === true,
+      // Mail may be off or out of reach: then an authenticator code or the recovery code is the
+      // proof, so a failed request is not an error on the screen.
+      askProof: () =>
+        kitApi
+          .proofRequest()
+          .then(() => true)
+          .catch(() => false),
       // The confirmation is the person typing a piece back; only then does the server get the kit.
       confirm: async (typed, proof) => {
         if (!making) return false;

@@ -93,3 +93,11 @@ describe('RecoveryKitCard', () => {
     expect(screen.getByText(/older key of your account/)).toBeInTheDocument();
   });
 });
+
+describe('RecoveryKitCard proof', () => {
+  it('tells the person an authenticator code or the recovery code works when no mail comes', async () => {
+    card({ kit: KIT });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Remove' }));
+    expect(screen.getByText(/authenticator app or your recovery code works too/)).toBeInTheDocument();
+  });
+});
