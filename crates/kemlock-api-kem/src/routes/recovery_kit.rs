@@ -189,7 +189,17 @@ where
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
     let request: ReplaceKitRequest = body.json()?;
-    let wrapped_key = decode("wrappedKey", &request.wrapped_key)?;
+    let new = NewKit {
+        kit_id: request.kit_id,
+        wrapped_key: decode("wrappedKey", &request.wrapped_key)?,
+        key_version: request.key_version,
+    };
+    // Everything that can be known to be wrong is said before the proof is spent.
+    let use_case = kits(&api, &repos);
+    use_case.check(authed.actor.user, &new).await?;
+    if use_case.show(authed.actor.user).await?.is_none() {
+        return Err(AppError::NotFound.into());
+    }
     require_proof(
         &api,
         &proof_steps(&api, repos.0.clone()),
@@ -197,16 +207,7 @@ where
         &request.proof,
     )
     .await?;
-    let kit = kits(&api, &repos)
-        .regenerate(
-            authed.actor.user,
-            NewKit {
-                kit_id: request.kit_id,
-                wrapped_key,
-                key_version: request.key_version,
-            },
-        )
-        .await?;
+    let kit = use_case.regenerate(authed.actor.user, new).await?;
     api.sessions()
         .record(
             "account.recovery_kit_regenerated",
@@ -231,6 +232,9 @@ where
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
     let request: ProofRequest = body.json()?;
+    if kits(&api, &repos).show(authed.actor.user).await?.is_none() {
+        return Err(AppError::NotFound.into());
+    }
     require_proof(
         &api,
         &proof_steps(&api, repos.0.clone()),

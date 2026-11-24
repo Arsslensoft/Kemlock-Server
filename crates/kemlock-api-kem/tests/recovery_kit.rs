@@ -438,3 +438,41 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
         .await;
     assert_eq!(by_app.status, StatusCode::NO_CONTENT, "{:?}", by_app.json());
 }
+
+#[tokio::test]
+async fn a_bad_replacement_or_a_missing_kit_does_not_spend_the_proof() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+
+    // No kit: removing and replacing say so, and the proof stays good.
+    let proof = rig.proof(&device, token).await;
+    let none = rig
+        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": proof})))
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+    let good = rig.kit_body(user).await;
+    let none = rig
+        .authed(&device, "PUT", KIT, token, Some(with(good.clone(), "proof", json!(proof))))
+        .await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(good.clone()))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED);
+
+    // A malformed replacement is refused before the proof is looked at.
+    let bad = with(rig.kit_body(user).await, "keyVersion", json!(99));
+    let refused = rig
+        .authed(&device, "PUT", KIT, token, Some(with(bad, "proof", json!(proof))))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+
+    // The same proof still works for a good one.
+    let next = rig.kit_body(user).await;
+    let replaced = rig
+        .authed(&device, "PUT", KIT, token, Some(with(next, "proof", json!(proof))))
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.json());
+}

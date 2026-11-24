@@ -98,6 +98,12 @@ where
         })
     }
 
+    /// Whether `new` would be kept, without keeping it: for a caller that wants to know before it
+    /// spends a proof.
+    pub async fn check(&self, user: UserId, new: &NewKit) -> Result<(), AppError> {
+        self.checked(&self.account(user).await?, new.clone()).map(|_| ())
+    }
+
     /// The account's kit, or `None`.
     pub async fn show(&self, user: UserId) -> Result<Option<KitView>, AppError> {
         let account = self.account(user).await?;
