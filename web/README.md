@@ -105,14 +105,16 @@ debug build reads `web/dist` from disk, which is the development override.
 
 ## What is not here yet
 
-Built and wired to the server: sign-in and setup, the vault with the item forms for logins and
+Built and wired to the server: sign-in (password, SSO, a passkey, an approval from another device,
+also from the unlock screen) and setup (with a security key or passkey), the vault with the item forms for logins and
 notes, the Trash, Sends, spaces, import and export, duplicates, health, devices and approvals,
 account security (an authenticator app, emergency contacts) and the admin console (users and
 invitations, event log, settings, SSO, migration, federation).
 
 Not built, or not working yet:
 
-- Sign-in with SSO, a passkey or an approval from a phone: the buttons are drawn, and say so.
+- Unlock with the Recovery Kit (2 of 3 pieces): the button is drawn and off. The server has no Recovery
+  Kit route and `docs/crypto.md` does not yet describe the pieces.
 - Passkeys, security keys, YubiKey, Duo, an emailed code and the Recovery Kit as second steps in
   Account security. The server serves them; the screens list them as "Later".
 - Items other than logins and notes open as read-only detail.

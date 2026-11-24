@@ -5,6 +5,7 @@ import { renderWithIntl } from '@/test/render';
 import { CodeForm } from '@/ui/CodeForm';
 import { PasswordForm } from './auth/PasswordForm';
 import { SetupAdminForm } from './setup/SetupAdmin';
+import { TwoStepChoice } from './setup/SetupTwoStep';
 import { SetupCodeForm } from './setup/SetupCode';
 import { SetupServerForm, defaultBasics } from './setup/SetupServer';
 import { LoginForm, NoteForm } from './vault/ItemForm';
@@ -84,9 +85,30 @@ describe('SetupAdminForm', () => {
     });
   });
 
-  it('offers the passkey option but keeps it off', () => {
-    renderWithIntl(<SetupAdminForm onSubmit={vi.fn()} />);
-    expect(screen.getByRole('checkbox', { name: /Add a passkey too/ })).toBeDisabled();
+  it('lets the passkey option be ticked, and says so on submit', async () => {
+    const onSubmit = vi.fn();
+    renderWithIntl(<SetupAdminForm onSubmit={onSubmit} />);
+    const user = userEvent.setup({ delay: null });
+    const box = screen.getByRole('checkbox', { name: /Add a passkey too/ });
+    expect(box).toBeEnabled();
+    expect(box).not.toBeChecked();
+    await user.click(box);
+    expect(box).toBeChecked();
+    await fill(user, 'a long enough password', 'a long enough password');
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    expect(onSubmit.mock.calls[0]?.[1]).toEqual({ passkey: true });
+  });
+});
+
+describe('TwoStepChoice', () => {
+  it('lets the security key be picked, and the app again', async () => {
+    const onChange = vi.fn();
+    renderWithIntl(<TwoStepChoice value="totp" onChange={onChange} />);
+    const key = screen.getByRole('radio', { name: /Security key/ });
+    expect(key).toBeEnabled();
+    expect(screen.getByRole('radio', { name: /Authenticator app/ })).toBeChecked();
+    await userEvent.setup({ delay: null }).click(key);
+    expect(onChange).toHaveBeenCalledWith('key');
   });
 });
 
