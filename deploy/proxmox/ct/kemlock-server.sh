@@ -82,10 +82,14 @@ update_deb_based() {
     systemctl start kemlock-server
     msg_ok "Started Service"
 
-    msg_info "Updating Caddy"
-    $STD apt update
-    $STD apt install -y --only-upgrade caddy
-    msg_ok "Updated Caddy"
+    # Only a Caddy that is on: one the admin turned off, for a proxy in front of the container,
+    # stays off.
+    if systemctl is-enabled --quiet caddy 2>/dev/null; then
+      msg_info "Updating Caddy"
+      $STD apt update
+      $STD apt install -y --only-upgrade caddy
+      msg_ok "Updated Caddy"
+    fi
     msg_ok "Updated successfully!"
   else
     msg_ok "${APP} is already up-to-date"
@@ -114,10 +118,14 @@ update_alpine() {
     rc-service kemlock-server start -q
     msg_ok "Started Service"
 
-    msg_info "Updating Caddy"
-    $STD apk -U upgrade caddy
-    rc-service caddy restart -q
-    msg_ok "Updated Caddy"
+    # Only a Caddy that is on: one the admin took out of the default runlevel, for a proxy in
+    # front of the container, stays off.
+    if rc-update show default 2>/dev/null | grep -qw caddy; then
+      msg_info "Updating Caddy"
+      $STD apk -U upgrade caddy
+      rc-service caddy restart -q
+      msg_ok "Updated Caddy"
+    fi
     msg_ok "Updated successfully!"
   else
     msg_ok "${APP} is already up-to-date"
