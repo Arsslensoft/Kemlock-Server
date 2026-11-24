@@ -181,7 +181,7 @@ impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
             match api.setup.pending() {
                 Some(pending) if pending == user => {}
                 Some(_) => return Err(AppError::Forbidden.into()),
-                None => return Err(kemlock_domain::SetupError::AlreadyDone.into()),
+                None => return Err(AppError::Setup(kemlock_domain::SetupError::AlreadyDone).into()),
             }
             let env = FnEnv(|name: &str| std::env::var(name).ok());
             let changes = without_env_set(changes, &env);

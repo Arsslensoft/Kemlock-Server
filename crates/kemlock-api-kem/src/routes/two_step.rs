@@ -40,7 +40,7 @@ use axum::{Extension, Json, Router};
 use kemlock_app::notices::{Notice, Notices, TwoStepChangedNotice};
 
 use kemlock_app::passkeys::ChallengeRepo;
-use kemlock_app::ports::{Clock, TokenSigner, TwoFactorMethod, TwoFactorRepo, UserRepo};
+use kemlock_app::ports::{Clock, TokenSigner, TwoFactorMethod, TwoFactorRepo};
 use kemlock_app::two_step::{
     Duo, DuoKeys, DuoStatus, NoDuo, NoYubico, ProtectedError, TwoStep, TwoStepInput,
     TwoStepSettings, TwoStepSignIn, Yubico,
@@ -517,7 +517,7 @@ where
         .await
         .map_err(AppError::from)?
         .iter()
-        .any(|row| row.enabled && row.method != own);
+        .any(|row| row.enabled);
     if other {
         return Err(AppError::Duplicate.into());
     }
