@@ -124,7 +124,7 @@
 
   "setup.server.title": "Server basics",
   "setup.server.lede": "The few things to choose before anyone else joins. All of it can change later in Server settings.",
-  "setup.server.notStored": "This server reads these settings from its configuration for now, not from this page. What you choose here is listed on the next page, so you can copy it into the configuration.",
+  "setup.server.notStored": "Who can join and the email server are saved by the server when you finish, and you can change them later in the admin Settings. The address, push, files and backups are read from the server's configuration for now; what you choose here is listed on the next page, so you can copy it into the configuration.",
   "setup.server.needsApi": "Needs the settings API, which the server doesn't have yet.",
   "setup.server.address": "Address",
   "setup.server.addressLabel": "Server address",
@@ -187,7 +187,7 @@
   "setup.done.backupsOn": "{every}, keep {keep}",
   "setup.done.on": "On",
   "setup.done.off": "Off",
-  "setup.done.configNote": "These choices aren't stored by the server yet. Copy them into its configuration.",
+  "setup.done.configNote": "Who can join and the email server are saved by the server. The address, push, files and backups aren't yet: copy them into its configuration.",
   "setup.done.kit.title": "Make a Recovery Kit",
   "setup.done.kit.body": "Nobody can reset your master password, not even you as admin. A Recovery Kit is your way back: 3 pieces, and any 2 of them open your vault. Print or save them, and keep each in a different place.",
   "setup.done.kit.make": "Make my Recovery Kit",

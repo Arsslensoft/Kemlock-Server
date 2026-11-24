@@ -13,6 +13,7 @@ import { placementApi, placementQuery } from './queries';
 
 function statusOf(server: PlacementServer): { label: MessageId; tone: 'on' | 'off' | 'idle' } {
   if (server.status === 'offline') return { label: 'failover.status.offline', tone: 'off' };
+  if (server.status === 'unknown') return { label: 'failover.status.unknown', tone: 'idle' };
   return server.inUse
     ? { label: 'failover.status.inUse', tone: 'on' }
     : { label: 'failover.status.online', tone: 'idle' };

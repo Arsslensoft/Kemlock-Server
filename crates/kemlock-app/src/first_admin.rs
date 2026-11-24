@@ -11,6 +11,9 @@ use crate::ports::StoreError;
 use kemlock_domain::{User, UserId};
 use std::future::Future;
 
+/// The `settings` key of the marker. `kemlock-cli reset-admin` deletes it to start over.
+pub const MARKER_KEY: &str = "first_admin";
+
 pub trait FirstAdminRepo: Send + Sync {
     /// Inserts `user` and the first-admin marker naming it, in one transaction. `Duplicate` when a
     /// marker already names an account that still exists, or when the id or the email is taken;

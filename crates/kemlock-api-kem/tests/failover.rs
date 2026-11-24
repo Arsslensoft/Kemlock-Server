@@ -25,6 +25,8 @@ use time::OffsetDateTime;
 #[derive(Default)]
 struct FakeView {
     vaults: HashMap<Owner, VaultServers>,
+    /// Vaults added once an account exists, whose id the test learns at sign-in.
+    late_vaults: Mutex<HashMap<Owner, VaultServers>>,
     siblings: Mutex<HashMap<Owner, Vec<SiblingSet>>>,
     replica_accounts: Mutex<HashSet<UserId>>,
     resolved: Mutex<Vec<(Owner, ItemId)>>,
@@ -34,7 +36,10 @@ struct FakeView {
 
 impl FederationView for FakeView {
     fn vault_servers(&self, vault: Owner) -> BoxFut<'_, Result<Option<VaultServers>, StoreError>> {
-        Box::pin(async move { Ok(self.vaults.get(&vault).cloned()) })
+        Box::pin(async move {
+            let late = self.late_vaults.lock().expect("lock").get(&vault).cloned();
+            Ok(self.vaults.get(&vault).cloned().or(late))
+        })
     }
 
     fn siblings(&self, owner: Owner) -> BoxFut<'_, Result<Vec<SiblingSet>, StoreError>> {
@@ -545,4 +550,77 @@ async fn the_device_key_routes_are_in_the_openapi_document() {
             "{method} {path} is documented"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// /placement
+
+#[tokio::test]
+async fn placement_lists_the_accounts_federated_vault_and_its_apps() {
+    let view = Arc::new(FakeView::default());
+    let (_app, client) = with_view(view.clone());
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let owner = owner_of(&session);
+    let mut servers = servers_of(owner, 1, None);
+    // The replica is the server answering: the test app's domain.
+    servers.servers[1].address = format!("{DOMAIN}/");
+    let replica = servers.servers[1].server.0.to_string();
+    view.late_vaults.lock().expect("lock").insert(owner, servers);
+
+    let reply = client
+        .get_authed("/kem/v1/placement", &session.access_token)
+        .await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    let json = reply.json();
+    let vault = &json["vaults"][0];
+    assert_eq!(vault["id"], "me");
+    assert_eq!(vault["servers"][0]["role"], "home");
+    assert_eq!(vault["servers"][0]["name"], "nas.example.org");
+    assert_eq!(vault["servers"][0]["status"], "unknown");
+    assert_eq!(vault["servers"][0]["inUse"], false);
+    assert_eq!(vault["servers"][1]["id"], replica);
+    assert_eq!(vault["servers"][1]["role"], "replica");
+    assert_eq!(vault["servers"][1]["inUse"], true);
+    assert!(vault["pending"].is_null());
+    // The device that signed in is an app of the vault, on the server answering.
+    assert!(
+        json["apps"]
+            .as_array()
+            .is_some_and(|apps| !apps.is_empty() && apps[0]["server"] == "kemlock.test")
+    );
+}
+
+#[tokio::test]
+async fn placement_is_not_found_without_federation_or_for_a_vault_that_is_not_federated() {
+    // No view at all.
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let reply = client
+        .get_authed("/kem/v1/placement", &session.access_token)
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+
+    // A view that holds none of the account's vaults.
+    let (_app, client) = with_view(Arc::new(FakeView::default()));
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let reply = client
+        .get_authed("/kem/v1/placement", &session.access_token)
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+
+    // It needs a signed-in account, and a waiting change is never there to cancel.
+    let anonymous = client.get("/kem/v1/placement").await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    let cancel = client
+        .send(
+            "DELETE",
+            "/kem/v1/placement/me/pending/c1",
+            Req {
+                access_token: Some(&session.access_token),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(cancel.status, StatusCode::NOT_FOUND);
 }

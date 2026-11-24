@@ -10,6 +10,7 @@ use axum::http::HeaderValue;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use axum::routing::{get, post};
+use kemlock_app::admin::SettingsRepo;
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::devices::DevicesStore;
 use kemlock_app::emergency::EmergencyRepo;
@@ -46,7 +47,7 @@ async fn not_found() -> Problem {
 /// segment that doesn't start with one is plain text.
 pub fn router<S, P, K, R>(api: Api<S, P, K>, spaces: R) -> Router
 where
-    S: Store + DevicesStore + EmergencyRepo + ManifestRepo + BwAccountRepo,
+    S: Store + DevicesStore + EmergencyRepo + ManifestRepo + BwAccountRepo + SettingsRepo,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + Clone + 'static,
@@ -56,6 +57,7 @@ where
         spaces,
     };
     let manifests = crate::routes::manifests::router(env.clone());
+    let placement = crate::routes::placement::router(env.clone());
     let items = crate::routes::items::router(env);
     type A<S, P, K> = Api<S, P, K>;
     Router::new()
@@ -122,5 +124,6 @@ where
         // The item routes answer with the nonce header themselves; the fallback stays the main
         // router's.
         .merge(items)
+        .merge(placement)
         .merge(manifests)
 }

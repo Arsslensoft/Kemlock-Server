@@ -15,6 +15,7 @@ pub(crate) mod items;
 pub(crate) mod manifests;
 pub(crate) mod new_device;
 pub(crate) mod passkeys;
+pub(crate) mod placement;
 pub(crate) mod policies;
 pub(crate) mod push;
 pub(crate) mod sends;

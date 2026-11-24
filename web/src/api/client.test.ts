@@ -86,6 +86,24 @@ describe('the public routes', () => {
     expect(init?.method).toBe('POST');
     expect(init?.body).toBe(JSON.stringify({ code: 'ABCD-EFGH-JKMN' }));
     expect(t.headersOf(0)['Content-Type']).toBe('application/json');
+
+  it('sends the server basics with setup finish, and nothing without them', async () => {
+    const t = setup([new Response(null, { status: 204 }), new Response(null, { status: 204 })], fresh);
+    const basics = {
+      join: 'domains',
+      joinDomains: 'example.org',
+      mailHost: 'smtp.example.org',
+      mailPort: '465',
+      mailSecurity: 'tls',
+      mailFrom: 'ops@example.org',
+      mailUser: 'ops',
+    } as const;
+    await t.api.setupFinish(basics);
+    await t.api.setupFinish();
+    expect(t.fetch.mock.calls[0]?.[0]).toBe('/kem/v1/setup/finish');
+    expect(t.fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ basics }));
+    expect(t.fetch.mock.calls[1]?.[1]?.body).toBeUndefined();
+  });
   });
 
   it('unwraps prelogin and methods', async () => {
