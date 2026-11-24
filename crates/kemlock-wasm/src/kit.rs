@@ -93,3 +93,63 @@ impl Session {
         self.insert(Slot::Root(Zeroizing::new(*root.as_bytes())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::Session;
+
+    #[test]
+    fn a_locked_session_makes_no_kit() {
+        assert_eq!(Session::new().kit_make().err(), Some(Error::Locked));
+    }
+
+    #[test]
+    fn a_wrap_that_does_not_open_leaves_no_handle() {
+        let (kit_id, _, pieces) = recovery_kit::make_kit(THRESHOLD, PIECES).expect("a kit");
+        let mut session = Session::new();
+        assert_eq!(
+            session.kit_open_root(&pieces[..2], &kit_id, &[1; 16], 1, &[0; 92]),
+            Err(Error::Invalid)
+        );
+        assert!(!session.is_unlocked());
+    }
+
+    #[test]
+    fn one_piece_or_another_kits_id_opens_nothing() {
+        let (kit_id, key, pieces) = recovery_kit::make_kit(THRESHOLD, PIECES).expect("a kit");
+        let root = kemlock_crypto::keys::RootKey::from_bytes(&[5; 64]);
+        let wrapped = recovery_kit::seal(&key, &kit_id, &root, &[1; 16], 1).expect("a wrap");
+        let mut session = Session::new();
+        assert_eq!(
+            session.kit_open_root(&pieces[..1], &kit_id, &[1; 16], 1, &wrapped),
+            Err(Error::Invalid)
+        );
+        assert_eq!(
+            session.kit_open_root(&pieces[..2], "AAAAAAAA", &[1; 16], 1, &wrapped),
+            Err(Error::Invalid)
+        );
+        assert!(
+            session
+                .kit_open_root(&[pieces[2].clone(), pieces[0].clone()], &kit_id, &[1; 16], 1, &wrapped)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_set_is_checked_for_typos_other_kits_and_repeats() {
+        let (_, _, one) = recovery_kit::make_kit(THRESHOLD, PIECES).expect("a kit");
+        let (_, _, two) = recovery_kit::make_kit(THRESHOLD, PIECES).expect("another");
+        assert_eq!(check_set(&one[..1]), Ok(()));
+        assert_eq!(check_set(&one[..2]), Ok(()));
+        assert_eq!(
+            check_set(&[one[0].clone(), two[1].clone()]),
+            Err(PieceProblem::OtherKit)
+        );
+        assert_eq!(
+            check_set(&[one[0].clone(), one[0].to_lowercase()]),
+            Err(PieceProblem::Duplicate)
+        );
+        assert_eq!(check_set(&["nonsense".to_owned()]), Err(PieceProblem::Format));
+    }
+}
