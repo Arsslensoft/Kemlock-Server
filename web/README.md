@@ -116,8 +116,10 @@ Not built, or not working yet:
 - Passkeys, security keys, YubiKey, Duo, an emailed code and the Recovery Kit as second steps in
   Account security. The server serves them; the screens list them as "Later".
 - Items other than logins and notes open as read-only detail.
-- First-run "Server basics" are kept in the browser and listed on the last setup screen; the
-  server does not take them there. They are set in the admin Settings.
+- First-run "Server basics": who can join and the email server are saved by the server when setup
+  finishes (as the admin Settings), and checked first. The address, push, file folder and backups
+  are not settings the server stores; the last setup screen lists them to copy into its
+  configuration.
 - Where each vault lives (`src/api/placement.ts`): the server has no placement route, so the
   failover banner and the storage page show nothing for a single server.
 

@@ -244,7 +244,15 @@ export default function SetupServer() {
     setPending(true);
     setError(undefined);
     try {
-      await api.setupFinish();
+      await api.setupFinish({
+        join: values.join,
+        joinDomains: values.joinDomains,
+        mailHost: values.mailHost,
+        mailPort: values.mailPort,
+        mailSecurity: values.mailSecurity,
+        mailFrom: values.mailFrom,
+        mailUser: values.mailUser,
+      });
       setupMemory.set({ basics: values });
       await queryClient.invalidateQueries({ queryKey: ['config'] });
       await navigate({ to: '/setup/done' });
