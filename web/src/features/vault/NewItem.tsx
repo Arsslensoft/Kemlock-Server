@@ -6,12 +6,13 @@ import { describeError } from '@/lib/errors';
 import type { LoginValues, NoteValues } from '@/lib/schemas';
 import { buttonClass } from '@/ui/Button';
 import { LoginForm, NoteForm } from './ItemForm';
+import { KEY_KINDS, KeyItemForm, isKeyKind } from './forms/KeyItemForm';
 import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
 import { type EditableKind, isEditable, kindLabel } from './kinds';
 import { type ItemData, type VaultItem, itemName, loginOf, noteOf } from './vault';
 import { readWebsites, writeWebsites } from './websites';
 
-const OTHER_KINDS = ['otp', 'backup-codes', 'card', 'identity', 'ssh-key', 'pgp-key', 'certificate', 'contact'];
+const OTHER_KINDS = ['otp', 'backup-codes', 'card', 'identity'];
 
 export function loginDefaults(item?: VaultItem): LoginValues {
   const login = item ? loginOf(item) : undefined;
@@ -126,14 +127,18 @@ export default function NewItem() {
       </nav>
       <div>
         <h1 className="page-title">
-          {editing ? t('newItem.editTitle') : t(kind === 'login' ? 'newItem.loginTitle' : 'newItem.noteTitle')}
+          {editing
+            ? t('newItem.editTitle')
+            : isKeyKind(kind)
+              ? t('newItem.titleOf', { kind: t(kindLabel(kind)) })
+              : t(kind === 'login' ? 'newItem.loginTitle' : 'newItem.noteTitle')}
         </h1>
         <p className="lede">{t('newItem.lede')}</p>
       </div>
 
       {editing ? null : (
         <div className="chips" role="group" aria-label={t('newItem.kind')}>
-          {(['login', 'note'] as const).map((option) => (
+          {(['login', 'note', ...KEY_KINDS] as const).map((option) => (
             <button
               key={option}
               type="button"
@@ -173,7 +178,20 @@ export default function NewItem() {
         </div>
       ) : null}
 
-      {kind === 'login' ? (
+      {isKeyKind(kind) ? (
+        <KeyItemForm
+          key={`${kind}-${item?.id ?? 'new'}`}
+          kind={kind}
+          item={item}
+          submitLabel={t('action.save')}
+          pending={save.isPending}
+          error={error}
+          onCancel={cancel}
+          onSave={(fields) =>
+            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+          }
+        />
+      ) : kind === 'login' ? (
         <LoginForm
           key={`login-${item?.id ?? 'new'}`}
           initial={loginDefaults(item)}

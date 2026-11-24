@@ -239,6 +239,11 @@ export interface SaveInput {
   collectionId?: string | undefined;
   /** The fields the form owns; other fields of `existing.data` survive. */
   fields: ItemData;
+  /**
+   * The item is an entry of the Kemlock app (a key or a contact): it carries its own `id`, the
+   * item's, and `addedAt` and `updatedAt` as epoch milliseconds, as the app reads them.
+   */
+  entry?: boolean;
 }
 
 /** Seals and stores one item. A new item is revision 1; an edit is the previous revision plus one. */
@@ -256,6 +261,12 @@ export async function saveItem(
     ...input.fields,
     updatedAt: (deps.now?.() ?? new Date()).toISOString(),
   };
+  if (input.entry) {
+    const at = (deps.now?.() ?? new Date()).getTime();
+    data['id'] = id;
+    data['addedAt'] = typeof data['addedAt'] === 'number' ? data['addedAt'] : at;
+    data['updatedAt'] = at;
+  }
   // A cleared optional field is removed, not kept as an empty string.
   for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
   const collectionId = existing?.collectionId ?? input.collectionId;
