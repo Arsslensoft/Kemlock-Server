@@ -289,6 +289,29 @@ async fn rotate_api_key<S: BwStore>(
     api_key_route(app, authed, body, true).await
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UserKeyIdData {
+    #[serde(alias = "UserKeyId")]
+    user_key_id: String,
+}
+
+async fn post_user_key_id<S: BwStore>(
+    State(app): State<App<S>>,
+    authed: Authed,
+    body: Bytes,
+) -> EmptyResult {
+    let data: UserKeyIdData = parse(&body)?;
+    // A malformed id fails as Vaultwarden's `KeyId` fails to deserialize: a 422.
+    if !account::is_key_id(&data.user_key_id) {
+        return Err(BwError::status(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Unprocessable Entity",
+        ));
+    }
+    empty(account::record_user_key_id(&app, authed.user.id, &data.user_key_id).await)
+}
+
 async fn known_device<S: BwStore>(State(app): State<App<S>>, headers: HeaderMap) -> JsonResult {
     // The email comes as unpadded base64url in `X-Request-Email`; padding some clients add is dropped.
     let email = header_text(&headers, "x-request-email")
@@ -671,6 +694,10 @@ pub fn router<S: BwStore>(app: App<S>) -> Router {
         .route("/api/accounts/profile", get(profile::<S>))
         .route("/api/accounts/api-key", post(post_api_key::<S>))
         .route("/api/accounts/rotate-api-key", post(rotate_api_key::<S>))
+        .route(
+            "/api/accounts/key-management/user-key-id",
+            post(post_user_key_id::<S>),
+        )
         .route("/api/devices/knowndevice", get(known_device::<S>))
         .route(
             "/api/two-factor/send-email-login",

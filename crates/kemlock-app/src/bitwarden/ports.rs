@@ -71,3 +71,23 @@ pub trait BwAccountRepo: Send + Sync {
         now_ms: i64,
     ) -> impl Future<Output = Result<i64, StoreError>> + Send;
 }
+
+/// The id of an account's user key: 32 lowercase hex digits, as Bitwarden's `KeyId`. Bitwarden
+/// clients from 2026.10 read it in `/api/sync` and report it once when the server holds none
+/// (`POST /api/accounts/key-management/user-key-id`).
+pub trait BwUserKeyIdRepo: Send + Sync {
+    /// The id, from the account's own record or, for an account moved from Vaultwarden, from
+    /// its imported row.
+    fn user_key_id(
+        &self,
+        user: UserId,
+    ) -> impl Future<Output = Result<Option<String>, StoreError>> + Send;
+
+    /// Records `key_id` unless the account has one already, in either place. `false` means it
+    /// has one and nothing was written.
+    fn put_user_key_id_if_absent(
+        &self,
+        user: UserId,
+        key_id: &str,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+}
