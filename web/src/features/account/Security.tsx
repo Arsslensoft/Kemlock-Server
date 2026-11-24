@@ -7,8 +7,9 @@ import { api, hostOf, session, configQuery } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { useT } from '@/i18n';
 import { vaultCrypto } from '@/crypto-port';
-import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
-import { createPasskey, passkeysAvailable } from '@/lib/passkey';
+import { decodeB64 } from '@/lib/b64url';
+import { passkeysAvailable } from '@/lib/passkey';
+import { registerPasskey } from '@/lib/webauthn';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
@@ -100,19 +101,9 @@ export default function Security() {
               passkeys: passkeys.data,
               busy: passkeyRun.pending,
               onAdd: () =>
-                void changePasskeys(async () => {
-                  const options = await passkeysApi.creationOptions();
-                  const made = await createPasskey(options);
-                  // With a PRF output the passkey also keeps a wrap of the root key, which opens
-                  // the vault at sign-in; without one it only proves who is asking.
-                  let prf: { wrappedKey: string; keyVersion: number } | undefined;
-                  if (made.prfOutput) {
-                    const wrap = await vaultCrypto.prfWrapRoot(made.prfOutput, made.credentialId);
-                    prf = { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
-                    wipe(made.prfOutput);
-                  }
-                  return passkeysApi.register(t('security.passkeys.defaultName'), made.credential, prf);
-                }),
+                void changePasskeys(() =>
+                  registerPasskey({ passkeys: passkeysApi, crypto: vaultCrypto }, t('security.passkeys.defaultName')),
+                ),
               onRemove: (id) => void changePasskeys(() => passkeysApi.remove(id).then(() => true)),
             }
           : undefined
