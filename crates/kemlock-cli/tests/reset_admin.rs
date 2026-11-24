@@ -16,7 +16,7 @@ const SERVER_KEY: &str = "070707070707070707070707070707070707070707070707070707
 fn url(data: &Path) -> String {
     format!(
         "sqlite://{}?mode=rwc",
-        data.join("kemlock.db").to_string_lossy().replace('\', "/")
+        data.join("kemlock.db").to_string_lossy().replace('\\', "/")
     )
 }
 
