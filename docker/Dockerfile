@@ -73,6 +73,12 @@ RUN --mount=type=bind,source=.,target=/src,rw \
       echo "web/ has not landed: building the API without the web vault" >&2; \
     fi
 
+# Only the built web vault (web/dist, its WebAssembly included), for the release's native builds,
+# which embed it without building Rust to WebAssembly themselves:
+#   docker build --target web-out --output web/dist -f docker/Dockerfile .
+FROM scratch AS web-out
+COPY --from=web /out/ /
+
 # ---------------------------------------------------------------------------------------------
 # The C and Rust toolchain: Zig pinned by checksum, cargo-zigbuild pinned by version.
 # ---------------------------------------------------------------------------------------------
