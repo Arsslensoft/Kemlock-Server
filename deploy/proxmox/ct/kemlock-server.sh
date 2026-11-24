@@ -82,10 +82,14 @@ update_deb_based() {
     systemctl start kemlock-server
     msg_ok "Started Service"
 
-    msg_info "Updating Caddy"
-    $STD apt update
-    $STD apt install -y --only-upgrade caddy
-    msg_ok "Updated Caddy"
+    # Only a Caddy that is on: one the admin turned off, for a proxy in front of the container,
+    # stays off.
+    if systemctl is-enabled --quiet caddy 2>/dev/null; then
+      msg_info "Updating Caddy"
+      $STD apt update
+      $STD apt install -y --only-upgrade caddy
+      msg_ok "Updated Caddy"
+    fi
     msg_ok "Updated successfully!"
   else
     msg_ok "${APP} is already up-to-date"
@@ -114,10 +118,14 @@ update_alpine() {
     rc-service kemlock-server start -q
     msg_ok "Started Service"
 
-    msg_info "Updating Caddy"
-    $STD apk -U upgrade caddy
-    rc-service caddy restart -q
-    msg_ok "Updated Caddy"
+    # Only a Caddy that is on: one the admin took out of the default runlevel, for a proxy in
+    # front of the container, stays off.
+    if rc-update show default 2>/dev/null | grep -qw caddy; then
+      msg_info "Updating Caddy"
+      $STD apk -U upgrade caddy
+      rc-service caddy restart -q
+      msg_ok "Updated Caddy"
+    fi
     msg_ok "Updated successfully!"
   else
     msg_ok "${APP} is already up-to-date"
@@ -140,9 +148,24 @@ msg_ok "Completed successfully!\n"
 echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
 echo -e "${INFO}${YW}Access it using the following URL:${CL}"
 echo -e "${TAB}${GATEWAY}${BGN}https://${IP}:8443${CL}"
-echo -e "${INFO}${YW}The certificate is self-signed, so the browser warns once. First start prints a one-time setup code:${CL}"
+echo -e "${INFO}${YW}The certificate is self-signed, so the browser warns once.${CL}"
+# The setup code, read from the container's log: the first start logs it a moment after it listens.
 if [[ "${var_os:-}" == "alpine" ]]; then
-  echo -e "${TAB}${BGN}grep -i 'setup code' /var/log/kemlock-server.log${CL}"
+  log_cmd="cat /var/log/kemlock-server.log"
 else
-  echo -e "${TAB}${BGN}journalctl -u kemlock-server | grep -i 'setup code'${CL}"
+  log_cmd="journalctl -u kemlock-server -o cat --no-pager"
 fi
+setup_code=""
+for _ in $(seq 1 30); do
+  setup_code=$(pct exec "$CTID" -- sh -c "$log_cmd" 2>/dev/null |
+    grep -oE 'setup code [0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}' | tail -n 1 | awk '{print $3}')
+  [[ -n "$setup_code" ]] && break
+  sleep 1
+done
+if [[ -n "$setup_code" ]]; then
+  echo -e "${INFO}${YW}The one-time setup code (the setup page asks for it):${CL} ${BGN}${setup_code}${CL}"
+else
+  echo -e "${INFO}${YW}No setup code in the log yet; read it in the container with:${CL}"
+fi
+echo -e "${TAB}${YW}A restart makes a new code until the first admin exists. Read the current one in the container with:${CL}"
+echo -e "${TAB}${BGN}${log_cmd} | grep -i 'setup code' | tail -n 1${CL}"

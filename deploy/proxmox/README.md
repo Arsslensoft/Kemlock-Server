@@ -83,14 +83,14 @@ Caddyfile, or reserve an address for it.
 ## The setup code
 
 There is no admin token. On its first start the server logs a one-time setup code, and its setup
-page asks for it before it creates the first admin account. In the container:
+page asks for it before it creates the first admin account. The script prints the code when it
+finishes. The code is valid until the server restarts: a restart before setup (after editing
+`.env`, say) makes a new one, so read the latest in the container:
 
 ```bash
-journalctl -u kemlock-server | grep -i 'setup code'            # Debian
-grep -i 'setup code' /var/log/kemlock-server.log                # Alpine
+journalctl -u kemlock-server -o cat | grep -i 'setup code' | tail -n 1   # Debian
+grep -i 'setup code' /var/log/kemlock-server.log | tail -n 1           # Alpine
 ```
-
-The code is valid until the server restarts; a restart before setup makes a new one.
 
 ## Update
 
