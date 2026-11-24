@@ -125,7 +125,6 @@ export function VaultShell() {
           <Link to="/about" activeOptions={{ exact: true }}>
             <Item icon="info">{t('about.link')}</Item>
           </Link>
-          <SourceLink icon />
           {state.admin ? (
             <Link to="/admin" activeOptions={{ exact: true }}>
             <Item icon="server">{t('nav.admin')}</Item>
