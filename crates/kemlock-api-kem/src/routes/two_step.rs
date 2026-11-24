@@ -615,6 +615,8 @@ where
 {
     let request: EmailConfirmRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
+    // Another method may have been turned on since the code was asked for.
+    refuse_while_on(&api, authed.actor.user).await?;
     two_step_of(&api, &runtime)
         .email_confirm(authed.actor.user, &request.address, &request.code)
         .await?;
