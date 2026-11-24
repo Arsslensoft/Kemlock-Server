@@ -60,28 +60,37 @@
   // Whether `text` is exactly an extension's redirect address that the admin named: https, the
   // Chromium or Firefox host of an id on the list, the path / or /sso, and nothing else. Anything
   // else, an unlisted id included, gets no answer, so another extension can't read it.
-  function redirectAllowed(text) {
+  // The address is rebuilt from the list's own id, host and path, never the caller's text, so
+  // nothing the caller wrote reaches the redirect. `null` for anything else.
+  function redirectTarget(text) {
     var url;
     try {
       url = new URL(text);
     } catch (e) {
-      return false;
+      return null;
     }
-    if (url.href !== text || url.protocol !== 'https:') return false;
-    if (url.username || url.password || url.port || url.search || url.hash) return false;
-    if (REDIRECT_PATHS.indexOf(url.pathname) < 0) return false;
+    if (url.href !== text || url.protocol !== 'https:') return null;
+    if (url.username || url.password || url.port || url.search || url.hash) return null;
+    var path = REDIRECT_PATHS[REDIRECT_PATHS.indexOf(url.pathname)];
+    if (path === undefined) return null;
     var host = url.hostname;
-    var label = null;
-    if (host.endsWith(CHROMIUM_HOST)) label = host.slice(0, -CHROMIUM_HOST.length);
-    else if (host.endsWith(FIREFOX_HOST)) label = host.slice(0, -FIREFOX_HOST.length);
-    return label !== null && allowed.indexOf(label) >= 0;
+    var suffix = null;
+    if (host.endsWith(CHROMIUM_HOST)) suffix = CHROMIUM_HOST;
+    else if (host.endsWith(FIREFOX_HOST)) suffix = FIREFOX_HOST;
+    if (suffix === null) return null;
+    var id = allowed[allowed.indexOf(host.slice(0, -suffix.length))];
+    if (id === undefined) return null;
+    return 'https://' + id + suffix + path;
   }
 
   // Where the answer goes: a redirect on the allowlist, else the opener when it is an allowlisted
   // Chromium extension. `null` when the caller named neither, or one that isn't allowed.
   function deliveryOf(params) {
     var redirect = params.get('redirect');
-    if (redirect !== null) return redirectAllowed(redirect) ? { redirect: redirect } : null;
+    if (redirect !== null) {
+      var target = redirectTarget(redirect);
+      return target === null ? null : { redirect: target };
+    }
     var id = params.get('extension');
     if (id && allowed.indexOf(id) >= 0 && window.opener) return { origin: 'chrome-extension://' + id };
     return null;
@@ -146,7 +155,7 @@
     var body = Object.assign({ state: state }, payload);
     if (delivery.redirect) {
       var text = encode(new TextEncoder().encode(JSON.stringify(body)));
-      window.location.replace(delivery.redirect + '#result=' + text + (state ? '&state=' + state : ''));
+      window.location.replace(delivery.redirect + '#result=' + text + (state ? '&state=' + encodeURIComponent(state) : ''));
       return;
     }
     window.opener.postMessage({ type: 'kemlock-webauthn', body: body }, delivery.origin);
