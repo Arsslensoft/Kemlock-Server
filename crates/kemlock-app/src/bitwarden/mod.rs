@@ -6,4 +6,4 @@ pub mod orgs;
 pub mod ports;
 
 pub use orgs::BwOrgStore;
-pub use ports::{BwAccount, BwAccountRepo};
+pub use ports::{BwAccount, BwAccountRepo, BwUserKeyIdRepo};

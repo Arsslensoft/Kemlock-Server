@@ -12,7 +12,7 @@ use kemlock_app::admin::{InviteGate, InviteTicket};
 use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::ports::{StoreError, TwoFactorRepo, UserRepo};
 use kemlock_crypto::hash;
-use kemlock_domain::{AccountMode, Email, KdfParams, Role, User};
+use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -240,7 +240,12 @@ pub(crate) async fn profile_json<S: BwStore>(
 }
 
 /// `userDecryption` in `/api/sync` (camelCase here; the token answer's copy is PascalCase).
-pub(crate) fn user_decryption_json(user: &User, account: &BwAccount) -> Value {
+/// `userKeyId` is left out while the server holds none, as in Vaultwarden.
+pub(crate) fn user_decryption_json(
+    user: &User,
+    account: &BwAccount,
+    key_id: Option<&str>,
+) -> Value {
     let unlock = if account.password_hash.is_empty() {
         Value::Null
     } else {
@@ -256,10 +261,32 @@ pub(crate) fn user_decryption_json(user: &User, account: &BwAccount) -> Value {
             "salt": user.email.as_str()
         })
     };
-    json!({
-        "masterPasswordUnlock": unlock,
-        "userKeyId": null,
-    })
+    let mut out = json!({ "masterPasswordUnlock": unlock });
+    if let Some(key_id) = key_id {
+        out["userKeyId"] = json!(key_id);
+    }
+    out
+}
+
+/// Whether `key_id` is a Bitwarden `KeyId`: 32 lowercase hex digits.
+pub(crate) fn is_key_id(key_id: &str) -> bool {
+    key_id.len() == 32
+        && key_id
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// `POST /api/accounts/key-management/user-key-id`: records the id of the account's user key,
+/// once. Afterwards only a key rotation would change it, so a second report is refused.
+pub(crate) async fn record_user_key_id<S: BwStore>(
+    app: &App<S>,
+    user: UserId,
+    key_id: &str,
+) -> BwResult<()> {
+    if !app.store.put_user_key_id_if_absent(user, key_id).await? {
+        return Err(BwError::msg("User key id is already set."));
+    }
+    app.touch(user).await
 }
 
 /// What a registration request says, in either of the two shapes clients send.

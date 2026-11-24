@@ -12,6 +12,7 @@ pub(crate) mod bw_accounts;
 pub(crate) mod bw_attachments;
 pub(crate) mod bw_devices;
 pub(crate) mod bw_docs;
+pub(crate) mod bw_user_key_ids;
 pub(crate) mod changes;
 pub(crate) mod dedup_owners;
 pub(crate) mod device_api_use;

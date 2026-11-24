@@ -355,6 +355,7 @@ pub(crate) async fn sync<S: BwStore>(
     ciphers.extend(org_parts.ciphers);
     let domains = crate::domains::sync_json(app, authed, exclude_domains).await?;
     let sends = crate::sends::sync_json(app, user).await?;
+    let key_id = kemlock_app::bitwarden::BwUserKeyIdRepo::user_key_id(&app.store, user).await?;
     Ok(json!({
         "profile": profile_json(app, &authed.user, &authed.account).await?,
         "folders": folders,
@@ -364,7 +365,7 @@ pub(crate) async fn sync<S: BwStore>(
         "ciphers": ciphers,
         "domains": domains,
         "sends": sends,
-        "userDecryption": user_decryption_json(&authed.user, &authed.account),
+        "userDecryption": user_decryption_json(&authed.user, &authed.account, key_id.as_deref()),
         "object": "sync",
     }))
 }

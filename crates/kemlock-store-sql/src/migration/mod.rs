@@ -43,6 +43,7 @@ mod m20261126_020001_two_step_version;
 mod m20261126_030001_pending_changes;
 mod m20261126_040001_federation_insight;
 mod m20261127_030001_space_recovery_boxes;
+mod m20261128_010001_bw_user_key_ids;
 
 use sea_orm_migration::prelude::*;
 
@@ -91,6 +92,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261126_030001_pending_changes::Migration),
             Box::new(m20261126_040001_federation_insight::Migration),
             Box::new(m20261127_030001_space_recovery_boxes::Migration),
+            Box::new(m20261128_010001_bw_user_key_ids::Migration),
         ]
     }
 }

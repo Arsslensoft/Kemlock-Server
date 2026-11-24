@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use kemlock_app::api_use::ApiUseRepo;
-use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwOrgStore};
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwOrgStore, BwUserKeyIdRepo};
 use kemlock_app::bw_events::{BwDeviceRepo, BwEvents, BwRelay};
 use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::event_reader::EventReader;
@@ -44,6 +44,7 @@ pub trait BwStore:
     + TwoFactorRepo
     + ItemStore
     + BwAccountRepo
+    + BwUserKeyIdRepo
     + BwDeviceRepo
     + ApiUseRepo
     + ChallengeRepo
@@ -66,6 +67,7 @@ impl<T> BwStore for T where
         + TwoFactorRepo
         + ItemStore
         + BwAccountRepo
+        + BwUserKeyIdRepo
         + BwDeviceRepo
         + ApiUseRepo
         + ChallengeRepo
