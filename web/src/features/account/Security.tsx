@@ -14,6 +14,7 @@ import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
 import { confirmEmergencyContact } from './emergencyModel';
+import { useRecoveryKit } from './useRecoveryKit';
 import { useRun } from './useRun';
 import { useSecondSteps } from './useSecondSteps';
 import { SecurityView, type TotpState } from './SecurityView';
@@ -41,6 +42,7 @@ export default function Security() {
   const totpRun = useRun();
   const { run, pending, error } = useRun();
   const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes);
+  const recoveryKit = useRecoveryKit();
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
 
@@ -77,9 +79,10 @@ export default function Security() {
       host={hostOf(config.data?.domain)}
       methods={methods}
       totp={totp}
-      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy}
-      error={error ?? passkeyRun.error ?? secondSteps.error}
+      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy || recoveryKit.props.busy}
+      error={error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error}
       secondSteps={secondSteps.props}
+      recoveryKit={recoveryKit.props}
       totpError={totpRun.error}
       onStartTotp={() => {
         setTotp({ open: true, enrol: undefined });
