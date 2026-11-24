@@ -259,7 +259,10 @@ with a `SHA256SUMS` file, one cosign bundle per file, SLSA provenance and the SB
 | Level | Targets |
 |---|---|
 | First class | `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `armv7-unknown-linux-musleabihf`, `arm-unknown-linux-musleabihf` (ARMv6) |
-| Best effort | `i686`, `powerpc64le`, `s390x`, `riscv64gc` on Linux musl; `x86_64-unknown-freebsd`; `aarch64-apple-darwin`, `x86_64-apple-darwin`; `x86_64-pc-windows-msvc` |
+| Best effort | `i686`, `powerpc64le`, `riscv64gc` on Linux musl; `x86_64-unknown-freebsd`; `aarch64-apple-darwin`, `x86_64-apple-darwin`; `x86_64-pc-windows-msvc` |
+
+There is no `s390x` build: Rust ships no prebuilt standard library for `s390x-unknown-linux-musl`
+(a Tier 3 target), and building one needs a nightly toolchain.
 
 ## Reverse proxies
 

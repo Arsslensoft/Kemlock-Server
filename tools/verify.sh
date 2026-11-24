@@ -54,9 +54,8 @@ case "$arch" in
   armv6)   platform=linux/arm/v6;  dir=linux_arm_v6;  target=arm-unknown-linux-musleabihf ;;
   386)     platform=linux/386;     dir=linux_386;     target=i686-unknown-linux-musl ;;
   ppc64le) platform=linux/ppc64le; dir=linux_ppc64le; target=powerpc64le-unknown-linux-musl ;;
-  s390x)   platform=linux/s390x;   dir=linux_s390x;   target=s390x-unknown-linux-musl ;;
   riscv64) platform=linux/riscv64; dir=linux_riscv64; target=riscv64gc-unknown-linux-musl ;;
-  *) die "unknown --arch $arch (amd64, arm64, armv7, armv6, 386, ppc64le, s390x, riscv64)" ;;
+  *) die "unknown --arch $arch (amd64, arm64, armv7, armv6, 386, ppc64le, riscv64)" ;;
 esac
 
 for tool in docker git curl tar sha256sum; do

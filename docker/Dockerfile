@@ -7,8 +7,9 @@
 #
 # Why cargo-zigbuild. aws-lc-rs compiles C and assembly (aws-lc-sys), so a musl build needs a C
 # cross toolchain for every target. Zig's `zig cc` is one pinned download that targets musl on
-# amd64, arm64, arm/v7, arm/v6, 386, ppc64le, s390x and riscv64 from one build host, with its own
-# musl and no sysroots to install. The alternatives were musl.cc or distro cross-gcc packages (one
+# amd64, arm64, arm/v7, arm/v6, 386, ppc64le and riscv64 from one build host, with its own musl
+# and no sysroots to install. (Not s390x: Rust ships no prebuilt standard library for
+# s390x-unknown-linux-musl, a Tier 3 target, and building one needs nightly.) The alternatives were musl.cc or distro cross-gcc packages (one
 # toolchain per architecture, unpinned apt packages, so builds drift) and building each
 # architecture under QEMU (about ten times slower, and no better pinned). The builder runs on the
 # build platform, so nothing here runs under emulation; QEMU is used only to start the finished
@@ -126,7 +127,6 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
       armv6)    rust_target=arm-unknown-linux-musleabihf ;; \
       386)      rust_target=i686-unknown-linux-musl ;; \
       ppc64le)  rust_target=powerpc64le-unknown-linux-musl ;; \
-      s390x)    rust_target=s390x-unknown-linux-musl ;; \
       riscv64)  rust_target=riscv64gc-unknown-linux-musl ;; \
       *) echo "no Rust target for ${TARGETARCH}${TARGETVARIANT}" >&2; exit 1 ;; \
     esac; \
