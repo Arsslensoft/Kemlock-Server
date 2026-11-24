@@ -1,0 +1,355 @@
+//! The Recovery Kit routes through the router, in-process, with a real DPoP client: the record the
+//! server keeps, and the fresh proof replacing or removing it takes.
+
+mod common;
+#[path = "../../kemlock-app/tests/passkey_fakes/mod.rs"]
+mod passkey_fakes;
+
+use axum::Router;
+use axum::http::StatusCode;
+use common::{App, Client, Reply, Req, Session, register_and_sign_in};
+use kemlock_api_kem::testing::DpopSigner;
+use kemlock_api_kem::{RecoveryKitApiDoc, recovery_kit_router};
+use kemlock_app::notices::{BoxFuture, Notice, Outbox};
+use kemlock_app::passkeys::{ChallengeKind, ChallengeRepo};
+use kemlock_app::ports::{StoreError, UserRepo};
+use kemlock_app::recovery_kit::RecoveryKitRepo;
+use kemlock_crypto::recovery_kit::{WRAPPED_LEN, make_kit};
+use kemlock_domain::{RecoveryKit, UserId};
+use passkey_fakes::FakePasskeys;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use time::OffsetDateTime;
+use utoipa::OpenApi;
+
+const EMAIL: &str = "sam@example.org";
+const KIT: &str = "/kem/v1/account/recovery-kit";
+const PROOF: &str = "/kem/v1/account/two-factor/proof";
+
+/// The mailed proofs.
+#[derive(Clone, Default)]
+struct Mailbox(Arc<Mutex<Vec<String>>>);
+
+impl Outbox for Mailbox {
+    fn deliver(&self, notice: Notice) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            if let Notice::ProtectedAction(p) = notice {
+                self.0.lock().expect("the lock").push(p.code.clone());
+            }
+        })
+    }
+}
+
+impl Mailbox {
+    fn last_proof(&self) -> String {
+        self.0
+            .lock()
+            .expect("the lock")
+            .last()
+            .cloned()
+            .expect("a proof was mailed")
+    }
+}
+
+/// The challenge store of the passkey fakes, and the kits in a map.
+#[derive(Clone, Default)]
+struct Repos {
+    challenges: FakePasskeys,
+    kits: Arc<Mutex<HashMap<UserId, RecoveryKit>>>,
+}
+
+impl ChallengeRepo for Repos {
+    async fn put_challenge(
+        &self,
+        user: UserId,
+        kind: ChallengeKind,
+        state: &[u8],
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.challenges
+            .put_challenge(user, kind, state, expires_at)
+            .await
+    }
+
+    async fn take_challenge(
+        &self,
+        user: UserId,
+        kind: ChallengeKind,
+        now: OffsetDateTime,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        self.challenges.take_challenge(user, kind, now).await
+    }
+
+    async fn purge_challenges(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
+        self.challenges.purge_challenges(before).await
+    }
+}
+
+impl RecoveryKitRepo for Repos {
+    async fn recovery_kit(&self, user: UserId) -> Result<Option<RecoveryKit>, StoreError> {
+        Ok(self.kits.lock().expect("the lock").get(&user).cloned())
+    }
+
+    async fn insert_recovery_kit(
+        &self,
+        user: UserId,
+        kit: &RecoveryKit,
+    ) -> Result<bool, StoreError> {
+        let mut kits = self.kits.lock().expect("the lock");
+        if kits.contains_key(&user) {
+            return Ok(false);
+        }
+        kits.insert(user, kit.clone());
+        Ok(true)
+    }
+
+    async fn replace_recovery_kit(
+        &self,
+        user: UserId,
+        kit: &RecoveryKit,
+    ) -> Result<bool, StoreError> {
+        let mut kits = self.kits.lock().expect("the lock");
+        Ok(kits.insert(user, kit.clone()).is_some())
+    }
+
+    async fn remove_recovery_kit(&self, user: UserId) -> Result<bool, StoreError> {
+        Ok(self.kits.lock().expect("the lock").remove(&user).is_some())
+    }
+}
+
+struct Rig {
+    app: App,
+    router: Router,
+    mailbox: Mailbox,
+    calls: AtomicUsize,
+}
+
+fn rig() -> Rig {
+    let mailbox = Mailbox::default();
+    let app = App::mailing(true, Arc::new(mailbox.clone()));
+    let router = app
+        .router
+        .clone()
+        .merge(recovery_kit_router(app.api.clone(), Repos::default()));
+    Rig {
+        app,
+        router,
+        mailbox,
+        calls: AtomicUsize::new(0),
+    }
+}
+
+impl Rig {
+    async fn plain(&self) -> (Client, Session, UserId) {
+        let device = Client::new(
+            self.router.clone(),
+            self.app.clock.clone(),
+            DpopSigner::es256(),
+        );
+        let session = register_and_sign_in(&device, EMAIL).await;
+        let user = UserId(uuid::Uuid::parse_str(&session.user_id).expect("a UUID"));
+        (device, session, user)
+    }
+
+    async fn authed(
+        &self,
+        client: &Client,
+        method: &str,
+        uri: &str,
+        token: &str,
+        body: Option<Value>,
+    ) -> Reply {
+        let n = self.calls.fetch_add(1, Ordering::Relaxed);
+        let peer = SocketAddr::from((
+            [
+                10,
+                4,
+                u8::try_from(n / 250).unwrap_or(0),
+                u8::try_from(n % 250).unwrap_or(0) + 1,
+            ],
+            40_000,
+        ));
+        client
+            .send(
+                method,
+                uri,
+                Req {
+                    access_token: Some(token),
+                    body,
+                    peer: Some(peer),
+                    ..Req::default()
+                },
+            )
+            .await
+    }
+
+    /// A kit the way the key worker makes one, but with a wrap of the right length that no one
+    /// opens: the server never looks inside.
+    async fn kit_body(&self, user: UserId) -> Value {
+        let (kit_id, _, _) = make_kit(2, 3).expect("a kit");
+        let account = self
+            .app
+            .store
+            .by_id(user)
+            .await
+            .expect("the store")
+            .expect("the account");
+        json!({
+            "kitId": kit_id,
+            "keyVersion": account.key_version,
+            "wrappedKey": kemlock_app::b64url::encode(&vec![7u8; WRAPPED_LEN]),
+        })
+    }
+
+    async fn proof(&self, device: &Client, token: &str) -> String {
+        let asked = self.authed(device, "POST", PROOF, token, None).await;
+        assert_eq!(asked.status, StatusCode::NO_CONTENT, "{:?}", asked.json());
+        self.mailbox.last_proof()
+    }
+
+    fn actions(&self) -> Vec<&'static str> {
+        self.app.store.events().iter().map(|e| e.action).collect()
+    }
+}
+
+fn with(mut body: Value, key: &str, value: Value) -> Value {
+    body[key] = value;
+    body
+}
+
+#[tokio::test]
+async fn a_kit_is_made_read_replaced_with_a_proof_and_removed_with_a_proof() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+
+    let none = rig.authed(&device, "GET", KIT, token, None).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+
+    let first = rig.kit_body(user).await;
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(first.clone()))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
+    let shown = rig.authed(&device, "GET", KIT, token, None).await;
+    let shown = shown.json();
+    assert_eq!(shown["kitId"], first["kitId"]);
+    assert_eq!(shown["wrappedKey"], first["wrappedKey"]);
+    assert_eq!(shown["threshold"], 2);
+    assert_eq!(shown["shares"], 3);
+    assert_eq!(shown["current"], true);
+    assert!(shown["createdAt"].is_string());
+    assert!(rig.actions().contains(&"account.recovery_kit_created"));
+
+    let again = rig
+        .authed(&device, "POST", KIT, token, Some(rig.kit_body(user).await))
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "one kit at a time");
+
+    // Replacing needs a proof.
+    let second = rig.kit_body(user).await;
+    let bare = rig
+        .authed(&device, "PUT", KIT, token, Some(second.clone()))
+        .await;
+    assert!(bare.status.is_client_error(), "no proof: {:?}", bare.status);
+    let guess = rig
+        .authed(
+            &device,
+            "PUT",
+            KIT,
+            token,
+            Some(with(second.clone(), "proof", json!("123456"))),
+        )
+        .await;
+    assert_eq!(guess.status, StatusCode::BAD_REQUEST);
+    let shown = rig.authed(&device, "GET", KIT, token, None).await.json();
+    assert_eq!(shown["kitId"], first["kitId"], "the old kit is untouched");
+
+    let proof = rig.proof(&device, token).await;
+    let replaced = rig
+        .authed(
+            &device,
+            "PUT",
+            KIT,
+            token,
+            Some(with(second.clone(), "proof", json!(proof))),
+        )
+        .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{:?}", replaced.json());
+    let shown = rig.authed(&device, "GET", KIT, token, None).await.json();
+    assert_eq!(shown["kitId"], second["kitId"], "the old pieces are out");
+    assert!(rig.actions().contains(&"account.recovery_kit_regenerated"));
+
+    // Removing needs one too, and a proof is good once.
+    let bare = rig.authed(&device, "DELETE", KIT, token, None).await;
+    assert!(bare.status.is_client_error(), "no proof: {:?}", bare.status);
+    let spent = rig
+        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": proof})))
+        .await;
+    assert_eq!(spent.status, StatusCode::BAD_REQUEST, "a proof is good once");
+    let proof = rig.proof(&device, token).await;
+    let removed = rig
+        .authed(&device, "DELETE", KIT, token, Some(json!({"proof": proof})))
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.json());
+    let gone = rig.authed(&device, "GET", KIT, token, None).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    assert!(rig.actions().contains(&"account.recovery_kit_removed"));
+}
+
+#[tokio::test]
+async fn a_malformed_kit_is_refused_and_nothing_is_kept() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let good = rig.kit_body(user).await;
+
+    for (name, body) in [
+        ("an id that is not base32", with(good.clone(), "kitId", json!("abc"))),
+        (
+            "a short wrap",
+            with(
+                good.clone(),
+                "wrappedKey",
+                json!(kemlock_app::b64url::encode(&[1u8; 20])),
+            ),
+        ),
+        (
+            "another key version than the account's",
+            with(good.clone(), "keyVersion", json!(99)),
+        ),
+    ] {
+        let reply = rig.authed(&device, "POST", KIT, token, Some(body)).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{name}: {:?}", reply.json());
+    }
+    let none = rig.authed(&device, "GET", KIT, token, None).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_routes_need_a_session_and_are_in_the_openapi_document() {
+    let rig = rig();
+    let anonymous = Client::new(
+        rig.router.clone(),
+        rig.app.clock.clone(),
+        DpopSigner::es256(),
+    );
+    let reply = anonymous
+        .send("GET", KIT, Req::default())
+        .await;
+    assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+
+    let document = serde_json::to_value(RecoveryKitApiDoc::openapi()).expect("a document");
+    let methods: Vec<&str> = document["paths"][KIT]
+        .as_object()
+        .expect("the path")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for method in ["get", "post", "put", "delete"] {
+        assert!(methods.contains(&method), "{method} is documented");
+    }
+}
