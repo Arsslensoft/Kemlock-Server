@@ -138,6 +138,8 @@ pub(crate) mod vault_federation {
         pub replicas: Vec<u8>,
         /// The signed promotion record that made the current epoch.
         pub promotion: Option<Vec<u8>>,
+        /// A promotion another server signed that waits for this server's admin.
+        pub held_demotion: Option<Vec<u8>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -168,6 +170,7 @@ pub(crate) mod vault_federation {
                 epoch: from_i64(self.epoch, "epoch")?,
                 replicas,
                 promotion: self.promotion,
+                held_demotion: self.held_demotion,
             })
         }
     }
@@ -186,6 +189,7 @@ pub(crate) mod vault_federation {
             epoch: Set(to_i64(vault.epoch, "epoch")?),
             replicas: Set(replicas),
             promotion: Set(vault.promotion.clone()),
+            held_demotion: Set(vault.held_demotion.clone()),
         })
     }
 
@@ -203,6 +207,7 @@ pub(crate) mod vault_federation {
             );
             vault.epoch = 4;
             vault.promotion = Some(vec![1, 2, 3]);
+            vault.held_demotion = Some(vec![4, 5]);
             let row = active(&vault).expect("fits");
             let (owner_type, owner_id) = owner_parts(vault.owner);
             let mut replicas = Vec::new();
@@ -219,6 +224,7 @@ pub(crate) mod vault_federation {
                 epoch: 4,
                 replicas,
                 promotion: Some(vec![1, 2, 3]),
+                held_demotion: Some(vec![4, 5]),
             };
             assert_eq!(model.into_domain(), Ok(vault));
         }
@@ -233,6 +239,7 @@ pub(crate) mod vault_federation {
                 epoch: 1,
                 replicas: vec![0; 17],
                 promotion: None,
+                held_demotion: None,
             };
             assert!(model.into_domain().is_err());
         }

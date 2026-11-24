@@ -733,6 +733,8 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                 epoch,
                 replicas: Vec::new(),
                 promotion,
+                // A changed set no longer fits a held demotion's record, so it goes.
+                held_demotion: None,
             },
             Policy::Federated => {
                 if replicas.is_empty() || replicas.len() > MAX_REPLICAS {
@@ -764,6 +766,8 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                     epoch,
                     replicas,
                     promotion,
+                    // A changed set no longer fits a held demotion's record, so it goes.
+                    held_demotion: None,
                 }
             }
         };
@@ -800,6 +804,19 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
             }
         }
         Ok(record)
+    }
+
+    /// Lets another server become the home of `vault`, which this server is the home of, by
+    /// applying the promotion it sent ([`VaultFederation::held_demotion`]). The caller has checked
+    /// the admin with a fresh passkey or password first. This server becomes the last replica.
+    pub async fn accept_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        let next = self.replica.accept_demotion(vault).await?;
+        for server in next.order() {
+            if server != self.me() {
+                self.runner.mark_dirty(server);
+            }
+        }
+        Ok(next)
     }
 
     /// The event log entries peers sent for `vault`, newest first: what the switches allowed.
