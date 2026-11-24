@@ -32,6 +32,7 @@ allowed=(
   "CDLA-Permissive-2.0"
   "0BSD"
   "OFL-1.1"
+  "Python-2.0"
   "Unlicense"
 )
 only_allow="$(IFS=';'; echo "${allowed[*]}")"

@@ -1,0 +1,12 @@
+{
+  "name": "kemlock-web-gen-api",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Generates web/src/api/schema.gen.d.ts from the server's OpenAPI document (npm run gen:api in web/). Kept apart from web/ because openapi-typescript accepts TypeScript 5 only, while the web vault builds with TypeScript 7.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "dependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}
