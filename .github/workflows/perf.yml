@@ -23,8 +23,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: perf-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # One run per pull request and one push run on main: a newer push or merge cancels the older
+  # run. Scheduled and manual runs have their own group, so a push never cancels them.
+  group: perf-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 env:
   CARGO_TERM_COLOR: always
