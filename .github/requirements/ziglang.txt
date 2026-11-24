@@ -1,0 +1,3 @@
+# Zig for the FreeBSD cross build (release.yml), on the ubuntu-24.04 x86_64 runner.
+# The hash is PyPI's sha256 of ziglang-0.15.2-py3-none-manylinux_2_12_x86_64.manylinux2010_x86_64.musllinux_1_1_x86_64.whl.
+ziglang==0.15.2 --hash=sha256:806316453d1ede7174ed3fefb8e5348154629089c3bb5fe812dfd0e172fac130

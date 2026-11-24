@@ -686,7 +686,7 @@ jobs:
       - name: Zig for the FreeBSD cross build
         if: matrix.zig
         run: |
-          pip install ziglang==0.15.2
+          pip install --require-hashes --no-deps -r .github/requirements/ziglang.txt
           cargo install --locked --version 0.24.1 cargo-zigbuild
       # The web vault goes into the binary when there is one, as in the Dockerfile's build stage:
       # rust-embed needs web/dist, and the `web` feature is off by default.

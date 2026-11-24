@@ -10,6 +10,46 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-24
+
+### Added
+
+- Web vault
+  - Forms to add and edit every kind of item: one-time codes, backup codes, cards, identities,
+    SSH keys (made in the browser or pasted), PGP keys, certificates and contacts.
+  - Sign-in with SSO, a passkey or an approval from another device, and unlock with an approval.
+  - Setup with a security key or a passkey as the admin's second step.
+  - Account security sets up passkeys, security keys, YubiKey, Duo, an emailed code and the
+    recovery code. A step can be added beside another one after a fresh proof.
+  - The Recovery Kit: three printable pieces, any two of which unlock the vault, in the Kemlock
+    app's format.
+  - The about page names the author and links to the contributors.
+- Server
+  - Routes for email, YubiKey and Duo two-step setup, security keys, the Recovery Kit and vault
+    placement (`GET /kem/v1/placement`).
+  - First-run "Server basics" (who may join, the mail server) are saved when setup finishes.
+  - `kemlock-cli reset-admin`, with `--promote <email>`.
+
+### Changed
+
+- Removing a second step, and showing the recovery code, need a fresh proof.
+- The source code link is on the about page only.
+
+### Fixed
+
+- Items saved from the web vault carry the entry id and epoch-millisecond times the Kemlock app
+  reads, so the app shows them and keeps web edits when it syncs.
+- The setup screen's passkey and security key choices can be picked.
+- A held federation promotion that would take a vault's home from this server.
+- Proxmox setup: the setup code, a turned-off Caddy on update, and Alpine settings.
+
+### Security
+
+- An authenticator code works once as a proof, as it does at sign-in.
+- The passkey page for the browser extension builds its redirect from the allowlist, never from
+  the caller's address.
+- The release build installs Zig from a hash-pinned requirements file.
+
 ## [0.1.0] - 2026-11-24
 
 The first release.
@@ -57,5 +97,6 @@ The first release.
   - Contributing guide, DCO, code of conduct, governance, maintainers, support page, issue forms,
     a pull request template and code owners.
 
-[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Arsslensoft/Kemlock-Server/releases/tag/v0.1.0
