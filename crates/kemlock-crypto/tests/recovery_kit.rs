@@ -129,3 +129,14 @@ fn the_wrap_opens_for_nothing_else() {
     assert!(open(&key, &id, &altered, &account, 2).is_err(), "an altered byte");
     assert!(open(&key, &id, &wrapped[1..], &account, 2).is_err(), "a short wrap");
 }
+
+#[test]
+fn a_pieces_share_is_held_in_wiped_memory_and_still_rebuilds_the_key() {
+    let (_, key, pieces) = make_kit(2, 3).expect("a kit");
+    let all = parsed(&pieces);
+    // The share is zeroizing: it is wiped when the piece is dropped.
+    let share: &zeroize::Zeroizing<[u8; KIT_KEY_LEN]> = &all[0].y;
+    assert_ne!(**share, [0u8; KIT_KEY_LEN]);
+    let rebuilt = rebuild_key(&all[1..]).expect("two pieces");
+    assert_eq!(*rebuilt, *key);
+}

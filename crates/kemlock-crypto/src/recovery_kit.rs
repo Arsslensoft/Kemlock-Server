@@ -97,8 +97,8 @@ pub struct KitPiece {
     pub shares: u8,
     /// This piece's number, 1-based.
     pub index: u8,
-    /// This piece's share of the kit key.
-    pub y: [u8; KIT_KEY_LEN],
+    /// This piece's share of the kit key, wiped when the piece is dropped.
+    pub y: Zeroizing<[u8; KIT_KEY_LEN]>,
 }
 
 // ---- GF(2^8), the AES field (x^8 + x^4 + x^3 + x + 1), generator 3 ----
@@ -155,11 +155,11 @@ fn split_with(
     secret: &[u8; KIT_KEY_LEN],
     threshold: u8,
     count: u8,
-    coefficients: &[[u8; KIT_KEY_LEN]],
-) -> Vec<[u8; KIT_KEY_LEN]> {
+    coefficients: &[Zeroizing<[u8; KIT_KEY_LEN]>],
+) -> Vec<Zeroizing<[u8; KIT_KEY_LEN]>> {
     (1..=count)
         .map(|x| {
-            let mut y = [0u8; KIT_KEY_LEN];
+            let mut y = Zeroizing::new([0u8; KIT_KEY_LEN]);
             for (i, out) in y.iter_mut().enumerate() {
                 let mut value = 0u8;
                 for j in (0..usize::from(threshold) - 1).rev() {
@@ -210,8 +210,8 @@ fn base32(bytes: &[u8]) -> String {
 }
 
 /// Bits past the last whole byte are dropped, whatever they are.
-fn unbase32(text: &str) -> Result<Vec<u8>, PieceProblem> {
-    let mut out = Vec::new();
+fn unbase32(text: &str) -> Result<Zeroizing<Vec<u8>>, PieceProblem> {
+    let mut out = Zeroizing::new(Vec::new());
     let (mut bits, mut value) = (0u32, 0u32);
     for c in text.bytes() {
         let v = ALPHABET
@@ -241,7 +241,7 @@ pub fn piece_text(piece: &KitPiece) -> String {
         piece.threshold,
         piece.shares,
         piece.index,
-        base32(&piece.y)
+        base32(&piece.y[..])
     );
     format!("{body}-{}", check_of(&body))
 }
@@ -294,6 +294,7 @@ pub fn parse_piece(input: &str) -> Result<KitPiece, PieceProblem> {
         .get(..KIT_KEY_LEN)
         .and_then(|b| b.try_into().ok())
         .ok_or(PieceProblem::Format)?;
+    let y = Zeroizing::new(y);
     Ok(KitPiece {
         kit_id: kit_id.to_owned(),
         threshold,
@@ -315,7 +316,9 @@ pub fn make_kit(threshold: u8, shares: u8) -> Result<NewKit, Error> {
     }
     let key = Zeroizing::new(rand::bytes::<KIT_KEY_LEN>());
     let kit_id = base32(&rand::bytes::<5>());
-    let coefficients: Vec<[u8; KIT_KEY_LEN]> = (1..threshold).map(|_| rand::bytes()).collect();
+    let coefficients: Vec<Zeroizing<[u8; KIT_KEY_LEN]>> = (1..threshold)
+        .map(|_| Zeroizing::new(rand::bytes::<KIT_KEY_LEN>()))
+        .collect();
     let pieces = split_with(&key, threshold, shares, &coefficients)
         .into_iter()
         .zip(1..)
@@ -347,7 +350,7 @@ pub fn rebuild_key(pieces: &[KitPiece]) -> Result<Zeroizing<[u8; KIT_KEY_LEN]>, 
     if pieces.len() < usize::from(first.threshold) {
         return Err(PieceProblem::NotEnough);
     }
-    let shares: Vec<_> = pieces.iter().map(|p| (p.index, &p.y)).collect();
+    let shares: Vec<(u8, &[u8; KIT_KEY_LEN])> = pieces.iter().map(|p| (p.index, &*p.y)).collect();
     Ok(combine(&shares))
 }
 
