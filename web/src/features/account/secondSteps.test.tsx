@@ -43,8 +43,9 @@ function card(over: Partial<SecondStepsProps> = {}) {
 
 describe('the second-steps API', () => {
   it('calls the routes the server serves', async () => {
-    const request = vi.fn(async () => ({ keys: [], enabled: false, code: null }));
-    const send = vi.fn(async () => undefined);
+    type Call = { method: string; path: string; body?: unknown };
+    const request = vi.fn(async (_call: Call) => ({ keys: [], enabled: false, code: null }));
+    const send = vi.fn(async (_call: Call) => undefined);
     const steps = createSecondStepsApi({ request, send } as never);
     await steps.setup();
     await steps.emailBegin('a@b.co');

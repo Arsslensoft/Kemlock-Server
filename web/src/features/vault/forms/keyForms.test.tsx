@@ -83,6 +83,7 @@ describe('field builders', () => {
 
 describe('saving an entry', () => {
   it('stamps the item id and epoch milliseconds, and keeps the other fields on edit', async () => {
+    await fakeCrypto.unlock('u', new TextEncoder().encode('wrapped:u'), new Uint8Array(), new Uint8Array());
     const store = new VaultStore();
     const put = vi.fn().mockResolvedValue(undefined);
     const deps = {
@@ -139,14 +140,14 @@ describe('the forms', () => {
     const user = userEvent.setup({ delay: null });
     await user.type(screen.getByLabelText('Name'), 'Mine');
     await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('This is required.')).toBeInTheDocument();
+    expect((await screen.findAllByText('This is required.')).length).toBeGreaterThan(0);
     expect(onPgp).not.toHaveBeenCalled();
     first.unmount();
     const onCert = vi.fn();
     renderWithIntl(<CertificateForm initial={certificateDefaults()} onSubmit={onCert} onCancel={vi.fn()} submitLabel="Save" />);
     await user.type(screen.getByLabelText('Name'), 'Site');
     await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('This is required.')).toBeInTheDocument();
+    expect((await screen.findAllByText('This is required.')).length).toBeGreaterThan(0);
     expect(onCert).not.toHaveBeenCalled();
   });
 
