@@ -334,7 +334,7 @@ fn doc_replace() {}
 #[allow(dead_code)]
 fn doc_remove() {}
 
-#[derive(OpenApi)]
+#[derive(Debug, OpenApi)]
 #[openapi(
     paths(doc_show, doc_create, doc_replace, doc_remove),
     components(schemas(CreateKitRequest, ReplaceKitRequest, KitDto))
