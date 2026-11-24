@@ -16,9 +16,20 @@ import { type SignInStatus, createSignIn } from './signIn';
 
 const route = getRouteApi('/unlock');
 
-function Way({ icon, title, hint }: { icon: IconName; title: string; hint: string }) {
+/** One of the other ways to open the vault; with no `onPress` it is drawn but off. */
+export function Way({
+  icon,
+  title,
+  hint,
+  onPress,
+}: {
+  icon: IconName;
+  title: string;
+  hint: string;
+  onPress?: () => void;
+}) {
   return (
-    <button type="button" className="way" disabled>
+    <button type="button" className="way" disabled={!onPress} onClick={onPress}>
       <span className="ic" aria-hidden="true">
         <Icon name={icon} />
       </span>
@@ -92,7 +103,12 @@ export default function Unlock() {
       )}
       <div className="stack">
         <h2 className="hint">{t('unlock.other')}</h2>
-        <Way icon="device" title={t('unlock.approve')} hint={t('unlock.approveHint')} />
+        <Way
+          icon="device"
+          title={t('unlock.approve')}
+          hint={t('unlock.approveHint')}
+          onPress={() => void navigate({ to: '/sign-in/device', search: { email, next } })}
+        />
         <Way icon="key" title={t('unlock.kit')} hint={t('unlock.kitHint')} />
       </div>
       <p className="hint">
