@@ -20,6 +20,7 @@
 //! [`passkeys_router`].
 
 use super::guard;
+use super::two_step::{ProofRequest, proof_steps, require_proof};
 use super::new_device::announce;
 use crate::dto::{DeviceDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
@@ -729,6 +730,7 @@ async fn handle_key_remove<S, P, K, R, W, M>(
     Extension(runtime): Extension<Arc<PasskeyRuntime<R, W, M>>>,
     authed: Authed,
     Path(slot): Path<u8>,
+    body: Body,
 ) -> Result<Json<SecurityKeysResponse>, Problem>
 where
     S: Store,
@@ -739,6 +741,14 @@ where
     M: Send + Sync + 'static,
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    let request: ProofRequest = body.json()?;
+    require_proof(
+        &api,
+        &proof_steps(&api, runtime.repos.clone()),
+        authed.actor.user,
+        &request.proof,
+    )
+    .await?;
     let list = security_keys(&api, &runtime)
         .remove(authed.actor.user, slot)
         .await?;
@@ -1056,6 +1066,7 @@ fn doc_keys_list() {}
 #[utoipa::path(
     delete, path = "/kem/v1/account/two-factor/webauthn/{slot}", tag = "account",
     security(("dpop" = [])),
+    request_body = ProofRequest,
     params(("slot" = u8, Path, description = "The key's slot, 1 to 5")),
     responses(
         (status = 200, description = "The key is removed; the keys left", body = SecurityKeysResponse),
@@ -1125,6 +1136,7 @@ fn doc_key_step() {}
         SecurityKeyConfirmRequest,
         SecurityKeyDto,
         SecurityKeysResponse,
+        ProofRequest,
         KeyStepOptionsRequest,
         RequestOptionsResponse,
         KeyStepRequest,
