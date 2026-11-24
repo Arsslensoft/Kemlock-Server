@@ -56,8 +56,8 @@ export function KeyItemForm({ kind, item, submitLabel, pending, error, onCancel,
           key={`cert-${item?.id ?? 'new'}`}
           initial={certificateDefaults(item)}
           {...common}
-          onSubmit={(values) => {
-            const fields = certificateFields(values, editing);
+          onSubmit={(values, key) => {
+            const fields = certificateFields(values, editing, key);
             if (fields) onSave(fields);
           }}
         />

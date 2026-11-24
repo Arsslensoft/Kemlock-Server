@@ -6,7 +6,7 @@ import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useT } from '@/i18n';
 import { Field } from '@/ui/fields';
-import { pemBlocks, sshAlgorithmOf, fromB64 } from './keyMaterial';
+import { type SshMaterial, fromB64, pemBlocks, readPastedSshKey } from './keyMaterial';
 import { FormActions, type KeyFormProps } from './shared';
 import type { ItemData, VaultItem } from '../vault';
 import { itemName } from '../vault';
@@ -18,10 +18,10 @@ const base = {
   privateKey: z.string().max(20000, 'error.tooLong'),
 };
 
-export const certificateSchema = z.object(base).refine((v) => v.certificate.trim() !== '', {
-  path: ['certificate'],
-  message: 'error.required',
-});
+export const certificateSchema = z
+  .object(base)
+  .refine((v) => v.certificate.trim() !== '', { path: ['certificate'], message: 'error.required' })
+  .refine((v) => v.privateKey.trim() !== '', { path: ['privateKey'], message: 'error.required' });
 export const certificateEditSchema = z.object(base);
 export type CertificateValues = z.infer<typeof certificateSchema>;
 
@@ -50,38 +50,39 @@ export function certificatePem(text: string): string | undefined {
   return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----\n`;
 }
 
-/** The PKCS#8 DER (base64) of a pasted private key; '' for none, undefined for one this cannot read. */
-export function certificateKey(text: string): string | undefined {
-  if (text.trim() === '') return '';
-  const blocks = pemBlocks(text);
-  const only = blocks.length === 1 ? blocks[0] : undefined;
-  if (only?.label !== 'PRIVATE KEY') return undefined;
-  try {
-    return fromB64(only.body).length > 0 ? only.body : undefined;
-  } catch {
-    return undefined;
-  }
-}
+/** The key pasted with a certificate: PKCS#8, Ed25519 or ECDSA P-256; undefined if it cannot be read. */
+export const certificateKey = readPastedSshKey;
 
-/** The fields a certificate form owns; undefined when a paste cannot be read. */
-export function certificateFields(values: CertificateValues, editing: boolean): ItemData | undefined {
+/**
+ * The fields a certificate form owns; undefined when the certificate cannot be read. A certificate
+ * is a key entry that carries a `certificate`, so it needs the key it belongs to: the model has no
+ * entry without its private half. The key's own algorithm and halves are written, as for an SSH key.
+ */
+export function certificateFields(
+  values: CertificateValues,
+  editing: boolean,
+  key?: SshMaterial,
+): ItemData | undefined {
   const fields: ItemData = { name: values.name, note: values.note === '' ? undefined : values.note };
   if (editing) return fields;
   const pem = certificatePem(values.certificate);
-  const key = certificateKey(values.privateKey);
-  if (!pem || key === undefined) return undefined;
-  const algorithm = key === '' ? undefined : sshAlgorithmOf(fromB64(key));
+  if (!pem || !key) return undefined;
   return {
     ...fields,
-    kind: 'other',
-    algorithm: algorithm ?? '',
-    private: key,
+    kind: 'signing',
+    algorithm: key.algorithm,
+    private: key.private,
+    public: key.public,
     certificate: pem,
     origin: 'imported',
   };
 }
 
-export function CertificateForm({ initial, editing, onSubmit, onCancel, pending, error, submitLabel }: KeyFormProps<CertificateValues>) {
+type Props = Omit<KeyFormProps<CertificateValues>, 'onSubmit'> & {
+  onSubmit: (values: CertificateValues, key?: SshMaterial) => void;
+};
+
+export function CertificateForm({ initial, editing, onSubmit, onCancel, pending, error, submitLabel }: Props) {
   const t = useT();
   const { control, handleSubmit, setError } = useForm<CertificateValues>({
     resolver: zodResolver(editing ? certificateEditSchema : certificateSchema),
@@ -91,18 +92,18 @@ export function CertificateForm({ initial, editing, onSubmit, onCancel, pending,
     <form
       className="stack form-wide"
       noValidate
-      onSubmit={handleSubmit((values) => {
-        if (!editing) {
-          if (!certificatePem(values.certificate)) {
-            setError('certificate', { message: 'keys.certificate.error.pem' });
-            return;
-          }
-          if (certificateKey(values.privateKey) === undefined) {
-            setError('privateKey', { message: 'keys.certificate.error.key' });
-            return;
-          }
+      onSubmit={handleSubmit(async (values) => {
+        if (editing) return onSubmit(values);
+        if (!certificatePem(values.certificate)) {
+          setError('certificate', { message: 'keys.certificate.error.pem' });
+          return undefined;
         }
-        onSubmit(values);
+        const key = await certificateKey(values.privateKey);
+        if (!key) {
+          setError('privateKey', { message: 'keys.certificate.error.key' });
+          return undefined;
+        }
+        return onSubmit(values, key);
       })}
     >
       <section className="card pad" aria-labelledby="h-cert">

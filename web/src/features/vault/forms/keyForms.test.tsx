@@ -6,6 +6,7 @@ import { CertificateForm, certificateDefaults, certificateFields, certificatePem
 import { ContactForm, contactDefaults, contactFields } from './ContactForm';
 import { PgpKeyForm, pgpKeyDefaults, pgpKeyFields } from './PgpKeyForm';
 import { SshKeyForm, sshKeyDefaults, sshKeyFields } from './SshKeyForm';
+import { generateEd25519, readPastedSshKey } from './keyMaterial';
 import { fromB64, pemBlocks, pgpHalves, sshAlgorithmOf, toB64 } from './keyMaterial';
 import { type VaultItem, saveItem, VaultStore } from '../vault';
 import { crypto as fakeCrypto } from '@/test/fake-crypto';
@@ -53,12 +54,17 @@ describe('field builders', () => {
 
   it('builds a certificate, with or without its key', () => {
     expect(certificatePem(CERT)).toBe(`-----BEGIN CERTIFICATE-----\n${BODY}\n-----END CERTIFICATE-----\n`);
-    const fields = certificateFields({ ...certificateDefaults(), name: 'Site', certificate: CERT }, false);
-    expect(fields).toMatchObject({ certificate: expect.stringContaining('BEGIN CERTIFICATE'), private: '' });
-    expect(certificateFields({ ...certificateDefaults(), name: 'Site', certificate: 'nope' }, false)).toBeUndefined();
-    expect(
-      certificateFields({ ...certificateDefaults(), name: 'Site', certificate: CERT, privateKey: 'nope' }, false),
-    ).toBeUndefined();
+    const key = { algorithm: 'ed25519' as const, private: 'p', public: 'q' };
+    const values = { ...certificateDefaults(), name: 'Site', certificate: CERT };
+    expect(certificateFields(values, false, key)).toMatchObject({
+      kind: 'signing',
+      algorithm: 'ed25519',
+      private: 'p',
+      public: 'q',
+      certificate: expect.stringContaining('BEGIN CERTIFICATE'),
+    });
+    expect(certificateFields(values, false)).toBeUndefined();
+    expect(certificateFields({ ...values, certificate: 'nope' }, false, key)).toBeUndefined();
   });
 
   it('changes only the name and note of an ssh key that exists', () => {
@@ -152,5 +158,21 @@ describe('the forms', () => {
     expect(screen.queryByLabelText('Private key')).not.toBeInTheDocument();
     await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+  });
+});
+
+describe('key reading', () => {
+  it('generates an Ed25519 key and reads it back when pasted', async () => {
+    const made = await generateEd25519();
+    expect(made.algorithm).toBe('ed25519');
+    const pem = `-----BEGIN PRIVATE KEY-----\n${made.private}\n-----END PRIVATE KEY-----`;
+    expect(await readPastedSshKey(pem)).toEqual(made);
+    expect(await readPastedSshKey(made.private)).toEqual(made);
+  });
+
+  it('refuses what is not a PKCS#8 Ed25519 or P-256 key', async () => {
+    expect(await readPastedSshKey('hello')).toBeUndefined();
+    expect(await readPastedSshKey(PUBLIC)).toBeUndefined();
+    expect(await readPastedSshKey(`-----BEGIN PRIVATE KEY-----\n${BODY}\n-----END PRIVATE KEY-----`)).toBeUndefined();
   });
 });

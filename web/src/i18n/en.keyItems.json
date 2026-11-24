@@ -19,7 +19,7 @@
   "keys.certificate.details": "Certificate details",
   "keys.certificate.pem": "Certificate",
   "keys.certificate.key": "Private key",
-  "keys.certificate.keyHint": "Optional. A PKCS#8 private key (BEGIN PRIVATE KEY).",
+  "keys.certificate.keyHint": "The key the certificate belongs to: a PKCS#8 private key (BEGIN PRIVATE KEY), Ed25519 or ECDSA P-256. It is needed to keep the certificate.",
   "keys.certificate.error.pem": "That is not a PEM certificate (BEGIN CERTIFICATE).",
-  "keys.certificate.error.key": "That is not a PKCS#8 private key (BEGIN PRIVATE KEY)."
+  "keys.certificate.error.key": "That is not a PKCS#8 Ed25519 or ECDSA P-256 private key."
 }
