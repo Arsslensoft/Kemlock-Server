@@ -12,6 +12,13 @@ use crate::ports::{SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo};
 use kemlock_domain::{Email, User, UserId};
 use time::{Duration, OffsetDateTime};
 
+/// A setup code that was entered right, until the method is turned on.
+#[derive(Debug)]
+pub struct EmailChecked {
+    data: EmailData,
+    now: OffsetDateTime,
+}
+
 impl<F, S, E, C> TwoStep<F, S, E, C>
 where
     F: TwoFactorRepo,
@@ -104,6 +111,19 @@ where
         address: &str,
         code: &str,
     ) -> Result<(), AppError> {
+        let checked = self.email_check(user, address, code).await?;
+        self.email_store(user, checked).await
+    }
+
+    /// The check of [`TwoStep::email_confirm`] alone. A caller that wants a proof spent between
+    /// the check and the change calls this, then the proof (and [`TwoStep::email_retry`] when it
+    /// fails, so the right code isn't lost), then [`TwoStep::email_store`].
+    pub async fn email_check(
+        &self,
+        user: UserId,
+        address: &str,
+        code: &str,
+    ) -> Result<EmailChecked, AppError> {
         self.email_allowed()?;
         let now = self.env.now();
         let state = self
@@ -135,6 +155,27 @@ where
             }
             return Err(AppError::Unauthorized);
         }
+        Ok(EmailChecked { data, now })
+    }
+
+    /// Puts back the setup code a [`TwoStep::email_check`] took, when what came after it (the
+    /// proof) was refused: the entry was right, so it isn't counted against the code.
+    pub async fn email_retry(&self, user: UserId, checked: &EmailChecked) -> Result<(), AppError> {
+        let sent = OffsetDateTime::from_unix_timestamp(checked.data.token_sent).unwrap_or(checked.now);
+        self.challenges
+            .put_challenge(
+                user,
+                ChallengeKind::EmailSetup,
+                &sealed(&self.seal, PURPOSE_EMAIL_SETUP, &checked.data),
+                sent + self.email_lifetime(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Turns the method on with what [`TwoStep::email_check`] accepted.
+    pub async fn email_store(&self, user: UserId, checked: EmailChecked) -> Result<(), AppError> {
+        let EmailChecked { mut data, now } = checked;
         data.reset_token();
         self.two_factor
             .put(&TwoFactor {

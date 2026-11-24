@@ -106,7 +106,15 @@ where
         user: UserId,
         custom: Option<DuoKeys>,
     ) -> Result<DuoStatus, AppError> {
-        let plain = match &custom {
+        let plain = self.duo_check(custom.as_ref()).await?;
+        self.duo_store(user, &plain).await
+    }
+
+    /// The checks of [`TwoStep::duo_set`] alone, with Duo: what to store. A caller that wants a
+    /// proof spent between the check and the change calls this, then the proof, then
+    /// [`TwoStep::duo_store`].
+    pub async fn duo_check(&self, custom: Option<&DuoKeys>) -> Result<Vec<u8>, AppError> {
+        Ok(match custom {
             Some(keys) => {
                 if !keys.is_complete() {
                     return Err(AppError::Invalid("the Duo host and keys are all required"));
@@ -128,12 +136,16 @@ where
                 }
                 b"{}".to_vec()
             }
-        };
+        })
+    }
+
+    /// Stores what [`TwoStep::duo_check`] accepted, and turns the method on.
+    pub async fn duo_store(&self, user: UserId, plain: &[u8]) -> Result<DuoStatus, AppError> {
         self.two_factor
             .put(&TwoFactor {
                 user,
                 method: TwoFactorMethod::Duo,
-                sealed_secret: self.seal.seal(PURPOSE_DUO, &plain),
+                sealed_secret: self.seal.seal(PURPOSE_DUO, plain),
                 enabled: true,
                 created_at: self.env.now(),
             })

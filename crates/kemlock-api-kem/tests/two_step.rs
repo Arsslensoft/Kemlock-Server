@@ -1172,3 +1172,79 @@ async fn a_second_step_is_added_beside_another_after_a_fresh_proof_that_works_on
         replaced.json()
     );
 }
+
+#[tokio::test]
+async fn a_request_that_fails_its_own_checks_does_not_spend_the_proof() {
+    let rig = rig();
+    let (device, session) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let user = UserId(uuid::Uuid::parse_str(&session.user_id).expect("a UUID"));
+    rig.app
+        .store
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::YubiKey,
+            sealed_secret: rig
+                .app
+                .crypto
+                .seal(PURPOSE_YUBIKEY, br#"{"keys":["cccccccccccc"],"nfc":false}"#),
+            enabled: true,
+            created_at: rig.app.clock.now(),
+        })
+        .await
+        .expect("the row is stored");
+    let asked = rig
+        .authed(&device, "POST", &format!("{FACTOR}/proof"), token, None)
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let proof = rig.mailbox.last_proof();
+
+    // Duo keys off Duo's own host fail before the proof is looked at; so does a wrong setup code.
+    let duo = format!("{FACTOR}/duo");
+    let bad = rig
+        .authed(
+            &device,
+            "PUT",
+            &duo,
+            token,
+            Some(json!({
+                "host": "evil.example", "clientId": "DIX", "clientSecret": "s", "proof": proof
+            })),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST, "{:?}", bad.json());
+    let begun = rig
+        .authed(
+            &device,
+            "POST",
+            &format!("{FACTOR}/email"),
+            token,
+            Some(json!({"address": "mfa@example.org"})),
+        )
+        .await;
+    assert_eq!(begun.status, StatusCode::NO_CONTENT);
+    let (_, code) = rig.mailbox.last();
+    let confirm = format!("{FACTOR}/email/confirm");
+    let wrong = rig
+        .authed(
+            &device,
+            "POST",
+            &confirm,
+            token,
+            Some(json!({"address": "mfa@example.org", "code": "nope", "proof": proof})),
+        )
+        .await;
+    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "{:?}", wrong.json());
+
+    // The proof is still good, once, for the request that is right.
+    let added = rig
+        .authed(
+            &device,
+            "POST",
+            &confirm,
+            token,
+            Some(json!({"address": "mfa@example.org", "code": code, "proof": proof})),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::NO_CONTENT, "{:?}", added.json());
+}

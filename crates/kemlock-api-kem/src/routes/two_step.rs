@@ -906,20 +906,25 @@ where
 {
     let request: EmailConfirmRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
-    // Checked before the proof is spent: an address that can't be one fails first.
-    kemlock_domain::Email::parse(request.address.trim())
-        .map_err(|_| AppError::Invalid("the email address isn't valid"))?;
-    require_proof_to_add(
+    // The setup code is checked first, then the proof is spent, then the method is turned on. A
+    // refused proof puts the right setup code back, so it needn't be mailed again.
+    let steps = two_step_of(&api, &runtime);
+    let checked = steps
+        .email_check(authed.actor.user, &request.address, &request.code)
+        .await?;
+    if let Err(refused) = require_proof_to_add(
         &api,
-        &two_step_of(&api, &runtime),
+        &steps,
         authed.actor.user,
         Some(TwoFactorMethod::Email),
         request.proof.as_deref(),
     )
-    .await?;
-    two_step_of(&api, &runtime)
-        .email_confirm(authed.actor.user, &request.address, &request.code)
-        .await?;
+    .await
+    {
+        steps.email_retry(authed.actor.user, &checked).await?;
+        return Err(refused);
+    }
+    steps.email_store(authed.actor.user, checked).await?;
     api.recovery_codes().ensure(authed.actor.user).await?;
     announce_change(&api, &authed, "email", true).await;
     Ok(StatusCode::NO_CONTENT)
@@ -972,17 +977,18 @@ where
     if request.otps.iter().all(|otp| otp.trim().is_empty()) {
         return Err(AppError::Invalid("A key is required.").into());
     }
+    // Yubico checks the OTPs first, then the proof is spent, then the keys are stored.
+    let steps = two_step_of(&api, &runtime);
+    let checked = steps.yubikey_check(&request.otps, request.nfc).await?;
     require_proof_to_add(
         &api,
-        &two_step_of(&api, &runtime),
+        &steps,
         authed.actor.user,
         Some(TwoFactorMethod::YubiKey),
         request.proof.as_deref(),
     )
     .await?;
-    let data = two_step_of(&api, &runtime)
-        .yubikey_set(authed.actor.user, &request.otps, request.nfc)
-        .await?;
+    let data = steps.yubikey_store(authed.actor.user, checked).await?;
     api.recovery_codes().ensure(authed.actor.user).await?;
     announce_change(&api, &authed, "yubikey", true).await;
     Ok(Json(YubikeyShown {
@@ -1044,22 +1050,18 @@ where
             sk: sk.unwrap_or_default(),
         }),
     };
-    if let Some(keys) = &custom {
-        if !keys.is_complete() {
-            return Err(AppError::Invalid("the Duo host and keys are all required").into());
-        }
-    }
+    // Duo checks the keys first, then the proof is spent, then the method is turned on.
+    let steps = two_step_of(&api, &runtime);
+    let plain = steps.duo_check(custom.as_ref()).await?;
     require_proof_to_add(
         &api,
-        &two_step_of(&api, &runtime),
+        &steps,
         authed.actor.user,
         Some(TwoFactorMethod::Duo),
         request.proof.as_deref(),
     )
     .await?;
-    let status = two_step_of(&api, &runtime)
-        .duo_set(authed.actor.user, custom)
-        .await?;
+    let status = steps.duo_store(authed.actor.user, &plain).await?;
     api.recovery_codes().ensure(authed.actor.user).await?;
     announce_change(&api, &authed, "duo", true).await;
     Ok(Json(match status {
