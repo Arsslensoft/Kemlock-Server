@@ -42,9 +42,10 @@ async fn reset_admin_demotes_every_admin_clears_the_marker_and_logs_it() {
         admins: store.clone(),
         events: store.clone(),
         settings: store.clone(),
+        two_factor: store.clone(),
         clock: FixedClock,
     };
-    let mut demoted = reset.execute().await.expect("reset");
+    let mut demoted = reset.execute(None).await.expect("reset");
     demoted.sort();
     let mut expected = vec![
         first.email.as_str().to_owned(),
@@ -80,5 +81,53 @@ async fn reset_admin_demotes_every_admin_clears_the_marker_and_logs_it() {
     // (FirstRun::start checks exactly these two).
 
     // A second run has nothing left to demote and still succeeds.
-    assert!(reset.execute().await.expect("again").is_empty());
+    assert!(reset.execute(None).await.expect("again").is_empty());
+}
+
+#[tokio::test]
+async fn promote_hands_the_role_to_an_account_with_two_step_and_changes_nothing_otherwise() {
+    use kemlock_app::ports::{TwoFactor, TwoFactorMethod, TwoFactorRepo};
+    let store = memory().await;
+    let mut old = user(&unique_email("old"));
+    old.role = Role::Admin;
+    UserRepo::insert(&store, &old).await.expect("insert");
+    let heir = user(&unique_email("heir"));
+    UserRepo::insert(&store, &heir).await.expect("insert");
+    let reset = ResetAdmin {
+        users: store.clone(),
+        admins: store.clone(),
+        events: store.clone(),
+        settings: store.clone(),
+        two_factor: store.clone(),
+        clock: FixedClock,
+    };
+
+    // No two-step method yet: refused, and the old admin is still the admin.
+    assert!(reset.execute(Some(&heir.email)).await.is_err());
+    assert_eq!(UserRepo::count_admins(&store).await.expect("count"), 1);
+    // An unknown account is refused too.
+    let ghost = kemlock_domain::Email::parse("ghost@example.org").expect("email");
+    assert!(reset.execute(Some(&ghost)).await.is_err());
+    assert_eq!(UserRepo::count_admins(&store).await.expect("count"), 1);
+
+    TwoFactorRepo::put(
+        &store,
+        &TwoFactor {
+            user: heir.id,
+            method: TwoFactorMethod::Totp,
+            sealed_secret: vec![1; 40],
+            enabled: true,
+            created_at: NOW,
+        },
+    )
+    .await
+    .expect("two-step");
+    let demoted = reset.execute(Some(&heir.email)).await.expect("promote");
+    assert_eq!(demoted, vec![old.email.as_str().to_owned()]);
+    let after = |id| {
+        let store = store.clone();
+        async move { UserRepo::by_id(&store, id).await.expect("by id").expect("kept").role }
+    };
+    assert_eq!(after(heir.id).await, Role::Admin);
+    assert_eq!(after(old.id).await, Role::User);
 }
