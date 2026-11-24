@@ -93,6 +93,7 @@ pub mod p256;
 pub mod password_wrap;
 pub mod prf_wrap;
 pub mod private_keys;
+pub mod recovery_kit;
 pub mod rand;
 pub mod seal;
 pub mod sealed_box;
