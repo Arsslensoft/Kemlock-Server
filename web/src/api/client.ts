@@ -340,12 +340,13 @@ export function createApi(deps: ApiDeps) {
         path: `${BASE}/account/two-factor/totp`,
         mode: 'auth',
       }),
-    totpConfirm: (code: string) =>
+    /** `proof` is the recovery code, asked for when another second step is on already. */
+    totpConfirm: (code: string, proof?: string) =>
       none({
         method: 'POST',
         path: `${BASE}/account/two-factor/totp/confirm`,
         mode: 'auth',
-        body: { code },
+        body: proof ? { code, proof } : { code },
       }),
 
     /** `GET /kem/v1/account/keys`: the wrapped root key and key material, for a browser that did not make the account. */

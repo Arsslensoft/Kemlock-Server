@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type { TotpEnrolResponse } from '@/api/types';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -11,6 +12,7 @@ import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
 import { RecoveryKitCard, type RecoveryKitProps } from './RecoveryKitCard';
 import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
+import { TextInput } from './controls';
 import type { Described } from './errors';
 
 export interface TotpState {
@@ -31,7 +33,8 @@ export interface SecurityViewProps {
   totpError?: Described | undefined;
   onStartTotp: () => void;
   onCancelTotp: () => void;
-  onConfirmTotp: (code: string) => void;
+  /** `proof` is the recovery code, given when another second step is on already. */
+  onConfirmTotp: (code: string, proof?: string) => void;
   emergency: EmergencyCardProps;
   /** The account's passkeys; omitted where passkeys are not offered. */
   passkeys?: PasskeysCardProps | undefined;
@@ -62,6 +65,9 @@ export function SecurityView({
 }: SecurityViewProps) {
   const t = useT();
   const totpOn = methods?.includes('totp') ?? false;
+  // Another second step that is on asks for the recovery code before an app is added beside it.
+  const othersOn = methods?.some((m) => m !== 'totp') ?? false;
+  const [recovery, setRecovery] = useState('');
   const later: readonly (typeof LATER)[number][] = secondSteps ? [] : LATER;
 
   return (
@@ -155,10 +161,16 @@ export function SecurityView({
                   </p>
                 )}
                 <p className="hint">{t('twoStep.keepApp')}</p>
+                {othersOn ? (
+                  <>
+                    <p className="hint">{t('security.totp.proof')}</p>
+                    <TextInput label={t('security.totp.recovery')} value={recovery} onChange={setRecovery} mono />
+                  </>
+                ) : null}
                 <CodeForm
                   label={t('twoStep.codeLabel')}
                   submitLabel={t('twoStep.submit')}
-                  onSubmit={onConfirmTotp}
+                  onSubmit={(code) => (recovery.trim() ? onConfirmTotp(code, recovery.trim()) : onConfirmTotp(code))}
                   pending={busy || !totp.enrol}
                 />
                 <div className="actions">

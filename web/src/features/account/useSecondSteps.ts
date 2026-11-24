@@ -10,7 +10,7 @@ import { createSecurityKey } from '@/lib/webauthn';
 const stepsApi = createSecondStepsApi(api);
 
 /** The second steps beyond an authenticator app and passkeys: what they read and how they change. */
-export function useSecondSteps(hasRecoveryCode: boolean | undefined) {
+export function useSecondSteps(hasRecoveryCode: boolean | undefined, totpOn = false) {
   const t = useT();
   const queryClient = useQueryClient();
   const setup = useQuery({ queryKey: ['security', 'setup'], queryFn: () => stepsApi.setup() });
@@ -37,22 +37,23 @@ export function useSecondSteps(hasRecoveryCode: boolean | undefined) {
     securityKeys: passkeysAvailable() ? keys.data : undefined,
     securityKeysAvailable: passkeysAvailable(),
     hasRecoveryCode,
+    totpOn,
     busy: pending,
     actions: {
-      addSecurityKey: (name) =>
+      addSecurityKey: (name, proof) =>
         change(async () => {
           const options = await stepsApi.securityKeyOptions();
           const credential = await createSecurityKey(options);
-          return stepsApi.securityKeyConfirm(name || t('security.webauthn.defaultName'), credential);
+          return stepsApi.securityKeyConfirm(name || t('security.webauthn.defaultName'), credential, proof);
         }),
       askProof: () => change(() => stepsApi.proofRequest()),
       removeSecurityKey: (slot, proof) => change(() => stepsApi.securityKeyRemove(slot, proof)),
       emailBegin: (address) => change(() => stepsApi.emailBegin(address)),
-      emailConfirm: (address, code) => change(() => stepsApi.emailConfirm(address, code)),
+      emailConfirm: (address, code, proof) => change(() => stepsApi.emailConfirm(address, code, proof)),
       emailOff: (proof) => change(() => stepsApi.emailOff(proof)),
-      yubikeySet: (otps, nfc) => change(() => stepsApi.yubikeySet(otps, nfc)),
+      yubikeySet: (otps, nfc, proof) => change(() => stepsApi.yubikeySet(otps, nfc, proof)),
       yubikeyOff: (proof) => change(() => stepsApi.yubikeyOff(proof)),
-      duoSet: (input) => change(() => stepsApi.duoSet(input)),
+      duoSet: (input, proof) => change(() => stepsApi.duoSet(input, proof)),
       duoOff: (proof) => change(() => stepsApi.duoOff(proof)),
       showRecoveryCode: () => run(() => stepsApi.recoveryCode()),
     },

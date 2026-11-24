@@ -89,8 +89,10 @@ describe('SecondStepsCard', () => {
     expect(props.actions.removeSecurityKey).toHaveBeenCalledWith(3, '731904');
     await user.click(screen.getByRole('button', { name: 'Add a key' }));
     await user.type(screen.getByLabelText('Name for this key'), 'Spare');
+    // A key is on already, so adding another asks for the fresh proof too.
+    await user.type(screen.getByLabelText('The code from the email'), '482913');
     await user.click(screen.getByRole('button', { name: 'Register the key' }));
-    expect(props.actions.addSecurityKey).toHaveBeenCalledWith('Spare');
+    expect(props.actions.addSecurityKey).toHaveBeenCalledWith('Spare', '482913');
   });
 
   it('mails a code to an address, then turns the method on with the code', async () => {

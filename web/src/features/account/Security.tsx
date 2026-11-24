@@ -41,7 +41,7 @@ export default function Security() {
   const [totp, setTotp] = useState<TotpState>({ open: false, enrol: undefined });
   const totpRun = useRun();
   const { run, pending, error } = useRun();
-  const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes);
+  const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes, methods?.includes('totp') ?? false);
   const recoveryKit = useRecoveryKit();
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
@@ -91,8 +91,8 @@ export default function Security() {
         });
       }}
       onCancelTotp={() => setTotp({ open: false, enrol: undefined })}
-      onConfirmTotp={(code) => {
-        void totpRun.run(() => api.totpConfirm(code).then(() => true)).then(async (done) => {
+      onConfirmTotp={(code, proof) => {
+        void totpRun.run(() => api.totpConfirm(code, proof).then(() => true)).then(async (done) => {
           if (!done) return;
           setTotp({ open: false, enrol: undefined });
           await queryClient.invalidateQueries({ queryKey: ['security', 'methods'] });

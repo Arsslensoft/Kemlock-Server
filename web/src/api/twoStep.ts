@@ -65,6 +65,11 @@ type SetupHttp = Pick<Api, 'request' | 'send'>;
 
 const factor = '/kem/v1/account/two-factor';
 
+/** A request that turns a method on carries `proof` only when a second step is on already. */
+function withProof<T extends object>(body: T, proof: string | undefined): T & { proof?: string } {
+  return proof ? { ...body, proof } : body;
+}
+
 /**
  * Setting the other second steps up from a signed-in device
  * (crates/kemlock-api-kem/src/routes/two_step.rs and passkeys.rs). A secret goes only where the
@@ -75,23 +80,28 @@ export function createSecondStepsApi(http: SetupHttp) {
     setup: () => http.request<TwoStepSetupDto>({ method: 'GET', path: '/kem/v1/account/two-step/setup' }),
 
     emailBegin: (address: string) => http.send({ method: 'POST', path: `${factor}/email`, body: { address } }),
-    emailConfirm: (address: string, code: string) =>
-      http.send({ method: 'POST', path: `${factor}/email/confirm`, body: { address, code } }),
+    /** With another second step on, `proof` is the fresh proof a removal takes (see `proofRequest`). */
+    emailConfirm: (address: string, code: string, proof?: string) =>
+      http.send({ method: 'POST', path: `${factor}/email/confirm`, body: withProof({ address, code }, proof) }),
     /** Mails the one-time code that proves the owner, which every turning off takes as `proof`. */
     proofRequest: () => http.send({ method: 'POST', path: `${factor}/proof` }),
 
     emailOff: (proof: string) => http.send({ method: 'DELETE', path: `${factor}/email`, body: { proof } }),
 
-    yubikeySet: (otps: string[], nfc: boolean) =>
-      http.request<{ keys: string[]; nfc: boolean }>({ method: 'PUT', path: `${factor}/yubikey`, body: { otps, nfc } }),
+    yubikeySet: (otps: string[], nfc: boolean, proof?: string) =>
+      http.request<{ keys: string[]; nfc: boolean }>({
+        method: 'PUT',
+        path: `${factor}/yubikey`,
+        body: withProof({ otps, nfc }, proof),
+      }),
     yubikeyOff: (proof: string) =>
       http.send({ method: 'DELETE', path: `${factor}/yubikey`, body: { proof } }),
 
-    duoSet: (keys: DuoKeysInput | null) =>
+    duoSet: (keys: DuoKeysInput | null, proof?: string) =>
       http.request<{ integration: 'own' | 'server'; host: string | null }>({
         method: 'PUT',
         path: `${factor}/duo`,
-        body: keys ?? {},
+        body: withProof(keys ? { ...keys } : {}, proof),
       }),
     duoOff: (proof: string) => http.send({ method: 'DELETE', path: `${factor}/duo`, body: { proof } }),
 
@@ -100,8 +110,12 @@ export function createSecondStepsApi(http: SetupHttp) {
       http
         .request<{ options: Record<string, unknown> }>({ method: 'POST', path: `${factor}/webauthn` })
         .then((r) => r.options),
-    securityKeyConfirm: (name: string, credential: Record<string, unknown>) =>
-      http.request<SecurityKeysDto>({ method: 'POST', path: `${factor}/webauthn/confirm`, body: { name, credential } }),
+    securityKeyConfirm: (name: string, credential: Record<string, unknown>, proof?: string) =>
+      http.request<SecurityKeysDto>({
+        method: 'POST',
+        path: `${factor}/webauthn/confirm`,
+        body: withProof({ name, credential }, proof),
+      }),
     securityKeyRemove: (slot: number, proof: string) =>
       http.request<SecurityKeysDto>({
         method: 'DELETE',
