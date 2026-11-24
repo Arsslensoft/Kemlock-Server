@@ -746,7 +746,12 @@ async fn a_security_key_beside_an_authenticator_app_needs_a_proof() {
             Some(json!({"name": "Yubi", "credential": authenticator().create(&options)})),
         )
         .await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
 }
 
 #[tokio::test]

@@ -903,11 +903,7 @@ async fn slots_are_one_to_five_and_a_chosen_slot_replaces_its_key() {
         vec![info(1, "Replaced"), info(2, "Second"), info(5, "Fifth")]
     );
 
-    let options = fx
-        .keys()
-        .start_registration(user)
-        .await
-        .expect("options");
+    let options = fx.keys().start_registration(user).await.expect("options");
     for slot in [0, 6] {
         assert_eq!(
             fx.keys()
@@ -942,11 +938,7 @@ async fn the_same_security_key_twice_is_refused() {
     let fx = Fx::new();
     let user = fx.user(EMAIL).await;
     fx.register_key(user, None, "Yubi", b"yubi").await;
-    let options = fx
-        .keys()
-        .start_registration(user)
-        .await
-        .expect("options");
+    let options = fx.keys().start_registration(user).await.expect("options");
     assert_eq!(
         fx.keys()
             .finish_registration(user, None, "Again", &registration_answer(&options, b"yubi"))
@@ -959,11 +951,7 @@ async fn the_same_security_key_twice_is_refused() {
 async fn a_security_key_registration_answer_that_is_wrong_uses_its_challenge_up() {
     let fx = Fx::new();
     let user = fx.user(EMAIL).await;
-    let options = fx
-        .keys()
-        .start_registration(user)
-        .await
-        .expect("options");
+    let options = fx.keys().start_registration(user).await.expect("options");
     let wrong = registration_answer(&json!({"challenge": "not it"}), b"yubi");
     assert_eq!(
         fx.keys()

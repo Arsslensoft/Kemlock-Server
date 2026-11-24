@@ -513,7 +513,12 @@ async fn an_authenticator_code_or_the_recovery_code_proves_the_owner_when_mail_i
             Some(json!({"proof": current})),
         )
         .await;
-    assert_eq!(replayed.status, StatusCode::BAD_REQUEST, "{:?}", replayed.json());
+    assert_eq!(
+        replayed.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        replayed.json()
+    );
 }
 
 #[tokio::test]

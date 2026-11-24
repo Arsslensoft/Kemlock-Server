@@ -219,10 +219,7 @@ where
             }
             None => (None, Vec::new()),
         };
-        Ok(Loaded {
-            created_at,
-            keys,
-        })
+        Ok(Loaded { created_at, keys })
     }
 
     /// Writes the list back; an empty list removes the row, so the method is off.
@@ -274,10 +271,7 @@ where
     /// Whether a registration may start beside another method that is on is for the caller to
     /// decide: the Kemlock routes ask for a fresh proof before the method is turned on, and
     /// Bitwarden's check the master password.
-    pub async fn start_registration(
-        &self,
-        user: UserId,
-    ) -> Result<Value, AppError> {
+    pub async fn start_registration(&self, user: UserId) -> Result<Value, AppError> {
         let account = self
             .users
             .by_id(user)

@@ -789,11 +789,26 @@ async fn a_second_step_beside_another_needs_a_proof_and_a_method_is_not_replaced
     // Duo is a second method: without a proof it is refused; the YubiKey method is on, so
     // replacing it is refused (409) even with one.
     for (method, uri, body, status) in [
-        ("PUT", format!("{FACTOR}/duo"), json!({}), StatusCode::BAD_REQUEST),
-        ("PUT", format!("{FACTOR}/yubikey"), json!({"otps": [OTP]}), StatusCode::CONFLICT),
+        (
+            "PUT",
+            format!("{FACTOR}/duo"),
+            json!({}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "PUT",
+            format!("{FACTOR}/yubikey"),
+            json!({"otps": [OTP]}),
+            StatusCode::CONFLICT,
+        ),
     ] {
         let refused = rig.authed(&device, method, &uri, token, Some(body)).await;
-        assert_eq!(refused.status, status, "{method} {uri}: {:?}", refused.json());
+        assert_eq!(
+            refused.status,
+            status,
+            "{method} {uri}: {:?}",
+            refused.json()
+        );
     }
     let shown = rig.authed(&device, "GET", SETUP, token, None).await;
     assert_eq!(
@@ -1111,7 +1126,12 @@ async fn a_second_step_is_added_beside_another_after_a_fresh_proof_that_works_on
     let replayed = rig
         .authed(&device, "PUT", &duo, token, Some(json!({"proof": proof})))
         .await;
-    assert_eq!(replayed.status, StatusCode::BAD_REQUEST, "{:?}", replayed.json());
+    assert_eq!(
+        replayed.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        replayed.json()
+    );
     // A fresh one adds Duo (the server's keys) beside both.
     rig.app.clock.advance(time::Duration::seconds(31));
     let asked = rig
@@ -1145,5 +1165,10 @@ async fn a_second_step_is_added_beside_another_after_a_fresh_proof_that_works_on
             Some(json!({"otps": [OTP], "proof": rig.mailbox.last_proof()})),
         )
         .await;
-    assert_eq!(replaced.status, StatusCode::CONFLICT, "{:?}", replaced.json());
+    assert_eq!(
+        replaced.status,
+        StatusCode::CONFLICT,
+        "{:?}",
+        replaced.json()
+    );
 }
