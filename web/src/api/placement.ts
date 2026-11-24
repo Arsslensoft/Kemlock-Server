@@ -1,8 +1,11 @@
 // Where each vault lives, for the failover banner and "Where your vault is stored".
 //
-// ASSUMED route: the server has no placement API yet (federation exists as /fed/v1 between servers
-// only). The shape below is what the canvas draws; a server that doesn't have the route answers 404
-// and the web vault shows nothing, which is right for a single server.
+// `GET /kem/v1/placement` answers from the federation state: the servers of the account's own
+// vault and its spaces (home first), and the apps that use this server. A server that federates
+// none of them answers 404 and the web vault shows nothing, which is right for a single server.
+// The server does not yet know a peer is down (`status` is always `online`), keeps no waiting
+// changes (`pending` is null; cancelling one answers 404), and has no place or name for a server
+// beyond the host of its address.
 import type { Api } from './client';
 import { isApiError } from './errors';
 

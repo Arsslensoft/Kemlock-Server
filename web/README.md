@@ -120,8 +120,11 @@ Not built, or not working yet:
   finishes (as the admin Settings), and checked first. The address, push, file folder and backups
   are not settings the server stores; the last setup screen lists them to copy into its
   configuration.
-- Where each vault lives (`src/api/placement.ts`): the server has no placement route, so the
-  failover banner and the storage page show nothing for a single server.
+- Where each vault lives (`src/api/placement.ts`): `GET /kem/v1/placement` is served from the
+  federation state. A single server answers 404 and the failover banner and storage page show
+  nothing. A server is named by the host of its address, and every peer shows as online, because
+  the server does not probe its peers yet, so the banner does not appear on its own. Waiting
+  changes are not kept per vault, so there is nothing to cancel.
 
 ### Federation: what a server cannot say
 
