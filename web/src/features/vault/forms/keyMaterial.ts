@@ -134,7 +134,7 @@ export async function readPastedSshKey(text: string): Promise<SshMaterial | unde
   if (!algorithm) return undefined;
   try {
     const params = algorithm === 'ed25519' ? { name: 'Ed25519' } : { name: 'ECDSA', namedCurve: 'P-256' };
-    const key = await crypto.subtle.importKey('pkcs8', der, params, true, ['sign']);
+    const key = await crypto.subtle.importKey('pkcs8', der as Uint8Array<ArrayBuffer>, params, true, ['sign']);
     const jwk = await crypto.subtle.exportKey('jwk', key);
     if (!jwk.x) return undefined;
     const x = fromB64(jwk.x);
