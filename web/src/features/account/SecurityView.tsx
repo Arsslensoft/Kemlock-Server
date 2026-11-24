@@ -9,13 +9,16 @@ import '@/styles/account.css';
 import { EmergencyCard, type EmergencyCardProps } from './EmergencyCard';
 import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
+import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
 import type { Described } from './errors';
 
 export interface TotpState {
   /** The enrolment panel is open. */
   open: boolean;
   /** The secret and URI, once the server has made them. */
-  enrol: TotpEnrolResponse | undefined;
+  enrol: TotpEnrolResponse |  passkeys?: PasskeysCardProps | undefined;
+  /** The emailed code, YubiKeys, Duo, security keys and the recovery code; omitted, they read "Later". */
+  secondSteps?: SecondStepsProps | undefined;
 }
 
 export interface SecurityViewProps {
@@ -35,7 +38,7 @@ export interface SecurityViewProps {
   passkeys?: PasskeysCardProps | undefined;
 }
 
-/** The two-step methods the canvas draws and the server doesn't offer yet. */
+/** The methods drawn as "Later" where the screen is given no way to set them up. */
 const LATER = ['yubikey', 'duo', 'email', 'recovery'] as const;
 
 export function SecurityView({
@@ -51,9 +54,11 @@ export function SecurityView({
   onConfirmTotp,
   emergency,
   passkeys,
+  secondSteps,
 }: SecurityViewProps) {
   const t = useT();
   const totpOn = methods?.includes('totp') ?? false;
+  const later: readonly (typeof LATER)[number][] = secondSteps ? [] : LATER;
 
   return (
     <>
@@ -158,7 +163,8 @@ export function SecurityView({
               </div>
             ) : null}
             {passkeys ? <PasskeysCard {...passkeys} /> : null}
-            {LATER.map((method) => (
+            {secondSteps ? <SecondStepsCard {...secondSteps} /> : null}
+            {later.map((method) => (
               <div className="row" key={method}>
                 <div className="grow">
                   <div>{t(`security.method.${method}`)}</div>
