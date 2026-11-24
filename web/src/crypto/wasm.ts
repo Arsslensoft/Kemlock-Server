@@ -107,6 +107,20 @@ export interface WasmVault {
     keyVersion: number,
     wrapped: string,
   ): number;
+  /** `{kitId, pieces, wrappedKey, keyVersion}`: a 2-of-3 Recovery Kit for the open account. */
+  kitMake(): string;
+  /** `{kitId, threshold, shares, index}` or `{problem}` (format, checksum) for one piece's text. */
+  kitReadPiece(text: string): string;
+  /** `{problem}` (other-kit, duplicate, format, checksum), or `{}`, for a JSON array of pieces. */
+  kitCheckPieces(piecesJson: string): string;
+  /** Opens a kit's wrap with enough pieces (a JSON array); the root key stays behind the handle. */
+  kitOpenRoot(
+    piecesJson: string,
+    kitId: string,
+    accountId: string,
+    keyVersion: number,
+    wrapped: string,
+  ): number;
   unlockWithRoot(
     accountId: string,
     rootHandle: number,

@@ -63,6 +63,24 @@ export interface PrfWrap {
   keyVersion: number;
 }
 
+/** A new Recovery Kit: the pieces to show once, and the record for the server. */
+export interface MadeKit {
+  kitId: string;
+  /** The text of each piece, `BMCKIT1-...`; the only copy there will be. */
+  pieces: string[];
+  /** base64url, 92 bytes: the root key under the kit key. */
+  wrappedKey: string;
+  keyVersion: number;
+}
+
+/** What is wrong with a piece or the pieces entered so far (docs/crypto.md, "The Recovery Kit"). */
+export type KitProblem = 'format' | 'checksum' | 'other-kit' | 'duplicate' | 'not-enough';
+
+/** A piece read from its text, or the problem with it. */
+export type KitPieceRead =
+  | { problem?: undefined; kitId: string; threshold: number; shares: number; index: number }
+  | { problem: KitProblem };
+
 export interface UnlockOptions {
   /** The account's key version; 1 when omitted. */
   keyVersion?: number;
@@ -457,6 +475,23 @@ export interface CryptoApi {
     keyVersion: number,
     wrapped: string,
   ): Promise<ApprovedKeyHandle>;
+  /** Makes a 2-of-3 Recovery Kit for the open account; the root key never leaves the worker. */
+  kitMake(): Promise<MadeKit>;
+  /** Reads one piece however it was typed. */
+  kitReadPiece(text: string): Promise<KitPieceRead>;
+  /** Whether pieces are of one kit with none twice; fewer than the kit needs pass. */
+  kitCheckPieces(pieces: string[]): Promise<{ problem?: KitProblem }>;
+  /**
+   * Opens a kit's wrap of the root key with enough pieces and keeps the root key in the worker;
+   * unlock with `unlockWithRoot`. Refuses too few pieces, another kit, account or key version.
+   */
+  kitOpenRoot(
+    pieces: string[],
+    kitId: string,
+    accountId: string,
+    keyVersion: number,
+    wrapped: string,
+  ): Promise<ApprovedKeyHandle>;
   /** Opens the vault with an approved root key; consumes the handle. */
   unlockWithRoot(
     accountId: string,
@@ -571,6 +606,13 @@ export interface Ops {
       keyVersion: number,
       wrapped: string,
     ];
+    result: ApprovedKeyHandle;
+  };
+  kitMake: { args: []; result: MadeKit };
+  kitReadPiece: { args: [text: string]; result: KitPieceRead };
+  kitCheckPieces: { args: [pieces: string[]]; result: { problem?: KitProblem } };
+  kitOpenRoot: {
+    args: [pieces: string[], kitId: string, accountId: string, keyVersion: number, wrapped: string];
     result: ApprovedKeyHandle;
   };
   newSsoAccount: { args: [accountId: string]; result: NewAccount };
