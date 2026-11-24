@@ -10,7 +10,9 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
-Nothing is released yet. This is what the repository holds today.
+## [0.1.0] - 2026-11-24
+
+The first release.
 
 ### Added
 
@@ -26,6 +28,8 @@ Nothing is released yet. This is what the repository holds today.
 - Bitwarden API
   - Answers as Vaultwarden does, so Bitwarden apps and Amethystora Vault keep syncing; two-step
     login with authenticator apps, security keys, emailed codes, YubiKey and Duo.
+  - Bitwarden clients up to 2026.10, including the user key id and minimum KDF steps they take
+    at sign-in.
   - Contract tests that replay the traffic of the Kemlock app and Amethystora Vault.
 - Migration
   - Import of a Vaultwarden data folder as stored, with nothing decrypted, and importers ported
@@ -53,4 +57,5 @@ Nothing is released yet. This is what the repository holds today.
   - Contributing guide, DCO, code of conduct, governance, maintainers, support page, issue forms,
     a pull request template and code owners.
 
-[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/commits/main
+[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/Arsslensoft/Kemlock-Server/releases/tag/v0.1.0
