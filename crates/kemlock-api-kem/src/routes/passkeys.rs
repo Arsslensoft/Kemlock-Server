@@ -9,7 +9,8 @@
 //!   and delete an account's passkeys (at most five), and `PUT .../{id}/prf` stores the PRF copy
 //!   of the root key.
 //! - `POST /kem/v1/account/two-factor/webauthn` and `.../confirm` enrol a security key as a
-//!   second step, as the TOTP routes enrol an authenticator app.
+//!   second step, as the TOTP routes enrol an authenticator app; `GET .../webauthn` lists the keys
+//!   and `DELETE .../webauthn/{slot}` removes one.
 //! - `POST /kem/v1/auth/two-factor/webauthn/options` and `.../webauthn` answer the second step of
 //!   a sign-in with that key.
 //!
@@ -700,6 +701,50 @@ where
     Ok(Json(SecurityKeysResponse::from_list(list)))
 }
 
+/// `GET /kem/v1/account/two-factor/webauthn`: the account's security keys.
+async fn handle_keys_list<S, P, K, R, W, M>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<PasskeyRuntime<R, W, M>>>,
+    authed: Authed,
+) -> Result<Json<SecurityKeysResponse>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+    M: Send + Sync + 'static,
+{
+    guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    let list = security_keys(&api, &runtime)
+        .keys(authed.actor.user)
+        .await?;
+    Ok(Json(SecurityKeysResponse::from_list(list)))
+}
+
+/// `DELETE /kem/v1/account/two-factor/webauthn/{slot}`: removes the key in a slot (1 to 5); with
+/// the last one gone the method is off.
+async fn handle_key_remove<S, P, K, R, W, M>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<PasskeyRuntime<R, W, M>>>,
+    authed: Authed,
+    Path(slot): Path<u8>,
+) -> Result<Json<SecurityKeysResponse>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+    M: Send + Sync + 'static,
+{
+    guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    let list = security_keys(&api, &runtime)
+        .remove(authed.actor.user, slot)
+        .await?;
+    Ok(Json(SecurityKeysResponse::from_list(list)))
+}
+
 /// The limits every second-step call passes: per address, and per challenge.
 fn limit_second_step<S, P, K>(
     api: &Api<S, P, K>,
@@ -853,7 +898,11 @@ where
         )
         .route(
             "/kem/v1/account/two-factor/webauthn",
-            post(handle_key_enrol::<S, P, K, R, W, M>),
+            get(handle_keys_list::<S, P, K, R, W, M>).post(handle_key_enrol::<S, P, K, R, W, M>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/webauthn/{slot}",
+            axum::routing::delete(handle_key_remove::<S, P, K, R, W, M>),
         )
         .route(
             "/kem/v1/account/two-factor/webauthn/confirm",
@@ -997,6 +1046,26 @@ fn doc_key_enrol() {}
 fn doc_key_confirm() {}
 
 #[utoipa::path(
+    get, path = "/kem/v1/account/two-factor/webauthn", tag = "account",
+    security(("dpop" = [])),
+    responses((status = 200, description = "The account's security keys", body = SecurityKeysResponse))
+)]
+#[allow(dead_code)]
+fn doc_keys_list() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/account/two-factor/webauthn/{slot}", tag = "account",
+    security(("dpop" = [])),
+    params(("slot" = u8, Path, description = "The key's slot, 1 to 5")),
+    responses(
+        (status = 200, description = "The key is removed; the keys left", body = SecurityKeysResponse),
+        (status = 404, description = "No key in that slot", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_key_remove() {}
+
+#[utoipa::path(
     post, path = "/kem/v1/auth/two-factor/webauthn/options", tag = "auth",
     params(("DPoP" = String, Header, description = "A DPoP proof signed by the key that passed the first step")),
     request_body = KeyStepOptionsRequest,
@@ -1036,6 +1105,8 @@ fn doc_key_step() {}
         doc_passkey_prf,
         doc_key_enrol,
         doc_key_confirm,
+        doc_keys_list,
+        doc_key_remove,
         doc_key_step_options,
         doc_key_step
     ),
