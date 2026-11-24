@@ -67,7 +67,9 @@ export default function Item() {
       ? noteOf(item)
       : typeof item.data?.notes === 'string'
         ? item.data.notes
-        : '';
+        : typeof item.data?.note === 'string' && isEditable(item.kind)
+          ? item.data.note
+          : '';
   const ageText = timeAgo(item.data?.updatedAt);
 
   return (
