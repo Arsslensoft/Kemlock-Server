@@ -594,6 +594,11 @@ where
     let request: EmailBeginRequest = body.json()?;
     limit_setup(&api, &authed, "email-setup")?;
     refuse_while_on(&api, authed.actor.user).await?;
+    // Each code mailed counts, 5 in 15 minutes: the route can't be used to fill a mailbox.
+    let issued = format!("email-setup-codes:{}", authed.actor.user);
+    let now = api.now();
+    api.limits.second_step.blocked(&issued, now).map_err(rate_limited)?;
+    api.limits.second_step.fail(&issued, now);
     two_step_of(&api, &runtime)
         .email_begin(authed.actor.user, &request.address)
         .await?;
