@@ -6,12 +6,12 @@ import { describeError } from '@/lib/errors';
 import type { LoginValues, NoteValues } from '@/lib/schemas';
 import { buttonClass } from '@/ui/Button';
 import { LoginForm, NoteForm } from './ItemForm';
+import { ENTRY_KINDS, ENTRY_TITLES, EntryForm, isEntryKind } from './forms';
+import { KEY_KINDS, KeyItemForm, isKeyKind } from './forms/KeyItemForm';
 import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
 import { type EditableKind, isEditable, kindLabel } from './kinds';
 import { type ItemData, type VaultItem, itemName, loginOf, noteOf } from './vault';
 import { readWebsites, writeWebsites } from './websites';
-
-const OTHER_KINDS = ['otp', 'backup-codes', 'card', 'identity', 'ssh-key', 'pgp-key', 'certificate', 'contact'];
 
 export function loginDefaults(item?: VaultItem): LoginValues {
   const login = item ? loginOf(item) : undefined;
@@ -110,7 +110,10 @@ export default function NewItem() {
     void navigate({ to: '/vault/$itemId', params: { itemId: result.id } });
   }
 
-  const target = collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where);
+  // A contact is one person's own statement: it stays in the account's own vault.
+  const target = kind === 'contact'
+    ? undefined
+    : collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where);
   const owner = target ? `space:${target.spaceId}` : `user:${session.getState().userId ?? ''}`;
   const collectionId = target?.collectionId;
   const heldIn = item?.collectionId
@@ -126,14 +129,20 @@ export default function NewItem() {
       </nav>
       <div>
         <h1 className="page-title">
-          {editing ? t('newItem.editTitle') : t(kind === 'login' ? 'newItem.loginTitle' : 'newItem.noteTitle')}
+          {editing
+            ? t('newItem.editTitle')
+            : isEntryKind(kind)
+              ? t(ENTRY_TITLES[kind])
+              : isKeyKind(kind)
+                ? t('newItem.titleOf', { kind: t(kindLabel(kind)) })
+                : t(kind === 'login' ? 'newItem.loginTitle' : 'newItem.noteTitle')}
         </h1>
         <p className="lede">{t('newItem.lede')}</p>
       </div>
 
       {editing ? null : (
         <div className="chips" role="group" aria-label={t('newItem.kind')}>
-          {(['login', 'note'] as const).map((option) => (
+          {(['login', 'note', ...ENTRY_KINDS, ...KEY_KINDS] as const).map((option) => (
             <button
               key={option}
               type="button"
@@ -142,11 +151,6 @@ export default function NewItem() {
               onClick={() => setChosen(option)}
             >
               {t(kindLabel(option))}
-            </button>
-          ))}
-          {OTHER_KINDS.map((other) => (
-            <button key={other} type="button" className="chip" disabled title={t('newItem.later')}>
-              {t(kindLabel(other))}
             </button>
           ))}
         </div>
@@ -159,7 +163,7 @@ export default function NewItem() {
             : t('newItem.where.inSpace')}
         </p>
       ) : null}
-      {!editing && collections.data && collections.data.length > 0 ? (
+      {!editing && kind !== 'contact' && collections.data && collections.data.length > 0 ? (
         <div className="field">
           <label htmlFor="item-where">{t('newItem.where')}</label>
           <select id="item-where" value={where} onChange={(event) => setWhere(event.target.value)}>
@@ -173,7 +177,32 @@ export default function NewItem() {
         </div>
       ) : null}
 
-      {kind === 'login' ? (
+      {isEntryKind(kind) ? (
+        <EntryForm
+          kind={kind}
+          item={item}
+          submitLabel={t('action.save')}
+          pending={save.isPending}
+          error={error}
+          onCancel={cancel}
+          onSubmit={(fields) =>
+            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+          }
+        />
+      ) : isKeyKind(kind) ? (
+        <KeyItemForm
+          key={`${kind}-${item?.id ?? 'new'}`}
+          kind={kind}
+          item={item}
+          submitLabel={t('action.save')}
+          pending={save.isPending}
+          error={error}
+          onCancel={cancel}
+          onSave={(fields) =>
+            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+          }
+        />
+      ) : kind === 'login' ? (
         <LoginForm
           key={`login-${item?.id ?? 'new'}`}
           initial={loginDefaults(item)}

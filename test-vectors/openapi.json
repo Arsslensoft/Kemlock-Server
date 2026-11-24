@@ -686,6 +686,32 @@
         ],
         "type": "object"
       },
+      "CreateKitRequest": {
+        "additionalProperties": false,
+        "description": "A new kit's record, from the key worker's `kitMake`.",
+        "properties": {
+          "keyVersion": {
+            "description": "The account's key version the wrap is for: the current one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kitId": {
+            "description": "The kit id: 8 base32 characters, as in every piece.",
+            "type": "string"
+          },
+          "wrappedKey": {
+            "description": "The root key wrapped under the kit key, base64url, 92 bytes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kitId",
+          "keyVersion",
+          "wrappedKey"
+        ],
+        "type": "object"
+      },
       "CreateSendRequest": {
         "additionalProperties": false,
         "description": "`POST /sends`.",
@@ -1042,6 +1068,57 @@
         ],
         "type": "object"
       },
+      "DuoSetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "clientId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "clientSecret": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "host": {
+            "description": "The account's own Duo integration; leave out all three to use the server's.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "DuoShown": {
+        "properties": {
+          "host": {
+            "description": "The Duo host, when the account uses its own keys.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "integration": {
+            "description": "`own` for the account's keys, `server` for the server's integration.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "integration"
+        ],
+        "type": "object"
+      },
       "DuoStartResponse": {
         "properties": {
           "authUrl": {
@@ -1160,6 +1237,43 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "EmailBeginRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "description": "Where the codes go; a first one is mailed to it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "address"
+        ],
+        "type": "object"
+      },
+      "EmailConfirmRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "code": {
+            "description": "The code that was mailed.",
+            "type": "string"
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "address",
+          "code"
+        ],
         "type": "object"
       },
       "EmailRequest": {
@@ -2027,6 +2141,52 @@
         ],
         "type": "object"
       },
+      "KitDto": {
+        "properties": {
+          "createdAt": {
+            "description": "When the kit was made, RFC 3339.",
+            "type": "string"
+          },
+          "current": {
+            "description": "Whether the kit is for the account's current key version: only then do its pieces open the\nvault.",
+            "type": "boolean"
+          },
+          "keyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kitId": {
+            "type": "string"
+          },
+          "shares": {
+            "description": "Pieces made.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "threshold": {
+            "description": "Pieces needed to unlock.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "wrappedKey": {
+            "description": "The root key wrapped under the kit key, base64url: opaque to the server, and useless\nwithout the pieces.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kitId",
+          "threshold",
+          "shares",
+          "keyVersion",
+          "createdAt",
+          "current",
+          "wrappedKey"
+        ],
+        "type": "object"
+      },
       "ManifestRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2833,6 +2993,132 @@
         ],
         "type": "object"
       },
+      "PlacementAppDto": {
+        "properties": {
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "localCopy": {
+            "description": "A Bitwarden-compatible app, which stays on its address.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "server": {
+            "description": "The server it uses now, by name.",
+            "type": "string"
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "server",
+          "localCopy"
+        ],
+        "type": "object"
+      },
+      "PlacementDto": {
+        "properties": {
+          "apps": {
+            "items": {
+              "$ref": "#/components/schemas/PlacementAppDto"
+            },
+            "type": "array"
+          },
+          "vaults": {
+            "items": {
+              "$ref": "#/components/schemas/PlacementVaultDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "vaults",
+          "apps"
+        ],
+        "type": "object"
+      },
+      "PlacementServerDto": {
+        "properties": {
+          "id": {
+            "description": "The server's id.",
+            "type": "string"
+          },
+          "inUse": {
+            "description": "The apps of this vault are on it right now.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The host of its address.",
+            "type": "string"
+          },
+          "offlineSince": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "place": {
+            "description": "What the descriptor doesn't carry: always `null` for now.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "role": {
+            "description": "`home` or `replica`.",
+            "type": "string"
+          },
+          "status": {
+            "description": "`unknown`: this server has no liveness probe of its peers yet, so it never says online or\noffline.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "role",
+          "status",
+          "inUse"
+        ],
+        "type": "object"
+      },
+      "PlacementVaultDto": {
+        "properties": {
+          "id": {
+            "description": "`me`, or the space's id.",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "pending": {
+            "description": "The server keeps no waiting changes per vault yet: always `null`."
+          },
+          "servers": {
+            "description": "Home first, then the replicas in order.",
+            "items": {
+              "$ref": "#/components/schemas/PlacementServerDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "servers"
+        ],
+        "type": "object"
+      },
       "PoliciesDto": {
         "additionalProperties": false,
         "description": "A space's policies. Every setting defaults to off, so a `PUT` that leaves one out turns it off.",
@@ -3103,6 +3389,20 @@
         ],
         "type": "object"
       },
+      "ProofRequest": {
+        "additionalProperties": false,
+        "description": "What proves it is the account's owner at a keyboard who turns a second step off, not only a\nsession: the one-time code mailed by `POST /kem/v1/account/two-factor/proof`, as Vaultwarden\ntakes a mailed code for the master password (`PasswordOrOtpData`).",
+        "properties": {
+          "proof": {
+            "description": "The code that was mailed; it works once.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "proof"
+        ],
+        "type": "object"
+      },
       "PushTokenRequest": {
         "additionalProperties": false,
         "description": "The body of `POST /kem/v1/devices/push-token`.",
@@ -3145,6 +3445,20 @@
           "keySeq",
           "stale"
         ],
+        "type": "object"
+      },
+      "RecoveryCodeRequest": {
+        "additionalProperties": false,
+        "description": "Asks for the account's recovery code.",
+        "properties": {
+          "proof": {
+            "description": "A fresh proof that is not the recovery code itself: a code mailed by\n`POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not\nneeded while the account holds no recovery code.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
         "type": "object"
       },
       "RecoveryCodeResponse": {
@@ -3365,6 +3679,34 @@
         ],
         "type": "object"
       },
+      "ReplaceKitRequest": {
+        "additionalProperties": false,
+        "description": "A new kit in place of the old one.",
+        "properties": {
+          "keyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kitId": {
+            "type": "string"
+          },
+          "proof": {
+            "description": "The code mailed by `POST /kem/v1/account/two-factor/proof`; it works once.",
+            "type": "string"
+          },
+          "wrappedKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kitId",
+          "keyVersion",
+          "wrappedKey",
+          "proof"
+        ],
+        "type": "object"
+      },
       "ReplacementWriteDto": {
         "additionalProperties": false,
         "properties": {
@@ -3539,6 +3881,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when a second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -3701,6 +4050,40 @@
         ],
         "type": "object"
       },
+      "ServerBasicsDto": {
+        "description": "The server basics a setup screen sends. Fields the server has no setting for (the public\naddress, push, file folder, backups) are accepted and ignored, so a client may send its whole\nform.",
+        "properties": {
+          "join": {
+            "description": "`invite`, `domains` or `anyone`.",
+            "type": "string"
+          },
+          "joinDomains": {
+            "description": "Comma-separated; needed for `domains`.",
+            "type": "string"
+          },
+          "mailFrom": {
+            "type": "string"
+          },
+          "mailHost": {
+            "description": "The outgoing mail server; empty for no mail.",
+            "type": "string"
+          },
+          "mailPort": {
+            "type": "string"
+          },
+          "mailSecurity": {
+            "description": "`starttls` or `tls`.",
+            "type": "string"
+          },
+          "mailUser": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "join"
+        ],
+        "type": "object"
+      },
       "ServerEntryDto": {
         "description": "One server a vault is held on.",
         "properties": {
@@ -3727,6 +4110,24 @@
           "identityKey",
           "role"
         ],
+        "type": "object"
+      },
+      "SetupFinishRequest": {
+        "additionalProperties": false,
+        "description": "The optional body of `POST /kem/v1/setup/finish`.",
+        "properties": {
+          "basics": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ServerBasicsDto",
+                "description": "The \"Server basics\" the setup screens collected; saved as the settings the admin console\nedits."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
         "type": "object"
       },
       "SetupVerifyRequest": {
@@ -4088,7 +4489,7 @@
             "type": "string"
           },
           "client": {
-            "description": "The client's kind, which Duo's redirect page needs: `web` (the default), `browser`,\n`desktop`, `mobile` or `cli`. Send the same when the prompt is answered.",
+            "description": "The client's kind, which Duo's redirect page needs: `web` (the default), `b.any(|row| row.enabled)ser`,\n`desktop`, `mobile` or `cli`. Send the same when the prompt is answered.",
             "type": [
               "string",
               "null"
@@ -4340,6 +4741,13 @@
         "properties": {
           "code": {
             "type": "string"
+          },
+          "proof": {
+            "description": "The recovery code, when another second step is on already: a session alone may add the\nfirst step, and a fresh proof is needed beside one that is on.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -4420,6 +4828,56 @@
         "required": [
           "method",
           "enabled"
+        ],
+        "type": "object"
+      },
+      "TwoStepSetupResponse": {
+        "description": "What the account has set up beyond the list: never a secret. The address, the public ids of\nYubiKeys and the host of a Duo integration.",
+        "properties": {
+          "duo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DuoShown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "duoServerKeys": {
+            "description": "Whether this server has a Duo integration an account can use without keys of its own.",
+            "type": "boolean"
+          },
+          "email": {
+            "description": "The address codes go to, when the method is on.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "emailOffered": {
+            "description": "Whether this server can mail a code.",
+            "type": "boolean"
+          },
+          "yubikey": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/YubikeyShown"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "yubikeyOffered": {
+            "description": "Whether this server can check a YubiKey OTP.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "emailOffered",
+          "yubikeyOffered",
+          "duoServerKeys"
         ],
         "type": "object"
       },
@@ -4556,6 +5014,52 @@
         "required": [
           "entry",
           "signature"
+        ],
+        "type": "object"
+      },
+      "YubikeySetRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "nfc": {
+            "description": "Whether the keys are read over NFC.",
+            "type": "boolean"
+          },
+          "otps": {
+            "description": "One OTP per key (or, for a key already checked, its 12-character public id); at most five.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "proof": {
+            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "otps"
+        ],
+        "type": "object"
+      },
+      "YubikeyShown": {
+        "properties": {
+          "keys": {
+            "description": "The public ids of the registered keys.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "nfc": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "keys",
+          "nfc"
         ],
         "type": "object"
       }
@@ -5473,9 +5977,943 @@
         ]
       }
     },
-    "/kem/v1/account/two-factor/recovery-code": {
+    "/kem/v1/account/recovery-kit": {
+      "delete": {
+        "operationId": "doc_remove",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The kit is gone"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The proof is wrong or spent"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no kit"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "recovery-kit"
+        ]
+      },
       "get": {
+        "operationId": "doc_show",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KitDto"
+                }
+              }
+            },
+            "description": "The account's kit"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no kit"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "recovery-kit"
+        ]
+      },
+      "post": {
+        "operationId": "doc_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateKitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KitDto"
+                }
+              }
+            },
+            "description": "The kit is kept"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The id or the wrap is malformed, or the wrap is for another key version"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has a kit: replace it"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "recovery-kit"
+        ]
+      },
+      "put": {
+        "operationId": "doc_replace",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceKitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KitDto"
+                }
+              }
+            },
+            "description": "The new kit is kept; the old pieces no longer work"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The proof is wrong or spent, or the id or wrap is malformed"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no kit"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "recovery-kit"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/duo": {
+      "delete": {
+        "operationId": "doc_duo_off",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The method is off"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "put": {
+        "operationId": "doc_duo_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuoSetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuoShown"
+                }
+              }
+            },
+            "description": "Duo is on"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Keys Duo did not accept, no server keys to use, or a second step is on and the fresh proof is missing or wrong"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The Duo method is on already: remove it (with a proof), then add it"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/email": {
+      "delete": {
+        "operationId": "doc_email_off",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The method is off"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "doc_email_begin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailBeginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "A first code was mailed to the address"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Not an address, or the server can't mail codes"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The email method is on already: remove it (with a proof), then add it"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/email/confirm": {
+      "post": {
+        "operationId": "doc_email_confirm",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailConfirmRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The method is on. With another second step on, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "A second step is on and no proof came, or the proof is wrong or has run out"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong address or code"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The email method is on already"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/proof": {
+      "post": {
+        "operationId": "doc_proof_request",
+        "responses": {
+          "204": {
+            "description": "A one-time code was mailed to the account's address"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The server can't mail, or a code was sent a moment ago"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/recovery-code": {
+      "post": {
         "operationId": "doc_recovery_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -5485,7 +6923,17 @@
                 }
               }
             },
-            "description": "The recovery code (null before the account's first second step, or once it was spent)"
+            "description": "The recovery code (null before the account's first second step, or once it was spent). While the account holds one, the request carries a fresh `proof` that is not the recovery code: a mailed code or a current code of the authenticator app"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account holds a code and the proof is missing, wrong or has run out"
           },
           "401": {
             "content": {
@@ -5634,7 +7082,17 @@
         },
         "responses": {
           "204": {
-            "description": "The method is enabled"
+            "description": "The method is enabled. With another second step on, the request carries the recovery code as `proof`"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Another second step is on and the proof is missing or wrong"
           },
           "401": {
             "content": {
@@ -5686,6 +7144,81 @@
       }
     },
     "/kem/v1/account/two-factor/webauthn": {
+      "get": {
+        "operationId": "doc_keys_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityKeysResponse"
+                }
+              }
+            },
+            "description": "The account's security keys"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
       "post": {
         "operationId": "doc_key_enrol",
         "responses": {
@@ -5722,16 +7255,6 @@
                 }
               }
             }
-          },
-          "409": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDoc"
-                }
-              }
-            },
-            "description": "An authenticator app is on: a session alone can't add a second step beside it"
           },
           "429": {
             "content": {
@@ -5794,7 +7317,7 @@
                 }
               }
             },
-            "description": "The key is registered and the method is on"
+            "description": "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)"
           },
           "400": {
             "content": {
@@ -5804,7 +7327,7 @@
                 }
               }
             },
-            "description": "The answer wasn't accepted or no registration is in progress"
+            "description": "The answer wasn't accepted, no registration is in progress, or a second step is on and the fresh proof is missing or wrong"
           },
           "401": {
             "content": {
@@ -5829,6 +7352,301 @@
                 }
               }
             }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/webauthn/{slot}": {
+      "delete": {
+        "operationId": "doc_key_remove",
+        "parameters": [
+          {
+            "description": "The key's slot, 1 to 5",
+            "in": "path",
+            "name": "slot",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityKeysResponse"
+                }
+              }
+            },
+            "description": "The key is removed; the keys left"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "No key in that slot"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-factor/yubikey": {
+      "delete": {
+        "operationId": "doc_yubikey_off",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The method and its keys are gone"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "put": {
+        "operationId": "doc_yubikey_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/YubikeySetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/YubikeyShown"
+                }
+              }
+            },
+            "description": "The keys, replacing any the account had"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "An OTP Yubico did not accept, Yubico is not set up, or a second step is on and the fresh proof is missing or wrong"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The YubiKey method is on already: remove it (with a proof), then add it"
           },
           "429": {
             "content": {
@@ -5902,6 +7720,69 @@
               }
             },
             "description": "Too many calls"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/two-step/setup": {
+      "get": {
+        "operationId": "doc_setup_show",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TwoStepSetupResponse"
+                }
+              }
+            },
+            "description": "What the account set up: the address, the YubiKey ids, the Duo integration, and what the server offers"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "No valid access token"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "500": {
             "content": {
@@ -11795,6 +13676,190 @@
         ]
       }
     },
+    "/kem/v1/placement": {
+      "get": {
+        "operationId": "doc_placement",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlacementDto"
+                }
+              }
+            },
+            "description": "The servers that hold each of the account's federated vaults (the home first), and the apps that use this server"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "None of the account's vaults is federated here: a single server"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "failover"
+        ]
+      }
+    },
+    "/kem/v1/placement/{vault}/pending/{change}": {
+      "delete": {
+        "operationId": "doc_cancel_pending",
+        "parameters": [
+          {
+            "description": "`me` or a space id",
+            "in": "path",
+            "name": "vault",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The waiting change's id",
+            "in": "path",
+            "name": "change",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The server keeps no waiting changes per vault yet"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "failover"
+        ]
+      }
+    },
     "/kem/v1/policies": {
       "get": {
         "operationId": "doc_mine",
@@ -12687,9 +14752,35 @@
     "/kem/v1/setup/finish": {
       "post": {
         "operationId": "doc_setup_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SetupFinishRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
         "responses": {
           "204": {
-            "description": "Setup is closed for good"
+            "description": "Setup is closed for good, and the server basics (when sent) are saved as settings"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "A server basic is not valid; setup stays open"
           },
           "401": {
             "content": {

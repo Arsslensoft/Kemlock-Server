@@ -7,7 +7,8 @@
 use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
-    InvitationNotice, Notice, ProtectedActionNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
+    InvitationNotice, Notice, ProtectedActionNotice, TwoStepChangedNotice, TwoStepCodeNotice,
+    TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -318,6 +319,33 @@ fn two_step_recovered(notice: &TwoStepRecoveredNotice, brand: &Branding) -> Rend
     )
 }
 
+fn two_step_changed(notice: &TwoStepChangedNotice, brand: &Branding) -> Rendered {
+    let what = match notice.method {
+        "email" => "emailed codes",
+        "yubikey" => "a YubiKey",
+        "duo" => "Duo",
+        _ => "a security key",
+    };
+    let verb = if notice.on { "turned on" } else { "turned off" };
+    let lead = format!(
+        "On {}, {what} was {verb} as a second step of your account.",
+        when(notice.at)
+    );
+    let body = Body::new(&[
+        &lead,
+        "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!(
+            "A second step was {verb} on your {} account",
+            brand.app_name
+        ),
+        &body,
+        brand,
+    )
+}
+
 fn protected_action(notice: &ProtectedActionNotice, brand: &Branding) -> Rendered {
     let lead = format!("Your verification code is {}", plain(&notice.code));
     let body = Body::new(&[
@@ -344,6 +372,7 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::TwoStepCode(n) => two_step_code(n, brand),
         Notice::ProtectedAction(n) => protected_action(n, brand),
         Notice::TwoStepRecovered(n) => two_step_recovered(n, brand),
+        Notice::TwoStepChanged(n) => two_step_changed(n, brand),
     }
 }
 
@@ -570,6 +599,25 @@ mod tests {
         assert!(r.text.contains("2026-11-26 09:05 UTC"), "{}", r.text);
         assert!(r.text.contains("recovery code"));
         assert!(r.html.contains("2026-11-26 09:05 UTC"));
+    }
+
+    #[test]
+    fn a_changed_second_step_is_named_and_dated() {
+        let r = render(
+            &Notice::TwoStepChanged(TwoStepChangedNotice {
+                to: email(),
+                at: datetime!(2026-11-26 10:05 +01:00),
+                method: "duo",
+                on: false,
+            }),
+            &brand(),
+        );
+        assert_eq!(
+            r.subject,
+            "A second step was turned off on your Kemlock account"
+        );
+        assert!(r.text.contains("Duo was turned off"), "{}", r.text);
+        assert!(r.text.contains("2026-11-26 09:05 UTC"));
     }
 
     #[test]

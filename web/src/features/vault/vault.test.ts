@@ -93,7 +93,9 @@ describe('saving', () => {
     expect(sent).toMatchObject({ format: 'kem1', kind: 'login', owner: OWNER, revision: 1, deleted: false });
     // What goes to the server is ciphertext: the name and password are not in it as JSON fields.
     expect(sent?.ciphertext).toBeTruthy();
-    expect(store.items.get(saved.id)?.data?.updatedAt).toBe(NOW.toISOString());
+    expect(store.items.get(saved.id)?.data?.updatedAt).toBe(NOW.getTime());
+    // The entry's own id is the item's id, which kemlock-core checks before it reads the item.
+    expect(store.items.get(saved.id)?.data?.id).toBe(saved.id);
   });
 
   it('edits as the next revision with If-Match, keeping fields it does not own', async () => {

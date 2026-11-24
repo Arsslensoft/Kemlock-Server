@@ -10,8 +10,6 @@ import SendAccess from './SendAccess';
 import type { RecipientDeps } from './recipient';
 import { makeSend } from './sendCrypto';
 
-// The source link reads the server's config through react-query; SourceLink.test.tsx covers it.
-vi.mock('@/ui/SourceLink', () => ({ SourceLink: () => null }));
 
 const ACCESS_ID =encodeB64(new Uint8Array(16).fill(9));
 

@@ -45,9 +45,9 @@ use crate::tables::{
     bw_docs, bw_user_key_ids, changes, dedup_owners, device_api_use, device_key_copies, devices,
     duplicate_dismissals, emergency_access, events, federation, federation_insight,
     federation_keys, federation_logs, federation_wiring, item_tags, items, passkeys,
-    pending_erasures, policies, push_tokens, refresh_tokens, revoked_families, sends, server_meta,
-    settings, sign_in_log, signed_manifests, sync_horizon, two_factor, two_factor_recovery,
-    two_step_versions, users, vw_rows, webauthn_challenges,
+    pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens, revoked_families,
+    sends, server_meta, settings, sign_in_log, signed_manifests, sync_horizon, two_factor,
+    two_factor_recovery, two_step_versions, users, vw_rows, webauthn_challenges,
 };
 use kemlock_app::b64url;
 use kemlock_app::ports::StoreError;
@@ -184,6 +184,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         two_factor_recovery::Entity,
         two_step_versions::Entity,
         passkeys::Entity,
+        recovery_kits::Entity,
         webauthn_challenges::Entity,
         bw_accounts::Entity,
         bw_account_extras::Entity,

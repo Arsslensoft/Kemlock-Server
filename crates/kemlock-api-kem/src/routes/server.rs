@@ -2,7 +2,9 @@
 
 use super::guard;
 use super::view::MaybeView;
-use crate::dto::{ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, VaultServersDto};
+use crate::dto::{
+    ConfigResponse, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, VaultServersDto,
+};
 use crate::extract::{Authed, Body, ClientIp, SecureConnection};
 use crate::openapi::{ApiDoc, CommonAnswers};
 use crate::problem::Problem;
@@ -11,8 +13,9 @@ use crate::state::{Api, Crypto, Store};
 use axum::Json;
 use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
+use kemlock_app::admin::{FnEnv, Settings, SettingsRepo};
 use kemlock_app::ports::TokenSigner;
-use kemlock_app::{AppError, SetupPhase};
+use kemlock_app::{AppError, SetupPhase, save_basics, without_env_set};
 use kemlock_domain::Owner;
 use utoipa::{Modify, OpenApi};
 
@@ -106,7 +109,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
 
     /// `GET /kem/v1/openapi.json`: one document for every route: the API's own and the parts that
     /// live beside their routes: trusted devices, emergency access and the app contract, files,
-    /// single sign-on, spaces, your data, push tokens, passkeys, Sends, policies and the duplicate
+    /// single sign-on, spaces, your data, push tokens, passkeys, Sends, policies, the Recovery Kit and the duplicate
     /// cleaner. `tests/openapi.rs` checks that every routed path is in it.
     pub(crate) async fn handle_openapi() -> Json<utoipa::openapi::OpenApi> {
         let mut document = ApiDoc::openapi()
@@ -122,7 +125,9 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .merge_from(super::sends::SendsDoc::openapi())
             .merge_from(super::policies::PoliciesDoc::openapi())
             .merge_from(super::duplicates::openapi())
-            .merge_from(super::two_step::TwoStepApiDoc::openapi());
+            .merge_from(super::placement::document())
+            .merge_from(super::two_step::TwoStepApiDoc::openapi())
+            .merge_from(super::recovery_kit::RecoveryKitApiDoc::openapi());
         // The answers every route can give, over the whole merged document.
         CommonAnswers.modify(&mut document);
         Json(document)
@@ -148,13 +153,46 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             expires_in: (grant.expires_at - api.crypto.now()).whole_seconds().max(0),
         }))
     }
+}
 
-    /// `POST /kem/v1/setup/finish`: closes setup, for the admin who has a two-step method.
+impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
+    /// `POST /kem/v1/setup/finish`: closes setup, for the admin who has a two-step method. The
+    /// body is optional; with `basics` the server basics are saved as settings first, and only for
+    /// the admin setup waits for, so a failed save leaves setup open to retry. They are checked
+    /// before either, so a bad value changes nothing.
     pub(crate) async fn handle_setup_finish(
         State(api): State<Self>,
         authed: Authed,
+        body: Body,
     ) -> Result<StatusCode, Problem> {
-        api.finish_setup().execute(authed.actor.user).await?;
+        let changes = if body.0.iter().all(u8::is_ascii_whitespace) {
+            None
+        } else {
+            let request: SetupFinishRequest = body.json()?;
+            request
+                .basics
+                .map(|basics| basics.into_basics()?.changes())
+                .transpose()?
+        };
+        let user = authed.actor.user;
+        if let Some(changes) = changes {
+            // Only the account setup waits for may write them; they are saved before setup
+            // closes, so a store failure leaves setup open to retry (saving is idempotent).
+            match api.setup.pending() {
+                Some(pending) if pending == user => {}
+                Some(_) => return Err(AppError::Forbidden.into()),
+                None => return Err(AppError::Setup(kemlock_domain::SetupError::AlreadyDone).into()),
+            }
+            let env = FnEnv(|name: &str| std::env::var(name).ok());
+            let changes = without_env_set(changes, &env);
+            let settings = Settings {
+                repo: api.store.clone(),
+                seal: api.crypto.clone(),
+                env,
+            };
+            save_basics(&settings, &changes).await?;
+        }
+        api.finish_setup().execute(user).await?;
         Ok(StatusCode::NO_CONTENT)
     }
 }

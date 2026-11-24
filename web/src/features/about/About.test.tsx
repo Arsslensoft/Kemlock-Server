@@ -46,6 +46,15 @@ describe('the about page', () => {
     expect(screen.getByRole('link', { name: 'Notices' })).toHaveAttribute('href', '/NOTICE.txt');
   });
 
+  it('names the author and links the contributors', () => {
+    renderWithIntl(<AboutView config={config} />);
+    expect(screen.getByText('Arsslen Idadi')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: 'Everyone who has contributed' });
+    expect(link).toHaveAttribute('href', 'https://github.com/Arsslensoft/Kemlock-Server/graphs/contributors');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
   it('does not link a source address that is not a web address', () => {
     renderWithIntl(<AboutView config={{ ...config, sourceUrl: 'javascript:alert(1)' }} />);
     expect(screen.queryByRole('link', { name: 'Source code' })).not.toBeInTheDocument();

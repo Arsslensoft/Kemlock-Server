@@ -33,6 +33,17 @@ import type {
 
 const BASE = '/kem/v1';
 
+/** The server basics `POST /setup/finish` takes: the ones the server has a setting for. */
+export interface SetupBasicsBody {
+  join: 'invite' | 'domains' | 'anyone';
+  joinDomains: string;
+  mailHost: string;
+  mailPort: string;
+  mailSecurity: 'starttls' | 'tls';
+  mailFrom: string;
+  mailUser: string;
+}
+
 export interface Tokens {
   access: string;
   refresh: string;
@@ -258,8 +269,18 @@ export function createApi(deps: ApiDeps) {
         mode: 'public',
         body: { code },
       }),
-    /** Closes setup, for an admin who has confirmed a two-step method. */
-    setupFinish: () => none({ method: 'POST', path: `${BASE}/setup/finish`, mode: 'auth' }),
+    /**
+     * Closes setup, for an admin who has confirmed a two-step method. The server basics (who may
+     * join, the outgoing mail) go with it and are saved as the admin Settings; the server checks
+     * them first, so a bad value leaves setup open.
+     */
+    setupFinish: (basics?: SetupBasicsBody) =>
+      none({
+        method: 'POST',
+        path: `${BASE}/setup/finish`,
+        mode: 'auth',
+        ...(basics ? { body: { basics } } : {}),
+      }),
 
     prelogin: async (email: string): Promise<KdfDto> =>
       (
@@ -319,12 +340,13 @@ export function createApi(deps: ApiDeps) {
         path: `${BASE}/account/two-factor/totp`,
         mode: 'auth',
       }),
-    totpConfirm: (code: string) =>
+    /** `proof` is the recovery code, asked for when another second step is on already. */
+    totpConfirm: (code: string, proof?: string) =>
       none({
         method: 'POST',
         path: `${BASE}/account/two-factor/totp/confirm`,
         mode: 'auth',
-        body: { code },
+        body: proof ? { code, proof } : { code },
       }),
 
     /** `GET /kem/v1/account/keys`: the wrapped root key and key material, for a browser that did not make the account. */

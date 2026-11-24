@@ -4,10 +4,10 @@ use super::guard;
 use super::new_device::announce;
 use crate::dto::{
     EmailRequest, KdfDto, MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest,
-    OpaqueStartResponse, PreloginResponse, RecoveryCodeResponse, RefreshRequest,
-    RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
-    SignInResponse, SsoOffer, TokenResponse, TotpConfirmRequest, TotpEnrolResponse,
-    TwoFactorRequest, decode,
+    OpaqueStartResponse, PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse,
+    RefreshRequest, RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest,
+    RegisterStartResponse, SignInResponse, SsoOffer, TokenResponse, TotpConfirmRequest,
+    TotpEnrolResponse, TwoFactorRequest, decode,
 };
 use crate::extract::{Authed, Body, ClientIp, Proof, SecureConnection};
 use crate::problem::{Problem, rate_limited};
@@ -360,6 +360,14 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             &format!("totp:{}", authed.actor.user),
             now,
         )?;
+        // Beside another second step that is on, the recovery code proves it is the owner.
+        super::two_step::require_proof_to_add_via_api(
+            &api,
+            authed.actor.user,
+            Some(kemlock_app::ports::TwoFactorMethod::Totp),
+            request.proof.as_deref(),
+        )
+        .await?;
         api.confirm_totp()
             .execute(authed.actor.user, &request.code)
             .await?;
@@ -368,12 +376,20 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         Ok(StatusCode::NO_CONTENT)
     }
 
-    /// `GET /kem/v1/account/two-factor/recovery-code`: the account's recovery code, for a signed-in
-    /// device. The Bitwarden API shows the same code for the master password.
+    /// `POST /kem/v1/account/two-factor/recovery-code`: the account's recovery code, for a signed-in
+    /// device that proves it is the owner with a fresh proof that is not the recovery code (it
+    /// proves removals and additions, so a session alone must not be able to read it). The
+    /// Bitwarden API shows the same code for the master password.
     pub(crate) async fn handle_recovery_code(
         State(api): State<Self>,
         authed: Authed,
+        body: Body,
     ) -> Result<Json<RecoveryCodeResponse>, Problem> {
+        let request: RecoveryCodeRequest = if body.0.is_empty() {
+            RecoveryCodeRequest::default()
+        } else {
+            body.json()?
+        };
         let now = api.now();
         guard(&api.limits.sign_in, &ip_key(authed.ip), now)?;
         guard(
@@ -382,6 +398,15 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             now,
         )?;
         let code = api.recovery_codes().show(authed.actor.user).await?;
+        // Nothing to give away without a code.
+        if code.is_some() {
+            super::two_step::require_proof_for_recovery_code(
+                &api,
+                authed.actor.user,
+                request.proof.as_deref().unwrap_or_default(),
+            )
+            .await?;
+        }
         Ok(Json(RecoveryCodeResponse { code }))
     }
 }

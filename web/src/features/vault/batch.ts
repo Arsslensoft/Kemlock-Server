@@ -4,7 +4,7 @@
 import type { ItemDto } from '@/api/types';
 import { encodeB64 } from '@/lib/b64url';
 import {
-  type ItemData,
+  sealedData,
   type SaveInput,
   type VaultDeps,
   type VaultItem,
@@ -19,7 +19,7 @@ export async function saveBatch(
   store: VaultStore,
   inputs: SaveInput[],
 ): Promise<VaultItem[]> {
-  const now = (deps.now?.() ?? new Date()).toISOString();
+  const now = deps.now?.() ?? new Date();
   const newId = deps.newId ?? (() => globalThis.crypto.randomUUID());
   const saved: VaultItem[] = [];
   const writes: Array<{ expectedRevision: number | null; item: ItemDto }> = [];
@@ -28,8 +28,7 @@ export async function saveBatch(
     const id = existing?.id ?? newId();
     const revision = existing ? existing.revision + 1 : 1;
     const owner = existing?.owner ?? input.owner;
-    const data: ItemData = { ...(existing?.data ?? {}), ...input.fields, updatedAt: now };
-    for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
+    const data = sealedData(existing, id, input.fields, now);
     const collectionId = existing?.collectionId ?? input.collectionId;
     const sealed = await sealFor(deps.crypto, {
       id,

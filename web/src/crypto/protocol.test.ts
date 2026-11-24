@@ -84,6 +84,12 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     importRoot: vi.fn(() => 34),
     prfWrapRoot: vi.fn(() => JSON.stringify({ wrappedKey: 'd3JhcA', keyVersion: 3 })),
     prfOpenRoot: vi.fn(() => 33),
+    kitMake: vi.fn(() =>
+      JSON.stringify({ kitId: 'ABCDEFGH', pieces: ['p1', 'p2', 'p3'], wrappedKey: 'd3JhcA', keyVersion: 3 }),
+    ),
+    kitReadPiece: vi.fn(() => JSON.stringify({ problem: 'checksum' })),
+    kitCheckPieces: vi.fn(() => JSON.stringify({ problem: 'duplicate' })),
+    kitOpenRoot: vi.fn(() => 35),
     unlockWithRoot: vi.fn(),
     sealSpaceItem: vi.fn(() => JSON.stringify({ ciphertext: 'c2k', itemKey: 'a2s', keyVersion: 2 })),
     openSpaceItem: vi.fn(() => '{"name":"vpn"}'),
@@ -411,6 +417,29 @@ describe('the dispatcher', () => {
     expect(vault.prfOpenRoot).toHaveBeenCalledWith('cHJm', 'Y3JlZA', UUID, 3, 'd3JhcA');
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 3 }]);
     expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined);
+  });
+
+  it('makes a Recovery Kit in the worker and opens its wrap with pieces into a handle', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('kitMake', [])).toEqual({
+      kitId: 'ABCDEFGH',
+      pieces: ['p1', 'p2', 'p3'],
+      wrappedKey: 'd3JhcA',
+      keyVersion: 3,
+    });
+    expect(await dispatch('kitReadPiece', ['bad'])).toEqual({ problem: 'checksum' });
+    expect(await dispatch('kitCheckPieces', [['a', 'a']])).toEqual({ problem: 'duplicate' });
+    expect(vault.kitCheckPieces).toHaveBeenCalledWith(JSON.stringify(['a', 'a']));
+    const root = await dispatch('kitOpenRoot', [['p1', 'p2'], 'ABCDEFGH', UUID, 3, 'd3JhcA']);
+    expect(root).toBe(35);
+    expect(vault.kitOpenRoot).toHaveBeenCalledWith(
+      JSON.stringify(['p1', 'p2']),
+      'ABCDEFGH',
+      UUID,
+      3,
+      'd3JhcA',
+    );
   });
 
   it('opens an approved root key under the request it was sealed for, then unlocks with it', async () => {

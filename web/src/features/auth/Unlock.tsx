@@ -7,18 +7,32 @@ import { vaultCrypto } from '@/crypto-port';
 import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { thisDevice } from '@/lib/device';
+import { safeNext } from '@/lib/safe-next';
 import { AuthPage } from '@/ui/AuthPage';
 import { CodeForm } from '@/ui/CodeForm';
 import { Icon, type IconName } from '@/ui/Icon';
 import { afterSignIn } from './afterSignIn';
 import { PasswordForm } from './PasswordForm';
+import { kitAccount } from './kitUnlock';
+import { RecoveryKitUnlock } from './RecoveryKitUnlock';
 import { type SignInStatus, createSignIn } from './signIn';
 
 const route = getRouteApi('/unlock');
 
-function Way({ icon, title, hint }: { icon: IconName; title: string; hint: string }) {
+/** One of the other ways to open the vault; with no `onPress` it is drawn but off. */
+export function Way({
+  icon,
+  title,
+  hint,
+  onPress,
+}: {
+  icon: IconName;
+  title: string;
+  hint: string;
+  onPress?: () => void;
+}) {
   return (
-    <button type="button" className="way" disabled>
+    <button type="button" className="way" disabled={!onPress} onClick={onPress}>
       <span className="ic" aria-hidden="true">
         <Icon name={icon} />
       </span>
@@ -42,12 +56,15 @@ export default function Unlock() {
   const { next } = route.useSearch();
   const state = useSessionState(session);
   const email = state.email ?? '';
+  // The kit opens one account's vault: wait until the session knows which, never ask with ''.
+  const kitUser = kitAccount(state.userId);
   const signIn = useMemo(
     () => createSignIn({ api, crypto: vaultCrypto, session, device: thisDevice }),
     [],
   );
   useEffect(() => () => signIn.abandon(), [signIn]);
   const [step, setStep] = useState<'password' | 'code'>('password');
+  const [useKit, setUseKit] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<ReturnType<typeof describeError>>();
 
@@ -71,7 +88,17 @@ export default function Unlock() {
         <h1>{t('unlock.title')}</h1>
         <p className="lede">{t('unlock.lede', { email })}</p>
       </div>
-      {step === 'password' ? (
+      {useKit && kitUser ? (
+        <RecoveryKitUnlock
+          accountId={kitUser}
+          onBack={() => setUseKit(false)}
+          onUnlocked={() => {
+            const target = safeNext(next);
+            if (target) router.history.push(target);
+            else void navigate({ to: '/vault' });
+          }}
+        />
+      ) : step === 'password' ? (
         <section className="stack" aria-labelledby="h-pw">
           <h2 id="h-pw">{t('unlock.password')}</h2>
           <PasswordForm
@@ -92,8 +119,13 @@ export default function Unlock() {
       )}
       <div className="stack">
         <h2 className="hint">{t('unlock.other')}</h2>
-        <Way icon="device" title={t('unlock.approve')} hint={t('unlock.approveHint')} />
-        <Way icon="key" title={t('unlock.kit')} hint={t('unlock.kitHint')} />
+        <Way
+          icon="device"
+          title={t('unlock.approve')}
+          hint={t('unlock.approveHint')}
+          onPress={() => void navigate({ to: '/sign-in/device', search: { email, next } })}
+        />
+        <Way icon="key" title={t('unlock.kit')} hint={t('unlock.kitHint')} onPress={kitUser ? () => setUseKit(true) : undefined} />
       </div>
       <p className="hint">
         <Link

@@ -48,6 +48,14 @@ where
         otps: &[String],
         nfc: bool,
     ) -> Result<YubikeyData, AppError> {
+        let data = self.yubikey_check(otps, nfc).await?;
+        self.yubikey_store(user, data).await
+    }
+
+    /// The checks of [`TwoStep::yubikey_set`] alone, with Yubico: the keys to store. A caller
+    /// that wants a proof spent between the check and the change calls this, then the proof, then
+    /// [`TwoStep::yubikey_store`].
+    pub async fn yubikey_check(&self, otps: &[String], nfc: bool) -> Result<YubikeyData, AppError> {
         if !self.settings.yubico_enabled {
             return Err(AppError::Invalid("Yubico support is disabled"));
         }
@@ -76,7 +84,15 @@ where
         if keys.is_empty() {
             return Err(AppError::Invalid("A key is required."));
         }
-        let data = YubikeyData { keys, nfc };
+        Ok(YubikeyData { keys, nfc })
+    }
+
+    /// Stores keys that [`TwoStep::yubikey_check`] accepted, and turns the method on.
+    pub async fn yubikey_store(
+        &self,
+        user: UserId,
+        data: YubikeyData,
+    ) -> Result<YubikeyData, AppError> {
         self.two_factor
             .put(&TwoFactor {
                 user,

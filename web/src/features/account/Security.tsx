@@ -7,13 +7,16 @@ import { api, hostOf, session, configQuery } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { useT } from '@/i18n';
 import { vaultCrypto } from '@/crypto-port';
-import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
-import { createPasskey, passkeysAvailable } from '@/lib/passkey';
+import { decodeB64 } from '@/lib/b64url';
+import { passkeysAvailable } from '@/lib/passkey';
+import { registerPasskey } from '@/lib/webauthn';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
 import { confirmEmergencyContact } from './emergencyModel';
+import { useRecoveryKit } from './useRecoveryKit';
 import { useRun } from './useRun';
+import { useSecondSteps } from './useSecondSteps';
 import { SecurityView, type TotpState } from './SecurityView';
 
 const emergencyApi = createEmergencyApi(api);
@@ -26,17 +29,20 @@ export default function Security() {
   const state = useSessionState(session);
   const config = useQuery(configQuery);
   const email = state.email ?? '';
-  const methods = useQuery({
+  const twoStepList = useQuery({
     queryKey: ['security', 'methods', email],
-    queryFn: () => twoStepApi.list().then(enabledMethods),
+    queryFn: () => twoStepApi.list(),
     enabled: email !== '',
   });
+  const methods = twoStepList.data ? enabledMethods(twoStepList.data) : undefined;
   const passkeys = useQuery({ queryKey: ['security', 'passkeys'], queryFn: () => passkeysApi.list() });
   const passkeyRun = useRun();
   const overview = useQuery({ queryKey: ['security', 'emergency'], queryFn: () => emergencyApi.overview() });
   const [totp, setTotp] = useState<TotpState>({ open: false, enrol: undefined });
   const totpRun = useRun();
   const { run, pending, error } = useRun();
+  const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes, methods?.includes('totp') ?? false);
+  const recoveryKit = useRecoveryKit();
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
 
@@ -71,20 +77,24 @@ export default function Security() {
     <SecurityView
       email={email}
       host={hostOf(config.data?.domain)}
-      methods={methods.data}
+      methods={methods}
       totp={totp}
-      busy={pending || totpRun.pending || passkeyRun.pending}
-      error={error ?? passkeyRun.error}
+      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy || recoveryKit.props.busy}
+      error={error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error}
+      secondSteps={secondSteps.props}
+      recoveryKit={recoveryKit.props}
       totpError={totpRun.error}
       onStartTotp={() => {
         setTotp({ open: true, enrol: undefined });
+        // Beside another second step that is on, adding the app asks for a mailed code too.
+        if (methods?.some((m) => m !== 'totp')) void secondSteps.props.actions.askProof();
         void totpRun.run(() => api.totpEnrol()).then((enrol) => {
           if (enrol) setTotp({ open: true, enrol });
         });
       }}
       onCancelTotp={() => setTotp({ open: false, enrol: undefined })}
-      onConfirmTotp={(code) => {
-        void totpRun.run(() => api.totpConfirm(code).then(() => true)).then(async (done) => {
+      onConfirmTotp={(code, proof) => {
+        void totpRun.run(() => api.totpConfirm(code, proof).then(() => true)).then(async (done) => {
           if (!done) return;
           setTotp({ open: false, enrol: undefined });
           await queryClient.invalidateQueries({ queryKey: ['security', 'methods'] });
@@ -96,19 +106,9 @@ export default function Security() {
               passkeys: passkeys.data,
               busy: passkeyRun.pending,
               onAdd: () =>
-                void changePasskeys(async () => {
-                  const options = await passkeysApi.creationOptions();
-                  const made = await createPasskey(options);
-                  // With a PRF output the passkey also keeps a wrap of the root key, which opens
-                  // the vault at sign-in; without one it only proves who is asking.
-                  let prf: { wrappedKey: string; keyVersion: number } | undefined;
-                  if (made.prfOutput) {
-                    const wrap = await vaultCrypto.prfWrapRoot(made.prfOutput, made.credentialId);
-                    prf = { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
-                    wipe(made.prfOutput);
-                  }
-                  return passkeysApi.register(t('security.passkeys.defaultName'), made.credential, prf);
-                }),
+                void changePasskeys(() =>
+                  registerPasskey({ passkeys: passkeysApi, crypto: vaultCrypto }, t('security.passkeys.defaultName')),
+                ),
               onRemove: (id) => void changePasskeys(() => passkeysApi.remove(id).then(() => true)),
             }
           : undefined

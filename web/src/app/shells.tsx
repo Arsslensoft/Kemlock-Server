@@ -6,7 +6,6 @@ import { FailoverBanner } from '@/features/failover/Banner';
 import { useT } from '@/i18n';
 import { Icon, type IconName, Logo } from '@/ui/Icon';
 import { buttonClass } from '@/ui/Button';
-import { SourceLink } from '@/ui/SourceLink';
 import { lockVault, signOut } from './actions';
 import { session } from './services';
 import { useSessionState } from './session';
@@ -125,7 +124,6 @@ export function VaultShell() {
           <Link to="/about" activeOptions={{ exact: true }}>
             <Item icon="info">{t('about.link')}</Item>
           </Link>
-          <SourceLink icon />
           {state.admin ? (
             <Link to="/admin" activeOptions={{ exact: true }}>
             <Item icon="server">{t('nav.admin')}</Item>
@@ -217,7 +215,6 @@ export function AdminShell() {
           <Link to="/about" activeOptions={{ exact: true }}>
             <Item icon="info">{t('about.link')}</Item>
           </Link>
-          <SourceLink icon />
         </nav>
         <main id="main" className="page" tabIndex={-1}>
           <Outlet />

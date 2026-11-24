@@ -313,7 +313,7 @@ async fn get_webauthn_challenge<S: BwStore>(
         Some(&data.user_verification_token),
     )?;
     let mut options = keys
-        .start_registration(authed.user.id, false)
+        .start_registration(authed.user.id)
         .await
         .map_err(app_error)?;
     options["status"] = json!("ok");

@@ -82,7 +82,7 @@ async fn the_openapi_document_names_every_route() {
         ("/kem/v1/auth/token", "post"),
         ("/kem/v1/account/two-factor/totp", "post"),
         ("/kem/v1/account/two-factor/totp/confirm", "post"),
-        ("/kem/v1/account/two-factor/recovery-code", "get"),
+        ("/kem/v1/account/two-factor/recovery-code", "post"),
         ("/kem/v1/items/{id}", "put"),
         ("/kem/v1/items:batch", "post"),
         ("/kem/v1/sync", "get"),

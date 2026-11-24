@@ -100,7 +100,10 @@ test('account security, spaces and devices & apps', async ({ page }) => {
   await page.getByRole('link', { name: 'Account security' }).first().click();
   await expect(page.getByRole('heading', { name: 'Account security', level: 1 })).toBeVisible();
   await expect(page.getByText('Authenticator app')).toBeVisible();
-  await expect(page.getByText('On', { exact: true })).toBeVisible();
+  // The app's own row: the second-step card lists the recovery code as On too.
+  await expect(
+    page.locator('.row', { hasText: 'Authenticator app' }).getByText('On', { exact: true }),
+  ).toBeVisible();
   await expectAccessible(page);
 
   // Emergency access: a contact is invited on the real route, then removed.

@@ -68,3 +68,25 @@ describe('StorageView', () => {
     expect(screen.getByRole('heading', { name: 'One server' })).toBeInTheDocument();
   });
 });
+
+describe('a server whose status is unknown', () => {
+  const unknown: Placement = {
+    ...PLACEMENT,
+    vaults: PLACEMENT.vaults.map((vault) => ({
+      ...vault,
+      pending: null,
+      servers: vault.servers.map((server) => ({ ...server, status: 'unknown' as const, offlineSince: null })),
+    })),
+  };
+
+  it('is not called offline by the banner', async () => {
+    await renderInRouter(<FailoverBannerView placement={unknown} />);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('is listed as such, not as online', async () => {
+    await renderInRouter(<StorageView placement={unknown} onCancelPending={vi.fn()} />);
+    const yours = screen.getByRole('list', { name: 'Servers of Your vault' });
+    expect(within(yours).getAllByRole('listitem')[0]).toHaveTextContent('Status unknown');
+  });
+});

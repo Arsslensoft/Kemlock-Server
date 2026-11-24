@@ -13,6 +13,8 @@ export type AboutConfig = Pick<ConfigResponse, 'version' | 'commit' | 'license' 
 /** How many characters of the commit are shown; the link has the rest. */
 const SHORT_COMMIT = 12;
 
+const CONTRIBUTORS_URL = 'https://github.com/Arsslensoft/Kemlock-Server/graphs/contributors';
+
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const;
 
 /** What the page says: the licence, where the source of this version is, and who this is not. */
@@ -53,6 +55,14 @@ export function AboutView({ config }: { config: AboutConfig | undefined }) {
               ) : null}
               <span className="hint">{t('about.sourceHint')}</span>
             </div>
+          </dd>
+          <dt>{t('about.author')}</dt>
+          <dd>{t('about.authorName')}</dd>
+          <dt>{t('about.contributors')}</dt>
+          <dd>
+            <a href={CONTRIBUTORS_URL} {...external}>
+              {t('about.contributorsLink')}
+            </a>
           </dd>
           <dt>{t('about.documents')}</dt>
           <dd>

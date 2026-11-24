@@ -18,6 +18,9 @@ import {
   type OpaqueRegisterFinished,
   type OpaqueStart,
   type OpName,
+  type KitPieceRead,
+  type KitProblem,
+  type MadeKit,
   type PrfWrap,
   type Ops,
   type SealedCollection,
@@ -327,6 +330,24 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       return (await current()).prfOpenRoot(
         prfOutput,
         credentialId,
+        accountId,
+        keyVersion,
+        wrapped,
+      ) as ApprovedKeyHandle;
+    },
+    async kitMake() {
+      return parse<MadeKit>((await current()).kitMake());
+    },
+    async kitReadPiece(text) {
+      return parse<KitPieceRead>((await current()).kitReadPiece(text));
+    },
+    async kitCheckPieces(pieces) {
+      return parse<{ problem?: KitProblem }>((await current()).kitCheckPieces(JSON.stringify(pieces)));
+    },
+    async kitOpenRoot(pieces, kitId, accountId, keyVersion, wrapped) {
+      return (await current()).kitOpenRoot(
+        JSON.stringify(pieces),
+        kitId,
         accountId,
         keyVersion,
         wrapped,

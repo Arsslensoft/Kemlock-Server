@@ -94,6 +94,7 @@ pub mod password_wrap;
 pub mod prf_wrap;
 pub mod private_keys;
 pub mod rand;
+pub mod recovery_kit;
 pub mod seal;
 pub mod sealed_box;
 pub mod send;

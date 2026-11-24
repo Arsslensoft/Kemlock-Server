@@ -45,7 +45,7 @@ export function SetupAdminForm({
   pending,
   error,
 }: {
-  onSubmit: (values: SetupAdminValues) => void;
+  onSubmit: (values: SetupAdminValues, options: { passkey: boolean }) => void;
   pending?: boolean;
   error?: { id: MessageId; values?: Record<string, string | number> } | undefined;
 }) {
@@ -55,8 +55,9 @@ export function SetupAdminForm({
     defaultValues: { name: '', email: '', password: '', confirm: '' },
   });
   const [password, confirm] = useWatch({ control, name: ['password', 'confirm'] });
+  const [passkey, setPasskey] = useState(false);
   return (
-    <form className="stack" noValidate onSubmit={handleSubmit(onSubmit)}>
+    <form className="stack" noValidate onSubmit={handleSubmit((values) => onSubmit(values, { passkey }))}>
       <div className="grid">
         <Field control={control} name="name" label={t('setup.admin.name')} autoComplete="name" large />
         <Field
@@ -87,7 +88,7 @@ export function SetupAdminForm({
         large
         hint={confirm && confirm === password ? t('setup.admin.match') : undefined}
       />
-      <Checkbox className="check" isDisabled>
+      <Checkbox className="check" isSelected={passkey} onChange={setPasskey}>
         <span className="box">
           <Icon name="check" />
         </span>
@@ -137,7 +138,7 @@ export default function SetupAdmin() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<ReturnType<typeof describeError>>();
 
-  async function make(values: SetupAdminValues) {
+  async function make(values: SetupAdminValues, options: { passkey: boolean }) {
     const grant = setupMemory.get().grant;
     if (!grant) {
       await navigate({ to: '/setup' });
@@ -151,7 +152,7 @@ export default function SetupAdmin() {
         { api, crypto: vaultCrypto },
         { email, name: values.name.trim(), password: values.password, setupGrant: grant },
       );
-      setupMemory.set({ adminName: values.name.trim(), adminEmail: email });
+      setupMemory.set({ adminName: values.name.trim(), adminEmail: email, wantPasskey: options.passkey });
       // The first admin is signed in at once: the next step enrols two-step login, which needs
       // tokens. The sign-in takes ownership of the master key and wipes it when done.
       const signIn = createSignIn({ api, crypto: vaultCrypto, session, device: thisDevice });
@@ -178,7 +179,7 @@ export default function SetupAdmin() {
         <h1>{t('setup.admin.title')}</h1>
         <p className="lede">{t('setup.admin.lede')}</p>
       </div>
-      <SetupAdminForm onSubmit={(values) => void make(values)} pending={pending} error={error} />
+      <SetupAdminForm onSubmit={(values, options) => void make(values, options)} pending={pending} error={error} />
       <div className="actions">
         <Link to="/setup" className={buttonClass({ size: 'large' })}>
           {t('action.back')}

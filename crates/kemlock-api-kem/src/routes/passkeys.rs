@@ -9,7 +9,8 @@
 //!   and delete an account's passkeys (at most five), and `PUT .../{id}/prf` stores the PRF copy
 //!   of the root key.
 //! - `POST /kem/v1/account/two-factor/webauthn` and `.../confirm` enrol a security key as a
-//!   second step, as the TOTP routes enrol an authenticator app.
+//!   second step, as the TOTP routes enrol an authenticator app; `GET .../webauthn` lists the keys
+//!   and `DELETE .../webauthn/{slot}` removes one.
 //! - `POST /kem/v1/auth/two-factor/webauthn/options` and `.../webauthn` answer the second step of
 //!   a sign-in with that key.
 //!
@@ -20,6 +21,9 @@
 
 use super::guard;
 use super::new_device::announce;
+use super::two_step::{
+    ProofRequest, announce_change, proof_steps, require_proof, require_proof_to_add,
+};
 use crate::dto::{DeviceDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
 use crate::openapi::ProblemDoc;
@@ -200,6 +204,8 @@ pub(crate) struct RenameRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SecurityKeyConfirmRequest {
     pub(crate) name: String,
+    /// A fresh proof, as a removal takes: needed when a second step is on already.
+    pub(crate) proof: Option<String>,
     /// The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.create`.
     #[schema(value_type = Object)]
     pub(crate) credential: Value,
@@ -644,7 +650,8 @@ where
 // Handlers: security keys
 
 /// `POST /kem/v1/account/two-factor/webauthn`: the creation options for a security key. Refused
-/// (409) while an authenticator app is on, as a session alone may not add a second step beside it.
+/// Nothing is turned on yet: a fresh proof, when a second step is on already, is asked for when
+/// the key is confirmed.
 async fn handle_key_enrol<S, P, K, R, W, M>(
     State(api): State<Api<S, P, K>>,
     Extension(runtime): Extension<Arc<PasskeyRuntime<R, W, M>>>,
@@ -660,7 +667,7 @@ where
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
     let options = security_keys(&api, &runtime)
-        .start_registration(authed.actor.user, true)
+        .start_registration(authed.actor.user)
         .await?;
     Ok(Json(CreationOptionsResponse { options }))
 }
@@ -688,15 +695,74 @@ where
         &format!("webauthn:{}", authed.actor.user),
         now,
     )?;
+    let credential = credential_bytes(&request.credential)?;
+    require_proof_to_add(
+        &api,
+        &proof_steps(&api, runtime.repos.clone()),
+        authed.actor.user,
+        None,
+        request.proof.as_deref(),
+    )
+    .await?;
     let list = security_keys(&api, &runtime)
-        .finish_registration(
-            authed.actor.user,
-            None,
-            &request.name,
-            &credential_bytes(&request.credential)?,
-        )
+        .finish_registration(authed.actor.user, None, &request.name, &credential)
         .await
         .map_err(AppError::from)?;
+    announce_change(&api, &authed, "security-key", true).await;
+    Ok(Json(SecurityKeysResponse::from_list(list)))
+}
+
+/// `GET /kem/v1/account/two-factor/webauthn`: the account's security keys.
+async fn handle_keys_list<S, P, K, R, W, M>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<PasskeyRuntime<R, W, M>>>,
+    authed: Authed,
+) -> Result<Json<SecurityKeysResponse>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+    M: Send + Sync + 'static,
+{
+    guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    let list = security_keys(&api, &runtime)
+        .keys(authed.actor.user)
+        .await?;
+    Ok(Json(SecurityKeysResponse::from_list(list)))
+}
+
+/// `DELETE /kem/v1/account/two-factor/webauthn/{slot}`: removes the key in a slot (1 to 5); with
+/// the last one gone the method is off.
+async fn handle_key_remove<S, P, K, R, W, M>(
+    State(api): State<Api<S, P, K>>,
+    Extension(runtime): Extension<Arc<PasskeyRuntime<R, W, M>>>,
+    authed: Authed,
+    Path(slot): Path<u8>,
+    body: Body,
+) -> Result<Json<SecurityKeysResponse>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+    M: Send + Sync + 'static,
+{
+    guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    let request: ProofRequest = body.json()?;
+    require_proof(
+        &api,
+        &proof_steps(&api, runtime.repos.clone()),
+        authed.actor.user,
+        &request.proof,
+    )
+    .await?;
+    let list = security_keys(&api, &runtime)
+        .remove(authed.actor.user, slot)
+        .await?;
+    announce_change(&api, &authed, "security-key", false).await;
     Ok(Json(SecurityKeysResponse::from_list(list)))
 }
 
@@ -853,7 +919,11 @@ where
         )
         .route(
             "/kem/v1/account/two-factor/webauthn",
-            post(handle_key_enrol::<S, P, K, R, W, M>),
+            get(handle_keys_list::<S, P, K, R, W, M>).post(handle_key_enrol::<S, P, K, R, W, M>),
+        )
+        .route(
+            "/kem/v1/account/two-factor/webauthn/{slot}",
+            axum::routing::delete(handle_key_remove::<S, P, K, R, W, M>),
         )
         .route(
             "/kem/v1/account/two-factor/webauthn/confirm",
@@ -978,7 +1048,6 @@ fn doc_passkey_prf() {}
     security(("dpop" = [])),
     responses(
         (status = 200, description = "Options for `navigator.credentials.create`", body = CreationOptionsResponse),
-        (status = 409, description = "An authenticator app is on: a session alone can't add a second step beside it", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -989,12 +1058,33 @@ fn doc_key_enrol() {}
     security(("dpop" = [])),
     request_body = SecurityKeyConfirmRequest,
     responses(
-        (status = 200, description = "The key is registered and the method is on", body = SecurityKeysResponse),
-        (status = 400, description = "The answer wasn't accepted or no registration is in progress", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 200, description = "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)", body = SecurityKeysResponse),
+        (status = 400, description = "The answer wasn't accepted, no registration is in progress, or a second step is on and the fresh proof is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn doc_key_confirm() {}
+
+#[utoipa::path(
+    get, path = "/kem/v1/account/two-factor/webauthn", tag = "account",
+    security(("dpop" = [])),
+    responses((status = 200, description = "The account's security keys", body = SecurityKeysResponse))
+)]
+#[allow(dead_code)]
+fn doc_keys_list() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/account/two-factor/webauthn/{slot}", tag = "account",
+    security(("dpop" = [])),
+    request_body = ProofRequest,
+    params(("slot" = u8, Path, description = "The key's slot, 1 to 5")),
+    responses(
+        (status = 200, description = "The key is removed; the keys left", body = SecurityKeysResponse),
+        (status = 404, description = "No key in that slot", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_key_remove() {}
 
 #[utoipa::path(
     post, path = "/kem/v1/auth/two-factor/webauthn/options", tag = "auth",
@@ -1036,6 +1126,8 @@ fn doc_key_step() {}
         doc_passkey_prf,
         doc_key_enrol,
         doc_key_confirm,
+        doc_keys_list,
+        doc_key_remove,
         doc_key_step_options,
         doc_key_step
     ),
@@ -1054,6 +1146,7 @@ fn doc_key_step() {}
         SecurityKeyConfirmRequest,
         SecurityKeyDto,
         SecurityKeysResponse,
+        ProofRequest,
         KeyStepOptionsRequest,
         RequestOptionsResponse,
         KeyStepRequest,

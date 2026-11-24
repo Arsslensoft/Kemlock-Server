@@ -31,6 +31,7 @@ pub use data::{
     provider_type,
 };
 pub use duo::DuoStatus;
+pub use email::EmailChecked;
 pub use ports::{Duo, DuoError, DuoPrompt, NoDuo, NoYubico, TwoStepSettings, Yubico, YubicoError};
 pub use protected::{PROTECTED_REQUEST_DELAY_SECS, ProtectedError};
 pub use recovery::{PURPOSE_LEGACY_RECOVERY, PURPOSE_RECOVERY, RecoveryCodeRepo, RecoveryCodes};

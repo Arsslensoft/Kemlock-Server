@@ -4,7 +4,7 @@
 use crate::problem::Problem;
 use kemlock_app::devices::MAX_IDENTIFIER_LEN;
 use kemlock_app::federation_view::{SiblingSet, VaultServers};
-use kemlock_app::{DeviceInfo, b64url};
+use kemlock_app::{AppError, DeviceInfo, JoinPolicy, ServerBasics, b64url};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::{
     DeviceId, DeviceKind, Item, ItemFormat, ItemId, ItemKind, ItemWrite, KdfParams, Owner,
@@ -109,6 +109,65 @@ pub struct SetupVerifyResponse {
     /// Send it as `setupGrant` when registering the first admin.
     pub grant: String,
     pub expires_in: i64,
+}
+
+/// The optional body of `POST /kem/v1/setup/finish`.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SetupFinishRequest {
+    /// The "Server basics" the setup screens collected; saved as the settings the admin console
+    /// edits.
+    pub basics: Option<ServerBasicsDto>,
+}
+
+/// The server basics a setup screen sends. Fields the server has no setting for (the public
+/// address, push, file folder, backups) are accepted and ignored, so a client may send its whole
+/// form.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerBasicsDto {
+    /// `invite`, `domains` or `anyone`.
+    pub join: String,
+    /// Comma-separated; needed for `domains`.
+    #[serde(default)]
+    pub join_domains: String,
+    /// The outgoing mail server; empty for no mail.
+    #[serde(default)]
+    pub mail_host: String,
+    #[serde(default = "default_mail_port")]
+    pub mail_port: String,
+    /// `starttls` or `tls`.
+    #[serde(default = "default_mail_security")]
+    pub mail_security: String,
+    #[serde(default)]
+    pub mail_from: String,
+    #[serde(default)]
+    pub mail_user: String,
+}
+
+fn default_mail_port() -> String {
+    "587".to_owned()
+}
+
+fn default_mail_security() -> String {
+    "starttls".to_owned()
+}
+
+impl ServerBasicsDto {
+    pub fn into_basics(self) -> Result<ServerBasics, AppError> {
+        let join = JoinPolicy::parse(&self.join).ok_or(AppError::Invalid(
+            "server basics: join must be invite, domains or anyone",
+        ))?;
+        Ok(ServerBasics {
+            join,
+            join_domains: self.join_domains,
+            mail_host: self.mail_host,
+            mail_port: self.mail_port,
+            mail_security: self.mail_security,
+            mail_from: self.mail_from,
+            mail_user: self.mail_user,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -359,6 +418,19 @@ pub struct TotpEnrolResponse {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TotpConfirmRequest {
     pub code: String,
+    /// The recovery code, when another second step is on already: a session alone may add the
+    /// first step, and a fresh proof is needed beside one that is on.
+    pub proof: Option<String>,
+}
+
+/// Asks for the account's recovery code.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecoveryCodeRequest {
+    /// A fresh proof that is not the recovery code itself: a code mailed by
+    /// `POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not
+    /// needed while the account holds no recovery code.
+    pub proof: Option<String>,
 }
 
 /// The account's two-step recovery code.

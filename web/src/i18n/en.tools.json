@@ -278,6 +278,7 @@
   "failover.status.offline": "Offline",
   "failover.status.inUse": "In use",
   "failover.status.online": "Online",
+  "failover.status.unknown": "Status unknown",
   "failover.waiting": "Waiting for the home server",
   "failover.askedAt": "You asked {when}; it goes through when the home server is back.",
   "failover.cancelChange": "Cancel this change",

@@ -1,9 +1,30 @@
 import type { MessageId } from '@/i18n';
 import type { IconName } from '@/ui/Icon';
 
-export type EditableKind = 'login' | 'note';
+export type EditableKind =
+  | 'login'
+  | 'note'
+  | 'otp'
+  | 'backup-codes'
+  | 'card'
+  | 'identity'
+  | 'ssh-key'
+  | 'pgp-key'
+  | 'certificate'
+  | 'contact';
 
-export const EDITABLE_KINDS: EditableKind[] = ['login', 'note'];
+export const EDITABLE_KINDS: EditableKind[] = [
+  'login',
+  'note',
+  'otp',
+  'backup-codes',
+  'card',
+  'identity',
+  'ssh-key',
+  'pgp-key',
+  'certificate',
+  'contact',
+];
 
 const KIND_LABELS: Record<string, MessageId> = {
   login: 'kind.login',
@@ -39,7 +60,7 @@ export function kindIcon(kind: string): IconName {
 }
 
 export function isEditable(kind: string): kind is EditableKind {
-  return kind === 'login' || kind === 'note';
+  return (EDITABLE_KINDS as string[]).includes(kind);
 }
 
 /** The letter on an item's tile. */
@@ -77,7 +98,7 @@ const UNITS: Array<[Intl.RelativeTimeFormatUnit, number]> = [
 
 /** "2 hours ago", from an ISO date. Empty when the date is missing or unreadable. */
 export function timeAgo(iso: unknown, now: Date = new Date()): string {
-  if (typeof iso !== 'string') return '';
+  if (typeof iso !== 'string' && typeof iso !== 'number') return '';
   const then = new Date(iso);
   if (Number.isNaN(then.getTime())) return '';
   const seconds = Math.round((then.getTime() - now.getTime()) / 1000);

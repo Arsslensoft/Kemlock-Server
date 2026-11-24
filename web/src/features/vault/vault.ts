@@ -14,7 +14,8 @@ export type ItemData = {
   name?: string;
   notes?: string;
   favorite?: boolean;
-  updatedAt?: string;
+  /** Epoch ms, as the Kemlock app writes it; older web saves hold an ISO string. */
+  updatedAt?: string | number;
   /** Set while the item is in the Trash; the item is removed for good 30 days later. */
   trashedAt?: string;
   [field: string]: unknown;
@@ -35,6 +36,24 @@ export interface VaultItem {
 }
 
 export const TRASH_DAYS = 30;
+
+/**
+ * The plaintext of a saved item: the entry's own `id` is the item's id (kemlock-core reads an item
+ * only when `kmItemId(json.id)` is the item's id, and a UUID maps to itself), then what the item
+ * held, then the form's fields, stamped with `updatedAt` in epoch ms.
+ */
+export function sealedData(existing: VaultItem | undefined, id: string, fields: ItemData, now: Date): ItemData {
+  const data: ItemData = {
+    ...(existing?.data ?? {}),
+    ...fields,
+    updatedAt: now.getTime(),
+  };
+  // The app reads an entry only when its own id matches the item id.
+  if (typeof data['id'] !== 'string' || data['id'] === '') data['id'] = id;
+  // A cleared optional field is removed, not kept as an empty string.
+  for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
+  return data;
+}
 
 export class VaultStore {
   readonly items = new Map<string, VaultItem>();
@@ -239,6 +258,11 @@ export interface SaveInput {
   collectionId?: string | undefined;
   /** The fields the form owns; other fields of `existing.data` survive. */
   fields: ItemData;
+  /**
+   * The item is an entry of the Kemlock app (a key or a contact): it carries its own `id`, the
+   * item's, and `addedAt` and `updatedAt` as epoch milliseconds, as the app reads them.
+   */
+  entry?: boolean;
 }
 
 /** Seals and stores one item. A new item is revision 1; an edit is the previous revision plus one. */
@@ -251,13 +275,9 @@ export async function saveItem(
   const id = existing?.id ?? (deps.newId ?? (() => globalThis.crypto.randomUUID()))();
   const revision = existing ? existing.revision + 1 : 1;
   const owner = existing?.owner ?? input.owner;
-  const data: ItemData = {
-    ...(existing?.data ?? {}),
-    ...input.fields,
-    updatedAt: (deps.now?.() ?? new Date()).toISOString(),
-  };
-  // A cleared optional field is removed, not kept as an empty string.
-  for (const key of Object.keys(data)) if (data[key] === undefined) delete data[key];
+  const now = deps.now?.() ?? new Date();
+  const data = sealedData(existing, id, input.fields, now);
+  if (input.entry && typeof data['addedAt'] !== 'number') data['addedAt'] = now.getTime();
   const collectionId = existing?.collectionId ?? input.collectionId;
   const sealed = await sealFor(deps.crypto, {
     id,
@@ -358,8 +378,13 @@ export async function emptyTrash(
 
 /** What to show for an item that has no readable name. */
 export function itemName(item: VaultItem): string {
-  const name = item.data?.name;
-  return typeof name === 'string' && name !== '' ? name : item.kind;
+  const data = item.data;
+  const name = data?.name;
+  if (typeof name === 'string' && name !== '') return name;
+  // The app's one-time codes and backup codes have no `name`: an issuer and account, a service.
+  const text = (key: string) => (typeof data?.[key] === 'string' ? (data[key] as string) : '');
+  const code = [text('issuer'), text('label')].filter((part) => part !== '').join(': ');
+  return code || text('serviceName') || item.kind;
 }
 
 export function loginOf(item: VaultItem): { username: string; password: string; urls: string[] } {

@@ -106,10 +106,23 @@ where
         user: UserId,
         custom: Option<DuoKeys>,
     ) -> Result<DuoStatus, AppError> {
-        let plain = match &custom {
+        let plain = self.duo_check(custom.as_ref()).await?;
+        self.duo_store(user, &plain).await
+    }
+
+    /// The checks of [`TwoStep::duo_set`] alone, with Duo: what to store. A caller that wants a
+    /// proof spent between the check and the change calls this, then the proof, then
+    /// [`TwoStep::duo_store`].
+    pub async fn duo_check(&self, custom: Option<&DuoKeys>) -> Result<Vec<u8>, AppError> {
+        Ok(match custom {
             Some(keys) => {
                 if !keys.is_complete() {
                     return Err(AppError::Invalid("the Duo host and keys are all required"));
+                }
+                if !duo_host_ok(&keys.host) {
+                    return Err(AppError::Invalid(
+                        "the Duo host must look like api-1234abcd.duosecurity.com",
+                    ));
                 }
                 self.duo
                     .check_keys(keys)
@@ -123,12 +136,16 @@ where
                 }
                 b"{}".to_vec()
             }
-        };
+        })
+    }
+
+    /// Stores what [`TwoStep::duo_check`] accepted, and turns the method on.
+    pub async fn duo_store(&self, user: UserId, plain: &[u8]) -> Result<DuoStatus, AppError> {
         self.two_factor
             .put(&TwoFactor {
                 user,
                 method: TwoFactorMethod::Duo,
-                sealed_secret: self.seal.seal(PURPOSE_DUO, &plain),
+                sealed_secret: self.seal.seal(PURPOSE_DUO, plain),
                 enabled: true,
                 created_at: self.env.now(),
             })
@@ -217,5 +234,44 @@ where
             tracing::debug!(error = %e, "Duo didn't accept the answer");
             AppError::Unauthorized
         })
+    }
+}
+
+/// Whether `host` is a Duo API host, `api-<id>.duosecurity.com`, and so a place the server may
+/// call with a person's keys (a Duo host that is any name would let a setup make the server
+/// request an address of the person's choosing).
+pub(crate) fn duo_host_ok(host: &str) -> bool {
+    let Some(id) = host
+        .strip_prefix("api-")
+        .and_then(|rest| rest.strip_suffix(".duosecurity.com"))
+    else {
+        return false;
+    };
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::duo_host_ok;
+
+    #[test]
+    fn only_duo_api_hosts_are_called() {
+        assert!(duo_host_ok("api-1234abcd.duosecurity.com"));
+        for bad in [
+            "",
+            "api-.duosecurity.com",
+            "api-x.duosecurity.com.evil.example",
+            "evil.example/api-x.duosecurity.com",
+            "api-x@evil.example.duosecurity.com",
+            "API-X.duosecurity.com",
+            "api-a.b.duosecurity.com",
+            "localhost",
+            "127.0.0.1",
+        ] {
+            assert!(!duo_host_ok(bad), "{bad}");
+        }
     }
 }

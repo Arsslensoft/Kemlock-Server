@@ -158,6 +158,21 @@ describe('SecurityView', () => {
     await vi.waitFor(() => expect(props.onConfirmTotp).toHaveBeenCalledWith('123456'));
   });
 
+  it('asks for a proof before an app is added beside another second step', async () => {
+    const enrol = { secret: 'KQ7M4XZPABCD', uri: 'otpauth://totp/Kemlock:sam?secret=KQ7M4XZPABCD' };
+    const props = security({ methods: ['email'], totp: { open: true, enrol } });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('The code from the email'), 'ABCD EFGH');
+    await user.type(screen.getByLabelText('Code from your authenticator app'), '123456');
+    await user.click(screen.getByRole('button', { name: 'Turn on two-step login' }));
+    await vi.waitFor(() => expect(props.onConfirmTotp).toHaveBeenCalledWith('123456', 'ABCD EFGH'));
+  });
+
+  it('asks for no proof when no other second step is on', () => {
+    security({ methods: [], totp: { open: true, enrol: { secret: 'KQ7M4XZPABCD', uri: 'otpauth://totp/x' } } });
+    expect(screen.queryByLabelText('The code from the email')).not.toBeInTheDocument();
+  });
+
   it('opens enrolment from the Set up button', async () => {
     const props = security();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Set up' }));
@@ -166,7 +181,8 @@ describe('SecurityView', () => {
 
   it('says plainly what is not built yet', () => {
     security();
-    expect(screen.getByText('Recovery Kit')).toBeInTheDocument();
+    expect(screen.getByText('API key')).toBeInTheDocument();
+    expect(screen.queryByText('Recovery Kit')).not.toBeInTheDocument();
     expect(screen.getByText('Delete account')).toBeInTheDocument();
   });
 });

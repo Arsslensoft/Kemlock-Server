@@ -81,6 +81,8 @@ struct StoreInner {
     disabled: HashSet<UserId>,
     /// The accounts whose deletion is pending (the grace period), with when it is due.
     erasing: HashMap<UserId, OffsetDateTime>,
+    /// The `settings` table.
+    settings: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -1325,6 +1327,40 @@ impl VerifiedDomainRepo for FakeStore {
 
     async fn remove_domain_claim(&self, domain: &str) -> Result<(), StoreError> {
         self.lock().domains.remove(domain);
+        Ok(())
+    }
+}
+
+impl FakeStore {
+    /// The value saved under `key` in the `settings` table.
+    pub(crate) fn saved_setting(&self, key: &str) -> Option<String> {
+        self.lock().settings.get(key).cloned()
+    }
+}
+
+impl kemlock_app::admin::SettingsRepo for FakeStore {
+    async fn settings_with_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        Ok(self
+            .lock()
+            .settings
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect())
+    }
+
+    async fn put_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.lock()
+            .settings
+            .insert(key.to_owned(), value.to_owned());
+        Ok(())
+    }
+
+    async fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
+        self.lock().settings.remove(key);
         Ok(())
     }
 }

@@ -18,7 +18,10 @@ usage: kemlock-cli <command>
 commands:
   migrate        apply pending database migrations, then exit
   healthcheck    ask the local server's /alive and exit 0 if it answers 200, else 1
-  reset-admin    start over with a new first admin (needs --yes; not available yet)
+  reset-admin [--promote <email>] --yes
+                 start over with a new first admin: demotes every admin, then the next start
+                 prints a new setup code (needs --yes); with --promote <email>, that existing
+                 account (it needs a confirmed two-step method) becomes the admin instead
   import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]
                  move in from Vaultwarden: prints a dry-run plan; --apply writes it to the server
                  move in from Vaultwarden: prints a dry-run plan; --apply writes (see below)
@@ -44,7 +47,7 @@ once while Vaultwarden runs and again, for what changed, after you stop it.";
 enum Command {
     Migrate,
     Healthcheck,
-    ResetAdmin { yes: bool },
+    ResetAdmin { yes: bool, promote: Option<String> },
     ImportVaultwarden(import_vaultwarden::ImportArgs),
     Backup(backup_cmd::BackupArgs),
     Restore(backup_cmd::RestoreArgs),
@@ -66,11 +69,24 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "migrate" => no_extra(Command::Migrate),
         "healthcheck" => no_extra(Command::Healthcheck),
         "help" | "--help" | "-h" => Ok(Command::Help),
-        "reset-admin" => match rest {
-            [] => Ok(Command::ResetAdmin { yes: false }),
-            [flag] if flag == "--yes" => Ok(Command::ResetAdmin { yes: true }),
-            _ => Err("reset-admin takes only --yes".to_owned()),
-        },
+        "reset-admin" => {
+            let mut yes = false;
+            let mut promote = None;
+            let mut it = rest.iter();
+            while let Some(arg) = it.next() {
+                match arg.as_str() {
+                    "--yes" => yes = true,
+                    "--promote" => match it.next() {
+                        Some(email) => promote = Some(email.clone()),
+                        None => return Err("--promote needs an email".to_owned()),
+                    },
+                    _ => {
+                        return Err("reset-admin takes only --yes and --promote <email>".to_owned());
+                    }
+                }
+            }
+            Ok(Command::ResetAdmin { yes, promote })
+        }
         "import-vaultwarden" => {
             import_vaultwarden::parse_args(rest).map(Command::ImportVaultwarden)
         }
@@ -130,11 +146,20 @@ fn redact(url: &str) -> String {
     }
 }
 
-fn reset_admin(yes: bool) -> u8 {
+/// The time, from the system clock.
+struct SystemClock;
+
+impl kemlock_app::ports::Clock for SystemClock {
+    fn now(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::now_utc()
+    }
+}
+
+async fn reset_admin(config: &Config, yes: bool, promote: Option<String>) -> u8 {
     println!(
-        "reset-admin would remove the admin role from every account, close setup's finished \
-         state and print a new setup code at the server's next start, so a new first admin can \
-         be made. Accounts, vaults and devices stay as they are."
+        "reset-admin removes the admin role from every account and the first-admin marker, so \
+         the server prints a new setup code at its next start and a new first admin can be made. \
+         Accounts, vaults and devices stay as they are."
     );
     if !yes {
         eprintln!(
@@ -142,12 +167,59 @@ fn reset_admin(yes: bool) -> u8 {
         );
         return 2;
     }
-    eprintln!(
-        "kemlock-cli: reset-admin isn't implemented yet. The admin console and the store's \
-         settings it needs come in a later release; until then, restore from a backup or ask on \
-         the project's issue tracker."
-    );
-    1
+    let promote = match promote.as_deref().map(kemlock_domain::Email::parse) {
+        Some(Ok(email)) => Some(email),
+        Some(Err(_)) => {
+            eprintln!("kemlock-cli: --promote needs an email address");
+            return 2;
+        }
+        None => None,
+    };
+    let store = match kemlock_store_sql::SqlStore::connect(&config.database_url).await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("kemlock-cli: can't open the database: {e}");
+            return 1;
+        }
+    };
+    let reset = kemlock_app::reset_admin::ResetAdmin {
+        users: store.clone(),
+        admins: store.clone(),
+        events: store.clone(),
+        settings: store.clone(),
+        two_factor: store.clone(),
+        clock: SystemClock,
+    };
+    let result = reset.execute(promote.as_ref()).await;
+    let _ = store.close().await;
+    match result {
+        Ok(demoted) if promote.is_some() => {
+            for email in &demoted {
+                println!("no longer an admin: {email}");
+            }
+            println!("done. The promoted account is the admin; setup stays closed.");
+            0
+        }
+        Ok(demoted) if demoted.is_empty() => {
+            println!("no account was an admin; setup will open at the server's next start");
+            0
+        }
+        Ok(demoted) => {
+            for email in &demoted {
+                println!("no longer an admin: {email}");
+            }
+            println!(
+                "done. Restart the server: it prints a new setup code in its log. Sessions that \
+                 are open keep their tokens until they expire, but no longer reach the admin \
+                 console."
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("kemlock-cli: reset-admin failed: {e}");
+            1
+        }
+    }
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -181,7 +253,9 @@ async fn main() -> ExitCode {
     match command {
         Command::Migrate => migrate(&config).await,
         Command::Healthcheck => healthcheck(&config),
-        Command::ResetAdmin { yes } => ExitCode::from(reset_admin(yes)),
+        Command::ResetAdmin { yes, promote } => {
+            ExitCode::from(reset_admin(&config, yes, promote).await)
+        }
         Command::Backup(args) => {
             ExitCode::from(backup_cmd::run_backup_command(&config, args).await)
         }
@@ -208,12 +282,36 @@ mod tests {
         assert_eq!(parse(&args(&["--help"])), Ok(Command::Help));
         assert_eq!(
             parse(&args(&["reset-admin"])),
-            Ok(Command::ResetAdmin { yes: false })
+            Ok(Command::ResetAdmin {
+                yes: false,
+                promote: None
+            })
         );
         assert_eq!(
             parse(&args(&["reset-admin", "--yes"])),
-            Ok(Command::ResetAdmin { yes: true })
+            Ok(Command::ResetAdmin {
+                yes: true,
+                promote: None
+            })
         );
+    }
+
+    #[test]
+    fn reset_admin_parses_promote() {
+        assert_eq!(
+            parse(&args(&[
+                "reset-admin",
+                "--promote",
+                "a@example.org",
+                "--yes"
+            ])),
+            Ok(Command::ResetAdmin {
+                yes: true,
+                promote: Some("a@example.org".to_owned())
+            })
+        );
+        assert!(parse(&args(&["reset-admin", "--promote"])).is_err());
+        assert!(parse(&args(&["reset-admin", "--now"])).is_err());
     }
 
     #[test]
@@ -249,11 +347,5 @@ mod tests {
             "sqlite://data/db.sqlite3?mode=rwc"
         );
         assert_eq!(redact("sqlite::memory:"), "sqlite::memory:");
-    }
-
-    #[test]
-    fn reset_admin_refuses_without_yes_and_says_not_yet_with_it() {
-        assert_eq!(reset_admin(false), 2);
-        assert_eq!(reset_admin(true), 1);
     }
 }

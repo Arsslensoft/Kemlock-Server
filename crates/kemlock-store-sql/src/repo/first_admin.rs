@@ -15,7 +15,7 @@ use sea_orm::{ConnectionTrait, EntityTrait, TransactionTrait};
 use uuid::Uuid;
 
 /// The marker's `settings` key.
-const KEY: &str = "first_admin";
+const KEY: &str = kemlock_app::first_admin::MARKER_KEY;
 
 /// The account the marker names, if the marker exists and the account does too.
 async fn marked_account<C: ConnectionTrait>(db: &C) -> Result<Option<Uuid>, StoreError> {

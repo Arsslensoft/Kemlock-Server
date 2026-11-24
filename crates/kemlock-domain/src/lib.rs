@@ -15,6 +15,7 @@ pub mod owner;
 pub mod passkeys;
 pub mod policies;
 pub mod privacy;
+pub mod recovery_kit;
 pub mod sends;
 pub mod setup;
 pub mod spaces;
@@ -35,6 +36,7 @@ pub use item::{
 };
 pub use owner::Owner;
 pub use passkeys::{Passkey, PasskeyId, PrfWrap};
+pub use recovery_kit::RecoveryKit;
 pub use setup::{SetupError, is_secure_context};
 pub use sync_cursor::SyncCursor;
 pub use user::{AccountMode, Email, EmailError, KdfParams, Role, User};

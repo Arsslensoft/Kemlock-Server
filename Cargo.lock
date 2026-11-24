@@ -3574,7 +3574,9 @@ dependencies = [
 name = "kemlock-cli"
 version = "0.1.0"
 dependencies = [
+ "kemlock-app",
  "kemlock-crypto",
+ "kemlock-domain",
  "kemlock-server",
  "kemlock-store-sql",
  "kemlock-vaultwarden",
@@ -3582,6 +3584,7 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

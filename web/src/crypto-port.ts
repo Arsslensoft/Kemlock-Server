@@ -7,7 +7,7 @@
 // own contract (src/crypto/types.ts) speaks base64url strings and numeric handles; `fromWorker`
 // below adapts it, and under Vitest `@/crypto-port` is aliased to the fake in src/test.
 import { crypto as worker } from '@/crypto';
-import type { CryptoApi, Handle, OpaqueStateHandle } from '@/crypto/types';
+import type { CryptoApi, Handle, KitPieceRead, KitProblem, OpaqueStateHandle } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 
 /** Argon2id settings from /auth/prelogin, with the salt decoded. */
@@ -213,6 +213,27 @@ export interface CryptoPort {
     wrapped: Uint8Array,
   ): Promise<Uint8Array>;
   /**
+   * Makes a 2-of-3 Recovery Kit for the open account (docs/crypto.md, "The Recovery Kit"). The
+   * pieces are text to show once; the wrap is for the server. The root key stays in the worker.
+   */
+  kitMake(): Promise<{ kitId: string; pieces: string[]; wrappedKey: Uint8Array; keyVersion: number }>;
+  /** Reads one piece however it was typed, or says what is wrong with it. */
+  kitReadPiece(text: string): Promise<KitPieceRead>;
+  /** Whether the pieces are of one kit with none twice; fewer than the kit needs pass. */
+  kitCheckPieces(pieces: string[]): Promise<{ problem?: KitProblem }>;
+  /**
+   * Opens a kit's wrap with enough pieces and keeps the root key in the worker; `unlockWithRoot`
+   * opens the vault with the handle returned. Refuses too few pieces, another kit, account or
+   * key version.
+   */
+  kitOpenRoot(
+    pieces: string[],
+    kitId: string,
+    accountId: string,
+    keyVersion: number,
+    wrapped: Uint8Array,
+  ): Promise<Uint8Array>;
+  /**
    * Makes the keys of an account that has no password (single sign-on made it), leaves the vault
    * open, and returns what `POST /kem/v1/account/keys/enrol` takes. `wrappedRootKey` is empty.
    */
@@ -384,6 +405,16 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         keyVersion,
         encodeB64(wrapped),
       );
+      return handleBytes(root);
+    },
+    async kitMake() {
+      const made = await api.kitMake();
+      return { ...made, wrappedKey: decodeB64(made.wrappedKey) };
+    },
+    kitReadPiece: (text) => api.kitReadPiece(text),
+    kitCheckPieces: (pieces) => api.kitCheckPieces(pieces),
+    async kitOpenRoot(pieces, kitId, accountId, keyVersion, wrapped) {
+      const root = await api.kitOpenRoot(pieces, kitId, accountId, keyVersion, encodeB64(wrapped));
       return handleBytes(root);
     },
     async newSsoAccount(accountId) {

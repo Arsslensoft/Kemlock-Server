@@ -105,21 +105,31 @@ debug build reads `web/dist` from disk, which is the development override.
 
 ## What is not here yet
 
-Built and wired to the server: sign-in and setup, the vault with the item forms for logins and
-notes, the Trash, Sends, spaces, import and export, duplicates, health, devices and approvals,
-account security (an authenticator app, emergency contacts) and the admin console (users and
+Built and wired to the server: sign-in (password, SSO, a passkey, an approval from another device,
+also from the unlock screen, or with 2 of the 3 pieces of a Recovery Kit) and setup (with a security key or passkey), the vault with the item
+forms for every kind (logins, notes, one-time codes, backup codes, cards, identities, SSH keys, PGP
+keys, certificates and contacts), the Trash, Sends, spaces, import and export, duplicates, health,
+devices and approvals, account security (an authenticator app, passkeys, security keys, YubiKey,
+Duo, an emailed code, the recovery code, the Recovery Kit, emergency contacts) and the admin console (users and
 invitations, event log, settings, SSO, migration, federation).
 
 Not built, or not working yet:
 
-- Sign-in with SSO, a passkey or an approval from a phone: the buttons are drawn, and say so.
-- Passkeys, security keys, YubiKey, Duo, an emailed code and the Recovery Kit as second steps in
-  Account security. The server serves them; the screens list them as "Later".
-- Items other than logins and notes open as read-only detail.
-- First-run "Server basics" are kept in the browser and listed on the last setup screen; the
-  server does not take them there. They are set in the admin Settings.
-- Where each vault lives (`src/api/placement.ts`): the server has no placement route, so the
-  failover banner and the storage page show nothing for a single server.
+- Scanning a Recovery Kit piece needs the browser's `BarcodeDetector` (Chromium, Safari); elsewhere
+  the pieces are typed or pasted. The kit is made and opened in the key worker, so the page never
+  holds the root key (docs/crypto.md, "The Recovery Kit").
+- Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
+  (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
+  its key.
+- First-run "Server basics": who can join and the email server are saved by the server when setup
+  finishes (as the admin Settings), and checked first. The address, push, file folder and backups
+  are not settings the server stores; the last setup screen lists them to copy into its
+  configuration.
+- Where each vault lives (`src/api/placement.ts`): `GET /kem/v1/placement` is served from the
+  federation state. A single server answers 404 and the failover banner and storage page show
+  nothing. A server is named by the host of its address, and every peer's status is `unknown`,
+  because the server does not probe its peers yet, so the banner does not appear on its own.
+  Waiting changes are not kept per vault, so there is nothing to cancel.
 
 ### Federation: what a server cannot say
 

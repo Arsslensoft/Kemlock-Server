@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 use crate::{
     b64,
     error::Error,
-    ids, sends,
+    ids, kit, sends,
     session::{self, SealedItemRef, Session},
     sharing::{self, Facts},
     spaces::{NameKind, NewCollection},
@@ -79,6 +79,30 @@ struct SealedOut {
 struct DeviceKeyOut {
     handle: u32,
     public_key: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KitOut {
+    kit_id: String,
+    pieces: Vec<String>,
+    wrapped_key: String,
+    key_version: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KitPieceOut {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kit_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    threshold: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shares: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    problem: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -813,6 +837,78 @@ impl Vault {
         let wrapped = b64::decode(wrapped).map_err(fail)?;
         self.session
             .prf_open_root_key(&prf, &credential, &account, key_version, &wrapped)
+            .map_err(fail)
+    }
+
+    /// Makes a Recovery Kit for the open account (docs/crypto.md, "The Recovery Kit"):
+    /// `{kitId, pieces, wrappedKey, keyVersion}`. The pieces are text for the page to show once;
+    /// the wrap is for the server to keep.
+    #[wasm_bindgen(js_name = kitMake)]
+    pub fn kit_make(&self) -> Result<String, JsError> {
+        let made = self.session.kit_make().map_err(fail)?;
+        json(&KitOut {
+            kit_id: made.kit_id,
+            pieces: made.pieces,
+            wrapped_key: b64::encode(&made.wrapped),
+            key_version: made.key_version,
+        })
+    }
+
+    /// Reads one piece, however it was typed: `{kitId, threshold, shares, index}`, or
+    /// `{problem}` with `format` or `checksum`.
+    #[wasm_bindgen(js_name = kitReadPiece)]
+    pub fn kit_read_piece(&self, text: &str) -> Result<String, JsError> {
+        match kit::read_piece(text) {
+            Ok(piece) => json(&KitPieceOut {
+                kit_id: Some(piece.kit_id),
+                threshold: Some(piece.threshold),
+                shares: Some(piece.shares),
+                index: Some(piece.index),
+                problem: None,
+            }),
+            Err(problem) => json(&KitPieceOut {
+                kit_id: None,
+                threshold: None,
+                shares: None,
+                index: None,
+                problem: Some(problem.code()),
+            }),
+        }
+    }
+
+    /// Whether the pieces (a JSON array of their text) are of one kit with none twice:
+    /// `{problem}`, or `{}` when they are.
+    #[wasm_bindgen(js_name = kitCheckPieces)]
+    pub fn kit_check_pieces(&self, pieces_json: &str) -> Result<String, JsError> {
+        let pieces: Vec<String> =
+            serde_json::from_str(pieces_json).map_err(|_| fail(Error::Invalid))?;
+        json(&KitPieceOut {
+            kit_id: None,
+            threshold: None,
+            shares: None,
+            index: None,
+            problem: kit::check_set(&pieces).err().map(|p| p.code()),
+        })
+    }
+
+    /// Opens a Recovery Kit's wrap of the root key with enough pieces (a JSON array of their text)
+    /// and keeps the root key behind a handle for `unlockWithRoot`. Fails for pieces that are not
+    /// enough of the kit, and for another kit, account or key version than the wrap's.
+    #[wasm_bindgen(js_name = kitOpenRoot)]
+    pub fn kit_open_root(
+        &mut self,
+        pieces_json: &str,
+        kit_id: &str,
+        account_id: &str,
+        key_version: u32,
+        wrapped: &str,
+    ) -> Result<u32, JsError> {
+        let pieces: Vec<String> =
+            serde_json::from_str(pieces_json).map_err(|_| fail(Error::Invalid))?;
+        let account = ids::parse_uuid(account_id).map_err(fail)?;
+        let wrapped = b64::decode(wrapped).map_err(fail)?;
+        self.session
+            .kit_open_root(&pieces, kit_id, &account, key_version, &wrapped)
             .map_err(fail)
     }
 

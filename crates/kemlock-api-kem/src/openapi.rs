@@ -9,11 +9,11 @@
 use crate::dto::{
     ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
-    PreloginResponse, RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest,
-    RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse, SetupVerifyRequest,
-    SetupVerifyResponse, SignInResponse, SsoOffer, SyncBody, SyncResponse, TagOutcomeDto,
-    TaggedBatchRequest, TaggedBatchResponse, TaggedBatchWriteDto, TokenResponse,
-    TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
+    PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest,
+    RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
+    ServerBasicsDto, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse,
+    SsoOffer, SyncBody, SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse,
+    TaggedBatchWriteDto, TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
 };
 use serde::Serialize;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
@@ -217,8 +217,10 @@ fn doc_setup_verify() {}
 #[utoipa::path(
     post, path = "/kem/v1/setup/finish", tag = "setup",
     security(("dpop" = [])),
+    request_body = Option<SetupFinishRequest>,
     responses(
-        (status = 204, description = "Setup is closed for good"),
+        (status = 204, description = "Setup is closed for good, and the server basics (when sent) are saved as settings"),
+        (status = 400, description = "A server basic is not valid; setup stays open", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "The admin has no confirmed two-step method yet", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -324,7 +326,8 @@ fn doc_totp_enrol() {}
     security(("dpop" = [])),
     request_body = TotpConfirmRequest,
     responses(
-        (status = 204, description = "The method is enabled"),
+        (status = 204, description = "The method is enabled. With another second step on, the request carries the recovery code as `proof`"),
+        (status = 400, description = "Another second step is on and the proof is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong code", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -332,10 +335,12 @@ fn doc_totp_enrol() {}
 fn doc_totp_confirm() {}
 
 #[utoipa::path(
-    get, path = "/kem/v1/account/two-factor/recovery-code", tag = "account",
+    post, path = "/kem/v1/account/two-factor/recovery-code", tag = "account",
     security(("dpop" = [])),
+    request_body = RecoveryCodeRequest,
     responses(
-        (status = 200, description = "The recovery code (null before the account's first second step, or once it was spent)", body = RecoveryCodeResponse),
+        (status = 200, description = "The recovery code (null before the account's first second step, or once it was spent). While the account holds one, the request carries a fresh `proof` that is not the recovery code: a mailed code or a current code of the authenticator app", body = RecoveryCodeResponse),
+        (status = 400, description = "The account holds a code and the proof is missing, wrong or has run out", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 429, description = "Too many asks", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -436,11 +441,12 @@ fn doc_live() {}
         doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
-        ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, EmailRequest, KdfDto,
+        ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,
+        ServerBasicsDto, EmailRequest, KdfDto,
         PreloginResponse, MethodsResponse, SsoOffer, RegisterStartRequest, RegisterStartResponse,
         RegisterFinishRequest, RegisterFinishResponse, OpaqueStartRequest, OpaqueStartResponse,
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,
-        TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeResponse, ItemDto,
+        TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeRequest, RecoveryCodeResponse, ItemDto,
         ItemWriteDto, ItemWriteAnswerDto, TaggedBatchWriteDto, TaggedBatchRequest, TagOutcomeDto,
         TaggedBatchResponse, SyncBody, SyncResponse
     )),

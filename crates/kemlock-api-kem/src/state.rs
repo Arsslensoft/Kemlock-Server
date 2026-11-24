@@ -201,6 +201,10 @@ pub struct Inner<S, P, K> {
     pub(crate) recorded_use: TimedSet,
     /// Members whose invitation was mailed again in the last 10 minutes: one resend each.
     pub(crate) resent_invitations: TimedSet,
+    /// How the routes that live beside the main router's (the authenticator app's, the recovery
+    /// code's) check a mailed proof: set by `two_step_router`, which holds the store of codes.
+    /// Unset, only what needs no store proves it.
+    pub(crate) proofs: std::sync::OnceLock<Arc<dyn crate::routes::two_step::MailedProof>>,
 }
 
 /// The API's shared state: cheap to clone, handed to every handler. `S` is the store, `P` the
@@ -211,6 +215,17 @@ pub struct Api<S, P, K>(Arc<Inner<S, P, K>>);
 impl<S, P, K> Clone for Api<S, P, K> {
     fn clone(&self) -> Self {
         Api(Arc::clone(&self.0))
+    }
+}
+
+impl<S, P, K> Api<S, P, K> {
+    /// A handle that doesn't keep the state alive, for what the state itself holds.
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<Inner<S, P, K>> {
+        Arc::downgrade(&self.0)
+    }
+
+    pub(crate) fn upgrade(weak: &std::sync::Weak<Inner<S, P, K>>) -> Option<Self> {
+        weak.upgrade().map(Api)
     }
 }
 
@@ -249,6 +264,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             used_states: TimedSet::new(states_ttl, MAX_USED_STATES),
             recorded_use: TimedSet::new(USE_GRANULARITY.whole_seconds(), MAX_USED_STATES),
             resent_invitations: TimedSet::new(RESEND_WINDOW_SECS, MAX_USED_STATES),
+            proofs: std::sync::OnceLock::new(),
         })))
     }
 
@@ -365,7 +381,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         }
     }
 
-    fn sessions(&self) -> Sessions<S, S, K, P, S, S> {
+    pub(crate) fn sessions(&self) -> Sessions<S, S, K, P, S, S> {
         Sessions {
             devices: self.store.clone(),
             tokens: self.store.clone(),

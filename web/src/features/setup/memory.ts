@@ -10,7 +10,11 @@ export interface SetupMemory {
   /** The server-basics choices, kept for the summary on the last screen. */
   basics?: ServerBasicsValues;
   /** The two-step method the admin confirmed. */
-  twoStep?: 'totp';
+  twoStep?: 'totp' | 'key';
+  /** "Add a passkey too" was ticked on the admin screen. */
+  wantPasskey?: boolean;
+  /** A passkey was already made in this setup, so it is not made twice. */
+  passkeyMade?: boolean;
 }
 
 let memory: SetupMemory = {};

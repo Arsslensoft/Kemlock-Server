@@ -176,8 +176,6 @@ struct Loaded {
     /// When the row was made, kept across rewrites.
     created_at: Option<OffsetDateTime>,
     keys: Vec<StoredKey>,
-    /// Whether the account has another enabled two-step method (an authenticator app).
-    other_method: bool,
 }
 
 /// An account's security keys over their ports.
@@ -203,9 +201,6 @@ where
 {
     async fn load(&self, user: UserId) -> Result<Loaded, AppError> {
         let rows = self.two_factor.list(user).await?;
-        let other_method = rows
-            .iter()
-            .any(|t| t.enabled && t.method != TwoFactorMethod::WebAuthn);
         let row = rows
             .into_iter()
             .find(|t| t.method == TwoFactorMethod::WebAuthn && t.enabled);
@@ -224,11 +219,7 @@ where
             }
             None => (None, Vec::new()),
         };
-        Ok(Loaded {
-            created_at,
-            keys,
-            other_method,
-        })
+        Ok(Loaded { created_at, keys })
     }
 
     /// Writes the list back; an empty list removes the row, so the method is off.
@@ -277,24 +268,16 @@ where
     /// Starts a registration: the creation options for `navigator.credentials.create`, which
     /// exclude the keys the account has, so a key is not enrolled twice.
     ///
-    /// `from_session` is a registration asked for by a signed-in device alone. It is refused,
-    /// as `Duplicate`, while the account has another two-step method on, so a stolen session can't
-    /// add a second step it controls beside an authenticator app (the same rule as `EnrolTotp`).
-    /// Bitwarden's routes check the master password first and pass `false`.
-    pub async fn start_registration(
-        &self,
-        user: UserId,
-        from_session: bool,
-    ) -> Result<Value, AppError> {
+    /// Whether a registration may start beside another method that is on is for the caller to
+    /// decide: the Kemlock routes ask for a fresh proof before the method is turned on, and
+    /// Bitwarden's check the master password.
+    pub async fn start_registration(&self, user: UserId) -> Result<Value, AppError> {
         let account = self
             .users
             .by_id(user)
             .await?
             .ok_or(AppError::Unauthorized)?;
         let loaded = self.load(user).await?;
-        if from_session && loaded.other_method {
-            return Err(AppError::Duplicate);
-        }
         if loaded.keys.len() >= MAX_KEYS {
             return Err(AppError::Invalid(
                 "an account may have at most five security keys",

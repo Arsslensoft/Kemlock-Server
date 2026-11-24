@@ -120,13 +120,42 @@ async fn setup_code_to_first_admin_to_synced_item() {
         .await;
     assert_eq!(confirmed.status, StatusCode::NO_CONTENT);
 
-    // Now setup finishes, for good.
+    // A server basic that isn't valid stops the request, and setup stays open.
+    let bad_basics = client
+        .send(
+            "POST",
+            "/kem/v1/setup/finish",
+            Req {
+                access_token: Some(&session.access_token),
+                body: Some(json!({"basics": {"join": "domains", "joinDomains": "not a domain"}})),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(bad_basics.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        client.get("/kem/v1/config").await.json()["setup"],
+        "pending"
+    );
+    assert_eq!(app.store.saved_setting("setting.signups_allowed"), None);
+
+    // Now setup finishes, for good, and the server basics are saved as settings.
     let finished = client
         .send(
             "POST",
             "/kem/v1/setup/finish",
             Req {
                 access_token: Some(&session.access_token),
+                body: Some(json!({"basics": {
+                    "address": "https://kemlock.test",
+                    "join": "domains",
+                    "joinDomains": "Example.org",
+                    "mailHost": "smtp.example.org",
+                    "mailPort": "465",
+                    "mailSecurity": "tls",
+                    "mailFrom": "ops@example.org",
+                    "mailUser": "ops",
+                }})),
                 ..Req::default()
             },
         )
@@ -142,6 +171,41 @@ async fn setup_code_to_first_admin_to_synced_item() {
         "complete"
     );
     assert!(app.store.user(admin).expect("stored").is_admin());
+    for (key, value) in [
+        ("signups_allowed", "true"),
+        ("signups_domains_whitelist", "example.org"),
+        ("smtp_host", "smtp.example.org"),
+        ("smtp_port", "465"),
+        ("smtp_security", "force_tls"),
+        ("smtp_from", "ops@example.org"),
+    ] {
+        assert_eq!(
+            app.store
+                .saved_setting(&format!("setting.{key}"))
+                .as_deref(),
+            Some(value),
+            "{key}"
+        );
+    }
+    // Once setup is closed, nobody can write basics through it.
+    let late = client
+        .send(
+            "POST",
+            "/kem/v1/setup/finish",
+            Req {
+                access_token: Some(&session.access_token),
+                body: Some(json!({"basics": {"join": "invite"}})),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(late.status, StatusCode::CONFLICT);
+    assert_eq!(
+        app.store
+            .saved_setting("setting.signups_allowed")
+            .as_deref(),
+        Some("true")
+    );
     let reopened = client
         .post("/kem/v1/setup/verify", json!({"code": "AAAA-AAAA-AAAA"}))
         .await;
