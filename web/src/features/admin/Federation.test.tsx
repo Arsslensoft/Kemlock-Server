@@ -97,6 +97,36 @@ describe('FederationView', () => {
     expect(screen.queryByRole('button', { name: /Promote to home/ })).not.toBeInTheDocument();
   });
 
+  it('shows a promotion another server sent for a vault homed here, and hands the home over only on request', async () => {
+    const held = {
+      ...OVERVIEW.vaults[1],
+      federated: true,
+      replicas: ['a'.repeat(32)],
+      request: null,
+      heldDemotion: { newHomeId: 'a'.repeat(32), epoch: 2, at: NOW - 600 },
+    } as FedVault;
+    const onAcceptDemotion = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, vaults: [held] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onAcceptDemotion={onAcceptDemotion}
+      />,
+    );
+    expect(screen.getByText('Home server asks to become the home')).toBeInTheDocument();
+    expect(onAcceptDemotion).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Hand over the home of Side projects to Home server' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }));
+  });
+
   it('leads to a peer with a key mismatch', async () => {
     const { onNavigate } = view({ ...OVERVIEW, peers: [peer({ mismatch: true })] });
     await userEvent.setup().click(screen.getByRole('button', { name: 'Possible man in the middle with Office server' }));
