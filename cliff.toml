@@ -32,14 +32,15 @@ conventional_commits = true
 filter_unconventional = true
 protect_breaking_commits = true
 filter_commits = false
-tag_pattern = "v?[0-9]+\.[0-9]+\.[0-9]+.*"
+tag_pattern = 'v?[0-9]+\.[0-9]+\.[0-9]+.*'
 sort_commits = "oldest"
 topo_order = false
 
 commit_parsers = [
   # Not for the notes: the release bump, merge commits and the repository's own housekeeping.
-  { message = "^chore\(release\)", skip = true },
-  { message = "^chore\((deps|docker)\)", group = "<!-- 7 -->Dependencies" },
+  # Regexes go in single-quoted (literal) strings: TOML takes `\.` or `\(` in "..." as a bad escape.
+  { message = '^chore\(release\)', skip = true },
+  { message = '^chore\((deps|docker)\)', group = "<!-- 7 -->Dependencies" },
   { message = "^ci", group = "<!-- 8 -->Build and CI" },
   { message = "^chore", group = "<!-- 9 -->Maintenance" },
   { message = "^feat", group = "<!-- 0 -->Features" },
