@@ -45,14 +45,15 @@ export function useSecondSteps(hasRecoveryCode: boolean | undefined) {
           const credential = await createSecurityKey(options);
           return stepsApi.securityKeyConfirm(name || t('security.webauthn.defaultName'), credential);
         }),
-      removeSecurityKey: (slot) => change(() => stepsApi.securityKeyRemove(slot)),
+      askProof: () => change(() => stepsApi.proofRequest()),
+      removeSecurityKey: (slot, proof) => change(() => stepsApi.securityKeyRemove(slot, proof)),
       emailBegin: (address) => change(() => stepsApi.emailBegin(address)),
       emailConfirm: (address, code) => change(() => stepsApi.emailConfirm(address, code)),
-      emailOff: () => change(() => stepsApi.emailOff()),
+      emailOff: (proof) => change(() => stepsApi.emailOff(proof)),
       yubikeySet: (otps, nfc) => change(() => stepsApi.yubikeySet(otps, nfc)),
-      yubikeyOff: () => change(() => stepsApi.yubikeyOff()),
+      yubikeyOff: (proof) => change(() => stepsApi.yubikeyOff(proof)),
       duoSet: (input) => change(() => stepsApi.duoSet(input)),
-      duoOff: () => change(() => stepsApi.duoOff()),
+      duoOff: (proof) => change(() => stepsApi.duoOff(proof)),
       showRecoveryCode: () => run(() => stepsApi.recoveryCode()),
     },
   };

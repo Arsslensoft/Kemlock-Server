@@ -77,11 +77,15 @@ export function createSecondStepsApi(http: SetupHttp) {
     emailBegin: (address: string) => http.send({ method: 'POST', path: `${factor}/email`, body: { address } }),
     emailConfirm: (address: string, code: string) =>
       http.send({ method: 'POST', path: `${factor}/email/confirm`, body: { address, code } }),
-    emailOff: () => http.send({ method: 'DELETE', path: `${factor}/email` }),
+    /** Mails the one-time code that proves the owner, which every turning off takes as `proof`. */
+    proofRequest: () => http.send({ method: 'POST', path: `${factor}/proof` }),
+
+    emailOff: (proof: string) => http.send({ method: 'DELETE', path: `${factor}/email`, body: { proof } }),
 
     yubikeySet: (otps: string[], nfc: boolean) =>
       http.request<{ keys: string[]; nfc: boolean }>({ method: 'PUT', path: `${factor}/yubikey`, body: { otps, nfc } }),
-    yubikeyOff: () => http.send({ method: 'DELETE', path: `${factor}/yubikey` }),
+    yubikeyOff: (proof: string) =>
+      http.send({ method: 'DELETE', path: `${factor}/yubikey`, body: { proof } }),
 
     duoSet: (keys: DuoKeysInput | null) =>
       http.request<{ integration: 'own' | 'server'; host: string | null }>({
@@ -89,7 +93,7 @@ export function createSecondStepsApi(http: SetupHttp) {
         path: `${factor}/duo`,
         body: keys ?? {},
       }),
-    duoOff: () => http.send({ method: 'DELETE', path: `${factor}/duo` }),
+    duoOff: (proof: string) => http.send({ method: 'DELETE', path: `${factor}/duo`, body: { proof } }),
 
     securityKeys: () => http.request<SecurityKeysDto>({ method: 'GET', path: `${factor}/webauthn` }),
     securityKeyOptions: () =>
@@ -98,8 +102,12 @@ export function createSecondStepsApi(http: SetupHttp) {
         .then((r) => r.options),
     securityKeyConfirm: (name: string, credential: Record<string, unknown>) =>
       http.request<SecurityKeysDto>({ method: 'POST', path: `${factor}/webauthn/confirm`, body: { name, credential } }),
-    securityKeyRemove: (slot: number) =>
-      http.request<SecurityKeysDto>({ method: 'DELETE', path: `${factor}/webauthn/${slot}` }),
+    securityKeyRemove: (slot: number, proof: string) =>
+      http.request<SecurityKeysDto>({
+        method: 'DELETE',
+        path: `${factor}/webauthn/${slot}`,
+        body: { proof },
+      }),
 
     /** The account's recovery code, or null when it has none (or has spent it). */
     recoveryCode: () =>

@@ -24,6 +24,7 @@ function card(over: Partial<SecondStepsProps> = {}) {
     busy: false,
     actions: {
       addSecurityKey: ok(),
+      askProof: ok(),
       removeSecurityKey: ok(),
       emailBegin: ok(),
       emailConfirm: ok(),
@@ -50,7 +51,9 @@ describe('the second-steps API', () => {
     await steps.emailConfirm('a@b.co', '123456');
     await steps.yubikeySet(['ccccccccccccx'], true);
     await steps.duoSet(null);
-    await steps.securityKeyRemove(2);
+    await steps.securityKeyRemove(2, '731904');
+    await steps.proofRequest();
+    await steps.emailOff('731904');
     await steps.recoveryCode();
     expect(request.mock.calls.map(([c]) => `${c.method} ${c.path}`)).toEqual([
       'GET /kem/v1/account/two-step/setup',
@@ -62,7 +65,11 @@ describe('the second-steps API', () => {
     expect(send.mock.calls.map(([c]) => `${c.method} ${c.path}`)).toEqual([
       'POST /kem/v1/account/two-factor/email',
       'POST /kem/v1/account/two-factor/email/confirm',
+      'POST /kem/v1/account/two-factor/proof',
+      'DELETE /kem/v1/account/two-factor/email',
     ]);
+    expect(request.mock.calls[3]?.[0]).toMatchObject({ body: { proof: '731904' } });
+    expect(send.mock.calls[3]?.[0]).toMatchObject({ body: { proof: '731904' } });
     expect(request.mock.calls[2]?.[0]).toMatchObject({ body: {} });
   });
 });
@@ -73,7 +80,12 @@ describe('SecondStepsCard', () => {
     expect(screen.getByText('Desk key')).toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Remove Desk key' }));
-    expect(props.actions.removeSecurityKey).toHaveBeenCalledWith(3);
+    // Turning a second step off asks for the code that was mailed first.
+    expect(props.actions.askProof).toHaveBeenCalled();
+    expect(props.actions.removeSecurityKey).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText('The code from the email'), '731904');
+    await user.click(screen.getByRole('button', { name: 'Turn it off' }));
+    expect(props.actions.removeSecurityKey).toHaveBeenCalledWith(3, '731904');
     await user.click(screen.getByRole('button', { name: 'Add a key' }));
     await user.type(screen.getByLabelText('Name for this key'), 'Spare');
     await user.click(screen.getByRole('button', { name: 'Register the key' }));
@@ -96,8 +108,12 @@ describe('SecondStepsCard', () => {
   it('shows where the codes go and turns the method off', async () => {
     const props = card({ setup: { ...setupOff, email: 'sam@example.co' } });
     expect(screen.getByText('Codes go to sam@example.co')).toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Turn off' }));
-    expect(props.actions.emailOff).toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Turn off' }));
+    expect(props.actions.emailOff).not.toHaveBeenCalled();
+    await user.type(screen.getByLabelText('The code from the email'), '731904');
+    await user.click(screen.getByRole('button', { name: 'Turn it off' }));
+    expect(props.actions.emailOff).toHaveBeenCalledWith('731904');
   });
 
   it('says so when the server can not mail or check a YubiKey', () => {

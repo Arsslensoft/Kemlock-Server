@@ -20,18 +20,23 @@ export interface SecondStepsProps {
   busy: boolean;
   actions: {
     addSecurityKey: (name: string) => Done;
-    removeSecurityKey: (slot: number) => Done;
+    /** Mails the one-time code that proves the owner, for turning a second step off. */
+    askProof: () => Done;
+    removeSecurityKey: (slot: number, proof: string) => Done;
     emailBegin: (address: string) => Done;
     emailConfirm: (address: string, code: string) => Done;
-    emailOff: () => Done;
+    emailOff: (proof: string) => Done;
     yubikeySet: (otps: string[], nfc: boolean) => Done;
-    yubikeyOff: () => Done;
+    yubikeyOff: (proof: string) => Done;
     duoSet: (keys: DuoKeysInput | null) => Done;
-    duoOff: () => Done;
+    duoOff: (proof: string) => Done;
     /** The recovery code, or null when the account has none; undefined when the call failed. */
     showRecoveryCode: () => Promise<string | null | undefined>;
   };
 }
+
+/** What is being turned off, until its proof comes. */
+type Removal = { kind: 'email' | 'yubikey' | 'duo' } | { kind: 'key'; slot: number };
 
 function Tag({ on }: { on: boolean | undefined }) {
   const t = useT();
@@ -50,6 +55,27 @@ export function SecondStepsCard({
 }: SecondStepsProps) {
   const t = useT();
   const loading = setup === undefined;
+  // Turning a second step off asks for a fresh proof: a code mailed to the account's address.
+  const [removing, setRemoving] = useState<Removal | null>(null);
+  const [proof, setProof] = useState('');
+  function askToRemove(what: Removal) {
+    setRemoving(what);
+    setProof('');
+    void actions.askProof();
+  }
+  async function remove() {
+    if (!removing) return;
+    const code = proof.trim();
+    const done =
+      removing.kind === 'key'
+        ? await actions.removeSecurityKey(removing.slot, code)
+        : removing.kind === 'email'
+          ? await actions.emailOff(code)
+          : removing.kind === 'yubikey'
+            ? await actions.yubikeyOff(code)
+            : await actions.duoOff(code);
+    if (done) setRemoving(null);
+  }
   return (
     <>
       <SecurityKeysRows
@@ -57,22 +83,43 @@ export function SecondStepsCard({
         available={securityKeysAvailable}
         busy={busy}
         onAdd={actions.addSecurityKey}
-        onRemove={actions.removeSecurityKey}
+        onRemove={(slot) => askToRemove({ kind: 'key', slot })}
       />
       <YubikeyRows
         setup={setup}
         busy={busy}
         onSet={actions.yubikeySet}
-        onOff={actions.yubikeyOff}
+        onOff={() => askToRemove({ kind: 'yubikey' })}
       />
-      <DuoRows setup={setup} busy={busy} onSet={actions.duoSet} onOff={actions.duoOff} />
+      <DuoRows setup={setup} busy={busy} onSet={actions.duoSet} onOff={() => askToRemove({ kind: 'duo' })} />
       <EmailRows
         setup={setup}
         busy={busy}
         onBegin={actions.emailBegin}
         onConfirm={actions.emailConfirm}
-        onOff={actions.emailOff}
+        onOff={() => askToRemove({ kind: 'email' })}
       />
+      {removing ? (
+        <form
+          className="panel-body"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void remove();
+          }}
+        >
+          <p className="hint">{t('security.proof.sent')}</p>
+          <TextInput label={t('security.proof.code')} value={proof} onChange={setProof} mono required />
+          <div className="actions">
+            <Button type="submit" variant="danger" isDisabled={busy || proof.trim() === ''}>
+              {t('security.proof.confirm')}
+            </Button>
+            <Button isDisabled={busy} onPress={() => void actions.askProof()}>
+              {t('security.proof.again')}
+            </Button>
+            <Button onPress={() => setRemoving(null)}>{t('action.cancel')}</Button>
+          </div>
+        </form>
+      ) : null}
       <RecoveryRows has={loading ? undefined : hasRecoveryCode} busy={busy} onShow={actions.showRecoveryCode} />
       <p className="hint">{t('security.secondSteps.beside')}</p>
     </>
@@ -90,7 +137,7 @@ function SecurityKeysRows({
   available: boolean;
   busy: boolean;
   onAdd: (name: string) => Done;
-  onRemove: (slot: number) => Done;
+  onRemove: (slot: number) => void;
 }) {
   const t = useT();
   const [naming, setNaming] = useState(false);
@@ -140,7 +187,7 @@ function SecurityKeysRows({
             size="small"
             isDisabled={busy}
             aria-label={t('security.webauthn.remove', { name: key.name })}
-            onPress={() => void onRemove(key.id)}
+            onPress={() => onRemove(key.id)}
           >
             {t('security.passkeys.removeLabel')}
           </Button>
@@ -159,7 +206,7 @@ function YubikeyRows({
   setup: TwoStepSetupDto | undefined;
   busy: boolean;
   onSet: (otps: string[], nfc: boolean) => Done;
-  onOff: () => Done;
+  onOff: () => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -174,13 +221,13 @@ function YubikeyRows({
           <div className="hint">{t('security.method.yubikey.hint')}</div>
         </div>
         <Tag on={on} />
-        {setup && !open && setup.yubikeyOffered ? (
+        {setup && !on && !open && setup.yubikeyOffered ? (
           <Button size="small" isDisabled={busy} onPress={() => setOpen(true)}>
-            {on ? t('security.change') : t('security.setUp')}
+            {t('security.setUp')}
           </Button>
         ) : null}
         {on ? (
-          <Button size="small" isDisabled={busy} onPress={() => void onOff()}>
+          <Button size="small" isDisabled={busy} onPress={onOff}>
             {t('security.turnOff')}
           </Button>
         ) : null}
@@ -238,7 +285,7 @@ function DuoRows({
   setup: TwoStepSetupDto | undefined;
   busy: boolean;
   onSet: (keys: DuoKeysInput | null) => Done;
-  onOff: () => Done;
+  onOff: () => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -261,13 +308,13 @@ function DuoRows({
           </div>
         </div>
         <Tag on={on} />
-        {setup && !open ? (
+        {setup && !on && !open ? (
           <Button size="small" isDisabled={busy} onPress={() => setOpen(true)}>
-            {on ? t('security.change') : t('security.setUp')}
+            {t('security.setUp')}
           </Button>
         ) : null}
         {on ? (
-          <Button size="small" isDisabled={busy} onPress={() => void onOff()}>
+          <Button size="small" isDisabled={busy} onPress={onOff}>
             {t('security.turnOff')}
           </Button>
         ) : null}
@@ -318,7 +365,7 @@ function EmailRows({
   busy: boolean;
   onBegin: (address: string) => Done;
   onConfirm: (address: string, code: string) => Done;
-  onOff: () => Done;
+  onOff: () => void;
 }) {
   const t = useT();
   const [stage, setStage] = useState<'closed' | 'address' | 'code'>('closed');
@@ -339,13 +386,13 @@ function EmailRows({
           </div>
         </div>
         <Tag on={on} />
-        {setup && stage === 'closed' && setup.emailOffered ? (
+        {setup && !on && stage === 'closed' && setup.emailOffered ? (
           <Button size="small" isDisabled={busy} onPress={() => setStage('address')}>
-            {on ? t('security.change') : t('security.setUp')}
+            {t('security.setUp')}
           </Button>
         ) : null}
         {on ? (
-          <Button size="small" isDisabled={busy} onPress={() => void onOff()}>
+          <Button size="small" isDisabled={busy} onPress={onOff}>
             {t('security.turnOff')}
           </Button>
         ) : null}
