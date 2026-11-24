@@ -151,9 +151,23 @@ EOT
   msg_ok "Configured Caddy"
 }
 
-print_hint() {
-  echo -e "${INFO}${YW}Kemlock Server prints a one-time setup code on its first start; the setup page asks for it:${CL}"
-  echo -e "${TAB}${BGN}$1${CL}"
+# The server logs the one-time setup code (`setup code ABCD-EFGH-JKMN`, Crockford's base32) on its
+# first start, a moment after it starts listening. Wait for it and show it, and say how to read it
+# again: every restart makes a new code until the first admin exists.
+print_setup_code() {
+  local log_cmd="$1" code="" _
+  for _ in $(seq 1 30); do
+    code=$(sh -c "$log_cmd" 2>/dev/null | grep -oE 'setup code [0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}' | tail -n 1 | awk '{print $3}')
+    [ -n "$code" ] && break
+    sleep 1
+  done
+  if [ -n "$code" ]; then
+    echo -e "${INFO}${YW}The one-time setup code (the setup page asks for it):${CL} ${BGN}${code}${CL}"
+  else
+    echo -e "${INFO}${YW}Kemlock Server didn't print a setup code within 30 seconds; read it from its log:${CL}"
+  fi
+  echo -e "${TAB}${YW}A restart makes a new code until the first admin exists. Read the current one with:${CL}"
+  echo -e "${TAB}${BGN}${log_cmd} | grep -i 'setup code' | tail -n 1${CL}"
 }
 
 setup_deb_based() {
@@ -224,7 +238,7 @@ EOT
   systemctl restart caddy
   msg_ok "Created Service"
 
-  print_hint "journalctl -u kemlock-server | grep -i 'setup code'"
+  print_setup_code "journalctl -u kemlock-server -o cat --no-pager"
 }
 
 setup_alpine() {
@@ -268,10 +282,22 @@ depend() {
 
 start_pre() {
   checkpath -f -m 0640 -o kemlock:kemlock /var/log/kemlock-server.log
-  # The settings are in /opt/kemlock-server/.env, the same file the Debian unit reads.
-  set -a
-  . /opt/kemlock-server/.env
-  set +a
+  # The settings are in /opt/kemlock-server/.env, the same file the Debian unit reads, and read
+  # as systemd's EnvironmentFile reads it: KEY=value lines, # comments, one pair of quotes around
+  # a value taken off. Never sourced, so a space, a $ or a backtick in a password is just text.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | '#'* | ';'*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    [ "$key" != "$line" ] || continue
+    key=$(printf '%s' "$key" | tr -d '[:space:]')
+    case "$key" in '' | [0-9]* | *[!A-Za-z0-9_]*) continue ;; esac
+    case "$value" in
+      \"*\") value=${value#\"}; value=${value%\"} ;;
+      \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+    export "$key=$value"
+  done </opt/kemlock-server/.env
 }
 EOT
   chmod +x /etc/init.d/kemlock-server
@@ -281,7 +307,7 @@ EOT
   $STD rc-service caddy restart
   msg_ok "Created Service"
 
-  print_hint "grep -i 'setup code' /var/log/kemlock-server.log"
+  print_setup_code "cat /var/log/kemlock-server.log"
 }
 
 run_os_setup
