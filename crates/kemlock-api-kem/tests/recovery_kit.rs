@@ -136,8 +136,11 @@ fn rig() -> Rig {
 fn rig_with(email_enabled: bool) -> Rig {
     let mailbox = Mailbox::default();
     let app = App::mailing(true, Arc::new(mailbox.clone()));
+    // One challenge store for both routers, as the server gives them: the proof the second-step
+    // routes mail is the one the kit routes take.
+    let challenges = FakePasskeys::default();
     let runtime = TwoStepRuntime {
-        challenges: FakePasskeys::default(),
+        challenges: challenges.clone(),
         notices: Notices::with_outbox(Arc::new(mailbox.clone())),
         yubico: Arc::new(NoYubico),
         duo: Arc::new(NoDuo),
@@ -150,7 +153,13 @@ fn rig_with(email_enabled: bool) -> Rig {
         .router
         .clone()
         .merge(two_step_router(app.api.clone(), runtime))
-        .merge(recovery_kit_router(app.api.clone(), Repos::default()));
+        .merge(recovery_kit_router(
+            app.api.clone(),
+            Repos {
+                challenges,
+                kits: Arc::default(),
+            },
+        ));
     Rig {
         app,
         router,
@@ -217,7 +226,7 @@ impl Rig {
         json!({
             "kitId": kit_id,
             "keyVersion": account.key_version,
-            "wrappedKey": kemlock_app::b64url::encode(&vec![7u8; WRAPPED_LEN]),
+            "wrappedKey": kemlock_app::b64url::encode(&[7u8; WRAPPED_LEN]),
         })
     }
 

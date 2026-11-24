@@ -30,8 +30,14 @@ fn any_two_of_three_pieces_rebuild_the_key() {
 fn one_piece_is_not_enough_and_gives_no_key() {
     let (_, _, pieces) = make_kit(2, 3).expect("a kit");
     let all = parsed(&pieces);
-    assert_eq!(rebuild_key(&all[..1]).expect_err("one piece"), PieceProblem::NotEnough);
-    assert_eq!(rebuild_key(&[]).expect_err("no pieces"), PieceProblem::NotEnough);
+    assert_eq!(
+        rebuild_key(&all[..1]).expect_err("one piece"),
+        PieceProblem::NotEnough
+    );
+    assert_eq!(
+        rebuild_key(&[]).expect_err("no pieces"),
+        PieceProblem::NotEnough
+    );
 }
 
 #[test]
@@ -86,7 +92,10 @@ fn a_mistyped_piece_fails_its_check() {
     let at = 21;
     chars[at] = if chars[at] == 'A' { 'B' } else { 'A' };
     let typo: String = chars.into_iter().collect();
-    assert_eq!(parse_piece(&typo).expect_err("a typo"), PieceProblem::Checksum);
+    assert_eq!(
+        parse_piece(&typo).expect_err("a typo"),
+        PieceProblem::Checksum
+    );
 }
 
 #[test]
