@@ -168,18 +168,16 @@ export function UsersView(props: UsersViewProps) {
   const { users, spaces, now } = props;
   const t = useT();
   const [email, setEmail] = useState('');
-  const [emailError, setEmailError] = useState<MessageId | undefined>();
   const [erase, setErase] = useState<AdminUser | null>(null);
   const [ownerOf, setOwnerOf] = useState<AdminSpace | null>(null);
   const candidates = useMemo(() => users.filter((user) => user.disabledAt === null), [users]);
 
+  // Checked as it is typed: an address that is not one shows its error and blocks Invite.
+  const parsed = emailSchema.safeParse({ email });
+  const emailError: MessageId | undefined = email.trim() !== '' && !parsed.success ? 'error.email' : undefined;
+
   function invite(): void {
-    const parsed = emailSchema.safeParse({ email });
-    if (!parsed.success) {
-      setEmailError('error.email');
-      return;
-    }
-    setEmailError(undefined);
+    if (!parsed.success) return;
     props.onInvite(parsed.data.email);
     setEmail('');
   }
@@ -204,10 +202,12 @@ export function UsersView(props: UsersViewProps) {
               value={email}
               onChange={setEmail}
               placeholder="name@example.co"
+              inputMode="email"
+              required
               error={emailError}
               autoComplete="off"
             />
-            <Button type="submit" variant="primary" isDisabled={props.busy}>
+            <Button type="submit" variant="primary" isDisabled={props.busy || email.trim() === '' || !parsed.success}>
               {t('admin.users.invite.submit')}
             </Button>
           </form>
