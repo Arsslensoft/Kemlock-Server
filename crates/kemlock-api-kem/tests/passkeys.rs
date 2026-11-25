@@ -792,6 +792,146 @@ async fn a_security_key_that_isnt_ours_is_not_registered() {
     assert_eq!(signed["status"], "signed_in");
 }
 
+// ---------------------------------------------------------------------------------------------
+// A security key or passkey as a fresh proof
+
+impl Pk {
+    /// `proof/webauthn/options`: the options to answer a fresh proof with.
+    async fn proof_options(&self, client: &Client, session: &Session) -> Reply {
+        self.call(
+            client,
+            "POST",
+            "/kem/v1/account/two-factor/proof/webauthn/options",
+            Some(&session.access_token),
+            None,
+        )
+        .await
+    }
+
+    /// Removes the security key in slot 1 with `proof`, the request every proof-gated route shares.
+    async fn remove_key_with(&self, client: &Client, session: &Session, proof: Value) -> Reply {
+        self.call(
+            client,
+            "DELETE",
+            "/kem/v1/account/two-factor/webauthn/1",
+            Some(&session.access_token),
+            Some(json!({ "proof": proof })),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_security_key_answer_is_a_proof_that_works_once() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let mut key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+
+    let asked = pk.proof_options(&d1, &s1).await;
+    assert_eq!(asked.status, StatusCode::OK, "{:?}", asked.json());
+    let options = asked.json()["options"].clone();
+    assert_eq!(options["allowCredentials"][0]["type"], "public-key");
+    let answer = json!({ "webauthn": key.get(&options) });
+
+    // A wrong string is still refused, as before: the string form is unchanged.
+    let wrong = pk.remove_key_with(&d1, &s1, json!("000000")).await;
+    assert_eq!(wrong.status, StatusCode::BAD_REQUEST, "{:?}", wrong.json());
+
+    let removed = pk.remove_key_with(&d1, &s1, answer.clone()).await;
+    assert_eq!(removed.status, StatusCode::OK, "{:?}", removed.json());
+    assert_eq!(removed.json()["enabled"], false);
+
+    // The same answer again finds no challenge, whatever it is asked to do.
+    let replay = pk.remove_key_with(&d1, &s1, answer).await;
+    assert_eq!(replay.status, StatusCode::BAD_REQUEST, "{:?}", replay.json());
+}
+
+#[tokio::test]
+async fn a_passkey_answer_is_a_proof_and_needs_user_verification() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let _key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+    let (_, mut passkey) = pk.new_passkey(&d1, &s1, "Laptop", None).await;
+
+    // Without user verification the passkey proves nothing, as at sign-in; the challenge is spent.
+    passkey.set_user_verified(false);
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let weak = pk
+        .remove_key_with(&d1, &s1, json!({ "webauthn": passkey.get(&options) }))
+        .await;
+    assert_eq!(weak.status, StatusCode::BAD_REQUEST, "{:?}", weak.json());
+
+    passkey.set_user_verified(true);
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let removed = pk
+        .remove_key_with(&d1, &s1, json!({ "webauthn": passkey.get(&options) }))
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{:?}", removed.json());
+}
+
+#[tokio::test]
+async fn an_answer_to_another_challenge_is_no_proof() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let mut key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+
+    // A challenge made for a sign-in's second step, answered correctly, proves nothing here.
+    let d2 = pk.device();
+    let first = sign_in_reply(&d2, "sam@example.org", test_device())
+        .await
+        .json();
+    let challenge = first["challenge"].clone();
+    let asked = pk.key_options(&d2, json!({"challenge": challenge})).await;
+    let options = asked.json()["options"].clone();
+    let refused = pk
+        .remove_key_with(&d1, &s1, json!({ "webauthn": key.get(&options) }))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+
+    // And a proof answer is no second step: the proof challenge is not the sign-in's.
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let step = pk
+        .call(
+            &d2,
+            "POST",
+            "/kem/v1/auth/two-factor/webauthn",
+            None,
+            Some(json!({"challenge": challenge, "credential": key.get(&options)})),
+        )
+        .await;
+    assert_eq!(step.status, StatusCode::UNAUTHORIZED, "{:?}", step.json());
+
+    // The key is still there.
+    let listed = pk
+        .call(
+            &d1,
+            "GET",
+            "/kem/v1/account/two-factor/webauthn",
+            Some(&s1.access_token),
+            None,
+        )
+        .await;
+    assert_eq!(listed.json()["keys"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
+async fn an_account_without_a_key_gets_no_proof_options_and_another_accounts_key_proves_nothing() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let none = pk.proof_options(&d1, &s1).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND, "{:?}", none.json());
+
+    // Sam has a key; Alex has one too, and answers Sam's challenge with it.
+    let _sams = enrol_key(&pk, &d1, &s1, "Sam's").await;
+    let (d2, s2) = pk.signed_in("alex@example.org").await;
+    let mut alexs = enrol_key(&pk, &d2, &s2, "Alex's").await;
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let refused = pk
+        .remove_key_with(&d1, &s1, json!({ "webauthn": alexs.get(&options) }))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+}
+
 #[test]
 fn the_openapi_document_names_the_routes() {
     let doc = serde_json::to_value(PasskeysApiDoc::openapi()).expect("serialises");
@@ -811,9 +951,10 @@ fn the_openapi_document_names_the_routes() {
         ("/kem/v1/account/two-factor/webauthn/confirm", "post"),
         ("/kem/v1/auth/two-factor/webauthn/options", "post"),
         ("/kem/v1/auth/two-factor/webauthn", "post"),
+        ("/kem/v1/account/two-factor/proof/webauthn/options", "post"),
     ] {
         assert!(paths[path][method].is_object(), "{method} {path}");
     }
-    // Eleven paths: the {slot} one is the security keys' removal.
-    assert_eq!(paths.len(), 11);
+    // Twelve paths: the {slot} one is the security keys' removal.
+    assert_eq!(paths.len(), 12);
 }
