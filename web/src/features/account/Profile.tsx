@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { tokensFromResponse } from '@/api/client';
 import { createProfileApi } from '@/api/profile';
 import { api, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
@@ -8,6 +9,7 @@ import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
 import { type IdentityNotice, type PasswordNotice, ProfileView } from './ProfileView';
+import { describeProfileError } from './profileErrors';
 import { type ProfileDeps, changePassword, requestEmailChange } from './profileModel';
 import { useRun } from './useRun';
 
@@ -30,8 +32,8 @@ export default function Profile() {
   const t = useT();
   const queryClient = useQueryClient();
   const query = useQuery({ queryKey: profileKey, queryFn: () => profileApi.get() });
-  const identity = useRun();
-  const password = useRun();
+  const identity = useRun(describeProfileError);
+  const password = useRun(describeProfileError);
   const [identityNotice, setIdentityNotice] = useState<IdentityNotice | undefined>();
   const [passwordNotice, setPasswordNotice] = useState<PasswordNotice | undefined>();
   const profile = query.data;
@@ -103,7 +105,12 @@ export default function Profile() {
         async changePassword(input) {
           setPasswordNotice(undefined);
           const done = await password.run(async () => {
-            await changePassword(deps, { email: current.email, ...input });
+            const changed = await changePassword(deps, { email: current.email, ...input });
+            // Signing the other devices out changed the account's security stamp, which ended this
+            // device's tokens with theirs: the answer holds the ones to go on with.
+            if (changed.tokens) session.tokenStore.set(tokensFromResponse(changed.tokens, Date.now()));
+            // A change of address asked for before is dropped with the old password.
+            await queryClient.invalidateQueries({ queryKey: profileKey });
             return true;
           });
           if (done) setPasswordNotice(input.signOutOthers ? 'changedOthers' : 'changed');

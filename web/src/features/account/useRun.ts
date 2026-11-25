@@ -3,9 +3,10 @@ import { type Described, describeAccountError } from './errors';
 
 /**
  * Runs one action at a time and keeps its failure for the screen to show. `run` resolves with the
- * action's value, or undefined when it failed, so a caller never has to catch.
+ * action's value, or undefined when it failed, so a caller never has to catch. A screen with
+ * words of its own for some failures gives `describe`, which falls back on the account screens'.
  */
-export function useRun() {
+export function useRun(describe: (error: unknown) => Described = describeAccountError) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Described | undefined>(undefined);
 
@@ -15,7 +16,7 @@ export function useRun() {
     try {
       return await action();
     } catch (caught) {
-      setError(describeAccountError(caught));
+      setError(describe(caught));
       return undefined;
     } finally {
       setPending(false);

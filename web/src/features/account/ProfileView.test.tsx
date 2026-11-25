@@ -106,7 +106,7 @@ describe('the name and email', () => {
       { identityNotice: { kind: 'sent', email: 'new@example.org' } },
       { pendingEmail: 'new@example.org' },
     );
-    expect(screen.getByText('We sent a link to new@example.org. Your address changes once you open it.')).toBeInTheDocument();
+    expect(screen.getByText('We sent an email to new@example.org. Your address changes once you open the link in it.')).toBeInTheDocument();
     expect(
       screen.getByText(`Waiting for the link sent to new@example.org. Your address stays ${EMAIL} until it is opened.`),
     ).toBeInTheDocument();
@@ -115,9 +115,9 @@ describe('the name and email', () => {
   });
 
   it('says what the last save did and what went wrong', () => {
-    view({ identityNotice: { kind: 'saved' }, identityError: { id: 'profile.error.taken' } });
+    view({ identityNotice: { kind: 'saved' }, identityError: { id: 'profile.error.mailOff' } });
     expect(screen.getByText('Saved.')).toBeInTheDocument();
-    expect(screen.getByText('Another account already uses that address.')).toBeInTheDocument();
+    expect(screen.getByText(/This server sends no email/)).toBeInTheDocument();
   });
 
   it('shows the pending change only to someone who can still change the address', () => {

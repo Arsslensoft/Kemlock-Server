@@ -155,7 +155,7 @@ test('Profile: the name, the address and the master password', async ({ page }) 
   await section.getByLabel('Current master password').fill(ADMIN.password);
   await section.getByRole('button', { name: 'Save' }).click();
   // With the server's mail on, a link is sent and the change waits; with it off, the server says so.
-  const sent = page.getByText(/We sent a link to sam\.new@example\.co/);
+  const sent = page.getByText(/We sent an email to sam\.new@example\.co/);
   await expect(sent.or(page.getByText(/This server sends no email/))).toBeVisible({ timeout: 60_000 });
   if (await sent.isVisible()) {
     await expect(page.getByText(/Waiting for the link sent to sam\.new@example\.co/)).toBeVisible();

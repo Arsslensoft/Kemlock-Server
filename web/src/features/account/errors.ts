@@ -37,14 +37,10 @@ export function describeAccountError(error: unknown): Described {
         return { id: 'profile.error.compatible' };
       case 'no-password':
         return { id: 'profile.error.noPassword' };
-      case 'email-taken':
-        return { id: 'profile.error.taken' };
       case 'mail-off':
         return { id: 'profile.error.mailOff' };
       case 'mail-failed':
         return { id: 'profile.error.mailFailed' };
-      case 'invalid-request':
-        return { id: 'profile.error.badRequest' };
       case 'wrong-state':
         return { id: 'space.error.wrongState' };
       case 'stale-key-version':

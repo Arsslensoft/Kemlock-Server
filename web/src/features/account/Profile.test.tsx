@@ -17,7 +17,7 @@ const profileApi = vi.hoisted(() => ({
   cancelEmailChange: vi.fn(),
   confirmEmailChange: vi.fn(),
 }));
-const session = vi.hoisted(() => ({ renamed: vi.fn() }));
+const session = vi.hoisted(() => ({ renamed: vi.fn(), tokenStore: { set: vi.fn() } }));
 const model = vi.hoisted(() => ({ changePassword: vi.fn(), requestEmailChange: vi.fn() }));
 
 vi.mock('@/api/profile', () => ({ createProfileApi: () => profileApi }));
@@ -56,7 +56,9 @@ const identity = () => screen.getByRole('region', { name: 'Name and email' });
 const password = () => screen.getByRole('region', { name: 'Master password' });
 
 beforeEach(() => {
-  for (const fn of [...Object.values(profileApi), ...Object.values(model), session.renamed]) fn.mockReset();
+  for (const fn of [...Object.values(profileApi), ...Object.values(model), session.renamed, session.tokenStore.set]) {
+    fn.mockReset();
+  }
   profileApi.get.mockResolvedValue(PROFILE);
 });
 
@@ -116,7 +118,9 @@ describe('changing the address', () => {
     await user.type(screen.getByLabelText('Email'), 'new@example.org');
     await user.type(within(identity()).getByLabelText('Current master password'), 'the current password');
     await user.click(within(identity()).getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('We sent a link to new@example.org. Your address changes once you open it.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('We sent an email to new@example.org. Your address changes once you open the link in it.'),
+    ).toBeInTheDocument();
     expect(model.requestEmailChange).toHaveBeenCalledWith(expect.anything(), {
       email: 'sam@example.org',
       newEmail: 'new@example.org',
@@ -160,7 +164,7 @@ describe('changing the master password', () => {
   }
 
   it('hands the model the address in force and what was typed, then says the other devices are signed out', async () => {
-    model.changePassword.mockResolvedValue(undefined);
+    model.changePassword.mockResolvedValue({ tokens: null });
     open();
     await submit(userEvent.setup());
     expect(
@@ -180,6 +184,62 @@ describe('changing the master password', () => {
     await submit(userEvent.setup());
     expect(await screen.findByText('That is not your current master password.')).toBeInTheDocument();
     expect(within(password()).getByLabelText('Current master password')).toHaveValue('the current password');
+  });
+
+  it('takes up the new tokens when the other devices were signed out, since the old ones ended with theirs', async () => {
+    const tokens = {
+      tokenType: 'DPoP',
+      accessToken: 'new-access',
+      refreshToken: 'new-refresh',
+      expiresIn: 900,
+      refreshExpiresIn: 3600,
+      userId: 'u1',
+      deviceId: 'd1',
+      admin: false,
+    };
+    model.changePassword.mockResolvedValue({ tokens });
+    open();
+    await submit(userEvent.setup());
+    await screen.findByText('Your master password is changed, and your other devices are signed out.');
+    expect(session.tokenStore.set).toHaveBeenCalledOnce();
+    expect(session.tokenStore.set).toHaveBeenCalledWith(
+      expect.objectContaining({ access: 'new-access', refresh: 'new-refresh' }),
+    );
+  });
+
+  it('keeps the tokens it has when the server made no new ones', async () => {
+    model.changePassword.mockResolvedValue({ tokens: null });
+    open();
+    await submit(userEvent.setup());
+    await screen.findByText(/Your master password is changed/);
+    expect(session.tokenStore.set).not.toHaveBeenCalled();
+  });
+
+  it('reads the profile again, so a change of address dropped with the old password stops showing', async () => {
+    profileApi.get.mockResolvedValueOnce({ ...PROFILE, pendingEmail: 'new@example.org' }).mockResolvedValue(PROFILE);
+    model.changePassword.mockResolvedValue({ tokens: null });
+    open();
+    expect(await screen.findByText(/Waiting for the link sent to new@example.org/)).toBeInTheDocument();
+    await submit(userEvent.setup());
+    await screen.findByText(/Your master password is changed/);
+    await waitFor(() => expect(screen.queryByText(/Waiting for the link sent/)).toBeNull());
+    expect(profileApi.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('words a malformed request and a lost race here, in Profile's own words', async () => {
+    model.changePassword.mockRejectedValueOnce(
+      new ApiError(400, { type: 'urn:kemlock:problem:invalid-request', title: 'x', status: 400 } as never),
+    );
+    open();
+    const user = userEvent.setup();
+    await submit(user);
+    expect(await screen.findByText(/That could not be saved/)).toBeInTheDocument();
+
+    model.changePassword.mockRejectedValueOnce(
+      new ApiError(409, { type: 'urn:kemlock:problem:account-changed', title: 'x', status: 409 } as never),
+    );
+    await user.click(within(password()).getByRole('button', { name: 'Change master password' }));
+    expect(await screen.findByText(/Your account changed while this was being saved/)).toBeInTheDocument();
   });
 
   it('says why a Bitwarden-shared account is refused', async () => {
