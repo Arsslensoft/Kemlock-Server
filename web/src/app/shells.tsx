@@ -1,6 +1,6 @@
 // The page frames: the vault's header and sidebar, and the admin console's. They are layout
 // routes, so they stay mounted while the screens inside them change.
-import { Link, Outlet, useNavigate, useSearch } from '@tanstack/react-router';
+import { Link, Outlet, useNavigate, useRouter, useSearch } from '@tanstack/react-router';
 import { useVault } from '@/features/vault/hooks';
 import { FailoverBanner } from '@/features/failover/Banner';
 import { useT } from '@/i18n';
@@ -31,6 +31,7 @@ function Item({ icon, count, children }: { icon: IconName; count?: number; child
 export function VaultShell() {
   const t = useT();
   const navigate = useNavigate();
+  const router = useRouter();
   const state = useSessionState(session);
   const search = useSearch({ strict: false }) as { q?: string };
   const { active, trashed } = useVault();
@@ -131,7 +132,9 @@ export function VaultShell() {
           <button
             type="button"
             onClick={() => {
-              void lockVault().then(() => navigate({ to: '/unlock' }));
+              // The unlock screen brings the person back to the page they locked from.
+              const next = router.state.location.href;
+              void lockVault().then(() => navigate({ to: '/unlock', search: { next } }));
             }}
           >
             <Icon name="lock" />
