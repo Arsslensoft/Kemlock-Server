@@ -2,7 +2,9 @@
 // and `undoWrites` turn a plan into the one batch that applies or reverses it.
 //
 // Nothing is lost: a password that isn't kept joins the kept login's password history, the websites
-// of every login are kept unless unticked, and the other items go to the Trash for 30 days.
+// of every login are kept unless unticked, the linked items and custom fields of every item join the
+// kept one's, and the other items go to the Trash for 30 days.
+import { vaultIdOf } from '@/features/vault/listFilters';
 import type { ItemData, SaveInput, VaultItem } from '@/features/vault/vault';
 import { type WebsiteRule, readWebsites, writeWebsites } from '@/features/vault/websites';
 
@@ -18,6 +20,13 @@ export interface MergePicks {
   /** Passkeys to keep, by credential id. */
   passkeys: string[];
 }
+
+/**
+ * The members of an item that hold a list every merged item adds to: the items it is linked to
+ * (`links`, `[{ id }]`) and its custom fields (`customFields`). A merge writes the union of the
+ * lists of all its items to the kept one, whatever else it keeps.
+ */
+export const UNION_MEMBERS = ['links', 'customFields'] as const;
 
 export const websiteKey = (rule: WebsiteRule): string => `${rule.uri.trim().toLowerCase()}|${rule.match}`;
 
@@ -53,6 +62,27 @@ export function allWebsites(items: VaultItem[]): WebsiteRule[] {
   return out;
 }
 
+/** Whether any of the items has linked items or custom fields, which the merge keeps from all. */
+export function hasUnionMembers(items: VaultItem[]): boolean {
+  return items.some((item) => UNION_MEMBERS.some((member) => Array.isArray(item.data?.[member]) && (item.data?.[member] as unknown[]).length > 0));
+}
+
+/** The vault each item is in, once each, in the order the items come (newest first). */
+export function vaultsOf(items: VaultItem[]): string[] {
+  return [...new Set(items.map((item) => vaultIdOf(item.owner)))];
+}
+
+/**
+ * `picks` with the kept item moved to `vault`: the item of that vault whose name is picked, else
+ * the newest one there. The name, and every other pick, stay as they are. `picks` come back as they
+ * were when no item is in `vault`.
+ */
+export function keepInVault(items: VaultItem[], picks: MergePicks, vault: string): MergePicks {
+  const there = items.filter((item) => vaultIdOf(item.owner) === vault);
+  const keep = there.find((item) => item.id === picks.nameFrom) ?? there[0];
+  return keep ? { ...picks, keepId: keep.id } : picks;
+}
+
 /** The first pick of every field: the most recently changed item (the group is sorted that way). */
 export function defaultPicks(items: VaultItem[]): MergePicks {
   const first = items[0];
@@ -83,6 +113,53 @@ export interface MergePlan {
 
 const pick = (items: VaultItem[], id: string): VaultItem | undefined =>
   items.find((item) => item.id === id);
+
+/** A value as one string, with object keys in order, to tell two entries from each other. */
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * The entries of `member` across `items`, the kept item's first, each distinct entry once. A link
+ * to an item of the merge itself is dropped (an item is not linked to itself), and links stay
+ * sorted by id as the item format keeps them.
+ */
+function unionOf(
+  member: (typeof UNION_MEMBERS)[number],
+  kept: VaultItem,
+  items: VaultItem[],
+  merged: Set<string>,
+): unknown[] {
+  const seen = new Set<string>();
+  const out: unknown[] = [];
+  for (const item of [kept, ...items.filter((other) => other.id !== kept.id)]) {
+    const list = item.data?.[member];
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      const id = member === 'links' && entry && typeof entry === 'object' ? (entry as { id?: unknown }).id : undefined;
+      if (typeof id === 'string' && merged.has(id.toLowerCase())) continue;
+      const key = typeof id === 'string' ? id.toLowerCase() : stable(entry);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(entry);
+    }
+  }
+  if (member === 'links') {
+    const idOf = (entry: unknown): string =>
+      entry && typeof entry === 'object' && typeof (entry as { id?: unknown }).id === 'string'
+        ? (entry as { id: string }).id.toLowerCase()
+        : '';
+    out.sort((a, b) => (idOf(a) < idOf(b) ? -1 : idOf(a) > idOf(b) ? 1 : 0));
+  }
+  return out;
+}
 
 /** The writes of a merge of `items` (at least two) under `picks`. */
 export function planMerge(items: VaultItem[], picks: MergePicks, now: Date): MergePlan | null {
@@ -149,6 +226,13 @@ export function planMerge(items: VaultItem[], picks: MergePicks, now: Date): Mer
       }
     }
     fields['passkeys'] = passkeys.length > 0 ? passkeys : undefined;
+  }
+
+  const members = new Set(items.map((item) => item.id.toLowerCase()));
+  for (const member of UNION_MEMBERS) {
+    if (!items.some((item) => Array.isArray(item.data?.[member]))) continue;
+    const union = unionOf(member, kept, items, members);
+    fields[member] = union.length > 0 ? union : undefined;
   }
 
   const tags = new Set<string>();
