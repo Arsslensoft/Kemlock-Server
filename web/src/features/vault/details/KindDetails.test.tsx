@@ -81,6 +81,34 @@ describe('KindDetails', () => {
     expect(screen.getByText('ada@example.org')).toBeInTheDocument();
   });
 
+  it('shows identity documents by their typed fields, the number masked and never the id', async () => {
+    renderWithIntl(
+      <KindDetails
+        item={item('identity', {
+          givenName: 'Ada',
+          documents: [
+            {
+              id: 'doc-uuid-1',
+              type: 'Passport',
+              number: 'X1234567',
+              issuingCountry: 'UK',
+              issuingAuthority: 'HMPO',
+              issuedOn: '2020-01-02',
+              expiresOn: '2030-01-02',
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText('Passport')).toBeInTheDocument();
+    expect(screen.getByText('HMPO')).toBeInTheDocument();
+    expect(screen.getByText('2030-01-02')).toBeInTheDocument();
+    expect(screen.queryByText('doc-uuid-1')).not.toBeInTheDocument();
+    expect(screen.queryByText('X1234567')).not.toBeInTheDocument();
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show document number' }));
+    expect(screen.getByText('X1234567')).toBeInTheDocument();
+  });
+
   it('shows nothing for a login', () => {
     const { container } = renderWithIntl(<KindDetails item={item('login', {})} />);
     expect(container).toBeEmptyDOMElement();

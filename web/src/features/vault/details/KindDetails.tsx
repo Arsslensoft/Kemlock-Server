@@ -282,25 +282,40 @@ function addressLines(data: ItemData | null): string[] {
   return [...lines, place, s('region'), s('country')].filter((l) => l !== '');
 }
 
-/** The documents of an identity as lines of `key: value`; their shape is the app's own. */
-export function documentLines(data: ItemData | null): string[][] {
+export interface IdentityDocument {
+  type: string;
+  number: string;
+  issuingCountry: string;
+  issuingAuthority: string;
+  issuedOn: string;
+  expiresOn: string;
+}
+
+/** The documents of an identity (kemlock-core `IdentityDocument`); its `id` is never read. */
+export function documentsOf(data: ItemData | null): IdentityDocument[] {
   const docs = data?.['documents'];
   if (!Array.isArray(docs)) return [];
   return docs
     .filter((d): d is Record<string, unknown> => typeof d === 'object' && d !== null && !Array.isArray(d))
-    .map((d) =>
-      Object.entries(d)
-        .filter(([, v]) => (typeof v === 'string' && v !== '') || typeof v === 'number')
-        .map(([k, v]) => `${k}: ${String(v)}`),
-    )
-    .filter((lines) => lines.length > 0);
+    .map((d) => {
+      const s = (key: string) => (typeof d[key] === 'string' ? (d[key] as string) : '');
+      return {
+        type: s('type'),
+        number: s('number'),
+        issuingCountry: s('issuingCountry'),
+        issuingAuthority: s('issuingAuthority'),
+        issuedOn: s('issuedOn'),
+        expiresOn: s('expiresOn'),
+      };
+    })
+    .filter((d) => Object.values(d).some((v) => v !== ''));
 }
 
 function IdentityDetail({ data }: { data: ItemData | null }) {
   const t = useT();
   const name = ['title', 'givenName', 'middleName', 'familyName'].map((k) => text(data, k)).filter(Boolean).join(' ');
   const address = addressLines(data);
-  const docs = documentLines(data);
+  const docs = documentsOf(data);
   const simple: [MessageId, string][] = [
     ['detail.identity.company', text(data, 'company')],
     ['detail.identity.email', text(data, 'email')],
@@ -329,17 +344,34 @@ function IdentityDetail({ data }: { data: ItemData | null }) {
           ))}
         </Row>
       ) : null}
-      {docs.length > 0 ? (
-        <Row label={t('detail.identity.documents')}>
-          {docs.map((lines, i) => (
-            <div key={i} className="mono">
-              {lines.map((line) => (
-                <div key={line}>{line}</div>
-              ))}
-            </div>
-          ))}
-        </Row>
-      ) : null}
+      {docs.map((doc, i) => (
+        <div key={i} className="doc">
+          <Row label={t('detail.identity.document', { n: i + 1 })}>
+            <div>{doc.type || '—'}</div>
+          </Row>
+          {doc.number ? (
+            <SecretRow
+              label={t('detail.identity.docNumber')}
+              value={doc.number}
+              masked={'•'.repeat(doc.number.length)}
+            />
+          ) : null}
+          {(
+            [
+              ['detail.identity.issuingCountry', doc.issuingCountry],
+              ['detail.identity.issuingAuthority', doc.issuingAuthority],
+              ['detail.identity.issuedOn', doc.issuedOn],
+              ['detail.identity.expiresOn', doc.expiresOn],
+            ] as [MessageId, string][]
+          )
+            .filter(([, value]) => value !== '')
+            .map(([id, value]) => (
+              <Row key={id} label={t(id)}>
+                <div>{value}</div>
+              </Row>
+            ))}
+        </div>
+      ))}
     </Card>
   );
 }
