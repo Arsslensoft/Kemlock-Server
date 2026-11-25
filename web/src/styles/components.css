@@ -302,12 +302,15 @@
   gap: 12px;
   align-items: flex-start;
 }
+/* The track sits on the same line, before its label. */
+.switch .track {
+  order: -1;
+}
 .switch .text {
   flex: 1;
 }
 .switch .track {
   flex: none;
-  order: 2;
   width: 40px;
   height: 24px;
   border-radius: var(--radius-pill);
@@ -1166,4 +1169,11 @@ ol.stack {
   margin: 0;
   padding: 0;
   gap: 16px;
+}
+
+/* Two short inputs side by side; one column when narrow. */
+.pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 14px;
 }

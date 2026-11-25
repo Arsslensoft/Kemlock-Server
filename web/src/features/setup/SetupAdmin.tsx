@@ -58,36 +58,48 @@ export function SetupAdminForm({
   const [passkey, setPasskey] = useState(false);
   return (
     <form className="stack" noValidate onSubmit={handleSubmit((values) => onSubmit(values, { passkey }))}>
-      <div className="grid">
-        <Field control={control} name="name" label={t('setup.admin.name')} autoComplete="name" large />
+      <div className="pair">
+        <Field
+          control={control}
+          name="name"
+          label={t('setup.admin.name')}
+          placeholder={t('setup.admin.namePlaceholder')}
+          autoComplete="name"
+          maxLength={100}
+          large
+        />
         <Field
           control={control}
           name="email"
           label={t('field.email')}
           type="email"
+          placeholder={t('setup.admin.emailPlaceholder')}
           autoComplete="username"
+          maxLength={254}
           large
         />
       </div>
-      <Field
-        control={control}
-        name="password"
-        label={t('field.masterPassword')}
-        type="password"
-        autoComplete="new-password"
-        large
-        below={<StrengthMeter password={password} />}
-        hint={t('setup.admin.passwordHint')}
-      />
-      <Field
-        control={control}
-        name="confirm"
-        label={t('setup.admin.confirm')}
-        type="password"
-        autoComplete="new-password"
-        large
-        hint={confirm && confirm === password ? t('setup.admin.match') : undefined}
-      />
+      <div className="pair">
+        <Field
+          control={control}
+          name="password"
+          label={t('field.masterPassword')}
+          type="password"
+          autoComplete="new-password"
+          large
+          below={<StrengthMeter password={password} />}
+          hint={t('setup.admin.passwordHint')}
+        />
+        <Field
+          control={control}
+          name="confirm"
+          label={t('setup.admin.confirm')}
+          type="password"
+          autoComplete="new-password"
+          large
+          hint={confirm && confirm === password ? t('setup.admin.match') : undefined}
+        />
+      </div>
       <Checkbox className="check" isSelected={passkey} onChange={setPasskey}>
         <span className="box">
           <Icon name="check" />
