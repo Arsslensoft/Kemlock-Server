@@ -91,3 +91,50 @@ describe('the migration status', () => {
     expect(await finished.admin.migration()).toMatchObject({ state: 'done', report: '1 user written', finishedAt: 20 });
   });
 });
+
+describe('the custom fields', () => {
+  it('reads the fields and the switch as the server sends them', async () => {
+    const answer = {
+      fields: [
+        { id: 'f1', name: 'Employee ID', type: 'text', kinds: 'all' },
+        { id: 'f2', name: 'Cost center', type: 'hidden', kinds: ['login', 'card'] },
+      ],
+      allowOwn: false,
+    };
+    const { admin, calls } = transport({ [`GET ${BASE}/custom-fields`]: answer });
+    expect(await admin.customFields()).toEqual(answer);
+    expect(calls[0]).toMatchObject({ method: 'GET', path: `${BASE}/custom-fields` });
+  });
+
+  it('adds, changes and deletes a field with the step-up token', async () => {
+    const field = { id: 'f1', name: 'Employee ID', type: 'text', kinds: 'all' };
+    const { admin, calls } = transport({
+      [`POST ${BASE}/custom-fields`]: field,
+      [`PUT ${BASE}/custom-fields/f1`]: { ...field, name: 'Staff number' },
+    });
+    const input = { name: 'Employee ID', type: 'text', kinds: 'all' } as const;
+    expect(await admin.addCustomField(input, 'tok')).toEqual(field);
+    expect(await admin.updateCustomField('f1', { ...input, name: 'Staff number' }, 'tok')).toMatchObject({
+      name: 'Staff number',
+    });
+    await admin.deleteCustomField('f1', 'tok');
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      `POST ${BASE}/custom-fields`,
+      `PUT ${BASE}/custom-fields/f1`,
+      `DELETE ${BASE}/custom-fields/f1`,
+    ]);
+    expect(calls[0]?.body).toEqual(input);
+    for (const call of calls) expect(call.headers).toEqual({ 'Step-Up-Token': 'tok' });
+  });
+
+  it('turns people adding their own fields off and on', async () => {
+    const { admin, calls } = transport({ [`PUT ${BASE}/custom-fields/allow-own`]: { allowOwn: false } });
+    expect(await admin.allowOwnFields(false, 'tok')).toEqual({ allowOwn: false });
+    expect(calls[0]).toMatchObject({
+      method: 'PUT',
+      path: `${BASE}/custom-fields/allow-own`,
+      body: { allow: false },
+      headers: { 'Step-Up-Token': 'tok' },
+    });
+  });
+});
