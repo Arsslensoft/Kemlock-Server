@@ -107,11 +107,11 @@ describe('checking a draft', () => {
 describe('the On column', () => {
   it('says all types, or names the types in the plural', () => {
     expect(appliesTo({ kinds: 'all' })).toBe('all');
-    expect(appliesTo(FIELD)).toEqual(['admin.fields.kind.login', 'admin.fields.kind.card']);
+    expect(appliesTo(FIELD)).toEqual(['kind.plural.login', 'kind.plural.card']);
     expect(appliesTo({ kinds: ['otp', 'backup-codes', 'ssh-key'] })).toEqual([
-      'admin.fields.kind.otp',
-      'admin.fields.kind.backupCodes',
-      'admin.fields.kind.sshKey',
+      'kind.plural.otp',
+      'kind.plural.backup-codes',
+      'kind.plural.ssh-key',
     ]);
   });
 });

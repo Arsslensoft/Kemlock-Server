@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Dialog, Heading, Modal, ModalOverlay } from 'react-aria-components';
 import type { CustomField, CustomFieldInput, CustomFields } from '@/api/admin';
+import { kindPluralLabel } from '@/features/vault/kinds';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
@@ -13,7 +14,6 @@ import {
   FIELD_KINDS,
   FIELD_TYPES,
   type FieldDraft,
-  KIND_LABELS,
   TYPE_LABELS,
   appliesTo,
   checkDraft,
@@ -91,7 +91,7 @@ function FieldForm({
             {FIELD_KINDS.map((kind) => (
               <CheckBox
                 key={kind}
-                label={t(KIND_LABELS[kind])}
+                label={t(kindPluralLabel(kind))}
                 checked={draft.kinds.includes(kind)}
                 onChange={(on) =>
                   set('kinds', on ? [...draft.kinds, kind] : draft.kinds.filter((other) => other !== kind))

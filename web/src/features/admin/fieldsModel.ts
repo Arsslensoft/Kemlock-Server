@@ -3,39 +3,14 @@
 // things again (crates/kemlock-domain/src/custom_field.rs).
 import type { CustomField, CustomFieldInput, CustomFieldType } from '@/api/admin';
 import type { MessageId } from '@/i18n';
+import { KIND_ORDER, type KnownKind, kindPluralLabel } from '@/features/vault/kinds';
 
-/**
- * The item types that take custom fields, in the order the apps list their types. A file and a
- * passkey take none. `otp` is the MFA code.
- */
-export const FIELD_KINDS = [
-  'login',
-  'note',
-  'otp',
-  'backup-codes',
-  'card',
-  'identity',
-  'contact',
-  'certificate',
-  'ssh-key',
-  'pgp-key',
-] as const;
+/** The item types that take custom fields: every type but a file and a passkey, in the apps' order. */
+export type FieldKind = Exclude<KnownKind, 'file' | 'passkey'>;
 
-export type FieldKind = (typeof FIELD_KINDS)[number];
-
-/** The plural names the table and the form use for the types. */
-export const KIND_LABELS: Record<FieldKind, MessageId> = {
-  login: 'admin.fields.kind.login',
-  note: 'admin.fields.kind.note',
-  otp: 'admin.fields.kind.otp',
-  'backup-codes': 'admin.fields.kind.backupCodes',
-  card: 'admin.fields.kind.card',
-  identity: 'admin.fields.kind.identity',
-  contact: 'admin.fields.kind.contact',
-  certificate: 'admin.fields.kind.certificate',
-  'ssh-key': 'admin.fields.kind.sshKey',
-  'pgp-key': 'admin.fields.kind.pgpKey',
-};
+export const FIELD_KINDS: readonly FieldKind[] = KIND_ORDER.filter(
+  (kind): kind is FieldKind => kind !== 'file' && kind !== 'passkey',
+);
 
 export const FIELD_TYPES: CustomFieldType[] = ['text', 'hidden', 'checkbox'];
 
@@ -104,5 +79,5 @@ export function checkDraft(draft: FieldDraft): Checked {
 /** The "On" column: the words of `admin.fields.on.all`, or the plural names of the types. */
 export function appliesTo(field: Pick<CustomField, 'kinds'>): 'all' | MessageId[] {
   if (field.kinds === 'all') return 'all';
-  return field.kinds.filter(isFieldKind).map((kind) => KIND_LABELS[kind]);
+  return field.kinds.filter(isFieldKind).map((kind) => kindPluralLabel(kind));
 }
