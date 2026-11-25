@@ -523,7 +523,7 @@ function CertificateDetail({ data }: { data: ItemData | null }) {
 
 /** Whether two fingerprints are the same key's, ignoring spaces, colons and case. */
 export function sameFingerprint(a: string, b: string): boolean {
-  const clean = (value: string) => value.replace(/[s:]/g, '').toLowerCase();
+  const clean = (value: string) => value.replace(/[\s:]/g, '').toLowerCase();
   return clean(a) !== '' && clean(a) === clean(b);
 }
 
