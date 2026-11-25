@@ -36,26 +36,38 @@ pub struct EmailChanges<U, R, P, E> {
 impl<U: UserRepo, R: ProfileRepo, P: crate::ports::PasswordAuth, E: Platform>
     EmailChanges<U, R, P, E>
 {
+    /// The account, if its address may be changed here and a link can be mailed: it has a master
+    /// password this API can change, no identity provider owns its address, and the server sends
+    /// mail, or no one could open the link.
+    async fn allowed(&self, user: UserId) -> Result<User, ProfileError> {
+        let account = account(&self.users, user).await?;
+        changeable_password(&account)?;
+        if self.repo.has_sso_identity(user).await? {
+            return Err(ProfileError::SsoManaged);
+        }
+        if !self.notices.mails() {
+            return Err(ProfileError::MailOff);
+        }
+        Ok(account)
+    }
+
+    /// Whether the account's address may be changed at all. Asked before the password is spent,
+    /// so a refusal that can be known costs the person nothing.
+    pub async fn check(&self, user: UserId) -> Result<(), ProfileError> {
+        self.allowed(user).await.map(|_| ())
+    }
+
     /// Keeps `email` and the credentials made under it, and mails the link to it. A new ask
     /// replaces the one before: its link stops working. The old address is told, best effort.
-    ///
-    /// The server must be able to mail, or no one could open the link.
     pub async fn request(
         &self,
         user: UserId,
         email: &str,
         new: NewCredentials,
     ) -> Result<EmailChangeAsked, ProfileError> {
-        let account = account(&self.users, user).await?;
-        changeable_password(&account)?;
-        if self.repo.has_sso_identity(user).await? {
-            return Err(ProfileError::SsoManaged);
-        }
+        let account = self.allowed(user).await?;
         let email = free_address(&self.users, &account, email).await?;
         let checked = check(&self.auth, new)?;
-        if !self.notices.mails() {
-            return Err(ProfileError::MailOff);
-        }
 
         let now = self.env.now();
         let token = b64url::encode(&self.env.bytes::<32>());
