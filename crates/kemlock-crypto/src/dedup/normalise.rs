@@ -239,6 +239,38 @@ pub fn identity_text(raw: &str) -> String {
     username(raw)
 }
 
+/// A contact's **email**: trimmed, NFC, lower case, as a username is.
+pub fn email(raw: &str) -> String {
+    username(raw)
+}
+
+/// A contact's **phone**: its ASCII digits only, so `+1 (555) 0142` and `15550142` are one number.
+pub fn phone(raw: &str) -> String {
+    raw.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// The fewest letters and digits a document number needs to make a tag. A shorter one (a lone
+/// `0`, a placeholder) would match unrelated documents.
+const MIN_DOCUMENT_NUMBER: usize = 4;
+
+/// An identity document's **number**: NFC, lower case, and only its letters and digits, so spaces,
+/// dashes and dots in `X 1234-567` don't matter. `None` below four letters and digits.
+pub fn document_number(raw: &str) -> Option<String> {
+    let kept: String = lower(&nfc(raw))
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    (kept.chars().count() >= MIN_DOCUMENT_NUMBER).then_some(kept)
+}
+
+/// A file's **content hash**: the SHA-256 of its plaintext as 64 hex digits, any case, written
+/// lower case. `None` for anything else.
+pub fn content_hash(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    (text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| text.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
