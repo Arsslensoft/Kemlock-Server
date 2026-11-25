@@ -238,7 +238,7 @@ export function SendView({
                 ) : null}
               </div>
             )}
-            <div className="grid-2">
+            <div className="send-options">
               <div className="field">
                 <label htmlFor="s-exp">{t('send.deleteAfter')}</label>
                 <select id="s-exp" value={days} onChange={(e) => setDays(Number.parseInt(e.target.value, 10))}>
@@ -264,16 +264,16 @@ export function SendView({
                   </span>
                 ) : null}
               </div>
-            </div>
-            <div className="field">
-              <label htmlFor="s-pw">{t('send.passwordOptional')}</label>
-              <input
-                id="s-pw"
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <div className="field">
+                <label htmlFor="s-pw">{t('send.passwordOptional')}</label>
+                <input
+                  id="s-pw"
+                  type="password"
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
             </div>
             <div className="check-row">
               <input
