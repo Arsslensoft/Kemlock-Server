@@ -144,6 +144,27 @@ describe('contacts', () => {
   it('read the email a key-only contact came from', () => {
     expect(groupOf('contact', { sourceEmail: 'a@b.c' }, { email: 'a@b.c' })?.why).toBe('contactEmail');
   });
+
+  it('match on the PGP key they hold, as the Kemlock app does, whoever they are called', () => {
+    const a = vaultItem('contact', { name: 'Alex', email: 'alex@work.example', public: 'AAAA' });
+    const b = vaultItem('contact', { name: 'A. Chen', email: 'a.chen@home.example', public: 'AAAA' });
+    const none = vaultItem('contact', { name: 'Blake', email: 'blake@home.example', public: 'BBBB' });
+    const facts: DerivedFacts = new Map([
+      [a.id, { fingerprint: '9F3A 77C1 0B2E 45D6 8A19 C0DE 12F4 5B6A 7788 9900' }],
+      [b.id, { fingerprint: '9f3a77c10b2e45d68a19c0de12f45b6a77889900' }],
+      [none.id, { fingerprint: '1111 2222' }],
+    ]);
+    expect(findDuplicates([a, b, none])).toEqual([]);
+    const groups = findDuplicates([a, b, none], facts);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.why).toBe('key');
+    expect(groups[0]?.items.map((item) => item.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('give a contact with no key only its email and phone to go by', () => {
+    const a = vaultItem('contact', { name: 'a', email: 'a@b.c' });
+    expect(tagsOf(a, new Map([[a.id, { fingerprint: 'AB' }]])).map((tag) => tag.name)).toEqual(['contact']);
+  });
 });
 
 describe('keys and certificates', () => {

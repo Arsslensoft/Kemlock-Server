@@ -34,8 +34,13 @@ describe('the facts of a key item', () => {
     expect((await keyFactsOf(vaultItem('pgp-key', { name: 'p', fingerprint: '9F3A' })))?.fingerprint).toBe('9F3A');
   });
 
-  it('are asked of the three kinds that have a fingerprint', () => {
-    expect([...KEY_KINDS]).toEqual(['ssh-key', 'pgp-key', 'certificate']);
+  it('are asked of the kinds that have a fingerprint, a contact when it holds a key', () => {
+    expect([...KEY_KINDS]).toEqual(['ssh-key', 'pgp-key', 'certificate', 'contact']);
+  });
+
+  it('are nothing for a contact with no key, or one that can\'t be read', async () => {
+    expect(await keyFactsOf(vaultItem('contact', { name: 'Alex', email: 'a@b.c' }))).toBeUndefined();
+    expect(await keyFactsOf(vaultItem('contact', { name: 'Alex', public: 'not a key' }))).toBeUndefined();
   });
 
   it('can be forgotten when the vault locks', () => {
