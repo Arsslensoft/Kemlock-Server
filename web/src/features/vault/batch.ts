@@ -35,7 +35,7 @@ export async function saveBatch(
     const revision = existing ? existing.revision + 1 : 1;
     const owner = existing?.owner ?? input.owner;
     const data = sealedData(existing, id, input.fields, now);
-    const collectionId = existing?.collectionId ?? input.collectionId;
+    const collectionId = input.recollect ?? existing?.collectionId ?? input.collectionId;
     const sealed = await sealFor(deps.crypto, {
       id,
       owner,

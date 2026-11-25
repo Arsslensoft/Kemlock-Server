@@ -256,6 +256,11 @@ export interface SaveInput {
   owner: string;
   /** The collection of a new item of a space; an edit keeps its own. */
   collectionId?: string | undefined;
+  /**
+   * Moves an item of a space to another collection of the same space: it keeps its id, and is
+   * sealed again under the new collection's key. Only for an `existing` item of a space.
+   */
+  recollect?: string | undefined;
   /** The fields the form owns; other fields of `existing.data` survive. */
   fields: ItemData;
   /**
@@ -278,7 +283,7 @@ export async function saveItem(
   const now = deps.now?.() ?? new Date();
   const data = sealedData(existing, id, input.fields, now);
   if (input.entry && typeof data['addedAt'] !== 'number') data['addedAt'] = now.getTime();
-  const collectionId = existing?.collectionId ?? input.collectionId;
+  const collectionId = input.recollect ?? existing?.collectionId ?? input.collectionId;
   const sealed = await sealFor(deps.crypto, {
     id,
     owner,
