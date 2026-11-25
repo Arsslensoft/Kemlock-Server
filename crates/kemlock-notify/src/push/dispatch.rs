@@ -3,11 +3,21 @@
 //! Nudges queue and are gathered for a short window, so a burst of writes (an import, a batch)
 //! sends one push per device rather than one per item. Only the replica that took the write
 //! pushes: the dispatcher is fed by the local commit, never by the fan-out between replicas.
+//!
+//! Each device is pushed to by its kind:
+//!
+//! - `apns`: straight to Apple when the server holds an Apple key; else through the optional relay
+//!   when the operator turned it on; else nothing;
+//! - `unifiedpush`: straight to the endpoint, always;
+//! - `fcm` (an old row): nothing, Kemlock doesn't use Firebase.
 
-use super::{Installation, PushTarget, RelayError, open_installation};
+use super::{
+    ApnsSender, PushTarget, RelayClient, RelayError, SendOutcome, UnifiedPushSender,
+    open_installation,
+};
 use crate::audience::Audience;
 use kemlock_app::ports::SecretSeal;
-use kemlock_app::push::{PushRegistration, PushRepo};
+use kemlock_app::push::{PushKind, PushRegistration, PushRepo};
 use kemlock_domain::{Owner, UserId};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -18,6 +28,14 @@ use tokio::time::Instant;
 
 /// How long nudges are gathered before one send.
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(1);
+
+/// The senders that need no relay: Apple's push, when the operator gave the server a key, and
+/// UnifiedPush.
+#[derive(Clone, Debug, Default)]
+pub struct DirectSenders {
+    pub apns: Option<ApnsSender>,
+    pub unified_push: UnifiedPushSender,
+}
 
 #[derive(Debug)]
 struct Task(JoinHandle<()>);
@@ -36,13 +54,15 @@ pub struct PushDispatcher {
 }
 
 impl PushDispatcher {
-    /// Starts the worker. It does nothing until the server has registered with the relay (an
-    /// installation is stored), so it is safe to run always.
+    /// Starts the worker. It pushes to iPhones through Apple when `direct` has an Apple sender,
+    /// and otherwise through `relay` once the server has registered with it (an installation is
+    /// stored), so it is safe to run always.
     pub fn start<R, A, S>(
         repo: R,
         audience: A,
         seal: S,
-        client: super::RelayClient,
+        relay: RelayClient,
+        direct: DirectSenders,
         window: Duration,
     ) -> PushDispatcher
     where
@@ -55,7 +75,8 @@ impl PushDispatcher {
             repo,
             audience,
             seal,
-            client,
+            relay,
+            direct,
         };
         let task = tokio::spawn(worker.run(rx, window));
         PushDispatcher {
@@ -75,7 +96,8 @@ struct Worker<R, A, S> {
     repo: R,
     audience: A,
     seal: S,
-    client: super::RelayClient,
+    relay: RelayClient,
+    direct: DirectSenders,
 }
 
 impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
@@ -101,15 +123,6 @@ impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
     }
 
     async fn flush(&self, owners: HashSet<Owner>) {
-        let installation = match open_installation(&self.repo, &self.seal).await {
-            Ok(Some(installation)) => installation,
-            // Not opted in: nothing to do.
-            Ok(None) => return,
-            Err(error) => {
-                tracing::warn!(%error, "couldn't read the push installation");
-                return;
-            }
-        };
         let mut users: HashSet<UserId> = HashSet::new();
         for owner in owners {
             users.extend(self.audience.users(owner).await);
@@ -125,37 +138,66 @@ impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
                 return;
             }
         };
-        if registrations.is_empty() {
-            return;
+        let of_kind = |kind: PushKind| -> Vec<&PushRegistration> {
+            registrations.iter().filter(|r| r.kind == kind).collect()
+        };
+
+        let iphones = of_kind(PushKind::Apns);
+        if !iphones.is_empty() {
+            self.push_iphones(&iphones).await;
         }
-        self.send(&installation, &registrations).await;
+        let androids = of_kind(PushKind::UnifiedPush);
+        if !androids.is_empty() {
+            let endpoints: Vec<String> = androids.iter().map(|r| r.token.clone()).collect();
+            let outcome = self.direct.unified_push.send_sync(&endpoints).await;
+            self.forget(&androids, &outcome).await;
+        }
+        // Firebase rows (`fcm`, from an older server) are left alone: nothing sends to them.
     }
 
-    async fn send(&self, installation: &Installation, registrations: &[PushRegistration]) {
-        let targets: Vec<PushTarget> = registrations
+    /// Apple's push when the server has a key, else the relay if the operator turned it on.
+    async fn push_iphones(&self, iphones: &[&PushRegistration]) {
+        if let Some(apns) = &self.direct.apns {
+            let tokens: Vec<String> = iphones.iter().map(|r| r.token.clone()).collect();
+            let outcome = apns.send_sync(&tokens).await;
+            self.forget(iphones, &outcome).await;
+            return;
+        }
+        let installation = match open_installation(&self.repo, &self.seal).await {
+            Ok(Some(installation)) => installation,
+            // No Apple key and not opted in to the relay: nothing to send through.
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(%error, "couldn't read the push installation");
+                return;
+            }
+        };
+        let targets: Vec<PushTarget> = iphones
             .iter()
             .map(|r| PushTarget {
                 kind: r.kind,
                 token: r.token.clone(),
             })
             .collect();
-        match self.client.send_sync(installation, &targets).await {
-            Ok(outcome) => {
-                for dead in &outcome.rejected {
-                    for registration in registrations.iter().filter(|r| &r.token == dead) {
-                        if let Err(error) = self.repo.remove_registration(registration.device).await
-                        {
-                            tracing::warn!(%error, "couldn't forget a dead push token");
-                        }
-                    }
-                }
-            }
+        match self.relay.send_sync(&installation, &targets).await {
+            Ok(outcome) => self.forget(iphones, &outcome).await,
             Err(RelayError::Unauthorized) => {
                 tracing::warn!(
                     "the push relay refused this installation; turn the relay off and on again"
                 );
             }
             Err(error) => tracing::warn!(%error, "couldn't send a push"),
+        }
+    }
+
+    /// Forgets the devices whose tokens the push service no longer knows.
+    async fn forget(&self, sent: &[&PushRegistration], outcome: &SendOutcome) {
+        for dead in &outcome.rejected {
+            for registration in sent.iter().filter(|r| &r.token == dead) {
+                if let Err(error) = self.repo.remove_registration(registration.device).await {
+                    tracing::warn!(%error, "couldn't forget a dead push token");
+                }
+            }
         }
     }
 }

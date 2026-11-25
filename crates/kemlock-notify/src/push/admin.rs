@@ -1,15 +1,36 @@
-//! [`PushRelayAdmin`]: Kemlock's push relay as the admin console turns it on and off.
+//! [`PushRelayAdmin`]: Kemlock's optional push relay as the admin console turns it on and off, and
+//! where the server's own pushes stand ([`BuiltInPush`]).
 //!
 //! Turning it on is [`enable_relay`] (register with the relay, seal the key, store both) and
 //! turning it off is [`disable_relay`] (ask the relay to erase the installation, forget it here
 //! even when the relay can't be reached). The dispatcher reads the installation for every send,
 //! so a change takes effect at once, with no restart.
 
-use super::{EnableError, RelayClient, disable_relay, enable_relay};
+use super::{ApnsSender, EnableError, RelayClient, disable_relay, enable_relay};
 use kemlock_app::admin::{AdminError, PushRelayControl, RelayStatus};
 use kemlock_app::notices::BoxFuture;
 use kemlock_app::ports::SecretSeal;
 use kemlock_app::push::PushRepo;
+
+/// What the server sends itself, as the console shows it. UnifiedPush is always on, so only
+/// Apple's push has a state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BuiltInPush {
+    /// The server holds an Apple key and pushes to iPhones itself.
+    pub apns: bool,
+    /// That key pushes through Apple's sandbox.
+    pub apns_sandbox: bool,
+}
+
+impl BuiltInPush {
+    /// What `apns` (the server's Apple sender, if it has one) says.
+    pub fn of(apns: Option<&ApnsSender>) -> BuiltInPush {
+        BuiltInPush {
+            apns: apns.is_some(),
+            apns_sandbox: apns.is_some_and(ApnsSender::sandbox),
+        }
+    }
+}
 
 /// The console's hold on the relay. Cheap to clone when its parts are.
 #[derive(Clone)]
@@ -18,24 +39,34 @@ pub struct PushRelayAdmin<R, S> {
     seal: S,
     client: RelayClient,
     url: String,
+    built_in: BuiltInPush,
 }
 
 impl<R, S> std::fmt::Debug for PushRelayAdmin<R, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PushRelayAdmin")
             .field("url", &self.url)
+            .field("built_in", &self.built_in)
             .finish_non_exhaustive()
     }
 }
 
 impl<R: PushRepo, S: SecretSeal> PushRelayAdmin<R, S> {
-    /// `url` is the relay `client` talks to, shown in the console.
-    pub fn new(repo: R, seal: S, client: RelayClient, url: impl Into<String>) -> Self {
+    /// `url` is the relay `client` talks to, shown in the console; `built_in` is what the server
+    /// sends itself, shown beside it.
+    pub fn new(
+        repo: R,
+        seal: S,
+        client: RelayClient,
+        url: impl Into<String>,
+        built_in: BuiltInPush,
+    ) -> Self {
         PushRelayAdmin {
             repo,
             seal,
             client,
             url: url.into(),
+            built_in,
         }
     }
 
@@ -45,6 +76,8 @@ impl<R: PushRepo, S: SecretSeal> PushRelayAdmin<R, S> {
             enabled: installation.is_some(),
             installation_id: installation.map(|i| i.id),
             relay_url: self.url.clone(),
+            apns_configured: self.built_in.apns,
+            apns_sandbox: self.built_in.apns_sandbox,
         })
     }
 }
@@ -144,6 +177,7 @@ mod tests {
             TaggedSeal,
             RelayClient::new(&url).expect("client"),
             url,
+            BuiltInPush::default(),
         );
         (relay, repo, admin)
     }
@@ -155,6 +189,31 @@ mod tests {
         assert!(!status.enabled);
         assert_eq!(status.installation_id, None);
         assert!(status.relay_url.starts_with("http://127.0.0.1"));
+    }
+
+    #[tokio::test]
+    async fn the_status_says_whether_the_server_pushes_to_iphones_itself() {
+        let (_, repo, _) = admin().await;
+        let url = "http://127.0.0.1:9".to_owned();
+        let with = |built_in| {
+            PushRelayAdmin::new(
+                repo.clone(),
+                TaggedSeal,
+                RelayClient::new(&url).expect("client"),
+                url.clone(),
+                built_in,
+            )
+        };
+        let none = with(BuiltInPush::of(None)).status().await.expect("reads");
+        assert!(!none.apns_configured && !none.apns_sandbox);
+        let apple = with(BuiltInPush {
+            apns: true,
+            apns_sandbox: true,
+        });
+        let status = apple.status().await.expect("reads");
+        assert!(status.apns_configured && status.apns_sandbox);
+        // The relay's own state is separate: it is off, and no Apple key doesn't turn it on.
+        assert!(!status.enabled);
     }
 
     #[tokio::test]
@@ -204,6 +263,7 @@ mod tests {
             TaggedSeal,
             RelayClient::new(&url).expect("client"),
             url,
+            BuiltInPush::default(),
         );
         assert!(matches!(
             admin.enable().await,
@@ -229,6 +289,7 @@ mod tests {
             TaggedSeal,
             RelayClient::new(&url).expect("client"),
             url,
+            BuiltInPush::default(),
         );
         let status = down
             .disable()

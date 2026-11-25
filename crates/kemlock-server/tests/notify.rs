@@ -356,3 +356,94 @@ async fn the_built_server_serves_the_push_relay_routes_to_admins_only() {
         );
     }
 }
+
+/// A throwaway P-256 key in the form Apple's `.p8` files have; it signs nothing real.
+const TEST_P8: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgLCpHyhHVUWJyiE+w
+5q1Ed49bwewRopqW+tx19E2IisihRANCAAS3O272KD8fVm1SZrcrHSKRua0ttLzN
+mYa1o1kWjBqRy4lH9qL07NARM5LqJup5OCX1OiEs94cqi24FaRV+H9V7
+-----END PRIVATE KEY-----
+";
+
+#[tokio::test]
+async fn an_apple_key_makes_the_console_say_iphones_are_pushed_to_directly() {
+    let dir = TempDir::new("apns-on");
+    let key = dir.0.join("AuthKey_TEST.p8");
+    std::fs::write(&key, TEST_P8).expect("writes the key");
+    let key = key.display().to_string();
+    let started = notify::start(
+        &config(&dir.0),
+        &env(&[
+            ("KEMLOCK_APNS_KEY_FILE", key.as_str()),
+            ("KEMLOCK_APNS_KEY_ID", "KEY1234567"),
+            ("KEMLOCK_APNS_TEAM_ID", "TEAM123456"),
+            ("KEMLOCK_APNS_SANDBOX", "true"),
+        ]),
+        &memory_store().await,
+        &crypto(),
+    )
+    .await
+    .expect("starts");
+    let status = started.push_relay.status().await.expect("reads");
+    assert!(status.apns_configured);
+    assert!(status.apns_sandbox);
+    assert!(!status.enabled, "the relay stays off");
+
+    let dir = TempDir::new("apns-off");
+    let started = notify::start(&config(&dir.0), &env(&[]), &memory_store().await, &crypto())
+        .await
+        .expect("starts");
+    let status = started.push_relay.status().await.expect("reads");
+    assert!(!status.apns_configured && !status.apns_sandbox);
+}
+
+#[tokio::test]
+async fn bad_apple_settings_stop_the_start_and_name_the_setting() {
+    let dir = TempDir::new("bad-apns");
+    let key = dir.0.join("AuthKey_TEST.p8");
+    std::fs::write(&key, TEST_P8).expect("writes the key");
+    let key = key.display().to_string();
+    for (pairs, setting) in [
+        // Only some of the three.
+        (
+            vec![("KEMLOCK_APNS_KEY_ID", "KEY1234567")],
+            "KEMLOCK_APNS_KEY_FILE",
+        ),
+        (
+            vec![
+                ("KEMLOCK_APNS_KEY_FILE", key.as_str()),
+                ("KEMLOCK_APNS_KEY_ID", "KEY1234567"),
+            ],
+            "KEMLOCK_APNS_TEAM_ID",
+        ),
+        (
+            vec![
+                ("KEMLOCK_APNS_KEY_FILE", "/no/such/AuthKey.p8"),
+                ("KEMLOCK_APNS_KEY_ID", "KEY1234567"),
+                ("KEMLOCK_APNS_TEAM_ID", "TEAM123456"),
+            ],
+            "KEMLOCK_APNS_KEY_FILE",
+        ),
+        (
+            vec![
+                ("KEMLOCK_APNS_KEY_FILE", key.as_str()),
+                ("KEMLOCK_APNS_KEY_ID", "KEY1234567"),
+                ("KEMLOCK_APNS_TEAM_ID", "TEAM123456"),
+                ("KEMLOCK_APNS_SANDBOX", "maybe"),
+            ],
+            "KEMLOCK_APNS_SANDBOX",
+        ),
+    ] {
+        let result = notify::start(
+            &config(&dir.0),
+            &env(&pairs),
+            &memory_store().await,
+            &crypto(),
+        )
+        .await;
+        match result {
+            Err(RunError::Config(message)) => assert!(message.contains(setting), "{message}"),
+            other => panic!("expected a config error, got {:?}", other.map(|_| ())),
+        }
+    }
+}

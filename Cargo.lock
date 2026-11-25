@@ -3748,6 +3748,7 @@ dependencies = [
 name = "kemlock-notify"
 version = "0.1.2"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "futures-util",
  "kemlock-app",
@@ -3764,6 +3765,7 @@ dependencies = [
  "tokio-tungstenite",
  "tower",
  "tracing",
+ "url",
  "uuid",
 ]
 

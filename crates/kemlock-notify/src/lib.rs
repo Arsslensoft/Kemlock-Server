@@ -6,9 +6,10 @@
 //! - [`fanout`]: tells every replica's open sockets that an owner's vault changed (PostgreSQL
 //!   `NOTIFY` with the owner id only, MySQL polling a small table each second, in process on
 //!   SQLite).
-//! - [`push`]: Kemlock's push relay, a hosted service that wakes the mobile apps. The server
-//!   registers once, then sends "sync now" for the push tokens of an owner's devices. The relay's
-//!   HTTP contract is `docs/push-relay.md`.
+//! - [`push`]: the server wakes the mobile apps itself, with "sync now" and nothing else: iPhones
+//!   through Apple's push service with the operator's own key, Android phones through
+//!   UnifiedPush. Kemlock's hosted relay is an optional fallback for iPhones on a server with no
+//!   Apple key; its HTTP contract is `docs/push-relay.md`.
 //! - [`bitwarden`]: what Bitwarden's apps use: the `/notifications/hub` WebSocket in SignalR
 //!   (MessagePack and JSON), and Bitwarden's own push relay with an installation id and key.
 //!
@@ -27,7 +28,7 @@ mod testing;
 use kemlock_domain::Owner;
 
 /// What a commit calls: nudges every replica's sockets, and wakes the owner's phones through the
-/// push relay when the operator opted in. Cheap to clone.
+/// push services. Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct Notify {
     fanout: fanout::Fanout,
@@ -72,6 +73,7 @@ mod tests {
             UserOnly,
             TaggedSeal,
             client,
+            crate::push::DirectSenders::default(),
             Duration::from_millis(10),
         );
         let notify = Notify::new(Fanout::in_process(sink), Some(dispatcher));
