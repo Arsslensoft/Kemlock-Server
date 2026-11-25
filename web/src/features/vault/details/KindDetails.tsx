@@ -522,12 +522,19 @@ function CertificateDetail({ data }: { data: ItemData | null }) {
   );
 }
 
+/** Whether two fingerprints are the same key's, ignoring spaces, colons and case. */
+export function sameFingerprint(a: string, b: string): boolean {
+  const clean = (value: string) => value.replace(/[s:]/g, '').toLowerCase();
+  return clean(a) !== '' && clean(a) === clean(b);
+}
+
 function ContactDetail({ data }: { data: ItemData | null }) {
   const t = useT();
   const pub = text(data, 'public');
   const info: PgpInfo | undefined = useAsync(() => (pub ? pgpInfo(pub) : Promise.resolve({ userIds: [] })), pub);
-  const emails = [...strings(data, 'emails'), ...[text(data, 'email')].filter(Boolean)];
-  const phones = [...strings(data, 'phones'), ...[text(data, 'phone')].filter(Boolean)];
+  const sourceEmail = text(data, 'sourceEmail');
+  const addresses = strings(data, 'checkedAddresses');
+  const checked = text(data, 'checkedFingerprint');
   const name = text(data, 'name');
   const armored = pub ? armor('PGP PUBLIC KEY BLOCK', pub) : '';
   return (
@@ -537,23 +544,32 @@ function ContactDetail({ data }: { data: ItemData | null }) {
           <div>{name}</div>
         </Row>
       ) : null}
-      {emails.length > 0 ? (
-        <Row label={t('detail.contact.emails')} copy={emails.join('\n')}>
-          {emails.map((e) => (
-            <div key={e}>{e}</div>
-          ))}
+      {sourceEmail ? (
+        <Row label={t('detail.contact.sourceEmail')} copy={sourceEmail}>
+          <div>{sourceEmail}</div>
         </Row>
       ) : null}
-      {phones.length > 0 ? (
-        <Row label={t('detail.contact.phones')} copy={phones.join('\n')}>
-          {phones.map((p) => (
-            <div key={p}>{p}</div>
+      {addresses.length > 0 ? (
+        <Row label={t('detail.contact.checkedAddresses')} copy={addresses.join('
+')}>
+          {addresses.map((address) => (
+            <div key={address}>{address}</div>
           ))}
         </Row>
       ) : null}
       {info?.fingerprint ? (
         <Row label={t('detail.pgp.fingerprint')} copy={info.fingerprint}>
           <div className="mono wrap">{info.fingerprint}</div>
+        </Row>
+      ) : null}
+      {checked ? (
+        <Row label={t('detail.contact.checked')}>
+          <div className="mono wrap">{checked}</div>
+          {info?.fingerprint ? (
+            <div className="muted">
+              {sameFingerprint(checked, info.fingerprint) ? t('detail.contact.matches') : t('detail.contact.differs')}
+            </div>
+          ) : null}
         </Row>
       ) : null}
       {info && info.userIds.length > 0 ? (

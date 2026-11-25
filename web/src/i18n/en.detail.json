@@ -59,7 +59,10 @@
   "detail.certificate.pem": "Certificate (PEM)",
   "detail.certificate.unreadable": "The certificate could not be read.",
   "detail.contact.title": "Contact",
-  "detail.contact.emails": "Emails",
-  "detail.contact.phones": "Phones",
+  "detail.contact.sourceEmail": "Key found for",
+  "detail.contact.checkedAddresses": "Addresses checked",
+  "detail.contact.checked": "Fingerprint you checked",
+  "detail.contact.matches": "It matches this key.",
+  "detail.contact.differs": "It does not match this key. Do not trust it.",
   "detail.contact.public": "Public key"
 }

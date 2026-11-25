@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { copyText } from '@/lib/clipboard';
 import { renderWithIntl } from '@/test/render';
 import type { VaultItem } from '../vault';
-import { KindDetails, groupDigits, maskedNumber } from './KindDetails';
+import { toB64 } from '../forms/keyMaterial';
+import { KindDetails, groupDigits, maskedNumber, sameFingerprint } from './KindDetails';
 
 vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(() => Promise.resolve(true)) }));
 
@@ -114,6 +115,35 @@ describe('KindDetails', () => {
     expect(screen.queryByText('MC4CAQAwBQYDK2VwBCIEIA==')).not.toBeInTheDocument();
     await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show private key' }));
     expect(screen.getByText('MC4CAQAwBQYDK2VwBCIEIA==')).toBeInTheDocument();
+  });
+
+  it('shows the source, the checked addresses and whether the checked fingerprint matches', async () => {
+    // A v4 RSA public key packet; its SHA-1 fingerprint is the one below.
+    const body = Uint8Array.from([4, 0, 0, 0, 1, 1, 0, 8, 0xc3, 0, 8, 0x03]);
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-1', Uint8Array.from([0x99, 0, body.length, ...body])));
+    const fingerprint = Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+    const contact = {
+      name: 'Ada',
+      public: toB64(Uint8Array.from([0xc6, body.length, ...body])),
+      source: 'wkd',
+      sourceEmail: 'ada@example.org',
+      checkedAddresses: ['ada@example.org', 'ada@work.example'],
+    };
+    const { unmount } = renderWithIntl(
+      <KindDetails item={item('contact', { ...contact, checkedFingerprint: fingerprint.toUpperCase() })} />,
+    );
+    expect(screen.getAllByText('ada@example.org').length).toBeGreaterThan(0);
+    expect(screen.getByText('ada@work.example')).toBeInTheDocument();
+    expect(await screen.findByText('It matches this key.')).toBeInTheDocument();
+    unmount();
+    renderWithIntl(<KindDetails item={item('contact', { ...contact, checkedFingerprint: 'AB'.repeat(20) })} />);
+    expect(await screen.findByText(/does not match this key/)).toBeInTheDocument();
+  });
+
+  it('compares fingerprints without spaces, colons or case', () => {
+    expect(sameFingerprint('AB CD:ef', 'abcdef')).toBe(true);
+    expect(sameFingerprint('', '')).toBe(false);
+    expect(sameFingerprint('ab', 'cd')).toBe(false);
   });
 
   it('shows nothing for a login', () => {
