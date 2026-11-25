@@ -1,8 +1,9 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SendDto } from '@/api/sends';
 import { encodeB64, utf8 } from '@/lib/b64url';
+import { I18nProvider } from '@/i18n';
 import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
 import { renderWithIntl } from '@/test/render';
 import { type SendRow, SendView, formatSize, isSpent, rowsFrom } from './Send';
@@ -74,6 +75,8 @@ describe('SendView', () => {
     await user.click(screen.getByRole('button', { name: 'Copy the link of Guest Wi-Fi' }));
     expect(props.onCopy).toHaveBeenCalledWith(ROWS[0]);
     await user.click(screen.getByRole('button', { name: 'Delete Guest Wi-Fi' }));
+    expect(props.onDelete).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     expect(props.onDelete).toHaveBeenCalledWith(ROWS[0]);
   });
 
@@ -243,5 +246,30 @@ describe('rowsFrom', () => {
     const rows = await rowsFrom([dto(item, 'A1'), dto(plain, 'A2')], 'https://vault.example.org', crypto);
     expect(rows[0]?.itemKind).toBe('card');
     expect(rows[1]?.itemKind).toBeUndefined();
+  });
+});
+
+describe('SendView after a Send is made', () => {
+  it('empties the form so a second press cannot make it twice', async () => {
+    const onCreate = vi.fn();
+    const ui = (createdLink?: string) => (
+      <I18nProvider>
+        <SendView rows={[]} now={NOW} onCreate={onCreate} onCopy={vi.fn()} onDelete={vi.fn()} createdLink={createdLink} />
+      </I18nProvider>
+    );
+    const { rerender } = render(ui());
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Name'), 'Door code');
+    await user.type(screen.getByLabelText('Text'), '4 7 1 9');
+    expect(screen.getByRole('button', { name: 'Create link' })).toBeEnabled();
+    rerender(ui('https://vault.example.org/#/send/z/KEY'));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(''));
+    expect(screen.getByLabelText('Text')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Create link' })).toBeDisabled();
+  });
+
+  it('keeps the Delete buttons still while a delete is in flight', () => {
+    view({ deleting: true });
+    expect(screen.getByRole('button', { name: 'Delete Guest Wi-Fi' })).toBeDisabled();
   });
 });

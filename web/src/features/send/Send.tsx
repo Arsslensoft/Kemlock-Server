@@ -1,7 +1,7 @@
 // Send (canvas: Send): share a text, a small file or an item of the vault through a link. It is encrypted in this
 // browser and the key travels after the `#` in the link, which never reaches the server.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createSendsApi } from '@/api/sends';
 import type { SendDto, SendKind } from '@/api/sends';
 import { ApiError } from '@/api/errors';
@@ -13,6 +13,7 @@ import { readBytes } from '@/lib/files';
 import { describeError } from '@/lib/errors';
 import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
+import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
@@ -71,6 +72,7 @@ export function SendView({
   onCopy,
   copiedId,
   onDelete,
+  deleting,
   error,
   loading,
   items = [],
@@ -83,6 +85,8 @@ export function SendView({
   onCopy: (row: SendRow) => void;
   copiedId?: string | undefined;
   onDelete: (row: SendRow) => void;
+  /** A delete is in flight: the Delete buttons wait. */
+  deleting?: boolean;
   error?: Described;
   loading?: boolean;
   /** The vault's active items, to send one of them. */
@@ -103,9 +107,25 @@ export function SendView({
   const [hideEmail, setHideEmail] = useState(true);
   const [fileError, setFileError] = useState(false);
   const [itemError, setItemError] = useState(false);
+  const [confirming, setConfirming] = useState<SendRow | null>(null);
   const parsedViews = views.trim() === '' ? null : Number.parseInt(views, 10);
   const viewsValid = parsedViews === null || (Number.isInteger(parsedViews) && parsedViews >= 1);
   const ready = name.trim() !== '' && viewsValid && (mode === 'file' ? file !== undefined : mode === 'text' ? text !== '' : chosen !== undefined);
+
+  // A made Send empties the form, so a second press cannot make the same Send again.
+  useEffect(() => {
+    if (!createdLink) return;
+    setItemId(undefined);
+    setName('');
+    setText('');
+    setFile(undefined);
+    setDays(7);
+    setViews('');
+    setPassword('');
+    setHideEmail(true);
+    setFileError(false);
+    setItemError(false);
+  }, [createdLink]);
 
   return (
     <>
@@ -168,7 +188,8 @@ export function SendView({
                   <Button
                     size="small"
                     aria-label={t('send.deleteFor', { name: row.name })}
-                    onPress={() => onDelete(row)}
+                    isDisabled={deleting}
+                    onPress={() => setConfirming(row)}
                   >
                     {t('send.delete')}
                   </Button>
@@ -338,6 +359,22 @@ export function SendView({
           ) : null}
         </section>
       </div>
+
+      <ConfirmDialog
+        isOpen={confirming !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirming(null);
+        }}
+        title={t('send.delete.title', { name: confirming?.name ?? '' })}
+        confirmLabel={t('send.delete')}
+        pending={deleting}
+        onConfirm={() => {
+          if (confirming) onDelete(confirming);
+          setConfirming(null);
+        }}
+      >
+        <p>{t('send.delete.body')}</p>
+      </ConfirmDialog>
     </>
   );
 }
@@ -444,6 +481,7 @@ export default function Send() {
       now={new Date()}
       loading={list.isPending}
       creating={create.isPending}
+      deleting={remove.isPending}
       createdLink={created}
       copiedId={copied}
       error={failure ? describeSendError(failure) : undefined}
