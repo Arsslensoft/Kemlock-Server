@@ -15,13 +15,7 @@ use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use kemlock_app::admin::{FnEnv, Settings, SettingsRepo};
 use kemlock_app::ports::TokenSigner;
-use kemlock_app::{AppError, SetupPhase, save_            request
-                .basics
-                .map(|basics| {
-                    let basics = basics.into_basics()?;
-                    Ok::<_, AppError>((basics.changes()?, basics.recorded_domain()?))
-                })
-                .transpose()?, without_env_set};
+use kemlock_app::{AppError, SetupPhase, record_domain, save_basics, without_env_set};
 use kemlock_domain::Owner;
 use utoipa::{Modify, OpenApi};
 
