@@ -620,6 +620,26 @@ pub(crate) async fn api_key<S: BwStore>(
     }))
 }
 
+/// `DELETE /api/accounts` and `POST /api/accounts/delete`: erases the account that asks, its vault,
+/// attachments, Sends, devices and the rest, as Vaultwarden's `User::delete` does. The caller has
+/// checked the password or code. An account that is the only owner of a space still shared with
+/// others is refused with Vaultwarden's words, and nothing is touched.
+pub(crate) async fn delete_account<S: BwStore>(app: &App<S>, user: UserId) -> BwResult<()> {
+    let Some(erasure) = app.erasure.as_ref() else {
+        return Err(BwError::msg(
+            "Deleting an account is not available on this server",
+        ));
+    };
+    erasure
+        .erase_own(user)
+        .await
+        .map(|_| ())
+        .map_err(|e| match e {
+            AppError::Invalid(_) => BwError::msg("Can't delete last owner"),
+            other => crate::two_step::failed(other),
+        })
+}
+
 /// `{"object":"masterPasswordPolicy"}`, which Vaultwarden's identity answers carry with
 /// PascalCase keys (no policies exist, so it is only the `Object`).
 pub(crate) fn identity_master_password_policy() -> Value {
