@@ -59,9 +59,18 @@ export function TextBox({
   hint,
   placeholder,
   error,
+  errorValues,
   autoComplete,
   disabled,
   readOnly,
+  inputMode,
+  required,
+  min,
+  max,
+  step,
+  pattern,
+  maxLength,
+  suffix,
 }: {
   label: string;
   value: string;
@@ -71,33 +80,59 @@ export function TextBox({
   hint?: ReactNode;
   placeholder?: string;
   error?: MessageId | undefined;
+  /** The values the error's words take, such as a range. */
+  errorValues?: Record<string, string | number>;
   autoComplete?: string;
   disabled?: boolean;
   readOnly?: boolean;
+  inputMode?: 'text' | 'numeric' | 'email' | 'url';
+  required?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  pattern?: string;
+  maxLength?: number;
+  /** A unit shown beside the input, such as KiB. */
+  suffix?: string;
 }) {
   const t = useT();
   const id = useId();
+  const described = [hint ? `${id}-h` : '', error ? `${id}-e` : ''].filter((x) => x !== '').join(' ');
   return (
     <div className="field" data-invalid={error ? true : undefined}>
       <label htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        className={mono ? 'mono' : undefined}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        autoComplete={autoComplete ?? 'off'}
-        spellCheck={false}
-        disabled={disabled}
-        readOnly={readOnly ?? onChange === undefined}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error ? `${id}-e` : undefined}
-        onChange={(event) => onChange?.(event.target.value)}
-      />
-      {hint ? <span className="hint">{hint}</span> : null}
+      {hint ? (
+        <span className="hint" id={`${id}-h`}>
+          {hint}
+        </span>
+      ) : null}
+      <div className={suffix ? 'with-suffix' : 'contents'}>
+        <input
+          id={id}
+          className={mono ? 'mono' : undefined}
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          autoComplete={autoComplete ?? 'off'}
+          spellCheck={false}
+          disabled={disabled}
+          readOnly={readOnly ?? onChange === undefined}
+          inputMode={inputMode}
+          required={required}
+          min={min}
+          max={max}
+          step={step}
+          pattern={pattern}
+          maxLength={maxLength}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={described || undefined}
+          onChange={(event) => onChange?.(event.target.value)}
+        />
+        {suffix ? <span className="unit">{suffix}</span> : null}
+      </div>
       {error ? (
         <span className="field-error" id={`${id}-e`}>
-          {t(error)}
+          {t(error, errorValues)}
         </span>
       ) : null}
     </div>
@@ -121,14 +156,23 @@ export function SelectBox({
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
-      <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
+      {hint ? (
+        <span className="hint" id={`${id}-h`}>
+          {hint}
+        </span>
+      ) : null}
+      <select
+        id={id}
+        value={value}
+        aria-describedby={hint ? `${id}-h` : undefined}
+        onChange={(event) => onChange(event.target.value)}
+      >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
       </select>
-      {hint ? <span className="hint">{hint}</span> : null}
     </div>
   );
 }

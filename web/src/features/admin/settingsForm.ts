@@ -37,16 +37,27 @@ export type Checked =
   | { ok: false; errors: SettingErrors };
 
 const WHOLE_NUMBER = /^-?\d+$/;
+/** A host name or address: no spaces and no slash, so no `https://` typed by mistake. */
+export const HOST_PATTERN = '[^\\s\\/]+';
+const HOST = new RegExp(`^${HOST_PATTERN}$`);
+
+/** Whether the draft differs from what is saved: a typed secret counts. */
+export function isDirty(settings: AdminSetting[], draft: Draft): boolean {
+  const saved = draftOf(settings);
+  return settings.some((setting) => !setting.readOnly && (draft[setting.key] ?? '') !== (saved[setting.key] ?? ''));
+}
 
 /** The error a typed value earns, or undefined. The server checks again, so this only spares a trip. */
 export function errorOf(setting: AdminSetting, text: string): MessageId | undefined {
   const value = text.trim();
   switch (setting.kind) {
     case 'int': {
-      if (!WHOLE_NUMBER.test(value)) return 'admin.settings.error.number';
+      // Without both bounds there is no range to name.
+      const wrong = setting.min != null && setting.max != null ? 'admin.settings.error.number' : 'admin.settings.error.whole';
+      if (!WHOLE_NUMBER.test(value)) return wrong;
       const n = Number(value);
-      if (setting.min != null && n < setting.min) return 'admin.settings.error.number';
-      if (setting.max != null && n > setting.max) return 'admin.settings.error.number';
+      if (setting.min != null && n < setting.min) return wrong;
+      if (setting.max != null && n > setting.max) return wrong;
       return undefined;
     }
     case 'choice':
@@ -54,6 +65,7 @@ export function errorOf(setting: AdminSetting, text: string): MessageId | undefi
     case 'email':
       return value === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? undefined : 'error.email';
     case 'text':
+      if (setting.key === 'smtp_host' && value !== '' && !HOST.test(value)) return 'admin.settings.error.host';
       return setting.maxLength != null && value.length > setting.maxLength
         ? 'admin.settings.error.tooLong'
         : undefined;
