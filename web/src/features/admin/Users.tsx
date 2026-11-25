@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import type { AccountMode, AdminInvite, AdminSpace, AdminUser, InviteIssued } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
@@ -432,6 +432,8 @@ export default function Users() {
     queryFn: ({ pageParam }) =>
       admin.users({ search: search === '' ? undefined : search, limit: PAGE, offset: pageParam }),
     initialPageParam: 0,
+    // Keep the list on screen while a new search loads, so the search box stays mounted.
+    placeholderData: keepPreviousData,
     getNextPageParam: (last, pages) => {
       const shown = pages.reduce((sum, page) => sum + page.users.length, 0);
       return shown < last.total && last.users.length > 0 ? shown : undefined;
