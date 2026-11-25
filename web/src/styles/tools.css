@@ -325,15 +325,9 @@
   flex-wrap: wrap;
 }
 
-/* The Send form's options: two columns, one when the card is narrow. */
+/* The Send form options share a row when they fit, like the other option grids. */
 .send-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
   gap: 12px;
-}
-
-@media (max-width: 520px) {
-  .send-options {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
