@@ -51,6 +51,18 @@ describe('the Overview numbers', () => {
     }
   });
 
+  it('draw Features with the sliders, as the mockup does, and not the gear', () => {
+    renderWithIntl(<OverviewStats config={CONFIG} overview={OVERVIEW} />);
+    const features = cards()[4] as HTMLElement;
+    const icon = features.querySelector('.si svg') as SVGElement;
+    // Three sliders: a line each, with a knob each.
+    expect(icon.querySelectorAll('circle')).toHaveLength(3);
+    expect(icon.querySelector('path')?.getAttribute('d')).toBe('M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12');
+    // The Settings page's gear has a single circle and rays.
+    const users = cards()[0] as HTMLElement;
+    expect(users.querySelectorAll('.si circle').length).not.toBe(3);
+  });
+
   it('show the real counts, with the admins, the live items and the feature names beneath', () => {
     renderWithIntl(<OverviewStats config={CONFIG} overview={OVERVIEW} />);
     const [users, devices, spaces, events, features] = cards() as [
