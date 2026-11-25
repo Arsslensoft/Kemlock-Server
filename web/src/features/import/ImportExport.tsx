@@ -449,6 +449,21 @@ export function ImportExportScreen({ deps }: { deps: ImportFlowDeps }) {
   );
 }
 
+/**
+ * Runs an import and publishes the vault however it ends: items saved before a failure are in the
+ * store already, and would not be listed until the next sync if only a success published them.
+ */
+export async function importThenPublish(
+  run: () => Promise<{ imported: number }>,
+  publish: () => void,
+): Promise<number> {
+  try {
+    return (await run()).imported;
+  } finally {
+    publish();
+  }
+}
+
 export default function ImportExport() {
   const t = useT();
   const { active, isLoading } = useVault();
@@ -466,17 +481,11 @@ export default function ImportExport() {
     client: importClient,
     items: () => active,
     scopes,
-    importInto: async (conversion, into, onProgress) => {
-      const outcome = await importItems(
-        { api, crypto: vaultCrypto },
-        vaultStore,
-        conversion.items,
-        into,
-        onProgress,
-      );
-      queryClient.setQueryData(vaultKey, vaultStore.snapshot());
-      return outcome.imported;
-    },
+    importInto: (conversion, into, onProgress) =>
+      importThenPublish(
+        () => importItems({ api, crypto: vaultCrypto }, vaultStore, conversion.items, into, onProgress),
+        () => queryClient.setQueryData(vaultKey, vaultStore.snapshot()),
+      ),
   };
   return <ImportExportScreen deps={deps} />;
 }

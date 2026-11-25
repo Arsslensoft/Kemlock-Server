@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react';
 import { api, queryClient, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import { spaceDeps } from '@/features/spaces/deps';
+import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
 import {
   type ItemData,
@@ -47,7 +48,7 @@ function publish(): void {
 export function clearVault(): void {
   vaultStore.reset();
   spaceKeys.forget();
-  queryClient.removeQueries({ queryKey: ['writable-collections'] });
+  queryClient.removeQueries({ queryKey: writableCollectionsKey });
   queryClient.removeQueries({ queryKey: vaultKey });
 }
 
@@ -69,7 +70,7 @@ export function useVault() {
 /** The collections of the account's spaces that a new item may be saved to. */
 export function useWritableCollections() {
   return useQuery({
-    queryKey: ['writable-collections'] as const,
+    queryKey: writableCollectionsKey,
     queryFn: () => loadWritableCollections(spaceDeps),
     staleTime: 60_000,
   });

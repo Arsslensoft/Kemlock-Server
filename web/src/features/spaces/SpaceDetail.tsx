@@ -7,7 +7,8 @@ import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
 import { describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
-import { spaceDeps, spacesKey } from './deps';
+import { spaceDeps } from './deps';
+import { refreshSpaces } from './refresh';
 import {
   type SpaceDetail as Detail,
   confirmMember,
@@ -37,10 +38,14 @@ export default function SpaceDetail() {
   async function change<T>(action: () => Promise<T>): Promise<T | undefined> {
     const result = await run(action);
     if (result !== undefined) {
-      await queryClient.invalidateQueries({ queryKey: key });
-      await queryClient.invalidateQueries({ queryKey: spacesKey });
+      await refreshSpaces(queryClient);
     }
     return result;
+  }
+
+  /** Runs a change and says whether it worked, so a form can keep its input when it didn't. */
+  async function worked(action: () => Promise<unknown>): Promise<boolean> {
+    return (await change(action)) !== undefined;
   }
 
   function nameOf(user: string): string {
@@ -73,7 +78,7 @@ export default function SpaceDetail() {
       cryptoAvailable={spaceDeps.crypto.available}
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
-        invite: (input) => void change(() => inviteMember(spaceDeps, spaceId, input)),
+        invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input)),
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
         cancelConfirm: () => setConfirming(null),
@@ -86,34 +91,28 @@ export default function SpaceDetail() {
             if (done) setConfirming(null);
           });
         },
-        changeRole: (user, role, custom) => void change(() => api.changeRole(spaceId, user, role, custom)),
+        changeRole: (user, role, custom) => worked(() => api.changeRole(spaceId, user, role, custom)),
         revoke: (user) =>
-          void change(() => api.revoke(spaceId, user)).then((outcome) => {
+          change(() => api.revoke(spaceId, user)).then((outcome) => {
             if (outcome) setOffboarded({ name: nameOf(user), outcome });
+            return outcome !== undefined;
           }),
         restore: (user) => void change(() => api.restore(spaceId, user)),
         remove: (user) =>
-          void change(() => api.remove(spaceId, user)).then((outcome) => {
+          change(() => api.remove(spaceId, user)).then((outcome) => {
             if (outcome) setOffboarded({ name: nameOf(user), outcome });
+            return outcome !== undefined;
           }),
-        createCollection: (name, parent) => {
-          if (!detail) return;
-          void change(() => createCollection(spaceDeps, detail, parent ? { name, parent } : { name }));
-        },
-        renameCollection: (id, name) => {
-          if (!detail) return;
-          void change(() => renameCollection(spaceDeps, detail, id, name));
-        },
-        deleteCollection: (id) => void change(() => api.deleteCollection(spaceId, id).then(() => true)),
-        createGroup: (name, members) => {
-          if (!detail) return;
-          void change(() => createGroup(spaceDeps, detail, { name, members }));
-        },
-        setGroupMembers: (id, members) => {
-          if (!detail) return;
-          void change(() => setGroupMembers(spaceDeps, detail, id, members));
-        },
-        deleteGroup: (id) => void change(() => api.deleteGroup(spaceId, id).then(() => true)),
+        createCollection: async (name, parent) =>
+          !!detail && (await worked(() => createCollection(spaceDeps, detail, parent ? { name, parent } : { name }))),
+        renameCollection: async (id, name) =>
+          !!detail && (await worked(() => renameCollection(spaceDeps, detail, id, name))),
+        deleteCollection: (id) => worked(() => api.deleteCollection(spaceId, id).then(() => true)),
+        createGroup: async (name, members) =>
+          !!detail && (await worked(() => createGroup(spaceDeps, detail, { name, members }))),
+        setGroupMembers: async (id, members) =>
+          !!detail && (await worked(() => setGroupMembers(spaceDeps, detail, id, members))),
+        deleteGroup: (id) => worked(() => api.deleteGroup(spaceId, id).then(() => true)),
         grant: (collection, grantee, permission) => {
           if (!detail) return;
           void change(() => grantAccess(spaceDeps, detail, { collection, grantee, permission }));

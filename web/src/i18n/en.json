@@ -425,6 +425,8 @@
   "trash.confirmEmpty.body": "{count, plural, one {# item} other {# items}} will be deleted for good, on every app. This can't be undone.",
   "trash.confirmOne.title": "Delete this item for good?",
   "trash.confirmOne.body": "It is deleted on every app and can't be restored.",
+  "space.collections.deleteBody": "The collection is deleted for everyone in the space. This can't be undone.",
+  "space.groups.deleteBody": "The group is deleted for everyone in the space. This can't be undone.",
 
   "devices.title": "Devices & apps",
   "devices.lede": "The apps and browsers signed in to your account, and requests to sign in.",
