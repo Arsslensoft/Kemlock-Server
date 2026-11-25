@@ -1,5 +1,6 @@
 import { clearVault } from '@/features/vault/hooks';
 import { vaultCrypto } from '@/crypto-port';
+import { forgetGrant } from '@/features/admin/reauth';
 import { queryClient, session } from './services';
 
 /** Cached answers that hold no secret and that routing needs before anyone is signed in. */
@@ -19,6 +20,8 @@ export async function lockVault(): Promise<void> {
   await vaultCrypto.lock();
   clearVault();
   forgetCachedData();
+  // An admin step-up stays with the keys: locking drops it too.
+  forgetGrant();
 }
 
 /**
@@ -28,6 +31,7 @@ export async function lockVault(): Promise<void> {
 export function forgetEndedSession(): void {
   clearVault();
   forgetCachedData();
+  forgetGrant();
 }
 
 /** Forgets the keys and the tokens. */
@@ -35,5 +39,6 @@ export async function signOut(): Promise<void> {
   await vaultCrypto.lock();
   clearVault();
   session.end();
+  forgetGrant();
   queryClient.clear();
 }
