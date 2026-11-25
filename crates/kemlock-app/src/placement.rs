@@ -6,17 +6,17 @@
 //! that use this server). A server that doesn't federate any of them has nothing to say, and the
 //! answer is `None`.
 //!
-//! What this server cannot know it does not say: a server's name is the host of its address, its
-//! place is not in its descriptor, and a peer's status is `unknown` because this server has no
-//! liveness probe of a peer yet (a failed handshake is not recorded), so `offline_since` stays
-//! empty. A space has no name the server can read, so it is named by its short id. Waiting
-//! changes (`pending`) are not kept per vault yet.
+//! A peer's status is what this server's probes of it found (`federation_view::PeerStatus`:
+//! `unknown` until the first probe), and this server itself is `online`, since it is answering. What
+//! this server cannot know it does not say: a server's name is the host of its address and its
+//! place is not in its descriptor. A space has no name the server can read, so it is named by its
+//! short id.
 
 use crate::error::AppError;
-use crate::federation_view::{FederationView, ServerRole};
+use crate::federation_view::{FederationView, PeerHealthView, PeerStatus, ServerRole};
 use crate::ports::DeviceRepo;
 use crate::spaces::SpaceRepo;
-use kemlock_domain::{DeviceKind, Owner, UserId};
+use kemlock_domain::{DeviceKind, Owner, ServerId, UserId};
 
 /// One server a vault is held on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +27,8 @@ pub struct PlacementServer {
     pub role: ServerRole,
     /// The apps of this vault are on it right now: it is the server answering.
     pub in_use: bool,
+    /// Whether it answers, as the probes found; this server is `online`.
+    pub health: PeerHealthView,
 }
 
 /// One vault and the servers that hold it.
@@ -37,6 +39,21 @@ pub struct PlacementVault {
     pub name: String,
     /// The home first, then the replicas in order.
     pub servers: Vec<PlacementServer>,
+    /// Changes of this vault that haven't reached one of the other servers.
+    pub pending: Option<PlacementPending>,
+}
+
+/// Changes of a vault that wait for one server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlacementPending {
+    /// The server they wait for; also the id the cancel route takes.
+    pub peer: ServerId,
+    pub peer_name: String,
+    pub changes: u64,
+    /// The count stopped at a limit.
+    pub at_least: bool,
+    /// When the oldest was written, Unix seconds.
+    pub oldest_at: Option<u64>,
 }
 
 /// An app of the account, and the server it uses.
@@ -114,17 +131,57 @@ impl<D: DeviceRepo, Q: SpaceRepo> ReadPlacement<D, Q> {
             let Some(held) = view.vault_servers(owner).await? else {
                 continue;
             };
-            let servers = held
-                .servers
-                .iter()
-                .map(|s| PlacementServer {
+            let mut servers = Vec::new();
+            for s in &held.servers {
+                let in_use = same_address(&s.address, own_address);
+                let health = if in_use {
+                    // This server is answering: no probe is needed to know it is up.
+                    PeerHealthView {
+                        status: PeerStatus::Online,
+                        ..PeerHealthView::unknown()
+                    }
+                } else {
+                    view.peer_health(s.server).await?
+                };
+                servers.push(PlacementServer {
                     id: s.server.to_string(),
                     name: host_of(&s.address),
                     role: s.role,
-                    in_use: same_address(&s.address, own_address),
-                })
-                .collect();
-            vaults.push(PlacementVault { id, name, servers });
+                    in_use,
+                    health,
+                });
+            }
+            // Changes waiting for a server that is down come first: they are the ones a person
+            // may cancel. One is reported per vault; cancelling it shows the next.
+            let waiting = view.waiting_changes(owner).await?;
+            let offline = |peer: &ServerId| {
+                servers
+                    .iter()
+                    .any(|s| s.id == peer.to_string() && s.health.status == PeerStatus::Offline)
+            };
+            let pending = waiting
+                .iter()
+                .find(|w| offline(&w.peer))
+                .or_else(|| waiting.first())
+                .map(|w| {
+                    let peer = w.peer.to_string();
+                    PlacementPending {
+                        peer: w.peer,
+                        peer_name: servers
+                            .iter()
+                            .find(|s| s.id == peer)
+                            .map_or(peer, |s| s.name.clone()),
+                        changes: w.changes,
+                        at_least: w.at_least,
+                        oldest_at: w.oldest_at,
+                    }
+                });
+            vaults.push(PlacementVault {
+                id,
+                name,
+                servers,
+                pending,
+            });
         }
         if vaults.is_empty() {
             return Ok(None);
