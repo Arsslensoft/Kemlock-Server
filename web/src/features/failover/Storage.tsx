@@ -123,7 +123,7 @@ export function StorageView({
                       aria-label={t('failover.withheldFor', { name: server.name })}
                     >
                       <strong>{t('failover.withheldFor', { name: server.name })}</strong>
-                      <span>{t('failover.withheldBody')}</span>
+                      <span>{t('failover.withheldBody', { name: server.name })}</span>
                       <Button size="small" isDisabled={cancelling} onPress={() => onResume?.(vault.id, server.id)}>
                         {t('failover.resume')}
                       </Button>

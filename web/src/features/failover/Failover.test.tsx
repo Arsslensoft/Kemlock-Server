@@ -123,6 +123,7 @@ describe('changes held back from a server', () => {
     const onResume = vi.fn();
     await renderInRouter(<StorageView placement={held} onCancelPending={vi.fn()} onResume={onResume} />);
     const group = screen.getByRole('group', { name: 'Changes held back from Home server' });
+    expect(group).toHaveTextContent("You chose not to send Home server's copy the changes");
     expect(group).toHaveTextContent(/still on this server/);
     await userEvent.setup().click(within(group).getByRole('button', { name: 'Resume' }));
     expect(onResume).toHaveBeenCalledWith('me', 's1');
