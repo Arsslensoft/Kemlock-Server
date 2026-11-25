@@ -21,12 +21,18 @@ export function inVault(item: Pick<VaultItem, 'owner'>, vault: string): boolean 
 
 const SEARCHED_TEXT = ['username', 'email', 'issuer', 'label', 'serviceName', 'company', 'phone', 'cardholder'] as const;
 
-/** Whether the search words are in the item's name, username, websites or the like. Never a secret. */
-export function matches(item: VaultItem, query: string): boolean {
+/** The names a person gives a type, in the words they read ("MFA code", "MFA codes"). */
+export type TypeNames = (kind: string) => readonly string[];
+
+/**
+ * Whether the search words are in the item's name, username, websites or the like, or in the name of
+ * its type (`typeNames`: typing "mfa" finds the MFA codes, whose stored kind is `otp`). Never a secret.
+ */
+export function matches(item: VaultItem, query: string, typeNames?: TypeNames): boolean {
   const needle = query.trim().toLowerCase();
   if (needle === '') return true;
   const data = item.data;
-  const fields: string[] = [itemName(item), item.kind];
+  const fields: string[] = [itemName(item), item.kind, ...(typeNames?.(item.kind) ?? [])];
   for (const key of SEARCHED_TEXT) {
     const value = data?.[key];
     if (typeof value === 'string') fields.push(value);
@@ -42,16 +48,18 @@ export interface ListQuery {
   vault?: string | undefined;
   fav?: boolean | undefined;
   q?: string | undefined;
+  /** The names of a type as the person reads them, for the search. */
+  typeNames?: TypeNames | undefined;
 }
 
 /** The items a list shows for `query`, by name. The type and the vault combine. */
 export function filterItems(items: readonly VaultItem[], query: ListQuery): VaultItem[] {
-  const { kind, vault = ALL_VAULTS, fav, q = '' } = query;
+  const { kind, vault = ALL_VAULTS, fav, q = '', typeNames } = query;
   return items
     .filter((item) => (kind ? item.kind === kind : true))
     .filter((item) => inVault(item, vault))
     .filter((item) => (fav ? isFavorite(item) : true))
-    .filter((item) => matches(item, q))
+    .filter((item) => matches(item, q, typeNames))
     .sort((a, b) => itemName(a).localeCompare(itemName(b)));
 }
 

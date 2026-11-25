@@ -2,7 +2,7 @@
 // `/vault?kind=<kind id>` (`login`, `otp`, `backup-codes`…). The type chips are on All items only.
 // The Vault filter (All vaults, Personal, a space) combines with the type.
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button, buttonClass } from '@/ui/Button';
@@ -229,7 +229,12 @@ export default function Main() {
   const vault = knownVault(chosen, vaults.options);
   const { facts } = useKeyFacts(active);
 
-  const filtered = useMemo(() => filterItems(active, { kind, vault, fav, q }), [active, kind, vault, fav, q]);
+  const t = useT();
+  const typeNames = useCallback((of: string) => [t(kindLabel(of)), t(kindPluralLabel(of))], [t]);
+  const filtered = useMemo(
+    () => filterItems(active, { kind, vault, fav, q, typeNames }),
+    [active, kind, vault, fav, q, typeNames],
+  );
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages);
   const rows = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
