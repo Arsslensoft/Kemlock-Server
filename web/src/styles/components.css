@@ -1210,6 +1210,7 @@ ol.stack {
   .waiting::after {
     animation: none;
   }
+}
 
 /* The collapsed "where to find the setup code" panel. */
 .where {
