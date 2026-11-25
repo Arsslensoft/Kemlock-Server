@@ -147,6 +147,12 @@ describe('SettingsView', () => {
     expect(onSave).toHaveBeenCalledWith({ smtp_port: '465' }, 'smtp');
   });
 
+  it('gives the host input a pattern that is valid with the v flag', () => {
+    view();
+    expect(screen.getByLabelText('SMTP server')).toHaveAttribute('pattern', '[^\\s\\/]+');
+    expect(() => new RegExp('^(?:[^\\s\\/]+)$', 'v')).not.toThrow();
+  });
+
   it('refuses a host with a slash', async () => {
     const { onSave } = view();
     const user = userEvent.setup();

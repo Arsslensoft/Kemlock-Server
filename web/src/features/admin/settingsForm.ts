@@ -38,7 +38,7 @@ export type Checked =
 
 const WHOLE_NUMBER = /^-?\d+$/;
 /** A host name or address: no spaces and no slash, so no `https://` typed by mistake. */
-export const HOST_PATTERN = '[^\\s/]+';
+export const HOST_PATTERN = '[^\\s\\/]+';
 const HOST = new RegExp(`^${HOST_PATTERN}$`);
 
 /** Whether the draft differs from what is saved: a typed secret counts. */
