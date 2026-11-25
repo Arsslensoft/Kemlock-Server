@@ -121,10 +121,14 @@ Not built, or not working yet:
 - Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
   (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
   its key.
-- First-run "Server basics": who can join and the email server are saved by the server when setup
-  finishes (as the admin Settings), and checked first. The address, push, file folder and backups
-  are not settings the server stores; the last setup screen lists them to copy into its
-  configuration.
+- First-run "Server basics": who can join, the email server, Kemlock's push relay and the backups
+  (schedule, count, recipient) are saved by the server when setup finishes (as the admin
+  Settings, where push and backups also have their own cards), and checked first; a value the
+  server's environment sets stays as it is. The address and the files folder are configuration,
+  not settings: `DOMAIN` is checked against sign-in proofs and `DATA_FOLDER` holds the store, so
+  neither can change while the server runs. Setup only records the address, and Settings shows it
+  beside the one in use and warns when they differ. The last setup screen lists both to copy into
+  the server's environment. Bitwarden's push relay (`PUSH_*`) is set in Settings, not in setup.
 - Where each vault lives (`src/api/placement.ts`): `GET /kem/v1/placement` is served from the
   federation state. A single server answers 404 and the failover banner and storage page show
   nothing. A server is named by the host of its address, and every peer's status is `unknown`,

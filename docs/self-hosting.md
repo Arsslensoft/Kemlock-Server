@@ -114,6 +114,19 @@ off erases the installation at the relay and here, and works even when the relay
 | `KEMLOCK_PUSH_RELAY` | `false` | `true` registers this server with the relay at start when it hasn't yet |
 | `KEMLOCK_PUSH_RELAY_URL` | `https://push.kemlock.app` | another relay, such as your own; it must be `https`, because the installation key goes with every send |
 
+### Push and backups are settings too
+
+Every `PUSH_*`, `KEMLOCK_PUSH_RELAY*` and `KEMLOCK_BACKUP_*` variable above (schedule, count, folder,
+recipient) is also a setting in the admin console (Settings, Push and Backups), and the first-run
+setup saves the push switch and the backups. The installation id and key are kept sealed under
+`server.key`. A saved value takes effect without a restart: the server rebuilds the relay and the
+backup schedule looks again every 30 seconds. A variable that is set wins and the console shows it
+read-only. A backup folder saved in the console must be inside the data folder; the variable may
+name any folder or a bucket. `DOMAIN` and `DATA_FOLDER` are not settings: sign-in proofs are
+checked against `DOMAIN` and the store lives in `DATA_FOLDER`, so they change only in the
+environment, with a restart. Setup records the address it was given, and the console shows it
+beside `DOMAIN` with a warning when they differ.
+
 ### Bitwarden's push relay (`PUSH_*`)
 
 Bitwarden's phone apps don't use Kemlock's relay. As with Vaultwarden you register an installation
