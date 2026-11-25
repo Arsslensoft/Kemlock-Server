@@ -18,7 +18,7 @@ function CopyCode({ item }: { item: VaultItem }) {
   return (
     <>
       <IconButton
-        aria-label={t('lists.copyCode', { name: itemName(item) })}
+        aria-label={t(/code$/i.test(itemName(item).trim()) ? 'lists.copyCodeNamed' : 'lists.copyCode', { name: itemName(item) })}
         onPress={() => {
           const params = otpParamsOf(item.data);
           if (!params) return;
@@ -50,6 +50,8 @@ export function RowCopy({ item }: { item: VaultItem }) {
       <CopyButton value={password} secret label={t('main.copyPassword', { name: itemName(item) })} />
     ) : null;
   }
-  if (item.kind === 'otp' && otpParamsOf(item.data)) return <CopyCode item={item} />;
+  // A counter code has no code of the moment to copy: the counter moves when it is used.
+  const params = item.kind === 'otp' ? otpParamsOf(item.data) : undefined;
+  if (params && params.type !== 'hotp') return <CopyCode item={item} />;
   return null;
 }
