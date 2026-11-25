@@ -6,6 +6,7 @@ import { encodeB64, utf8 } from '@/lib/b64url';
 import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
 import { renderWithIntl } from '@/test/render';
 import { type SendRow, SendView, formatSize, isSpent, rowsFrom } from './Send';
+import { serializeEnvelope } from './itemEnvelope';
 import { makeSend } from './sendCrypto';
 
 const NOW = new Date('2026-11-22T10:00:00Z');
@@ -205,5 +206,42 @@ describe('rowsFrom', () => {
       link: `https://vault.example.org/#/send/ACCESS1/${made.key}`,
     });
     expect(rows[1]).toMatchObject({ name: 'send-2', link: null, size: 2_200_000 });
+  });
+
+  it('marks an item Send with the kind of its item, and leaves a text Send alone', async () => {
+    resetFakeCrypto();
+    await crypto.unlock('u', utf8('wrapped:u'), new Uint8Array(), new Uint8Array());
+    const input = { kind: 'text' as const, deleteAfterDays: 1, maxViews: null, hideEmail: false };
+    const item = await makeSend(
+      {
+        ...input,
+        name: 'Visa',
+        text: serializeEnvelope({ kemlockSend: 1, kind: 'card', name: 'Visa', fields: { number: '4111' } }),
+      },
+      { crypto },
+      NOW,
+    );
+    const plain = await makeSend({ ...input, name: 'Note', text: '{"kemlockSend":1,"kind":"card"}' }, { crypto }, NOW);
+    const dto = (made: typeof item, accessId: string): SendDto => ({
+      kind: 'text',
+      id: made.id,
+      accessId,
+      meta: made.request.meta,
+      sealedKey: made.request.sealedKey,
+      payload: made.request.payload,
+      file: null,
+      accessCount: 0,
+      maxAccess: null,
+      hideEmail: false,
+      disabled: false,
+      expiresAt: null,
+      deletionAt: 1_795_000_000,
+      createdAt: 1_794_000_000,
+      revisedAt: 1_794_000_000,
+      hasPassword: false,
+    });
+    const rows = await rowsFrom([dto(item, 'A1'), dto(plain, 'A2')], 'https://vault.example.org', crypto);
+    expect(rows[0]?.itemKind).toBe('card');
+    expect(rows[1]?.itemKind).toBeUndefined();
   });
 });

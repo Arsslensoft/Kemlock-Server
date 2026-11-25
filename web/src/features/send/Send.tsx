@@ -8,6 +8,7 @@ import { ApiError } from '@/api/errors';
 import { api } from '@/app/services';
 import { type CryptoPort, vaultCrypto } from '@/crypto-port';
 import { copyText } from '@/lib/clipboard';
+import { decodeB64 } from '@/lib/b64url';
 import { readBytes } from '@/lib/files';
 import { describeError } from '@/lib/errors';
 import { type MessageId, useT } from '@/i18n';
@@ -16,11 +17,11 @@ import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
 import { useVault } from '@/features/vault/hooks';
-import { EDITABLE_KINDS, type EditableKind, kindLabel, timeAgo } from '@/features/vault/kinds';
+import { EDITABLE_KINDS, type EditableKind, kindIcon, kindLabel, timeAgo } from '@/features/vault/kinds';
 import { type VaultItem, itemName } from '@/features/vault/vault';
-import { MAX_ENVELOPE_CHARS, buildEnvelope, serializeEnvelope } from './itemEnvelope';
+import { MAX_ENVELOPE_CHARS, buildEnvelope, parseEnvelope, serializeEnvelope } from './itemEnvelope';
 import { SendItemPicker } from './SendItemPicker';
-import { MAX_FILE_BYTES, type SendInput, makeSend, openOwnerView, sendLink } from './sendCrypto';
+import { MAX_FILE_BYTES, type SendInput, makeSend, openOwnerView, parsePayload, sendLink } from './sendCrypto';
 
 export interface SendRow {
   id: string;
@@ -33,6 +34,8 @@ export interface SendRow {
   expiresAt: string;
   /** null when the owner's copy of the key could not be opened. */
   link: string | null;
+  /** The kind of the item an item Send carries, found by opening its payload here; else absent. */
+  itemKind?: EditableKind;
 }
 
 export function isSpent(row: SendRow, now: Date): boolean {
@@ -134,7 +137,9 @@ export function SendView({
               const parts = [
                 row.kind === 'file'
                   ? t('send.fileSize', { size: formatSize(row.size ?? 0) })
-                  : t('send.kind.text'),
+                  : row.itemKind
+                    ? t(kindLabel(row.itemKind))
+                    : t('send.kind.text'),
                 row.maxViews === null
                   ? t('send.views', { count: row.viewCount })
                   : t('send.viewsOf', { count: row.viewCount, max: row.maxViews }),
@@ -144,7 +149,7 @@ export function SendView({
               return (
                 <div className="row" key={row.id}>
                   <span className="tile" aria-hidden="true">
-                    <Icon name={row.kind === 'file' ? 'note' : 'send'} />
+                    <Icon name={row.itemKind ? kindIcon(row.itemKind) : row.kind === 'file' ? 'note' : 'send'} />
                   </span>
                   <div className="grow">
                     <div>{row.name}</div>
@@ -340,15 +345,40 @@ export function SendView({
 const sendsApi = createSendsApi(api);
 const sendsKey = ['sends'] as const;
 
+/**
+ * The kind of item a text Send carries: its payload is opened here with the link key and read as an
+ * item envelope. Only the kind is kept; nothing is fetched and the text goes no further.
+ */
+async function itemKindOf(
+  send: SendDto,
+  linkKey: string,
+  worker: Pick<CryptoPort, 'openSendPayload'>,
+): Promise<EditableKind | undefined> {
+  if (send.kind !== 'text' || !send.payload) return undefined;
+  try {
+    const raw = await worker.openSendPayload({
+      id: send.id,
+      kind: send.kind,
+      linkKey,
+      sealed: decodeB64(send.payload),
+    });
+    const payload = parsePayload('text', raw);
+    return payload?.kind === 'text' ? (parseEnvelope(payload.text)?.kind ?? undefined) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Opens the owner's copy of each Send's key and name, and builds its link. */
 export async function rowsFrom(
   sends: SendDto[],
   origin: string,
-  worker: Pick<CryptoPort, 'unwrapSendKey' | 'openSendMeta'>,
+  worker: Pick<CryptoPort, 'unwrapSendKey' | 'openSendMeta' | 'openSendPayload'>,
 ): Promise<SendRow[]> {
   const rows: SendRow[] = [];
   for (const send of sends) {
     const opened = await openOwnerView(send, worker);
+    const itemKind = opened ? await itemKindOf(send, opened.key, worker) : undefined;
     rows.push({
       id: send.id,
       name: opened?.name ?? send.id,
@@ -359,6 +389,7 @@ export async function rowsFrom(
       hasPassword: send.hasPassword,
       expiresAt: new Date(send.deletionAt * 1000).toISOString(),
       link: opened ? sendLink(origin, send.accessId, opened.key) : null,
+      ...(itemKind ? { itemKind } : {}),
     });
   }
   return rows;
