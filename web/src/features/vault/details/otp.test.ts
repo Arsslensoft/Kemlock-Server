@@ -41,6 +41,13 @@ describe('one-time codes', () => {
     expect(otpParamsOf(null)).toBeUndefined();
   });
 
+  it('makes a Steam code SHA-1 and five characters whatever the item stores', async () => {
+    const stored = params({ type: 'steam', algorithm: 'SHA512', digits: 8 });
+    expect(stored).toMatchObject({ algorithm: 'SHA1', digits: 5 });
+    expect(await codeAt(stored, 59_000)).toBe(await codeAt(params({ type: 'steam' }), 59_000));
+    expect(await codeAt(stored, 59_000)).toHaveLength(5);
+  });
+
   it('writes a Steam code in its alphabet', async () => {
     expect(await codeAt(params({ type: 'steam', digits: 5 }), 59_000)).toMatch(/^[2-9BCDFGHJKMNPQRTVWXY]{5}$/);
   });

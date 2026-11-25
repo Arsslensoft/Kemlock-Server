@@ -82,7 +82,9 @@ export function codeAt(params: OtpParams, nowMs: number): Promise<string> {
 export function otpParamsOf(data: Record<string, unknown> | null | undefined): OtpParams | undefined {
   if (!data || typeof data['secret'] !== 'string') return undefined;
   const type = data['type'] === 'hotp' || data['type'] === 'steam' ? data['type'] : 'totp';
-  const algorithm = data['algorithm'] === 'SHA256' || data['algorithm'] === 'SHA512' ? data['algorithm'] : 'SHA1';
+  // Steam Guard is SHA-1 and five characters whatever the item stores (the app's otp.dart).
+  const algorithm =
+    type !== 'steam' && (data['algorithm'] === 'SHA256' || data['algorithm'] === 'SHA512') ? data['algorithm'] : 'SHA1';
   const num = (key: string, fallback: number) => {
     const value = data[key];
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
@@ -96,7 +98,7 @@ export function otpParamsOf(data: Record<string, unknown> | null | undefined): O
     secret: data['secret'],
     type,
     algorithm,
-    digits: Math.min(10, num('digits', type === 'steam' ? 5 : 6)),
+    digits: type === 'steam' ? 5 : Math.min(10, num('digits', 6)),
     period: num('period', 30),
     counter: typeof data['counter'] === 'number' ? data['counter'] : 0,
   };
