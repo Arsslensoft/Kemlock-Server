@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isKindActive, withQuery } from './shellNav';
+import { initials, isKindActive, withQuery } from './shellNav';
 
 describe('the header search', () => {
   it('keeps the kind and favourites filters and starts the pages over', () => {
@@ -29,5 +29,25 @@ describe('the sidebar kind links', () => {
     expect(isKindActive('/vault', 'note', 'login')).toBe(false);
     expect(isKindActive('/vault/new', undefined, undefined)).toBe(false);
     expect(isKindActive('/trash', 'login', 'login')).toBe(false);
+  });
+});
+
+describe('the avatar letters', () => {
+  it('are the first letters of the first two words of the name', () => {
+    expect(initials('Sam Rivera', 'sam@example.org')).toBe('SR');
+    expect(initials('  ada  king lovelace ', null)).toBe('AK');
+  });
+
+  it('are the first two letters of a one-word name', () => {
+    expect(initials('Sam', 'sam@example.org')).toBe('SA');
+  });
+
+  it('come from the address when there is no name, or a blank one', () => {
+    expect(initials(null, 'sam.rivera@example.org')).toBe('SR');
+    expect(initials('   ', 'sam.rivera@example.org')).toBe('SR');
+  });
+
+  it('are a question mark for nobody', () => {
+    expect(initials(null, null)).toBe('?');
   });
 });
