@@ -50,6 +50,12 @@ describe('the settings form', () => {
     expect(errorOf(security, 'force_tls')).toBeUndefined();
   });
 
+  it('asks for a whole number, without a range, when the server states no bounds', () => {
+    const open = setting({ key: 'extra_count', group: 'later', kind: 'int' });
+    expect(errorOf(open, '2.5')).toBe('admin.settings.error.whole');
+    expect(errorOf(open, '12')).toBeUndefined();
+  });
+
   it('sends only what changed, never an environment setting, and a secret only when typed', () => {
     const smtp = groupsOf(SETTINGS)[0]?.settings ?? [];
     expect(changesOf(smtp, draftOf(smtp))).toEqual({ ok: true, changes: {} });

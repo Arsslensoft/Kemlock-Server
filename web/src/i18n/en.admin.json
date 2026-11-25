@@ -92,6 +92,7 @@
   "admin.settings.error.host": "Type a host name or address, without https:// or a slash.",
   "admin.settings.domainsHint": "Separate domains with commas, such as example.co, example.dev.",
   "admin.settings.error.number": "Type a whole number from {min} to {max}.",
+  "admin.settings.error.whole": "Type a whole number.",
   "admin.settings.error.choice": "Pick one of the choices.",
   "admin.settings.error.tooLong": "That is longer than the server keeps.",
   "admin.settings.key.smtp_host": "SMTP server",

@@ -52,10 +52,12 @@ export function errorOf(setting: AdminSetting, text: string): MessageId | undefi
   const value = text.trim();
   switch (setting.kind) {
     case 'int': {
-      if (!WHOLE_NUMBER.test(value)) return 'admin.settings.error.number';
+      // Without both bounds there is no range to name.
+      const wrong = setting.min != null && setting.max != null ? 'admin.settings.error.number' : 'admin.settings.error.whole';
+      if (!WHOLE_NUMBER.test(value)) return wrong;
       const n = Number(value);
-      if (setting.min != null && n < setting.min) return 'admin.settings.error.number';
-      if (setting.max != null && n > setting.max) return 'admin.settings.error.number';
+      if (setting.min != null && n < setting.min) return wrong;
+      if (setting.max != null && n > setting.max) return wrong;
       return undefined;
     }
     case 'choice':
