@@ -73,6 +73,91 @@ function describeSignInError(error: unknown): ReturnType<typeof describeError> {
   return describeError(error);
 }
 
+/**
+ * The other ways in. Up to two stack as full-width buttons; with more, the organisation's SSO
+ * stays one full-width button and the rest sit side by side as compact icon-over-label tiles.
+ */
+export function Alternatives({
+  methods,
+  provider,
+  passkey,
+  pending,
+  onSso,
+  onPasskey,
+  onDevice,
+  onPassword,
+}: {
+  methods: string[];
+  provider?: string | undefined;
+  /** Whether this browser has passkeys. */
+  passkey: boolean;
+  pending?: boolean;
+  onSso: () => void;
+  onPasskey: () => void;
+  onDevice: () => void;
+  onPassword: () => void;
+}) {
+  const t = useT();
+  const sso = methods.includes('sso');
+  const withPasskey = methods.includes('passkey') && passkey;
+  const withPassword = methods.includes('password');
+  const total = Number(sso) + Number(withPasskey) + 1 + Number(withPassword);
+  const tiled = total > 2;
+  const ssoButton = sso ? (
+    <Button block isDisabled={pending} onPress={onSso}>
+      <Icon name="key" />
+      {t('signIn.ssoNamed', { provider: provider ?? '' })}
+    </Button>
+  ) : null;
+  if (!tiled) {
+    return (
+      <>
+        {ssoButton}
+        {withPasskey ? (
+          <Button block isDisabled={pending} onPress={onPasskey}>
+            <Icon name="login" />
+            {t('signIn.passkey')}
+          </Button>
+        ) : null}
+        <Button block onPress={onDevice}>
+          <Icon name="device" />
+          {t('signIn.approve')}
+        </Button>
+        {withPassword ? (
+          <Button block onPress={onPassword}>
+            <Icon name="lock" />
+            {t('signIn.password')}
+          </Button>
+        ) : null}
+      </>
+    );
+  }
+  const tiles = total - Number(sso);
+  return (
+    <>
+      {ssoButton}
+      <div className="tiles" data-count={tiles}>
+        {withPasskey ? (
+          <Button className="tile" isDisabled={pending} aria-label={t('signIn.passkey')} onPress={onPasskey}>
+            <Icon name="login" />
+            <span>{t('signIn.passkeyShort')}</span>
+          </Button>
+        ) : null}
+        <Button className="tile" aria-label={t('signIn.approve')} onPress={onDevice}>
+          <Icon name="device" />
+          <span>{t('signIn.approveShort')}</span>
+        </Button>
+        {withPassword ? (
+          <Button className="tile" aria-label={t('signIn.password')} onPress={onPassword}>
+            <Icon name="lock" />
+            <span>{t('signIn.passwordShort')}</span>
+          </Button>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 export default function SignIn() {
   const t = useT();
   const navigate = useNavigate();
@@ -165,38 +250,16 @@ export default function SignIn() {
       {offered ? (
         <div className="stack">
           <div className="or">{t('signIn.or')}</div>
-          {offered.methods.includes('sso') ? (
-            <Button block isDisabled={pending} onPress={() => void withSso(offered.email)}>
-              <Icon name="key" />
-              {t('signIn.ssoNamed', { provider: offered.provider ?? '' })}
-            </Button>
-          ) : null}
-          {offered.methods.includes('passkey') && passkeysAvailable() ? (
-            <Button block isDisabled={pending} onPress={() => void withPasskey(offered.email)}>
-              <Icon name="login" />
-              {t('signIn.passkey')}
-            </Button>
-          ) : null}
-          <Button
-            block
-            onPress={() =>
-              void navigate({ to: '/sign-in/device', search: { email: offered.email, next } })
-            }
-          >
-            <Icon name="device" />
-            {t('signIn.approve')}
-          </Button>
-          {offered.methods.includes('password') ? (
-            <Button
-              block
-              onPress={() =>
-                void navigate({ to: '/sign-in/password', search: { email: offered.email, next } })
-              }
-            >
-              <Icon name="lock" />
-              {t('signIn.password')}
-            </Button>
-          ) : null}
+          <Alternatives
+            methods={offered.methods}
+            provider={offered.provider}
+            passkey={passkeysAvailable()}
+            pending={pending}
+            onSso={() => void withSso(offered.email)}
+            onPasskey={() => void withPasskey(offered.email)}
+            onDevice={() => void navigate({ to: '/sign-in/device', search: { email: offered.email, next } })}
+            onPassword={() => void navigate({ to: '/sign-in/password', search: { email: offered.email, next } })}
+          />
         </div>
       ) : null}
       <p className="hint">{t('signIn.footer')}</p>

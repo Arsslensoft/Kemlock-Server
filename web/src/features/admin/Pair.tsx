@@ -21,6 +21,22 @@ import { type AdminNav, useAdminNav } from './nav';
 import { useReauth } from './reauth';
 import { CheckBox, ErrorNotice, Loading, PageHead, TextBox, Toggle } from './ui';
 
+/** The address the server dials: an http or https URL with a host (an IPv6 host in brackets). */
+export function isPeerUrl(address: string): boolean {
+  if (!URL.canParse(address)) return false;
+  const url = new URL(address);
+  return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname !== '';
+}
+/**
+ * Whether typed text is a one-time code, read as the server reads it: spaces and dashes are
+ * ignored, case does not matter, O, I and L stand for 0, 1 and 1, and twelve characters of
+ * Crockford's base32 remain.
+ */
+export function isPairingCode(input: string): boolean {
+  const text = input.replace(/[\s-]/g, '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1');
+  return /^[0-9A-HJKMNP-TV-Z]{12}$/.test(text);
+}
+
 /** The words to compare, and each key's short form. */
 export interface Comparison {
   words: string;
@@ -111,6 +127,11 @@ export function PairView({
   const { code, session } = state;
   const [address, setAddress] = useState('');
   const [typed, setTyped] = useState('');
+  const [tried, setTried] = useState(false);
+  const addressError: MessageId | undefined =
+    tried && !isPeerUrl(address.trim()) ? 'admin.pair.error.address' : undefined;
+  const codeError: MessageId | undefined =
+    tried && !isPairingCode(typed) ? 'admin.pair.error.code' : undefined;
   const [wordsMatch, setWordsMatch] = useState(false);
   const [acks, setAcks] = useState<PairingAck[]>([]);
   const [offer, setOffer] = useState<string[]>([]);
@@ -209,12 +230,35 @@ export function PairView({
               noValidate
               onSubmit={(event) => {
                 event.preventDefault();
-                if (address.trim() !== '' && typed.trim() !== '') onConnect(address.trim(), typed.trim());
+                setTried(true);
+                const goodAddress = isPeerUrl(address.trim());
+                const goodCode = isPairingCode(typed);
+                if (goodAddress && goodCode) onConnect(address.trim(), typed.trim());
               }}
             >
               <span>{t('admin.pair.enterCode')}</span>
-              <TextBox label={t('admin.pair.address')} mono value={address} onChange={setAddress} placeholder="vps.example.org" />
-              <TextBox label={t('admin.pair.theirCode')} mono value={typed} onChange={setTyped} />
+              <div className="adm-g2">
+                <TextBox
+                  label={t('admin.pair.address')}
+                  mono
+                  value={address}
+                  onChange={setAddress}
+                  type="url"
+                  placeholder="https://peer.example.org"
+                  inputMode="url"
+                  required
+                  error={addressError}
+                />
+                <TextBox
+                  label={t('admin.pair.theirCode')}
+                  mono
+                  value={typed}
+                  onChange={setTyped}
+                  placeholder="XXXX-XXXX-XXXX"
+                  required
+                  error={codeError}
+                />
+              </div>
               <div className="actions">
                 <Button type="submit" size="small" isDisabled={connecting || address.trim() === '' || typed.trim() === ''}>
                   {t('admin.pair.connect')}

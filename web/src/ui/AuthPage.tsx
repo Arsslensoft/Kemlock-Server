@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { useT } from '@/i18n';
-import { Logo } from './Icon';
+import { Wordmark } from './Icon';
 import { LegalLinks } from './LegalLinks';
 
 /** The centered card page of sign-in and setup, with the logo and the badge. */
@@ -22,8 +22,7 @@ export function AuthPage({
   return (
     <div className="auth-page">
       <div className="brand">
-        <Logo />
-        <span className="name">Kemlock</span>
+        <Wordmark />
         {badge ? (
           <span className="tag-chip amber">{t(badge === 'setup' ? 'brand.setup' : 'brand.admin')}</span>
         ) : null}

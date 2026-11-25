@@ -95,7 +95,15 @@ export function SetupServerForm({
           ]}
         />
         {join === 'domains' ? (
-          <Field control={control} name="joinDomains" label={t('setup.server.joinDomains')} mono />
+          <Field
+            control={control}
+            name="joinDomains"
+            label={t('setup.server.joinDomains')}
+            placeholder={t('setup.server.joinDomainsPlaceholder')}
+            maxLength={500}
+            autoComplete="off"
+            mono
+          />
         ) : null}
       </section>
 
@@ -104,9 +112,25 @@ export function SetupServerForm({
           {t('setup.server.mail')} <span className="tag-chip">{t('setup.optional')}</span>
         </h2>
         <p className="hint">{t('setup.server.mailHint')}</p>
-        <div className="grid">
-          <Field control={control} name="mailHost" label={t('setup.server.mailHost')} mono />
-          <Field control={control} name="mailPort" label={t('setup.server.mailPort')} inputMode="numeric" />
+        <div className="pair">
+          <Field
+            control={control}
+            name="mailHost"
+            label={t('setup.server.mailHost')}
+            placeholder={t('setup.server.mailHostPlaceholder')}
+            maxLength={253}
+            autoComplete="off"
+            mono
+          />
+          <Field
+            control={control}
+            name="mailPort"
+            label={t('setup.server.mailPort')}
+            placeholder="587"
+            inputMode="numeric"
+            maxLength={5}
+            autoComplete="off"
+          />
           <SelectField
             control={control}
             name="mailSecurity"
@@ -116,8 +140,23 @@ export function SetupServerForm({
               { value: 'tls', label: 'TLS' },
             ]}
           />
-          <Field control={control} name="mailFrom" label={t('setup.server.mailFrom')} type="email" />
-          <Field control={control} name="mailUser" label={t('setup.server.mailUser')} />
+          <Field
+            control={control}
+            name="mailFrom"
+            label={t('setup.server.mailFrom')}
+            placeholder={t('setup.server.mailFromPlaceholder')}
+            type="email"
+            maxLength={254}
+            autoComplete="off"
+          />
+          <Field
+            control={control}
+            name="mailUser"
+            label={t('setup.server.mailUser')}
+            placeholder={t('setup.server.mailUserPlaceholder')}
+            maxLength={254}
+            autoComplete="off"
+          />
         </div>
         <div className="actions">
           <Button size="small" isDisabled>
@@ -158,7 +197,15 @@ export function SetupServerForm({
           ]}
         />
         {files === 'local' ? (
-          <Field control={control} name="folder" label={t('setup.server.folder')} mono />
+          <Field
+            control={control}
+            name="folder"
+            label={t('setup.server.folder')}
+            placeholder="/data/files"
+            maxLength={500}
+            autoComplete="off"
+            mono
+          />
         ) : (
           <p className="hint">{t('setup.server.s3Config')}</p>
         )}
@@ -174,7 +221,7 @@ export function SetupServerForm({
         />
         {backups ? (
           <>
-            <div className="grid">
+            <div className="pair">
               <SelectField
                 control={control}
                 name="backupEvery"
@@ -199,6 +246,8 @@ export function SetupServerForm({
               control={control}
               name="backupRecipient"
               label={t('setup.server.backupRecipient')}
+              placeholder="age1..."
+              autoComplete="off"
               mono
               hint={t('setup.server.backupRecipientHint')}
             />

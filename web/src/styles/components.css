@@ -302,12 +302,15 @@
   gap: 12px;
   align-items: flex-start;
 }
+/* The track sits on the same line, before its label. */
+.switch .track {
+  order: -1;
+}
 .switch .text {
   flex: 1;
 }
 .switch .track {
   flex: none;
-  order: 2;
   width: 40px;
   height: 24px;
   border-radius: var(--radius-pill);
@@ -591,15 +594,26 @@
   flex-wrap: wrap;
   justify-content: center;
 }
-.brand .name {
-  font-size: 21px;
-  font-weight: 600;
-  letter-spacing: -0.42px;
-  color: var(--text);
+.wordmark {
+  display: inline-flex;
+  line-height: 0;
 }
-.brand .host {
-  font-size: 12px;
-  color: var(--faint);
+.wordmark .wm-light {
+  display: none;
+}
+:root[data-theme='light'] .wordmark .wm-dark {
+  display: none;
+}
+:root[data-theme='light'] .wordmark .wm-light {
+  display: block;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) .wordmark .wm-dark {
+    display: none;
+  }
+  :root:not([data-theme='dark']) .wordmark .wm-light {
+    display: block;
+  }
 }
 .auth-card {
   width: 100%;
@@ -858,15 +872,6 @@
 .shell-header .logo:hover {
   text-decoration: none;
   color: var(--text);
-}
-.shell-header .logo b {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.17px;
-}
-.shell-header .host {
-  font-size: 12px;
-  color: var(--faint);
 }
 .shell-header .search {
   position: relative;
@@ -1146,4 +1151,117 @@ ol.stack {
 }
 .field input[type='range'] {
   accent-color: var(--accent);
+}
+
+/* The mobile app's AppAlert glow: a soft halo in the alert's own hue (--glow) that swells and
+ * fades. Decoration only; it stops for people who ask for less motion. */
+@keyframes alert-glow {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.notice,
+.adm-banner,
+.failover-banner,
+.confirm-panel,
+.approval,
+.waiting {
+  --glow: var(--warn);
+  position: relative;
+  isolation: isolate;
+}
+/* The halo sits on its own layer so only its opacity animates, not a repainted shadow. */
+.notice::after,
+.adm-banner::after,
+.failover-banner::after,
+.confirm-panel::after,
+.approval::after,
+.waiting::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 24px 0 color-mix(in srgb, var(--glow) var(--glow-alpha), transparent);
+  opacity: 0;
+  animation: alert-glow 3.4s ease-in-out infinite;
+}
+.notice {
+  --glow: var(--accent);
+}
+.notice.warn {
+  --glow: var(--warn);
+}
+.notice.error,
+.adm-banner.bad {
+  --glow: var(--danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice::after,
+  .adm-banner::after,
+  .failover-banner::after,
+  .confirm-panel::after,
+  .approval::after,
+  .waiting::after {
+    animation: none;
+  }
+}
+
+/* The collapsed "where to find the setup code" panel. */
+.where {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: 12px 16px;
+}
+.where > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.where[open] > summary {
+  margin-bottom: 12px;
+}
+.where ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  gap: 16px;
+}
+
+/* Two short inputs side by side; one column when narrow. */
+.pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 14px;
+}
+
+/* Alternative sign-in methods as compact icon-over-label tiles, up to three across. */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.tiles[data-count='1'] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.tiles[data-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.btn.tile {
+  flex-direction: column;
+  gap: 6px;
+  height: auto;
+  min-height: 72px;
+  padding: 12px 6px;
+  font-size: 13px;
+  text-align: center;
+  line-height: 1.2;
+  white-space: normal;
+}
+.pair.wide {
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
 }

@@ -64,7 +64,7 @@ describe('SsoView', () => {
     const issuer = screen.getByLabelText('Issuer URL');
     await user.clear(issuer);
     await user.type(issuer, 'not a url');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/Type a web address that starts with/)).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
   });
@@ -74,13 +74,13 @@ describe('SsoView', () => {
     const user = userEvent.setup();
     await user.clear(screen.getByLabelText('Name people see'));
     await user.type(screen.getByLabelText('Name people see'), 'Staff');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(onSave).toHaveBeenCalledTimes(1);
     const first = onSave.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(first['displayName']).toBe('Staff');
     expect(first).not.toHaveProperty('clientSecret');
     await user.type(screen.getByLabelText('Client secret'), 'new-secret');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect((onSave.mock.calls[1]?.[0] as Record<string, unknown>)['clientSecret']).toBe('new-secret');
   });
 
@@ -91,7 +91,7 @@ describe('SsoView', () => {
     expect(screen.getAllByLabelText('Provider group')).toHaveLength(2);
     await user.click(screen.getByRole('button', { name: 'Remove the rule for engineering' }));
     expect(screen.getAllByLabelText('Provider group')).toHaveLength(1);
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     const saved = onSave.mock.calls[0]?.[0] as { groupRules: Array<{ group: string; space: string; role: string; collections: string[] }> };
     expect(saved.groupRules).toEqual([{ group: '', space: 's1aaaaaaaa', role: 'member', collections: [] }]);
   });
@@ -100,7 +100,7 @@ describe('SsoView', () => {
     const { onSave } = view();
     const user = userEvent.setup();
     await user.click(screen.getByRole('checkbox', { name: /Only accept people whose email domain is verified here/ }));
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     const saved = onSave.mock.calls[0]?.[0] as { requireVerifiedDomain: boolean };
     expect(saved.requireVerifiedDomain).toBe(false);
   });
@@ -127,5 +127,40 @@ describe('SsoView', () => {
     await user.type(screen.getByLabelText('Add a domain'), 'Example.org');
     await user.click(screen.getByRole('button', { name: 'Add' }));
     expect(onAddDomain).toHaveBeenCalledWith('example.org');
+  });
+
+  it('keeps Save disabled and Discard away until the form changes', async () => {
+    view();
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Name people see'), 'x');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument();
+  });
+
+  it('shows an error as the issuer is typed, and takes it away once the value is right', async () => {
+    view();
+    const user = userEvent.setup();
+    const issuer = screen.getByLabelText('Issuer URL');
+    await user.clear(issuer);
+    await user.type(issuer, 'nope');
+    expect(issuer).toHaveAttribute('aria-invalid', 'true');
+    await user.clear(issuer);
+    await user.type(issuer, 'https://id.example.org');
+    expect(issuer).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByText(/Type a web address/)).not.toBeInTheDocument();
+  });
+
+  it('marks a bad issuer invalid and describes it by its error', async () => {
+    view();
+    const user = userEvent.setup();
+    const issuer = screen.getByLabelText('Issuer URL');
+    await user.clear(issuer);
+    await user.type(issuer, 'nope');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(issuer).toHaveAttribute('aria-invalid', 'true');
+    expect(issuer).toHaveAccessibleDescription(/Type a web address/);
+    expect(issuer).toBeRequired();
   });
 });

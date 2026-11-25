@@ -12,6 +12,11 @@ function view(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
   return { onSave };
 }
 
+/** The Save button of the card with this title. */
+function saveOf(title: string) {
+  return within(screen.getByRole('region', { name: title })).getByRole('button', { name: 'Save' });
+}
+
 describe('the settings form', () => {
   it('groups the catalogue in the console\'s order and puts a group it does not know last', () => {
     const extra = setting({ key: 'new_thing', group: 'later', kind: 'bool' });
@@ -43,6 +48,12 @@ describe('the settings form', () => {
     expect(errorOf(port, '465')).toBeUndefined();
     expect(errorOf(security, 'plain')).toBe('admin.settings.error.choice');
     expect(errorOf(security, 'force_tls')).toBeUndefined();
+  });
+
+  it('asks for a whole number, without a range, when the server states no bounds', () => {
+    const open = setting({ key: 'extra_count', group: 'later', kind: 'int' });
+    expect(errorOf(open, '2.5')).toBe('admin.settings.error.whole');
+    expect(errorOf(open, '12')).toBeUndefined();
   });
 
   it('sends only what changed, never an environment setting, and a secret only when typed', () => {
@@ -84,7 +95,7 @@ describe('SettingsView', () => {
     expect(largest).toBeDisabled();
     expect(screen.getByText(/Set by KEMLOCK_MAX_FILE_SIZE_MIB/)).toBeInTheDocument();
     const files = screen.getByRole('region', { name: 'Files' });
-    expect(within(files).queryByRole('button', { name: /^Save/ })).not.toBeInTheDocument();
+    expect(within(files).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
   });
 
   it('refuses a bad port without sending anything', async () => {
@@ -93,8 +104,8 @@ describe('SettingsView', () => {
     const port = screen.getByLabelText('SMTP port');
     await user.clear(port);
     await user.type(port, '70000');
-    await user.click(screen.getByRole('button', { name: 'Save Email' }));
-    expect(await screen.findByText(/Type a whole number within the range/)).toBeInTheDocument();
+    await user.click(saveOf('Email'));
+    expect(await screen.findByText(/Type a whole number from 1 to 65535/)).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
   });
 
@@ -104,11 +115,11 @@ describe('SettingsView', () => {
     const host = screen.getByLabelText('SMTP server');
     await user.clear(host);
     await user.type(host, 'mail.example.org');
-    await user.click(screen.getByRole('button', { name: 'Save Email' }));
+    await user.click(saveOf('Email'));
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenLastCalledWith({ smtp_host: 'mail.example.org' }, 'smtp');
     await user.type(screen.getByLabelText('SMTP password'), 'hunter2');
-    await user.click(screen.getByRole('button', { name: 'Save Email' }));
+    await user.click(saveOf('Email'));
     expect(onSave).toHaveBeenLastCalledWith({ smtp_host: 'mail.example.org', smtp_password: 'hunter2' }, 'smtp');
   });
 
@@ -116,12 +127,76 @@ describe('SettingsView', () => {
     const { onSave } = view();
     const user = userEvent.setup();
     await user.click(screen.getByRole('switch', { name: 'Anyone may make an account' }));
-    await user.click(screen.getByRole('button', { name: 'Save Who can make an account' }));
+    await user.click(saveOf('Who can make an account'));
     expect(onSave).toHaveBeenCalledWith({ signups_allowed: 'true' }, 'signups');
   });
 
   it('says which group was saved', () => {
     view({ savedGroup: 'trash' });
     expect(screen.getAllByText('Saved.')).toHaveLength(1);
+  });
+
+  it('blocks Save and marks the field while a value is wrong, then lets go when it is right', async () => {
+    const { onSave } = view();
+    const user = userEvent.setup();
+    const port = screen.getByLabelText('SMTP port');
+    await user.clear(port);
+    await user.type(port, '0');
+    expect(port).toHaveAttribute('aria-invalid', 'true');
+    expect(port).toHaveAccessibleDescription(/Type a whole number from 1 to 65535/);
+    await user.click(saveOf('Email'));
+    expect(onSave).not.toHaveBeenCalled();
+    await user.clear(port);
+    await user.type(port, '465');
+    expect(port).not.toHaveAttribute('aria-invalid');
+    await user.click(saveOf('Email'));
+    expect(onSave).toHaveBeenCalledWith({ smtp_port: '465' }, 'smtp');
+  });
+
+  it('gives the host input a pattern that is valid with the v flag', () => {
+    view();
+    expect(screen.getByLabelText('SMTP server')).toHaveAttribute('pattern', '[^\\s\\/]+');
+    expect(() => new RegExp('^(?:[^\\s\\/]+)$', 'v')).not.toThrow();
+  });
+
+  it('refuses a host with a slash', async () => {
+    const { onSave } = view();
+    const user = userEvent.setup();
+    const host = screen.getByLabelText('SMTP server');
+    await user.clear(host);
+    await user.type(host, 'https://mail.example.org');
+    expect(await screen.findByText(/without https:[/][/] or a slash/)).toBeInTheDocument();
+    await user.click(saveOf('Email'));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('keeps Save disabled and Discard away while the section is clean', async () => {
+    view();
+    const user = userEvent.setup();
+    const email = screen.getByRole('region', { name: 'Email' });
+    expect(saveOf('Email')).toBeDisabled();
+    expect(within(email).queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('SMTP server'), 'x');
+    expect(saveOf('Email')).toBeEnabled();
+    await user.click(within(email).getByRole('button', { name: 'Discard' }));
+    expect(screen.getByLabelText('SMTP server')).toHaveValue('smtp.example.org');
+    expect(saveOf('Email')).toBeDisabled();
+    expect(within(email).queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+  });
+
+  it('shows the unit beside a size limit and says 0 means no limit in its description', () => {
+    const kib = setting({ key: 'user_attachment_limit_kib', group: 'files', kind: 'int', min: 0, max: 1048576, value: '0' });
+    view({ settings: [kib] });
+    expect(screen.getByText('KiB')).toBeInTheDocument();
+    expect(screen.getByLabelText('Attachments per person')).toHaveAccessibleDescription(/0 means no limit/);
+  });
+
+  it('puts the range in the placeholder, and Saved. under the title of the saved section', () => {
+    view({ savedGroup: 'smtp' });
+    expect(screen.getByLabelText('SMTP port')).toHaveAttribute('placeholder', '1–65535');
+    expect(screen.getByLabelText('SMTP port')).toHaveAttribute('min', '1');
+    expect(screen.getByLabelText('SMTP port')).toBeRequired();
+    const email = screen.getByRole('region', { name: 'Email' });
+    expect(within(email).getByText('Saved.')).toBeInTheDocument();
   });
 });

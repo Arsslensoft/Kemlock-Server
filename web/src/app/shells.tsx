@@ -4,7 +4,7 @@ import { Link, Outlet, useNavigate, useSearch } from '@tanstack/react-router';
 import { useVault } from '@/features/vault/hooks';
 import { FailoverBanner } from '@/features/failover/Banner';
 import { useT } from '@/i18n';
-import { Icon, type IconName, Logo } from '@/ui/Icon';
+import { Icon, type IconName, Wordmark } from '@/ui/Icon';
 import { buttonClass } from '@/ui/Button';
 import { lockVault, signOut } from './actions';
 import { session } from './services';
@@ -42,8 +42,7 @@ export function VaultShell() {
       </a>
       <header className="shell-header">
         <Link to="/vault" className="logo">
-          <Logo size={28} />
-          <b>Kemlock</b>
+          <Wordmark />
           <span className="tag-chip">{t('brand.server')}</span>
         </Link>
         <div className="search" role="search">
@@ -167,8 +166,7 @@ export function AdminShell() {
       </a>
       <header className="shell-header">
         <Link to="/admin" className="logo">
-          <Logo size={28} />
-          <b>Kemlock</b>
+          <Wordmark />
           <span className="tag-chip amber">{t('brand.admin')}</span>
         </Link>
         <div className="right">

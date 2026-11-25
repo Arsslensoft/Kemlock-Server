@@ -33,6 +33,8 @@ interface FieldProps<T extends FieldValues> {
   autoComplete?: string;
   inputMode?: 'text' | 'numeric' | 'email' | 'url';
   placeholder?: string;
+  /** The longest value the box takes. */
+  maxLength?: number;
   mono?: boolean;
   /** 48 px tall, as on the sign-in and setup cards. */
   large?: boolean;
@@ -57,6 +59,7 @@ export function Field<T extends FieldValues>({
   autoComplete,
   inputMode,
   placeholder,
+  maxLength,
   mono,
   large,
   code,
@@ -93,6 +96,7 @@ export function Field<T extends FieldValues>({
       type={type}
       autoComplete={autoComplete}
       inputMode={inputMode}
+      maxLength={maxLength}
       isInvalid={Boolean(fieldState.error)}
       isReadOnly={readOnly}
       isDisabled={disabled}
