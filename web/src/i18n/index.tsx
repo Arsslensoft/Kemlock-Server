@@ -10,10 +10,11 @@ import tools from './en.tools.json';
 import entries from './en.entries.json';
 import keyItems from './en.keyItems.json';
 import detail from './en.detail.json';
+import shell from './en.shell.json';
 
 // One catalogue per area, so areas built side by side never edit the same file. An id lives in
 // exactly one of them (the catalogue test checks it).
-export const catalogues = { en, about, account, admin, tools, entries, keyItems, detail } as const;
+export const catalogues = { en, about, account, admin, tools, entries, keyItems, detail, shell } as const;
 
 export type MessageId =
   | keyof typeof en
@@ -23,7 +24,8 @@ export type MessageId =
   | keyof typeof tools
   | keyof typeof entries
   | keyof typeof keyItems
-  | keyof typeof detail;
+  | keyof typeof detail
+  | keyof typeof shell;
 export type Values = Record<string, string | number>;
 
 export const messages: Record<string, string> = {
@@ -35,6 +37,7 @@ export const messages: Record<string, string> = {
   ...entries,
   ...keyItems,
   ...detail,
+  ...shell,
 };
 
 export function I18nProvider({ children }: { children: ReactNode }) {
