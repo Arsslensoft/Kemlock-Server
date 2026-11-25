@@ -31,9 +31,10 @@
 
   "lists.details.codes": "{total, plural, one {# code} other {# codes}}, {unused} unused",
   "lists.details.cardEnding": "{brand} ending {last4}",
-  "lists.details.cardEndingNoBrand": "Ending {last4}",
+  "lists.details.cardEndingNoBrand": "ending {last4}",
   "lists.details.expiresShort": "expires {date}",
   "lists.details.expiresOn": "Expires {date}",
+  "lists.details.subkeys": "{count, plural, =0 {no subkeys} one {# subkey} other {# subkeys}}",
   "lists.details.every": "every {seconds} s",
   "lists.details.attachments": "{count, plural, one {# attachment} other {# attachments}}"
 }

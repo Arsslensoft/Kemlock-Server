@@ -46,12 +46,27 @@ function fileEntry(data: ItemData): ItemData {
   return entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as ItemData) : {};
 }
 
-function fileType(file: ItemData): string {
+const IMAGES = new Set(['jpeg', 'png', 'gif', 'webp', 'svg', 'heic', 'tiff', 'bmp', 'avif']);
+
+/**
+ * What kind of file it is, as a person says it: `PDF`, `JPEG image`, `ZIP`. From the extension of
+ * the name, else the media type.
+ */
+export function fileTypeName(file: ItemData): string {
   const name = text(file, 'name');
   const dot = name.lastIndexOf('.');
-  if (dot > 0 && dot < name.length - 1) return name.slice(dot + 1).toUpperCase();
-  const subtype = text(file, 'type').split('/')[1];
-  return subtype ? subtype.toUpperCase() : '';
+  const mime = text(file, 'type').split('/');
+  let ext = dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLowerCase() : (mime[1] ?? '').split(/[;+]/)[0] ?? '';
+  if (ext === '') return '';
+  if (ext === 'jpg') ext = 'jpeg';
+  if (ext === 'tif') ext = 'tiff';
+  if (IMAGES.has(ext) || (dot <= 0 && mime[0] === 'image')) return `${ext.toUpperCase()} image`;
+  return ext.toUpperCase();
+}
+
+/** The common name of a certificate's subject (`CN=vpn.example.co, O=Example` is `vpn.example.co`). */
+export function commonName(subject: string): string {
+  return /(?:^|,\s*)CN=([^,]+)/i.exec(subject)?.[1]?.trim() || subject;
 }
 
 function codesOf(data: ItemData): { total: number; unused: number } {
@@ -119,7 +134,7 @@ export function detailParts(item: VaultItem, facts?: KeyFacts): DetailPart[] {
       const file = fileEntry(data);
       const bytes = file['size'];
       const size = typeof bytes === 'number' && bytes >= 0 ? formatSize(bytes) : '';
-      const list = parts(fileType(file), size);
+      const list = parts(fileTypeName(file), size);
       return list.length > 0 ? list : other;
     }
     case 'otp': {
@@ -160,7 +175,7 @@ export function detailParts(item: VaultItem, facts?: KeyFacts): DetailPart[] {
     }
     case 'certificate': {
       const list = parts(
-        facts?.subject,
+        facts?.subject && commonName(facts.subject),
         facts?.notAfter && { id: 'lists.details.expiresShort', values: { date: longDate(facts.notAfter) } },
       );
       return list.length > 0 ? list : other;
@@ -170,7 +185,13 @@ export function detailParts(item: VaultItem, facts?: KeyFacts): DetailPart[] {
       return list.length > 0 ? list : other;
     }
     case 'pgp-key': {
-      const list = parts(facts?.userId, facts && shortFingerprint(facts.fingerprint));
+      // "ed25519 · 3 subkeys" when the key says what it is; else who it is for and its fingerprint.
+      const list = facts?.algorithm
+        ? parts(
+            facts.algorithm,
+            facts.subkeys !== undefined && { id: 'lists.details.subkeys', values: { count: facts.subkeys } },
+          )
+        : parts(facts?.userId, facts && shortFingerprint(facts.fingerprint));
       return list.length > 0 ? list : other;
     }
     default:

@@ -19,6 +19,8 @@ export interface KeyFacts {
   notAfter?: Date;
   /** A PGP key's first user id. */
   userId?: string;
+  /** How many subkeys a PGP key holds. */
+  subkeys?: number;
 }
 
 function text(data: ItemData, key: string): string {
@@ -43,7 +45,13 @@ export async function keyFactsOf(item: Pick<VaultItem, 'kind' | 'data'>): Promis
     const info = source === '' ? undefined : await pgpInfo(source);
     const fingerprint = stored || info?.fingerprint;
     const userId = info?.userIds[0];
-    return fingerprint ? { fingerprint, ...(userId ? { userId } : {}) } : undefined;
+    if (!fingerprint) return undefined;
+    return {
+      fingerprint,
+      ...(userId ? { userId } : {}),
+      ...(info?.algorithm ? { algorithm: info.algorithm } : {}),
+      ...(info?.subkeys !== undefined ? { subkeys: info.subkeys } : {}),
+    };
   }
   if (item.kind === 'contact') {
     // The key a contact holds, if it holds one: the Kemlock app tells contacts apart by it.
