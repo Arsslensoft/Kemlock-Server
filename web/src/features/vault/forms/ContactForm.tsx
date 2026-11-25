@@ -63,9 +63,9 @@ export function armorProblem(armor: string): boolean {
 }
 
 /**
- * The fields a contact form owns. A pasted key replaces the key; "Remove the key" clears it and
- * what was checked against it; otherwise the key stays as it was. A contact with no key at all is
- * `source: manual`.
+ * The fields a contact form owns. A pasted key replaces the key, and "Remove the key" clears it; either
+ * way what was checked against the old key and the address it was found for (`sourceEmail`) go too.
+ * Otherwise the key stays as it was. A contact with no key at all is `source: manual`.
  */
 export function contactFields(values: ContactValues, existing?: VaultItem): ItemData {
   const fields: ItemData = {
@@ -85,6 +85,7 @@ export function contactFields(values: ContactValues, existing?: VaultItem): Item
       ...fields,
       public: pasted,
       source: 'paste',
+      sourceEmail: undefined,
       checkedAt: undefined,
       checkedFingerprint: undefined,
       checkedAddresses: undefined,
@@ -96,6 +97,7 @@ export function contactFields(values: ContactValues, existing?: VaultItem): Item
     ...fields,
     public: undefined,
     source: 'manual',
+    sourceEmail: undefined,
     checkedAt: undefined,
     checkedFingerprint: undefined,
     checkedAddresses: undefined,
