@@ -301,12 +301,15 @@ export interface SettingsViewProps {
   onSave: (changes: SettingChanges, group: string) => void;
   /** The group that was just saved. */
   savedGroup?: string | undefined;
+  /** How many times each group has been saved: a save starts the group over, even when the
+   *  server sends it back unchanged (a secret replaced by another). */
+  saves?: Record<string, number> | undefined;
   error?: unknown;
   /** The address and data folder, when the server says. */
   address?: ServerAddress | undefined;
 }
 
-export function SettingsView({ settings, onSave, savedGroup, error, address }: SettingsViewProps) {
+export function SettingsView({ settings, onSave, savedGroup, saves, error, address }: SettingsViewProps) {
   const t = useT();
   return (
     <>
@@ -315,7 +318,7 @@ export function SettingsView({ settings, onSave, savedGroup, error, address }: S
       {groupsOf(settings).map((view) => (
         <Group
           // A saved group remounts with what the server kept; the others keep their unsaved edits.
-          key={`${view.group}:${JSON.stringify(view.settings)}`}
+          key={`${view.group}:${saves?.[view.group] ?? 0}:${JSON.stringify(view.settings)}`}
           group={view.group}
           settings={view.settings}
           saved={savedGroup === view.group}
@@ -332,6 +335,7 @@ export default function Settings() {
   const { guard, dialog } = useReauth(admin);
   const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: () => admin.settings() });
   const [saved, setSaved] = useState<string | undefined>();
+  const [saves, setSaves] = useState<Record<string, number>>({});
   // An older server has no such route: the card is left out.
   const address = useQuery({ queryKey: ['admin', 'server-address'], queryFn: () => admin.serverAddress(), retry: false });
   const save = useMutation({
@@ -341,6 +345,7 @@ export default function Settings() {
     },
     onSuccess: ({ group, result }) => {
       setSaved(group);
+      setSaves((counts) => ({ ...counts, [group]: (counts[group] ?? 0) + 1 }));
       // The server answers every setting as it is now: secrets cleared, numbers normalised.
       queryClient.setQueryData(['admin', 'settings'], result);
     },
@@ -356,6 +361,7 @@ export default function Settings() {
           save.mutate({ changes, group });
         }}
         savedGroup={saved}
+        saves={saves}
         error={save.error}
         address={address.data}
       />

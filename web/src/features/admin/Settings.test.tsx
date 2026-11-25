@@ -219,4 +219,18 @@ describe('saving one group', () => {
     expect(screen.getByDisplayValue('mail.example.org')).toBeInTheDocument();
     expect(screen.getByDisplayValue('45')).toBeInTheDocument();
   });
+
+  it('starts the group over when the server sends it back unchanged, as after a secret is replaced', async () => {
+    const { rerender } = renderWithIntl(<SettingsView settings={SETTINGS} onSave={vi.fn()} />);
+    const password = screen.getByLabelText('SMTP password', { exact: false });
+    await userEvent.setup().type(password, 'a-new-password');
+    // The password was already set, so the answer to the save is the same as before.
+    rerender(
+      <I18nProvider>
+        <SettingsView settings={SETTINGS} onSave={vi.fn()} savedGroup="smtp" saves={{ smtp: 1 }} />
+      </I18nProvider>,
+    );
+    expect(screen.getByLabelText('SMTP password', { exact: false })).toHaveValue('');
+    expect(within(screen.getByRole('region', { name: 'Email' })).getByText('Saved.')).toBeInTheDocument();
+  });
 });
