@@ -205,3 +205,25 @@ describe('isEmail', () => {
     expect(isEmail('a da@example.co')).toBe(false);
   });
 });
+
+describe('a request that fails', () => {
+  it('keeps the invite address, the owner panel and the erase dialog open', async () => {
+    const failing = vi.fn().mockResolvedValue(false);
+    view({ onInvite: failing, onChangeOwner: failing, onAction: failing });
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText('Email to invite'), 'new@example.co');
+    await user.click(screen.getByRole('button', { name: 'Invite' }));
+    expect(failing).toHaveBeenCalledWith('new@example.co');
+    expect(screen.getByLabelText('Email to invite')).toHaveValue('new@example.co');
+
+    await user.click(screen.getByRole('button', { name: 'Change owner of s1aaaaaa' }));
+    await user.click(screen.getByRole('button', { name: 'Make owner' }));
+    expect(screen.getByRole('group', { name: /owner/i })).toBeInTheDocument();
+
+    const row = screen.getByRole('row', { name: /Jordan Lee/ });
+    await user.click(within(row).getByRole('button', { name: /Erase/ }));
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: /Erase/ }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+});

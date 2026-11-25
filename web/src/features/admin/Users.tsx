@@ -28,7 +28,7 @@ function UserRow({
   user: AdminUser;
   now?: number | undefined;
   busy?: boolean | undefined;
-  onAction: (action: UserAction, user: AdminUser) => void;
+  onAction: (action: UserAction, user: AdminUser) => Promise<boolean> | void;
 }) {
   const t = useT();
   const who = user.name ?? user.email;
@@ -94,7 +94,7 @@ function OwnerPanel({
 }: {
   space: AdminSpace;
   candidates: AdminUser[];
-  onConfirm: (userId: string) => void;
+  onConfirm: (userId: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const t = useT();
@@ -151,10 +151,11 @@ export interface UsersViewProps {
   spaces: AdminSpace[];
   search: string;
   onSearch: (value: string) => void;
-  onInvite: (email: string) => void;
+  /** These three may answer false when the request failed: the form then keeps what was typed. */
+  onInvite: (email: string) => Promise<boolean> | void;
   onInviteAction: (action: InviteAction, invite: AdminInvite) => void;
-  onAction: (action: UserAction, user: AdminUser) => void;
-  onChangeOwner: (space: AdminSpace, userId: string) => void;
+  onAction: (action: UserAction, user: AdminUser) => Promise<boolean> | void;
+  onChangeOwner: (space: AdminSpace, userId: string) => Promise<boolean> | void;
   hasMore?: boolean;
   onMore?: () => void;
   busy?: boolean;
@@ -187,9 +188,10 @@ export function UsersView(props: UsersViewProps) {
   const valid = isEmail(address);
   const emailError: MessageId | undefined = address !== '' && !valid ? 'error.email' : undefined;
 
-  function invite(): void {
+  async function invite(): Promise<void> {
     if (!valid) return;
-    props.onInvite(address);
+    const done = await props.onInvite(address);
+    if (done === false) return;
     setEmail('');
   }
 
@@ -204,7 +206,7 @@ export function UsersView(props: UsersViewProps) {
             noValidate
             onSubmit={(event) => {
               event.preventDefault();
-              invite();
+              void invite();
             }}
           >
             <TextBox
@@ -394,8 +396,9 @@ export function UsersView(props: UsersViewProps) {
             space={ownerOf}
             candidates={candidates}
             onCancel={() => setOwnerOf(null)}
-            onConfirm={(userId) => {
-              props.onChangeOwner(ownerOf, userId);
+            onConfirm={async (userId) => {
+              const done = await props.onChangeOwner(ownerOf, userId);
+              if (done === false) return;
               setOwnerOf(null);
             }}
           />
@@ -409,18 +412,24 @@ export function UsersView(props: UsersViewProps) {
         }}
         title={t('admin.users.erase.title', { who: erase?.name ?? erase?.email ?? '' })}
         confirmLabel={t('admin.users.erase')}
-        onConfirm={() => {
-          if (erase) props.onAction('erase', erase);
+        pending={props.busy}
+        onConfirm={async () => {
+          if (erase && (await props.onAction('erase', erase)) === false) return;
           setErase(null);
         }}
       >
         <p>{t('admin.users.erase.body')}</p>
+        {props.error ? <ErrorNotice error={props.error} /> : null}
       </ConfirmDialog>
     </>
   );
 }
 
 const PAGE = 50;
+
+// What a request answers the form with: the error itself is shown from the mutation.
+const ok = () => true;
+const failed = () => false;
 
 export default function Users() {
   const queryClient = useQueryClient();
@@ -503,10 +512,10 @@ export default function Users() {
         spaces={spaces.data?.spaces ?? []}
         search={search}
         onSearch={setSearch}
-        onInvite={(email) => invite.mutate(email)}
+        onInvite={(email) => invite.mutateAsync(email).then(ok, failed)}
         onInviteAction={(action, target) => inviteAct.mutate({ action, target })}
-        onAction={(action, user) => act.mutate({ action, user })}
-        onChangeOwner={(space, userId) => owner.mutate({ space, userId })}
+        onAction={(action, user) => act.mutateAsync({ action, user }).then(ok, failed)}
+        onChangeOwner={(space, userId) => owner.mutateAsync({ space, userId }).then(ok, failed)}
         hasMore={users.hasNextPage}
         onMore={() => void users.fetchNextPage()}
         busy={act.isPending || invite.isPending || inviteAct.isPending || owner.isPending}
