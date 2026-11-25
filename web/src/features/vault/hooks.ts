@@ -6,8 +6,11 @@ import { vaultCrypto } from '@/crypto-port';
 import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
+import { createItemFilesApi } from '@/api/itemFiles';
 import { saveBatch } from './batch';
-import { linkInputs, unlinkInputs } from './links';
+import { saveCopy } from './copy';
+import { unlinkPair } from './itemLinks';
+import { linkInputs } from './links';
 import { type MoveTarget, moveItem } from './move';
 import {
   type ItemData,
@@ -28,6 +31,9 @@ import {
 // Items of a space open once the worker holds the space's keys: the loader opens them on demand.
 const spaceKeys = createSpaceKeyLoader(spaceDeps);
 const deps: VaultDeps = { api, crypto: vaultCrypto, ensureSpaceKeys: spaceKeys.ensure };
+
+/** The files of items on this server: what a move or a copy sends again under another item. */
+export const itemFiles = createItemFilesApi(api);
 
 export const vaultKey = ['vault'] as const;
 
@@ -139,19 +145,35 @@ export function useVaultActions() {
   // Links are two-way: both items are written in one batch, so a link is on both or on neither.
   const link = useMutation({
     mutationFn: async ({ a, b, linked }: { a: VaultItem; b: VaultItem; linked: boolean }) => {
-      const inputs = linked ? linkInputs(a, b) : unlinkInputs(a, b);
+      const inputs = linked ? linkInputs(a, b) : unlinkPair(a, b);
       if (inputs.length > 0) await saveBatch(deps, vaultStore, inputs);
     },
     onSuccess: publish,
     onError: afterFailure,
   });
   const move = useMutation({
-    mutationFn: ({ item, target, linked }: { item: VaultItem; target: MoveTarget; linked: VaultItem[] }) =>
-      moveItem(deps, vaultStore, item, target, linked),
+    mutationFn: ({
+      item,
+      target,
+      linked,
+      writable,
+    }: {
+      item: VaultItem;
+      target: MoveTarget;
+      linked: VaultItem[];
+      writable: boolean;
+    }) => moveItem(deps, vaultStore, item, target, { linked, writable, files: itemFiles }),
     onSuccess: publish,
     onError: afterFailure,
   });
-  return { save, trash, restore, remove, empty, link, move };
+  // A copy of an item: saved like a new one, and its files sent again under the new item.
+  const copy = useMutation({
+    mutationFn: ({ input, sourceId }: { input: SaveInput; sourceId: string }) =>
+      saveCopy(deps, vaultStore, itemFiles, input, sourceId),
+    onSuccess: publish,
+    onError: afterFailure,
+  });
+  return { save, trash, restore, remove, empty, link, move, copy };
 }
 
 /** Stable text fields for a form: only strings the form owns. */

@@ -6,12 +6,12 @@ import { describeError } from '@/lib/errors';
 import type { LoginValues, NoteValues } from '@/lib/schemas';
 import { buttonClass } from '@/ui/Button';
 import { LoginForm, NoteForm } from './ItemForm';
-import { canCopy, copyDraft } from './copy';
+import { canCopy, copyDraft, copyFields } from './copy';
 import { ENTRY_KINDS, ENTRY_TITLES, EntryForm, isEntryKind } from './forms';
 import { KEY_KINDS, KeyItemForm, isKeyKind } from './forms/KeyItemForm';
 import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
 import { type EditableKind, isEditable, kindLabel } from './kinds';
-import { type ItemData, type VaultItem, itemName, loginOf, noteOf } from './vault';
+import { type ItemData, type SaveInput, type VaultItem, itemName, loginOf, noteOf } from './vault';
 import { readWebsites, writeWebsites } from './websites';
 
 export function loginDefaults(item?: VaultItem): LoginValues {
@@ -76,10 +76,11 @@ export default function NewItem() {
   const { itemId } = useParams({ strict: false }) as { itemId?: string };
   const search = useSearch({ strict: false }) as { kind?: EditableKind; copyOf?: string };
   const { item: found, isLoading } = useVaultItem(itemId ?? search.copyOf);
-  const { save } = useVaultActions();
+  const { save, copy } = useVaultActions();
   const [chosen, setChosen] = useState<EditableKind>(search.kind ?? 'login');
   // Where a new item goes: '' is the account's own vault, otherwise `<space id>/<collection id>`.
-  const [where, setWhere] = useState('');
+  // Until the person picks, a copy goes where its source is, when the person may write there.
+  const [picked, setWhere] = useState<string | undefined>(undefined);
   const collections = useWritableCollections();
   const editing = itemId !== undefined;
   // "Make a copy" fills the form from an item, without its ids, and saves a new item.
@@ -87,7 +88,14 @@ export default function NewItem() {
   const item = editing ? found : draft;
   const existing = editing ? item : undefined;
   const kind: EditableKind = item && isEditable(item.kind) ? item.kind : chosen;
-  const error = save.error ? describeError(save.error) : undefined;
+  const failure = copy.error ?? save.error;
+  const error = failure ? describeError(failure) : undefined;
+  const pending = save.isPending || copy.isPending;
+  const sourceHome =
+    draft && found?.collectionId && kind !== 'contact'
+      ? collections.data?.find((c) => c.collectionId === found.collectionId)
+      : undefined;
+  const where = picked ?? (sourceHome ? `${sourceHome.spaceId}/${sourceHome.collectionId}` : '');
 
   if ((editing || search.copyOf !== undefined) && isLoading) {
     return (
@@ -96,11 +104,11 @@ export default function NewItem() {
       </p>
     );
   }
-  if (editing && (!item || !isEditable(item.kind))) {
+  if (editing && (!item || !isEditable(item.kind) || item.data === null)) {
     return (
       <div className="empty">
         <h1 className="page-title">{t('item.missing.title')}</h1>
-        <p>{t('newItem.cantEdit')}</p>
+        <p>{item?.data === null ? t('item.unreadable') : t('newItem.cantEdit')}</p>
         <Link to="/vault" className={buttonClass({ variant: 'primary' })}>
           {t('nav.all')}
         </Link>
@@ -121,6 +129,19 @@ export default function NewItem() {
   // The form is replaced by the item, so Back after Save doesn't reopen the form.
   function saved(result: VaultItem) {
     void navigate({ to: '/vault/$itemId', params: { itemId: result.id }, replace: true });
+  }
+
+  // A copy keeps what the form doesn't own (custom fields, tags, a TOTP secret, keys an app wrote):
+  // its body is the source's, with the form's values on top, and a note's files are sent again.
+  function submit(input: SaveInput) {
+    if (draft && found) {
+      copy.mutate(
+        { input: { ...input, fields: copyFields(draft, input.fields) }, sourceId: found.id },
+        { onSuccess: saved },
+      );
+    } else {
+      save.mutate(input, { onSuccess: saved });
+    }
   }
 
   // A contact is one person's own statement: it stays in the account's own vault.
@@ -195,11 +216,11 @@ export default function NewItem() {
           kind={kind}
           item={item}
           submitLabel={t('action.save')}
-          pending={save.isPending}
+          pending={pending}
           error={error}
           onCancel={cancel}
           onSubmit={(fields) =>
-            save.mutate({ existing, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+            submit({ existing, kind, owner, collectionId, fields, entry: true })
           }
         />
       ) : isKeyKind(kind) ? (
@@ -208,11 +229,11 @@ export default function NewItem() {
           kind={kind}
           item={item}
           submitLabel={t('action.save')}
-          pending={save.isPending}
+          pending={pending}
           error={error}
           onCancel={cancel}
           onSave={(fields) =>
-            save.mutate({ existing, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+            submit({ existing, kind, owner, collectionId, fields, entry: true })
           }
         />
       ) : kind === 'login' ? (
@@ -220,14 +241,11 @@ export default function NewItem() {
           key={`login-${item?.id ?? 'new'}`}
           initial={loginDefaults(item)}
           submitLabel={t('action.save')}
-          pending={save.isPending}
+          pending={pending}
           error={error}
           onCancel={cancel}
           onSubmit={(values) =>
-            save.mutate(
-              { existing, kind: 'login', owner, collectionId, fields: loginFields(values, item) },
-              { onSuccess: saved },
-            )
+            submit({ existing, kind: 'login', owner, collectionId, fields: loginFields(values, item) })
           }
         />
       ) : (
@@ -235,14 +253,11 @@ export default function NewItem() {
           key={`note-${item?.id ?? 'new'}`}
           initial={noteDefaults(item)}
           submitLabel={t('action.save')}
-          pending={save.isPending}
+          pending={pending}
           error={error}
           onCancel={cancel}
           onSubmit={(values) =>
-            save.mutate(
-              { existing, kind: 'note', owner, collectionId, fields: noteFields(values) },
-              { onSuccess: saved },
-            )
+            submit({ existing, kind: 'note', owner, collectionId, fields: noteFields(values) })
           }
         />
       )}
