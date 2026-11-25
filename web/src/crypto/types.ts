@@ -300,6 +300,13 @@ export interface CryptoApi {
     exportKey: ExportKeyHandle,
   ): Promise<NewAccount>;
   /**
+   * Wraps the open account's root key under a new master key and OPAQUE export key, for a change
+   * of master password or sign-in address (docs/crypto.md, "Changing the master password and the
+   * sign-in address"). Returns the wrap, base64url, 92 bytes. The root key, the key version and
+   * the vault stay as they are. Consumes both handles on success.
+   */
+  rewrapRoot(masterKey: MasterKeyHandle, exportKey: ExportKeyHandle): Promise<string>;
+  /**
    * Makes the keys of an account that has no password (single sign-on made it) and leaves the
    * vault open: `wrappedRootKey` is empty. Seal this device's copy of the root key next with
    * `deviceCopySeal`, since nothing else opens it here.
@@ -523,6 +530,7 @@ export interface Ops {
     args: [accountId: string, masterKey: MasterKeyHandle, exportKey: ExportKeyHandle];
     result: NewAccount;
   };
+  rewrapRoot: { args: [masterKey: MasterKeyHandle, exportKey: ExportKeyHandle]; result: string };
   unlock: {
     args: [
       accountId: string,
