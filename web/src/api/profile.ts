@@ -5,7 +5,7 @@
 // record, the new KDF settings and the root key wrapped for them.
 import type { Api } from './client';
 import type { PasswordProof } from './eraseAccount';
-import type { KdfDto } from './types';
+import type { KdfDto, TokenResponse } from './types';
 
 export interface ProfileDto {
   userId: string;
@@ -23,6 +23,12 @@ export interface ProfileDto {
 
 /** What replaces the account's password record: made in the browser, in the worker. */
 export interface NewCredential {
+  /**
+   * The server's sealed ticket from the registration's first message. It binds that registration
+   * to this account, this device key and (for an address change) this address, and the change
+   * is refused without it.
+   */
+  ticket: string;
   /** OPAQUE's `RegistrationUpload`, base64url. */
   upload: string;
   kdf: KdfDto;
@@ -36,6 +42,15 @@ export interface PasswordChange extends PasswordProof, NewCredential {
 
 export interface EmailChange extends PasswordProof, NewCredential {
   email: string;
+}
+
+/**
+ * What a changed password answers. `tokens` is present when the other devices were signed out: the
+ * account's security stamp changed with them, so this device's old tokens stopped working and these
+ * are the ones to carry on with.
+ */
+export interface PasswordChanged {
+  tokens: TokenResponse | null;
 }
 
 export interface EmailChangeRequested {
@@ -54,16 +69,16 @@ export function createProfileApi(http: Http) {
       http.request<ProfileDto>({ method: 'PATCH', path: '/kem/v1/account/profile', body: { name } }),
     /**
      * OPAQUE registration, first answer: bound to the account's address, or, with `email`, to the
-     * address it is about to have.
+     * address it is about to have, and a ticket that the last call must carry back.
      */
     credentialsStart: (request: string, email?: string) =>
-      http.request<{ response: string }>({
+      http.request<{ response: string; ticket: string }>({
         method: 'POST',
         path: '/kem/v1/account/credentials/start',
         body: email === undefined ? { request } : { request, email },
       }),
     changePassword: (change: PasswordChange) =>
-      http.send({ method: 'PUT', path: '/kem/v1/account/password', body: change }),
+      http.request<PasswordChanged>({ method: 'PUT', path: '/kem/v1/account/password', body: change }),
     /** Mails a link to the new address; nothing changes until it is opened. */
     requestEmailChange: (change: EmailChange) =>
       http.request<EmailChangeRequested>({ method: 'POST', path: '/kem/v1/account/email', body: change }),

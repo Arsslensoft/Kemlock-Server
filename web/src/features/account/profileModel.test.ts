@@ -3,6 +3,7 @@ import { ApiError } from '@/api/errors';
 import { createProfileApi } from '@/api/profile';
 import { decodeB64, encodeB64, utf8 } from '@/lib/b64url';
 import { describeAccountError } from './errors';
+import { describeProfileError } from './profileErrors';
 import {
   type ProfileDeps,
   WrongPasswordError,
@@ -60,10 +61,11 @@ function deps(over: { crypto?: Record<string, unknown>; api?: Record<string, unk
     }),
     credentialsStart: vi.fn(async () => {
       order.push('credentialsStart');
-      return { response: encodeB64(utf8('reg-response')) };
+      return { response: encodeB64(utf8('reg-response')), ticket: 'ticket-1' };
     }),
     changePassword: vi.fn(async () => {
       order.push('changePassword');
+      return { tokens: null };
     }),
     requestEmailChange: vi.fn(async (body: { email: string }) => {
       order.push('requestEmailChange');
@@ -115,6 +117,7 @@ describe('making the new record', () => {
     expect(api.credentialsStart).toHaveBeenCalledWith(encodeB64(utf8('reg-request')), undefined);
     expect(crypto.rewrapRoot).toHaveBeenCalledWith(utf8('mk:a new long password'), utf8('export-new'));
     expect(made).toEqual({
+      ticket: 'ticket-1',
       upload: encodeB64(utf8('upload')),
       kdf: { memoryKib: 65536, iterations: 3, parallelism: 4, salt: encodeB64(SALT) },
       wrappedRootKey: encodeB64(utf8('wrap')),
@@ -163,6 +166,7 @@ describe('changing the master password', () => {
     expect(api.changePassword).toHaveBeenCalledWith({
       loginState: 'login-state-token',
       finalization: encodeB64(utf8('finalization')),
+      ticket: 'ticket-1',
       upload: encodeB64(utf8('upload')),
       kdf: { memoryKib: 65536, iterations: 3, parallelism: 4, salt: encodeB64(SALT) },
       wrappedRootKey: encodeB64(utf8('wrap')),
@@ -170,6 +174,27 @@ describe('changing the master password', () => {
     });
     // The record is made for the address in force.
     expect(api.credentialsStart).toHaveBeenCalledWith(expect.any(String), undefined);
+  });
+
+  it('hands back the new tokens the server made when it signed the other devices out', async () => {
+    const tokens = { tokenType: 'DPoP', accessToken: 'a', refreshToken: 'r', expiresIn: 900, refreshExpiresIn: 3600 };
+    const { wiring } = deps({ api: { changePassword: vi.fn(async () => ({ tokens })) } });
+    expect(await changePassword(wiring, input)).toEqual({ tokens });
+    const none = deps();
+    expect(await changePassword(none.wiring, { ...input, signOutOthers: false })).toEqual({ tokens: null });
+  });
+
+  it('gives the worker back the keys of the password check, whichever way it goes', async () => {
+    const proved = deps();
+    await changePassword(proved.wiring, input);
+    // The check's master key and export key, then none of the new record's (the wrap spent those).
+    expect(proved.crypto.release).toHaveBeenCalledTimes(2);
+    expect(proved.crypto.release).toHaveBeenCalledWith(utf8('mk:the current password'));
+    expect(proved.crypto.release).toHaveBeenCalledWith(utf8('export-old'));
+
+    const wrong = deps({ crypto: { opaqueLoginFinish: vi.fn().mockRejectedValue(new Error('bad')) } });
+    await expect(changePassword(wrong.wiring, input)).rejects.toBeInstanceOf(WrongPasswordError);
+    expect(wrong.crypto.release).toHaveBeenCalledOnce();
   });
 
   it('sends the choice of leaving the other devices signed in', async () => {
@@ -218,6 +243,7 @@ describe('changing the address', () => {
       email: 'new@example.org',
       loginState: 'login-state-token',
       finalization: encodeB64(utf8('finalization')),
+      ticket: 'ticket-1',
       upload: encodeB64(utf8('upload')),
       kdf: { memoryKib: 65536, iterations: 3, parallelism: 4, salt: encodeB64(SALT) },
       wrappedRootKey: encodeB64(utf8('wrap')),
@@ -280,12 +306,13 @@ describe('the profile client', () => {
     const record = {
       loginState: 's',
       finalization: 'f',
+      ticket: 't',
       upload: 'u',
       kdf: { memoryKib: 65536, iterations: 3, parallelism: 4, salt: 'c2FsdA' },
       wrappedRootKey: 'w',
     };
     await profile.changePassword({ ...record, signOutOthers: true });
-    expect(send).toHaveBeenLastCalledWith({
+    expect(request).toHaveBeenLastCalledWith({
       method: 'PUT',
       path: '/kem/v1/account/password',
       body: { ...record, signOutOthers: true },
@@ -306,10 +333,17 @@ describe('the profile client', () => {
     expect(describeAccountError(problem('sso-managed', 403)).id).toBe('profile.error.sso');
     expect(describeAccountError(problem('compatible-account', 403)).id).toBe('profile.error.compatible');
     expect(describeAccountError(problem('no-password', 403)).id).toBe('profile.error.noPassword');
-    expect(describeAccountError(problem('email-taken', 409)).id).toBe('profile.error.taken');
     expect(describeAccountError(problem('mail-off', 409)).id).toBe('profile.error.mailOff');
     expect(describeAccountError(problem('mail-failed', 502)).id).toBe('profile.error.mailFailed');
-    expect(describeAccountError(problem('invalid-request', 400)).id).toBe('profile.error.badRequest');
     expect(describeAccountError(new WrongPasswordError()).id).toBe('profile.error.wrong');
+  });
+
+  it('words a malformed request and a lost race on the Profile page only', () => {
+    expect(describeProfileError(problem('invalid-request', 400)).id).toBe('profile.error.badRequest');
+    expect(describeProfileError(problem('account-changed', 409)).id).toBe('profile.error.changed');
+    expect(describeProfileError(problem('sso-managed', 403)).id).toBe('profile.error.sso');
+    expect(describeProfileError(new WrongPasswordError()).id).toBe('profile.error.wrong');
+    // The other screens keep the general words for the same answers.
+    expect(describeAccountError(problem('invalid-request', 400)).id).toBe('error.generic');
   });
 });

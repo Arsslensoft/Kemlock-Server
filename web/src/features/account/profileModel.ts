@@ -7,11 +7,12 @@
 // registered again (under the new address for an address change), and the worker wraps the open
 // root key under the new master key and export key. The root key does not change, so nothing else
 // in the vault is touched. The server is told only the new record, the new KDF settings and the
-// wrap, together with a fresh proof of the current password.
+// wrap, together with the ticket the registration's first message got (it binds the registration to
+// this device and this use) and a fresh proof of the current password.
 import { z } from 'zod';
 import { ApiError } from '@/api/errors';
 import type { Api } from '@/api/client';
-import type { EmailChangeRequested, NewCredential, ProfileApi } from '@/api/profile';
+import type { EmailChangeRequested, NewCredential, PasswordChanged, ProfileApi } from '@/api/profile';
 import type { CryptoPort } from '@/crypto-port';
 import { NEW_ACCOUNT_KDF } from '@/features/setup/registerAccount';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
@@ -80,8 +81,8 @@ async function proveCurrent(deps: ProfileDeps, email: string, password: string) 
 
 /**
  * The record that replaces the account's password record: a master key from `password` and a fresh
- * salt, OPAQUE registered again (under `email` when the address is changing), and the open root key
- * wrapped under both keys. Both handles are given back to the worker if anything fails before the
+ * salt, OPAQUE registered again (under `email` when the address is changing), the ticket of that
+ * registration, and the open root key wrapped under both keys. Both handles are given back to the worker if anything fails before the
  * wrap spends them.
  */
 export async function makeCredential(deps: ProfileDeps, password: string, email?: string): Promise<NewCredential> {
@@ -98,6 +99,7 @@ export async function makeCredential(deps: ProfileDeps, password: string, email?
     const wrap = await deps.crypto.rewrapRoot(masterKey, exportKey);
     wrapped = true;
     return {
+      ticket: started.ticket,
       upload: encodeB64(second.upload),
       kdf: { ...NEW_ACCOUNT_KDF, salt: encodeB64(salt) },
       wrappedRootKey: encodeB64(wrap),
@@ -119,12 +121,16 @@ export interface PasswordChangeInput {
   signOutOthers: boolean;
 }
 
-/** Changes the master password. The server swaps the record, the KDF settings and the wrap in one write. */
-export async function changePassword(deps: ProfileDeps, input: PasswordChangeInput): Promise<void> {
+/**
+ * Changes the master password. The server swaps the record, the KDF settings and the wrap in one
+ * write. When the other devices are signed out the answer carries this device's new tokens, which
+ * the caller must take up: the old ones stopped working with the others.
+ */
+export async function changePassword(deps: ProfileDeps, input: PasswordChangeInput): Promise<PasswordChanged> {
   const proof = await proveCurrent(deps, input.email, input.current);
   const credential = await makeCredential(deps, input.next);
   try {
-    await deps.api.changePassword({ ...proof, ...credential, signOutOthers: input.signOutOthers });
+    return await deps.api.changePassword({ ...proof, ...credential, signOutOthers: input.signOutOthers });
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) throw new WrongPasswordError();
     throw error;
