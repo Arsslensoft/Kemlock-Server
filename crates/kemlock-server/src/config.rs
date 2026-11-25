@@ -623,6 +623,29 @@ mod tests {
     }
 
     #[test]
+    fn peers_are_probed_every_minute_unless_the_operator_says_otherwise() {
+        assert_eq!(config(&[], None).expect("valid").federation_probe_seconds, 60);
+        let c = config(&[("KEMLOCK_FEDERATION_PROBE_SECONDS", " 15 ")], None).expect("valid");
+        assert_eq!(c.federation_probe_seconds, 15);
+        let c = config(&[], Some("federation_probe_seconds = 120\n")).expect("valid");
+        assert_eq!(c.federation_probe_seconds, 120);
+        // The environment outranks the file, and 0 turns the probes off.
+        let c = config(
+            &[("KEMLOCK_FEDERATION_PROBE_SECONDS", "0")],
+            Some("federation_probe_seconds = 120\n"),
+        )
+        .expect("valid");
+        assert_eq!(c.federation_probe_seconds, 0);
+        assert!(matches!(
+            config(&[("KEMLOCK_FEDERATION_PROBE_SECONDS", "often")], None),
+            Err(ConfigError::Bad {
+                name: "KEMLOCK_FEDERATION_PROBE_SECONDS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn the_source_url_is_unset_unless_the_operator_sets_it() {
         assert_eq!(config(&[], None).expect("valid").source_url, None);
         let c = config(
