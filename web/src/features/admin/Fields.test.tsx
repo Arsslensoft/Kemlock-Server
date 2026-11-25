@@ -65,6 +65,14 @@ describe('the Custom fields page', () => {
     expect(screen.queryByText(/required/i)).toBeNull();
   });
 
+  it('marks the field name as one that wraps, and the type and the types as softer text', () => {
+    view();
+    const row = screen.getByRole('row', { name: /Account owner/ });
+    expect(within(row).getByRole('rowheader')).toHaveClass('adm-field-name');
+    expect(within(row).getByText('Checkbox')).toHaveClass('adm-dim');
+    expect(within(row).getByText('Logins, Cards')).toHaveClass('adm-dim');
+  });
+
   it('says how it is with no fields', () => {
     view({ definitions: { fields: [], allowOwn: true } });
     expect(screen.getByText(/No fields yet/)).toBeInTheDocument();
