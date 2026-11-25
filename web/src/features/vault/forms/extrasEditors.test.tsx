@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
@@ -58,7 +58,7 @@ describe('the custom fields card', () => {
   it('lists the admin fields for the kind, with their type, and leaves out the others', async () => {
     renderWithIntl(<Fields kind="note" />);
     await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Add a field' }));
-    const menu = screen.getByRole('group', { name: 'Add a field' });
+    const menu = screen.getByRole('dialog', { name: 'Add a field' });
     expect(within(menu).getByRole('button', { name: /Employee ID/ })).toHaveTextContent('Text');
     expect(within(menu).getByRole('button', { name: /Reviewed/ })).toHaveTextContent('Checkbox');
     expect(within(menu).queryByRole('button', { name: /Security question/ })).not.toBeInTheDocument();
@@ -125,6 +125,29 @@ describe('the custom fields card', () => {
     expect(screen.queryByRole('button', { name: 'Add a field' })).not.toBeInTheDocument();
   });
 
+  it('says it opens a dialog, and closes it when focus leaves', async () => {
+    renderWithIntl(
+      <>
+        <Fields />
+        <button type="button">Outside</button>
+      </>,
+    );
+    const user = userEvent.setup({ delay: null });
+    const opener = screen.getByRole('button', { name: 'Add a field' });
+    expect(opener).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(opener).toHaveAttribute('aria-expanded', 'false');
+    await user.click(opener);
+    expect(opener).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('dialog', { name: 'Add a field' })).toBeInTheDocument();
+    // Focus moving inside the panel does not close it.
+    act(() => screen.getByRole('dialog', { name: 'Add a field' }).focus());
+    expect(screen.getByRole('dialog', { name: 'Add a field' })).toBeInTheDocument();
+    // Focus leaving it does.
+    act(() => screen.getByRole('button', { name: 'Outside' }).focus());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('closes the menu with Escape', async () => {
     renderWithIntl(<Fields />);
     const user = userEvent.setup({ delay: null });
@@ -188,7 +211,7 @@ describe('the linked items card', () => {
     renderWithIntl(<Links selfId={A} initial={[B]} seen={seen} />);
     const user = userEvent.setup({ delay: null });
     await user.click(screen.getByRole('button', { name: 'Link an item' }));
-    const picker = screen.getByRole('group', { name: 'Link an item' });
+    const picker = screen.getByRole('dialog', { name: 'Link an item' });
     expect(within(picker).getAllByRole('button').map((button) => button.textContent)).toEqual([
       expect.stringContaining('GitHub recovery codes'),
     ]);
@@ -199,7 +222,23 @@ describe('the linked items card', () => {
     expect(seen).toHaveBeenLastCalledWith([B, C]);
     expect(screen.getByRole('button', { name: 'Unlink GitHub recovery codes (Backup codes)' })).toBeInTheDocument();
     // The picker closed.
-    expect(screen.queryByRole('group', { name: 'Link an item' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Link an item' })).not.toBeInTheDocument();
+  });
+
+  it('says it opens a dialog, and closes it when focus leaves', async () => {
+    renderWithIntl(
+      <>
+        <Links selfId={A} />
+        <button type="button">Outside</button>
+      </>,
+    );
+    const user = userEvent.setup({ delay: null });
+    const opener = screen.getByRole('button', { name: 'Link an item' });
+    expect(opener).toHaveAttribute('aria-haspopup', 'dialog');
+    await user.click(opener);
+    expect(screen.getByRole('dialog', { name: 'Link an item' })).toBeInTheDocument();
+    act(() => screen.getByRole('button', { name: 'Outside' }).focus());
+    expect(screen.queryByRole('dialog', { name: 'Link an item' })).not.toBeInTheDocument();
   });
 
   it('shows a link to an item that is not there, and lets it be unlinked', async () => {

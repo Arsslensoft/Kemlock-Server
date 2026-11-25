@@ -6,9 +6,9 @@ import { renderWithIntl } from '@/test/render';
 import { PasswordInput } from './PasswordInput';
 import { Field } from './fields';
 
-function Wrapped() {
+function Wrapped({ disabled }: { disabled?: boolean }) {
   const { control } = useForm<{ password: string }>({ defaultValues: { password: 'hunter2' } });
-  return <Field control={control} name="password" label="Master password" type="password" />;
+  return <Field control={control} name="password" label="Master password" type="password" disabled={disabled} />;
 }
 
 describe('PasswordInput', () => {
@@ -53,6 +53,18 @@ describe('PasswordInput', () => {
 
   it('keeps the eye off when the box is disabled', () => {
     renderWithIntl(<PasswordInput aria-label="Secret" disabled />);
+    expect(screen.getByRole('button', { name: 'Show the password' })).toBeDisabled();
+  });
+
+  it('keeps the eye off when the box is isDisabled, as React Aria spells it', () => {
+    renderWithIntl(<PasswordInput aria-label="Secret" isDisabled />);
+    expect(screen.getByLabelText('Secret')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Show the password' })).toBeDisabled();
+  });
+
+  it('is as disabled as the field it sits in', () => {
+    renderWithIntl(<Wrapped disabled />);
+    expect(screen.getByLabelText('Master password')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Show the password' })).toBeDisabled();
   });
 
