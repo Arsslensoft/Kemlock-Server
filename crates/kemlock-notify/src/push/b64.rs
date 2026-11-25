@@ -1,6 +1,7 @@
 //! Base64, just enough for the Apple push key (a PEM file, standard alphabet) and the JWT
 //! (URL-safe, no padding). Small enough to keep here rather than add a crate.
 
+#[cfg(test)]
 const STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const URL_SAFE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
