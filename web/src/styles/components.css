@@ -1155,38 +1155,56 @@ ol.stack {
 @keyframes alert-glow {
   0%,
   100% {
-    box-shadow: 0 0 24px 0 color-mix(in srgb, var(--glow) 0%, transparent);
+    opacity: 0;
   }
   50% {
-    box-shadow: 0 0 24px 0 color-mix(in srgb, var(--glow) var(--glow-alpha), transparent);
+    opacity: 1;
   }
 }
 .notice,
-.notice.warn,
-.notice.error,
 .adm-banner,
-.adm-banner.bad,
 .failover-banner,
 .confirm-panel,
 .approval,
 .waiting {
   --glow: var(--warn);
+  position: relative;
+  isolation: isolate;
+}
+/* The halo sits on its own layer so only its opacity animates, not a repainted shadow. */
+.notice::after,
+.adm-banner::after,
+.failover-banner::after,
+.confirm-panel::after,
+.approval::after,
+.waiting::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow: 0 0 24px 0 color-mix(in srgb, var(--glow) var(--glow-alpha), transparent);
+  opacity: 0;
   animation: alert-glow 3.4s ease-in-out infinite;
 }
 .notice {
   --glow: var(--accent);
+}
+.notice.warn {
+  --glow: var(--warn);
 }
 .notice.error,
 .adm-banner.bad {
   --glow: var(--danger);
 }
 @media (prefers-reduced-motion: reduce) {
-  .notice,
-  .adm-banner,
-  .failover-banner,
-  .confirm-panel,
-  .approval,
-  .waiting {
+  .notice::after,
+  .adm-banner::after,
+  .failover-banner::after,
+  .confirm-panel::after,
+  .approval::after,
+  .waiting::after {
     animation: none;
   }
 }
