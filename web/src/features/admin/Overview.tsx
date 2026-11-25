@@ -119,7 +119,7 @@ export function OverviewStats({
       ) : null}
       {config ? (
         <StatCard
-          icon="settings"
+          icon="sliders"
           value={config.features.length}
           label={t('admin.stat.features')}
           hint={config.features.join(', ')}
@@ -159,30 +159,34 @@ export default function Overview() {
 
       <OverviewStats config={config} overview={attention.data} />
 
-      <section className="card" aria-labelledby="h-checks">
-        <div className="card-head">
-          <h2 id="h-checks">{t('admin.checks')}</h2>
+      {/* Checks and the users to look at in the left column, the push relay beside them. */}
+      <div className="adm-split">
+        <div className="adm-col">
+          <section className="card" aria-labelledby="h-checks">
+            <div className="card-head">
+              <h2 id="h-checks">{t('admin.checks')}</h2>
+            </div>
+            <Check
+              ok={config?.setup === 'complete'}
+              label={t('admin.check.setup')}
+              detail={config?.setup ?? '—'}
+            />
+            <Check
+              ok={window.isSecureContext}
+              label={t('admin.check.secure')}
+              detail={window.isSecureContext ? t('admin.check.secureYes') : t('admin.check.secureNo')}
+            />
+            <Check
+              ok={config ? hostOf(config.domain) === window.location.host : false}
+              label={t('admin.check.domain')}
+              detail={config?.domain ?? '—'}
+            />
+          </section>
+
+          <AttentionCard items={attention.data ? attentionFrom(attention.data) : []} unavailable={attention.isError} />
         </div>
-        <Check
-          ok={config?.setup === 'complete'}
-          label={t('admin.check.setup')}
-          detail={config?.setup ?? '—'}
-        />
-        <Check
-          ok={window.isSecureContext}
-          label={t('admin.check.secure')}
-          detail={window.isSecureContext ? t('admin.check.secureYes') : t('admin.check.secureNo')}
-        />
-        <Check
-          ok={config ? hostOf(config.domain) === window.location.host : false}
-          label={t('admin.check.domain')}
-          detail={config?.domain ?? '—'}
-        />
-      </section>
-
-      <AttentionCard items={attention.data ? attentionFrom(attention.data) : []} unavailable={attention.isError} />
-
-      <PushRelayPanel />
+        <PushRelayPanel />
+      </div>
     </>
   );
 }

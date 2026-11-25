@@ -168,6 +168,14 @@ const ICONS = {
       <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </>
   ),
+  sliders: (
+    <>
+      <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12" />
+      <circle cx="16" cy="6" r="2" />
+      <circle cx="10" cy="12" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </>
+  ),
   fields: (
     <>
       <rect x="3" y="5" width="18" height="5" rx="1.5" />
