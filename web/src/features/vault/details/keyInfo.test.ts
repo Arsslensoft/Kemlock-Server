@@ -21,6 +21,24 @@ describe('SSH key info', () => {
     expect(info?.fingerprint).toBe(`SHA256:${toB64(digest).replace(/=+$/, '')}`);
   });
 
+  // Keys made with `ssh-keygen`, their SPKI (base64) and what `ssh-keygen -l` printed.
+  it.each([
+    [
+      'ed25519',
+      'MCowBQYDK2VwAyEA3LfzBHECprL7AEkJxPpn2ZwoU6PYV9hFKE+Ya2lbWPA=',
+      'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINy38wRxAqay+wBJCcT6Z9mcKFOj2FfYRShPmGtpW1jw',
+      'SHA256:q38FRmSR0cmF/HngMtpw1AoIHLbKjnCck9Xp3KhZaS8',
+    ],
+    [
+      'ecdsa-p256',
+      'MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEMB41G3kSlU8/RUAexjUYm6cN49STIAtqBL7avUiqcRJZNyvPRCBDt8AlLkqIbmZZDVEQappXmCNSNX7zlj3iyQ==',
+      'ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDAeNRt5EpVPP0VAHsY1GJunDePUkyALagS+2r1IqnESWTcrz0QgQ7fAJS5KiG5mWQ1REGqaV5gjUjV+85Y94sk=',
+      'SHA256:RNAAHhWMuzmQ3XfX5YUo591+Afn04LjbEripUnyLS28',
+    ],
+  ])('matches ssh-keygen -l for a %s key', async (algorithm, spki, line, fingerprint) => {
+    expect(await sshInfo(algorithm, spki)).toEqual({ line, fingerprint });
+  });
+
   it('shows nothing for a key it does not know', async () => {
     expect(await sshInfo('ed25519', toB64(Uint8Array.of(1, 2, 3)))).toBeUndefined();
   });
