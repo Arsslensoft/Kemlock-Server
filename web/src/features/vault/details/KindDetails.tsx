@@ -481,6 +481,7 @@ const date = (d: Date) => d.toISOString().slice(0, 10);
 function CertificateDetail({ data }: { data: ItemData | null }) {
   const t = useT();
   const pem = text(data, 'certificate');
+  const priv = text(data, 'private');
   const info: CertInfo | undefined = useAsync(() => certInfo(pem), pem);
   return (
     <Card id="h-cert" title={t('detail.certificate.title')}>
@@ -516,6 +517,7 @@ function CertificateDetail({ data }: { data: ItemData | null }) {
           <p className="grow muted">{t('detail.certificate.unreadable')}</p>
         </div>
       )}
+      {priv ? <SecretRow label={t('detail.ssh.private')} value={priv} /> : null}
     </Card>
   );
 }

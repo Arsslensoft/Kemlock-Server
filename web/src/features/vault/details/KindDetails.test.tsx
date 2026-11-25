@@ -109,6 +109,13 @@ describe('KindDetails', () => {
     expect(screen.getByText('X1234567')).toBeInTheDocument();
   });
 
+  it('masks the private key of a certificate behind Show', async () => {
+    renderWithIntl(<KindDetails item={item('certificate', { certificate: 'nope', private: 'MC4CAQAwBQYDK2VwBCIEIA==' })} />);
+    expect(screen.queryByText('MC4CAQAwBQYDK2VwBCIEIA==')).not.toBeInTheDocument();
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show private key' }));
+    expect(screen.getByText('MC4CAQAwBQYDK2VwBCIEIA==')).toBeInTheDocument();
+  });
+
   it('shows nothing for a login', () => {
     const { container } = renderWithIntl(<KindDetails item={item('login', {})} />);
     expect(container).toBeEmptyDOMElement();
