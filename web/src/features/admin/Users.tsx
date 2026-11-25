@@ -2,7 +2,6 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { useMemo, useState } from 'react';
 import type { AccountMode, AdminInvite, AdminSpace, AdminUser, InviteIssued } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
-import { emailSchema } from '@/lib/schemas';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { CopyButton } from '@/ui/CopyButton';
@@ -163,6 +162,17 @@ export interface UsersViewProps {
   now?: number;
 }
 
+/**
+ * The server's own rule for an address: one @, text before it, a dot in the domain, no spaces.
+ * It takes what a stricter parser would not, such as ada@bücher.de.
+ */
+export function isEmail(value: string): boolean {
+  const parts = value.split('@');
+  if (parts.length !== 2 || /s/.test(value)) return false;
+  const [local = '', domain = ''] = parts;
+  return local !== '' && domain.includes('.') && !domain.startsWith('.') && !domain.endsWith('.');
+}
+
 /** Users, invitations and spaces. Takes data and callbacks, no router and no network. */
 export function UsersView(props: UsersViewProps) {
   const { users, spaces, now } = props;
@@ -173,12 +183,13 @@ export function UsersView(props: UsersViewProps) {
   const candidates = useMemo(() => users.filter((user) => user.disabledAt === null), [users]);
 
   // Checked as it is typed: an address that is not one shows its error and blocks Invite.
-  const parsed = emailSchema.safeParse({ email });
-  const emailError: MessageId | undefined = email.trim() !== '' && !parsed.success ? 'error.email' : undefined;
+  const address = email.trim();
+  const valid = isEmail(address);
+  const emailError: MessageId | undefined = address !== '' && !valid ? 'error.email' : undefined;
 
   function invite(): void {
-    if (!parsed.success) return;
-    props.onInvite(parsed.data.email);
+    if (!valid) return;
+    props.onInvite(address);
     setEmail('');
   }
 
@@ -207,7 +218,7 @@ export function UsersView(props: UsersViewProps) {
               error={emailError}
               autoComplete="off"
             />
-            <Button type="submit" variant="primary" isDisabled={props.busy || email.trim() === '' || !parsed.success}>
+            <Button type="submit" variant="primary" isDisabled={props.busy || !valid}>
               {t('admin.users.invite.submit')}
             </Button>
           </form>
