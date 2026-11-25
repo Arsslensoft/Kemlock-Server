@@ -18,6 +18,9 @@ const T0: OffsetDateTime = datetime!(2026-11-25 10:00:00 UTC);
 const T1: OffsetDateTime = datetime!(2026-11-25 11:00:00 UTC);
 const T2: OffsetDateTime = datetime!(2026-11-25 12:00:00 UTC);
 
+/// More than a scenario stores, so the cap is not in its way.
+const LIMIT: usize = 1000;
+
 /// A name no other scenario of this run uses: PostgreSQL and MySQL may hold earlier runs' rows.
 fn unique(prefix: &str) -> String {
     format!("{prefix} {}", CustomFieldId::random())
@@ -39,8 +42,8 @@ async fn fields(store: &SqlStore) {
     let cost = field(&cost_name, FieldType::Hidden, only(&["card", "login"]), T1);
 
     assert_eq!(store.custom_field(id.id).await, Ok(None));
-    store.insert_custom_field(&cost).await.expect("insert");
-    store.insert_custom_field(&id).await.expect("insert");
+    assert_eq!(store.insert_custom_field(&cost, LIMIT).await, Ok(true));
+    assert_eq!(store.insert_custom_field(&id, LIMIT).await, Ok(true));
 
     // What went in comes back as it went in: type, kinds and times.
     assert_eq!(store.custom_field(id.id).await, Ok(Some(id.clone())));
@@ -64,7 +67,7 @@ async fn fields(store: &SqlStore) {
     // A name another field has is taken, whatever the case.
     let twin = field(&id_name.to_uppercase(), FieldType::Text, FieldKinds::All, T2);
     assert_eq!(
-        store.insert_custom_field(&twin).await,
+        store.insert_custom_field(&twin, LIMIT).await,
         Err(StoreError::Duplicate)
     );
     assert_eq!(store.custom_field(twin.id).await, Ok(None));
@@ -110,26 +113,97 @@ async fn fields(store: &SqlStore) {
     assert_eq!(store.remove_custom_field(cost.id).await, Ok(false));
     assert_eq!(store.custom_field(cost.id).await, Ok(None));
     let again = field(&cost_name, FieldType::Text, FieldKinds::All, T2);
-    store.insert_custom_field(&again).await.expect("name is free");
+    assert_eq!(store.insert_custom_field(&again, LIMIT).await, Ok(true));
     assert_eq!(store.remove_custom_field(again.id).await, Ok(true));
     assert_eq!(store.remove_custom_field(id.id).await, Ok(true));
 }
 
+/// Names that differ by an accent or a letter's case are told apart exactly as far as lowercase
+/// goes: `Café` and `Cafe` are two fields (a binary collation on MySQL), `Café` and `CAFÉ` one.
+async fn accents(store: &SqlStore) {
+    let plain = unique("Cafe");
+    let accented = plain.replacen("Cafe", "Café", 1);
+    let shouted = accented.to_uppercase();
+    let a = field(&plain, FieldType::Text, FieldKinds::All, T0);
+    let b = field(&accented, FieldType::Text, FieldKinds::All, T1);
+    let c = field(&shouted, FieldType::Text, FieldKinds::All, T2);
+    assert_eq!(store.insert_custom_field(&a, LIMIT).await, Ok(true));
+    assert_eq!(
+        store.insert_custom_field(&b, LIMIT).await,
+        Ok(true),
+        "an accent makes it another name"
+    );
+    assert_eq!(
+        store.insert_custom_field(&c, LIMIT).await,
+        Err(StoreError::Duplicate),
+        "capitals do not"
+    );
+    assert_eq!(store.remove_custom_field(a.id).await, Ok(true));
+    assert_eq!(store.remove_custom_field(b.id).await, Ok(true));
+}
+
+/// The cap is kept by the store: once it holds `limit` more fields than it did, a field is not
+/// stored and the answer is `false`, including when inserts come at once.
+async fn cap(store: &SqlStore) {
+    let before = store.custom_fields().await.expect("list").len();
+    let limit = before + 3;
+    let made: Vec<CustomField> = (0..6)
+        .map(|n| field(&unique(&format!("Capped {n}")), FieldType::Text, FieldKinds::All, T0))
+        .collect();
+    // All six at once, each from its own task.
+    let tasks: Vec<_> = made
+        .iter()
+        .cloned()
+        .map(|field| {
+            let store = store.clone();
+            tokio::spawn(async move { store.insert_custom_field(&field, limit).await })
+        })
+        .collect();
+    let mut stored = Vec::new();
+    for task in tasks {
+        stored.push(task.await.expect("the task ran").expect("answers"));
+    }
+    assert_eq!(stored.iter().filter(|stored| **stored).count(), 3, "{stored:?}");
+    assert_eq!(store.custom_fields().await.expect("list").len(), limit);
+    // Full: a field is turned away; after a delete there is room again.
+    let extra = field(&unique("One more"), FieldType::Text, FieldKinds::All, T1);
+    assert_eq!(store.insert_custom_field(&extra, limit).await, Ok(false));
+    assert_eq!(store.custom_field(extra.id).await, Ok(None));
+    let kept = made
+        .iter()
+        .zip(&stored)
+        .find(|(_, stored)| **stored)
+        .map(|(field, _)| field.id)
+        .expect("one was stored");
+    assert_eq!(store.remove_custom_field(kept).await, Ok(true));
+    assert_eq!(store.insert_custom_field(&extra, limit).await, Ok(true));
+    for field in made.iter().chain([&extra]) {
+        let _ = store.remove_custom_field(field.id).await;
+    }
+}
+
 #[tokio::test]
 async fn sqlite_in_memory() {
-    fields(&memory().await).await;
+    let store = memory().await;
+    fields(&store).await;
+    accents(&store).await;
+    cap(&store).await;
 }
 
 #[tokio::test]
 async fn sqlite_in_a_file() {
     let (store, _dir) = file().await;
     fields(&store).await;
+    accents(&store).await;
+    cap(&store).await;
 }
 
 #[tokio::test]
 async fn postgres_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_POSTGRES_URL").await {
         fields(&store).await;
+        accents(&store).await;
+        cap(&store).await;
     }
 }
 
@@ -137,5 +211,7 @@ async fn postgres_when_configured() {
 async fn mysql_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_MYSQL_URL").await {
         fields(&store).await;
+        accents(&store).await;
+        cap(&store).await;
     }
 }
