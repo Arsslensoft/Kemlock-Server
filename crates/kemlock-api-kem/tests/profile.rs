@@ -68,6 +68,41 @@ impl Mailbox {
             .expect("a link was mailed")
     }
 
+    /// How many links were mailed, whatever address they went to.
+    fn links(&self) -> usize {
+        self.0
+            .lock()
+            .expect("the lock")
+            .iter()
+            .filter(|notice| matches!(notice, Notice::EmailChange(_)))
+            .count()
+    }
+
+    /// Whether `to` was told it has an account already.
+    fn told_taken(&self, to: &str) -> bool {
+        self.0
+            .lock()
+            .expect("the lock")
+            .iter()
+            .any(|notice| matches!(notice, Notice::EmailTaken(n) if n.to.as_str() == to))
+    }
+
+    /// Whether `old` was told that the address of the account became `new`.
+    fn told_changed(&self, old: &str, new: &str) -> bool {
+        self.0.lock().expect("the lock").iter().any(|notice| {
+            matches!(notice, Notice::EmailChanged(n)
+                if n.to.as_str() == old && n.new_address.as_str() == new)
+        })
+    }
+
+    /// Whether `to` was told that the master password changed, and the other devices' fate.
+    fn told_password(&self, to: &str, others_signed_out: bool) -> bool {
+        self.0.lock().expect("the lock").iter().any(|notice| {
+            matches!(notice, Notice::PasswordChanged(n)
+                if n.to.as_str() == to && n.others_signed_out == others_signed_out)
+        })
+    }
+
     fn told_old_address(&self, old: &str, new: &str) -> bool {
         self.0.lock().expect("the lock").iter().any(|notice| {
             matches!(notice, Notice::EmailChangeRequested(n)
@@ -86,7 +121,7 @@ struct Rig {
 fn rig() -> Rig {
     let mailbox = Mailbox::default();
     let app = App::mailing(true, Arc::new(mailbox.clone()));
-    let repo = FakeProfile::default();
+    let repo = FakeProfile::over(&app.store);
     let router = app
         .router
         .clone()
@@ -215,9 +250,9 @@ impl Person {
         json!({"loginState": started["loginState"], "finalization": b64(&finalization)})
     }
 
-    /// The `upload` of a registration of `NEW_PASSWORD`, made through the server's first message
-    /// for the account's own address, or for `email`.
-    async fn registration(&self, email: Option<&str>) -> String {
+    /// The `upload` of a registration of `NEW_PASSWORD` and the ticket that came with the
+    /// server's first message, made for the account's own address, or for `email`.
+    async fn registration(&self, email: Option<&str>) -> (String, String) {
         let (state, request) = kemlock_crypto::opaque::client_registration_start(&NEW_PASSWORD)
             .expect("client registration start");
         let mut body = json!({"request": b64(&request)});
@@ -228,17 +263,21 @@ impl Person {
             .call("POST", "/kem/v1/account/credentials/start", Some(body))
             .await;
         assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
-        let response = unb64(reply.json()["response"].as_str().expect("response"));
+        let answer = reply.json();
+        let response = unb64(answer["response"].as_str().expect("response"));
+        let ticket = answer["ticket"].as_str().expect("a ticket").to_owned();
         let (upload, _export_key) =
             kemlock_crypto::opaque::client_registration_finish(state, &NEW_PASSWORD, &response)
                 .expect("client registration finish");
-        b64(&upload)
+        (b64(&upload), ticket)
     }
 
     /// The body of `PUT /account/password`, re-authenticated.
     async fn password_body(&self, sign_out_others: bool) -> Value {
         let mut body = self.reauth_body().await;
-        body["upload"] = json!(self.registration(None).await);
+        let (upload, ticket) = self.registration(None).await;
+        body["upload"] = json!(upload);
+        body["ticket"] = json!(ticket);
         body["kdf"] = kdf();
         body["wrappedRootKey"] = json!(b64(&[0x44u8; WRAPPED_ROOT_KEY_LEN]));
         body["signOutOthers"] = json!(sign_out_others);
@@ -248,8 +287,10 @@ impl Person {
     /// The body of `POST /account/email`, re-authenticated.
     async fn email_body(&self, email: &str) -> Value {
         let mut body = self.reauth_body().await;
+        let (upload, ticket) = self.registration(Some(email)).await;
         body["email"] = json!(email);
-        body["upload"] = json!(self.registration(Some(email)).await);
+        body["upload"] = json!(upload);
+        body["ticket"] = json!(ticket);
         body["kdf"] = kdf();
         body["wrappedRootKey"] = json!(b64(&[0x44u8; WRAPPED_ROOT_KEY_LEN]));
         body
@@ -382,7 +423,7 @@ async fn a_single_sign_on_account_keeps_its_name_and_address_and_may_change_its_
     // The password stays the account's own to change.
     let body = sam.password_body(false).await;
     let changed = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
-    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{:?}", changed.body);
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
 }
 
 impl Person {
@@ -393,6 +434,7 @@ impl Person {
             "loginState": "AAAA",
             "finalization": "AAAA",
             "upload": "AAAA",
+            "ticket": "AAAA",
             "kdf": kdf(),
             "wrappedRootKey": b64(&[0x44u8; WRAPPED_ROOT_KEY_LEN]),
         })
@@ -411,7 +453,8 @@ async fn a_new_password_signs_in_and_the_old_one_does_not() {
         .call("PUT", "/kem/v1/account/password", Some(body.clone()))
         .await;
 
-    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{:?}", changed.body);
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert!(changed.json()["tokens"].is_null(), "no new tokens: the stamp stayed");
     assert!(rig.signs_in(EMAIL, &NEW_PASSWORD).await);
     assert!(
         !rig.signs_in(EMAIL, &PASSWORD).await,
@@ -421,6 +464,9 @@ async fn a_new_password_signs_in_and_the_old_one_does_not() {
     let shown = sam.call("GET", "/kem/v1/account/profile", None).await;
     assert_eq!(shown.status, StatusCode::OK);
     assert!(actions(&rig).contains(&"account.password_changed"));
+    // The account's address was told, and nothing else was mailed.
+    assert!(rig.mailbox.told_password(EMAIL, false));
+    assert_eq!(rig.mailbox.links(), 0);
     // The same proof can't be used twice.
     let again = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST, "{:?}", again.json());
@@ -457,6 +503,67 @@ async fn the_password_stays_when_the_old_one_is_wrong_or_the_records_are_bad() {
 
     assert!(rig.signs_in(EMAIL, &PASSWORD).await);
     assert!(!rig.signs_in(EMAIL, &NEW_PASSWORD).await);
+    assert!(!rig.mailbox.told_password(EMAIL, false));
+}
+
+#[tokio::test]
+async fn a_registration_is_good_only_for_what_it_was_made_for() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+    let (reply, _id) = register(&rig.client(), "kim@example.org", None).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+    let put = |body: Value| sam.call("PUT", "/kem/v1/account/password", Some(body));
+    let post = |body: Value| sam.call("POST", "/kem/v1/account/email", Some(body));
+
+    // No ticket, a ticket that is no ticket, and one with a byte changed.
+    let mut missing = sam.password_body(false).await;
+    missing.as_object_mut().expect("an object").remove("ticket");
+    let refused = put(missing).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.problem(), "invalid-request");
+    let mut garbage = sam.password_body(false).await;
+    garbage["ticket"] = json!(b64(&[1u8; 60]));
+    assert_eq!(put(garbage).await.status, StatusCode::BAD_REQUEST);
+    let mut tampered = sam.password_body(false).await;
+    let mut bytes = unb64(tampered["ticket"].as_str().expect("a ticket"));
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    tampered["ticket"] = json!(b64(&bytes));
+    assert_eq!(put(tampered).await.status, StatusCode::BAD_REQUEST);
+
+    // A ticket from another device of the same account is for that device's key.
+    let other = rig.person_signing_in_again(&sam).await;
+    let (_, others_ticket) = other.registration(None).await;
+    let mut from_other = sam.password_body(false).await;
+    from_other["ticket"] = json!(others_ticket);
+    assert_eq!(put(from_other).await.status, StatusCode::BAD_REQUEST);
+
+    // An address's registration is not a password's, nor another address's, nor the other way
+    // round: and the answer is the same whether or not the address has an account.
+    let (_, address_ticket) = sam.registration(Some(NEW_EMAIL)).await;
+    let mut for_address = sam.password_body(false).await;
+    for_address["ticket"] = json!(address_ticket);
+    assert_eq!(put(for_address).await.status, StatusCode::BAD_REQUEST);
+    let (_, password_ticket) = sam.registration(None).await;
+    for address in [NEW_EMAIL, "kim@example.org"] {
+        let mut for_password = sam.email_body(address).await;
+        for_password["ticket"] = json!(password_ticket);
+        assert_eq!(post(for_password).await.status, StatusCode::BAD_REQUEST);
+    }
+    let mut elsewhere = sam.email_body(NEW_EMAIL).await;
+    elsewhere["email"] = json!("sam@example.net");
+    assert_eq!(post(elsewhere).await.status, StatusCode::BAD_REQUEST);
+
+    // A ticket runs out with the login state's lifetime, and is refused before the password is
+    // spent: the same proof is still good for a fresh registration.
+    let late = sam.password_body(false).await;
+    rig.app.clock.advance(Duration::minutes(6));
+    let stale = put(late).await;
+    assert_eq!(stale.status, StatusCode::BAD_REQUEST);
+    assert_eq!(stale.problem(), "invalid-request");
+    // A fresh registration and a fresh proof are good, on the same session.
+    let again = sam.password_body(false).await;
+    assert_eq!(put(again).await.status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -470,25 +577,72 @@ async fn signing_the_other_devices_out_keeps_the_device_that_asked() {
         Session::from_tokens(&signed.json()["tokens"])
     };
 
-    // Without the box ticked every device goes on.
+    // Without the box ticked every device goes on, access tokens and refresh tokens alike.
     let kept = sam.password_body(false).await;
     let changed = sam.call("PUT", "/kem/v1/account/password", Some(kept)).await;
-    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{:?}", changed.body);
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert!(changed.json()["tokens"].is_null());
+    let theirs = other
+        .get_authed("/kem/v1/account/profile", &other_session.access_token)
+        .await;
+    assert_eq!(theirs.status, StatusCode::OK, "{:?}", theirs.json());
     let still = refresh(&other, &other_session.refresh_token).await;
     assert_eq!(still.status, StatusCode::OK, "{:?}", still.json());
     let other_session = Session::from_tokens(&still.json());
 
-    // With it ticked the other device is signed out, and this one is not.
+    // With it ticked the stamp is replaced in the same write: the other device's access token is
+    // refused at once, its refresh token is, and so is this device's old pair. The answer carries
+    // this device's new one, bound to the same key and device.
     sam.password.set(NEW_PASSWORD);
     let ticked = sam.password_body(true).await;
     let changed = sam.call("PUT", "/kem/v1/account/password", Some(ticked)).await;
-    assert_eq!(changed.status, StatusCode::NO_CONTENT, "{:?}", changed.body);
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    let renewed = Session::from_tokens(&changed.json()["tokens"]);
+    assert_eq!(renewed.device_id, sam.session.device_id);
+    assert_eq!(renewed.user_id, sam.session.user_id);
+    assert_ne!(renewed.access_token, sam.session.access_token);
+
+    let theirs = other
+        .get_authed("/kem/v1/account/profile", &other_session.access_token)
+        .await;
+    assert_eq!(theirs.status, StatusCode::UNAUTHORIZED, "{:?}", theirs.json());
     let gone = refresh(&other, &other_session.refresh_token).await;
     assert_eq!(gone.status, StatusCode::UNAUTHORIZED);
+    let old_access = sam
+        .call("GET", "/kem/v1/account/profile", None)
+        .await;
+    assert_eq!(old_access.status, StatusCode::UNAUTHORIZED, "{:?}", old_access.json());
+    let old_refresh = refresh(&sam.client, &sam.session.refresh_token).await;
+    assert_eq!(old_refresh.status, StatusCode::UNAUTHORIZED);
+
+    let mine = sam
+        .client
+        .get_authed("/kem/v1/account/profile", &renewed.access_token)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{:?}", mine.json());
+    let rotated = refresh(&sam.client, &renewed.refresh_token).await;
+    assert_eq!(rotated.status, StatusCode::OK, "{:?}", rotated.json());
+    assert!(rig.mailbox.told_password(EMAIL, true));
+}
+
+#[tokio::test]
+async fn a_write_of_another_request_in_between_is_a_conflict_that_changes_nothing() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+    let body = sam.password_body(true).await;
+
+    rig.repo.interfere_once();
+    let lost = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
+
+    assert_eq!(lost.status, StatusCode::CONFLICT, "{:?}", lost.json());
+    assert_eq!(lost.problem(), "account-changed");
+    assert!(rig.signs_in(EMAIL, &PASSWORD).await, "the password is as it was");
+    // The session that asked still has its tokens, and asking again goes through.
     let shown = sam.call("GET", "/kem/v1/account/profile", None).await;
     assert_eq!(shown.status, StatusCode::OK, "{:?}", shown.json());
-    let mine = refresh(&sam.client, &sam.session.refresh_token).await;
-    assert_eq!(mine.status, StatusCode::OK, "{:?}", mine.json());
+    let again = sam.password_body(false).await;
+    let changed = sam.call("PUT", "/kem/v1/account/password", Some(again)).await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
 }
 
 #[tokio::test]
@@ -563,6 +717,10 @@ async fn an_address_changes_when_its_link_is_opened_and_every_session_ends() {
     assert!(rig.signs_in(NEW_EMAIL, &NEW_PASSWORD).await);
     assert!(!rig.signs_in(EMAIL, &PASSWORD).await, "the old address is over");
     assert!(!rig.signs_in(NEW_EMAIL, &PASSWORD).await);
+    // The old address was told, and the access token of the session that asked is refused at once.
+    assert!(rig.mailbox.told_changed(EMAIL, NEW_EMAIL));
+    let old_access = sam.call("GET", "/kem/v1/account/profile", None).await;
+    assert_eq!(old_access.status, StatusCode::UNAUTHORIZED, "{:?}", old_access.json());
     // Every session ended.
     let refreshed = sam
         .client
@@ -643,7 +801,7 @@ impl Rig {
 }
 
 #[tokio::test]
-async fn an_address_someone_has_is_refused_and_an_ask_can_be_taken_back() {
+async fn an_address_someone_has_is_answered_like_a_free_one_and_an_ask_can_be_taken_back() {
     let rig = rig();
     let sam = rig.person(EMAIL).await;
     let other = rig.client();
@@ -652,15 +810,32 @@ async fn an_address_someone_has_is_refused_and_an_ask_can_be_taken_back() {
 
     let (_state, request) =
         kemlock_crypto::opaque::client_registration_start(&NEW_PASSWORD).expect("start");
-    let taken = sam
-        .call(
+    let start = |email: &'static str| {
+        sam.call(
             "POST",
             "/kem/v1/account/credentials/start",
-            Some(json!({"request": b64(&request), "email": "kim@example.org"})),
+            Some(json!({"request": b64(&request), "email": email})),
         )
-        .await;
-    assert_eq!(taken.status, StatusCode::CONFLICT);
-    assert_eq!(taken.problem(), "email-taken");
+    };
+    let taken = start("kim@example.org").await;
+    let free = start(NEW_EMAIL).await;
+    assert_eq!(taken.status, StatusCode::OK, "{:?}", taken.json());
+    assert_eq!(free.status, StatusCode::OK, "{:?}", free.json());
+    let (taken_json, free_json) = (taken.json(), free.json());
+    let keys = |json: &Value| {
+        let mut keys: Vec<String> = json.as_object().expect("an object").keys().cloned().collect();
+        keys.sort();
+        keys
+    };
+    assert_eq!(keys(&taken_json), keys(&free_json));
+    assert_eq!(
+        taken_json["response"].as_str().map(str::len),
+        free_json["response"].as_str().map(str::len)
+    );
+    assert_eq!(
+        taken_json["ticket"].as_str().map(str::len),
+        free_json["ticket"].as_str().map(str::len)
+    );
     let own = sam
         .call(
             "POST",
@@ -669,6 +844,31 @@ async fn an_address_someone_has_is_refused_and_an_ask_can_be_taken_back() {
         )
         .await;
     assert_eq!(own.status, StatusCode::BAD_REQUEST);
+
+    // Asking for the address that has an account: 202, the same body, the same pending change on
+    // the profile, the same news to the old address; the address is told it has an account, with
+    // no link, and no link was mailed to anyone.
+    let for_taken = sam.email_body("kim@example.org").await;
+    let asked_taken = sam
+        .call("POST", "/kem/v1/account/email", Some(for_taken))
+        .await;
+    assert_eq!(asked_taken.status, StatusCode::ACCEPTED, "{:?}", asked_taken.json());
+    assert_eq!(asked_taken.json()["pendingEmail"], "kim@example.org");
+    assert!(asked_taken.json()["expiresAt"].as_str().is_some());
+    let shown = sam.call("GET", "/kem/v1/account/profile", None).await;
+    assert_eq!(shown.json()["pendingEmail"], "kim@example.org");
+    assert!(rig.mailbox.told_old_address(EMAIL, "kim@example.org"));
+    assert!(rig.mailbox.told_taken("kim@example.org"));
+    assert_eq!(rig.mailbox.links(), 0);
+    // Nothing opens it: no one was given a token.
+    let guess = rig
+        .client()
+        .post("/kem/v1/account/email/confirm", json!({"token": "decoy"}))
+        .await;
+    assert_eq!(guess.status, StatusCode::BAD_REQUEST);
+    assert_eq!(guess.problem(), "email-change-invalid");
+    let kim_still = rig.app.store.user_by_email("kim@example.org").expect("kim");
+    assert_ne!(kim_still.id, sam.id);
 
     // An ask taken back leaves a link that opens nothing; asking nothing is fine too.
     let body = sam.email_body(NEW_EMAIL).await;
@@ -701,6 +901,42 @@ async fn a_wrong_password_changes_no_address() {
     assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{:?}", refused.json());
     assert!(rig.repo.pending(sam.id).is_none());
     assert!(rig.signs_in(EMAIL, &PASSWORD).await);
+}
+
+#[tokio::test]
+async fn three_asks_an_hour_per_account_whether_or_not_the_address_is_free() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+    let other = rig.client();
+    let (reply, _id) = register(&other, "kim@example.org", None).await;
+    assert_eq!(reply.status, StatusCode::CREATED);
+
+    // Three asks, one of them for an address that has an account, and each answered the same.
+    for address in [NEW_EMAIL, "kim@example.org", "sam@example.net"] {
+        let body = sam.email_body(address).await;
+        let asked = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
+        assert_eq!(asked.status, StatusCode::ACCEPTED, "{address}: {:?}", asked.json());
+    }
+
+    // The fourth is turned away, before the password is spent, whichever address it is for.
+    for address in ["kim@example.org", "sam@example.org.uk"] {
+        let body = sam.email_body(address).await;
+        let fourth = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
+        assert_eq!(fourth.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", fourth.json());
+        assert_eq!(fourth.problem(), "rate-limited");
+        assert!(fourth.header("retry-after").is_some());
+    }
+    // Another account has its own count.
+    let kim = rig.person("lee@example.org").await;
+    let body = kim.email_body("lee@example.com").await;
+    let asked = kim.call("POST", "/kem/v1/account/email", Some(body)).await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED, "{:?}", asked.json());
+    // And an hour later the first account may ask again.
+    rig.app.clock.advance(Duration::hours(2));
+    let sam = rig.person_signing_in_again(&sam).await;
+    let body = sam.email_body(NEW_EMAIL).await;
+    let asked = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED, "{:?}", asked.json());
 }
 
 // ---- the document ----
