@@ -92,7 +92,11 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await page.getByRole('textbox', { name: 'Master password', exact: true }).fill(ADMIN.password);
   await page.getByRole('button', { name: 'Open the vault' }).click();
   await enterCode(page);
-  await expect(page).toHaveURL(/\/vault$/, { timeout: 60_000 });
+  // Unlocking goes back to where the vault was locked: the Trash, empty now.
+  await expect(page).toHaveURL(/\/trash$/, { timeout: 60_000 });
+  await expect(page.getByText('The Trash is empty')).toBeVisible();
+  await page.getByRole('link', { name: /^All items/ }).click();
+  await expect(page).toHaveURL(/\/vault$/);
   await expect(page.getByRole('row', { name: /GitHub/ })).toBeVisible();
 
   // The admin console shell is there for an admin.
