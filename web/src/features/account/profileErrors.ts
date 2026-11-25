@@ -6,7 +6,11 @@ import { type Described, describeAccountError } from './errors';
 
 export function describeProfileError(error: unknown): Described {
   if (isApiError(error)) {
-    if (error.slug === 'invalid-request') return { id: 'profile.error.badRequest' };
+    if (error.slug === 'invalid-request') {
+      // The second step's code was wrong, spent or out of time: the server says so in words.
+      if (error.detail?.includes('the code is wrong')) return { id: 'profile.error.proof' };
+      return { id: 'profile.error.badRequest' };
+    }
     // The account was written by someone else between the read and the write: nothing was changed.
     if (error.slug === 'account-changed') return { id: 'profile.error.changed' };
   }

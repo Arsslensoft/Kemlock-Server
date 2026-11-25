@@ -55,6 +55,7 @@
   "profile.error.mailOff": "This server sends no email, so an address can't be confirmed. Ask the admin.",
   "profile.error.mailFailed": "We could not send the link. Try again in a moment.",
   "profile.error.badRequest": "That could not be saved. Check what you typed and try again.",
+  "profile.error.proof": "That code is wrong, or it was used already or has run out. Ask for another and try again.",
   "profile.error.changed": "Your account changed while this was being saved, so nothing was changed. Try again.",
 
   "confirmEmail.title": "New email address",

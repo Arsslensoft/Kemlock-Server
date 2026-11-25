@@ -363,6 +363,13 @@ describe('the profile client', () => {
   it('words a malformed request and a lost race on the Profile page only', () => {
     expect(describeProfileError(problem('invalid-request', 400)).id).toBe('profile.error.badRequest');
     expect(describeProfileError(problem('account-changed', 409)).id).toBe('profile.error.changed');
+    const spent = new ApiError(400, {
+      type: 'urn:kemlock:problem:invalid-request',
+      title: 'x',
+      status: 400,
+      detail: 'the code is wrong or has run out: ask for another',
+    } as never);
+    expect(describeProfileError(spent).id).toBe('profile.error.proof');
     expect(describeProfileError(problem('sso-managed', 403)).id).toBe('profile.error.sso');
     expect(describeProfileError(new WrongPasswordError()).id).toBe('profile.error.wrong');
     // The other screens keep the general words for the same answers.
