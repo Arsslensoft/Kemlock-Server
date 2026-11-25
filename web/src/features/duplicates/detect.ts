@@ -162,7 +162,7 @@ export function tagsOf(item: VaultItem, facts?: DerivedFacts): Tag[] {
       break;
     }
     case 'contact': {
-      const email = normaliseUsername(text(data, 'email') || text(data, 'sourceEmail'));
+      const email = normaliseUsername(text(data, 'email'));
       const phone = normalisePhone(text(data, 'phone'));
       if (email !== '' || phone !== '') {
         tags.push({ name: 'contact', input: canonicalInput('contact', [email, phone]) });
@@ -335,7 +335,7 @@ function whyOf(kind: string, component: VaultItem[], tags: Map<string, Tag[]>): 
       if (sameKey) return 'key';
       // Members of one group share the whole tag, so the first says which of the two it holds.
       const first = component[0];
-      const email = normaliseUsername(text(first?.data ?? null, 'email') || text(first?.data ?? null, 'sourceEmail'));
+      const email = normaliseUsername(text(first?.data ?? null, 'email'));
       const phone = normalisePhone(text(first?.data ?? null, 'phone'));
       if (email !== '' && phone !== '') return 'contact';
       return email !== '' ? 'contactEmail' : 'contactPhone';

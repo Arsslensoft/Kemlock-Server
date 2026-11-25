@@ -1871,8 +1871,10 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 - **full name** and **email** (identity): trimmed, NFC, lower case.
 - **email** (contact): trimmed, NFC, lower case, as a username is. **phone**: its ASCII digits
   only, so `+1 (555) 0142` and `15550142` are one value. A contact whose email and phone are both
-  empty has no tag; with one of them, the other is the empty string. A contact that holds a PGP
-  public key also makes a `key` tag with that key's fingerprint, as a PGP key item does.
+  empty has no tag; with one of them, the other is the empty string. The email is the contact's
+  own `email`; the address a public key was looked up by (`sourceEmail`) is not read. A contact
+  that holds a PGP public key also makes a `key` tag with that key's fingerprint, as a PGP key
+  item does.
 - **number** (`document`, one per identity document): NFC, lower case, and only its letters and
   digits (Unicode alphabetic and numeric characters), so `X 1234-567` and `x1234567` are one
   value. A number of fewer than four letters and digits has no tag.
