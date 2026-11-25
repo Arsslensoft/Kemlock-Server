@@ -13,7 +13,9 @@ export interface VaultListSearch {
  * page starts over, and an empty box removes `q`.
  */
 export function withQuery(previous: VaultListSearch, q: string): VaultListSearch {
-  const { q: _q, page: _page, ...kept } = previous;
+  const kept = { ...previous };
+  delete kept.q;
+  delete kept.page;
   return q === '' ? kept : { ...kept, q };
 }
 
