@@ -492,10 +492,36 @@ fn is_relay_url(value: &str) -> bool {
     crate::push::is_relay_url(value)
 }
 
+/// What the store keeps in the data folder, by the start of the name: a backup folder saved in the
+/// console may not be, or lie in, any of them.
+pub const RESERVED_DATA_NAMES: &[&str] = &[
+    "attachments",
+    "sends",
+    "files",
+    "db",
+    "tmp",
+    "icon_cache",
+    "unpacked",
+    "data",
+    "server",
+    "kemlock",
+    "config",
+    "rsa_key",
+];
+
 /// A folder inside the data folder: relative, with no `..` and no drive or `s3://` prefix.
 fn is_folder_inside(value: &str) -> bool {
     let value = value.replace('\\', "/");
-    !value.starts_with('/') && !value.contains(':') && value.split('/').all(|part| part != "..")
+    let parts: Vec<&str> = value.split('/').filter(|p| !p.is_empty()).collect();
+    let Some(first) = parts.first() else {
+        // Empty means the default, backups.
+        return value.is_empty();
+    };
+    let first = first.to_ascii_lowercase();
+    !value.starts_with('/')
+        && !value.contains(':')
+        && parts.iter().all(|part| *part != ".." && *part != ".")
+        && !RESERVED_DATA_NAMES.iter().any(|name| first.starts_with(name))
 }
 
 /// What a few text settings need beyond their length. `value` is trimmed.

@@ -238,6 +238,50 @@ fn until(now: OffsetDateTime, at: OffsetDateTime) -> Duration {
 /// How often the schedule looks at the settings again while it waits.
 const RECHECK: Duration = Duration::from_secs(30);
 
+/// Where a backup folder saved in the console is: `folder` inside the data folder, checked now
+/// rather than when it was saved. The data folder and the folder are resolved (symlinks included)
+/// and the result must lie under the data folder, must not be the data folder itself, and must not
+/// be one of the store's own files or folders (the database, attachments, Sends, the server key).
+pub fn folder_inside(data_folder: &Path, folder: &str) -> Result<PathBuf, String> {
+    use kemlock_app::admin::settings::RESERVED_DATA_NAMES;
+    let bad = |why: &str| format!("the backup folder {folder:?} {why}");
+    let root = data_folder
+        .canonicalize()
+        .map_err(|e| format!("the data folder can't be resolved: {e}"))?;
+    let mut target = root.clone();
+    for part in folder.replace('\', "/").split('/').filter(|p| !p.is_empty()) {
+        if part == "." || part == ".." {
+            return Err(bad("must not use . or .."));
+        }
+        target.push(part);
+    }
+    if target == root {
+        return Err(bad("is the data folder itself"));
+    }
+    // What exists is resolved, so a symlink can't lead out; what doesn't is made under it later.
+    let mut existing = target.as_path();
+    while !existing.exists() {
+        existing = existing.parent().ok_or_else(|| bad("has no existing parent"))?;
+    }
+    let real = existing
+        .canonicalize()
+        .map_err(|e| bad(&format!("can't be resolved: {e}")))?;
+    let rest = target.strip_prefix(existing).unwrap_or(Path::new(""));
+    let resolved = real.join(rest);
+    let under = resolved
+        .strip_prefix(&root)
+        .map_err(|_| bad("leaves the data folder"))?;
+    let first = under
+        .components()
+        .next()
+        .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
+        .ok_or_else(|| bad("is the data folder itself"))?;
+    if RESERVED_DATA_NAMES.iter().any(|name| first.starts_with(name)) {
+        return Err(bad("is where the server keeps its own files"));
+    }
+    Ok(resolved)
+}
+
 /// The backup settings the running server follows: what the snapshot says (the environment, then
 /// the config file, then what the console saved), and the environment for what is no setting
 /// (the bucket's keys, `KEMLOCK_LOW_MEMORY`). A folder the console saved is inside the data
@@ -249,8 +293,7 @@ pub fn settings_from_snapshot(
 ) -> Result<BackupSettings, String> {
     let destination = if snapshot.backup_destination_saved && !snapshot.backup_destination.is_empty()
     {
-        data_folder
-            .join(&snapshot.backup_destination)
+        folder_inside(data_folder, &snapshot.backup_destination)?
             .display()
             .to_string()
     } else {
@@ -473,6 +516,35 @@ mod tests {
         assert!(layout.skip.contains(&PathBuf::from("/data/db.sqlite3")));
         assert!(layout.skip.contains(&PathBuf::from("/data/db.sqlite3-wal")));
         assert!(layout.skip.contains(&PathBuf::from("/data/db.sqlite3-shm")));
+    }
+
+    #[test]
+    fn a_saved_folder_stays_under_the_data_folder_and_off_the_stores_own_files() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path().canonicalize().expect("resolves");
+        std::fs::create_dir(root.join("attachments")).expect("made");
+        assert_eq!(
+            folder_inside(&root, "nas/backups").expect("fine"),
+            root.join("nas").join("backups")
+        );
+        for bad in [".", "", "..", "a/../..", "attachments", "Attachments/x", "db", "server.key"] {
+            assert!(folder_inside(&root, bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cannot_lead_out_of_the_data_folder() {
+        let dir = tempfile::tempdir().expect("a folder");
+        let outside = tempfile::tempdir().expect("another folder");
+        let root = dir.path().canonicalize().expect("resolves");
+        std::os::unix::fs::symlink(outside.path(), root.join("out")).expect("linked");
+        assert!(folder_inside(&root, "out").is_err());
+        assert!(folder_inside(&root, "out/deeper").is_err());
+        // A link to a folder that is the store's own is refused too.
+        std::fs::create_dir(root.join("attachments")).expect("made");
+        std::os::unix::fs::symlink(root.join("attachments"), root.join("innocent")).expect("linked");
+        assert!(folder_inside(&root, "innocent").is_err());
     }
 
     #[test]
