@@ -80,6 +80,21 @@ export function isKemlockApp(kind: DeviceKind): boolean {
   );
 }
 
+/** What a row's menu can do. */
+export type DeviceMenuAction = 'trust' | 'untrust' | 'sign-out';
+
+/**
+ * The items of a device row's menu, in order. Trust is for Kemlock apps only: the Bitwarden-API
+ * apps (Bitwarden, Amethystora Vault) get Sign out alone. A trusted copy of the key is wrapped by a
+ * key only its device holds, so this browser can start trusting itself but no other device: another
+ * Kemlock app that is trusted can be taken off, and one that is not turns trust on in its own app.
+ */
+export function deviceMenu(device: { kind: DeviceKind; trusted: boolean; current: boolean }): DeviceMenuAction[] {
+  if (!isKemlockApp(device.kind)) return ['sign-out'];
+  if (device.trusted) return ['untrust', 'sign-out'];
+  return device.current ? ['trust', 'sign-out'] : ['sign-out'];
+}
+
 /** The message that names what kind of app a device is, for the devices list. */
 export function deviceKindLabelId(kind: DeviceKind): MessageId {
   switch (kind) {

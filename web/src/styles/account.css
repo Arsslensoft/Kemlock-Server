@@ -120,6 +120,112 @@
 .card-head h2 {
   flex: 1;
 }
+.head-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* The blue shield beside a trusted device, and its tooltip (on hover and on keyboard focus). */
+.tr-i {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 6px;
+}
+.tr-b {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-wash-strong);
+  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+}
+.tr-b .i {
+  width: 13px;
+  height: 13px;
+}
+.tr-b:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tr-tip {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  top: 32px;
+  left: -8px;
+  width: 300px;
+  max-width: min(300px, 80vw);
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border-input);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.tr-title {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tr-i:hover .tr-tip:not([data-dismissed]),
+.tr-i:focus-within .tr-tip:not([data-dismissed]) {
+  display: block;
+}
+
+/* The Connect dialog: the address with its Copy button, then the steps one under another. */
+.dialog.wide {
+  max-width: 720px;
+}
+.dlg-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+.dlg-head h2 {
+  flex: 1;
+  margin: 0;
+  color: var(--text);
+}
+.dlg-foot {
+  display: flex;
+  justify-content: flex-end;
+}
+.addr-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.addr-row code {
+  padding: 10px 14px;
+  border-radius: var(--radius-field);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.stack-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.stack-steps p {
+  margin: 0;
+}
 .tile.faint {
   opacity: 0.8;
 }

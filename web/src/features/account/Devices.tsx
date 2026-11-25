@@ -1,5 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { createDevicesApi } from '@/api/devices';
+import { signOut } from '@/app/actions';
 import { api, configQuery, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { encodeB64 } from '@/lib/b64url';
@@ -14,6 +16,7 @@ const devicesApi = createDevicesApi(api);
 
 export default function Devices() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const state = useSessionState(session);
   const config = useQuery(configQuery);
   const approvals = useQuery({
@@ -30,6 +33,8 @@ export default function Devices() {
     await queryClient.invalidateQueries({ queryKey: ['devices'] });
   }
 
+  // The address the server is set up with, which is what an app needs; the page's own origin only
+  // stands in until the server's answer is there.
   const address = config.data?.domain ?? window.location.origin;
 
   return (
@@ -58,6 +63,16 @@ export default function Devices() {
       }}
       onDeny={(id) => void change(() => devicesApi.deny(id))}
       onSignOut={(device) => void change(() => devicesApi.signOut(device.id))}
+      onSignOutThisBrowser={() => {
+        const device = state.deviceId;
+        void (async () => {
+          // The server forgets this device and its key copy; if it can't be reached, the browser
+          // still lets go of its own session.
+          if (device) await devicesApi.signOut(device).catch(() => undefined);
+          await signOut();
+          await navigate({ to: '/sign-in' });
+        })();
+      }}
       onSignOutOthers={() => {
         const list = devices.data ? otherDevices(devices.data, state.deviceId) : [];
         void change(async () => {
@@ -78,6 +93,7 @@ export default function Devices() {
         });
       }}
       onUntrust={() => void change(() => devicesApi.deleteKeyCopy())}
+      onUntrustDevice={(device) => void change(() => devicesApi.untrustDevice(device.id))}
     />
   );
 }
