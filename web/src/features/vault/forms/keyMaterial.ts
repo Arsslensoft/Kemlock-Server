@@ -151,7 +151,7 @@ export async function readPastedSshKey(text: string): Promise<SshMaterial | unde
 }
 
 /** Bytes of the public key material of a v4 key of this algorithm, from `at`; undefined if unknown. */
-function publicLength(algo: number, b: Uint8Array, at: number): number | undefined {
+export function publicLength(algo: number, b: Uint8Array, at: number): number | undefined {
   const mpi = (p: number) => 2 + Math.ceil((((b[p] ?? 0) << 8) | (b[p + 1] ?? 0)) / 8);
   switch (algo) {
     case 1:

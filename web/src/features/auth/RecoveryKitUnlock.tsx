@@ -8,21 +8,9 @@ import { type Described, describeError } from '@/lib/errors';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
 import { type PieceCheck, checkPieces, newestOnly, unlockWithKit } from './kitUnlock';
+import { canScan, createQrReader } from './qrDetect';
 
 const kitApi = createRecoveryKitApi(api);
-
-/** Whether this browser can read a QR code from the camera. */
-function canScan(): boolean {
-  return (
-    typeof navigator !== 'undefined' &&
-    typeof navigator.mediaDevices?.getUserMedia === 'function' &&
-    'BarcodeDetector' in globalThis
-  );
-}
-
-interface Detector {
-  detect: (source: HTMLVideoElement) => Promise<{ rawValue: string }[]>;
-}
 
 /** Points the camera at a QR code until it reads one, and hands its text over. */
 function Scanner({ onText, onStop }: { onText: (text: string) => void; onStop: () => void }) {
@@ -42,13 +30,10 @@ function Scanner({ onText, onStop }: { onText: (text: string) => void; onStop: (
         if (!element || stopped) return;
         element.srcObject = stream;
         await element.play();
-        const Detect = (globalThis as unknown as { BarcodeDetector: new (options: object) => Detector })
-          .BarcodeDetector;
-        const detector = new Detect({ formats: ['qr_code'] });
+        const read = await createQrReader();
         const look = async () => {
           if (stopped) return;
-          const found = await detector.detect(element).catch(() => []);
-          const text = found[0]?.rawValue;
+          const text = await read(element).catch(() => undefined);
           if (text) {
             latest.current.onText(text);
             return;
