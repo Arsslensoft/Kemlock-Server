@@ -13,6 +13,7 @@ import {
 } from '@tanstack/react-router';
 import { z } from 'zod';
 import type { ConfigResponse } from '@/api/types';
+import { KIND_ORDER, type KnownKind } from '@/features/vault/kinds';
 import { safeNext } from '@/lib/safe-next';
 import { configQuery } from './services';
 import type { Session } from './session';
@@ -49,7 +50,8 @@ interface SsoSearch {
   error?: string;
 }
 interface NewItemSearch {
-  kind?: 'login' | 'note';
+  /** Which creation form opens; a login when absent or unknown. */
+  kind?: KnownKind;
 }
 
 const nextSearch = z.object({ next: optionalString });
@@ -61,7 +63,7 @@ const vaultSearch = z.object({
   page: z.number().int().min(1).optional().catch(undefined),
   fav: z.boolean().optional().catch(undefined),
 });
-const newItemSearch = z.object({ kind: z.enum(['login', 'note']).optional().catch(undefined) });
+const newItemSearch = z.object({ kind: z.enum(KIND_ORDER).optional().catch(undefined) });
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   beforeLoad: async ({ context, location }) => {

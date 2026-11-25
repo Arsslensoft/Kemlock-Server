@@ -18,7 +18,7 @@ import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
 import { useVault } from '@/features/vault/hooks';
-import { EDITABLE_KINDS, type EditableKind, kindIcon, kindLabel, timeAgo } from '@/features/vault/kinds';
+import { SENDABLE_KIND_ORDER, type SendableKind, kindIcon, kindLabel, timeAgo } from '@/features/vault/kinds';
 import { type VaultItem, itemName } from '@/features/vault/vault';
 import { MAX_ENVELOPE_CHARS, buildEnvelope, parseEnvelope, serializeEnvelope } from './itemEnvelope';
 import { SendItemPicker } from './SendItemPicker';
@@ -36,7 +36,7 @@ export interface SendRow {
   /** null when the owner's copy of the key could not be opened. */
   link: string | null;
   /** The kind of the item an item Send carries, found by opening its payload here; else absent. */
-  itemKind?: EditableKind;
+  itemKind?: SendableKind;
 }
 
 export function isSpent(row: SendRow, now: Date): boolean {
@@ -94,7 +94,7 @@ export function SendView({
 }) {
   const t = useT();
   // Text and file are Send kinds; a kind of the vault sends an item, as a text Send.
-  const [mode, setMode] = useState<'text' | 'file' | EditableKind>('text');
+  const [mode, setMode] = useState<'text' | 'file' | SendableKind>('text');
   const [itemId, setItemId] = useState<string | undefined>(undefined);
   const chosen = mode === 'text' || mode === 'file' ? undefined : items.find((item) => item.id === itemId && item.kind === mode);
   const kind: SendKind = mode === 'file' ? 'file' : 'text';
@@ -225,7 +225,7 @@ export function SendView({
             }}
           >
             <div className="chips" role="group" aria-label={t('send.type')}>
-              {(['text', 'file', ...EDITABLE_KINDS] as const).map((value) => (
+              {(['text', 'file', ...SENDABLE_KIND_ORDER] as const).map((value) => (
                 <button
                   key={value}
                   type="button"
@@ -390,7 +390,7 @@ async function itemKindOf(
   send: SendDto,
   linkKey: string,
   worker: Pick<CryptoPort, 'openSendPayload'>,
-): Promise<EditableKind | undefined> {
+): Promise<SendableKind | undefined> {
   if (send.kind !== 'text' || !send.payload) return undefined;
   try {
     const raw = await worker.openSendPayload({
