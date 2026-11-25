@@ -360,6 +360,7 @@
   "admin.migrate.step4": "Switch the address",
   "admin.migrate.source": "Source",
   "admin.migrate.path": "Vaultwarden data folder, on this server",
+  "admin.migrate.error.source": "Type a folder path, like /srv/vaultwarden/data, or a mysql:// or postgres:// address.",
   "admin.migrate.pathHint": "The folder with db.sqlite3, attachments, sends, rsa_key.pem and config.json.",
   "admin.migrate.check": "Check it",
   "admin.migrate.change": "Change",

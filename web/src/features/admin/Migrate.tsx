@@ -10,6 +10,15 @@ import { relative } from './format';
 import { useReauth } from './reauth';
 import { ErrorNotice, Loading, PageHead, TextBox } from './ui';
 
+/** What the data folder field holds: a folder on this server or a MySQL or PostgreSQL address. */
+const SOURCE = /^(\/|[A-Za-z]:[\\/]|\\\\|\.{1,2}[\\/]|(mysql|postgres|postgresql):\/\/)\S/;
+
+/** The error a typed source earns, or undefined; an empty one has none, it only keeps Check off. */
+export function checkSource(value: string): MessageId | undefined {
+  const text = value.trim();
+  return text === '' || SOURCE.test(text) ? undefined : 'admin.migrate.error.source';
+}
+
 export type MigrateStep = 1 | 2 | 3 | 4;
 
 /**
@@ -53,7 +62,7 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
   const [from, setFrom] = useState(status?.source ?? '');
   const [files, setFiles] = useState('');
   const step = stepOf(status);
-  const ready = from.trim() !== '';
+  const ready = from.trim() !== '' && checkSource(from) === undefined;
   return (
     <>
       <PageHead title={t('admin.migrate')} lede={t('admin.migrate.lede')} />
@@ -94,21 +103,30 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
                 onStart(request);
               }}
             >
-              <TextBox
-                label={t('admin.migrate.from')}
-                mono
-                value={from}
-                onChange={setFrom}
-                placeholder="/srv/vaultwarden/data"
-                hint={t('admin.migrate.pathHint')}
-              />
-              <TextBox
-                label={t('admin.migrate.files')}
-                mono
-                value={files}
-                onChange={setFiles}
-                hint={t('admin.migrate.filesHint')}
-              />
+              <div className="adm-g2">
+                <div className="wide">
+                  <TextBox
+                    label={t('admin.migrate.from')}
+                    mono
+                    value={from}
+                    onChange={setFrom}
+                    placeholder="/srv/vaultwarden/data"
+                    hint={t('admin.migrate.pathHint')}
+                    error={checkSource(from)}
+                    required
+                  />
+                </div>
+                <div className="wide">
+                  <TextBox
+                    label={t('admin.migrate.files')}
+                    mono
+                    value={files}
+                    onChange={setFiles}
+                    placeholder="/srv/vaultwarden/data"
+                    hint={t('admin.migrate.filesHint')}
+                  />
+                </div>
+              </div>
               <div className="actions">
                 <Button type="submit" variant="primary" isDisabled={starting || !ready}>
                   {t('admin.migrate.check')}
