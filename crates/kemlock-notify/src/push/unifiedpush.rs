@@ -5,9 +5,10 @@
 //! Web Push without a payload (RFC 8030): it needs no encryption, and the push says nothing but
 //! "something happened". The app wakes and syncs.
 //!
-//! The endpoint is a URL a client chose, so the server never lets it reach its own network:
-//! the name is resolved here, every address must be public, and the connection goes to exactly
-//! those addresses (a second lookup could answer differently). Redirects are not followed.
+//! The endpoint is a URL a client chose, so the server never lets it reach its own network: the
+//! name is resolved here, every address must be public (or, if the operator allows it, on a
+//! private network), and the connection goes to exactly those addresses (a second lookup could
+//! answer differently). Redirects are not followed.
 
 use super::SendOutcome;
 use kemlock_app::push::check_unifiedpush_endpoint;
@@ -113,11 +114,27 @@ enum Delivery {
     Failed,
 }
 
+/// Whether `ip` is on a private network an operator may choose to reach: RFC 1918 IPv4, unique
+/// local IPv6, or an IPv6 address that carries a private IPv4 one. Never loopback, link-local,
+/// unspecified or multicast addresses, which are not public either.
+pub fn is_lan_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.is_private(),
+            // fc00::/7, unique local.
+            None => (v6.segments()[0] & 0xfe00) == 0xfc00,
+        },
+    }
+}
+
 /// Sends "sync now" to UnifiedPush endpoints. Cheap to clone.
 #[derive(Clone, Debug)]
 pub struct UnifiedPushSender {
     /// Allows `http` and non-public addresses, for tests that talk to a server on this machine.
     allow_local: bool,
+    /// Also reaches private (LAN) addresses: the operator's own ntfy or Gotify.
+    allow_private: bool,
 }
 
 impl Default for UnifiedPushSender {
@@ -128,13 +145,47 @@ impl Default for UnifiedPushSender {
 
 impl UnifiedPushSender {
     pub fn new() -> UnifiedPushSender {
-        UnifiedPushSender { allow_local: false }
+        UnifiedPushSender {
+            allow_local: false,
+            allow_private: false,
+        }
+    }
+
+    /// Reads `KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE` (`true` or `false`, default `false`) through
+    /// `get`: whether endpoints on a private network (a LAN ntfy) are pushed to. A bad value is
+    /// an error that names the setting.
+    pub fn from_lookup(get: &dyn Fn(&str) -> Option<String>) -> Result<UnifiedPushSender, String> {
+        const NAME: &str = "KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE";
+        let allow_private = match get(NAME)
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+            .as_deref()
+        {
+            None | Some("false" | "0" | "no" | "off") => false,
+            Some("true" | "1" | "yes" | "on") => true,
+            Some(other) => return Err(format!("{NAME} must be true or false, not {other:?}")),
+        };
+        Ok(UnifiedPushSender::new().allowing_private(allow_private))
+    }
+
+    /// A sender that also reaches private (LAN) addresses when `allow` is true.
+    pub fn allowing_private(mut self, allow: bool) -> UnifiedPushSender {
+        self.allow_private = allow;
+        self
     }
 
     /// A sender that also reaches this machine over plain `http`.
     #[cfg(test)]
     pub(super) fn allowing_local() -> UnifiedPushSender {
-        UnifiedPushSender { allow_local: true }
+        UnifiedPushSender {
+            allow_local: true,
+            allow_private: false,
+        }
+    }
+
+    /// Whether the server may connect to `ip`.
+    fn may_reach(&self, ip: IpAddr) -> bool {
+        self.allow_local || is_public_ip(ip) || (self.allow_private && is_lan_ip(ip))
     }
 
     /// Sends "sync now" to these endpoints. One the server won't send to, or that is gone (404 or
@@ -194,12 +245,15 @@ impl UnifiedPushSender {
                 if found.is_empty() {
                     return Err(Delivery::Failed);
                 }
-                // One private answer is enough to refuse: the client could be handed it.
-                if !self.allow_local && found.iter().any(|a| !is_public_ip(a.ip())) {
+                // One private answer is enough to refuse: the client could be handed it. The
+                // endpoint is kept, though: the name can answer differently next time (split
+                // horizon DNS, a blocker answering 0.0.0.0, a bad answer that passes).
+                if found.iter().any(|a| !self.may_reach(a.ip())) {
                     tracing::warn!(
-                        "forgot a UnifiedPush endpoint that resolves to a non-public address"
+                        "didn't push to a UnifiedPush endpoint whose name resolves to a non-public \
+                         address (KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE allows a private network)"
                     );
-                    return Err(Delivery::Forget);
+                    return Err(Delivery::Failed);
                 }
                 Ok(Some(found))
             }
@@ -207,7 +261,7 @@ impl UnifiedPushSender {
     }
 
     fn literal(&self, ip: IpAddr) -> Result<Option<Vec<SocketAddr>>, Delivery> {
-        if !self.allow_local && !is_public_ip(ip) {
+        if !self.may_reach(ip) {
             tracing::warn!("forgot a UnifiedPush endpoint on a non-public address");
             return Err(Delivery::Forget);
         }
@@ -469,7 +523,6 @@ mod tests {
             // A server on this machine: the fake itself, as an https URL.
             base.replace("http://", "https://"),
             "https://127.0.0.1/up".to_owned(),
-            "https://localhost/up".to_owned(),
             "https://[::1]/up".to_owned(),
             "https://10.1.2.3/up".to_owned(),
             "https://192.168.0.7:8443/up".to_owned(),
@@ -482,13 +535,84 @@ mod tests {
         .into();
         let outcome = sender.send_sync(&targets).await;
         assert_eq!(outcome.accepted, 0);
-        // Every one is forgotten (`localhost` after a lookup that answers loopback).
+        // Every one is forgotten: each is a literal address, or not an endpoint at all.
         let mut forgotten = outcome.rejected;
         forgotten.sort();
         let mut expected = targets.clone();
         expected.sort();
         assert_eq!(forgotten, expected);
         assert!(seen.requests.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_name_that_resolves_to_a_non_public_address_is_a_failure_not_a_forgetting() {
+        let (seen, base) = fake().await;
+        let port = base.rsplit(':').next().expect("a port");
+        // `localhost` answers loopback: a split-horizon name or a DNS blocker could answer so
+        // for a moment, and the endpoint must survive it.
+        let endpoint = format!("https://localhost:{port}/up");
+        for sender in [
+            UnifiedPushSender::new(),
+            // Private networks allowed: loopback still never is.
+            UnifiedPushSender::new().allowing_private(true),
+        ] {
+            let outcome = sender.send_sync(&[endpoint.clone()]).await;
+            assert_eq!(outcome, SendOutcome::default());
+        }
+        assert!(seen.requests.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn private_networks_are_reached_only_when_allowed_and_never_loopback() {
+        let strict = UnifiedPushSender::new();
+        let lan = UnifiedPushSender::new().allowing_private(true);
+        for text in [
+            "10.0.0.5",
+            "172.16.0.1",
+            "192.168.1.10",
+            "fd12:3456::1",
+            "::ffff:192.168.0.1",
+        ] {
+            assert!(!strict.may_reach(ip(text)), "{text}");
+            assert!(lan.may_reach(ip(text)), "{text}");
+        }
+        for text in [
+            "127.0.0.1",
+            "::1",
+            "169.254.169.254",
+            "fe80::1",
+            "0.0.0.0",
+            "::",
+            "224.0.0.1",
+            "ff02::1",
+            "::ffff:127.0.0.1",
+            "100.64.0.1",
+            "192.0.2.1",
+        ] {
+            assert!(!strict.may_reach(ip(text)), "{text}");
+            assert!(!lan.may_reach(ip(text)), "{text}");
+        }
+        for text in ["8.8.8.8", "2606:4700:4700::1111"] {
+            assert!(strict.may_reach(ip(text)) && lan.may_reach(ip(text)), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_private_network_setting_is_read_like_the_other_switches() {
+        let read = |value: Option<&str>| {
+            UnifiedPushSender::from_lookup(&|name| {
+                (name == "KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE")
+                    .then(|| value.map(str::to_owned))
+                    .flatten()
+            })
+        };
+        assert!(!read(None).expect("ok").allow_private);
+        assert!(!read(Some("")).expect("ok").allow_private);
+        assert!(!read(Some("false")).expect("ok").allow_private);
+        assert!(read(Some("true")).expect("ok").allow_private);
+        assert!(read(Some(" ON ")).expect("ok").allow_private);
+        let error = read(Some("maybe")).expect_err("refused");
+        assert!(error.starts_with("KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE"), "{error}");
     }
 
     #[tokio::test]

@@ -121,13 +121,21 @@ sends no push to iPhones unless you turn on the relay below.
 | `KEMLOCK_APNS_TOPIC` | `com.kemlock.app` | the app's bundle id |
 | `KEMLOCK_APNS_SANDBOX` | `false` | `true` pushes through Apple's sandbox, for development builds of the app |
 
-**Android (UnifiedPush), no setting.** Kemlock uses no Firebase. A phone with a UnifiedPush
-distributor (ntfy, Gotify, NextPush and others) registers the endpoint URL the distributor gave it,
-and the server posts an empty body to it (Web Push without a payload, RFC 8030). The endpoint must
-be `https`. The server resolves the name itself and refuses any address that is not public
-(loopback, private, link-local and the like), follows no redirect and times out quickly, so an
-endpoint can't be used to reach your own network. Without a distributor, the app keeps its live
-connection while it is open and syncs when opened.
+**Android (UnifiedPush).** Kemlock uses no Firebase. A phone with a UnifiedPush distributor (ntfy,
+Gotify, NextPush and others) registers the endpoint URL the distributor gave it, and the server
+posts an empty body to it (Web Push without a payload, RFC 8030). The endpoint must be `https`. The
+server resolves the name itself and refuses any address that is not public (loopback, private,
+link-local and the like), follows no redirect and times out quickly, so an
+endpoint can't be used to reach your own network. Without a distributor, the app
+keeps its live connection while it is open and syncs when opened.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE` | `false` | `true` also pushes to endpoints on a private network (10/8, 172.16/12, 192.168/16, fc00::/7), for a ntfy or Gotify on your LAN. Loopback, link-local, unspecified and multicast addresses are never reached |
+
+A name that resolves to an address the server won't reach is not forgotten: the push fails (and is
+logged), and the next one looks the name up again. An endpoint written as an address that is not
+allowed is forgotten.
 
 **Kemlock's hosted relay, optional, `KEMLOCK_PUSH_RELAY*`.** A fallback for iPhones on a server
 that has no Apple key (`docs/push-relay.md` is its contract). It is off unless you turn it on, and a

@@ -212,7 +212,7 @@ pub async fn start(
     let built_in = BuiltInPush::of(apns.as_ref());
     let direct = DirectSenders {
         apns,
-        unified_push: UnifiedPushSender::new(),
+        unified_push: UnifiedPushSender::from_lookup(env).map_err(RunError::Config)?,
     };
 
     // Kemlock's optional push relay. It does nothing until the server has registered with it.
