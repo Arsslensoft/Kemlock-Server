@@ -7,3 +7,11 @@ eae84fb6abb4676dd66878f666215a59a3d9d1df:web/src/features/account/security.test.
 
 # A PEM template around a key the test generates in memory; no key is committed.
 5a1babe7bc6d135f261aad25cef90718a8c21ed3:web/src/features/vault/forms/keyForms.test.tsx:private-key:168
+
+# A throwaway P-256 key in Apple's .p8 form, and a PEM around base64 that is no key, in the push tests.
+8a41786eccb11d3074635481eeb528d52a552ff5:crates/kemlock-server/tests/notify.rs:private-key:361
+8a41786eccb11d3074635481eeb528d52a552ff5:crates/kemlock-notify/src/push/apns.rs:private-key:510
+
+# The RFC 4226 / 6238 test secret ("12345678901234567890" in base32) in the one-time code tests.
+ee6ebf58fe26ab8f8a00d8441023ec4c6a264957:web/src/features/vault/details/KindDetails.test.tsx:generic-api-key:16
+ee6ebf58fe26ab8f8a00d8441023ec4c6a264957:web/src/features/vault/details/otp.test.ts:generic-api-key:5
