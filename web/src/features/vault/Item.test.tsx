@@ -12,6 +12,9 @@ const state = vi.hoisted(() => ({
   item: undefined as VaultItem | undefined,
   all: [] as VaultItem[],
   collections: [] as Array<{ spaceId: string; spaceName: string; collectionId: string; collectionName: string }>,
+  adminFields: [] as Array<{ id: string; name: string; type: string; kinds: string | string[] }>,
+  canWrite: (_item: VaultItem) => true,
+  trashing: false,
   trash: vi.fn(),
   restore: vi.fn(),
   link: vi.fn(),
@@ -28,10 +31,12 @@ vi.mock('./backNav', () => ({ useBackToList: () => state.backToList }));
 vi.mock('./hooks', () => ({
   useVaultItem: () => ({ item: state.item, isLoading: false }),
   useVault: () => ({ all: state.all }),
-  useCanWrite: () => () => true,
+  useCanWrite: () => (item: VaultItem) => state.canWrite(item),
+  useAdminFields: () => state.adminFields,
+  itemFiles: { download: vi.fn() },
   useWritableCollections: () => ({ data: state.collections, isPending: false }),
   useVaultActions: () => ({
-    trash: { mutate: state.trash, isPending: false, error: null },
+    trash: { mutate: state.trash, isPending: state.trashing, error: null },
     restore: { mutate: state.restore, isPending: false, error: null },
     link: { mutateAsync: state.link },
     move: { mutate: state.move, isPending: false, error: null },
@@ -97,6 +102,9 @@ const moreButton = () => screen.getByRole('button', { name: 'More actions for Gi
 beforeEach(() => {
   for (const fn of [state.trash, state.restore, state.link, state.move, state.navigate, state.backToList]) fn.mockReset();
   state.collections = [];
+  state.adminFields = [];
+  state.canWrite = () => true;
+  state.trashing = false;
 });
 
 describe('the item page header', () => {
@@ -231,9 +239,9 @@ describe('the first section', () => {
     expect(within(card).queryByText('blue')).not.toBeInTheDocument();
     expect(within(card).getByText('Admin')).toBeInTheDocument();
     expect(within(card).getByText('sam.backup@example.org')).toBeInTheDocument();
-    await user.click(within(card).getByRole('button', { name: 'Show security question' }));
+    await user.click(within(card).getByRole('button', { name: 'Show the Security question' }));
     expect(within(card).getByText('blue')).toBeInTheDocument();
-    expect(within(card).getByRole('button', { name: 'Copy security question' })).toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Copy the Security question' })).toBeInTheDocument();
   });
 
   it('puts them in the card of another kind too', () => {
@@ -265,7 +273,7 @@ describe('every kind renders', () => {
     ['login', 'Sign-in', github],
     ['note', 'Text', { name: 'GitHub', text: 'hello' }],
     ['file', 'File', { name: 'GitHub', file: { name: 'a.pdf', size: 10, key: 'k', kemlockFile: 'f' } }],
-    ['otp', 'One-time code', { name: 'GitHub', secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' }],
+    ['otp', 'MFA code', { name: 'GitHub', secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ' }],
     ['backup-codes', 'Backup codes', { name: 'GitHub', codes: [{ code: 'aaaa' }] }],
     ['passkey', 'Passkey', { name: 'GitHub', rpId: 'github.com' }],
     ['card', 'Card', { name: 'GitHub', number: '4111111111111111' }],
@@ -315,9 +323,115 @@ describe('the Linked items card on the page', () => {
 });
 
 describe('an item that cannot be read', () => {
-  it('says so, and offers no links to change', () => {
+  it('says so, offers no Edit and no links to change, and has only What the server holds in its menu', async () => {
     show(make('login', null));
     expect(screen.getByText(/This app can't read this item/)).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Link an item' })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'More actions for login' }));
+    const entries = await screen.findAllByRole('menuitem');
+    expect(entries.map((entry) => entry.textContent)).toEqual(['What the server holds']);
+  });
+});
+
+describe('an item this person may only read', () => {
+  beforeEach(() => {
+    state.canWrite = () => false;
+  });
+
+  it('has no Edit, and a menu with a copy and the server record but no Move or Trash', async () => {
+    show(make('login', github, { owner: 'space:00000000-0000-4000-8000-0000000000bb', collectionId: '00000000-0000-4000-8000-0000000000cc' }));
+    expect(screen.queryByRole('link', { name: 'Edit' })).not.toBeInTheDocument();
+    await userEvent.setup().click(moreButton());
+    const entries = await screen.findAllByRole('menuitem');
+    expect(entries.map((entry) => entry.textContent)).toEqual(['Make a copy', 'What the server holds']);
+  });
+
+  it('says it is read-only, and offers no way to link or unlink', () => {
+    const login = make('login', { ...github, links: [{ id: CODE }] });
+    const code = make('otp', { name: 'GitHub code', links: [{ id: LOGIN }] }, { id: CODE });
+    show(login, [login, code]);
+    expect(screen.getByText(/You can read this item but not change it/)).toBeInTheDocument();
+    const card = screen.getByRole('region', { name: 'Linked items' });
+    expect(within(card).getByRole('link', { name: /GitHub code/ })).toBeInTheDocument();
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('shows no Restore for a read-only item in the Trash', () => {
+    show(make('login', { ...github, trashedAt: '2026-11-20T00:00:00.000Z' }));
+    expect(screen.queryByRole('button', { name: 'Restore' })).not.toBeInTheDocument();
+  });
+
+  it('says nothing about it for an item the person can change', () => {
+    state.canWrite = () => true;
+    show(make('login', github));
+    expect(screen.queryByText(/You can read this item but not change it/)).not.toBeInTheDocument();
+  });
+});
+
+describe('the websites', () => {
+  it('lists the websites of a login wherever its body keeps them', () => {
+    show(make('login', { name: 'GitHub', username: 'sam', uris: [{ uri: 'https://github.com' }, { uri: 'example.co', match: 1 }] }));
+    const card = screen.getByRole('region', { name: 'Sign-in' });
+    expect(within(card).getByRole('link', { name: 'github.com' })).toHaveAttribute('href', 'https://github.com');
+    expect(within(card).getByText('example.co')).toBeInTheDocument();
+  });
+
+  it('gives an MFA code a Website row from its linked login, read-only, before its custom fields', () => {
+    const login = make('login', { ...github, links: [{ id: CODE }] });
+    const code = make(
+      'otp',
+      { name: 'GitHub code', links: [{ id: LOGIN }], fields: [{ name: 'Seat', value: '12', kind: 'text' }] },
+      { id: CODE },
+    );
+    show(code, [login, code]);
+    const card = screen.getByRole('region', { name: 'MFA code' });
+    const labels = Array.from(card.querySelectorAll('.lbl')).map((node) => node.textContent);
+    expect(labels.slice(-2)).toEqual(['Website', 'Seat']);
+    expect(within(card).getByRole('link', { name: 'github.com' })).toBeInTheDocument();
+    expect(card).toHaveTextContent('From the linked login GitHub. Change it there.');
+  });
+
+  it('gives backup codes their own websites, with no note about a login', () => {
+    show(make('backup-codes', { name: 'Recovery', codes: [{ code: 'aaaa' }], urls: ['https://own.example'] }));
+    const card = screen.getByRole('region', { name: 'Backup codes' });
+    expect(within(card).getByRole('link', { name: 'own.example' })).toBeInTheDocument();
+    expect(card).not.toHaveTextContent('From the linked login');
+  });
+
+  it('shows no Website row for a code with no websites and no login', () => {
+    show(make('otp', { name: 'Code', secret: 'JBSWY3DPEHPK3PXP' }));
+    expect(screen.queryByText('Website')).not.toBeInTheDocument();
+  });
+});
+
+describe('the fields of the admin', () => {
+  it('shows the name and type the admin has now, with the Admin tag', async () => {
+    state.adminFields = [{ id: 'q1', name: 'Security prompt', type: 'hidden', kinds: 'all' }];
+    show(make('login', github));
+    const card = screen.getByRole('region', { name: 'Sign-in' });
+    expect(within(card).getByText('Security prompt')).toBeInTheDocument();
+    expect(within(card).queryByText('Security question')).not.toBeInTheDocument();
+    await userEvent.setup().click(within(card).getByRole('button', { name: 'Show the Security prompt' }));
+    expect(within(card).getByText('blue')).toBeInTheDocument();
+  });
+});
+
+describe('moving to the Trash', () => {
+  it('cannot be asked while it is already going', async () => {
+    state.trashing = true;
+    show(make('login', github));
+    await userEvent.setup().click(moreButton());
+    expect(await screen.findByRole('menuitem', { name: 'Move to Trash' })).toHaveAttribute('aria-disabled', 'true');
+  });
+});
+
+describe('What the server holds for an item in a collection', () => {
+  it('names the collection', async () => {
+    const user = userEvent.setup();
+    show(make('login', github, { owner: 'space:00000000-0000-4000-8000-0000000000bb', collectionId: '00000000-0000-4000-8000-0000000000cc' }));
+    await user.click(moreButton());
+    await user.click(await screen.findByRole('menuitem', { name: 'What the server holds' }));
+    expect(await screen.findByTestId('server-record')).toHaveTextContent('collection 00000000-0000-4000-8000-0000000000cc');
   });
 });
