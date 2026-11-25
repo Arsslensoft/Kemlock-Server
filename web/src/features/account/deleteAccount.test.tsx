@@ -69,6 +69,7 @@ describe('DeleteAccountCard', () => {
 
 function deps(over: Partial<DeleteDeps['api']> = {}) {
   const order: string[] = [];
+  const release = vi.fn(async () => undefined);
   const erase = vi.fn(async () => {
     order.push('erase');
   });
@@ -94,10 +95,11 @@ function deps(over: Partial<DeleteDeps['api']> = {}) {
         finalization: new Uint8Array([1, 2, 3]),
         exportKey: new Uint8Array(4),
       })),
+      release,
     } as never,
     signOut,
   };
-  return { wiring, erase, signOut, order };
+  return { wiring, erase, signOut, order, release };
 }
 
 describe('deleting the account', () => {
@@ -118,6 +120,22 @@ describe('deleting the account', () => {
     expect(done).toBe(true);
     expect(erase).toHaveBeenCalledWith({ loginState: 'state', finalization: encodeB64(new Uint8Array([1, 2, 3])) }, undefined);
     expect(order).toEqual(['erase', 'signOut']);
+  });
+
+  it('gives the worker back both keys the password check made, right password or wrong', async () => {
+    const proved = deps();
+    await deleteAccount(proved.wiring, { email: EMAIL, typed: EMAIL, password: 'hunter2', secondStep: false });
+    // The master key and the OPAQUE export key.
+    expect(proved.release).toHaveBeenCalledTimes(2);
+
+    const wrong = deps();
+    vi.mocked(wrong.wiring.crypto.opaqueLoginFinish).mockRejectedValue(new Error('bad'));
+    await expect(
+      deleteAccount(wrong.wiring, { email: EMAIL, typed: EMAIL, password: 'nope', secondStep: false }),
+    ).rejects.toThrow();
+    // Only the master key was made.
+    expect(wrong.release).toHaveBeenCalledTimes(1);
+    expect(wrong.erase).not.toHaveBeenCalled();
   });
 
   it('sends the fresh proof beside the password when a second step is on', async () => {
