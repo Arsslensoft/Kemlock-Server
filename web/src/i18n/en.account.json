@@ -164,6 +164,7 @@
   "devices.notListed": "This server doesn't list the other apps signed in to your account yet.",
   "devices.trust.trust": "Trust this device",
   "devices.trust.stop": "Stop trusting",
+  "devices.trust.onlyThere": "Only that device can turn this on: open Kemlock on it.",
   "devices.trusted.label": "Trusted device",
   "devices.trusted.since": "Trusted since {when}",
   "devices.trusted.body": "It keeps a copy of your account key wrapped by a key only it holds, so it can open the vault without the master password.",

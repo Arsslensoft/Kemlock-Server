@@ -320,16 +320,30 @@ export function DevicesView({
           </div>
         ) : (
           others.map((device) => {
-            const items: RowMenuItem[] = deviceMenu(device).map((action) =>
-              action === 'untrust'
-                ? {
+            const actions = deviceMenu(device);
+            const items: RowMenuItem[] = actions.map((action) => {
+              switch (action) {
+                case 'untrust':
+                  return {
                     id: 'untrust',
                     label: t('devices.trust.stop'),
                     icon: <Glyph name="shieldOff" />,
                     onAction: () => onUntrustDevice(device),
-                  }
-                : signOutItem(t('action.signOut'), () => onSignOut(device)),
-            );
+                  };
+                case 'trust':
+                  // Only the device that holds the wrapping key can make its copy, so from here
+                  // the item is shown off, with the reason under the menu.
+                  return {
+                    id: 'trust',
+                    label: t('devices.trust.trust'),
+                    icon: <Glyph name="shieldCheck" />,
+                    disabled: true,
+                    onAction: () => undefined,
+                  };
+                case 'sign-out':
+                  return signOutItem(t('action.signOut'), () => onSignOut(device));
+              }
+            });
             return (
               <div className="row" key={device.id}>
                 <Tile kemlock={isKemlockApp(device.kind)}>{(device.name[0] ?? '?').toUpperCase()}</Tile>
@@ -348,7 +362,12 @@ export function DevicesView({
                 <span className={isKemlockApp(device.kind) ? 'tag ok' : 'tag'}>
                   {t(isKemlockApp(device.kind) ? 'devices.api.kemlock' : 'devices.api.bitwarden')}
                 </span>
-                <RowMenu label={t('devices.actionsFor', { name: device.name })} items={items} isDisabled={busy} />
+                <RowMenu
+                  label={t('devices.actionsFor', { name: device.name })}
+                  items={items}
+                  note={actions.includes('trust') ? t('devices.trust.onlyThere') : undefined}
+                  isDisabled={busy}
+                />
               </div>
             );
           })
