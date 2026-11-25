@@ -8,6 +8,12 @@ import { createSession, tabStorage } from './session';
 // A reload of the tab keeps the person signed in, so the session lives in the tab's storage.
 export const session = createSession({ storage: tabStorage() });
 
+// Only a reload of this tab, soon after the page left, takes the session back (see session.ts).
+window.addEventListener('pagehide', () => session.leaving());
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) session.returned();
+});
+
 export const api = createApi({
   origin: window.location.origin,
   tokens: session.tokenStore,

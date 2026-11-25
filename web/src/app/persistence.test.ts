@@ -25,8 +25,13 @@ function tabStore(): TabStorage & { keys: () => string[] } {
   };
 }
 
-function setup(storage: TabStorage) {
-  const session = createSession({ storage, now: () => NOW });
+/** The page going away, as `pagehide` reports it a second before the next load. */
+function leave(storage: TabStorage, secondsAgo = 1) {
+  storage.setItem('kemlock.session.leftAt', String(NOW - secondsAgo * 1000));
+}
+
+function setup(storage: TabStorage, navigationType = 'reload') {
+  const session = createSession({ storage, now: () => NOW, navigationType: () => navigationType });
   const api = { accountKeys: vi.fn(async () => ({ keyVersion: 1, sealedPrivateKeys: 'c2s' }) as never) };
   const deps = { session, api, crypto: fake };
   return { session, api, deps };
@@ -48,6 +53,7 @@ async function signInAndUnlock(storage: TabStorage) {
 async function reload(storage: TabStorage) {
   await fake.lock();
   fakeCalls.length = 0;
+  leave(storage);
   const next = setup(storage);
   await restoreSession(next.deps);
   return next;
@@ -94,6 +100,7 @@ describe('keeping the vault open across a reload', () => {
     await signInAndUnlock(storage);
     await fake.lock();
     fakeCalls.length = 0;
+    leave(storage);
     const next = setup(storage);
     keepRootSealed(next.deps);
     await restoreSession(next.deps);
@@ -180,6 +187,7 @@ describe('keeping the vault open across a reload', () => {
   it('stays locked when the key version moved on', async () => {
     const storage = tabStore();
     await signInAndUnlock(storage);
+    leave(storage);
     const next = setup(storage);
     next.api.accountKeys.mockResolvedValue({ keyVersion: 2 } as never);
     await fake.lock();
@@ -194,6 +202,7 @@ describe('keeping the vault open across a reload', () => {
     await fake.lock();
     const spy = vi.spyOn(fake, 'unlockWithRoot').mockRejectedValueOnce(new Error('no'));
     const release = vi.spyOn(fake, 'release');
+    leave(storage);
     const next = setup(storage);
     await restoreSession(next.deps);
     expect(next.session.getState().status).toBe('locked');
@@ -207,6 +216,7 @@ describe('keeping the vault open across a reload', () => {
     const storage = tabStore();
     await signInAndUnlock(storage);
     await fake.lock();
+    leave(storage);
     const next = setup(storage);
     next.api.accountKeys.mockImplementation(async () => {
       // What the API client does when the refresh token is refused.
@@ -274,6 +284,66 @@ describe('keeping the vault open across a reload', () => {
       expect(session.getState().status).toBe('signed-out');
       expect(api.accountKeys).not.toHaveBeenCalled();
     }
+  });
+
+  describe('only a reload of this tab takes the session back', () => {
+    async function leftBehind() {
+      const storage = tabStore();
+      await signInAndUnlock(storage);
+      await fake.lock();
+      fakeCalls.length = 0;
+      return storage;
+    }
+
+    for (const type of ['navigate', 'back_forward', 'prerender', undefined]) {
+      it(`drops everything for a load that is ${type ?? 'of an unknown type'}, as a restored or duplicated tab is`, async () => {
+        const storage = await leftBehind();
+        leave(storage);
+        const next = setup(storage, type as string);
+        await restoreSession(next.deps);
+        expect(next.session.getState().status).toBe('signed-out');
+        expect(next.session.tokenStore.get()).toBeUndefined();
+        expect(storage.keys()).toEqual([]);
+        expect(next.api.accountKeys).not.toHaveBeenCalled();
+        expect(fakeCalls).toEqual([]);
+      });
+    }
+
+    it('drops everything when the page left long ago, even on a reload', async () => {
+      const storage = await leftBehind();
+      leave(storage, 11);
+      const next = setup(storage);
+      await restoreSession(next.deps);
+      expect(next.session.getState().status).toBe('signed-out');
+      expect(storage.keys()).toEqual([]);
+    });
+
+    it('drops everything when the page never said it was leaving', async () => {
+      const storage = await leftBehind();
+      const next = setup(storage);
+      await restoreSession(next.deps);
+      expect(next.session.getState().status).toBe('signed-out');
+      expect(storage.keys()).toEqual([]);
+    });
+
+    it('writes when it left, and not when nobody is signed in', async () => {
+      const storage = tabStore();
+      const out = createSession({ storage, now: () => NOW });
+      out.leaving();
+      expect(storage.keys()).toEqual([]);
+      out.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
+      out.leaving();
+      expect(storage.getItem('kemlock.session.leftAt')).toBe(String(NOW));
+      out.returned();
+      expect(storage.getItem('kemlock.session.leftAt')).toBeNull();
+    });
+
+    it('takes a leftAt only once: a second restore of the same storage needs a new one', async () => {
+      const storage = await leftBehind();
+      leave(storage);
+      await restoreSession(setup(storage).deps);
+      expect(storage.getItem('kemlock.session.leftAt')).toBeNull();
+    });
   });
 
   it('starts nothing when no tab storage has a session', async () => {

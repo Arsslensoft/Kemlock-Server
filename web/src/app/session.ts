@@ -18,6 +18,16 @@
 // the master password is needed again. Signing out, or the server ending the session, deletes all
 // of it. Storage that is missing, blocked or corrupt is treated as empty, so the worst case is the
 // old behaviour: a reload signs you out. The keys themselves stay in the crypto worker only.
+//
+// Only a reload of this very tab may take any of it back. `sessionStorage` is also copied into a
+// restored closed tab (Ctrl+Shift+T, "continue where you left off"), a duplicated tab and a window
+// opened by this one, and none of those may come back signed in: a closed tab must not reopen with
+// the vault open, and two tabs holding one rotating refresh token would have the server's reuse
+// detection sign both out. So a page leaving writes `leftAt` (`leaving`), and at start everything
+// kept is honoured only when the browser says this load is a reload AND the page left a moment ago
+// (RELOAD_WINDOW_MS). Otherwise it is all dropped and signing in is needed. A reload that races a
+// token refresh still in flight can lose the new refresh token and end the session; that is the
+// price of the single-use refresh token, and the person signs in again.
 import { useSyncExternalStore } from 'react';
 import type { TokenStore, Tokens } from '@/api/client';
 
@@ -55,11 +65,27 @@ export interface SessionOptions {
   storage?: TabStorage | undefined;
   /** Milliseconds since the epoch. */
   now?: () => number;
+  /** How this page was reached: the browser's navigation type ('reload', 'navigate', ...). */
+  navigationType?: () => string | undefined;
+}
+
+/** How long a page may have been gone and still count as a reload of the same tab. */
+export const RELOAD_WINDOW_MS = 10_000;
+
+/** The type of the navigation that loaded this page, when the browser says. */
+export function browserNavigationType(): string | undefined {
+  try {
+    const [entry] = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
+    return entry?.type;
+  } catch {
+    return undefined;
+  }
 }
 
 const INFO_KEY = 'kemlock.session.info';
 const TOKENS_KEY = 'kemlock.session.tokens';
 const ROOT_KEY = 'kemlock.session.root';
+const LEFT_KEY = 'kemlock.session.leftAt';
 
 const SIGNED_OUT: SessionState = {
   status: 'signed-out',
@@ -121,6 +147,7 @@ function readRoot(value: unknown): SealedRoot | undefined {
 export function createSession(options: SessionOptions = {}) {
   const storage = options.storage;
   const now = options.now ?? (() => Date.now());
+  const navigationType = options.navigationType ?? browserNavigationType;
   let state: SessionState = SIGNED_OUT;
   let tokens: Tokens | undefined;
   const listeners = new Set<() => void>();
@@ -219,16 +246,32 @@ export function createSession(options: SessionOptions = {}) {
     /** Forgets everything, in memory and in the tab's storage. */
     end(): void {
       tokens = undefined;
-      remove(INFO_KEY, TOKENS_KEY, ROOT_KEY);
+      remove(INFO_KEY, TOKENS_KEY, ROOT_KEY, LEFT_KEY);
       set(SIGNED_OUT);
+    },
+    /** The page is going away (`pagehide`): a reload within a few seconds may take the session back. */
+    leaving(): void {
+      if (state.status !== 'signed-out') write(LEFT_KEY, now());
+    },
+    /** The page came back from the back/forward cache with its memory intact: no reload follows. */
+    returned(): void {
+      remove(LEFT_KEY);
     },
     /**
      * Takes back what an earlier page of this tab kept: the tokens and who they belong to, with the
      * vault shut. True when there was a session to take back. Anything missing, corrupt or past
-     * its refresh token's life is cleared and counts as signed out. Call it once, at start.
+     * its refresh token's life is cleared and counts as signed out, and so is everything when this
+     * load is not a reload of this tab that left a moment ago (see the header). Call it once, at start.
      */
     restore(): boolean {
       if (state.status !== 'signed-out') return false;
+      const leftAt = read(LEFT_KEY);
+      remove(LEFT_KEY);
+      const away = typeof leftAt === 'number' ? now() - leftAt : Number.POSITIVE_INFINITY;
+      if (navigationType() !== 'reload' || away < 0 || away >= RELOAD_WINDOW_MS) {
+        remove(INFO_KEY, TOKENS_KEY, ROOT_KEY);
+        return false;
+      }
       const info = readInfo(read(INFO_KEY));
       const kept = readTokens(read(TOKENS_KEY));
       if (!info || !kept || kept.refreshExpiresAt <= now()) {
