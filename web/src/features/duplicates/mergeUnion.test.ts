@@ -55,7 +55,7 @@ describe('linked items', () => {
     const b = vaultItem('card', { name: 'Mastercard', number: '4111111111111111' });
     const plan = planMerge([a, b], defaultPicks([a, b]), NOW);
     expect('links' in (plan?.fields ?? {})).toBe(false);
-    expect('customFields' in (plan?.fields ?? {})).toBe(false);
+    expect('fields' in (plan?.fields ?? {})).toBe(false);
     expect(hasUnionMembers([a, b])).toBe(false);
   });
 
@@ -76,29 +76,36 @@ describe('linked items', () => {
 });
 
 describe('custom fields', () => {
-  it('joins the fields of every item, the kept item\'s first, each distinct field once', () => {
-    const pin = { name: 'PIN', type: 'hidden', value: '1234' };
-    const rack = { name: 'Rack', type: 'text', value: 'A3' };
-    const admin = { name: 'Cost centre', type: 'text', value: 'X9', adminId: 'cc' };
-    const a = vaultItem('card', { name: 'A', customFields: [pin, admin] });
-    const b = vaultItem('card', { name: 'B', customFields: [{ value: '1234', type: 'hidden', name: 'PIN' }, rack] });
+  it("joins the fields of every item, the kept item's first, each distinct field once", () => {
+    const pin = { name: 'PIN', value: '1234', kind: 'hidden' };
+    const rack = { name: 'Rack', value: 'A3', kind: 'text' };
+    const admin = { name: 'Cost centre', value: 'X9', kind: 'text', adminField: 'cc' };
+    const a = vaultItem('card', { name: 'A', fields: [pin, admin] });
+    const b = vaultItem('card', { name: 'B', fields: [{ kind: 'hidden', value: '1234', name: 'PIN' }, rack] });
     const plan = planMerge([a, b], defaultPicks([a, b]), NOW);
-    expect(plan?.fields['customFields']).toEqual([pin, admin, rack]);
+    expect(plan?.fields['fields']).toEqual([pin, admin, rack]);
   });
 
   it('keeps both values of a field the copies disagree on, so nothing is lost', () => {
-    const a = vaultItem('card', { name: 'A', customFields: [{ name: 'PIN', type: 'hidden', value: '1111' }] });
-    const b = vaultItem('card', { name: 'B', customFields: [{ name: 'PIN', type: 'hidden', value: '2222' }] });
-    const fields = planMerge([a, b], defaultPicks([a, b]), NOW)?.fields['customFields'] as Array<{ value: string }>;
+    const a = vaultItem('card', { name: 'A', fields: [{ name: 'PIN', value: '1111', kind: 'hidden' }] });
+    const b = vaultItem('card', { name: 'B', fields: [{ name: 'PIN', value: '2222', kind: 'hidden' }] });
+    const fields = planMerge([a, b], defaultPicks([a, b]), NOW)?.fields['fields'] as Array<{ value: string }>;
     expect(fields.map((field) => field.value)).toEqual(['1111', '2222']);
+  });
+
+  it("keeps one value of an admin's field, the kept item's, since the admin fixed it to one", () => {
+    const a = vaultItem('card', { name: 'A', fields: [{ name: 'Cost centre', value: 'X9', kind: 'text', adminField: 'cc' }] });
+    const b = vaultItem('card', { name: 'B', fields: [{ name: 'Cost centre', value: 'Y1', kind: 'text', adminField: 'cc' }] });
+    const fields = planMerge([a, b], defaultPicks([a, b]), NOW)?.fields['fields'] as Array<{ value: string }>;
+    expect(fields.map((field) => field.value)).toEqual(['X9']);
   });
 
   it('are taken from the other item when the kept one has none', () => {
     const a = vaultItem('note', { name: 'A', text: 'x' });
-    const b = vaultItem('note', { name: 'B', text: 'x', customFields: [{ name: 'Room', type: 'text', value: '5' }] });
+    const b = vaultItem('note', { name: 'B', text: 'x', fields: [{ name: 'Room', value: '5', kind: 'text' }] });
     expect(hasUnionMembers([a, b])).toBe(true);
-    expect(planMerge([a, b], defaultPicks([a, b]), NOW)?.fields['customFields']).toEqual([
-      { name: 'Room', type: 'text', value: '5' },
+    expect(planMerge([a, b], defaultPicks([a, b]), NOW)?.fields['fields']).toEqual([
+      { name: 'Room', value: '5', kind: 'text' },
     ]);
   });
 });

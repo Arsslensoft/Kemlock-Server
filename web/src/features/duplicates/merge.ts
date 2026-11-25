@@ -23,10 +23,10 @@ export interface MergePicks {
 
 /**
  * The members of an item that hold a list every merged item adds to: the items it is linked to
- * (`links`, `[{ id }]`) and its custom fields (`customFields`). A merge writes the union of the
- * lists of all its items to the kept one, whatever else it keeps.
+ * (`links`, `[{ id }]`) and its custom fields (`fields`, `[{ name, value, kind, adminField? }]`).
+ * A merge writes the union of the lists of all its items to the kept one, whatever else it keeps.
  */
-export const UNION_MEMBERS = ['links', 'customFields'] as const;
+export const UNION_MEMBERS = ['links', 'fields'] as const;
 
 export const websiteKey = (rule: WebsiteRule): string => `${rule.uri.trim().toLowerCase()}|${rule.match}`;
 
@@ -127,9 +127,11 @@ function stable(value: unknown): string {
 }
 
 /**
- * The entries of `member` across `items`, the kept item's first, each distinct entry once. A link
- * to an item of the merge itself is dropped (an item is not linked to itself), and links stay
- * sorted by id as the item format keeps them.
+ * The entries of `member` across `items`, the kept item's first, each distinct entry once: a link
+ * by the item it names, an admin's field by its definition (one value per item, the kept item's
+ * wins), any other field by all it holds, so two values of one field both stay. A link to an item of
+ * the merge itself is dropped (an item is not linked to itself), and links stay sorted by id as the
+ * item format keeps them.
  */
 function unionOf(
   member: (typeof UNION_MEMBERS)[number],
@@ -145,7 +147,16 @@ function unionOf(
     for (const entry of list) {
       const id = member === 'links' && entry && typeof entry === 'object' ? (entry as { id?: unknown }).id : undefined;
       if (typeof id === 'string' && merged.has(id.toLowerCase())) continue;
-      const key = typeof id === 'string' ? id.toLowerCase() : stable(entry);
+      const admin =
+        member === 'fields' && entry && typeof entry === 'object'
+          ? (entry as { adminField?: unknown }).adminField
+          : undefined;
+      const key =
+        typeof id === 'string'
+          ? id.toLowerCase()
+          : typeof admin === 'string' && admin !== ''
+            ? `admin:${admin}`
+            : stable(entry);
       if (seen.has(key)) continue;
       seen.add(key);
       out.push(entry);
