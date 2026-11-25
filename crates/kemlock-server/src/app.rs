@@ -505,15 +505,11 @@ pub async fn run(config: Config) -> Result<(), RunError> {
         api.crypto.clone(),
         crate::privacy::server_files(&config.data_folder).map_err(RunError::Config)?,
     );
-    let backups = match (
-        crate::backups::settings(&config),
-        crate::backups::layout(&config),
-    ) {
-        (Ok(settings), Ok(layout)) => {
-            crate::backups::spawn_backups(store.clone(), settings, layout)
-        }
-        (Err(e), _) | (_, Err(e)) => return Err(RunError::Config(e)),
-    };
+    // A bad backup setting in the environment stops the start; the schedule itself follows the
+    // saved settings from here on.
+    crate::backups::settings(&config).map_err(RunError::Config)?;
+    let layout = crate::backups::layout(&config).map_err(RunError::Config)?;
+    let backups = crate::backups::spawn_backups(store.clone(), settings.clone(), layout);
     let served = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -524,9 +520,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     retention.abort();
     settings_poll.abort();
     settings_apply.abort();
-    if let Some(backups) = backups {
-        backups.abort();
-    }
+    backups.abort();
     for task in replication_tasks {
         task.abort();
     }

@@ -219,6 +219,13 @@ pub struct Snapshot {
     pub kemlock_relay: bool,
     /// Kemlock's relay address; empty means the default.
     pub kemlock_relay_url: String,
+    /// The backup settings (`KEMLOCK_BACKUP_*`), as text. The folder is relative to the data
+    /// folder when `backup_destination_saved`, and as the environment wrote it otherwise.
+    pub backup_schedule: String,
+    pub backup_keep: String,
+    pub backup_destination: String,
+    pub backup_destination_saved: bool,
+    pub backup_recipient: String,
 }
 
 fn flag(view: &SettingView) -> bool {
@@ -284,6 +291,7 @@ impl Snapshot {
         let by_key: BTreeMap<&str, &SettingView> =
             views.iter().map(|v| (v.definition.key, v)).collect();
         let view = |key: &str| by_key.get(key).copied().ok_or(AdminError::NotFound);
+        let text = |key: &str| view(key).map(|v| v.value.clone().unwrap_or_default());
 
         let domains = view("signups_domains_whitelist")?
             .value
@@ -339,6 +347,11 @@ impl Snapshot {
             push_error,
             kemlock_relay: flag(view("kemlock_push_relay")?),
             kemlock_relay_url: view("kemlock_push_relay_url")?.value.clone().unwrap_or_default(),
+            backup_schedule: text("backup_schedule")?,
+            backup_keep: text("backup_keep")?,
+            backup_destination: text("backup_destination")?,
+            backup_destination_saved: view("backup_destination")?.source == Source::Saved,
+            backup_recipient: text("backup_recipient")?,
         })
     }
 }

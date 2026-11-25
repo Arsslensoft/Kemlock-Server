@@ -9,9 +9,12 @@
 //! `KEMLOCK_BACKUP_S3_ACCESS_KEY_ID`, `KEMLOCK_BACKUP_S3_SECRET_ACCESS_KEY`,
 //! `KEMLOCK_BACKUP_S3_ENDPOINT`, `KEMLOCK_BACKUP_S3_REGION` (default `us-east-1`) and
 //! `KEMLOCK_BACKUP_S3_PATH_STYLE` (default true). `KEMLOCK_LOW_MEMORY=true` compresses at zstd
-//! level 1. A setting saved from the admin console will replace these when the console exists.
+//! level 1. The admin console saves the same four as settings (`backup_schedule`, `backup_keep`,
+//! `backup_destination`, `backup_recipient`); the environment still wins, and the schedule follows
+//! what is saved without a restart ([`spawn_backups`]).
 
 use crate::config::Config;
+use crate::live::{SettingsWatch, Snapshot};
 use kemlock_app::privacy::PrivacySettings;
 use kemlock_backup::{
     BackupReport, BackupSettings, DataLayout, DestinationConfig, Kind, S3Destination, STATUS_KEY,
@@ -21,6 +24,7 @@ use kemlock_blob::{Backend, BlobConfig};
 use kemlock_crypto::rand;
 use kemlock_store_sql::SqlStore;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use time::OffsetDateTime;
 
@@ -231,31 +235,96 @@ fn until(now: OffsetDateTime, at: OffsetDateTime) -> Duration {
     Duration::from_secs(u64::try_from(seconds).unwrap_or(1))
 }
 
-/// Starts the schedule, or does nothing (`None`) when backups are off or have no recipient. The
-/// task runs a backup at each time the schedule names, on one replica at a time, and ends when the
-/// handle is aborted or the runtime stops.
+/// How often the schedule looks at the settings again while it waits.
+const RECHECK: Duration = Duration::from_secs(30);
+
+/// The backup settings the running server follows: what the snapshot says (the environment, then
+/// the config file, then what the console saved), and the environment for what is no setting
+/// (the bucket's keys, `KEMLOCK_LOW_MEMORY`). A folder the console saved is inside the data
+/// folder; one the environment names is taken as it is.
+pub fn settings_from_snapshot(
+    snapshot: &Snapshot,
+    env: &dyn Fn(&str) -> Option<String>,
+    data_folder: &Path,
+) -> Result<BackupSettings, String> {
+    let destination = if snapshot.backup_destination_saved && !snapshot.backup_destination.is_empty()
+    {
+        data_folder
+            .join(&snapshot.backup_destination)
+            .display()
+            .to_string()
+    } else {
+        snapshot.backup_destination.clone()
+    };
+    settings_from_env(
+        &|name| match name {
+            "KEMLOCK_BACKUP_SCHEDULE" => Some(snapshot.backup_schedule.clone()),
+            "KEMLOCK_BACKUP_KEEP" => Some(snapshot.backup_keep.clone()),
+            "KEMLOCK_BACKUP_DEST" => Some(destination.clone()),
+            "KEMLOCK_BACKUP_RECIPIENT" => Some(snapshot.backup_recipient.clone()),
+            other => env(other),
+        },
+        data_folder,
+    )
+}
+
+/// Starts the schedule. The task looks at the settings every [`RECHECK`] and again when a backup
+/// is due, so turning backups on or off, or changing the schedule, the count, the folder or the
+/// recipient, counts without a restart. It runs a backup at each time the schedule names, on one
+/// replica at a time, and ends when the handle is aborted or the runtime stops.
 pub fn spawn_backups(
     store: SqlStore,
-    settings: BackupSettings,
+    watch: Arc<SettingsWatch>,
     layout: DataLayout,
-) -> Option<tokio::task::JoinHandle<()>> {
-    if settings.schedule == Schedule::Off {
-        return None;
-    }
-    if settings.recipient.is_empty() {
-        tracing::warn!(
-            "backups are scheduled but KEMLOCK_BACKUP_RECIPIENT isn't set; none will be made"
-        );
-        return None;
-    }
-    Some(tokio::spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         let holder = holder_name();
+        let mut told = String::new();
+        // The settings now, or why there are none: said once each time the reason changes.
+        let current = |told: &mut String| -> Option<BackupSettings> {
+            let settings = settings_from_snapshot(
+                &watch.current(),
+                &|name| std::env::var(name).ok(),
+                &layout.data_folder,
+            );
+            let problem = match &settings {
+                Err(e) => e.clone(),
+                Ok(s) if s.schedule != Schedule::Off && s.recipient.is_empty() => {
+                    "backups are scheduled but no age recipient is set; none will be made"
+                        .to_owned()
+                }
+                Ok(_) => String::new(),
+            };
+            if problem != *told {
+                if !problem.is_empty() {
+                    tracing::warn!("{problem}");
+                }
+                *told = problem;
+            }
+            settings
+                .ok()
+                .filter(|s| s.schedule != Schedule::Off && !s.recipient.is_empty())
+        };
         loop {
+            let Some(settings) = current(&mut told) else {
+                tokio::time::sleep(RECHECK).await;
+                continue;
+            };
             let now = OffsetDateTime::now_utc();
             let Some(next) = settings.schedule.next_after(now) else {
-                return;
+                tokio::time::sleep(RECHECK).await;
+                continue;
             };
-            tokio::time::sleep(until(now, next)).await;
+            let wait = until(now, next);
+            if wait > RECHECK {
+                tokio::time::sleep(RECHECK).await;
+                continue;
+            }
+            tokio::time::sleep(wait).await;
+            // What was saved while waiting counts: the backup is made with the settings now.
+            let Some(settings) = current(&mut told) else {
+                continue;
+            };
             match store.try_lease(BACKUP_LEASE, &holder, LEASE_TTL).await {
                 Ok(true) => {
                     match run_backup(&store, &settings, &layout).await {
@@ -277,7 +346,7 @@ pub fn spawn_backups(
             // Never run twice for one slot: wait out the second the slot started in.
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-    }))
+    })
 }
 
 #[cfg(test)]
