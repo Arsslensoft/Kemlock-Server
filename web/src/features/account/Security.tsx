@@ -139,7 +139,7 @@ export default function Security() {
         cryptoAvailable: sharingCrypto.available,
         busy: pending,
         actions: {
-          invite: (input) => void change(() => emergencyApi.invite(input)),
+          invite: (input) => change(() => emergencyApi.invite(input)).then((made) => made !== undefined),
           revoke: (id) => void change(() => emergencyApi.revoke(id).then(() => true)),
           startConfirm: (view) => void startConfirm(view),
           cancelConfirm: () => setConfirming(null),

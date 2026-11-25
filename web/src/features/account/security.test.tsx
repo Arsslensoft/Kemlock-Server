@@ -206,6 +206,17 @@ describe('EmergencyCard', () => {
     });
   });
 
+  it('keeps the invitation form and what was typed when the invitation fails', async () => {
+    const invite = vi.fn().mockResolvedValue(false);
+    security({}, { trustedContacts: [viewOf({ state: 'confirmed' })], actions: { ...emergencyProps().actions, invite } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add a contact' }));
+    await user.type(screen.getByLabelText('Their email'), 'priya@example.co');
+    await user.click(screen.getByRole('button', { name: 'Send the invitation' }));
+    expect(invite).toHaveBeenCalled();
+    expect(screen.getByLabelText('Their email')).toHaveValue('priya@example.co');
+  });
+
   it('starts the confirmation of an accepted contact', async () => {
     const view = viewOf();
     const props = security({}, { trustedContacts: [view] });
