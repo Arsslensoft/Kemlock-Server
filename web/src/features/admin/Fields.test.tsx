@@ -263,3 +263,45 @@ describe('a row menu', () => {
     expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Edit', 'Delete']);
   });
 });
+
+describe('what an earlier failure left behind', () => {
+  it('is cleared when a form opens, when it is cancelled and when a question is put away', async () => {
+    const onReset = vi.fn();
+    view({ onReset });
+    const user = userEvent.setup();
+    expect(onReset).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Add a field' }));
+    const form = await screen.findByRole('dialog', { name: 'Add a field' });
+    expect(onReset).toHaveBeenCalledTimes(1);
+    await user.click(within(form).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onReset).toHaveBeenCalledTimes(2);
+
+    await pick(user, 'Cost center', 'Edit');
+    await screen.findByRole('dialog', { name: 'Change Cost center' });
+    expect(onReset).toHaveBeenCalledTimes(3);
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onReset).toHaveBeenCalledTimes(4);
+
+    await pick(user, 'Cost center', 'Delete');
+    const ask = await screen.findByRole('dialog', { name: 'Delete Cost center?' });
+    expect(onReset).toHaveBeenCalledTimes(5);
+    await user.click(within(ask).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onReset).toHaveBeenCalledTimes(6);
+  });
+
+  it('is left alone by a save that worked: the form closes without a reset of its own', async () => {
+    const onReset = vi.fn();
+    view({ onReset });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add a field' }));
+    const form = await screen.findByRole('dialog', { name: 'Add a field' });
+    await user.type(within(form).getByLabelText('Name'), 'Pin');
+    await user.click(within(form).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onReset).toHaveBeenCalledTimes(1);
+  });
+});
