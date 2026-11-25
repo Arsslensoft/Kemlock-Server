@@ -6,6 +6,7 @@ import { Button, IconButton, buttonClass } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
+import { KindDetails } from './details/KindDetails';
 import { useVaultActions, useVaultItem } from './hooks';
 import { hostOfUrl, isEditable, isWebUrl, kindLabel, tileLetter, timeAgo } from './kinds';
 import { isTrashed, itemName, loginOf, noteOf } from './vault';
@@ -191,6 +192,8 @@ export default function Item() {
           ) : null}
         </section>
       ) : null}
+
+      {isEditable(item.kind) && item.kind !== 'login' && item.kind !== 'note' ? <KindDetails item={item} /> : null}
 
       {notes ? (
         <section className="card" aria-labelledby="h-notes">
