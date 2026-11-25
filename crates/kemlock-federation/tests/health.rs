@@ -1,6 +1,7 @@
 //! Peer health probes through the replication job: the status a peer has before and after its
 //! probes, how a failing peer is backed off, the timeout, and a peer that is not paired.
 
+use kemlock_domain::ServerId;
 use kemlock_federation::health::{HealthConfig, HealthStatus};
 use kemlock_federation::memory::MemoryStore;
 use kemlock_federation::message::{Request, Response};
@@ -8,7 +9,6 @@ use kemlock_federation::ports::Peer;
 use kemlock_federation::replicate::Channel;
 use kemlock_federation::testing::identity;
 use kemlock_federation::{Connector, FedError, PeerRunner, Replica, Suite};
-use kemlock_domain::ServerId;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -44,11 +44,17 @@ impl Scripted {
     }
 }
 
-impl Connector for Arc<Scripted> {
+/// The connector the runner holds: the test keeps its own handle on the script to count probes.
+#[derive(Clone)]
+struct Shared(Arc<Scripted>);
+
+impl Connector for Shared {
     type Chan = Never;
 
     async fn connect(&self, _peer: &Peer) -> Result<Never, FedError> {
-        Err(FedError::Remote("this connector opens no sessions".to_owned()))
+        Err(FedError::Remote(
+            "this connector opens no sessions".to_owned(),
+        ))
     }
 
     async fn close(&self, _channel: Never) -> Result<(), FedError> {
@@ -56,14 +62,16 @@ impl Connector for Arc<Scripted> {
     }
 
     async fn probe(&self, _peer: &Peer) -> Result<(), FedError> {
-        *self.asked.lock().expect("lock") += 1;
-        if self.wrong_key {
-            return Err(FedError::KeyMismatch { offered: vec![1, 2, 3] });
+        *self.0.asked.lock().expect("lock") += 1;
+        if self.0.wrong_key {
+            return Err(FedError::KeyMismatch {
+                offered: vec![1, 2, 3],
+            });
         }
-        if self.hang {
+        if self.0.hang {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
-        match self.answers.lock().expect("lock").pop_front() {
+        match self.0.answers.lock().expect("lock").pop_front() {
             Some(Ok(())) | None => Ok(()),
             Some(Err(why)) => Err(FedError::Remote(why.to_owned())),
         }
@@ -71,7 +79,7 @@ impl Connector for Arc<Scripted> {
 }
 
 struct Setup {
-    runner: PeerRunner<MemoryStore, Arc<Scripted>>,
+    runner: PeerRunner<MemoryStore, Shared>,
     connector: Arc<Scripted>,
     peer: ServerId,
 }
@@ -84,7 +92,8 @@ async fn setup(connector: Scripted, config: HealthConfig) -> Setup {
     let replica = Arc::new(Replica::new(MemoryStore::new(a.server), Arc::new(a)));
     replica.pin_peer(&b.descriptor, NOW).await.expect("pin");
     let connector = Arc::new(connector);
-    let runner = PeerRunner::new(replica, connector.clone(), "test".to_owned()).with_health(config);
+    let runner =
+        PeerRunner::new(replica, Shared(connector.clone()), "test".to_owned()).with_health(config);
     Setup {
         runner,
         connector,
@@ -128,11 +137,17 @@ async fn failing_probes_degrade_then_take_a_peer_offline_and_back_off() {
     assert_eq!(t.runner.probe_tick(NOW).await, vec![(t.peer, false)]);
     assert_eq!(t.runner.health_status(t.peer, NOW), HealthStatus::Degraded);
     // The first failure is retried at the usual interval, the next after twice that.
-    assert_eq!(t.runner.health_of(t.peer).expect("health").next_probe_at, NOW + 60);
+    assert_eq!(
+        t.runner.health_of(t.peer).expect("health").next_probe_at,
+        NOW + 60
+    );
 
     assert!(t.runner.probe_tick(NOW + 59).await.is_empty());
     t.runner.probe_tick(NOW + 60).await;
-    assert_eq!(t.runner.health_status(t.peer, NOW + 60), HealthStatus::Degraded);
+    assert_eq!(
+        t.runner.health_status(t.peer, NOW + 60),
+        HealthStatus::Degraded
+    );
     assert_eq!(
         t.runner.health_of(t.peer).expect("health").next_probe_at,
         NOW + 60 + 120
@@ -140,7 +155,10 @@ async fn failing_probes_degrade_then_take_a_peer_offline_and_back_off() {
 
     assert!(t.runner.probe_tick(NOW + 60 + 119).await.is_empty());
     t.runner.probe_tick(NOW + 180).await;
-    assert_eq!(t.runner.health_status(t.peer, NOW + 180), HealthStatus::Offline);
+    assert_eq!(
+        t.runner.health_status(t.peer, NOW + 180),
+        HealthStatus::Offline
+    );
     let down = t.runner.health_of(t.peer).expect("health");
     assert_eq!(down.down_since, Some(NOW));
     assert!(
@@ -190,7 +208,10 @@ async fn probes_can_be_turned_off_and_a_stranger_is_not_probed() {
     let off = setup(Scripted::default(), HealthConfig::every(0)).await;
     assert!(off.runner.probe_tick(NOW).await.is_empty());
     assert_eq!(*off.connector.asked.lock().expect("lock"), 0);
-    assert_eq!(off.runner.health_status(off.peer, NOW), HealthStatus::Unknown);
+    assert_eq!(
+        off.runner.health_status(off.peer, NOW),
+        HealthStatus::Unknown
+    );
 
     let on = setup(Scripted::default(), steady()).await;
     assert_eq!(on.runner.probe_peer(ServerId::random(), NOW).await, None);
@@ -228,7 +249,10 @@ async fn a_peer_with_another_key_is_a_mismatch_never_offline() {
     let mut now = NOW;
     for _ in 0..5 {
         assert_eq!(t.runner.probe_tick(now).await, vec![(t.peer, false)]);
-        assert_eq!(t.runner.health_status(t.peer, now), HealthStatus::KeyMismatch);
+        assert_eq!(
+            t.runner.health_status(t.peer, now),
+            HealthStatus::KeyMismatch
+        );
         now += 600;
     }
 }
