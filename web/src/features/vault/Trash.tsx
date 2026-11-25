@@ -17,6 +17,14 @@ export default function Trash() {
   const { restore, remove, empty } = useVaultActions();
   const [confirm, setConfirm] = useState<Pending>(null);
   const failure = restore.error ?? remove.error ?? empty.error;
+  const confirmFailure = remove.error ?? empty.error;
+  const confirmError = confirmFailure ? describeError(confirmFailure) : null;
+  /** Opens the dialog on a clean slate, so an earlier failure doesn't greet it. */
+  function ask(next: Pending) {
+    remove.reset();
+    empty.reset();
+    setConfirm(next);
+  }
   const sorted = [...trashed].sort((a, b) =>
     String(b.data?.trashedAt ?? '').localeCompare(String(a.data?.trashedAt ?? '')),
   );
@@ -31,13 +39,13 @@ export default function Trash() {
         <Button
           variant="danger"
           isDisabled={sorted.length === 0}
-          onPress={() => setConfirm({ type: 'empty' })}
+          onPress={() => ask({ type: 'empty' })}
         >
           {t('trash.empty')}
         </Button>
       </div>
 
-      {failure ? (
+      {failure && confirm === null ? (
         <Notice tone="error" live>
           <p>{t(describeError(failure).id)}</p>
         </Notice>
@@ -97,7 +105,7 @@ export default function Trash() {
                           <Button
                             size="small"
                             aria-label={t('trash.deleteItem', { name })}
-                            onPress={() => setConfirm({ type: 'one', item })}
+                            onPress={() => ask({ type: 'one', item })}
                           >
                             {t('trash.deleteNow')}
                           </Button>
@@ -115,11 +123,15 @@ export default function Trash() {
       <ConfirmDialog
         isOpen={confirm !== null}
         onOpenChange={(open) => {
-          if (!open) setConfirm(null);
+          if (open) return;
+          remove.reset();
+          empty.reset();
+          setConfirm(null);
         }}
         title={confirm?.type === 'empty' ? t('trash.confirmEmpty.title') : t('trash.confirmOne.title')}
         confirmLabel={confirm?.type === 'empty' ? t('trash.empty') : t('trash.deleteNow')}
         pending={remove.isPending || empty.isPending}
+        error={confirmError ? t(confirmError.id, confirmError.values) : undefined}
         onConfirm={() => {
           if (confirm?.type === 'empty') {
             empty.mutate(sorted, { onSuccess: () => setConfirm(null) });
