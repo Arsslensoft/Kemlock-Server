@@ -126,24 +126,38 @@ export interface FieldsViewProps {
   /** Answers false when the request failed: the question then stays open. */
   onDelete: (field: CustomField) => Promise<boolean> | void;
   onAllowOwn: (allow: boolean) => void;
+  /**
+   * A form or a question opened, or was put away without saving: the last failure it showed is
+   * not the next one's to see.
+   */
+  onReset?: () => void;
   busy?: boolean;
   error?: unknown;
 }
 
 /** The fields an admin offers, and the switch for people's own. Takes data and callbacks, no network. */
-export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, busy, error }: FieldsViewProps) {
+export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, onReset, busy, error }: FieldsViewProps) {
   const t = useT();
   // `null`: closed; `'new'`: the form of a new field; a field: its form.
   const [editing, setEditing] = useState<CustomField | 'new' | null>(null);
   const [deleting, setDeleting] = useState<CustomField | null>(null);
   const open = editing !== null || deleting !== null;
+  const opening = (next: CustomField | 'new') => {
+    onReset?.();
+    setEditing(next);
+  };
+  const closing = () => {
+    onReset?.();
+    setEditing(null);
+    setDeleting(null);
+  };
   return (
     <>
       <PageHead
         title={t('admin.fields')}
         lede={t('admin.fields.lede')}
         actions={
-          <Button size="small" variant="primary" onPress={() => setEditing('new')}>
+          <Button size="small" variant="primary" onPress={() => opening('new')}>
             <Icon name="plus" />
             {t('admin.fields.add')}
           </Button>
@@ -190,14 +204,17 @@ export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, busy, er
                                 id: 'edit',
                                 label: t('admin.fields.edit'),
                                 icon: <Icon name="edit" />,
-                                onAction: () => setEditing(field),
+                                onAction: () => opening(field),
                               },
                               {
                                 id: 'delete',
                                 label: t('admin.fields.delete'),
                                 icon: <Icon name="trash" />,
                                 danger: true,
-                                onAction: () => setDeleting(field),
+                                onAction: () => {
+                                  onReset?.();
+                                  setDeleting(field);
+                                },
                               },
                             ]}
                           />
@@ -227,7 +244,7 @@ export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, busy, er
       <ModalOverlay
         isOpen={editing !== null}
         onOpenChange={(next) => {
-          if (!next) setEditing(null);
+          if (!next) closing();
         }}
         isDismissable={!busy}
         isKeyboardDismissDisabled={busy}
@@ -240,7 +257,7 @@ export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, busy, er
                 field={editing === 'new' ? null : editing}
                 pending={busy}
                 error={error}
-                onCancel={() => setEditing(null)}
+                onCancel={closing}
                 onSave={async (input) => {
                   const done = await onSave(editing === 'new' ? null : editing.id, input);
                   if (done === false) return;
@@ -255,7 +272,7 @@ export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, busy, er
       <ConfirmDialog
         isOpen={deleting !== null}
         onOpenChange={(next) => {
-          if (!next) setDeleting(null);
+          if (!next) closing();
         }}
         title={t('admin.fields.deleteTitle', { name: deleting?.name ?? '' })}
         confirmLabel={t('admin.fields.delete')}
@@ -314,6 +331,11 @@ export default function Fields() {
             () => true,
             () => false,
           );
+        }}
+        onReset={() => {
+          save.reset();
+          remove.reset();
+          own.reset();
         }}
         onAllowOwn={(allow) => {
           save.reset();
