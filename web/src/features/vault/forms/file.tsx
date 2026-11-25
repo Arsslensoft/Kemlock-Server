@@ -87,19 +87,20 @@ function Drop({ control, setName }: { control: Control<FileFormValues>; setName:
           <Icon name="file" />
         </span>
         <p className="drop-title">{t('itemForm.file.drop')}</p>
-        <label className="btn s" htmlFor={`${id}-file`}>
-          {t('itemForm.file.choose')}
-        </label>
+        {/* The input comes first so its focus ring can be drawn on the button after it. */}
         <input
           id={`${id}-file`}
           type="file"
-          className="sr"
+          className="sr file-input"
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
             choose(file);
           }}
         />
+        <label className="btn s" htmlFor={`${id}-file`}>
+          {t('itemForm.file.choose')}
+        </label>
         <p className="hint">{t('itemForm.file.quota')}</p>
       </div>
       {entry ? (

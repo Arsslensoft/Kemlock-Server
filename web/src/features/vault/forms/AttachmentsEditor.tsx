@@ -2,6 +2,7 @@
 // this browser before upload. Only a note has attachments; a File item holds its one file in its
 // own form (file.tsx).
 import { useId, useRef } from 'react';
+import { useIntl } from 'react-intl';
 import { useT } from '@/i18n';
 import { Icon } from '@/ui/Icon';
 import { type AttachmentEntry, MAX_ATTACHMENTS, formatSize, newAttachment, typeLabel } from '../attachments';
@@ -18,7 +19,8 @@ export function FileRow({
   onRemove: () => void;
 }) {
   const t = useT();
-  const detail = [typeLabel(entry), formatSize(entry.size), status].filter((part) => part !== undefined && part !== '');
+  const { locale } = useIntl();
+  const detail = [typeLabel(entry), formatSize(entry.size, locale), status].filter((part) => part !== undefined && part !== '');
   return (
     <div className="file-row">
       <span className="file-icon" aria-hidden="true">
@@ -65,16 +67,13 @@ export function AttachmentsEditor({ value, onChange }: Props) {
         ))}
         {value.length < MAX_ATTACHMENTS ? (
           <div>
-            <label className="btn s" htmlFor={`${id}-add`}>
-              <Icon name="file" />
-              {t('itemForm.attachments.add')}
-            </label>
+            {/* The input comes first so its focus ring can be drawn on the button after it. */}
             <input
               id={`${id}-add`}
               ref={input}
               type="file"
               multiple
-              className="sr"
+              className="sr file-input"
               onChange={(event) => {
                 const chosen = [...(event.target.files ?? [])];
                 // The same file can be chosen again once it was removed.
@@ -84,6 +83,10 @@ export function AttachmentsEditor({ value, onChange }: Props) {
                 onChange([...value, ...chosen.slice(0, room).map((file) => newAttachment(file))]);
               }}
             />
+            <label className="btn s" htmlFor={`${id}-add`}>
+              <Icon name="file" />
+              {t('itemForm.attachments.add')}
+            </label>
           </div>
         ) : null}
         <span className="hint">{t('itemForm.attachments.hint')}</span>

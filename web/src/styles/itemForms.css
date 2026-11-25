@@ -334,6 +334,11 @@
 .drop-title {
   font-weight: 600;
 }
+/* Keyboard focus on a file picker: the input is hidden, so its button shows the ring. */
+.file-input:focus-visible + label {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 
 /* ---------- The card number, with the brand it names ---------- */
 .brand-box {
