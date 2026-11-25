@@ -79,8 +79,9 @@ export function identityExpiryYear(data: ItemData): string | undefined {
   return years.sort()[0];
 }
 
+/** `2 Feb 2027`, the day in UTC as certificate tools print it. */
 const longDate = (date: Date): string =>
-  new Intl.DateTimeFormat('en', { day: 'numeric', month: 'short', year: 'numeric' }).format(date);
+  new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(date);
 
 /** `08/28` from a card's expiry month and year, or '' when it has none. */
 export function cardExpiry(data: ItemData): string {
