@@ -2,12 +2,12 @@
 //! right to know and delete).
 //!
 //! The export is the server's record of the account as JSON plus its encrypted vault as stored.
-//! The deletion needs proof it is the owner: the body carries either the last two messages of a
-//! fresh OPAQUE login (`POST /kem/v1/auth/opaque/start` first, with the same device key), or
-//! `proof`, a fresh code of the kind turning a second step off takes (the code mailed by
-//! `POST /kem/v1/account/two-factor/proof`, an authenticator code or the recovery code). A stolen
-//! access token alone can't erase an account. Both call the use cases the admin console calls for
-//! a request.
+//! The deletion needs the password again: the body carries the last two messages of a fresh OPAQUE
+//! login (`POST /kem/v1/auth/opaque/start` first, with the same device key). With a second step on,
+//! it needs `proof` too, a fresh code of the kind turning a second step off takes (the code mailed
+//! by `POST /kem/v1/account/two-factor/proof`, an authenticator code or the recovery code), so a
+//! stolen access token or a stolen password alone can't erase an account. Both call the use cases
+//! the admin console calls for a request.
 //!
 //! These routes need a store that also keeps the privacy tables, which `SqlStore` does and the
 //! shared [`Store`] bound doesn't say, so they have a router of their own, merged beside the main
@@ -30,7 +30,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use kemlock_app::AppError;
-use kemlock_app::ports::{TokenSigner, UserRepo};
+use kemlock_app::ports::{TokenSigner, TwoFactorRepo, UserRepo};
 use kemlock_app::privacy::{
     AccountData, AccountEraser, EraseAccount, Erasure, ErasureFiles, ExportAccount, PrivacyLog,
     PrivacySettings, Reauthenticate, Requester, SendEraser,
@@ -104,46 +104,16 @@ where
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EraseRequest {
-    /// What `POST /auth/opaque/start` answered, unread. Goes with `finalization`.
-    login_state: Option<String>,
+    /// What `POST /auth/opaque/start` answered, unread.
+    login_state: String,
     /// The client's OPAQUE `CredentialFinalization`.
-    finalization: Option<String>,
-    /// Instead of the password: the code mailed by `POST /kem/v1/account/two-factor/proof`, a
-    /// current code of the authenticator app, or the recovery code. A code works once.
+    finalization: String,
+    /// A fresh proof, needed beside the password when the account has a second step on: the code
+    /// mailed by `POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app,
+    /// or the recovery code. A code works once.
     proof: Option<String>,
 }
 
-/// How the request proves the owner.
-enum Proof {
-    Password {
-        login_state: String,
-        finalization: String,
-    },
-    Code(String),
-}
-
-impl EraseRequest {
-    fn proof(self) -> Result<Proof, Problem> {
-        match self {
-            EraseRequest {
-                login_state: Some(login_state),
-                finalization: Some(finalization),
-                proof: None,
-            } => Ok(Proof::Password {
-                login_state,
-                finalization,
-            }),
-            EraseRequest {
-                login_state: None,
-                finalization: None,
-                proof: Some(proof),
-            } if !proof.trim().is_empty() => Ok(Proof::Code(proof.trim().to_owned())),
-            _ => Err(Problem::bad_request(
-                "send loginState and finalization, or a proof, and nothing else",
-            )),
-        }
-    }
-}
 /// `GET /kem/v1/account/export`.
 async fn export_account<S, P, K, A, X, F>(
     State(env): State<Env<S, P, K, A, X, F>>,
@@ -201,8 +171,7 @@ where
         .map_err(AppError::from)?
         .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
 
-    let proof = request.proof()?;
-    // The refusal that needs no proof comes first, so a proof is never spent on it.
+    // What can be known to be wrong is said before the password or the proof is spent.
     if !env
         .privacy
         .blocking_spaces(user.id)
@@ -215,48 +184,54 @@ where
         )
         .into());
     }
-    match proof {
-        Proof::Code(code) => {
-            guard(&api.limits.sign_in, &ip_key(caller.0.ip), api.now())?;
-            require_proof_via_api(api, user.id, &code, true).await?;
-        }
-        Proof::Password {
-            login_state,
-            finalization,
-        } => {
-            // A wrong password counts against the account like a wrong sign-in does.
-            let account = format!("acct:{}", credential_id(user.email.as_str()));
-            api.limits
-                .account
-                .blocked(&account, api.now())
-                .map_err(rate_limited)?;
-            let login_state = decode("loginState", &login_state)?;
-            let finalization = decode("finalization", &finalization)?;
-            // A login state finishes once, whether the password was right or not. Only a genuine,
-            // fresh state is remembered.
-            api.sign_in().check_login_state(&login_state)?;
-            match api.used_states.insert(&login_state, api.now()) {
-                Ok(true) => {}
-                Ok(false) => {
-                    return Err(Problem::bad_request("the login state was already used"));
-                }
-                Err(Full) => return Err(Problem::overloaded()),
-            }
-            let checked = Reauthenticate {
-                users: api.store.clone(),
-                auth: api.crypto.clone(),
-                seal: api.crypto.clone(),
-                clock: api.crypto.clone(),
-            }
-            .execute(user.id, &login_state, &finalization, &caller.0.jkt)
-            .await;
-            match &checked {
-                Err(AppError::Unauthorized) => api.limits.account.fail(&account, api.now()),
-                Ok(()) => api.limits.account.clear(&account),
-                Err(_) => {}
-            }
-            checked?;
-        }
+    // The password is always asked. With a second step on, a fresh proof is asked beside it, so
+    // neither a stolen session nor a stolen password alone erases the account.
+    let second_step = TwoFactorRepo::list(&api.store, user.id)
+        .await
+        .map_err(AppError::from)?
+        .iter()
+        .any(|row| row.enabled);
+    let proof = request.proof.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    if second_step && proof.is_none() {
+        return Err(AppError::Invalid(
+            "a fresh proof is needed beside the password to erase an account with a second step",
+        )
+        .into());
+    }
+    guard(&api.limits.sign_in, &ip_key(caller.0.ip), api.now())?;
+
+    // A wrong password counts against the account like a wrong sign-in does.
+    let account = format!("acct:{}", credential_id(user.email.as_str()));
+    api.limits
+        .account
+        .blocked(&account, api.now())
+        .map_err(rate_limited)?;
+    let login_state = decode("loginState", &request.login_state)?;
+    let finalization = decode("finalization", &request.finalization)?;
+    // A login state finishes once, whether the password was right or not. Only a genuine, fresh
+    // state is remembered.
+    api.sign_in().check_login_state(&login_state)?;
+    match api.used_states.insert(&login_state, api.now()) {
+        Ok(true) => {}
+        Ok(false) => return Err(Problem::bad_request("the login state was already used")),
+        Err(Full) => return Err(Problem::overloaded()),
+    }
+    let checked = Reauthenticate {
+        users: api.store.clone(),
+        auth: api.crypto.clone(),
+        seal: api.crypto.clone(),
+        clock: api.crypto.clone(),
+    }
+    .execute(user.id, &login_state, &finalization, &caller.0.jkt)
+    .await;
+    match &checked {
+        Err(AppError::Unauthorized) => api.limits.account.fail(&account, api.now()),
+        Ok(()) => api.limits.account.clear(&account),
+        Err(_) => {}
+    }
+    checked?;
+    if let (true, Some(proof)) = (second_step, proof) {
+        require_proof_via_api(api, user.id, proof, true).await?;
     }
 
     let outcome = EraseAccount {
@@ -364,7 +339,7 @@ fn doc_export() {}
     responses(
         (status = 204, description = "The account is erased"),
         (status = 202, description = "Scheduled: the admin gave deleted accounts a grace period; carries `status` and `dueAt`"),
-        (status = 400, description = "The login state was used before, or isn't well formed; the proof is wrong or spent; or the account is the only owner of a space with other members", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "The login state was used before, or isn't well formed; a second step is on and the proof is missing, wrong or spent; or the account is the only owner of a space with other members", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 429, description = "Too many wrong passwords", body = ProblemDoc, content_type = "application/problem+json"),
     )

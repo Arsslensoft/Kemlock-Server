@@ -1,4 +1,4 @@
-//! The API key routes and the proof way of erasing an account, in-process with a real DPoP client:
+//! The API key routes and the proof erasing an account takes beside the password, in-process with a real DPoP client:
 //! what the key shows, what replaces it, and the fresh proof both the key and the erasure take.
 
 mod common;
@@ -13,7 +13,7 @@ mod privacy_fakes;
 
 use axum::Router;
 use axum::http::StatusCode;
-use common::{App, Client, Reply, Req, Session, register_and_sign_in};
+use common::{App, Client, PASSWORD, Reply, Req, Session, b64, register_and_sign_in, unb64};
 use kemlock_api_kem::testing::DpopSigner;
 use kemlock_api_kem::{
     ApiKeyApiDoc, TwoStepRuntime, account_router, api_key_router, two_step_router,
@@ -332,31 +332,99 @@ async fn the_key_routes_need_a_session_and_are_in_the_openapi_document() {
     assert!(document["paths"][ROTATE]["post"].is_object());
 }
 
+impl Rig {
+    /// The two OPAQUE messages of a fresh login with the account's password, as the web vault
+    /// sends them to re-authenticate.
+    async fn reauth(&self, device: &Client) -> Value {
+        let (state, request) =
+            kemlock_crypto::opaque::client_login_start(&PASSWORD).expect("client login start");
+        let started = device
+            .post(
+                "/kem/v1/auth/opaque/start",
+                json!({"email": EMAIL, "request": b64(&request)}),
+            )
+            .await;
+        assert_eq!(started.status, StatusCode::OK, "{:?}", started.json());
+        let started = started.json();
+        let response = unb64(started["response"].as_str().expect("response"));
+        let (finalization, _key, _export) =
+            kemlock_crypto::opaque::client_login_finish(state, &PASSWORD, &response)
+                .expect("client login finish");
+        json!({"loginState": started["loginState"], "finalization": b64(&finalization)})
+    }
+}
+
+fn with_proof(mut body: Value, proof: &str) -> Value {
+    body["proof"] = json!(proof);
+    body
+}
+
 #[tokio::test]
-async fn a_fresh_proof_erases_the_account_and_a_wrong_one_does_not() {
+async fn a_proof_alone_never_erases_an_account() {
+    let rig = rig();
+    let (device, session, _user) = rig.person(false).await;
+    let token = session.access_token.as_str();
+    let proof = rig.proof(&device, token).await;
+
+    let reply = rig
+        .call(&device, "DELETE", ACCOUNT, token, Some(json!({"proof": proof})))
+        .await;
+
+    assert!(reply.status.is_client_error(), "{:?}", reply.status);
+    assert!(rig.privacy.lock().erased.is_empty(), "nothing was erased");
+}
+
+#[tokio::test]
+async fn the_password_erases_an_account_with_no_second_step() {
     let rig = rig();
     let (device, session, user) = rig.person(false).await;
     let token = session.access_token.as_str();
+    let body = rig.reauth(&device).await;
 
+    let erased = rig.call(&device, "DELETE", ACCOUNT, token, Some(body)).await;
+
+    assert_eq!(erased.status, StatusCode::NO_CONTENT, "{:?}", erased.json());
+    assert_eq!(rig.privacy.lock().erased, vec![user]);
+}
+
+#[tokio::test]
+async fn with_a_second_step_on_the_password_needs_a_fresh_proof_beside_it() {
+    use kemlock_app::ports::{Clock, SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo};
+    let rig = rig();
+    let (device, session, user) = rig.person(false).await;
+    let token = session.access_token.as_str();
+    rig.app
+        .store
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::Totp,
+            sealed_secret: rig
+                .app
+                .crypto
+                .seal(kemlock_app::sealed::PURPOSE_TOTP, b"12345678901234567890"),
+            enabled: true,
+            created_at: rig.app.clock.now(),
+        })
+        .await
+        .expect("the row is stored");
+
+    // The password alone is not enough.
+    let body = rig.reauth(&device).await;
+    let bare = rig.call(&device, "DELETE", ACCOUNT, token, Some(body)).await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
+    // Nor is a wrong proof beside it.
+    let body = rig.reauth(&device).await;
     let guess = rig
-        .call(&device, "DELETE", ACCOUNT, token, Some(json!({"proof": "123456"})))
+        .call(&device, "DELETE", ACCOUNT, token, Some(with_proof(body, "123456")))
         .await;
     assert_eq!(guess.status, StatusCode::BAD_REQUEST, "{:?}", guess.json());
-    let both = rig
-        .call(
-            &device,
-            "DELETE",
-            ACCOUNT,
-            token,
-            Some(json!({"proof": "1", "loginState": "a", "finalization": "b"})),
-        )
-        .await;
-    assert_eq!(both.status, StatusCode::BAD_REQUEST);
     assert!(rig.privacy.lock().erased.is_empty(), "nothing was erased");
 
+    // Both together are.
     let proof = rig.proof(&device, token).await;
+    let body = rig.reauth(&device).await;
     let erased = rig
-        .call(&device, "DELETE", ACCOUNT, token, Some(json!({"proof": proof})))
+        .call(&device, "DELETE", ACCOUNT, token, Some(with_proof(body, &proof)))
         .await;
     assert_eq!(erased.status, StatusCode::NO_CONTENT, "{:?}", erased.json());
     assert_eq!(rig.privacy.lock().erased, vec![user]);
