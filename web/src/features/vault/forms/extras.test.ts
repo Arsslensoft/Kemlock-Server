@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AdminFieldDef } from '@/api/customFields';
 import type { ItemData, VaultItem } from '../vault';
 import {
+  type FieldValue,
   addAdminField,
   addOwnField,
   adminChoices,
@@ -91,15 +92,65 @@ describe('writing the custom fields of a body', () => {
     expect(writeFieldValues(addOwnField([]), null)).toEqual({ fields: undefined });
   });
 
-  it('keeps the entries it cannot edit, after the others', () => {
-    const existing = { fields: [{ name: 'Linked', value: 'x', kind: 'linked' }, { name: 'A', value: '1', kind: 'text' }] };
+  it('keeps the entries it cannot edit where they were', () => {
+    const existing = { fields: [{ name: 'Linked', value: 'x', kind: 'linked' }, { name: 'A', value: '1', kind: 'text' }, 'odd'] };
     const rows = readFieldValues(existing);
     expect(writeFieldValues(rows, existing)).toEqual({
-      fields: [
-        { name: 'A', value: '1', kind: 'text' },
-        { name: 'Linked', value: 'x', kind: 'linked' },
-      ],
+      fields: [{ name: 'Linked', value: 'x', kind: 'linked' }, { name: 'A', value: '1', kind: 'text' }, 'odd'],
     });
+  });
+
+  it('writes an entry nobody changed back as the same object, with every key and in the same order', () => {
+    const first = { value: '42', name: 'Employee ID', kind: 'text', adminField: 'f-emp', note: 'kept' };
+    const second = { name: 'PIN', value: 5, type: 'password', shown: false };
+    const existing = { fields: [first, second] };
+    const written = writeFieldValues(readFieldValues(existing), existing)['fields'] as unknown[];
+    expect(written[0]).toBe(first);
+    expect(written[1]).toBe(second);
+    expect(Object.keys(written[0] as object)).toEqual(['value', 'name', 'kind', 'adminField', 'note']);
+  });
+
+  it('changes only what was edited in an entry, and keeps its other keys and the order of the list', () => {
+    const existing = {
+      fields: [
+        { name: 'A', value: '1', kind: 'text', vendor: 'x' },
+        { name: 'Linked', value: 'x', kind: 'linked' },
+        { name: 'B', value: 'old', kind: 'hidden', adminField: 'f-q' },
+        { name: 'Ok', value: true, kind: 'boolean' },
+      ],
+    };
+    const rows = readFieldValues(existing);
+    const edit = (index: number, patch: Partial<FieldValue>) => {
+      const row = rows[index] as FieldValue;
+      rows[index] = { ...row, ...patch };
+    };
+    // The rows are the entries the form can edit: A, B and Ok (the linked field has none).
+    edit(0, { value: '2' });
+    edit(1, { value: 'new', type: 'text' });
+    const written = writeFieldValues(rows, existing)['fields'] as Array<Record<string, unknown>>;
+    expect(written).toEqual([
+      { name: 'A', value: '2', kind: 'text', vendor: 'x' },
+      { name: 'Linked', value: 'x', kind: 'linked' },
+      { name: 'B', value: 'new', kind: 'text', adminField: 'f-q' },
+      { name: 'Ok', value: true, kind: 'boolean' },
+    ]);
+    // A checkbox the person ticks stays a boolean where the entry held one.
+    edit(2, { value: 'false' });
+    expect(writeFieldValues(rows, existing)['fields']).toMatchObject([{}, {}, {}, { value: false }]);
+  });
+
+  it('drops a removed field, and puts a new one after the others', () => {
+    const existing = { fields: [{ name: 'A', value: '1', kind: 'text' }, { name: 'Linked', value: 'x', kind: 'linked' }, { name: 'B', value: '2', kind: 'text' }] };
+    let rows = readFieldValues(existing);
+    rows = removeField(rows, rows[0]?.key ?? '');
+    rows = addOwnField(rows);
+    const added = rows[rows.length - 1] as FieldValue;
+    rows = changeField(rows, added.key, { name: 'C', value: '3' });
+    expect(writeFieldValues(rows, existing)['fields']).toEqual([
+      { name: 'Linked', value: 'x', kind: 'linked' },
+      { name: 'B', value: '2', kind: 'text' },
+      { name: 'C', value: '3', kind: 'text' },
+    ]);
   });
 
   it('removes a field when its row is removed', () => {
