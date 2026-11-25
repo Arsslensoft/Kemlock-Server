@@ -975,6 +975,44 @@ const PINNED: &[(&str, &[&str])] = &[
         "identity-trimmed-composed-lower",
         &["[\"identity\",\"zo\u{eb} m\u{fc}ller\",\"zoe@example.com\"]"],
     ),
+    (
+        "key-certificate-sha256-colons",
+        &[r#"["key","ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"]"#],
+    ),
+    (
+        "key-certificate-sha256-lower-case-no-colons",
+        &[r#"["key","ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"]"#],
+    ),
+    (
+        "key-certificate-sha1-colons",
+        &[r#"["key","0F1E2D3C4B5A69788796A5B4C3D2E1F001122334"]"#],
+    ),
+    (
+        "key-certificate-0x-prefix",
+        &[r#"["key","0F1E2D3C4B5A69788796A5B4C3D2E1F001122334"]"#],
+    ),
+    ("key-certificate-too-short", &[]),
+    (
+        "contact-email-and-phone",
+        &[r#"["contact","alex.chen@example.org","15550142"]"#],
+    ),
+    (
+        "contact-email-only",
+        &["[\"contact\",\"caf\u{e9}@x.example\",\"\"]"],
+    ),
+    ("contact-phone-only", &[r#"["contact","","15550142"]"#]),
+    ("contact-nothing-to-hash", &[]),
+    (
+        "document-spaces-and-dashes",
+        &[r#"["document","x1234567"]"#],
+    ),
+    ("document-decomposed-e", &["[\"document\",\"caf\u{e9}9\"]"]),
+    ("document-too-short", &[]),
+    (
+        "file-upper-case-hash",
+        &[r#"["file","0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]"#],
+    ),
+    ("file-not-a-hash", &[]),
 ];
 
 fn dedup_normalise_file<B: Backend>(doc: &Value) {

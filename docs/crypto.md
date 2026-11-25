@@ -1887,7 +1887,10 @@ email and phone, no hash) has no tag.
 
 `dedup-normalise.json` in test-vectors pins raw values in and canonical inputs out, including
 `İstanbul`, `ΣΑΣ`, `Straße` against `STRASSE`, a decomposed `é`, a base32 secret with spaces,
-lower case and padding, a note with CRLF and trailing blanks, and duplicate backup codes.
+lower case and padding, a note with CRLF and trailing blanks, duplicate backup codes, a
+certificate's SHA-256 and SHA-1 thumbprints with colons, in lower case and after `0x`, a contact's
+phone with punctuation next to an email-only and a phone-only contact, a document number with
+spaces and dashes (and one too short to count), and a file's hash in upper case.
 
 ## Sync cursor
 
