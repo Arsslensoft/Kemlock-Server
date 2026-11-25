@@ -599,3 +599,92 @@ async fn file_sends_made_together_cannot_overrun_the_send_limit() {
     statuses.sort();
     assert_eq!(statuses, [StatusCode::OK, StatusCode::BAD_REQUEST]);
 }
+
+// ---------------------------------------------------------------------------------------------
+// A replica serves no Send that has a view limit.
+
+/// A federation view of a replica: the account's vault has its home elsewhere.
+struct ReplicaView;
+
+impl kemlock_app::federation_view::FederationView for ReplicaView {
+    fn vault_servers(
+        &self,
+        _vault: kemlock_domain::Owner,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Option<kemlock_app::federation_view::VaultServers>, kemlock_app::ports::StoreError>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn siblings(
+        &self,
+        _owner: kemlock_domain::Owner,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Vec<kemlock_app::federation_view::SiblingSet>, kemlock_app::ports::StoreError>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn resolve_siblings(
+        &self,
+        _owner: kemlock_domain::Owner,
+        _item: kemlock_domain::ItemId,
+    ) -> kemlock_app::federation_view::BoxFut<'_, Result<u64, kemlock_app::ports::StoreError>> {
+        Box::pin(async { Ok(0) })
+    }
+
+    fn is_replica_account(
+        &self,
+        _user: kemlock_domain::UserId,
+    ) -> kemlock_app::federation_view::BoxFut<'_, Result<bool, kemlock_app::ports::StoreError>>
+    {
+        Box::pin(async { Ok(true) })
+    }
+
+    fn limited_send_home(
+        &self,
+        _owner: kemlock_domain::UserId,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Option<String>, kemlock_app::ports::StoreError>,
+    > {
+        Box::pin(async { Ok(Some("https://nas.example.org".to_owned())) })
+    }
+}
+
+#[tokio::test]
+async fn a_replica_answers_a_send_with_a_view_limit_as_unavailable_and_serves_one_without() {
+    let mut h = Harness::new().await;
+    let (owner, _) = h.signed_in("ada@example.com").await;
+    let mut limited = text_send("2.limited");
+    limited["maxAccessCount"] = json!(3);
+    let limited = create(&h, &owner, limited).await;
+    let open = create(&h, &owner, text_send("2.open")).await;
+    let limited_token = recipient_token(&h, limited["id"].as_str().expect("id"));
+    let open_token = recipient_token(&h, open["id"].as_str().expect("id"));
+
+    let view: kemlock_app::federation_view::SharedView = std::sync::Arc::new(ReplicaView);
+    h.router = h.router.clone().layer(axum::Extension(view));
+
+    // Vaultwarden's answer for a Send that can't be reached: nothing is counted.
+    let (status, body) = h
+        .json("POST", "/api/sends/access", Some(&limited_token), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["message"], "Send does not exist or is no longer available");
+    let (status, _) = h
+        .json("POST", "/api/sends/access/file/abc", Some(&limited_token), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, served) = h
+        .json("POST", "/api/sends/access", Some(&open_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{served}");
+    let (_, listed) = h
+        .json("GET", &format!("/api/sends/{}", limited["id"].as_str().expect("id")), Some(&owner), None)
+        .await;
+    assert_eq!(listed["accessCount"], 0, "the refused access counted no view");
+}

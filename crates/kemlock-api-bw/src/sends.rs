@@ -21,6 +21,7 @@ use crate::cipher::{display_size, lcase_keys};
 use crate::dates::{format_date, parse_date};
 use crate::env::{random_bytes, random_hex, random_uuid};
 use crate::error::{BwError, BwResult};
+use crate::fed_view::MaybeView;
 use crate::orgs::policy;
 use crate::password::{hash_password, verify_password};
 use crate::routes::{EmptyResult, JsonResult, header_text, ok, parse};
@@ -896,8 +897,31 @@ async fn reachable<S: BwStore>(app: &App<S>, headers: &HeaderMap) -> BwResult<Se
     Ok(send)
 }
 
-async fn post_access<S: BwStore>(State(app): State<App<S>>, headers: HeaderMap) -> JsonResult {
+/// A Send with a view limit is opened at its home only: a replica counting views of its own would
+/// allow the whole limit again. Answered as an unavailable Send, as Vaultwarden does, so the app
+/// shows its usual "does not exist or is no longer available" and the recipient tries the home.
+async fn refuse_if_limited_elsewhere(
+    view: Option<kemlock_app::federation_view::SharedView>,
+    send: &SendRecord,
+) -> BwResult<()> {
+    let (Some(view), true, Some(owner)) = (view, send.max_access_count.is_some(), send.user)
+    else {
+        return Ok(());
+    };
+    match view.limited_send_home(owner).await {
+        Ok(None) => Ok(()),
+        Ok(Some(_)) => Err(inaccessible()),
+        Err(e) => Err(BwError::from(SendError(e.to_string()))),
+    }
+}
+
+async fn post_access<S: BwStore>(
+    State(app): State<App<S>>,
+    MaybeView(view): MaybeView,
+    headers: HeaderMap,
+) -> JsonResult {
     let mut send = reachable(&app, &headers).await?;
+    refuse_if_limited_elsewhere(view, &send).await?;
     // A file's access is counted when its link is asked for.
     if send.kind == TYPE_TEXT {
         send = app
@@ -925,9 +949,11 @@ async fn touch_owner<S: BwStore>(app: &App<S>, send: &SendRecord) {
 async fn post_access_file<S: BwStore>(
     State(app): State<App<S>>,
     Path(file_id): Path<String>,
+    MaybeView(view): MaybeView,
     headers: HeaderMap,
 ) -> JsonResult {
     let send = reachable(&app, &headers).await?;
+    refuse_if_limited_elsewhere(view, &send).await?;
     if send.kind != TYPE_FILE {
         return Err(BwError::msg("Send is not a file type send."));
     }
