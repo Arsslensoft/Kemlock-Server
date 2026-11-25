@@ -33,8 +33,13 @@ export interface AttachmentEntry {
   kemlockFile?: string | undefined;
   /** The bytes still to encrypt and upload: only on a file chosen in this form. */
   file?: Blob | undefined;
-  /** Keys of a stored attachment this form doesn't know, kept as they were. */
-  extra?: Record<string, unknown> | undefined;
+  /**
+   * A stored entry as the body holds it, written back exactly as it was: no key added, none
+   * reordered, no missing value filled in. The members above are what the form shows of it.
+   */
+  raw?: Record<string, unknown> | undefined;
+  /** Where the entry was in the body's list, so it is matched to its place when written back. */
+  origin?: number | undefined;
 }
 
 export const attachmentSchema = z.object({
@@ -47,15 +52,15 @@ export const attachmentSchema = z.object({
   sha256: z.string().optional(),
   kemlockFile: z.string().optional(),
   file: z.custom<Blob>((value) => typeof Blob !== 'undefined' && value instanceof Blob).optional(),
-  extra: z.record(z.string(), z.unknown()).optional(),
+  raw: z.record(z.string(), z.unknown()).optional(),
+  origin: z.number().optional(),
 });
 
 /** How many files a note holds, as the Kemlock app limits it. */
 export const MAX_ATTACHMENTS = 100;
 
-const KNOWN = new Set(['id', 'name', 'size', 'type', 'key', 'addedAt', 'sha256', 'kemlockFile']);
-
-function entryOf(raw: unknown): AttachmentEntry | undefined {
+/** The entry a body's object shows, or undefined for what this form can't show (it stays in the body). */
+function entryOf(raw: unknown, origin?: number): AttachmentEntry | undefined {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return undefined;
   const body = raw as Record<string, unknown>;
   const text = (key: string) => (typeof body[key] === 'string' ? (body[key] as string) : '');
@@ -63,7 +68,6 @@ function entryOf(raw: unknown): AttachmentEntry | undefined {
   const addedAt = body['addedAt'];
   const server = text('kemlockFile');
   if (text('name') === '' && server === '') return undefined;
-  const extra = Object.fromEntries(Object.entries(body).filter(([key]) => !KNOWN.has(key)));
   return {
     id: text('id'),
     name: text('name'),
@@ -73,7 +77,8 @@ function entryOf(raw: unknown): AttachmentEntry | undefined {
     addedAt: typeof addedAt === 'number' && Number.isFinite(addedAt) ? addedAt : 0,
     ...(text('sha256') !== '' ? { sha256: text('sha256') } : {}),
     ...(server !== '' ? { kemlockFile: server } : {}),
-    ...(Object.keys(extra).length > 0 ? { extra } : {}),
+    raw: body,
+    ...(origin !== undefined ? { origin } : {}),
   };
 }
 
@@ -81,7 +86,12 @@ function entryOf(raw: unknown): AttachmentEntry | undefined {
 export function readAttachments(data: ItemData | null | undefined): AttachmentEntry[] {
   const list = data?.['attachments'];
   if (!Array.isArray(list)) return [];
-  return list.map(entryOf).filter((entry): entry is AttachmentEntry => entry !== undefined);
+  const out: AttachmentEntry[] = [];
+  list.forEach((raw, index) => {
+    const entry = entryOf(raw, index);
+    if (entry) out.push(entry);
+  });
+  return out;
 }
 
 /** The file of a File item. */
@@ -102,10 +112,13 @@ export function newAttachment(file: File, now: number = Date.now()): AttachmentE
   };
 }
 
-/** What the body holds for an entry: the keys of the app's attachment, and what it didn't know. */
+/**
+ * What the body holds for an entry. A stored entry is written back as it was read; a new one gets
+ * the keys of the app's attachment.
+ */
 export function entryBody(entry: AttachmentEntry): Record<string, unknown> {
+  if (entry.raw !== undefined) return entry.raw;
   return {
-    ...(entry.extra ?? {}),
     id: entry.id,
     name: entry.name,
     size: entry.size,
@@ -127,27 +140,51 @@ export function pendingEntries(entries: readonly AttachmentEntry[]): AttachmentE
   return entries.filter((entry) => entry.file !== undefined);
 }
 
-/** The server's ids of the files the person removed: stored before, and not in `after`. */
-export function removedServerFiles(
-  before: readonly AttachmentEntry[],
-  after: readonly AttachmentEntry[],
-): string[] {
-  const kept = new Set(after.map((entry) => entry.id));
-  return before
-    .filter((entry) => !kept.has(entry.id) && entry.kemlockFile !== undefined)
-    .map((entry) => entry.kemlockFile as string);
+/** The entries of a body that the server holds a file for: those that name a `kemlockFile`. */
+export function namedEntries(data: ItemData | null | undefined): AttachmentEntry[] {
+  const file = readFileEntry(data);
+  return [...readAttachments(data), ...(file ? [file] : [])].filter((entry) => entry.kemlockFile !== undefined);
 }
 
-/** The `attachments` member for a note: its stored entries, and nothing when it has none. */
-export function noteAttachmentFields(entries: readonly AttachmentEntry[]): ItemData {
-  const stored = storedEntries(entries).map(entryBody);
-  return { attachments: stored.length > 0 ? stored : undefined };
+/** The server's ids of the files a body names. */
+export function serverFileIds(data: ItemData | null | undefined): string[] {
+  return namedEntries(data).map((entry) => entry.kemlockFile as string);
+}
+
+/**
+ * The `attachments` member for a note: its stored entries, each where it was in the list, and
+ * after them the new ones. An object the form can't show (not an attachment this app knows) stays
+ * where it was, and a note left with none writes nothing.
+ */
+export function noteAttachmentFields(
+  entries: readonly AttachmentEntry[],
+  existing?: ItemData | null,
+): ItemData {
+  const stored = storedEntries(entries);
+  const original = existing?.['attachments'];
+  const out: unknown[] = [];
+  const placed = new Set<AttachmentEntry>();
+  if (Array.isArray(original)) {
+    original.forEach((raw, index) => {
+      if (entryOf(raw, index) === undefined) {
+        out.push(raw);
+        return;
+      }
+      const kept = stored.find((entry) => entry.origin === index && !placed.has(entry));
+      if (kept) {
+        placed.add(kept);
+        out.push(entryBody(kept));
+      }
+    });
+  }
+  for (const entry of stored) if (!placed.has(entry)) out.push(entryBody(entry));
+  return { attachments: out.length > 0 ? out : undefined };
 }
 
 const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
 
-/** `2.4 MB`: decimal units, one decimal from a megabyte up. */
-export function formatSize(bytes: number): string {
+/** `2.4 MB`: decimal units, one decimal from a megabyte up, the number written for `locale`. */
+export function formatSize(bytes: number, locale = 'en'): string {
   let value = bytes;
   let unit = 0;
   while (value >= 1000 && unit < UNITS.length - 1) {
@@ -155,14 +192,46 @@ export function formatSize(bytes: number): string {
     unit += 1;
   }
   const digits = unit >= 2 && value < 100 ? 1 : 0;
-  const number = new Intl.NumberFormat('en', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits });
   return `${number.format(value)} ${UNITS[unit]}`;
 }
 
-/** `PDF` for `lease.pdf`; the media type's subtype when the name has no extension. */
+const KINDS_BY_EXTENSION: Record<string, string> = {
+  txt: 'Text',
+  md: 'Text',
+  pdf: 'PDF',
+  png: 'Image',
+  jpg: 'Image',
+  jpeg: 'Image',
+  gif: 'Image',
+  webp: 'Image',
+  svg: 'Image',
+  mp3: 'Audio',
+  wav: 'Audio',
+  m4a: 'Audio',
+  flac: 'Audio',
+  mp4: 'Video',
+  mov: 'Video',
+  webm: 'Video',
+  mkv: 'Video',
+};
+
+/**
+ * What kind of file it is, in a word: "Text", "PDF", "Image", "Audio", "Video"; any other file by
+ * its extension in capitals (`ZIP`), or by its media type's subtype when it has no extension.
+ */
 export function typeLabel(entry: Pick<AttachmentEntry, 'name' | 'type'>): string {
-  const sub = entry.type?.split('/')[1]?.split(/[;+]/)[0] ?? '';
-  const ext = entry.name.includes('.') ? (entry.name.split('.').pop() ?? '') : '';
+  const media = entry.type ?? '';
+  if (media === 'application/pdf') return 'PDF';
+  if (media === 'text/plain') return 'Text';
+  const family = media.split('/')[0];
+  if (family === 'image' || family === 'audio' || family === 'video') {
+    return family.charAt(0).toUpperCase() + family.slice(1);
+  }
+  const ext = entry.name.includes('.') ? (entry.name.split('.').pop() ?? '').toLowerCase() : '';
+  const known = KINDS_BY_EXTENSION[ext];
+  if (known !== undefined) return known;
+  const sub = media.split('/')[1]?.split(/[;+]/)[0] ?? '';
   const label = ext.length > 0 && ext.length <= 5 ? ext : sub;
   return label ? label.toUpperCase() : '';
 }
