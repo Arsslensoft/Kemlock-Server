@@ -17,7 +17,8 @@
 //! The browser makes everything secret: the root key stays, and is wrapped again under the new
 //! master key, with a new OPAQUE record for the password (or for the new address, which OPAQUE
 //! binds the record to). The server checks the password again before it writes, the way erasing
-//! the account does (`reauth.rs`), validates what it can without opening anything, and writes the
+//! the account does (`reauth.rs`), and with a second step on a fresh proof of it beside the
+//! password, as erasing does too; it validates what it can without opening anything, and writes the
 //! records in one conditional step. The registration's ticket (sealed, from `credentials/start`)
 //! binds it to the account, the DPoP key, the address and the next few minutes, and must come
 //! back with the change. A new address takes effect only when the link mailed to it is opened, and
@@ -29,9 +30,9 @@
 
 use super::guard;
 use super::reauth::reauthenticate;
-use super::two_step::nonce_header;
+use super::two_step::{nonce_header, require_proof_via_api};
 use super::devices::token_response;
-use crate::dto::{KdfDto, TokenResponse, decode};
+use crate::dto::{FreshProof, KdfDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, ClientIp};
 use crate::openapi::ProblemDoc;
 use crate::problem::Problem;
@@ -43,7 +44,7 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router, middleware};
 use kemlock_app::AppError;
 use kemlock_app::devices::{KeyCopyRepo, SignOutDevice};
-use kemlock_app::ports::{Clock, Event, EventLog, TokenSigner, UserRepo};
+use kemlock_app::ports::{Clock, Event, EventLog, TokenSigner, TwoFactorRepo, UserRepo};
 use kemlock_app::profile::{
     ConfirmEmailChange, Credentials, EmailChanges, NewCredentials, OtherDevices, Profile,
     ProfileError, ProfileRepo, ProfileView,
@@ -125,10 +126,13 @@ pub(crate) struct ProfileDto {
     compatible: bool,
     /// The address a link was mailed to, while it can still be opened.
     pending_email: Option<String>,
+    /// The account has a second step on: changing the master password or the address asks a fresh
+    /// proof of it (a code, a security key or a passkey) beside the password.
+    two_step: bool,
 }
 
 impl ProfileDto {
-    fn of(view: &ProfileView) -> Self {
+    fn of(view: &ProfileView, two_step: bool) -> Self {
         Self {
             user_id: view.user.0,
             email: view.email.as_str().to_owned(),
@@ -137,6 +141,7 @@ impl ProfileDto {
             has_password: view.has_password,
             compatible: view.compatible,
             pending_email: view.pending_email.as_ref().map(|e| e.as_str().to_owned()),
+            two_step,
         }
     }
 }
@@ -185,6 +190,10 @@ pub(crate) struct ChangePasswordRequest {
     /// What `POST /account/credentials/start` answered as `ticket`, for a registration made with no
     /// `email`, unread.
     ticket: String,
+    /// A fresh proof of the second step, needed beside the password when the account has one on:
+    /// the code mailed by `POST /kem/v1/account/two-factor/proof`, a current code of the
+    /// authenticator app, the recovery code, or a security key's or passkey's answer. Works once.
+    proof: Option<FreshProof>,
     /// End the sessions of every other device at once, and get new tokens for this one in the
     /// answer. Defaults to false.
     #[serde(default)]
@@ -217,6 +226,9 @@ pub(crate) struct ChangeEmailRequest {
     wrapped_root_key: String,
     /// What `POST /account/credentials/start` answered as `ticket` for this `email`, unread.
     ticket: String,
+    /// A fresh proof of the second step, needed beside the password when the account has one on,
+    /// of the same kinds as for changing the password. Works once.
+    proof: Option<FreshProof>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -389,6 +401,46 @@ where
         .ok_or_else(|| Problem::from(AppError::Unauthorized))
 }
 
+/// Whether the account has a second step on.
+async fn second_step_on<S, P, K>(api: &Api<S, P, K>, user: UserId) -> Result<bool, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    Ok(TwoFactorRepo::list(&api.store, user)
+        .await
+        .map_err(AppError::from)?
+        .iter()
+        .any(|row| row.enabled))
+}
+
+/// The fresh proof a second step asks beside the password, as erasing the account asks it: with a
+/// second step on, the request must carry one (said before the password is spent, so a refusal that
+/// can be known costs the person nothing) and `Some` gives it back to be checked once the password
+/// has been; with none on, whatever was sent is not needed and nothing is asked.
+async fn proof_needed<'a, S, P, K>(
+    api: &Api<S, P, K>,
+    user: UserId,
+    given: Option<&'a FreshProof>,
+) -> Result<Option<&'a FreshProof>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    if !second_step_on(api, user).await? {
+        return Ok(None);
+    }
+    match given.filter(|proof| !proof.is_blank()) {
+        Some(proof) => Ok(Some(proof)),
+        None => Err(AppError::Invalid(
+            "a fresh proof of the second step is needed beside the password",
+        )
+        .into()),
+    }
+}
+
 // ---- handlers ----
 
 async fn handle_show<S, P, K, R>(
@@ -404,7 +456,8 @@ where
 {
     guard(&api.limits.proof, &ip_key(authed.ip), api.now())?;
     let view = profile(&api, &repos).show(authed.actor.user).await?;
-    Ok(Json(ProfileDto::of(&view)))
+    let two_step = second_step_on(&api, authed.actor.user).await?;
+    Ok(Json(ProfileDto::of(&view, two_step)))
 }
 
 async fn handle_rename<S, P, K, R>(
@@ -432,7 +485,8 @@ where
         None,
     )
     .await;
-    Ok(Json(ProfileDto::of(&view)))
+    let two_step = second_step_on(&api, authed.actor.user).await?;
+    Ok(Json(ProfileDto::of(&view, two_step)))
 }
 
 async fn handle_credentials_start<S, P, K, R>(
@@ -482,6 +536,7 @@ where
     let credentials = credentials(&api, &repos);
     // What can be known to be wrong is said before the password is spent.
     credentials.check(user, &ticket, &authed.jkt).await?;
+    let proof = proof_needed(&api, user, request.proof.as_ref()).await?;
     let account = account_of(&api, &authed).await?;
     reauthenticate(
         &api,
@@ -491,6 +546,11 @@ where
         &request.finalization,
     )
     .await?;
+    // With a second step on, the password alone is not enough: a stolen session and a guessed
+    // password must not change it.
+    if let Some(proof) = proof {
+        require_proof_via_api(&api, user, proof, true).await?;
+    }
     let changed = credentials
         .change_password(user, new, &ticket, &authed.jkt, request.sign_out_others)
         .await?;
@@ -540,6 +600,7 @@ where
     changes
         .check(user, &request.email, &ticket, &authed.jkt)
         .await?;
+    let proof = proof_needed(&api, user, request.proof.as_ref()).await?;
     // Three asks an hour per account, whether the address is free or not: asking is how a person
     // would try addresses, and each ask mails someone.
     guard(&api.limits.email_change, &user.to_string(), api.now())?;
@@ -552,6 +613,9 @@ where
         &request.finalization,
     )
     .await?;
+    if let Some(proof) = proof {
+        require_proof_via_api(&api, user, proof, true).await?;
+    }
     let asked = changes
         .request(user, &request.email, new, &ticket, &authed.jkt)
         .await?;
@@ -699,7 +763,7 @@ fn doc_credentials_start() {}
     request_body = ChangePasswordRequest,
     responses(
         (status = 200, description = "The password's records are replaced; the root key and its version stay. With `signOutOthers` the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null", body = ChangedPasswordDto),
-        (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; the settings, the wrap or the upload are malformed", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; a second step is on and the proof is missing, wrong or spent; the settings, the wrap or the upload are malformed", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "`account-changed`: the account was written meanwhile and nothing was; ask again", body = ProblemDoc, content_type = "application/problem+json"),
@@ -714,7 +778,7 @@ fn doc_change_password() {}
     request_body = ChangeEmailRequest,
     responses(
         (status = 202, description = "The link is mailed to the new address; nothing changes until it is opened. The same answer whether or not another account has the address: that address is mailed a notice that says so instead of the link", body = EmailChangeAskedDto),
-        (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; the address, the settings, the wrap or the upload are malformed, or the address is the account's own", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; a second step is on and the proof is missing, wrong or spent; the address, the settings, the wrap or the upload are malformed, or the address is the account's own", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`sso-managed`, `compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "`mail-off`: the server sends no mail", body = ProblemDoc, content_type = "application/problem+json"),

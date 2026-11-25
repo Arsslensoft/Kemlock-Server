@@ -118,16 +118,22 @@ The routes need a session (`DPoP` and an access token); the one marked "no sessi
 the mail client. Every change that writes also needs the password again, as erasing the account does:
 `loginState` and `finalization` are the last two messages of a fresh OPAQUE login
 (`POST /kem/v1/auth/opaque/start` first, with the same device key). A login state works once, a
-wrong password counts against the account like a wrong sign-in, and a second step is not asked: the
-session already passed it.
+wrong password counts against the account like a wrong sign-in. With a second step on, a fresh
+proof of it is asked beside the password, exactly as erasing the account asks it: `proof` is the code mailed by
+`POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app, the recovery code,
+or a security key's or passkey's answer as `{"webauthn": …}`, and works once. The profile says
+whether one is on (`twoStep`). A request with a second step on and no proof is refused with
+`400 invalid-request` before the login state is spent; the proof is checked once the password is. A
+stolen session and a guessed password are therefore not enough to take the account's password or
+address over.
 
 | Route | |
 |---|---|
-| `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened. |
+| `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail, twoStep}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened, `twoStep` when the account has a second step on. |
 | `PATCH /kem/v1/account/profile` | `{name}`: trimmed, blank clears it, at most 100 characters and no control characters. Answers the profile. `403 sso-managed` for an identity provider's account. Event `account.name_changed`. |
 | `POST /kem/v1/account/credentials/start` | `{request, email?}`: OPAQUE's `RegistrationResponse` for the account's own address, or for `email`, which must be well formed and not the account's own (`400`). Answers `{response, ticket}`, and answers the same for an address another account has (see "No account enumeration"). |
-| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked when `signOutOthers` was true, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
-| `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey, ticket}` with `upload` registered under `email` and `ticket` asked for it: keeps the change as pending and mails the new address. `202 {pendingEmail, expiresAt}`, for an address that has an account too. Three asks an hour per account. Event `account.email_change_requested`. |
+| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked when `signOutOthers` was true, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
+| `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?}` with `upload` registered under `email` and `ticket` asked for it: keeps the change as pending and mails the new address. `202 {pendingEmail, expiresAt}`, for an address that has an account too. Three asks an hour per account. Event `account.email_change_requested`. |
 | `DELETE /kem/v1/account/email` | Takes the pending change back. `204`, also when there was none. |
 | `POST /kem/v1/account/email/confirm` | **No session.** `{token}`: opens the link. `200 {email}`. `409 account-changed` when the account was written meanwhile (the link still works). Event `account.email_changed`. |
 
