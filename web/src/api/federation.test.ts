@@ -206,6 +206,24 @@ describe('overviewOf', () => {
     expect(down.peers[0]?.offlineSince).toBe(1_800);
   });
 
+  it('reads what the probes found: offline, slow, and when the peer last answered', () => {
+    const states = (p: WirePeer) => overviewOf(overview({ peers: [p] })).peers[0];
+    expect(states(peer({ health: 'online', latencyMs: 40 }))).toMatchObject({
+      state: 'online',
+      lastSeen: 1_500,
+      latencyMs: 40,
+    });
+    expect(states(peer({ health: 'degraded' }))?.state).toBe('degraded');
+    expect(states(peer({ health: 'offline', failingSince: 1_900 }))).toMatchObject({
+      state: 'offline',
+      offlineSince: 1_900,
+    });
+    // A server that predates the probes says nothing, and the peer reads as before.
+    expect(states(peer())).toMatchObject({ state: 'online', latencyMs: null });
+    // A revoked peer stays revoked whatever the probes say.
+    expect(states(peer({ state: 'revoked', health: 'offline' }))?.state).toBe('revoked');
+  });
+
   it('flags a peer that offered another key', () => {
     const status = {
       lastAttempt: 2_000,
