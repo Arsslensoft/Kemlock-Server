@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { registerPasskey, registerSecurityKey } from './webauthn';
+import { proveWithKey, registerPasskey, registerSecurityKey } from './webauthn';
 
 function deps(prfOutput?: Uint8Array) {
   const passkeys = {
@@ -70,5 +70,23 @@ describe('registerSecurityKey', () => {
     await registerSecurityKey({ keys, create }, 'Key');
     expect(create).toHaveBeenCalledWith({ challenge: 'AAAA' });
     expect(keys.confirm).toHaveBeenCalledWith('Key', { id: 'k' });
+  });
+});
+
+describe('proveWithKey', () => {
+  it('asks for options, has the key answer them, and returns the { webauthn } proof', async () => {
+    const options = vi.fn(async () => ({ challenge: 'AAAA', allowCredentials: [] }));
+    const assert = vi.fn(async () => ({ id: 'c', response: { signature: 's' } }));
+    // jsdom has no WebAuthn: say this browser has it.
+    vi.stubGlobal('PublicKeyCredential', function PublicKeyCredential() {});
+    vi.stubGlobal('navigator', { credentials: { get: () => undefined } });
+    try {
+      const proof = await proveWithKey({ options, assert });
+      expect(options).toHaveBeenCalledOnce();
+      expect(assert).toHaveBeenCalledWith({ challenge: 'AAAA', allowCredentials: [] });
+      expect(proof).toEqual({ webauthn: { id: 'c', response: { signature: 's' } } });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
