@@ -139,6 +139,19 @@ describe('SsoView', () => {
     expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument();
   });
 
+  it('shows an error as the issuer is typed, and takes it away once the value is right', async () => {
+    view();
+    const user = userEvent.setup();
+    const issuer = screen.getByLabelText('Issuer URL');
+    await user.clear(issuer);
+    await user.type(issuer, 'nope');
+    expect(issuer).toHaveAttribute('aria-invalid', 'true');
+    await user.clear(issuer);
+    await user.type(issuer, 'https://id.example.org');
+    expect(issuer).not.toHaveAttribute('aria-invalid');
+    expect(screen.queryByText(/Type a web address/)).not.toBeInTheDocument();
+  });
+
   it('marks a bad issuer invalid and describes it by its error', async () => {
     view();
     const user = userEvent.setup();

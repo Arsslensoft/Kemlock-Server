@@ -102,9 +102,17 @@ export function SsoView({
 }: SsoViewProps) {
   const t = useT();
   const [form, setForm] = useState<SsoForm>(() => formFrom(config));
-  const [errors, setErrors] = useState<SsoErrors>({});
+  const [tried, setTried] = useState(false);
   const [domain, setDomain] = useState('');
-  const dirty = JSON.stringify(form) !== JSON.stringify(formFrom(config));
+  const saved0 = formFrom(config);
+  const dirty = JSON.stringify(form) !== JSON.stringify(saved0);
+  // Checked as it is typed: a field that changed shows its error at once, and every field does
+  // once Save was tried. An error goes as soon as the value is right.
+  const found = checkSso(form);
+  const errors: SsoErrors = {};
+  for (const key of Object.keys(found) as Array<keyof SsoErrors>) {
+    if (tried || form[key] !== saved0[key] || form.enabled !== saved0.enabled) errors[key] = found[key];
+  }
   const set = <K extends keyof SsoForm>(key: K, value: SsoForm[K]) => setForm((f) => ({ ...f, [key]: value }));
   const setRule = (index: number, patch: Partial<GroupRule>) =>
     set(
@@ -113,8 +121,7 @@ export function SsoView({
     );
 
   function save(): void {
-    const found = checkSso(form);
-    setErrors(found);
+    setTried(true);
     if (Object.keys(found).length === 0) onSave(updateFrom(form));
   }
 
@@ -136,7 +143,7 @@ export function SsoView({
               <Button
                 onPress={() => {
                   setForm(formFrom(config));
-                  setErrors({});
+                  setTried(false);
                 }}
               >
                 {t('admin.discard')}
