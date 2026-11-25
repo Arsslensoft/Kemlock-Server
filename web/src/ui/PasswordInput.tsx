@@ -18,7 +18,7 @@ export function PasswordInput({ ref, isDisabled, ...rest }: PasswordInputProps) 
   const [shown, setShown] = useState(false);
   // A disabled field (`isDisabled` on its TextField) tells its input through this context, so the
   // eye is as disabled as the box it sits in.
-  const field = useContext(InputContext) as { disabled?: boolean } | null;
+  const field = useContext(InputContext) as unknown as { disabled?: boolean } | null;
   const disabled = rest.disabled === true || isDisabled === true || field?.disabled === true;
   return (
     <span className="pw">
