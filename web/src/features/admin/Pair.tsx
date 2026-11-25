@@ -27,8 +27,15 @@ export function isPeerUrl(address: string): boolean {
   const url = new URL(address);
   return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname !== '';
 }
-/** The one-time code: three groups of four letters or digits. */
-const CODE_PATTERN = '[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}';
+/**
+ * Whether typed text is a one-time code, read as the server reads it: spaces and dashes are
+ * ignored, case does not matter, O, I and L stand for 0, 1 and 1, and twelve characters of
+ * Crockford's base32 remain.
+ */
+export function isPairingCode(input: string): boolean {
+  const text = input.replace(/[s-]/g, '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1');
+  return /^[0-9A-HJKMNP-TV-Z]{12}$/.test(text);
+}
 
 /** The words to compare, and each key's short form. */
 export interface Comparison {
@@ -124,7 +131,7 @@ export function PairView({
   const addressError: MessageId | undefined =
     tried && !isPeerUrl(address.trim()) ? 'admin.pair.error.address' : undefined;
   const codeError: MessageId | undefined =
-    tried && !new RegExp(`^${CODE_PATTERN}$`).test(typed.trim()) ? 'admin.pair.error.code' : undefined;
+    tried && !isPairingCode(typed) ? 'admin.pair.error.code' : undefined;
   const [wordsMatch, setWordsMatch] = useState(false);
   const [acks, setAcks] = useState<PairingAck[]>([]);
   const [offer, setOffer] = useState<string[]>([]);
@@ -225,7 +232,7 @@ export function PairView({
                 event.preventDefault();
                 setTried(true);
                 const goodAddress = isPeerUrl(address.trim());
-                const goodCode = new RegExp(`^${CODE_PATTERN}$`).test(typed.trim());
+                const goodCode = isPairingCode(typed);
                 if (goodAddress && goodCode) onConnect(address.trim(), typed.trim());
               }}
             >
@@ -248,8 +255,6 @@ export function PairView({
                   value={typed}
                   onChange={setTyped}
                   placeholder="XXXX-XXXX-XXXX"
-                  pattern={CODE_PATTERN}
-                  maxLength={14}
                   required
                   error={codeError}
                 />

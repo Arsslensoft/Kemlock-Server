@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PairingState } from '@/api/admin';
 import { renderWithIntl } from '@/test/render';
 import { NOW, SESSION, peer } from './fixtures';
-import { ALL_ACKS, type CompareFn, PairView, canConfirm, compareKeys, isPeerUrl } from './Pair';
+import { ALL_ACKS, type CompareFn, PairView, canConfirm, compareKeys, isPairingCode, isPeerUrl } from './Pair';
 
 const compare: CompareFn = async () => ({
   words: 'tulip-anchor-rover-mint-ladle-orbit',
@@ -82,6 +82,17 @@ describe('isPeerUrl', () => {
     expect(isPeerUrl('https://[2001:db8::1]:8443')).toBe(true);
     expect(isPeerUrl('peer.example.org')).toBe(false);
     expect(isPeerUrl('ftp://peer.example.org')).toBe(false);
+  });
+});
+
+describe('isPairingCode', () => {
+  it('reads a code as the server does', () => {
+    expect(isPairingCode('7KP2-WQ4N-D8RJ')).toBe(true);
+    expect(isPairingCode(' 7kp2 wq4n d8rj ')).toBe(true);
+    expect(isPairingCode('7KP2WQ4ND8RJ')).toBe(true);
+    expect(isPairingCode('OIL2-WQ4N-D8RJ')).toBe(true);
+    expect(isPairingCode('7KP2-WQ4N-D8RU')).toBe(false);
+    expect(isPairingCode('7KP2-WQ4N')).toBe(false);
   });
 });
 
