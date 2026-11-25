@@ -4,11 +4,10 @@ import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
-import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/lists.css';
 import { useVault, useVaultActions } from './hooks';
-import { kindIcon, kindLabel, shortDate, tileLetter, timeAgo } from './kinds';
+import { kindLabel, shortDate, tileLetter, timeAgo } from './kinds';
 import { inVault, knownVault } from './listFilters';
 import { VaultPill, VaultSelect } from './VaultSelect';
 import { useVaultFilter } from './vaultFilter';
@@ -61,12 +60,7 @@ export function TrashTable({
                     <span>{name}</span>
                   </Link>
                 </td>
-                <td>
-                  <span className="kind">
-                    <Icon name={kindIcon(item.kind)} />
-                    {t(kindLabel(item.kind))}
-                  </span>
-                </td>
+                <td>{t(kindLabel(item.kind))}</td>
                 <td>
                   <VaultPill label={vaults.labelOf(item.owner)} />
                 </td>
