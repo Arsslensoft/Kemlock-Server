@@ -188,6 +188,15 @@ export function createSession(options: SessionOptions = {}) {
     get: () => tokens,
     set: (next) => {
       tokens = next;
+      if (state.status === 'signed-out') {
+        // A sign-in sets the tokens and calls `signedIn` straight after, which stores them. A
+        // refresh that settles after sign-out sets them with nothing following: they must not
+        // reach the storage, and are dropped once this turn is over.
+        queueMicrotask(() => {
+          if (state.status === 'signed-out' && tokens === next) tokens = undefined;
+        });
+        return;
+      }
       write(TOKENS_KEY, next);
     },
     clear: () => {
@@ -215,6 +224,7 @@ export function createSession(options: SessionOptions = {}) {
     signedIn(info: SignedInInfo): void {
       // A new sign-in has no open keys yet; whatever copy an earlier one left is not trusted.
       remove(ROOT_KEY);
+      if (tokens) write(TOKENS_KEY, tokens);
       const next: SessionState = {
         status: 'locked',
         email: info.email,

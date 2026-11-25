@@ -153,6 +153,25 @@ describe('keeping the vault open across a reload', () => {
     expect(storage.getItem('kemlock.session.tokens')).toBeNull();
   });
 
+  it('does not write tokens that a refresh in flight delivers after sign-out', async () => {
+    const storage = tabStore();
+    const first = await signInAndUnlock(storage);
+    first.session.end();
+    first.session.tokenStore.set({ ...tokens, access: 'late', refresh: 'late' });
+    expect(storage.keys()).toEqual([]);
+    await Promise.resolve();
+    expect(first.session.tokenStore.get()).toBeUndefined();
+  });
+
+  it('still stores the tokens of a sign-in, which are set just before signedIn', () => {
+    const storage = tabStore();
+    const session = createSession({ storage, now: () => NOW });
+    session.tokenStore.set(tokens);
+    session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
+    expect(JSON.parse(storage.getItem('kemlock.session.tokens') ?? 'null')).toEqual(tokens);
+    expect(session.tokenStore.get()).toEqual(tokens);
+  });
+
   it('does not seal a vault that was shut while the keys were being fetched', async () => {
     const storage = tabStore();
     const first = setup(storage);
