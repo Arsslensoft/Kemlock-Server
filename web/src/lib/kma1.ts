@@ -86,3 +86,70 @@ export async function sealKma1(
   }
   return out;
 }
+
+const SEALED_CHUNK = CHUNK + TAG;
+
+/** Why a file did not open: its key, its shape, or because it is not the file this key seals. */
+export class Kma1Error extends Error {
+  constructor(readonly reason: 'key' | 'shape' | 'damaged') {
+    super(
+      reason === 'key'
+        ? 'the file key is not 32 bytes'
+        : reason === 'shape'
+          ? 'not a KMA1 file'
+          : 'the file is damaged, or the key is not its own',
+    );
+    this.name = 'Kma1Error';
+  }
+}
+
+/**
+ * The plaintext of a `KMA1` file, opened with its own key (base64 or base64url text, or the 32 bytes).
+ * Every chunk is opened at its place and the last is marked in its associated data, so a file that
+ * was changed, cut short (even at a chunk boundary), reordered, longer, or opened with another key
+ * fails with `damaged`, and no plaintext is returned.
+ */
+export async function openKma1(key: string | Uint8Array, file: Uint8Array): Promise<Uint8Array> {
+  let raw: Uint8Array;
+  try {
+    raw = typeof key === 'string' ? fileKeyBytes(key) : key;
+  } catch {
+    throw new Kma1Error('key');
+  }
+  if (raw.length !== 32) throw new Kma1Error('key');
+  if (file.length < HEADER + TAG || MAGIC.some((byte, i) => file[i] !== byte)) throw new Kma1Error('shape');
+  const aes = await globalThis.crypto.subtle.importKey('raw', raw as Uint8Array<ArrayBuffer>, 'AES-GCM', false, [
+    'decrypt',
+  ]);
+  const body = file.subarray(HEADER);
+  const count = Math.ceil(body.length / SEALED_CHUNK);
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (let counter = 0; counter < count; counter += 1) {
+      const last = counter === count - 1;
+      const sealed = body.subarray(counter * SEALED_CHUNK, last ? body.length : (counter + 1) * SEALED_CHUNK);
+      const nonce = new Uint8Array(12);
+      nonce.set(file.subarray(MAGIC.length, MAGIC.length + PREFIX));
+      new DataView(nonce.buffer).setUint32(PREFIX, counter);
+      const plain = new Uint8Array(
+        await globalThis.crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: nonce, additionalData: Uint8Array.of(last ? 1 : 0), tagLength: TAG * 8 },
+          aes,
+          sealed as Uint8Array<ArrayBuffer>,
+        ),
+      );
+      parts.push(plain);
+      total += plain.length;
+    }
+  } catch {
+    throw new Kma1Error('damaged');
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
