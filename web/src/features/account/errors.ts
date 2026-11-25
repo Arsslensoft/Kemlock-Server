@@ -5,6 +5,7 @@ import type { MessageId } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { PasskeyError } from '@/lib/passkey';
 import { isUnavailable } from '@/sharing/crypto';
+import { WrongPasswordError } from './profileModel';
 
 export interface Described {
   id: MessageId;
@@ -13,6 +14,7 @@ export interface Described {
 
 export function describeAccountError(error: unknown): Described {
   if (isUnavailable(error)) return { id: 'sharing.unavailable' };
+  if (error instanceof WrongPasswordError) return { id: 'profile.error.wrong' };
   if (error instanceof PasskeyError) {
     return { id: error.reason === 'cancelled' ? 'security.passkeys.cancelled' : 'security.passkeys.unavailable' };
   }
@@ -28,6 +30,21 @@ export function describeAccountError(error: unknown): Described {
         return { id: 'space.error.fingerprint' };
       case 'last-owner':
         return { id: 'space.error.lastOwner' };
+      // Profile: the name, the master password and the address.
+      case 'sso-managed':
+        return { id: 'profile.error.sso' };
+      case 'compatible-account':
+        return { id: 'profile.error.compatible' };
+      case 'no-password':
+        return { id: 'profile.error.noPassword' };
+      case 'email-taken':
+        return { id: 'profile.error.taken' };
+      case 'mail-off':
+        return { id: 'profile.error.mailOff' };
+      case 'mail-failed':
+        return { id: 'profile.error.mailFailed' };
+      case 'invalid-request':
+        return { id: 'profile.error.badRequest' };
       case 'wrong-state':
         return { id: 'space.error.wrongState' };
       case 'stale-key-version':

@@ -18,13 +18,19 @@ export interface DeleteDeps {
   signOut: () => Promise<void>;
 }
 
+/** What proving the password again needs: the server's KDF settings and OPAQUE login, and the worker. */
+export interface ReauthDeps {
+  api: Pick<Api, 'prelogin' | 'opaqueStart'>;
+  crypto: Pick<CryptoPort, 'masterKey' | 'opaqueLoginStart' | 'opaqueLoginFinish'>;
+}
+
 /**
  * The password again, as sign-in asks it: the master key from the server's KDF settings, then the
  * OPAQUE exchange, whose last message the server checks. A wrong password fails here, in the
  * client, as at sign-in.
  */
 export async function reauthenticate(
-  deps: Pick<DeleteDeps, 'api' | 'crypto'>,
+  deps: ReauthDeps,
   email: string,
   password: string,
 ): Promise<PasswordProof> {
