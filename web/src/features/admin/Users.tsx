@@ -168,7 +168,7 @@ export interface UsersViewProps {
  */
 export function isEmail(value: string): boolean {
   const parts = value.split('@');
-  if (parts.length !== 2 || /s/.test(value)) return false;
+  if (parts.length !== 2 || /\s/.test(value)) return false;
   const [local = '', domain = ''] = parts;
   return local !== '' && domain.includes('.') && !domain.startsWith('.') && !domain.endsWith('.');
 }
