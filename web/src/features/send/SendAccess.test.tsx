@@ -75,7 +75,8 @@ describe('SendAccess', () => {
       crypto,
     };
     renderWithIntl(<SendAccess link={{ accessId: ACCESS_ID, key }} deps={deps} />);
-    expect(await screen.findByRole('heading', { name: 'My card', level: 1 })).toBeInTheDocument();
+    // The title is the item's own name, not the Send's.
+    expect(await screen.findByRole('heading', { name: 'Visa', level: 1 })).toBeInTheDocument();
     expect(screen.getByText('Card')).toBeInTheDocument();
     expect(screen.getByText('Sam Doe')).toBeInTheDocument();
     expect(screen.getByText('05/2029')).toBeInTheDocument();

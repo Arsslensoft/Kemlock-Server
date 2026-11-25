@@ -182,14 +182,15 @@ function Opened({
 }) {
   const t = useT();
   const { payload } = send;
+  const envelope = payload.kind === 'text' ? parseEnvelope(payload.text) : null;
   return (
     <div className="stack">
       <div>
-        <h1>{payload.name}</h1>
+        <h1>{envelope ? envelope.name : payload.name}</h1>
         <p className="lede">{t('sendAccess.lede')}</p>
       </div>
-      {payload.kind === 'text' && parseEnvelope(payload.text) ? (
-        <ItemView envelope={parseEnvelope(payload.text) as ItemEnvelope} onCopy={onCopy} />
+      {envelope ? (
+        <ItemView envelope={envelope} onCopy={onCopy} />
       ) : payload.kind === 'text' ? (
         <div className="field">
           <span className="lbl" id="send-access-text-label">
