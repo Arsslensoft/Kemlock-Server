@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { RecoveryKitDto } from '@/api/recoveryKit';
+import type { Proof } from '@/api/twoStep';
 import { useT } from '@/i18n';
 import { displayPiece } from '@/lib/kitPiece';
 import { Button } from '@/ui/Button';
@@ -7,12 +8,15 @@ import { CopyButton } from '@/ui/CopyButton';
 import { Notice } from '@/ui/Notice';
 import { QrCode } from '@/ui/QrCode';
 import { TextInput } from './controls';
+import { type KeyProof, ProofInput, proofBlank, proofValue } from './ProofInput';
 
 export interface RecoveryKitProps {
   /** undefined while loading; null when the account has no kit */
   kit: RecoveryKitDto | null | undefined;
   /** A kit the key worker made that is not kept yet: its pieces are on screen. */
   making: { pieces: string[]; mismatch: boolean } | null;
+  /** Answers a fresh proof with a security key or passkey; undefined when the account has none. */
+  keyProof?: KeyProof | undefined;
   busy: boolean;
   actions: {
     /** Makes a kit in the key worker; true when its pieces are ready to show. */
@@ -21,16 +25,16 @@ export interface RecoveryKitProps {
     /** Mails the one-time code that proves the owner, for replacing or removing a kit. */
     askProof: () => Promise<boolean>;
     /** Keeps the kit when `typed` is one of its pieces; `proof` when it replaces another. */
-    confirm: (typed: string, proof?: string) => Promise<boolean>;
-    remove: (proof: string) => Promise<boolean>;
+    confirm: (typed: string, proof?: Proof) => Promise<boolean>;
+    remove: (proof: Proof) => Promise<boolean>;
   };
 }
 
 /** The Recovery Kit as rows of the two-step card: make, make again, remove. */
-export function RecoveryKitCard({ kit, making, busy, actions }: RecoveryKitProps) {
+export function RecoveryKitCard({ kit, making, busy, keyProof, actions }: RecoveryKitProps) {
   const t = useT();
   const [removing, setRemoving] = useState(false);
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   const [typed, setTyped] = useState('');
   const replacing = kit != null;
 
@@ -86,7 +90,7 @@ export function RecoveryKitCard({ kit, making, busy, actions }: RecoveryKitProps
           className="panel-body kit-sheet"
           onSubmit={(event) => {
             event.preventDefault();
-            void actions.confirm(typed, replacing ? proof.trim() : undefined);
+            void actions.confirm(typed, replacing ? proofValue(proof) : undefined);
           }}
         >
           <Notice tone="warn">{t('security.kit.once')}</Notice>
@@ -111,13 +115,13 @@ export function RecoveryKitCard({ kit, making, busy, actions }: RecoveryKitProps
             <TextInput label={t('security.kit.confirm')} value={typed} onChange={setTyped} mono required />
             {making.mismatch ? <Notice tone="error" live>{t('security.kit.mismatch')}</Notice> : null}
             {replacing ? (
-              <TextInput label={t('security.proof.code')} value={proof} onChange={setProof} mono required />
+              <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} />
             ) : null}
             <div className="actions">
               <Button
                 type="submit"
                 variant="primary"
-                isDisabled={busy || typed.trim() === '' || (replacing && proof.trim() === '')}
+                isDisabled={busy || typed.trim() === '' || (replacing && proofBlank(proof))}
               >
                 {replacing ? t('security.kit.keepNew') : t('security.kit.keep')}
               </Button>
@@ -137,16 +141,16 @@ export function RecoveryKitCard({ kit, making, busy, actions }: RecoveryKitProps
           className="panel-body"
           onSubmit={(event) => {
             event.preventDefault();
-            void actions.remove(proof.trim()).then((done) => {
+            void actions.remove(proofValue(proof)).then((done) => {
               if (done) setRemoving(false);
             });
           }}
         >
           <p className="hint">{t('security.kit.removeBody')}</p>
           <p className="hint">{t('security.kit.proofSent')}</p>
-          <TextInput label={t('security.proof.code')} value={proof} onChange={setProof} mono required />
+          <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} />
           <div className="actions">
-            <Button type="submit" variant="danger" isDisabled={busy || proof.trim() === ''}>
+            <Button type="submit" variant="danger" isDisabled={busy || proofBlank(proof)}>
               {t('security.kit.removeConfirm')}
             </Button>
             <Button isDisabled={busy} onPress={() => void actions.askProof()}>

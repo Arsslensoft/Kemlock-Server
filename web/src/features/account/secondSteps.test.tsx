@@ -253,3 +253,52 @@ describe('SecondStepsCard', () => {
     expect(screen.queryByTestId('recovery-code')).not.toBeInTheDocument();
   });
 });
+
+describe('answering a fresh proof with a security key', () => {
+  const answer = { webauthn: { id: 'c', response: { signature: 's' } } };
+
+  it('asks the server for the key options on a route of its own, and sends the answer as the proof', async () => {
+    type Call = { method: string; path: string; body?: unknown };
+    const request = vi.fn(async (_call: Call) => ({ options: { challenge: 'AAAA' }, keys: [], enabled: false }));
+    const send = vi.fn(async (_call: Call) => undefined);
+    const steps = createSecondStepsApi({ request, send } as never);
+    expect(await steps.proofKeyOptions()).toEqual({ challenge: 'AAAA' });
+    await steps.securityKeyRemove(1, answer);
+    await steps.emailOff(answer);
+    expect(request.mock.calls[0]?.[0]).toMatchObject({
+      method: 'POST',
+      path: '/kem/v1/account/two-factor/proof/webauthn/options',
+    });
+    expect(request.mock.calls[1]?.[0]).toMatchObject({ body: { proof: answer } });
+    expect(send.mock.calls[0]?.[0]).toMatchObject({ body: { proof: answer } });
+  });
+
+  it('offers "Use a security key" only when the account has one, and turns a method off with its answer', async () => {
+    const keyProof = vi.fn(async () => answer);
+    const props = card({ keyProof, setup: { ...setupOff, email: 'sam@example.co' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Turn off' }));
+    expect(screen.getByRole('button', { name: 'Turn it off' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Use a security key' }));
+    expect(keyProof).toHaveBeenCalledOnce();
+    expect(await screen.findByText(/Security key confirmed/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Turn it off' }));
+    expect(props.actions.emailOff).toHaveBeenCalledWith(answer);
+  });
+
+  it('shows no such button for an account without a key', async () => {
+    card({ setup: { ...setupOff, email: 'sam@example.co' } });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Turn off' }));
+    expect(screen.queryByRole('button', { name: 'Use a security key' })).not.toBeInTheDocument();
+  });
+
+  it('shows the recovery code after a key answer', async () => {
+    const keyProof = vi.fn(async () => answer);
+    const props = card({ hasRecoveryCode: true, keyProof });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Show the code' }));
+    await user.click(screen.getByRole('button', { name: 'Use a security key' }));
+    await user.click(await screen.findByRole('button', { name: 'Show the code' }));
+    expect(props.actions.showRecoveryCode).toHaveBeenCalledWith(answer);
+  });
+});

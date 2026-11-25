@@ -6,6 +6,7 @@
 // worker, whose key the token is bound to. The server's DPoP nonce is remembered from every
 // response and retried once on `use-dpop-nonce`; an expired access token is refreshed once.
 import { ApiError, NetworkError } from './errors';
+import type { Proof } from './twoStep';
 import type {
   AccountKeysResponse,
   BatchRequest,
@@ -341,7 +342,7 @@ export function createApi(deps: ApiDeps) {
         mode: 'auth',
       }),
     /** `proof` is the recovery code, asked for when another second step is on already. */
-    totpConfirm: (code: string, proof?: string) =>
+    totpConfirm: (code: string, proof?: Proof) =>
       none({
         method: 'POST',
         path: `${BASE}/account/two-factor/totp/confirm`,

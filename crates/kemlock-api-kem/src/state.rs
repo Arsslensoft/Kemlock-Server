@@ -205,6 +205,10 @@ pub struct Inner<S, P, K> {
     /// code's) check a mailed proof: set by `two_step_router`, which holds the store of codes.
     /// Unset, only what needs no store proves it.
     pub(crate) proofs: std::sync::OnceLock<Arc<dyn crate::routes::two_step::MailedProof>>,
+    /// How a proof by a security key or passkey is checked and its options made: set by
+    /// `passkeys_router`, which holds the relying party and the stored keys. Unset, no such proof
+    /// is accepted.
+    pub(crate) assertions: std::sync::OnceLock<Arc<dyn crate::routes::two_step::AssertionChecker>>,
 }
 
 /// The API's shared state: cheap to clone, handed to every handler. `S` is the store, `P` the
@@ -265,6 +269,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             recorded_use: TimedSet::new(USE_GRANULARITY.whole_seconds(), MAX_USED_STATES),
             resent_invitations: TimedSet::new(RESEND_WINDOW_SECS, MAX_USED_STATES),
             proofs: std::sync::OnceLock::new(),
+            assertions: std::sync::OnceLock::new(),
         })))
     }
 

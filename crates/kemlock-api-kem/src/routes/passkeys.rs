@@ -24,7 +24,7 @@ use super::new_device::announce;
 use super::two_step::{
     ProofRequest, announce_change, proof_steps, require_proof, require_proof_to_add,
 };
-use crate::dto::{DeviceDto, TokenResponse, decode};
+use crate::dto::{DeviceDto, FreshProof, KeyAssertion, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
 use crate::openapi::ProblemDoc;
 use crate::problem::{Problem, rate_limited};
@@ -205,7 +205,7 @@ pub(crate) struct RenameRequest {
 pub(crate) struct SecurityKeyConfirmRequest {
     pub(crate) name: String,
     /// A fresh proof, as a removal takes: needed when a second step is on already.
-    pub(crate) proof: Option<String>,
+    pub(crate) proof: Option<FreshProof>,
     /// The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.create`.
     #[schema(value_type = Object)]
     pub(crate) credential: Value,
@@ -701,7 +701,7 @@ where
         &proof_steps(&api, runtime.repos.clone()),
         authed.actor.user,
         None,
-        request.proof.as_deref(),
+        request.proof.as_ref(),
     )
     .await?;
     let list = security_keys(&api, &runtime)
@@ -855,6 +855,113 @@ where
     Ok(Json(token_response(&tokens, now)))
 }
 
+// ---------------------------------------------------------------------------------------------
+// A security key or passkey as a fresh proof
+
+/// What [`passkeys_router`] registers with the API state, so every route that takes a fresh proof
+/// can check an assertion: the stored keys and the relying party, without the route's own types.
+struct Asserting<S, P, K, R, W> {
+    api: std::sync::Weak<crate::state::Inner<S, P, K>>,
+    repos: R,
+    webauthn: W,
+}
+
+impl<S, P, K, R, W> std::fmt::Debug for Asserting<S, P, K, R, W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Asserting").finish_non_exhaustive()
+    }
+}
+
+type Proving<S, P, R, W> = kemlock_app::passkeys::AssertionProof<S, S, R, W, P, P, R>;
+
+impl<S, P, K, R, W> Asserting<S, P, K, R, W>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+{
+    fn proving(&self, api: &Api<S, P, K>) -> Proving<S, P, R, W> {
+        kemlock_app::passkeys::AssertionProof {
+            keys: SecurityKeys {
+                users: api.store.clone(),
+                two_factor: api.store.clone(),
+                challenges: self.repos.clone(),
+                webauthn: self.webauthn.clone(),
+                seal: api.crypto.clone(),
+                env: api.crypto.clone(),
+                config: api.config.auth,
+            },
+            passkeys: self.repos.clone(),
+        }
+    }
+}
+
+impl<S, P, K, R, W> super::two_step::AssertionChecker for Asserting<S, P, K, R, W>
+where
+    S: Store + Send + Sync,
+    P: Crypto + Send + Sync,
+    K: TokenSigner + Clone + Send + Sync + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+{
+    fn options(
+        &self,
+        user: kemlock_domain::UserId,
+    ) -> kemlock_app::notices::BoxFuture<'_, Result<Value, Problem>> {
+        Box::pin(async move {
+            let Some(api) = Api::upgrade(&self.api) else {
+                return Err(AppError::Unauthorized.into());
+            };
+            Ok(self.proving(&api).options(user).await?)
+        })
+    }
+
+    fn verify(
+        &self,
+        user: kemlock_domain::UserId,
+        response: Vec<u8>,
+    ) -> kemlock_app::notices::BoxFuture<'_, Result<(), kemlock_app::passkeys::SecurityKeyError>>
+    {
+        Box::pin(async move {
+            let Some(api) = Api::upgrade(&self.api) else {
+                return Err(AppError::Unauthorized.into());
+            };
+            self.proving(&api).verify(user, &response).await
+        })
+    }
+}
+
+/// `POST /kem/v1/account/two-factor/proof/webauthn/options`: the request options for answering a
+/// fresh proof with a security key or passkey of the signed-in account. `404` when it has none.
+/// A new challenge replaces the older one; it is good once and for two minutes.
+async fn handle_proof_options<S, P, K, R, W, M>(
+    State(api): State<Api<S, P, K>>,
+    authed: Authed,
+) -> Result<Json<RequestOptionsResponse>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: PasskeyStore,
+    W: WebAuthn + Clone + 'static,
+    M: Send + Sync + 'static,
+{
+    let now = api.now();
+    guard(&api.limits.sign_in, &ip_key(authed.ip), now)?;
+    guard(
+        &api.limits.sign_in,
+        &format!("proof-options:{}", authed.actor.user),
+        now,
+    )?;
+    let Some(checker) = api.assertions.get() else {
+        return Err(AppError::NotFound.into());
+    };
+    let options = checker.options(authed.actor.user).await?;
+    Ok(Json(RequestOptionsResponse { options }))
+}
+
 /// The same `DPoP-Nonce` header every other `/kem/v1` response carries.
 async fn nonce_header<S, P, K>(
     State(api): State<Api<S, P, K>>,
@@ -883,13 +990,19 @@ pub fn passkeys_router<S, P, K, R, W, M>(
     runtime: PasskeyRuntime<R, W, M>,
 ) -> Router
 where
-    S: Store,
-    P: Crypto,
-    K: TokenSigner + Clone + 'static,
+    S: Store + Send + Sync,
+    P: Crypto + Send + Sync,
+    K: TokenSigner + Clone + Send + Sync + 'static,
     R: PasskeyStore,
     W: WebAuthn + Clone + 'static,
     M: MembershipFacts + Clone + 'static,
 {
+    let runtime = Arc::new(runtime);
+    let _ = api.assertions.set(Arc::new(Asserting {
+        api: api.downgrade(),
+        repos: runtime.repos.clone(),
+        webauthn: runtime.webauthn.clone(),
+    }));
     Router::new()
         .route(
             "/kem/v1/auth/passkey/options",
@@ -930,6 +1043,10 @@ where
             post(handle_key_confirm::<S, P, K, R, W, M>),
         )
         .route(
+            "/kem/v1/account/two-factor/proof/webauthn/options",
+            post(handle_proof_options::<S, P, K, R, W, M>),
+        )
+        .route(
             "/kem/v1/auth/two-factor/webauthn/options",
             post(handle_key_step_options::<S, P, K, R, W, M>),
         )
@@ -937,7 +1054,7 @@ where
             "/kem/v1/auth/two-factor/webauthn",
             post(handle_key_step::<S, P, K, R, W, M>),
         )
-        .layer(Extension(Arc::new(runtime)))
+        .layer(Extension(runtime))
         .layer(middleware::from_fn_with_state(
             api.clone(),
             nonce_header::<S, P, K>,
@@ -1058,7 +1175,7 @@ fn doc_key_enrol() {}
     security(("dpop" = [])),
     request_body = SecurityKeyConfirmRequest,
     responses(
-        (status = 200, description = "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)", body = SecurityKeysResponse),
+        (status = 200, description = "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code), or the answer of a security key or passkey as `{\"webauthn\": ...}`", body = SecurityKeysResponse),
         (status = 400, description = "The answer wasn't accepted, no registration is in progress, or a second step is on and the fresh proof is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -1085,6 +1202,18 @@ fn doc_keys_list() {}
 )]
 #[allow(dead_code)]
 fn doc_key_remove() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/account/two-factor/proof/webauthn/options", tag = "account",
+    params(("DPoP" = String, Header, description = "A DPoP proof (RFC 9449) signed by the device key")),
+    responses(
+        (status = 200, description = "Options for `navigator.credentials.get`, listing the account's security keys and passkeys. Send the answer as `{\"webauthn\": <PublicKeyCredential.toJSON()>}` in the `proof` of any request that takes a fresh proof. The challenge is good once and for two minutes; asking again replaces it", body = RequestOptionsResponse),
+        (status = 404, description = "The account has no security key or passkey", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_proof_options() {}
 
 #[utoipa::path(
     post, path = "/kem/v1/auth/two-factor/webauthn/options", tag = "auth",
@@ -1128,6 +1257,7 @@ fn doc_key_step() {}
         doc_key_confirm,
         doc_keys_list,
         doc_key_remove,
+        doc_proof_options,
         doc_key_step_options,
         doc_key_step
     ),
@@ -1147,6 +1277,8 @@ fn doc_key_step() {}
         SecurityKeyDto,
         SecurityKeysResponse,
         ProofRequest,
+        FreshProof,
+        KeyAssertion,
         KeyStepOptionsRequest,
         RequestOptionsResponse,
         KeyStepRequest,

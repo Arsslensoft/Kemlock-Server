@@ -3,6 +3,7 @@
 // takes the same fresh proof turning a second step off does (`POST .../two-factor/proof`).
 import type { Api } from './client';
 import { ApiError } from './errors';
+import type { Proof } from './twoStep';
 
 /** `GET /kem/v1/account/recovery-kit`. */
 export interface RecoveryKitDto {
@@ -43,9 +44,9 @@ export function createRecoveryKitApi(http: Http) {
     },
     create: (kit: NewKitInput) => http.request<RecoveryKitDto>({ method: 'POST', path, body: kit }),
     /** A new kit in place of the old one; the old pieces stop working. */
-    replace: (kit: NewKitInput, proof: string) =>
+    replace: (kit: NewKitInput, proof: Proof) =>
       http.request<RecoveryKitDto>({ method: 'PUT', path, body: { ...kit, proof } }),
-    remove: (proof: string) => http.send({ method: 'DELETE', path, body: { proof } }),
+    remove: (proof: Proof) => http.send({ method: 'DELETE', path, body: { proof } }),
     /** Mails the one-time code that proves the owner, which replacing and removing take. */
     proofRequest: () => http.send({ method: 'POST', path: '/kem/v1/account/two-factor/proof' }),
   };

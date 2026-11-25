@@ -420,7 +420,7 @@ pub struct TotpConfirmRequest {
     pub code: String,
     /// The recovery code, when another second step is on already: a session alone may add the
     /// first step, and a fresh proof is needed beside one that is on.
-    pub proof: Option<String>,
+    pub proof: Option<FreshProof>,
 }
 
 /// Asks for the account's recovery code.
@@ -430,7 +430,7 @@ pub struct RecoveryCodeRequest {
     /// A fresh proof that is not the recovery code itself: a code mailed by
     /// `POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not
     /// needed while the account holds no recovery code.
-    pub proof: Option<String>,
+    pub proof: Option<FreshProof>,
 }
 
 /// The account's two-step recovery code.
@@ -709,6 +709,36 @@ impl SiblingSetDto {
 pub struct ResolveResponse {
     /// How many siblings were replaced by the item's head.
     pub resolved: u64,
+}
+
+/// A fresh proof that it is the account's owner at a keyboard, not only a session. Either a code
+/// (the mailed one, a current code of the authenticator app, or, where the route takes it, the
+/// recovery code) as a string, or the answer of a security key or passkey as
+/// `{ "webauthn": <PublicKeyCredential.toJSON()> }`, to the options at
+/// `POST /kem/v1/account/two-factor/proof/webauthn/options`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum FreshProof {
+    /// A code, as typed.
+    Code(String),
+    /// A security key's or passkey's assertion.
+    Assertion(KeyAssertion),
+}
+
+/// The answer of a security key or passkey, as the browser makes it.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeyAssertion {
+    /// The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.get`.
+    #[schema(value_type = Object)]
+    pub webauthn: serde_json::Value,
+}
+
+impl FreshProof {
+    /// Whether it is a code with nothing in it.
+    pub fn is_blank(&self) -> bool {
+        matches!(self, FreshProof::Code(code) if code.trim().is_empty())
+    }
 }
 
 #[cfg(test)]
