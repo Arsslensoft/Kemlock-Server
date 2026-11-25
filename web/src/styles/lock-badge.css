@@ -1,0 +1,47 @@
+/* The round lock beside a title, and its tooltip (shown on hover and on keyboard focus). */
+.enc {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+.enc-b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--accent-line);
+  background: var(--accent-wash-strong);
+  color: var(--accent-text);
+  cursor: help;
+}
+.enc-tip {
+  display: none;
+  position: absolute;
+  z-index: 10;
+  top: 40px;
+  left: -8px;
+  width: min(320px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border-radius: var(--radius-field);
+  border: 1px solid var(--border-input);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.5;
+  color: var(--text-2);
+  text-align: left;
+}
+.enc[data-open] .enc-tip {
+  display: block;
+}
+.enc-tip-title {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+  color: var(--text);
+}
