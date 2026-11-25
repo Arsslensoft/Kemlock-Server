@@ -121,14 +121,19 @@ sends no push to iPhones unless you turn on the relay below.
 | `KEMLOCK_APNS_TOPIC` | `com.kemlock.app` | the app's bundle id |
 | `KEMLOCK_APNS_SANDBOX` | `false` | `true` pushes through Apple's sandbox, for development builds of the app |
 
+Apple answers `BadDeviceToken` to a token from the wrong environment, so a wrong
+`KEMLOCK_APNS_SANDBOX` fails every push and logs one warning per send. The tokens are kept; fix the
+setting. Only a token Apple calls unregistered (410) is forgotten.
+
 **Android (UnifiedPush).** Kemlock uses no Firebase. A phone with a UnifiedPush distributor (ntfy,
 Gotify, NextPush and others) registers the endpoint URL the distributor gave it, and the server
 posts an empty body to it (Web Push without a payload, RFC 8030). The endpoint must be `https` on
-port 443 (the default) or 8443, so a client can't aim the server at other services. The
-server resolves the name itself and refuses any address that is not public (loopback, private,
-link-local and the like), follows no redirect and times out quickly, so an
-endpoint can't be used to reach your own network. Without a distributor, the app
-keeps its live connection while it is open and syncs when opened.
+port 443 (the default) or 8443, so a client can't aim the server at other services. The server
+resolves the name itself and refuses any address that is not public (loopback, private, link-local
+and the like), follows no redirect, ignores `HTTPS_PROXY` and `ALL_PROXY`, and gives up on a push
+after a few seconds, so an endpoint can't be used to reach your own network. Slow endpoints are
+pushed to in a task of their own and never delay other pushes. Without a distributor, the app keeps
+its live connection while it is open and syncs when opened.
 
 | Setting | Default | Meaning |
 |---|---|---|
