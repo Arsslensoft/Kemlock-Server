@@ -254,6 +254,8 @@
   "sso.working": "Checking with your provider.",
   "sso.codeTitle": "One more step",
   "sso.codeNote": "Your provider did not ask for a second step, so Kemlock asks for the code from your authenticator app.",
+  "sso.keyNote": "Your provider did not ask for a second step, so Kemlock asks for your security key. Press the button, then touch the key when your browser asks.",
+  "sso.eitherNote": "Your provider did not ask for a second step, so Kemlock asks for one: use your security key, or type the code from your authenticator app.",
   "sso.refused": "Your provider did not sign you in.",
   "sso.lost": "This sign-in was not started in this browser, or it took too long. Start again.",
   "sso.back": "Back to sign in",
@@ -269,6 +271,9 @@
   "password.codeNote": "Your account asks for a second step. Open your authenticator app and type the code it shows for this server.",
   "password.codeLabel": "Code from your authenticator app",
   "password.codeSubmit": "Open the vault",
+  "password.keyNote": "Your account asks for a security key as its second step. Press the button, then touch the key or approve the passkey when your browser asks.",
+  "password.eitherNote": "Your account asks for a second step. Use your security key, or type the code your authenticator app shows for this server.",
+  "password.keySubmit": "Use your security key",
 
   "unlock.title": "Open your vault",
   "unlock.lede": "You're signed in as {email}. This browser still needs your vault key, and only your master password makes it.",

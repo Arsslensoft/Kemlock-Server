@@ -1,41 +1,46 @@
 import { Link, getRouteApi, useRouter } from '@tanstack/react-router';
 import { useEffect, useMemo, useState } from 'react';
+import { createSecurityKeyStepApi } from '@/api/passkeys';
 import { api, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import { useT } from '@/i18n';
-import { describeError } from '@/lib/errors';
 import { thisDevice } from '@/lib/device';
 import { AuthPage } from '@/ui/AuthPage';
-import { CodeForm } from '@/ui/CodeForm';
-import { Notice } from '@/ui/Notice';
 import { PasswordForm } from './PasswordForm';
+import { SecondStep } from './SecondStep';
 import { afterSignIn } from './afterSignIn';
+import { describeSignInError } from './describeSignIn';
 import { type SignInStatus, createSignIn } from './signIn';
 
 const route = getRouteApi('/sign-in/password');
+const securityKey = createSecurityKeyStepApi(api);
 
 export default function Password() {
   const t = useT();
   const router = useRouter();
   const { email = '', next } = route.useSearch();
   const signIn = useMemo(
-    () => createSignIn({ api, crypto: vaultCrypto, session, device: thisDevice }),
+    () => createSignIn({ api, securityKey, crypto: vaultCrypto, session, device: thisDevice }),
     [],
   );
   useEffect(() => () => signIn.abandon(), [signIn]);
   const [step, setStep] = useState<'password' | 'code'>('password');
+  // What the account asks for as its second step: a code, a security key, or either.
+  const [methods, setMethods] = useState<string[]>([]);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<ReturnType<typeof describeError>>();
+  const [error, setError] = useState<ReturnType<typeof describeSignInError>>();
 
   async function run(attempt: () => Promise<SignInStatus>) {
     setPending(true);
     setError(undefined);
     try {
       const result = await attempt();
-      if (result.status === 'second-step') setStep('code');
-      else await afterSignIn(router, result, next);
+      if (result.status === 'second-step') {
+        setMethods(result.methods);
+        setStep('code');
+      } else await afterSignIn(router, result, next);
     } catch (caught) {
-      const described = describeError(caught);
+      const described = describeSignInError(caught);
       // A challenge that has expired or been used can't be retried: start again.
       if (step === 'code' && described.id === 'error.credentials') setStep('password');
       setError(described);
@@ -68,18 +73,14 @@ export default function Password() {
           </p>
         </>
       ) : (
-        <>
-          <Notice icon="shield">
-            <p>{t('password.codeNote')}</p>
-          </Notice>
-          <CodeForm
-            label={t('password.codeLabel')}
-            submitLabel={t('password.codeSubmit')}
-            pending={pending}
-            error={error}
-            onSubmit={(code) => void run(() => signIn.secondStep(code))}
-          />
-        </>
+        <SecondStep
+          methods={methods}
+          source="password"
+          pending={pending}
+          error={error}
+          onCode={(code) => void run(() => signIn.secondStep(code))}
+          onSecurityKey={() => void run(() => signIn.securityKey())}
+        />
       )}
     </AuthPage>
   );

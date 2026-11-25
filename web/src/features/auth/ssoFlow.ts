@@ -11,11 +11,13 @@
 // (enrolKeys.ts).
 import type { Api } from '@/api/client';
 import { tokensFromResponse } from '@/api/client';
+import type { SecurityKeyStepApi } from '@/api/passkeys';
 import type { SsoApi } from '@/api/sso';
 import type { DeviceDto, TokenResponse } from '@/api/types';
 import type { Session } from '@/app/session';
 import { encodeB64 } from '@/lib/b64url';
 import { rememberDeviceId } from '@/lib/device';
+import { assertWithPasskey } from '@/lib/passkey';
 
 const KEY = 'kemlock.sso';
 /** Where the provider's trip ends: a path of this server, which the web vault serves. */
@@ -33,6 +35,9 @@ type Area = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 export interface SsoDeps {
   sso: SsoApi;
   api: Pick<Api, 'twoFactor'>;
+  securityKey: SecurityKeyStepApi;
+  /** Asks the person's authenticator: the browser's own by default, a fake in tests. */
+  assert?: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
   session: Session;
   device: () => DeviceDto;
   origin: string;
@@ -40,7 +45,7 @@ export interface SsoDeps {
   now?: () => number;
 }
 
-function store(deps: SsoDeps): Area {
+function store(deps: Pick<SsoDeps, 'storage'>): Area {
   return deps.storage ?? sessionStorage;
 }
 
@@ -49,7 +54,11 @@ function randomText(bytes: number): string {
 }
 
 /** Starts a sign-in: the address to send the browser to. `email` is what the person typed. */
-export async function beginSso(deps: SsoDeps, email: string, next?: string): Promise<string> {
+export async function beginSso(
+  deps: Pick<SsoDeps, 'sso' | 'origin' | 'storage'>,
+  email: string,
+  next?: string,
+): Promise<string> {
   const verifier = randomText(48);
   const challenge = encodeB64(
     new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))),
@@ -125,6 +134,21 @@ export async function secondSsoStep(deps: SsoDeps, email: string, code: string):
   if (!waiting) throw new Error('there is no sign-in waiting for a code');
   const { challenge, next } = waiting;
   const tokens = await deps.api.twoFactor({ challenge, method: 'totp', code });
+  waiting = undefined;
+  signedIn(deps, email, tokens);
+  return { status: 'signed-in', email, admin: tokens.admin, next };
+}
+
+/**
+ * The second step with a security key. A key that was not touched or a refusal leaves the
+ * challenge in place, so the person can try again.
+ */
+export async function secondSsoKeyStep(deps: SsoDeps, email: string): Promise<SsoOutcome> {
+  if (!waiting) throw new Error('there is no sign-in waiting for a key');
+  const { challenge, next } = waiting;
+  const options = await deps.securityKey.options(challenge);
+  const credential = await (deps.assert ?? assertWithPasskey)(options);
+  const tokens = await deps.securityKey.verify({ challenge, credential });
   waiting = undefined;
   signedIn(deps, email, tokens);
   return { status: 'signed-in', email, admin: tokens.admin, next };

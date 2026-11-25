@@ -4,16 +4,22 @@
 // open, then are overwritten. They are handles for the crypto worker, not the keys themselves.
 import { type Api, tokensFromResponse } from '@/api/client';
 import { isApiError } from '@/api/errors';
+import type { SecurityKeyStepApi } from '@/api/passkeys';
 import type { DeviceDto, TokenResponse } from '@/api/types';
 import type { Session } from '@/app/session';
 import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
 import { rememberDeviceId } from '@/lib/device';
 import { CredentialsError } from '@/lib/errors';
+import { PasskeyError, assertWithPasskey } from '@/lib/passkey';
 
 export interface SignInDeps {
   api: Pick<Api, 'prelogin' | 'opaqueStart' | 'opaqueFinish' | 'twoFactor' | 'accountKeys'>;
   crypto: Pick<CryptoPort, 'masterKey' | 'opaqueLoginStart' | 'opaqueLoginFinish' | 'unlock'>;
+  /** The security key as a second step. */
+  securityKey: SecurityKeyStepApi;
+  /** Asks the person's authenticator: the browser's own by default, a fake in tests. */
+  assert?: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
   session: Session;
   device: () => DeviceDto;
   now?: () => number;
@@ -142,6 +148,24 @@ export function createSignIn(deps: SignInDeps) {
         return await unlock(tokens);
       } catch (error) {
         if (!isApiError(error)) forget();
+        throw error;
+      }
+    },
+    /**
+     * The second step with a security key, when the first step listed `webauthn` among its
+     * methods: the browser asks for the key and its answer is traded for tokens. A key that was
+     * not touched (`PasskeyError`) or a refusal leaves the challenge, so it can be tried again.
+     */
+    async securityKey(): Promise<SignInStatus> {
+      if (!challenge) throw new Error('there is no sign-in waiting for a key');
+      const assert = deps.assert ?? assertWithPasskey;
+      try {
+        const options = await deps.securityKey.options(challenge);
+        const credential = await assert(options);
+        const tokens = await deps.securityKey.verify({ challenge, credential });
+        return await unlock(tokens);
+      } catch (error) {
+        if (!isApiError(error) && !(error instanceof PasskeyError)) forget();
         throw error;
       }
     },

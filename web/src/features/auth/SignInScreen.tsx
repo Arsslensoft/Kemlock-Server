@@ -10,7 +10,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type MessageId, useT } from '@/i18n';
 import { thisDevice } from '@/lib/device';
 import { describeError } from '@/lib/errors';
-import { PasskeyError, assertWithPasskeyAndPrf, passkeysAvailable } from '@/lib/passkey';
+import { assertWithPasskeyAndPrf, passkeysAvailable } from '@/lib/passkey';
 import { type EmailValues, emailSchema } from '@/lib/schemas';
 import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
@@ -18,6 +18,7 @@ import { Field } from '@/ui/fields';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import { afterSignIn } from './afterSignIn';
+import { describeSignInError } from './describeSignIn';
 import { signInWithPasskey } from './passkeySignIn';
 import { unlockWithTrustedDevice } from './trustedDevice';
 import { beginSso } from './ssoFlow';
@@ -63,14 +64,6 @@ export function EmailForm({
       </Button>
     </form>
   );
-}
-
-/** The words for a passkey that did not answer; anything else is described as everywhere else. */
-function describeSignInError(error: unknown): ReturnType<typeof describeError> {
-  if (error instanceof PasskeyError) {
-    return { id: error.reason === 'cancelled' ? 'signIn.passkeyCancelled' : 'signIn.passkeyUnavailable' };
-  }
-  return describeError(error);
 }
 
 /**

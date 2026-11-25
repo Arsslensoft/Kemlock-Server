@@ -3,6 +3,7 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { Checkbox } from 'react-aria-components';
 import { useForm, useWatch } from 'react-hook-form';
+import { createSecurityKeyStepApi } from '@/api/passkeys';
 import { api, queryClient, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import { type MessageId, useRich, useT } from '@/i18n';
@@ -167,7 +168,13 @@ export default function SetupAdmin() {
       setupMemory.set({ adminName: values.name.trim(), adminEmail: email, wantPasskey: options.passkey });
       // The first admin is signed in at once: the next step enrols two-step login, which needs
       // tokens. The sign-in takes ownership of the master key and wipes it when done.
-      const signIn = createSignIn({ api, crypto: vaultCrypto, session, device: thisDevice });
+      const signIn = createSignIn({
+        api,
+        securityKey: createSecurityKeyStepApi(api),
+        crypto: vaultCrypto,
+        session,
+        device: thisDevice,
+      });
       await signIn.start(
         email,
         registered.masterKey,

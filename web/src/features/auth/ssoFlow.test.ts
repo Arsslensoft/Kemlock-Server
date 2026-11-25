@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { createSession } from '@/app/session';
-import { SSO_RETURN_PATH, beginSso, completeSso, secondSsoStep } from './ssoFlow';
+import { PasskeyError } from '@/lib/passkey';
+import { SSO_RETURN_PATH, beginSso, completeSso, secondSsoKeyStep, secondSsoStep } from './ssoFlow';
 
 const TOKENS = {
   tokenType: 'DPoP' as const,
@@ -47,15 +48,22 @@ function setup(finish: Record<string, unknown>) {
     })),
   };
   const api = { twoFactor: vi.fn(async () => TOKENS) };
+  const securityKey = {
+    options: vi.fn(async (_challenge: string) => ({ challenge: 'key-challenge' }) as Record<string, unknown>),
+    verify: vi.fn(async (_body: { challenge: string; credential: Record<string, unknown> }) => TOKENS),
+  };
+  const assert = vi.fn(async (_options: Record<string, unknown>) => ({ id: 'cred' }) as Record<string, unknown>);
   const deps = {
     sso: sso as never,
     api,
+    securityKey,
+    assert,
     session,
     device: () => ({ id: null, name: 'Web vault', kind: 'kemlock-web' as const }),
     origin: 'https://vault.example.org',
     storage: memory(),
   };
-  return { deps, sso, api, session };
+  return { deps, sso, api, securityKey, assert, session };
 }
 
 async function begin(env: ReturnType<typeof setup>): Promise<Started> {
@@ -125,5 +133,45 @@ describe('single sign-on', () => {
     expect(done.status).toBe('signed-in');
     expect(env.api.twoFactor).toHaveBeenCalledWith({ challenge: 'sealed', method: 'totp', code: '123456' });
     expect(env.session.getState().status).toBe('locked');
+  });
+
+  it('keeps a security key among the methods and signs in with it: options, the key, then the tokens', async () => {
+    const env = setup({
+      status: 'two_factor_required',
+      tokens: null,
+      challenge: 'sealed-key',
+      methods: ['webauthn'],
+    });
+    const started = await begin(env);
+    expect(await completeSso(env.deps, { code: 'c', state: started.state })).toEqual({
+      status: 'second-step',
+      email: 'sam@example.co',
+      methods: ['webauthn'],
+    });
+    const done = await secondSsoKeyStep(env.deps, 'sam@example.co');
+    expect(done).toEqual({ status: 'signed-in', email: 'sam@example.co', admin: false, next: '/vault' });
+    expect(env.securityKey.options).toHaveBeenCalledWith('sealed-key');
+    expect(env.assert).toHaveBeenCalledWith({ challenge: 'key-challenge' });
+    expect(env.securityKey.verify).toHaveBeenCalledWith({
+      challenge: 'sealed-key',
+      credential: { id: 'cred' },
+    });
+    expect(env.api.twoFactor).not.toHaveBeenCalled();
+    expect(env.session.getState().status).toBe('locked');
+  });
+
+  it('lets a key that was not touched be tried again', async () => {
+    const env = setup({
+      status: 'two_factor_required',
+      tokens: null,
+      challenge: 'sealed-key',
+      methods: ['webauthn', 'totp'],
+    });
+    const started = await begin(env);
+    await completeSso(env.deps, { code: 'c', state: started.state });
+    env.assert.mockRejectedValueOnce(new PasskeyError('cancelled'));
+    await expect(secondSsoKeyStep(env.deps, 'sam@example.co')).rejects.toBeInstanceOf(PasskeyError);
+    expect(env.session.getState().status).toBe('signed-out');
+    await expect(secondSsoKeyStep(env.deps, 'sam@example.co')).resolves.toMatchObject({ status: 'signed-in' });
   });
 });
