@@ -283,6 +283,8 @@ fn bitwarden_live(
         relay: relay.map(|relay| relay as Arc<dyn BwRelay>),
         notices,
         require_device_email: enabled(env("REQUIRE_DEVICE_EMAIL")),
+        // Set by the app, which holds the files the erasure deletes.
+        erasure: None,
     })
 }
 

@@ -273,6 +273,25 @@ async fn api_key_route<S: BwStore>(
     ok(account::api_key(&app, &authed.account, rotate).await?)
 }
 
+/// `DELETE /api/accounts` and `POST /api/accounts/delete`.
+async fn delete_account<S: BwStore>(
+    State(app): State<App<S>>,
+    authed: Authed,
+    body: Bytes,
+) -> EmptyResult {
+    let data: PasswordOrOtp = parse(&body)?;
+    // The password or a mailed one-time code, which a right entry uses up.
+    crate::protected::validate(
+        &app,
+        &authed,
+        data.master_password_hash.as_deref(),
+        data.otp.as_deref(),
+        true,
+    )
+    .await?;
+    empty(account::delete_account(&app, authed.user.id).await)
+}
+
 async fn post_api_key<S: BwStore>(
     State(app): State<App<S>>,
     authed: Authed,
@@ -701,6 +720,8 @@ pub fn router<S: BwStore>(app: App<S>) -> Router {
         .route("/api/version", get(version))
         .route("/api/accounts/revision-date", get(revision_date::<S>))
         .route("/api/accounts/profile", get(profile::<S>))
+        .route("/api/accounts", axum::routing::delete(delete_account::<S>))
+        .route("/api/accounts/delete", post(delete_account::<S>))
         .route("/api/accounts/api-key", post(post_api_key::<S>))
         .route("/api/accounts/rotate-api-key", post(rotate_api_key::<S>))
         .route("/api/accounts/kdf", post(post_kdf::<S>))

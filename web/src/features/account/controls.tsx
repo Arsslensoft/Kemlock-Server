@@ -14,7 +14,7 @@ export function TextInput({
   label: string;
   value: string;
   onChange: (value: string) => void;
-  type?: 'text' | 'email' | 'number';
+  type?: 'text' | 'email' | 'number' | 'password';
   hint?: ReactNode;
   mono?: boolean;
   required?: boolean;

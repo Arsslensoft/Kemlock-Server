@@ -232,6 +232,15 @@ where
         .map_err(|e| RunError::Config(format!("DOMAIN (WebAuthn): {e}")))?;
     let erasure_files =
         crate::privacy::server_files(&config.data_folder).map_err(RunError::Config)?;
+    let own_erasure = kemlock_app::privacy::EraseAccount {
+        users: store.clone(),
+        eraser: store.clone(),
+        sends: erasure_files.send_eraser(&store),
+        files: erasure_files.clone(),
+        settings: store.clone(),
+        log: store.clone(),
+        env: api.crypto.clone(),
+    };
     let admin_erasure = kemlock_app::privacy::EraseAccount {
         users: store.clone(),
         eraser: store.clone(),
@@ -278,7 +287,11 @@ where
                 api.live.clone(),
                 Some(relying_party.clone() as Arc<dyn WebAuthn>),
                 two_step.bitwarden(),
-                notifications.bw_live.clone(),
+                // The Bitwarden API's account deletion is the web vault's: the same erasure.
+                kemlock_api_bw::BwLive {
+                    erasure: Some(Arc::new(own_erasure)),
+                    ..notifications.bw_live.clone()
+                },
                 // Bitwarden Sends live in the database, not in memory.
                 Some(Arc::new(crate::bw_sends::SqlSends::new(store.clone())) as Arc<dyn SendStore>),
                 // Read through the server's own lookup, as the settings are (see Config).
@@ -317,6 +330,7 @@ where
             api.clone(),
             store.clone(),
         ))
+        .merge(kemlock_api_kem::api_key_router(api.clone(), store.clone()))
         .merge(account_routes)
         // /.well-known/security.txt, from the admin settings.
         .merge(crate::security_txt::router(
