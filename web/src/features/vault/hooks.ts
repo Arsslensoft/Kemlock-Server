@@ -6,6 +6,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
+import { type AdminFieldDef, createCustomFieldsApi } from '@/api/customFields';
 import { createItemFilesApi } from '@/api/itemFiles';
 import { saveBatch } from './batch';
 import { saveCopy } from './copy';
@@ -34,6 +35,24 @@ const deps: VaultDeps = { api, crypto: vaultCrypto, ensureSpaceKeys: spaceKeys.e
 
 /** The files of items on this server: what a move or a copy sends again under another item. */
 export const itemFiles = createItemFilesApi(api);
+
+const customFieldsApi = createCustomFieldsApi(api);
+const NO_ADMIN_FIELDS: AdminFieldDef[] = [];
+
+/**
+ * The fields the admin offers, as they are now (`GET /kem/v1/custom-fields`): an item holds the name
+ * and type a field had when it was saved, and the page shows the admin's current ones. Until the list
+ * arrives, or when it can't be read, there are none and the item's own are shown.
+ */
+export function useAdminFields(): AdminFieldDef[] {
+  const query = useQuery({
+    queryKey: ['custom-fields', 'definitions'],
+    queryFn: () => customFieldsApi.list(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  return query.data?.fields ?? NO_ADMIN_FIELDS;
+}
 
 export const vaultKey = ['vault'] as const;
 
