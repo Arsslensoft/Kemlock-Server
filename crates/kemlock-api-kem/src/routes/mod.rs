@@ -19,6 +19,7 @@ pub(crate) mod passkeys;
 pub(crate) mod placement;
 pub(crate) mod policies;
 pub(crate) mod push;
+pub(crate) mod reauth;
 pub(crate) mod recovery_kit;
 pub(crate) mod sends;
 mod server;
