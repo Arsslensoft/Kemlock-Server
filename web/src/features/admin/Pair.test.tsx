@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { PairingState } from '@/api/admin';
 import { renderWithIntl } from '@/test/render';
 import { NOW, SESSION, peer } from './fixtures';
-import { ALL_ACKS, type CompareFn, PairView, canConfirm, compareKeys } from './Pair';
+import { ALL_ACKS, type CompareFn, PairView, canConfirm, compareKeys, isPeerUrl } from './Pair';
 
 const compare: CompareFn = async () => ({
   words: 'tulip-anchor-rover-mint-ladle-orbit',
@@ -53,10 +53,10 @@ describe('PairView, step 1', () => {
     const user = userEvent.setup();
     const connect = screen.getByRole('button', { name: 'Connect' });
     expect(connect).toBeDisabled();
-    await user.type(screen.getByLabelText('Its address'), 'vps.example.org');
+    await user.type(screen.getByLabelText('Its address'), 'https://vps.example.org');
     await user.type(screen.getByLabelText('Its one-time code'), '7KP2-WQ4N-D8RJ');
     await user.click(connect);
-    expect(onConnect).toHaveBeenCalledWith('vps.example.org', '7KP2-WQ4N-D8RJ');
+    expect(onConnect).toHaveBeenCalledWith('https://vps.example.org', '7KP2-WQ4N-D8RJ');
     expect(screen.queryByText('The six words for both keys')).not.toBeInTheDocument();
   });
 });
@@ -65,13 +65,23 @@ describe('PairView, the connect form', () => {
   it('blocks Connect and marks the fields while the address or code is the wrong shape', async () => {
     const { onConnect } = view({ code: null, session: null });
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('Its address'), 'https://vps.example.org');
+    await user.type(screen.getByLabelText('Its address'), 'vps.example.org');
     await user.type(screen.getByLabelText('Its one-time code'), 'abc');
     await user.click(screen.getByRole('button', { name: 'Connect' }));
     expect(onConnect).not.toHaveBeenCalled();
     expect(screen.getByLabelText('Its address')).toHaveAttribute('aria-invalid', 'true');
     expect(screen.getByLabelText('Its one-time code')).toHaveAttribute('aria-invalid', 'true');
-    expect(screen.getByLabelText('Its address')).toHaveAccessibleDescription(/Type a host name/);
+    expect(screen.getByLabelText('Its address')).toHaveAccessibleDescription(/Type the web address/);
+  });
+});
+
+describe('isPeerUrl', () => {
+  it('takes an http or https URL with a host, an IPv6 one in brackets, and nothing else', () => {
+    expect(isPeerUrl('https://peer.example.org')).toBe(true);
+    expect(isPeerUrl('http://10.0.0.5:8443/')).toBe(true);
+    expect(isPeerUrl('https://[2001:db8::1]:8443')).toBe(true);
+    expect(isPeerUrl('peer.example.org')).toBe(false);
+    expect(isPeerUrl('ftp://peer.example.org')).toBe(false);
   });
 });
 

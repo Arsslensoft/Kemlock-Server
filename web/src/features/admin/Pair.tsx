@@ -21,8 +21,12 @@ import { type AdminNav, useAdminNav } from './nav';
 import { useReauth } from './reauth';
 import { CheckBox, ErrorNotice, Loading, PageHead, TextBox, Toggle } from './ui';
 
-/** A host name or address, with an optional port. */
-const ADDRESS_PATTERN = '[A-Za-z0-9]([A-Za-z0-9.\\-]*[A-Za-z0-9])?(:[0-9]{1,5})?';
+/** The address the server dials: an http or https URL with a host (an IPv6 host in brackets). */
+export function isPeerUrl(address: string): boolean {
+  if (!URL.canParse(address)) return false;
+  const url = new URL(address);
+  return (url.protocol === 'https:' || url.protocol === 'http:') && url.hostname !== '';
+}
 /** The one-time code: three groups of four letters or digits. */
 const CODE_PATTERN = '[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}';
 
@@ -118,7 +122,7 @@ export function PairView({
   const [typed, setTyped] = useState('');
   const [tried, setTried] = useState(false);
   const addressError: MessageId | undefined =
-    tried && !new RegExp(`^${ADDRESS_PATTERN}$`).test(address.trim()) ? 'admin.pair.error.address' : undefined;
+    tried && !isPeerUrl(address.trim()) ? 'admin.pair.error.address' : undefined;
   const codeError: MessageId | undefined =
     tried && !new RegExp(`^${CODE_PATTERN}$`).test(typed.trim()) ? 'admin.pair.error.code' : undefined;
   const [wordsMatch, setWordsMatch] = useState(false);
@@ -220,7 +224,7 @@ export function PairView({
               onSubmit={(event) => {
                 event.preventDefault();
                 setTried(true);
-                const goodAddress = new RegExp(`^${ADDRESS_PATTERN}$`).test(address.trim());
+                const goodAddress = isPeerUrl(address.trim());
                 const goodCode = new RegExp(`^${CODE_PATTERN}$`).test(typed.trim());
                 if (goodAddress && goodCode) onConnect(address.trim(), typed.trim());
               }}
@@ -232,8 +236,8 @@ export function PairView({
                   mono
                   value={address}
                   onChange={setAddress}
-                  placeholder="vps.example.org"
-                  pattern={ADDRESS_PATTERN}
+                  type="url"
+                  placeholder="https://peer.example.org"
                   inputMode="url"
                   required
                   error={addressError}

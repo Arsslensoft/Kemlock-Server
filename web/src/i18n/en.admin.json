@@ -505,7 +505,7 @@
   "admin.pair.address": "Its address",
   "admin.pair.theirCode": "Its one-time code",
   "admin.pair.connect": "Connect",
-  "admin.pair.error.address": "Type a host name, with a port if it has one, such as vps.example.org:8443.",
+  "admin.pair.error.address": "Type the web address of the other server, starting with https:// or http://, such as https://peer.example.org.",
   "admin.pair.error.code": "Type the code as the other server shows it, like 7KP2-WQ4N-D8RJ.",
   "admin.pair.connected": "Connected to {name} at {address} with its code. Compare the keys before you go on.",
   "admin.pair.step2": "Compare the identity keys",
