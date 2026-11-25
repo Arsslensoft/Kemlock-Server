@@ -445,6 +445,7 @@ export function PeerSecurityView(props: PeerSecurityViewProps) {
         onRotateIdentity={props.onRotateIdentity}
         onSaveSuites={props.onSaveSuites}
         kemRotated={props.kemRotated}
+        suitesSaved={props.suitesSaved}
         busy={props.busy}
         now={props.now}
       />
