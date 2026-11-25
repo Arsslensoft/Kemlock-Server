@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import type { Api } from '@/api/client';
+import type { ItemFiles } from '@/api/itemFiles';
 import { fetchFile, downloadFile, NoServerFileError, saveBytes } from './fileDownload';
 import { type AttachedFile, fileOf, filesOf, formatSize, typeLabel } from './files';
 
@@ -60,14 +60,14 @@ describe('downloading a file', () => {
   const file: AttachedFile = { id: 'a1', name: 'pattern.bin', size: 65636, type: 'application/octet-stream', key: KEY, serverId: 'f/1' };
 
   function apiAnswering(bytes: Uint8Array) {
-    const raw = vi.fn(async () => new Response(bytes as BodyInit));
-    return { api: { raw } as unknown as Pick<Api, 'raw'>, raw };
+    const download = vi.fn(async () => bytes);
+    return { api: { download } as Pick<ItemFiles, 'download'>, download };
   }
 
-  it('fetches the ciphertext from the item files route and opens it with the file key', async () => {
-    const { api, raw } = apiAnswering(twoChunks);
+  it('fetches the ciphertext of the file and opens it with the file key', async () => {
+    const { api, download } = apiAnswering(twoChunks);
     const plain = await fetchFile(api, 'item 1', file);
-    expect(raw).toHaveBeenCalledWith({ method: 'GET', path: '/kem/v1/items/item%201/files/f%2F1' });
+    expect(download).toHaveBeenCalledWith('item 1', 'f/1');
     expect(plain).toHaveLength(65636);
   });
 
@@ -89,9 +89,9 @@ describe('downloading a file', () => {
   });
 
   it('says so when the file was never uploaded', async () => {
-    const { api, raw } = apiAnswering(twoChunks);
+    const { api, download } = apiAnswering(twoChunks);
     await expect(fetchFile(api, 'i', { ...file, serverId: '' })).rejects.toBeInstanceOf(NoServerFileError);
-    expect(raw).not.toHaveBeenCalled();
+    expect(download).not.toHaveBeenCalled();
   });
 
   it('downloads through an anchor with the name, and lets go of the blob URL', () => {

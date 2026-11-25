@@ -1,7 +1,7 @@
 // Downloads a file an item holds: the `KMA1` bytes from the item files route, opened in the
 // browser with the file's own key from the body, then handed to the browser as a download. The
 // server only ever sends ciphertext; nothing is kept once the download is handed over.
-import type { Api } from '@/api/client';
+import type { ItemFiles } from '@/api/itemFiles';
 import type { AttachedFile } from './files';
 import { openKma1 } from './kma1';
 
@@ -12,14 +12,14 @@ export class NoServerFileError extends Error {
   }
 }
 
-/** The plaintext of `file`, fetched through `api` and opened. */
-export async function fetchFile(api: Pick<Api, 'raw'>, itemId: string, file: AttachedFile): Promise<Uint8Array> {
+/** The plaintext of `file`: its sealed bytes from the item files route, opened with the file's key. */
+export async function fetchFile(
+  files: Pick<ItemFiles, 'download'>,
+  itemId: string,
+  file: AttachedFile,
+): Promise<Uint8Array> {
   if (!file.serverId) throw new NoServerFileError();
-  const response = await api.raw({
-    method: 'GET',
-    path: `/kem/v1/items/${encodeURIComponent(itemId)}/files/${encodeURIComponent(file.serverId)}`,
-  });
-  return openKma1(file.key, new Uint8Array(await response.arrayBuffer()));
+  return openKma1(file.key, await files.download(itemId, file.serverId));
 }
 
 /** Hands bytes to the browser as a download. */
@@ -37,10 +37,10 @@ export function saveBytes(name: string, type: string, bytes: Uint8Array): void {
 
 /** Fetches, opens and saves one file. */
 export async function downloadFile(
-  api: Pick<Api, 'raw'>,
+  files: Pick<ItemFiles, 'download'>,
   itemId: string,
   file: AttachedFile,
   save: typeof saveBytes = saveBytes,
 ): Promise<void> {
-  save(file.name, file.type, await fetchFile(api, itemId, file));
+  save(file.name, file.type, await fetchFile(files, itemId, file));
 }
