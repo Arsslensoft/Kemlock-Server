@@ -1,6 +1,8 @@
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { IntlMessageFormat } from 'intl-messageformat';
 import { describe, expect, it, vi } from 'vitest';
+import { type MessageId, messages } from '@/i18n';
 import { renderWithIntl } from '@/test/render';
 import { ServerHolds, serverRecord } from './ServerHolds';
 import type { VaultItem } from './vault';
@@ -15,9 +17,13 @@ const item: VaultItem = {
   sizes: { ciphertext: 1214, itemKey: 1648 },
 };
 
+// The words come from the messages, so the test says them the way the page does.
+const t = (id: MessageId, values?: Record<string, string | number>) =>
+  String(new IntlMessageFormat(messages[id] ?? id, 'en').format(values));
+
 describe('serverRecord', () => {
   it('lists the id, kind, owner, revision, key version, wrapped key size and body cipher and size', () => {
-    expect(serverRecord(item)).toBe(
+    expect(serverRecord(item, t)).toBe(
       [
         'item     3f6a0c2e-4b1d-4e7a-9c52-6d0f8a91b4e3   login',
         'owner    user:7b2e1c90-5a3f-4d68-8e14-c3a9f0d2b657',
@@ -28,8 +34,25 @@ describe('serverRecord', () => {
     );
   });
 
+  it('adds the collection when the item sits in one, and lines the words up again', () => {
+    const inSpace: VaultItem = { ...item, owner: 'space:5a1b', collectionId: 'c0ffee00-0000-4000-8000-000000000001' };
+    expect(serverRecord(inSpace, t).split('\n')).toEqual([
+      'item       3f6a0c2e-4b1d-4e7a-9c52-6d0f8a91b4e3   login',
+      'owner      space:5a1b',
+      'collection c0ffee00-0000-4000-8000-000000000001',
+      'revision   14 · key version 3',
+      'key        1648 B wrapped',
+      'body       AES-256-GCM, 1214 B',
+    ]);
+  });
+
+  it('says its words through the messages, in any language', () => {
+    const shout = (id: MessageId, values?: Record<string, string | number>) => t(id, values).toUpperCase();
+    expect(serverRecord(item, shout)).toContain('REVISION 14 · KEY VERSION 3');
+  });
+
   it('holds no name, password or note: those are inside the ciphertext', () => {
-    const record = serverRecord(item);
+    const record = serverRecord(item, t);
     expect(record).not.toContain('GitHub');
     expect(record).not.toContain('hunter2');
   });

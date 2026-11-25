@@ -41,11 +41,18 @@ describe('the files an item holds', () => {
   });
 
   it('writes sizes in decimal units', () => {
-    expect(formatSize(0)).toBe('0 B');
-    expect(formatSize(999)).toBe('999 B');
-    expect(formatSize(1500)).toBe('2 KB');
-    expect(formatSize(2_400_000)).toBe('2.4 MB');
-    expect(formatSize(150_000_000)).toBe('150 MB');
+    const size = (bytes: number) => formatSize(bytes, 'en', (unit, value) => `${value} ${unit.toUpperCase()}`);
+    expect(size(0)).toBe('0 B');
+    expect(size(999)).toBe('999 B');
+    expect(size(1500)).toBe('2 KB');
+    expect(size(2_400_000)).toBe('2.4 MB');
+    expect(size(150_000_000)).toBe('150 MB');
+  });
+
+  it('writes the number as the language does and lets the message place the unit', () => {
+    const german = (bytes: number) => formatSize(bytes, 'de', (unit, value) => `${value} ${unit === 'mb' ? 'Mio. Byte' : unit}`);
+    expect(german(2_400_000)).toBe('2,4 Mio. Byte');
+    expect(formatSize(2_400_000, 'en', (unit, value) => `${unit}:${value}`)).toBe('mb:2.4');
   });
 
   it('names a type by the extension, or by the media type', () => {

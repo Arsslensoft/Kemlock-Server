@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { renderWithIntl } from '@/test/render';
@@ -45,6 +45,45 @@ describe('LockBadge', () => {
     expect(screen.getByRole('button', { name: 'End-to-end encrypted' })).toHaveFocus();
     expect(shown()).toBe(true);
     await user.tab();
+    expect(shown()).toBe(false);
+  });
+
+  // What a finger does: no hover, then a press that also focuses the button, then the click.
+  function tap(button: HTMLElement) {
+    fireEvent.pointerOver(button, { pointerType: 'touch' });
+    fireEvent.pointerDown(button, { pointerType: 'touch' });
+    button.focus();
+    fireEvent.pointerUp(button, { pointerType: 'touch' });
+    fireEvent.click(button);
+  }
+
+  it('opens on a tap and closes on the next, though a finger has no hover and the press focuses it', () => {
+    renderWithIntl(<LockBadge />);
+    const button = screen.getByRole('button', { name: 'End-to-end encrypted' });
+    tap(button);
+    expect(shown()).toBe(true);
+    tap(button);
+    expect(shown()).toBe(false);
+  });
+
+  it('closes when the person taps elsewhere', () => {
+    renderWithIntl(<LockBadge />);
+    const button = screen.getByRole('button', { name: 'End-to-end encrypted' });
+    tap(button);
+    button.blur();
+    expect(shown()).toBe(false);
+  });
+
+  it('closes a tooltip that hovering opened when the lock is clicked, and Escape closes a tapped one', async () => {
+    renderWithIntl(<LockBadge />);
+    const user = userEvent.setup();
+    const button = screen.getByRole('button', { name: 'End-to-end encrypted' });
+    await user.click(button);
+    expect(shown()).toBe(false);
+    button.blur();
+    tap(button);
+    expect(shown()).toBe(true);
+    await user.keyboard('{Escape}');
     expect(shown()).toBe(false);
   });
 

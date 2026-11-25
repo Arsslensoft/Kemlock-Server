@@ -4,9 +4,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { ItemMenu } from './ItemMenu';
 
+const FULL = { websites: true, move: true, copy: true, trash: true };
+// What an item in the Trash, one that can't be read, and a read-only one are left with.
+const SERVER_ONLY = { websites: false, move: false, copy: false, trash: false };
+
 function setup(props: Partial<Parameters<typeof ItemMenu>[0]> = {}) {
   const onAction = vi.fn();
-  renderWithIntl(<ItemMenu name="GitHub" trashed={false} websites copy onAction={onAction} {...props} />);
+  renderWithIntl(<ItemMenu name="GitHub" entries={FULL} onAction={onAction} {...props} />);
   const trigger = screen.getByRole('button', { name: 'More actions for GitHub' });
   return { onAction, trigger, user: userEvent.setup() };
 }
@@ -48,7 +52,7 @@ describe('the ⋯ menu', () => {
   });
 
   it('leaves out websites and rules for anything but a login, and the copy for what cannot be copied', async () => {
-    const { trigger, user } = setup({ websites: false, copy: false });
+    const { trigger, user } = setup({ entries: { ...FULL, websites: false, copy: false } });
     await user.click(trigger);
     await screen.findByRole('menu');
     expect(names()).toEqual([
@@ -58,12 +62,29 @@ describe('the ⋯ menu', () => {
     ]);
   });
 
-  it('holds only what the server holds for an item in the Trash', async () => {
-    const { trigger, user } = setup({ trashed: true });
+  it('holds only what the server holds when the page offers nothing else: in the Trash, unreadable', async () => {
+    const { trigger, user } = setup({ entries: SERVER_ONLY });
     await user.click(trigger);
     await screen.findByRole('menu');
     expect(names()).toEqual(['What the server holds']);
     expect(screen.queryByRole('separator')).not.toBeInTheDocument();
+  });
+
+  it('leaves out move and Trash for an item the person may only read, and keeps the copy', async () => {
+    const { trigger, user } = setup({ entries: { websites: false, move: false, copy: true, trash: false } });
+    await user.click(trigger);
+    await screen.findByRole('menu');
+    expect(names()).toEqual(['Make a copy', 'What the server holds']);
+  });
+
+  it('cannot move an item to the Trash twice while the first is going', async () => {
+    const { onAction, trigger, user } = setup({ trashing: true });
+    await user.click(trigger);
+    const trash = await screen.findByRole('menuitem', { name: 'Move to Trash' });
+    expect(trash).toHaveAttribute('aria-disabled', 'true');
+    await user.click(trash);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(onAction).not.toHaveBeenCalledWith('trash');
   });
 
   it('acts on the choice after the menu has closed and focus is back on the button', async () => {

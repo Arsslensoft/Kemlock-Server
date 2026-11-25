@@ -48,7 +48,7 @@ describe('custom fields in the first card', () => {
   it('shows a text field with a copy button', async () => {
     render();
     expect(screen.getByText('sam.backup@example.org')).toBeInTheDocument();
-    await user().click(screen.getByRole('button', { name: 'Copy recovery email' }));
+    await user().click(screen.getByRole('button', { name: 'Copy the Recovery email' }));
     expect(copyText).toHaveBeenCalledWith('sam.backup@example.org', { secret: false });
   });
 
@@ -56,11 +56,11 @@ describe('custom fields in the first card', () => {
     render();
     expect(screen.queryByText('blue')).not.toBeInTheDocument();
     const u = user();
-    await u.click(screen.getByRole('button', { name: 'Show security question' }));
+    await u.click(screen.getByRole('button', { name: 'Show the Security question' }));
     expect(screen.getByText('blue')).toBeInTheDocument();
-    await u.click(screen.getByRole('button', { name: 'Hide security question' }));
+    await u.click(screen.getByRole('button', { name: 'Hide the Security question' }));
     expect(screen.queryByText('blue')).not.toBeInTheDocument();
-    await u.click(screen.getByRole('button', { name: 'Copy security question' }));
+    await u.click(screen.getByRole('button', { name: 'Copy the Security question' }));
     expect(copyText).toHaveBeenCalledWith('blue', { secret: true });
   });
 
@@ -79,10 +79,70 @@ describe('custom fields in the first card', () => {
     expect(within(card).queryByRole('textbox')).not.toBeInTheDocument();
   });
 
+  it('names the buttons of a field with the name the person gave it, in its own case', async () => {
+    renderWithIntl(
+      <KindDetails
+        item={item('card', { number: '4111111111111111' })}
+        extra={
+          <CustomFieldRows
+            fields={readCustomFields({
+              fields: [
+                { name: 'SSH Key ID', value: 'abc', kind: 'text' },
+                { name: 'API token', value: 'tok', kind: 'hidden' },
+              ],
+            })}
+          />
+        }
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Copy the SSH Key ID' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show the API token' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy the API token' })).toBeInTheDocument();
+  });
+
   it('adds nothing when the item has no custom fields', () => {
     renderWithIntl(<KindDetails item={item('card', { number: '4111111111111111' })} />);
     const card = screen.getByRole('region', { name: 'Card' });
     expect(card.querySelectorAll('.row')).toHaveLength(1);
+  });
+});
+
+describe('the Website row of an MFA code and of backup codes', () => {
+  const own = { urls: ['https://github.com', 'example.co'] };
+  const note = 'From the linked login GitHub. Change it there.';
+
+  it('shows the websites of an MFA code after its code, and before its custom fields', () => {
+    renderWithIntl(
+      <KindDetails
+        item={item('otp', { name: 'GitHub code', secret: 'JBSWY3DPEHPK3PXP', ...own })}
+        sites={{ urls: ['https://github.com', 'example.co'] }}
+        extra={<CustomFieldRows fields={readCustomFields({ fields: [{ name: 'Seat', value: '12', kind: 'text' }] })} />}
+      />,
+    );
+    const card = screen.getByRole('region', { name: 'MFA code' });
+    const labels = Array.from(card.querySelectorAll('.lbl')).map((node) => node.textContent);
+    expect(labels).toEqual(['Code', 'Website', 'Seat']);
+    expect(within(card).getByRole('link', { name: 'github.com' })).toHaveAttribute('href', 'https://github.com');
+    expect(within(card).getByText('example.co')).toBeInTheDocument();
+    expect(card).not.toHaveTextContent(note);
+  });
+
+  it('says where the websites come from when they belong to the linked login, which alone changes them', () => {
+    renderWithIntl(
+      <KindDetails
+        item={item('backup-codes', { name: 'Recovery', codes: [{ code: 'aaaa' }] })}
+        sites={{ urls: ['https://github.com'], fromLogin: 'GitHub' }}
+      />,
+    );
+    const card = screen.getByRole('region', { name: 'Backup codes' });
+    expect(within(card).getByRole('link', { name: 'github.com' })).toBeInTheDocument();
+    expect(card).toHaveTextContent(note);
+    expect(within(card).queryByRole('textbox')).not.toBeInTheDocument();
+  });
+
+  it('has no Website row without websites', () => {
+    renderWithIntl(<KindDetails item={item('otp', { name: 'Code', secret: 'JBSWY3DPEHPK3PXP' })} sites={undefined} />);
+    expect(screen.queryByText('Website')).not.toBeInTheDocument();
   });
 });
 
@@ -104,7 +164,8 @@ describe('a File item', () => {
     renderWithIntl(<KindDetails item={item('file', { file })} download={download} />);
     await user().click(screen.getByRole('button', { name: 'Download Lease agreement.pdf' }));
     expect(download).toHaveBeenCalledWith(expect.objectContaining({ name: 'Lease agreement.pdf', serverId: 'f1', key: 'k' }));
-    const busy = screen.getByRole('button', { name: 'Download Lease agreement.pdf' });
+    // Its name is what it says while it works, not the old one that no longer matches its words.
+    const busy = screen.getByRole('button', { name: 'Preparing…' });
     expect(busy).toBeDisabled();
     expect(busy).toHaveTextContent('Preparing…');
     finish();
@@ -172,7 +233,7 @@ describe('a contact as a person', () => {
     expect(within(card).getByText('48 Pine Street')).toBeInTheDocument();
     expect(within(card).getByText('Portland, OR 97205')).toBeInTheDocument();
     expect(within(card).getByText('United States')).toBeInTheDocument();
-    await user().click(within(card).getByRole('button', { name: 'Copy address' }));
+    await user().click(within(card).getByRole('button', { name: 'Copy the address' }));
     expect(copyText).toHaveBeenCalledWith('48 Pine Street\nPortland, OR 97205\nUnited States', { secret: false });
   });
 
