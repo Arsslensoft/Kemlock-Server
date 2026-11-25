@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { NOW, migration } from './fixtures';
-import { MigrateView, stepOf } from './Migrate';
+import { MigrateView, checkSource, stepOf } from './Migrate';
 
 function view(props: Partial<Parameters<typeof MigrateView>[0]> = {}) {
   const onStart = vi.fn();
@@ -22,7 +22,28 @@ describe('stepOf', () => {
   });
 });
 
+describe('checkSource', () => {
+  it('accepts a folder or a database address, and only complains about what is neither', () => {
+    expect(checkSource('')).toBeUndefined();
+    expect(checkSource('/srv/vaultwarden/data')).toBeUndefined();
+    expect(checkSource('C:\vw\data')).toBeUndefined();
+    expect(checkSource('postgres://vw@db/vw')).toBeUndefined();
+    expect(checkSource('vaultwarden')).toBe('admin.migrate.error.source');
+    expect(checkSource('https://example.co')).toBe('admin.migrate.error.source');
+  });
+});
+
 describe('MigrateView', () => {
+  it('shows an error for a source that is not a path, and does not read it', async () => {
+    const { onStart } = view();
+    const user = userEvent.setup({ delay: null });
+    await user.click(screen.getByLabelText(/Vaultwarden data folder on this server/));
+    await user.paste('vaultwarden');
+    expect(await screen.findByText(/Type a folder path/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check it' })).toBeDisabled();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
   it('needs a source before it reads anything', async () => {
     const { onStart } = view();
     const check = screen.getByRole('button', { name: 'Check it' });

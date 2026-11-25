@@ -98,23 +98,42 @@ describe('PeerSecurityView', () => {
     expect(screen.getByText('This server has AES instructions, so AES-256-GCM is first.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: `Move ${SUITES.chacha} up` }));
     expect(screen.getByText(/AES-256-GCM would be faster here than ChaCha20-Poly1305/)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Save and re-sign the descriptor' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(onSaveSuites).toHaveBeenCalledWith(
       [on(SUITES.chacha), on(SUITES.aes), on(SUITES.fips, false, false)],
       'sealed',
     );
   });
 
-  it('cannot save with every suite off, and resets', async () => {
+  it('has Save off and no Discard until the suites change', async () => {
+    const { onSaveSuites } = view();
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: `Move ${SUITES.chacha} up` }));
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+    expect(onSaveSuites).not.toHaveBeenCalled();
+  });
+
+  it('cannot save with every suite off, and discards', async () => {
     view();
     const user = userEvent.setup();
     const list = within(screen.getByRole('list', { name: 'Suites this server accepts, most preferred first' }));
-    await user.click(list.getByRole('checkbox', { name: SUITES.aes }));
-    await user.click(list.getByRole('checkbox', { name: SUITES.chacha }));
+    await user.click(list.getByRole('switch', { name: new RegExp(`^${SUITES.aes}`) }));
+    await user.click(list.getByRole('switch', { name: new RegExp(`^${SUITES.chacha}`) }));
     expect(screen.getByText(/No suite is on/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Save and re-sign the descriptor' })).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: 'Reset' }));
-    expect(screen.getByRole('button', { name: 'Save and re-sign the descriptor' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Discard' }));
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.getByText(/AES-256-GCM is first/)).toBeInTheDocument();
+  });
+
+  it('says Saved. under the section title once the suites are saved', () => {
+    view({ suitesSaved: true });
+    expect(screen.getByText('Saved.')).toBeInTheDocument();
   });
 
   it('rotates the key exchange key at once, and the identity key only after confirming', async () => {

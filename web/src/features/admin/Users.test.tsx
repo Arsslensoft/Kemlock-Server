@@ -85,12 +85,22 @@ describe('UsersView', () => {
     expect(onAction).toHaveBeenCalledWith('erase', USERS[1]);
   });
 
+  it('shows the email error as it is typed and keeps Invite off', async () => {
+    const { onInvite } = view();
+    const user = userEvent.setup();
+    const invite = screen.getByRole('button', { name: 'Invite' });
+    expect(invite).toBeDisabled();
+    await user.type(screen.getByLabelText('Email to invite'), 'not-an-email');
+    expect(screen.getByText(/Type an email address/)).toBeInTheDocument();
+    expect(invite).toBeDisabled();
+    expect(onInvite).not.toHaveBeenCalled();
+  });
+
   it('checks the email before inviting', async () => {
     const { onInvite } = view();
     const user = userEvent.setup();
     const box = screen.getByLabelText('Email to invite');
     await user.type(box, 'not-an-email');
-    await user.click(screen.getByRole('button', { name: 'Invite' }));
     expect(await screen.findByText(/Type an email address/)).toBeInTheDocument();
     expect(onInvite).not.toHaveBeenCalled();
     await user.clear(box);
