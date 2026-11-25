@@ -112,14 +112,12 @@ struct SendResponse {
 #[derive(Clone, Debug)]
 pub struct RelayClient {
     http: reqwest::Client,
-    base: String,
+    /// Shared by every clone, so a new address reaches the dispatcher and the console at once.
+    base: std::sync::Arc<std::sync::RwLock<String>>,
 }
 
 fn allowed_url(url: &str) -> bool {
-    url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-        || url.starts_with("http://[::1]")
+    kemlock_app::push::is_relay_url(url)
 }
 
 impl RelayClient {
@@ -138,11 +136,36 @@ impl RelayClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| RelayError::Transport(e.to_string()))?;
-        Ok(RelayClient { http, base })
+        Ok(RelayClient {
+            http,
+            base: std::sync::Arc::new(std::sync::RwLock::new(base)),
+        })
+    }
+
+    /// The relay's address now.
+    pub fn base(&self) -> String {
+        self.base
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Talks to the relay at `base_url` from now on, in every clone. The same checks as
+    /// [`RelayClient::new`]; a bad address leaves the client as it was.
+    pub fn set_base(&self, base_url: &str) -> Result<(), RelayError> {
+        let base = base_url.trim().trim_end_matches('/').to_owned();
+        if !allowed_url(&base) {
+            return Err(RelayError::BadUrl);
+        }
+        *self
+            .base
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = base;
+        Ok(())
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.base)
+        format!("{}{path}", self.base())
     }
 
     fn failure(response: &reqwest::Response) -> RelayError {

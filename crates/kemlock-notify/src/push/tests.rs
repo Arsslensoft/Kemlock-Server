@@ -395,3 +395,16 @@ async fn pushes_continue_after_the_relay_failed_once() {
     dispatcher.nudge(Owner::User(ada));
     eventually(|| state.pushes.lock().expect("lock").len() == 1).await;
 }
+
+#[test]
+fn a_new_relay_address_reaches_every_clone_and_a_bad_one_changes_nothing() {
+    let client = RelayClient::new("https://relay.example.org/").expect("a client");
+    let clone = client.clone();
+    assert_eq!(client.base(), "https://relay.example.org");
+    clone
+        .set_base(" https://other.example.org/ ")
+        .expect("https is allowed");
+    assert_eq!(client.base(), "https://other.example.org");
+    assert!(client.set_base("http://relay.example.org").is_err());
+    assert_eq!(clone.base(), "https://other.example.org");
+}

@@ -73,7 +73,10 @@ pub use put_item::PutItem;
 pub use refresh::Refresh;
 pub use register::{Register, RegisterInput, RegisterStartInput, Registered};
 pub use session::{Continued, DeviceInfo, Sessions, TokenPair};
-pub use setup_basics::{JoinPolicy, ServerBasics, save_basics, without_env_set};
+pub use setup_basics::{
+    BackupBasics, JoinPolicy, RECORDED_DOMAIN_KEY, ServerBasics, record_domain, save_basics,
+    without_env_set,
+};
 pub use sign_in::{OpaqueFinishInput, OpaqueStartInput, OpaqueStarted, SignIn, SignedIn};
 pub use sign_in::{SecondStep, SecondStepInput};
 pub use sync_delta::{SyncDelta, SyncOutcome, SyncPage};

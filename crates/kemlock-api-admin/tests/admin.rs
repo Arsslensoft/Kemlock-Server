@@ -128,6 +128,7 @@ const READS: &[&str] = &[
     "/admin/v1/sso/domains",
     "/admin/v1/migration",
     "/admin/v1/push-relay",
+    "/admin/v1/server-address",
     "/admin/v1/compliance/requests",
 ];
 
@@ -2414,4 +2415,103 @@ async fn an_ordinary_account_cannot_see_or_change_the_push_relay() {
         )
         .await;
     assert_eq!(reply.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn turning_the_push_relay_off_clears_the_saved_switch_and_tells_the_server() {
+    use kemlock_app::admin::SettingsRepo;
+    use std::sync::atomic::Ordering;
+    let rig = Rig::with_push_relay(std::sync::Arc::new(FakeRelay::default()));
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    rig.admin
+        .put_setting("setting.kemlock_push_relay", "true")
+        .await
+        .expect("saved");
+    let before = root.get("/admin/v1/settings").await.json();
+    assert_eq!(setting(&before, "kemlock_push_relay")["value"], "true");
+    let saves = rig.settings_saves.load(Ordering::SeqCst);
+
+    let off = root
+        .write("POST", "/admin/v1/push-relay/disable", None, &token)
+        .await;
+    assert_eq!(off.status, StatusCode::OK);
+    let after = root.get("/admin/v1/settings").await.json();
+    assert_eq!(setting(&after, "kemlock_push_relay")["value"], "false");
+    assert_eq!(setting(&after, "kemlock_push_relay")["source"], "default");
+    assert_eq!(rig.settings_saves.load(Ordering::SeqCst), saves + 1);
+}
+
+#[tokio::test]
+async fn the_address_is_shown_with_the_one_recorded_at_setup_and_a_difference_is_flagged() {
+    use kemlock_app::admin::SettingsRepo;
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let none = root.get("/admin/v1/server-address").await;
+    assert_eq!(none.status, StatusCode::OK);
+    assert_eq!(none.json()["recordedDomain"], Value::Null);
+    assert_eq!(none.json()["differs"], false);
+    let domain = none.json()["domain"].as_str().expect("domain").to_owned();
+
+    // The same address, with a slash and another case, isn't a difference.
+    rig.admin
+        .put_setting("setup.domain", &format!("{}/", domain.to_uppercase()))
+        .await
+        .expect("saved");
+    assert_eq!(
+        root.get("/admin/v1/server-address").await.json()["differs"],
+        false
+    );
+
+    rig.admin
+        .put_setting("setup.domain", "https://old.example.org")
+        .await
+        .expect("saved");
+    let differs = root.get("/admin/v1/server-address").await.json();
+    assert_eq!(differs["recordedDomain"], "https://old.example.org");
+    assert_eq!(differs["differs"], true);
+    assert_eq!(differs["domain"], domain);
+}
+
+#[tokio::test]
+async fn an_ordinary_account_cannot_read_the_address() {
+    let rig = Rig::new();
+    let sam = rig.user("sam@example.org").await;
+    assert_eq!(
+        sam.get("/admin/v1/server-address").await.status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn the_push_installation_id_and_key_are_never_returned() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {
+                "push_installation_id": "id-sekret-1",
+                "push_installation_key": "key-sekret-2",
+                "push_enabled": "true"
+            }})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    for body in [
+        saved.json(),
+        root.get("/admin/v1/settings").await.json(),
+    ] {
+        for key in ["push_installation_id", "push_installation_key"] {
+            let s = setting(&body, key);
+            assert_eq!(s["kind"], "secret");
+            assert_eq!(s["secretSet"], true);
+            assert_eq!(s["value"], Value::Null);
+        }
+        let text = body.to_string();
+        assert!(!text.contains("sekret"), "{text}");
+    }
 }

@@ -38,6 +38,9 @@ pub struct AdminRuntime<R, Sp, So, D, M> {
     /// What deletes an account for an admin: privacy's whole erasure (see
     /// [`AdminRuntime::with_account_erasure`]).
     pub erasure: Option<Arc<dyn AccountErasure>>,
+    /// The data folder the server runs in, shown by `/admin/v1/server-address` (see
+    /// [`AdminRuntime::with_data_folder`]).
+    pub data_folder: Option<String>,
 }
 
 impl<R, Sp, So, D, M> AdminRuntime<R, Sp, So, D, M> {
@@ -61,7 +64,15 @@ impl<R, Sp, So, D, M> AdminRuntime<R, Sp, So, D, M> {
             migration: None,
             push_relay: None,
             erasure: None,
+            data_folder: None,
         }
+    }
+
+    /// Tells the console which data folder the server uses, which only the environment sets.
+    #[must_use]
+    pub fn with_data_folder(mut self, folder: impl Into<String>) -> Self {
+        self.data_folder = Some(folder.into());
+        self
     }
 
     /// Sets what deletes an account for an admin: `kemlock_app::privacy::EraseAccount`, which takes

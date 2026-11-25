@@ -1,11 +1,13 @@
-//! The "Server basics" of first-run setup: who may join, and the outgoing mail.
+//! The "Server basics" of first-run setup: who may join, the outgoing mail, Kemlock's push relay
+//! and the backups.
 //!
 //! The setup screens collect them and send them with `POST /kem/v1/setup/finish`. They are
 //! saved as the same settings the admin console's Settings screen edits (`signups_allowed`,
 //! `signups_domains_whitelist`, `invitations_allowed`, `smtp_*`), so the console shows them as
-//! what was chosen at setup and changes them from there. What the screens also ask (the public
-//! address, push, where files go, backups) is not a saved setting: the address is the server's
-//! `DOMAIN`, and the rest is set by the operator's environment.
+//! what was chosen at setup and changes them from there. The public address is not a setting: it is
+//! the server's `DOMAIN`, which sign-in proofs are checked against, so it can't change while the
+//! server runs. The choice is only recorded ([`RECORDED_DOMAIN_KEY`]), for the console to show
+//! beside the address in use. Where files go is the operator's `DATA_FOLDER`, never saved.
 
 use crate::admin::AdminError;
 use crate::admin::ports::SettingsRepo;
@@ -36,6 +38,21 @@ impl JoinPolicy {
     }
 }
 
+/// The backups the setup screen asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BackupBasics {
+    /// `night` (03:00 UTC) or `six-hours`.
+    pub every: String,
+    /// `7`, `14` or `30`.
+    pub keep: String,
+    /// The age recipient the archives are encrypted to.
+    pub recipient: String,
+}
+
+/// The setting under which the address chosen at setup is recorded. It isn't one of the settings
+/// the console edits (those start with `setting.`).
+pub const RECORDED_DOMAIN_KEY: &str = "setup.domain";
+
 /// What the setup screen sent. Empty mail fields mean "no mail yet".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerBasics {
@@ -48,6 +65,12 @@ pub struct ServerBasics {
     pub mail_security: String,
     pub mail_from: String,
     pub mail_user: String,
+    /// The public address the admin chose; recorded, not applied. Empty records nothing.
+    pub address: String,
+    /// Register with Kemlock's push relay.
+    pub push: bool,
+    /// `None` for no backups.
+    pub backups: Option<BackupBasics>,
 }
 
 fn invalid(key: &str) -> AppError {
@@ -58,6 +81,8 @@ fn invalid(key: &str) -> AppError {
         "smtp_security" => "server basics: the mail security must be starttls or tls",
         "smtp_from" => "server basics: the mail sender isn't an email address",
         "smtp_username" => "server basics: the mail user is too long or has odd characters",
+        "backup_keep" => "server basics: backups keep 7, 14 or 30",
+        "backup_recipient" => "server basics: the backup recipient isn't an age recipient",
         _ => "server basics: a value isn't valid",
     })
 }
@@ -114,8 +139,65 @@ impl ServerBasics {
             set(&mut changes, "smtp_from", &self.mail_from)?;
             set(&mut changes, "smtp_username", &self.mail_user)?;
         }
+        if self.push {
+            set(&mut changes, "kemlock_push_relay", "true")?;
+        } else {
+            changes.insert("kemlock_push_relay".to_owned(), Change::Reset);
+        }
+        match &self.backups {
+            Some(backups) => {
+                let schedule = match backups.every.as_str() {
+                    "night" => "nightly",
+                    "six-hours" => "6h",
+                    _ => {
+                        return Err(AppError::Invalid(
+                            "server basics: backups run at night or every six hours",
+                        ));
+                    }
+                };
+                if backups.recipient.trim().is_empty() {
+                    return Err(AppError::Invalid(
+                        "server basics: backups need an age recipient to encrypt to",
+                    ));
+                }
+                set(&mut changes, "backup_schedule", schedule)?;
+                set(&mut changes, "backup_keep", &backups.keep)?;
+                set(&mut changes, "backup_recipient", &backups.recipient)?;
+            }
+            None => {
+                changes.insert("backup_schedule".to_owned(), Change::Reset);
+            }
+        }
         Ok(changes)
     }
+}
+
+impl ServerBasics {
+    /// The address to record: trimmed, without a trailing slash, an http or https address; `None`
+    /// when the screen sent none.
+    pub fn recorded_domain(&self) -> Result<Option<String>, AppError> {
+        let address = self.address.trim().trim_end_matches('/');
+        if address.is_empty() {
+            return Ok(None);
+        }
+        let ok = (address.starts_with("https://") || address.starts_with("http://"))
+            && address.len() <= 253
+            && !address.chars().any(|c| c.is_control() || c.is_whitespace());
+        if !ok {
+            return Err(AppError::Invalid(
+                "server basics: the address must be an http or https address",
+            ));
+        }
+        Ok(Some(address.to_owned()))
+    }
+}
+
+/// Records the address chosen at setup, for the console to show beside the one in use. Nothing
+/// reads it back to configure the server.
+pub async fn record_domain<R: SettingsRepo>(repo: &R, address: &str) -> Result<(), AppError> {
+    repo.put_setting(RECORDED_DOMAIN_KEY, address)
+        .await
+        .map_err(AppError::from)
 }
 
 /// Drops the changes whose setting the environment sets: the operator's value wins and the
@@ -155,6 +237,9 @@ mod tests {
             mail_security: "starttls".into(),
             mail_from: String::new(),
             mail_user: String::new(),
+            address: String::new(),
+            push: false,
+            backups: None,
         }
     }
 
@@ -220,6 +305,59 @@ mod tests {
         assert!(!kept.contains_key("signups_allowed"));
         assert!(kept.contains_key("invitations_allowed"));
     }
+    #[test]
+    fn push_and_backups_become_settings() {
+        let mut b = basics(JoinPolicy::Invite);
+        b.push = true;
+        b.backups = Some(BackupBasics {
+            every: "six-hours".into(),
+            keep: "14".into(),
+            recipient: "age1qqqqqqqq".into(),
+        });
+        let changes = b.changes().expect("valid");
+        assert_eq!(value(&changes, "kemlock_push_relay").as_deref(), Some("true"));
+        assert_eq!(value(&changes, "backup_schedule").as_deref(), Some("6h"));
+        assert_eq!(value(&changes, "backup_keep").as_deref(), Some("14"));
+        b.backups = None;
+        b.push = false;
+        let changes = b.changes().expect("valid");
+        assert_eq!(changes.get("backup_schedule"), Some(&Change::Reset));
+        assert_eq!(changes.get("kemlock_push_relay"), Some(&Change::Reset));
+    }
+
+    #[test]
+    fn bad_backup_choices_are_refused() {
+        let mut b = basics(JoinPolicy::Invite);
+        for (every, keep, recipient) in [
+            ("weekly", "7", "age1x"),
+            ("night", "9", "age1x"),
+            ("night", "7", ""),
+            ("night", "7", "ssh-rsa x"),
+        ] {
+            b.backups = Some(BackupBasics {
+                every: every.into(),
+                keep: keep.into(),
+                recipient: recipient.into(),
+            });
+            assert!(b.changes().is_err(), "{every} {keep} {recipient}");
+        }
+    }
+
+    #[test]
+    fn the_address_is_recorded_cleaned_and_checked() {
+        let mut b = basics(JoinPolicy::Invite);
+        assert_eq!(b.recorded_domain(), Ok(None));
+        b.address = " https://Vault.example.org/ ".into();
+        assert_eq!(
+            b.recorded_domain(),
+            Ok(Some("https://Vault.example.org".into()))
+        );
+        b.address = "vault.example.org".into();
+        assert!(b.recorded_domain().is_err());
+        // An address never turns into a setting: DOMAIN is configuration.
+        assert!(b.changes().expect("valid").keys().all(|k| k != "domain"));
+    }
+
     #[test]
     fn join_words_parse() {
         assert_eq!(JoinPolicy::parse("anyone"), Some(JoinPolicy::Anyone));

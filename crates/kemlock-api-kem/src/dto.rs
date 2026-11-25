@@ -120,9 +120,9 @@ pub struct SetupFinishRequest {
     pub basics: Option<ServerBasicsDto>,
 }
 
-/// The server basics a setup screen sends. Fields the server has no setting for (the public
-/// address, push, file folder, backups) are accepted and ignored, so a client may send its whole
-/// form.
+/// The server basics a setup screen sends. The public address is only recorded (the server's
+/// `DOMAIN` is configuration). The file folder has no setting and is accepted and ignored, so a
+/// client may send its whole form.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerBasicsDto {
@@ -143,6 +143,32 @@ pub struct ServerBasicsDto {
     pub mail_from: String,
     #[serde(default)]
     pub mail_user: String,
+    /// The public address chosen at setup; recorded for the console, not applied.
+    #[serde(default)]
+    pub address: String,
+    /// Register with Kemlock's push relay.
+    #[serde(default)]
+    pub push: bool,
+    /// Turn scheduled backups on.
+    #[serde(default)]
+    pub backups: bool,
+    /// `night` or `six-hours`.
+    #[serde(default = "default_backup_every")]
+    pub backup_every: String,
+    /// `7`, `14` or `30`.
+    #[serde(default = "default_backup_keep")]
+    pub backup_keep: String,
+    /// The age recipient the backups are encrypted to.
+    #[serde(default)]
+    pub backup_recipient: String,
+}
+
+fn default_backup_every() -> String {
+    "night".to_owned()
+}
+
+fn default_backup_keep() -> String {
+    "30".to_owned()
 }
 
 fn default_mail_port() -> String {
@@ -166,6 +192,13 @@ impl ServerBasicsDto {
             mail_security: self.mail_security,
             mail_from: self.mail_from,
             mail_user: self.mail_user,
+            address: self.address,
+            push: self.push,
+            backups: self.backups.then_some(kemlock_app::BackupBasics {
+                every: self.backup_every,
+                keep: self.backup_keep,
+                recipient: self.backup_recipient,
+            }),
         })
     }
 }

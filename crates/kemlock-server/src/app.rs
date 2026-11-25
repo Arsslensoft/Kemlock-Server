@@ -82,6 +82,8 @@ pub struct Built {
     pub settings: Arc<SettingsWatch>,
     /// The mail sender the settings switch to another SMTP server.
     pub mailer: SwitchMailer,
+    /// Makes the push relays follow the saved settings.
+    pub push: crate::notify::PushFollower,
     /// What starts the move from Vaultwarden in the background; `run` recovers an orphaned one.
     pub migration: VaultwardenMove,
 }
@@ -208,6 +210,7 @@ where
         &api.limits,
         &notifications.mailer,
     );
+    notifications.push_follower.follow(&settings.current());
     settings.overlay_retention(&store);
     // An invited address registers with its token while sign-ups are closed.
     api.live.set_invites(Arc::new(AcceptInvite {
@@ -363,7 +366,8 @@ where
                 let settings = settings.clone();
                 move || settings.nudge()
             })
-            .with_push_relay(notifications.push_relay.clone()),
+            .with_push_relay(notifications.push_relay.clone())
+            .with_data_folder(config.data_folder.display().to_string()),
         ))
         .merge(federated.router)
         // Members, roles, policies and keys of a federated space are written at its home only.
@@ -397,6 +401,7 @@ where
         replication: federated.replication,
         settings,
         mailer: notifications.mailer,
+        push: notifications.push_follower,
         migration,
     })
 }
@@ -464,6 +469,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
         replication,
         settings,
         mailer,
+        push,
         migration,
         ..
     } = build(&config).await?;
@@ -480,7 +486,10 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     // Settings saved in the console, here or on another replica, reach the running server.
     let settings_apply = settings.spawn_apply({
         let api = api.clone();
-        move |snapshot| live::apply(snapshot, &api.live, &api.limits, &mailer)
+        move |snapshot| {
+            live::apply(snapshot, &api.live, &api.limits, &mailer);
+            push.follow(snapshot);
+        }
     });
     let settings_poll = settings.spawn_poll();
     let listener = bind(&config).await?;
@@ -511,15 +520,11 @@ pub async fn run(config: Config) -> Result<(), RunError> {
         api.crypto.clone(),
         crate::privacy::server_files(&config.data_folder).map_err(RunError::Config)?,
     );
-    let backups = match (
-        crate::backups::settings(&config),
-        crate::backups::layout(&config),
-    ) {
-        (Ok(settings), Ok(layout)) => {
-            crate::backups::spawn_backups(store.clone(), settings, layout)
-        }
-        (Err(e), _) | (_, Err(e)) => return Err(RunError::Config(e)),
-    };
+    // A bad backup setting in the environment stops the start; the schedule itself follows the
+    // saved settings from here on.
+    crate::backups::settings(&config).map_err(RunError::Config)?;
+    let layout = crate::backups::layout(&config).map_err(RunError::Config)?;
+    let backups = crate::backups::spawn_backups(store.clone(), settings.clone(), layout);
     let served = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -530,9 +535,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     retention.abort();
     settings_poll.abort();
     settings_apply.abort();
-    if let Some(backups) = backups {
-        backups.abort();
-    }
+    backups.abort();
     for task in replication_tasks {
         task.abort();
     }

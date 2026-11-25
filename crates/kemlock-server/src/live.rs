@@ -24,6 +24,7 @@ use kemlock_app::admin::{AdminError, EnvSettings, Live, Settings, SettingsRepo};
 use kemlock_app::notices::BoxFuture;
 use kemlock_app::ports::SecretSeal;
 use kemlock_domain::privacy::Retention;
+use kemlock_notify::bitwarden::BitwardenPushConfig;
 use kemlock_notify::mail::{LogMailer, Mail, MailError, Mailer, SmtpConfig, SmtpMailer};
 use kemlock_store_sql::SqlStore;
 use std::collections::BTreeMap;
@@ -211,6 +212,20 @@ pub struct Snapshot {
     /// make a valid one: then `smtp_error` says why and the sender in use stays as it was.
     pub smtp: Option<SmtpConfig>,
     pub smtp_error: Option<String>,
+    /// Bitwarden's push relay (`PUSH_*`). `push_error` says why they could not be read.
+    pub push: PushValues,
+    pub push_error: Option<String>,
+    /// `KEMLOCK_PUSH_RELAY`: register with Kemlock's relay when the server hasn't.
+    pub kemlock_relay: bool,
+    /// Kemlock's relay address; empty means the default.
+    pub kemlock_relay_url: String,
+    /// The backup settings (`KEMLOCK_BACKUP_*`), as text. The folder is relative to the data
+    /// folder when `backup_destination_saved`, and as the environment wrote it otherwise.
+    pub backup_schedule: String,
+    pub backup_keep: String,
+    pub backup_destination: String,
+    pub backup_destination_saved: bool,
+    pub backup_recipient: String,
 }
 
 fn flag(view: &SettingView) -> bool {
@@ -276,6 +291,7 @@ impl Snapshot {
         let by_key: BTreeMap<&str, &SettingView> =
             views.iter().map(|v| (v.definition.key, v)).collect();
         let view = |key: &str| by_key.get(key).copied().ok_or(AdminError::NotFound);
+        let text = |key: &str| view(key).map(|v| v.value.clone().unwrap_or_default());
 
         let domains = view("signups_domains_whitelist")?
             .value
@@ -300,6 +316,10 @@ impl Snapshot {
             outranks.then(|| u64::try_from(int(size)).unwrap_or(1).saturating_mul(MIB));
 
         let (smtp, smtp_error) = smtp_of(settings, &views, process_env).await;
+        let (push, push_error) = match push_of(settings, &views).await {
+            Ok(push) => (push, None),
+            Err(why) => (PushValues::default(), Some(why)),
+        };
 
         Ok(Snapshot {
             signups_allowed: flag(view("signups_allowed")?),
@@ -323,6 +343,15 @@ impl Snapshot {
             rate_register_per_hour: count(view("rate_register_per_hour")?),
             smtp,
             smtp_error,
+            push,
+            push_error,
+            kemlock_relay: flag(view("kemlock_push_relay")?),
+            kemlock_relay_url: view("kemlock_push_relay_url")?.value.clone().unwrap_or_default(),
+            backup_schedule: text("backup_schedule")?,
+            backup_keep: text("backup_keep")?,
+            backup_destination: text("backup_destination")?,
+            backup_destination_saved: view("backup_destination")?.source == Source::Saved,
+            backup_recipient: text("backup_recipient")?,
         })
     }
 }
@@ -366,6 +395,83 @@ where
         Ok(smtp) => (smtp, None),
         Err(e) => (None, Some(e.to_string())),
     }
+}
+
+/// Bitwarden's push relay settings as saved or set: what `PUSH_*` say. The key stays out of
+/// `Debug` output.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct PushValues {
+    pub enabled: bool,
+    pub installation_id: String,
+    pub installation_key: String,
+    pub relay_uri: String,
+    pub identity_uri: String,
+}
+
+impl std::fmt::Debug for PushValues {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushValues")
+            .field("enabled", &self.enabled)
+            .field("relay_uri", &self.relay_uri)
+            .field("identity_uri", &self.identity_uri)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PushValues {
+    /// The relay the values describe: `Ok(None)` when pushes are off, an error that says what is
+    /// missing or wrong when they are on without what they need.
+    pub fn config(&self) -> Result<Option<BitwardenPushConfig>, String> {
+        let get = |name: &str| -> Option<String> {
+            match name {
+                "PUSH_ENABLED" => Some(self.enabled.to_string()),
+                "PUSH_INSTALLATION_ID" => Some(self.installation_id.clone()),
+                "PUSH_INSTALLATION_KEY" => Some(self.installation_key.clone()),
+                "PUSH_RELAY_URI" => Some(self.relay_uri.clone()),
+                "PUSH_IDENTITY_URI" => Some(self.identity_uri.clone()),
+                _ => None,
+            }
+        };
+        BitwardenPushConfig::from_lookup(&get).map_err(|e| e.to_string())
+    }
+}
+
+/// The push settings in effect, secrets opened. A secret that doesn't open is an error the
+/// follower reports, leaving the relay as it was.
+async fn push_of<R, S, E>(
+    settings: &Settings<R, S, E>,
+    views: &[SettingView],
+) -> Result<PushValues, String>
+where
+    R: SettingsRepo,
+    S: SecretSeal,
+    E: EnvSettings,
+{
+    let text = |key: &str| {
+        views
+            .iter()
+            .find(|v| v.definition.key == key)
+            .and_then(|v| v.value.clone())
+            .unwrap_or_default()
+    };
+    let secret = |key: &'static str| async move {
+        match settings.secret(key).await {
+            Ok(Some(bytes)) => String::from_utf8(bytes.to_vec())
+                .map_err(|_| format!("{key} isn't text")),
+            Ok(None) => Ok(String::new()),
+            Err(e) => Err(format!("the saved {key}: {e}")),
+        }
+    };
+    Ok(PushValues {
+        enabled: matches!(
+            text("push_enabled").trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        ),
+        installation_id: secret("push_installation_id").await?,
+        installation_key: secret("push_installation_key").await?,
+        relay_uri: text("push_relay_uri"),
+        identity_uri: text("push_identity_uri"),
+    })
 }
 
 /// A mail sender whose SMTP server can be replaced while the server runs: every sender the
@@ -607,6 +713,63 @@ mod tests {
         SettingsWatch::start(store.clone(), crypto(), env)
             .await
             .expect("the settings are read")
+    }
+
+    #[tokio::test]
+    async fn backup_settings_follow_the_snapshot_with_the_environment_first_and_a_saved_folder_joined() {
+        use kemlock_backup::{DestinationConfig, Schedule};
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path().canonicalize().expect("resolves");
+        let store = new_store().await;
+        save(
+            &store,
+            &[
+                ("backup_schedule", "6h"),
+                ("backup_keep", "14"),
+                ("backup_destination", "nas/b"),
+                ("backup_recipient", "age1abc"),
+            ],
+        )
+        .await;
+        let saved = watching(&store, layered(&[], &[])).await;
+        let s = crate::backups::settings_from_snapshot(&saved.current(), &|_| None, &root)
+            .expect("valid");
+        assert_eq!(s.schedule, Schedule::EverySixHours);
+        assert_eq!(s.keep, 14);
+        assert_eq!(s.recipient, "age1abc");
+        assert_eq!(
+            s.destination,
+            DestinationConfig::Local {
+                folder: root.join("nas").join("b")
+            }
+        );
+        // The environment wins, and its folder is taken as written.
+        let env = watching(
+            &store,
+            layered(
+                &[
+                    ("KEMLOCK_BACKUP_SCHEDULE", "nightly"),
+                    ("KEMLOCK_BACKUP_DEST", "/mnt/elsewhere"),
+                ],
+                &[],
+            ),
+        )
+        .await;
+        let s = crate::backups::settings_from_snapshot(&env.current(), &|_| None, &root)
+            .expect("valid");
+        assert_eq!(s.schedule, Schedule::Nightly);
+        assert_eq!(
+            s.destination,
+            DestinationConfig::Local {
+                folder: std::path::PathBuf::from("/mnt/elsewhere")
+            }
+        );
+        // A saved folder that leaves the data folder is refused when it is used.
+        save(&store, &[("backup_destination", "attachments")]).await;
+        let saved = watching(&store, layered(&[], &[])).await;
+        assert!(
+            crate::backups::settings_from_snapshot(&saved.current(), &|_| None, &root).is_err()
+        );
     }
 
     #[test]

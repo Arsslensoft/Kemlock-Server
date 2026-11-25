@@ -83,10 +83,10 @@ impl BitwardenPushConfig {
             .trim_end_matches('/')
             .to_owned();
         // The key goes to both services: they must be https.
-        if !(relay_uri.starts_with("https://") || relay_uri.starts_with("http://127.0.0.1")) {
+        if !kemlock_app::push::is_relay_url(&relay_uri) {
             return Err(PushConfigError::NotHttps("PUSH_RELAY_URI"));
         }
-        if !(identity_uri.starts_with("https://") || identity_uri.starts_with("http://127.0.0.1")) {
+        if !kemlock_app::push::is_relay_url(&identity_uri) {
             return Err(PushConfigError::NotHttps("PUSH_IDENTITY_URI"));
         }
         Ok(Some(BitwardenPushConfig {
@@ -369,6 +369,69 @@ impl BitwardenPush {
     /// Sends an update: `POST /push/send`.
     pub async fn send(&self, push: &BwPush) -> Result<(), RelayError> {
         self.post("/push/send", &push.body()).await
+    }
+}
+
+/// Bitwarden's push relay that can be switched on, off or to other settings while the server
+/// runs. Every clone shares the one slot; the notifier and the device routes hold clones.
+#[derive(Clone, Default)]
+pub struct BwPushSwitch {
+    current: std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<BitwardenPush>>>>,
+}
+
+impl std::fmt::Debug for BwPushSwitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BwPushSwitch")
+            .field("on", &self.get().is_some())
+            .finish()
+    }
+}
+
+impl BwPushSwitch {
+    pub fn new(relay: Option<std::sync::Arc<BitwardenPush>>) -> BwPushSwitch {
+        BwPushSwitch {
+            current: std::sync::Arc::new(std::sync::RwLock::new(relay)),
+        }
+    }
+
+    /// Pushes go through `relay` from now on; `None` turns them off.
+    pub fn set(&self, relay: Option<std::sync::Arc<BitwardenPush>>) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = relay;
+    }
+
+    /// The relay in use, when pushes are on.
+    pub fn get(&self) -> Option<std::sync::Arc<BitwardenPush>> {
+        self.current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl BwRelay for BwPushSwitch {
+    fn enabled(&self) -> bool {
+        self.get().is_some()
+    }
+
+    fn register<'a>(&'a self, device: &'a BwDevice) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            match self.get() {
+                Some(relay) => relay.register(device).await,
+                None => Err("Bitwarden's push relay is off".to_owned()),
+            }
+        })
+    }
+
+    fn unregister(&self, push_uuid: Uuid) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            match self.get() {
+                Some(relay) => relay.unregister(push_uuid).await,
+                None => Err("Bitwarden's push relay is off".to_owned()),
+            }
+        })
     }
 }
 
