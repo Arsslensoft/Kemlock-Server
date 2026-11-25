@@ -215,6 +215,16 @@ impl UnifiedPushSender {
     }
 
     async fn send_one(&self, endpoint: &str) -> Delivery {
+        self.send_via(endpoint, |http| http).await
+    }
+
+    /// Sends to one endpoint; `tweak` changes the client's builder just before the proxy
+    /// settings are cleared (a test adds a proxy to see it is not used).
+    async fn send_via(
+        &self,
+        endpoint: &str,
+        tweak: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) -> Delivery {
         let Some(url) = self.parse(endpoint) else {
             return Delivery::Forget;
         };
@@ -232,7 +242,9 @@ impl UnifiedPushSender {
             // Connect to the addresses that were checked, not to a fresh lookup.
             http = http.resolve_to_addrs(name, addresses);
         }
-        let http = match http.build() {
+        // A proxy from HTTPS_PROXY or ALL_PROXY would resolve the name itself and so connect to
+        // an address the checks above never saw.
+        let http = match tweak(http).no_proxy().build() {
             Ok(http) => http,
             Err(error) => {
                 tracing::warn!(%error, "couldn't set up a UnifiedPush send");
@@ -477,6 +489,24 @@ mod tests {
         expected.sort();
         assert_eq!(forgotten, expected);
         assert!(seen.requests.lock().expect("lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_proxy_setting_is_never_used() {
+        let (seen, base) = fake().await;
+        let (proxied, proxy) = fake().await;
+        let sender = UnifiedPushSender::allowing_local();
+        let delivery = sender
+            .send_via(&format!("{base}/up"), |http| {
+                http.proxy(reqwest::Proxy::all(&proxy).expect("a proxy"))
+            })
+            .await;
+        assert_eq!(delivery, Delivery::Accepted);
+        assert_eq!(seen.requests.lock().expect("lock").len(), 1);
+        assert!(
+            proxied.requests.lock().expect("lock").is_empty(),
+            "the proxy would have resolved the name itself"
+        );
     }
 
     #[tokio::test]
