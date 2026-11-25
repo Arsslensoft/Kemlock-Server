@@ -520,6 +520,21 @@ limit used up at one server stays used up at the other. At a visit to the Send's
 deletes the copies it made that the home no longer holds (the owner deleted the Send there) and
 their files; a Send made at the replica itself is never deleted this way (table
 `federation_replicated_sends` records which rows are copies).
+A server lists only the Sends made on it, plus the copies it holds of other servers' Sends: never a
+copy to the server it came from, so a Send deleted at its origin can't come back. A copy is deleted
+when the server it came from no longer lists it, whether or not another Send's file could be copied.
+A copy never takes a file another Send or an attachment already holds, and deleting one never
+deletes a file another row holds. Notes copy where file storage isn't configured; a file Send is
+left out there. `Sends` is asked only of a peer whose descriptor lists `x-kemlock-sends1` among its
+suites (an unknown suite name is skipped by negotiation, so older servers ignore it and are never
+sent a request type they would drop the session on).
+
+A Send with a view limit (`maxAccess`) is opened at its vault's home only. Each server counts views
+on its own, and the copies take the larger count, but two servers counting apart would each allow
+the whole limit, so a replica answers 503 (`send-home-unavailable`, with the home's address and
+"try again when the home server is back") for it, for the note and for the file's download. A Send
+with no limit is opened at any server that holds it. Its deletion and expiry dates apply everywhere.
+
 
 **Member accounts.** The home publishes one home record of kind `member-account` per member of the
 vault (for a personal vault, its account; for a space, its confirmed members) whenever the account
@@ -778,7 +793,7 @@ the wire format: nothing is sent to the peer for it beyond an ordinary request.
 - **Placement.** `GET /kem/v1/placement` gives each server of a vault `status` (this server is
   always `online`), `lastSeen`, `latencyMs` and, while it is offline, `offlineSince`. The web
   vault's failover banner appears on its own when a vault's home is `offline`, and the storage page
-  shows each status. A `degraded` home is not an outage: no banner.
+  shows each status. A `degraded` home is not an outage: no banner. A peer that answers with an identity key other than the pinned one is `key-mismatch`: not an outage, no banner, and the changes waiting for it cannot be dropped.
 - **Admin API.** Each peer of `/admin/v1/federation/peers` carries `health` (the status),
   `latencyMs`, `probeError`, `failingSince` and a `lastSeen` that is the later of its last session
   and its last answered probe. The admin federation screen shows it beside each peer.
