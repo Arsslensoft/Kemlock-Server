@@ -266,6 +266,23 @@ impl<S: FedStore> Connector for WsConnector<S> {
         channel.close().await
     }
 
+    /// The peer's signed descriptor over HTTP, checked against the pinned key: no session, so a
+    /// probe costs one small request, and an answer from another server doesn't count.
+    async fn probe(&self, peer: &Peer) -> Result<()> {
+        let pinned = peer.key()?;
+        let mut last = FedError::Remote("the peer has no address".to_owned());
+        for address in &peer.addresses {
+            match self.http.descriptor(address).await {
+                Ok(descriptor) => {
+                    descriptor.verify(unix_now(), Some(&pinned))?;
+                    return Ok(());
+                }
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    }
+
     async fn send_key_record(&self, peer: &Peer, record: Vec<u8>) -> Result<()> {
         let mut last = FedError::Remote("the peer has no address".to_owned());
         for address in &peer.addresses {

@@ -23,6 +23,7 @@
 
 use crate::error::{FedError, Result};
 use crate::extra::Leases;
+use crate::health::{HealthConfig, HealthStatus, PeerHealth, random_bits};
 use crate::home::{Policy, VaultFederation};
 use crate::message::OfferState;
 use crate::ports::{Peer, PeerState};
@@ -32,7 +33,7 @@ use kemlock_domain::{Owner, ServerId, VersionVector};
 use std::collections::{HashMap, HashSet};
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long a lease on a peer lasts: well beyond one run, and a crashed holder only blocks that
 /// long.
@@ -57,6 +58,16 @@ pub trait Connector: Send + Sync {
 
     /// Ends a session cleanly.
     fn close(&self, channel: Self::Chan) -> impl Future<Output = Result<()>> + Send;
+
+    /// Asks whether `peer` answers, and is the peer: an error says why not. The default opens a
+    /// session and closes it; a transport with something cheaper (the signed descriptor over
+    /// HTTP) overrides it.
+    fn probe(&self, peer: &Peer) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            let channel = self.connect(peer).await?;
+            self.close(channel).await
+        }
+    }
 
     /// Delivers a signed key record (a rotation or a revocation of an identity key) to `peer` over
     /// plain HTTP: after a rotation the peer can't open a session until it has the record. The
@@ -162,6 +173,8 @@ struct RunnerState {
     dirty: HashSet<ServerId>,
     /// Key records already delivered: (peer, the server the record is about, kind, issued at).
     told_keys: HashSet<(ServerId, ServerId, String, u64)>,
+    /// What the probes and visits found of each peer.
+    health: HashMap<ServerId, PeerHealth>,
 }
 
 /// Runs replication for every paired peer.
@@ -170,6 +183,7 @@ pub struct PeerRunner<S, C> {
     connector: C,
     holder: String,
     state: Mutex<RunnerState>,
+    health_config: HealthConfig,
 }
 
 impl<S, C> std::fmt::Debug for PeerRunner<S, C> {
@@ -196,6 +210,113 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
             connector,
             holder,
             state: Mutex::new(RunnerState::default()),
+            health_config: HealthConfig::default(),
+        }
+    }
+
+    /// Sets how the peers are probed (the default is [`HealthConfig::default`]).
+    pub fn with_health(mut self, config: HealthConfig) -> PeerRunner<S, C> {
+        self.health_config = config;
+        self
+    }
+
+    pub fn health_config(&self) -> &HealthConfig {
+        &self.health_config
+    }
+
+    /// What the probes and visits found of each peer so far.
+    pub fn health(&self) -> HashMap<ServerId, PeerHealth> {
+        self.state().health.clone()
+    }
+
+    pub fn health_of(&self, peer: ServerId) -> Option<PeerHealth> {
+        self.state().health.get(&peer).cloned()
+    }
+
+    /// Whether `peer` answers, at `now`: `Unknown` for a peer nothing has been tried with.
+    pub fn health_status(&self, peer: ServerId, now: u64) -> HealthStatus {
+        self.state()
+            .health
+            .get(&peer)
+            .map_or(HealthStatus::Unknown, |h| h.status(now, &self.health_config))
+    }
+
+    /// Probes `peer` now: one call with a timeout, recorded in its health. Returns whether it
+    /// answered. A peer that isn't paired is not probed.
+    pub async fn probe_peer(&self, peer: ServerId, now: u64) -> Option<bool> {
+        let stored = self
+            .replica
+            .store()
+            .get_peer(peer)
+            .await
+            .ok()
+            .flatten()
+            .filter(|p| p.state == PeerState::Paired)?;
+        let started = Instant::now();
+        let result =
+            match tokio::time::timeout(self.health_config.timeout(), self.connector.probe(&stored))
+                .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(FedError::Remote("the peer did not answer in time".to_owned())),
+            };
+        let latency = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let answered = result.is_ok();
+        let mut state = self.state();
+        let health = state.health.entry(peer).or_default();
+        match result {
+            Ok(()) => health.record_answer(now, Some(latency)),
+            Err(e) => health.record_failure(now, e.to_string()),
+        }
+        health.schedule(now, &self.health_config, random_bits());
+        Some(answered)
+    }
+
+    /// Probes every paired peer whose probe is due. Returns the peers probed and whether each
+    /// answered. Does nothing when the probes are off.
+    pub async fn probe_tick(&self, now: u64) -> Vec<(ServerId, bool)> {
+        if !self.health_config.enabled() {
+            return Vec::new();
+        }
+        let peers = match self.replica.store().list_peers().await {
+            Ok(peers) => peers,
+            Err(e) => {
+                tracing::warn!(error = %e, "couldn't list the federation peers to probe");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for peer in peers.into_iter().filter(|p| p.state == PeerState::Paired) {
+            let due = self
+                .state()
+                .health
+                .get(&peer.id)
+                .is_none_or(|h| h.due(now));
+            if due && let Some(answered) = self.probe_peer(peer.id, now).await {
+                out.push((peer.id, answered));
+            }
+        }
+        out
+    }
+
+    /// Probes the peers that are due, every few seconds, until the task is dropped or aborted.
+    pub async fn run_probes(self: Arc<Self>)
+    where
+        S: 'static,
+        C: 'static,
+    {
+        if !self.health_config.enabled() {
+            return;
+        }
+        let mut every = tokio::time::interval(TICK);
+        every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            every.tick().await;
+            for (peer, answered) in self.probe_tick(unix_now()).await {
+                if !answered {
+                    tracing::info!(%peer, "a peer did not answer its probe");
+                }
+            }
         }
     }
 
@@ -234,6 +355,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         state.reconciled.retain(|(p, _), _| *p != peer);
         state.told_keys.retain(|(p, _, _, _)| *p != peer);
         state.told.retain(|(p, _), _| *p != peer);
+        state.health.remove(&peer);
         state.announced.retain(|(p, _, _)| *p != peer);
     }
 
@@ -394,7 +516,24 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
     async fn visit(&self, peer: &Peer, now: u64) -> Result<Vec<VaultStatus>> {
         // A rotated key can't open a session until the peer has the record, so it goes first.
         self.deliver_key_records(peer).await;
-        let mut channel = self.connector.connect(peer).await?;
+        let started = Instant::now();
+        let mut channel = match self.connector.connect(peer).await {
+            Ok(channel) => channel,
+            Err(e) => {
+                self.state()
+                    .health
+                    .entry(peer.id)
+                    .or_default()
+                    .record_failure(now, e.to_string());
+                return Err(e);
+            }
+        };
+        let latency = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        self.state()
+            .health
+            .entry(peer.id)
+            .or_default()
+            .record_answer(now, Some(latency));
         let returned = {
             let mut state = self.state();
             let status = state.peers.entry(peer.id).or_default();

@@ -22,7 +22,8 @@ use kemlock_api_kem::extract::Authed;
 use kemlock_api_kem::{Api, JwsTokenSigner};
 use kemlock_app::admin::StepUp;
 use kemlock_app::federation_view::{
-    BoxFut, FederationView, ServerEntry, ServerRole, SharedView, SiblingSet, VaultServers,
+    BoxFut, FederationView, PeerHealthView, ServerEntry, ServerRole, SharedView, SiblingSet,
+    VaultServers,
 };
 use kemlock_app::ports::{ServerInfo, StoreError, Zeroizing};
 use kemlock_crypto::seal::ServerSeal;
@@ -33,8 +34,8 @@ use kemlock_federation::job::PeerBlobFetcher;
 use kemlock_federation::net::Http;
 use kemlock_federation::ports::{PeerRepo, ReplicaStore, VaultRepo};
 use kemlock_federation::{
-    Connector, FedAdminRepo, Federation, HttpLink, MemberStore, PairingLink, Pairings, PeerRunner,
-    Replica, ServerProfile, WsConnector, unix_now,
+    Connector, FedAdminRepo, Federation, HealthConfig, HttpLink, MemberStore, PairingLink, Pairings,
+    PeerRunner, Replica, ServerProfile, WsConnector, unix_now,
 };
 use kemlock_store_sql::SqlStore;
 use std::net::SocketAddr;
@@ -82,7 +83,10 @@ impl<C: Connector + 'static> Replication for Running<C> {
     }
 
     fn spawn(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        let mut handles = vec![tokio::spawn(self.runner.clone().run())];
+        let mut handles = vec![
+            tokio::spawn(self.runner.clone().run()),
+            tokio::spawn(self.runner.clone().run_probes()),
+        ];
         let events = self
             .events
             .lock()
@@ -200,7 +204,10 @@ where
     .map_err(|e| RunError::Config(format!("the federation identity: {e}")))?;
     let replica = Arc::new(Replica::new(store.clone(), Arc::new(identity)).with_blob_files(files));
     let (connector, link) = make(&replica)?;
-    let runner = Arc::new(PeerRunner::new(replica.clone(), connector, holder_name()));
+    let runner = Arc::new(
+        PeerRunner::new(replica.clone(), connector, holder_name())
+            .with_health(HealthConfig::every(config.federation_probe_seconds)),
+    );
     let pairings = Arc::new(Pairings::new(replica.clone(), link));
     let facade = Federation::new(replica.clone(), runner.clone(), pairings.clone())
         .with_rotator(Arc::new(FileRotator::new(
@@ -223,6 +230,7 @@ where
         }));
     let view: SharedView = Arc::new(View {
         replica: replica.clone(),
+        runner: runner.clone(),
     });
     let for_gate = runner.clone();
     let home_gate = HomeGate::new(
@@ -268,8 +276,33 @@ pub fn files_of<B: kemlock_app::sends::SendBlobs + 'static>(blobs: B) -> Arc<dyn
 
 // ---- what the Kemlock API reads ----
 
+/// What the view reads of the replication job, without naming the connector it was built with.
+trait RunnerOps: Send + Sync {
+    fn health(&self, peer: ServerId) -> PeerHealthView;
+}
+
+impl<C: Connector + 'static> RunnerOps for PeerRunner<SqlStore, C> {
+    fn health(&self, peer: ServerId) -> PeerHealthView {
+        let now = unix_now();
+        let Some(found) = self.health_of(peer) else {
+            return PeerHealthView::unknown();
+        };
+        let status = found.status(now, self.health_config());
+        PeerHealthView {
+            status: status.into(),
+            last_seen: found.last_seen,
+            latency_ms: found.latency_ms,
+            last_error: found.last_error.clone(),
+            offline_since: found
+                .down_since
+                .filter(|_| status == kemlock_federation::HealthStatus::Offline),
+        }
+    }
+}
+
 struct View {
     replica: Arc<Replica<SqlStore>>,
+    runner: Arc<dyn RunnerOps>,
 }
 
 impl FederationView for View {
@@ -348,6 +381,10 @@ impl FederationView for View {
 
     fn is_replica_account(&self, user: UserId) -> BoxFut<'_, Result<bool, StoreError>> {
         Box::pin(async move { MemberStore::is_replica_account(self.replica.store(), user).await })
+    }
+
+    fn peer_health(&self, server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
+        Box::pin(async move { Ok(self.runner.health(server)) })
     }
 }
 

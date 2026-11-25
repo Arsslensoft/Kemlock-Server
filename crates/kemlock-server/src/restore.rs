@@ -382,6 +382,7 @@ pub async fn restore_check(
         ip_header: None,
         browser_extension_ids: Vec::new(),
         source_url: None,
+        federation_probe_seconds: 60,
         ignored: Vec::new(),
         config_file: None,
         settings_env: crate::config::settings_env(&|name| std::env::var(name).ok()),

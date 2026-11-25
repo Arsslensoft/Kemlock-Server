@@ -13,6 +13,7 @@ use crate::error::{FedError, Result};
 use crate::eventsync::PeerEvent;
 use crate::extra::{Acknowledgement, Leases, StoredOffer};
 use crate::forget::{CANT_FORCE, PeerReport};
+use crate::health::{HealthStatus, PeerHealth};
 use crate::home::{MAX_REPLICAS, Policy, VaultFederation};
 use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
@@ -100,6 +101,10 @@ pub struct PeerView {
     pub acknowledgement: Option<Acknowledgement>,
     /// What the last runs found, if the peer has been visited since the server started.
     pub status: Option<PeerStatus>,
+    /// Whether the peer answers, as the probes and visits found: `unknown` until the first.
+    pub health: HealthStatus,
+    /// What those found: when it last answered, how long that took, why it last failed.
+    pub probe: Option<PeerHealth>,
     pub activity: PeerActivity,
     /// Whether this server holds event-log entries the peer sent: it takes our Pull switch and the
     /// peer's Send switch both being on for any to arrive. The peer's switch itself isn't ours to
@@ -418,6 +423,8 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                 switches,
                 acknowledgement: self.replica.store().acknowledgement(peer.id).await?,
                 status: self.runner.status_of(peer.id),
+                health: self.runner.health_status(peer.id, unix_now()),
+                probe: self.runner.health_of(peer.id),
                 fingerprint,
                 activity,
                 they_send_logs,
