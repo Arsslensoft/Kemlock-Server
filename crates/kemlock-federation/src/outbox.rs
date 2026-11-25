@@ -71,6 +71,16 @@ pub trait Withholding: Send + Sync {
         ready(Ok(()))
     }
 
+    /// Lifts what is kept from `peer` in `vault`: the versions are offered to it again. `false`
+    /// when nothing was kept.
+    fn release_withheld(
+        &self,
+        _peer: ServerId,
+        _vault: Owner,
+    ) -> impl Future<Output = R<bool>> + Send {
+        ready(Ok(false))
+    }
+
     /// Forgets everything kept from `peer`, for a peer that is no longer paired.
     fn forget_withheld(&self, _peer: ServerId) -> impl Future<Output = R<()>> + Send {
         ready(Ok(()))
@@ -87,6 +97,14 @@ pub struct Cancelled {
 }
 
 impl<S: FedStore> Replica<S> {
+    /// Takes back a cancel: the versions withheld from `peer` in `vault` are offered again. The
+    /// peer's cursor moved past them while they were withheld, so a pull won't bring them; the
+    /// hash-tree comparison finds them (the peer fetches the items it lacks by id), at its next
+    /// one. `false` when nothing was withheld.
+    pub async fn resume_waiting(&self, peer: ServerId, vault: Owner) -> Result<bool> {
+        Ok(self.store.release_withheld(peer, vault).await?)
+    }
+
     /// What `peer` may still be waiting for in `vault`: the versions this server holds that its
     /// last pull from the peer did not cover, less those whose queue was cancelled, counted to
     /// [`WAITING_LIMIT`]. Not exact, since what the peer holds is only known as of that pull, but

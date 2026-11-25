@@ -131,6 +131,17 @@ pub struct WaitingChanges {
     pub oldest_at: Option<u64>,
 }
 
+/// What taking back a cancel did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeOutcome {
+    /// The withheld changes are offered to the peer again.
+    Resumed,
+    /// Nothing was withheld from that peer.
+    NothingHeld,
+    /// This server doesn't federate the vault with that peer.
+    Unknown,
+}
+
 /// What cancelling the changes waiting for a peer did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CancelOutcome {
@@ -172,6 +183,17 @@ pub trait FederationView: Send + Sync {
     /// waiting only.
     fn waiting_changes(&self, _vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
         Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Takes back a cancel: the changes withheld from `peer` in `vault` are offered to it again.
+    /// Allowed at any time, whether or not the peer is back.
+    fn resume_waiting(
+        &self,
+        _vault: Owner,
+        _peer: ServerId,
+        _by: UserId,
+    ) -> BoxFut<'_, Result<ResumeOutcome, StoreError>> {
+        Box::pin(async { Ok(ResumeOutcome::Unknown) })
     }
 
     /// Where an account's Sends that have a view limit are served from, when it isn't here: the

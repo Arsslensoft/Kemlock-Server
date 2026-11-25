@@ -10,8 +10,8 @@ use common::*;
 use kemlock_api_kem::testing::DpopSigner;
 use kemlock_app::b64url;
 use kemlock_app::federation_view::{
-    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ServerEntry, ServerRole,
-    SharedView, SiblingSet, VaultServers, WaitingChanges,
+    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ResumeOutcome, ServerEntry,
+    ServerRole, SharedView, SiblingSet, VaultServers, WaitingChanges,
 };
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{
@@ -40,6 +40,8 @@ struct FakeView {
     /// What cancelling answers (`Unknown` when unset), and what was asked.
     cancel_outcome: Mutex<Option<CancelOutcome>>,
     cancelled: Mutex<Vec<(Owner, ServerId, UserId)>>,
+    /// What resuming answers (`Unknown` when unset).
+    resume_outcome: Mutex<Option<ResumeOutcome>>,
 }
 
 impl FederationView for FakeView {
@@ -105,6 +107,21 @@ impl FederationView for FakeView {
                 .get(&vault)
                 .cloned()
                 .unwrap_or_default())
+        })
+    }
+
+    fn resume_waiting(
+        &self,
+        _vault: Owner,
+        _peer: ServerId,
+        _by: UserId,
+    ) -> BoxFut<'_, Result<ResumeOutcome, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .resume_outcome
+                .lock()
+                .expect("lock")
+                .unwrap_or(ResumeOutcome::Unknown))
         })
     }
 
@@ -797,4 +814,47 @@ async fn cancelling_waiting_changes_asks_the_view_and_maps_its_answer() {
         StatusCode::NOT_FOUND
     );
     assert_eq!(view.cancelled.lock().expect("lock").len(), before);
+}
+
+#[tokio::test]
+async fn resuming_offers_withheld_changes_again_and_is_allowed_while_the_server_is_up() {
+    let view = Arc::new(FakeView::default());
+    let (_app, client) = with_view(view.clone());
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let id = ServerId::random().0.to_string();
+    let resume = |vault: String, change: String| {
+        let client = &client;
+        let token = session.access_token.clone();
+        async move {
+            client
+                .send(
+                    "POST",
+                    &format!("/kem/v1/placement/{vault}/pending/{change}/resume"),
+                    Req {
+                        access_token: Some(&token),
+                        ..Req::default()
+                    },
+                )
+                .await
+        }
+    };
+
+    *view.resume_outcome.lock().expect("lock") = Some(ResumeOutcome::Resumed);
+    let done = resume("me".to_owned(), id.clone()).await;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.json());
+    assert_eq!(done.json()["resumed"], true);
+
+    for nothing in [ResumeOutcome::NothingHeld, ResumeOutcome::Unknown] {
+        *view.resume_outcome.lock().expect("lock") = Some(nothing);
+        assert_eq!(
+            resume("me".to_owned(), id.clone()).await.status,
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(
+        resume("me".to_owned(), "c1".to_owned()).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let stranger = kemlock_domain::SpaceId::random().to_string();
+    assert_eq!(resume(stranger, id).await.status, StatusCode::NOT_FOUND);
 }

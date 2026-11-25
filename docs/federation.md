@@ -813,10 +813,18 @@ estimate that falls to nothing once the peer has caught up.
   still given them. It does not ask the peer to forget anything it already has, and it does not touch
   the peer's own changes, which this server keeps pulling. It records an event, `federation.waiting_cancelled`
   (who, the vault, the server and how many), in the event log.
-- **After it.** The two copies of the vault now differ by those versions, and the hourly hash-tree
-  comparison reports the vault as out of step with that peer until it is copied afresh (unpairing
-  the peer and pairing again); nothing lifts the marker by itself. Unpairing the peer
+- **Taking it back.** `POST /kem/v1/placement/{vault}/pending/{change}/resume` (the same vault and
+  server as the cancel, the same rights; 200 `{resumed: true}`, 404 when nothing was withheld) lifts
+  the marker, at any time and whether or not the server is back, and records
+  `federation.waiting_resumed`. The peer's cursor moved past the withheld versions while they were
+  held back, so a pull alone doesn't bring them. The comparison of the two copies does: this server
+  asks for one and a visit at the next opportunity, and the peer, at its next comparison (hourly, and
+  at its first visit after it was away), sees the items it lacks and fetches them by id, which a
+  resume no longer holds back. Until then the vault is reported out of step with that peer.
+- **After a cancel.** The two copies of the vault differ by those versions, and the hourly hash-tree
+  comparison reports the vault as out of step with that peer until a resume. Unpairing the peer
   forgets the markers kept for it.
+
 
 
 ## Not built yet

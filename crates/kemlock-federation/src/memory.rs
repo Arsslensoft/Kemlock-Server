@@ -1341,6 +1341,10 @@ impl Withholding for MemoryStore {
         Ok(())
     }
 
+    async fn release_withheld(&self, peer: ServerId, vault: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().withheld.remove(&(peer, vault)).is_some())
+    }
+
     async fn forget_withheld(&self, peer: ServerId) -> Result<(), StoreError> {
         self.extras().withheld.retain(|(p, _), _| *p != peer);
         Ok(())

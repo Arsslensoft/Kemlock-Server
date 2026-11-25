@@ -211,3 +211,41 @@ async fn a_second_cancel_adds_to_the_first_and_an_unpair_forgets_it() {
     t.a.store().forget_withheld(t.b_id).await.expect("forget");
     assert_eq!(t.a.store().withheld(t.b_id, t.vault).await, Ok(None));
 }
+
+#[tokio::test]
+async fn a_resume_offers_the_withheld_changes_again_through_the_next_comparison() {
+    let t = pair().await;
+    let first = t.write(1_000_000);
+    t.write(2_000_000);
+    t.a.cancel_waiting(t.b_id, t.vault, NOW).await.expect("cancel");
+    // The peer's cursor moved past them: a pull alone will not bring them, even after a resume.
+    assert_eq!(t.b_pulls().await, 0);
+
+    assert!(t.a.resume_waiting(t.b_id, t.vault).await.expect("resume"));
+    assert_eq!(t.a.store().withheld(t.b_id, t.vault).await, Ok(None));
+    assert!(
+        !t.a.resume_waiting(t.b_id, t.vault).await.expect("again"),
+        "nothing is left to lift"
+    );
+    assert_eq!(t.b_pulls().await, 0);
+
+    // The comparison of the two copies finds the items the peer lacks and fetches them by id.
+    let mut channel = ToA {
+        a: &t.a,
+        b: t.b_id,
+    };
+    let report = t
+        .b
+        .reconcile(&mut channel, t.a_id, t.vault)
+        .await
+        .expect("reconcile");
+    assert!(!report.in_step);
+    assert_eq!(report.fetched.applied, 2);
+    assert!(t.b.store().export_items(t.vault, &[first]).await.is_ok_and(|e| e.len() == 1));
+    assert!(
+        t.b.reconcile(&mut channel, t.a_id, t.vault)
+            .await
+            .expect("reconcile")
+            .in_step
+    );
+}

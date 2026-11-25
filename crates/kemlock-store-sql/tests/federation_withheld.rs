@@ -68,6 +68,15 @@ async fn a_cancelled_queue_is_kept_added_to_and_forgotten(store: &SqlStore) {
     assert!(held.covers(&change(origin, 5)), "the first cancel still holds");
     assert!(held.covers(&change(second, 2)));
 
+    // A release lifts one peer's rows in one vault and says whether there was anything to lift.
+    store
+        .withhold(other_peer, mine, &upto(origin, 1), 3_000)
+        .await
+        .expect("another peer first");
+    assert_eq!(store.release_withheld(other_peer, mine).await, Ok(true));
+    assert_eq!(store.release_withheld(other_peer, mine).await, Ok(false));
+    assert_eq!(store.release_withheld(peer, theirs).await, Ok(false));
+
     // Forgetting a peer drops its rows and no one else's.
     store
         .withhold(other_peer, mine, &upto(origin, 1), 3_000)

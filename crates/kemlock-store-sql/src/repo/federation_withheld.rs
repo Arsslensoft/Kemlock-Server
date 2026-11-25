@@ -67,6 +67,15 @@ impl Withholding for SqlStore {
         Ok(())
     }
 
+    async fn release_withheld(&self, peer: ServerId, vault: Owner) -> Result<bool, StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        let done = withheld::Entity::delete_by_id((peer.0, owner_type, owner_id))
+            .exec(self.writer())
+            .await
+            .store()?;
+        Ok(done.rows_affected > 0)
+    }
+
     async fn forget_withheld(&self, peer: ServerId) -> Result<(), StoreError> {
         withheld::Entity::delete_many()
             .filter(withheld::Column::Peer.eq(peer.0))

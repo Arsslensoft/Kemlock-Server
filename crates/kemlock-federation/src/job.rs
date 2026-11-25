@@ -342,6 +342,14 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         self.state().peers.get(&peer).cloned()
     }
 
+    /// Asks for the hash trees of `vault` to be compared with `peer` at the next visit, and for
+    /// that visit to come soon: what a resume needs, to offer the withheld versions again.
+    pub fn reconcile_soon(&self, peer: ServerId, vault: Owner) {
+        let mut state = self.state();
+        state.reconciled.remove(&(peer, vault));
+        state.dirty.insert(peer);
+    }
+
     /// A peer showed it has more of a vault: visit it soon.
     pub fn mark_dirty(&self, peer: ServerId) {
         self.state().dirty.insert(peer);

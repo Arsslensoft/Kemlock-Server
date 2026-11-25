@@ -17,9 +17,9 @@ use crate::problem::Problem;
 use crate::state::{Crypto, Store};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router, middleware};
-use kemlock_app::federation_view::CancelOutcome;
+use kemlock_app::federation_view::{CancelOutcome, ResumeOutcome};
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::{AppError, Placement, ReadPlacement};
@@ -195,6 +195,86 @@ pub(crate) struct CancelledDto {
     dropped: u64,
 }
 
+/// The vault a path names: `me`, or a space the caller is a confirmed owner or admin of.
+async fn vault_of<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    user: kemlock_domain::UserId,
+    vault: &str,
+) -> Result<Owner, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    if vault == "me" {
+        return Ok(Owner::User(user));
+    }
+    let space: SpaceId = vault
+        .parse()
+        .map_err(|_| Problem::bad_request("the vault is `me` or a space id"))?;
+    let member = env
+        .spaces
+        .memberships(user)
+        .await
+        .map_err(|e| Problem::from(AppError::from(e)))?
+        .into_iter()
+        .find(|m| m.space == space && m.is_confirmed())
+        .ok_or_else(Problem::not_found)?;
+    if !matches!(member.role, SpaceRole::Owner | SpaceRole::Admin) {
+        return Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "Only a space's owners and admins may change its waiting changes",
+        ));
+    }
+    Ok(Owner::Space(space))
+}
+
+fn server_of(change: &str) -> Result<ServerId, Problem> {
+    change
+        .parse::<uuid::Uuid>()
+        .map(ServerId)
+        .map_err(|_| Problem::bad_request("the change is the id of the server it waits for"))
+}
+
+/// What taking back a cancel did.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResumedDto {
+    /// The withheld changes are offered to that server again, at the next comparison of the two
+    /// copies of the vault.
+    resumed: bool,
+}
+
+/// `POST /kem/v1/placement/{vault}/pending/{change}/resume`: offers the changes a cancel withheld
+/// from that server again. Nothing is lost by a cancel, so this restores what it kept back.
+async fn resume_pending<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    MaybeView(view): MaybeView,
+    Path((vault, change)): Path<(String, String)>,
+) -> Result<Json<ResumedDto>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let view = view.ok_or_else(Problem::not_found)?;
+    let user = caller.actor().user;
+    let owner = vault_of(&env, user, &vault).await?;
+    let peer = server_of(&change)?;
+    match view
+        .resume_waiting(owner, peer, user)
+        .await
+        .map_err(|e| Problem::from(AppError::from(e)))?
+    {
+        ResumeOutcome::Resumed => Ok(Json(ResumedDto { resumed: true })),
+        ResumeOutcome::NothingHeld | ResumeOutcome::Unknown => Err(Problem::not_found()),
+    }
+}
+
 /// `DELETE /kem/v1/placement/{vault}/pending/{change}`.
 async fn cancel_pending<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
@@ -210,33 +290,8 @@ where
 {
     let view = view.ok_or_else(Problem::not_found)?;
     let user = caller.actor().user;
-    let owner = if vault == "me" {
-        Owner::User(user)
-    } else {
-        let space: SpaceId = vault
-            .parse()
-            .map_err(|_| Problem::bad_request("the vault is `me` or a space id"))?;
-        let member = env
-            .spaces
-            .memberships(user)
-            .await
-            .map_err(|e| Problem::from(AppError::from(e)))?
-            .into_iter()
-            .find(|m| m.space == space && m.is_confirmed())
-            .ok_or_else(Problem::not_found)?;
-        if !matches!(member.role, SpaceRole::Owner | SpaceRole::Admin) {
-            return Err(Problem::new(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "Only a space's owners and admins may drop its waiting changes",
-            ));
-        }
-        Owner::Space(space)
-    };
-    let peer = change
-        .parse::<uuid::Uuid>()
-        .map(ServerId)
-        .map_err(|_| Problem::bad_request("the change is the id of the server it waits for"))?;
+    let owner = vault_of(&env, user, &vault).await?;
+    let peer = server_of(&change)?;
     match view
         .cancel_waiting(owner, peer, user)
         .await
@@ -265,6 +320,10 @@ where
         .route(
             "/kem/v1/placement/{vault}/pending/{change}",
             delete(cancel_pending::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/placement/{vault}/pending/{change}/resume",
+            post(resume_pending::<S, P, K, R>),
         )
         .layer(middleware::from_fn_with_state(
             env.clone(),
@@ -304,15 +363,32 @@ fn doc_placement() {}
 #[allow(dead_code)]
 fn doc_cancel_pending() {}
 
+#[utoipa::path(
+    post, path = "/kem/v1/placement/{vault}/pending/{change}/resume", tag = "failover",
+    security(("dpop" = [])),
+    params(
+        ("vault" = String, Path, description = "`me` or a space id"),
+        ("change" = String, Path, description = "The id of the server whose changes were withheld"),
+    ),
+    responses(
+        (status = 200, description = "The withheld changes are offered to that server again", body = ResumedDto),
+        (status = 403, description = "The vault is a space, and the caller is not one of its owners or admins", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "Nothing is withheld from that server, or the vault isn't federated with it", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_resume_pending() {}
+
 #[derive(Debug, OpenApi)]
 #[openapi(
-    paths(doc_placement, doc_cancel_pending),
+    paths(doc_placement, doc_cancel_pending, doc_resume_pending),
     components(schemas(
         PlacementDto,
         PlacementVaultDto,
         PlacementServerDto,
         PlacementPendingDto,
         CancelledDto,
+        ResumedDto,
         PlacementAppDto
     ))
 )]

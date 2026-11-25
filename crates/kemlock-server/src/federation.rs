@@ -22,8 +22,8 @@ use kemlock_api_kem::extract::Authed;
 use kemlock_api_kem::{Api, JwsTokenSigner};
 use kemlock_app::admin::StepUp;
 use kemlock_app::federation_view::{
-    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ServerEntry, ServerRole,
-    SharedView, SiblingSet, VaultServers, WaitingChanges,
+    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ResumeOutcome, ServerEntry,
+    ServerRole, SharedView, SiblingSet, VaultServers, WaitingChanges,
 };
 use kemlock_app::ports::{Event, EventLog, ServerInfo, StoreError, Zeroizing};
 use kemlock_crypto::seal::ServerSeal;
@@ -279,9 +279,14 @@ pub fn files_of<B: kemlock_app::sends::SendBlobs + 'static>(blobs: B) -> Arc<dyn
 /// What the view reads of the replication job, without naming the connector it was built with.
 trait RunnerOps: Send + Sync {
     fn health(&self, peer: ServerId) -> PeerHealthView;
+    fn reconcile_soon(&self, peer: ServerId, vault: Owner);
 }
 
 impl<C: Connector + 'static> RunnerOps for PeerRunner<SqlStore, C> {
+    fn reconcile_soon(&self, peer: ServerId, vault: Owner) {
+        PeerRunner::reconcile_soon(self, peer, vault);
+    }
+
     fn health(&self, peer: ServerId) -> PeerHealthView {
         let now = unix_now();
         let Some(found) = self.health_of(peer) else {
@@ -385,6 +390,43 @@ impl FederationView for View {
 
     fn peer_health(&self, server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
         Box::pin(async move { Ok(self.runner.health(server)) })
+    }
+
+    fn resume_waiting(
+        &self,
+        vault: Owner,
+        peer: ServerId,
+        by: UserId,
+    ) -> BoxFut<'_, Result<ResumeOutcome, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let store = self.replica.store();
+            let federated = VaultRepo::get_vault(store, vault)
+                .await?
+                .is_some_and(|v| v.policy == Policy::Federated && v.holds(me) && v.holds(peer));
+            if !federated || peer == me {
+                return Ok(ResumeOutcome::Unknown);
+            }
+            let lifted = self
+                .replica
+                .resume_waiting(peer, vault)
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            if !lifted {
+                return Ok(ResumeOutcome::NothingHeld);
+            }
+            self.runner.reconcile_soon(peer, vault);
+            store
+                .record(Event {
+                    actor: Some(by),
+                    device: None,
+                    action: "federation.waiting_resumed",
+                    target: Some(format!("vault:{vault} peer:{peer}")),
+                    at: time::OffsetDateTime::now_utc(),
+                })
+                .await?;
+            Ok(ResumeOutcome::Resumed)
+        })
     }
 
     fn limited_send_home(&self, owner: UserId) -> BoxFut<'_, Result<Option<String>, StoreError>> {
