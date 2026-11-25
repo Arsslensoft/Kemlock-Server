@@ -2149,7 +2149,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             }
         }
     }
-    assert_eq!(operations, 40, "every operation is documented once");
+    assert_eq!(operations, 41, "every operation is documented once");
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"
