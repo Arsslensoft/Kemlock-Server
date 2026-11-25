@@ -115,9 +115,10 @@ invitations, event log, settings, SSO, migration, federation).
 
 Not built, or not working yet:
 
-- Scanning a Recovery Kit piece needs the browser's `BarcodeDetector` (Chromium, Safari); elsewhere
-  the pieces are typed or pasted. The kit is made and opened in the key worker, so the page never
-  holds the root key (docs/crypto.md, "The Recovery Kit").
+- Scanning a Recovery Kit piece uses the browser's `BarcodeDetector` (Chromium, Safari) and, where
+  there is none (Firefox), decodes the camera frames with `jsqr`, loaded only when the scanner opens.
+  The kit is made and opened in the key worker, so the page never holds the root key
+  (docs/crypto.md, "The Recovery Kit").
 - Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
   (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
   its key.
