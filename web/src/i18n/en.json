@@ -384,7 +384,6 @@
   "newItem.editTitle": "Edit item",
   "newItem.lede": "Encrypted in this browser before it's saved. Edit opens this same form, filled in.",
   "newItem.kind": "Kind of item",
-  "newItem.later": "Comes in a later release",
   "newItem.cantEdit": "This web vault can only edit some kinds of item for now.",
   "newItem.name": "Name",
   "newItem.login.details": "Login details",
