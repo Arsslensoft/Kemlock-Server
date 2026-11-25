@@ -857,7 +857,7 @@ mod tests {
         let dest = def("backup_destination");
         assert!(validate(dest, "").is_ok());
         assert!(validate(dest, "nas/backups").is_ok());
-        for bad in ["/mnt/nas", "../outside", "a/../../b", "s3://bucket/x", "C:\backups", "..\x"] {
+        for bad in ["/mnt/nas", "../outside", "a/../../b", "s3://bucket/x", r"C:\backups", r"..\x"] {
             assert!(validate(dest, bad).is_err(), "{bad}");
         }
         assert!(validate(def("backup_recipient"), "age1abc").is_ok());
