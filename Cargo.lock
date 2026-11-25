@@ -3423,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-api-admin"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "kemlock-api-kem",
@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-api-bw"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-api-fed"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "hex",
@@ -3488,7 +3488,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-api-kem"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -3512,7 +3512,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-core",
@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-backup"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "age",
  "futures-util",
@@ -3556,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-blob"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -3572,7 +3572,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "kemlock-app",
  "kemlock-crypto",
@@ -3589,7 +3589,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-contract-tests"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-crypto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes-gcm 0.11.1",
  "argon2 0.6.0",
@@ -3637,7 +3637,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-domain"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3648,7 +3648,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-federation"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -3678,7 +3678,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-identity"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aws-lc-rs",
  "axum",
@@ -3696,7 +3696,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-import"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "aes 0.9.4",
  "argon2 0.6.0",
@@ -3715,7 +3715,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-import-wasm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -3729,7 +3729,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-loadgen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "clap",
@@ -3745,7 +3745,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-notify"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "futures-util",
@@ -3768,7 +3768,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "age",
  "axum",
@@ -3804,7 +3804,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-store-sql"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "kemlock-app",
  "kemlock-crypto",
@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-vaultwarden"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "kemlock-domain",
  "serde_json",
@@ -3838,7 +3838,7 @@ dependencies = [
 
 [[package]]
 name = "kemlock-wasm"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "getrandom 0.4.3",
  "hex",

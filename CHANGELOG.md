@@ -10,6 +10,28 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-25
+
+### Added
+
+- Send an item from the vault, of any kind, as a link. It travels as an encrypted text Send, so
+  Bitwarden apps still open it as text.
+- A "Where to find the setup code" panel on the first setup screen, for each way the server runs.
+
+### Changed
+
+- The Kemlock wordmark, not the app icon, in every header.
+- Alerts and banners glow softly in their own colour, as in the mobile app; not with reduced
+  motion.
+- Settings forms in the admin console and setup: the label above each control, short fields two
+  to a row, switches before their label, ranges as placeholders with validation that blocks Save,
+  one "Save" per section with "Saved." under its title, and Discard only when something changed.
+- Other ways to sign in show as compact tiles; username and password sit side by side.
+
+### Fixed
+
+- Pairing a server takes its full `https://` address, IPv6 included, and a code typed with spaces.
+
 ## [0.1.1] - 2026-11-24
 
 ### Added
@@ -97,6 +119,7 @@ The first release.
   - Contributing guide, DCO, code of conduct, governance, maintainers, support page, issue forms,
     a pull request template and code owners.
 
-[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Arsslensoft/Kemlock-Server/releases/tag/v0.1.0
