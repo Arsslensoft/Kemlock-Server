@@ -33,7 +33,10 @@ import type {
 
 const BASE = '/kem/v1';
 
-/** The server basics `POST /setup/finish` takes: the ones the server has a setting for. */
+/**
+ * The server basics `POST /setup/finish` takes. The address is only recorded (the server's
+ * `DOMAIN` is configuration); the file folder is not sent.
+ */
 export interface SetupBasicsBody {
   join: 'invite' | 'domains' | 'anyone';
   joinDomains: string;
@@ -42,6 +45,12 @@ export interface SetupBasicsBody {
   mailSecurity: 'starttls' | 'tls';
   mailFrom: string;
   mailUser: string;
+  address: string;
+  push: boolean;
+  backups: boolean;
+  backupEvery: 'night' | 'six-hours';
+  backupKeep: '7' | '14' | '30';
+  backupRecipient: string;
 }
 
 export interface Tokens {

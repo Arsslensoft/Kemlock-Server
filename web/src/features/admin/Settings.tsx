@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import type { AdminSetting, SettingChanges } from '@/api/admin';
+import type { AdminSetting, ServerAddress, SettingChanges } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
@@ -19,6 +19,8 @@ import { ErrorNotice, Loading, PageHead, SelectBox, TextBox, Toggle } from './ui
 
 const GROUP_TITLES: Record<string, MessageId> = {
   smtp: 'admin.settings.group.smtp',
+  push: 'admin.settings.group.push',
+  backups: 'admin.settings.group.backups',
   signups: 'admin.settings.group.signups',
   files: 'admin.settings.group.files',
   trash: 'admin.settings.group.trash',
@@ -36,6 +38,17 @@ const LABELS: Record<string, MessageId> = {
   smtp_password: 'admin.settings.key.smtp_password',
   smtp_from: 'admin.settings.key.smtp_from',
   smtp_from_name: 'admin.settings.key.smtp_from_name',
+  push_enabled: 'admin.settings.key.push_enabled',
+  push_installation_id: 'admin.settings.key.push_installation_id',
+  push_installation_key: 'admin.settings.key.push_installation_key',
+  push_relay_uri: 'admin.settings.key.push_relay_uri',
+  push_identity_uri: 'admin.settings.key.push_identity_uri',
+  kemlock_push_relay: 'admin.settings.key.kemlock_push_relay',
+  kemlock_push_relay_url: 'admin.settings.key.kemlock_push_relay_url',
+  backup_schedule: 'admin.settings.key.backup_schedule',
+  backup_keep: 'admin.settings.key.backup_keep',
+  backup_destination: 'admin.settings.key.backup_destination',
+  backup_recipient: 'admin.settings.key.backup_recipient',
   signups_allowed: 'admin.settings.key.signups_allowed',
   signups_verify: 'admin.settings.key.signups_verify',
   signups_domains_whitelist: 'admin.settings.key.signups_domains_whitelist',
@@ -243,15 +256,51 @@ function Group({
   );
 }
 
+/** The address and data folder: configuration, so shown here and not edited. */
+export function AddressCard({ address }: { address: ServerAddress }) {
+  const t = useT();
+  return (
+    <section className="card" aria-labelledby="h-address">
+      <div className="adm-head">
+        <h2 id="h-address">{t('admin.settings.address.title')}</h2>
+      </div>
+      <div className="adm-pad">
+        <dl className="summary">
+          <div>
+            <dt>{t('admin.settings.address.domain')}</dt>
+            <dd className="mono">{address.domain}</dd>
+          </div>
+          <div>
+            <dt>{t('admin.settings.address.recorded')}</dt>
+            <dd className="mono">{address.recordedDomain ?? t('admin.settings.address.none')}</dd>
+          </div>
+          <div>
+            <dt>{t('admin.settings.address.folder')}</dt>
+            <dd className="mono">{address.dataFolder ?? t('admin.settings.address.none')}</dd>
+          </div>
+        </dl>
+        {address.differs ? (
+          <Notice tone="warn" live>
+            <p>{t('admin.settings.address.differs')}</p>
+          </Notice>
+        ) : null}
+        <p className="hint">{t('admin.settings.address.note')}</p>
+      </div>
+    </section>
+  );
+}
+
 export interface SettingsViewProps {
   settings: AdminSetting[];
   onSave: (changes: SettingChanges, group: string) => void;
   /** The group that was just saved. */
   savedGroup?: string | undefined;
   error?: unknown;
+  /** The address and data folder, when the server says. */
+  address?: ServerAddress | undefined;
 }
 
-export function SettingsView({ settings, onSave, savedGroup, error }: SettingsViewProps) {
+export function SettingsView({ settings, onSave, savedGroup, error, address }: SettingsViewProps) {
   const t = useT();
   return (
     <>
@@ -266,6 +315,7 @@ export function SettingsView({ settings, onSave, savedGroup, error }: SettingsVi
           onSave={onSave}
         />
       ))}
+      {address ? <AddressCard address={address} /> : null}
     </>
   );
 }
@@ -275,6 +325,8 @@ export default function Settings() {
   const { guard, dialog } = useReauth(admin);
   const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: () => admin.settings() });
   const [saved, setSaved] = useState<string | undefined>();
+  // An older server has no such route: the card is left out.
+  const address = useQuery({ queryKey: ['admin', 'server-address'], queryFn: () => admin.serverAddress(), retry: false });
   const save = useMutation({
     mutationFn: async (input: { changes: SettingChanges; group: string }) => {
       const result = await guard((token) => admin.saveSettings(input.changes, token));
@@ -300,6 +352,7 @@ export default function Settings() {
         }}
         savedGroup={saved}
         error={save.error}
+        address={address.data}
       />
       {dialog}
     </>

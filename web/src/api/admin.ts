@@ -138,6 +138,18 @@ export interface PushRelay {
   relayUrl: string;
 }
 
+/** The address and data folder (`GET /admin/v1/server-address`): configuration, shown not edited. */
+export interface ServerAddress {
+  /** `DOMAIN` as the server runs with it. */
+  domain: string;
+  /** The address chosen at setup, when one was recorded. */
+  recordedDomain: string | null;
+  /** A recorded address that is not the one in use. */
+  differs: boolean;
+  /** `DATA_FOLDER`, which only the environment sets. */
+  dataFolder: string | null;
+}
+
 export interface UsersQuery {
   search?: string;
   limit?: number;
@@ -698,6 +710,8 @@ export function createAdminApi(api: AdminTransport) {
         finalization,
       } satisfies StepUpFinishRequest),
 
+    /** `GET /admin/v1/server-address` */
+    serverAddress: () => get<ServerAddress>('/server-address'),
     /** `GET /admin/v1/push-relay`: 409 when this server has no relay to control. */
     pushRelay: () => get<PushRelay>('/push-relay'),
     /** `POST /admin/v1/push-relay/enable`: registers this server with the relay. */
