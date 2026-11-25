@@ -91,6 +91,82 @@ wrapped  = AES-256-GCM(wrap key, nonce, root key, aad)
 The export key is OPAQUE's 64-byte export key. Neither the master key nor the export key alone
 opens the wrap, so a stolen database allows no offline guessing without the OPAQUE server secret.
 
+### Changing the master password and the sign-in address
+
+The root key does not change when the master password does. The browser makes a new master key and
+a new OPAQUE record, wraps the same root key again, and sends the three; the server swaps them in
+together. Nothing else the root key protects is touched: the key version, the public bundle and its
+signature, the sealed private keys, the Recovery Kit, the passkey PRF wraps, the trusted-device
+copies and every item stay byte for byte, because they hang off the root key and not off the master
+key. No item format changes.
+
+- **The new master key** is `Argon2id(new password, new salt, m = 65536, t = 3, p = 4, L = 32)`
+  with a new random 16-byte salt. The server accepts exactly these settings and a 16-byte salt, as
+  at registration, so prelogin answers an account no differently from an unknown email.
+- **The new wrap** is the password wrap above, `wrap key = HKDF(ikm = new master key ‖ new OPAQUE
+  export key, …)`, over the same root key, with the **same** `aad` (`"kemlock/v1/root-wrap"` ‖
+  account id ‖ `u32be(key version)`; the key version does not move) and a new random nonce. The key
+  worker makes it from the handles of the new master key and export key and the open account's root
+  key (`rewrapRoot`); the root key is never in JavaScript.
+- **The new OPAQUE record** is a registration of the new master key. OPAQUE binds the record to its
+  credential identifier, which is the account's email (lower-cased, `opaque1` above), so a change of
+  **address** needs a new record too: it is registered under the new address while the browser still
+  has the password. That is why changing the address asks for the master password, and why it
+  cannot be done for an account that has none.
+
+The routes need a session (`DPoP` and an access token); the one marked "no session" is opened from
+the mail client. Every change that writes also needs the password again, as erasing the account does:
+`loginState` and `finalization` are the last two messages of a fresh OPAQUE login
+(`POST /kem/v1/auth/opaque/start` first, with the same device key). A login state works once, a
+wrong password counts against the account like a wrong sign-in, and a second step is not asked: the
+session already passed it.
+
+| Route | |
+|---|---|
+| `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened. |
+| `PATCH /kem/v1/account/profile` | `{name}`: trimmed, blank clears it, at most 100 characters and no control characters. Answers the profile. `403 sso-managed` for an identity provider's account. Event `account.name_changed`. |
+| `POST /kem/v1/account/credentials/start` | `{request, email?}`: OPAQUE's `RegistrationResponse` for the account's own address, or for `email`, which must be well formed, not the account's own (`400`) and free (`409 email-taken`). Answers `{response}`. |
+| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one write. `204`. Event `account.password_changed`. |
+| `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey}` with `upload` registered under `email`: keeps the change as pending and mails the link to the new address. `202 {pendingEmail, expiresAt}`. Event `account.email_change_requested`. |
+| `DELETE /kem/v1/account/email` | Takes the pending change back. `204`, also when there was none. |
+| `POST /kem/v1/account/email/confirm` | **No session.** `{token}`: opens the link. `200 {email}`. Event `account.email_changed`. |
+
+`upload` is OPAQUE's `RegistrationUpload`, `kdf` is `{memoryKib, iterations, parallelism, salt}`, and
+`wrappedRootKey` is the 92-byte wrap, all base64url as everywhere. The server checks the settings and
+the lengths and never opens anything. `signOutOthers` (default false) signs every other device of the
+account out after the change: their refresh tokens are revoked and their trusted-device copies and
+the devices themselves deleted, as `POST /kem/v1/devices/sign-out` does for one; the device that asked
+keeps its tokens, and the security stamp does not change. Without it, the other devices go on, and
+ask for the new password the next time they unlock with it.
+
+**The address changes only when the link is opened.** Asking keeps one pending change per account (a
+new ask replaces the old one, whose link stops working): the new address, the new record, settings
+and wrap, and the SHA-256 of the link's token, which is 32 random bytes as base64url and is never
+stored. The mail to the new address carries `<DOMAIN>/confirm-email?token=<token>`, good once and for
+24 hours; the mail to the old address says a change was asked for, names the new address and carries
+no link. The server must be able to send mail (`409 mail-off` otherwise), and a mail that cannot be
+sent leaves nothing pending (`502 mail-failed`). Opening the link replaces the account's address,
+record, settings and wrap with the pending ones, gives the account a new security stamp and revokes
+every device's tokens, so every device signs in again with the new address and password; the pending
+change is deleted first, so a link works once. A change of master password drops a pending change of
+address, which was made from the old password and would put it back. Erasing the account deletes it.
+Events carry no address.
+
+Who may change what:
+
+- An account an identity provider owns (an SSO identity is linked) cannot change its name or its
+  address: `403 sso-managed`. It may change its master password, if it has one.
+- An account shared with the Bitwarden apps (`compatible`) holds its password hash and key in the
+  Bitwarden account record, so its password and address are changed there: `403 compatible-account`.
+- An account with no master password (single sign-on made it) has none to change, and a new address
+  needs one: `403 no-password`. Adding a password to such an account is a separate change.
+
+Other refusals: `400 invalid-request` for a malformed body, settings, wrap, upload, address or name,
+or a login state that was used or has run out; `401 unauthorized` for a wrong password;
+`400 email-change-invalid` for a token that is unknown, used or out of time (never which);
+`409 email-taken` for an address another account has, also when someone took it between the ask and
+the link (the ask is then dropped).
+
 ### The account's private keys
 
 The kx1 and sig1 private keys are sealed under the user key's `"kemlock/v1/private-keys"` child:
