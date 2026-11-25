@@ -17,6 +17,7 @@ function view(over: Partial<ProfileViewProps> = {}, profile: Partial<ProfileDto>
       hasPassword: true,
       compatible: false,
       pendingEmail: null,
+      twoStep: false,
       ...profile,
     },
     busy: false,
@@ -24,6 +25,7 @@ function view(over: Partial<ProfileViewProps> = {}, profile: Partial<ProfileDto>
       saveIdentity: vi.fn(async () => true),
       cancelEmailChange: vi.fn(async () => true),
       changePassword: vi.fn(async () => true),
+      askProof: vi.fn(async () => true),
     },
     ...over,
   };
@@ -260,5 +262,90 @@ describe('the master password', () => {
   it('waits for the current password before it can be sent', () => {
     view();
     expect(within(password()).getByRole('button', { name: 'Change master password' })).toBeDisabled();
+  });
+});
+
+describe('a second step', () => {
+  const fillPassword = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.type(within(password()).getByLabelText('Current master password'), 'the current password');
+    await user.type(within(password()).getByLabelText('New master password'), 'a brand new password');
+    await user.type(within(password()).getByLabelText('Type it again'), 'a brand new password');
+  };
+
+  it('asks no proof when none is on', () => {
+    view();
+    expect(screen.queryByLabelText('Second-step code')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Email me a code' })).toBeNull();
+  });
+
+  it('asks its code beside the password to change it, and sends nothing without it', async () => {
+    const props = view({}, { twoStep: true });
+    const user = userEvent.setup();
+    await fillPassword(user);
+    const submit = within(password()).getByRole('button', { name: 'Change master password' });
+    expect(within(password()).getByText(/You have a second step on/)).toBeInTheDocument();
+    expect(submit).toBeDisabled();
+    await user.type(within(password()).getByLabelText('Second-step code'), ' 123456 ');
+    expect(submit).toBeEnabled();
+    await user.click(submit);
+    expect(props.actions.changePassword).toHaveBeenCalledWith({
+      current: 'the current password',
+      next: 'a brand new password',
+      signOutOthers: true,
+      proof: '123456',
+    });
+    // A code works once: it is gone, and so is what was typed.
+    expect(within(password()).getByLabelText('Second-step code')).toHaveValue('');
+  });
+
+  it('empties the code even when the change failed, and keeps the rest', async () => {
+    const props = view({}, { twoStep: true });
+    vi.mocked(props.actions.changePassword).mockResolvedValue(false);
+    const user = userEvent.setup();
+    await fillPassword(user);
+    await user.type(within(password()).getByLabelText('Second-step code'), '123456');
+    await user.click(within(password()).getByRole('button', { name: 'Change master password' }));
+    expect(within(password()).getByLabelText('Second-step code')).toHaveValue('');
+    expect(within(password()).getByLabelText('New master password')).toHaveValue('a brand new password');
+  });
+
+  it('mails a code on request', async () => {
+    const props = view({}, { twoStep: true });
+    await userEvent.setup().click(within(password()).getByRole('button', { name: 'Email me a code' }));
+    expect(props.actions.askProof).toHaveBeenCalledOnce();
+  });
+
+  it('takes a security key\'s answer in the code\'s place', async () => {
+    const answer = { webauthn: { id: 'key-1' } };
+    const passwordKeyProof = vi.fn(async () => answer);
+    const props = view({ passwordKeyProof }, { twoStep: true });
+    const user = userEvent.setup();
+    await fillPassword(user);
+    await user.click(within(password()).getByRole('button', { name: 'Use a security key' }));
+    expect(within(password()).getByText(/Security key confirmed/)).toBeInTheDocument();
+    await user.click(within(password()).getByRole('button', { name: 'Change master password' }));
+    expect(props.actions.changePassword).toHaveBeenCalledWith(expect.objectContaining({ proof: answer }));
+  });
+
+  it('asks for it with a new address, and not for a new name alone', async () => {
+    const props = view({}, { twoStep: true });
+    const user = userEvent.setup();
+    await user.clear(screen.getByLabelText('Name'));
+    await user.type(screen.getByLabelText('Name'), 'Alex');
+    expect(within(identity()).queryByLabelText('Second-step code')).toBeNull();
+    await user.click(within(identity()).getByRole('button', { name: 'Save' }));
+    expect(props.actions.saveIdentity).toHaveBeenLastCalledWith({ name: 'Alex', password: '' });
+
+    await user.clear(screen.getByLabelText('Email'));
+    await user.type(screen.getByLabelText('Email'), 'new@example.org');
+    await user.type(within(identity()).getByLabelText('Current master password'), 'pw');
+    const save = within(identity()).getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled();
+    await user.type(within(identity()).getByLabelText('Second-step code'), '654321');
+    expect(save).toBeEnabled();
+    await user.click(save);
+    expect(props.actions.saveIdentity).toHaveBeenLastCalledWith(
+      expect.objectContaining({ email: 'new@example.org', password: 'pw', proof: '654321' }),
+    );
   });
 });

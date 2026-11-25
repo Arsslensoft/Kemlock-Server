@@ -19,8 +19,15 @@ const profileApi = vi.hoisted(() => ({
 }));
 const session = vi.hoisted(() => ({ renamed: vi.fn(), tokenStore: { set: vi.fn() } }));
 const model = vi.hoisted(() => ({ changePassword: vi.fn(), requestEmailChange: vi.fn() }));
+const steps = vi.hoisted(() => ({ proofRequest: vi.fn() }));
 
 vi.mock('@/api/profile', () => ({ createProfileApi: () => profileApi }));
+vi.mock('@/api/twoStep', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/twoStep')>()),
+  createSecondStepsApi: () => steps,
+}));
+// No security key in the test browser: the card offers the code only.
+vi.mock('./useKeyProof', () => ({ useKeyProof: () => undefined }));
 vi.mock('@/app/services', () => ({ api: { prelogin: vi.fn(), opaqueStart: vi.fn() }, session }));
 vi.mock('./profileModel', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./profileModel')>()),
@@ -39,6 +46,7 @@ const PROFILE: ProfileDto = {
   hasPassword: true,
   compatible: false,
   pendingEmail: null,
+  twoStep: false,
 };
 
 function open() {
@@ -56,7 +64,13 @@ const identity = () => screen.getByRole('region', { name: 'Name and email' });
 const password = () => screen.getByRole('region', { name: 'Master password' });
 
 beforeEach(() => {
-  for (const fn of [...Object.values(profileApi), ...Object.values(model), session.renamed, session.tokenStore.set]) {
+  for (const fn of [
+    ...Object.values(profileApi),
+    ...Object.values(model),
+    ...Object.values(steps),
+    session.renamed,
+    session.tokenStore.set,
+  ]) {
     fn.mockReset();
   }
   profileApi.get.mockResolvedValue(PROFILE);
@@ -240,6 +254,40 @@ describe('changing the master password', () => {
     );
     await user.click(within(password()).getByRole('button', { name: 'Change master password' }));
     expect(await screen.findByText(/Your account changed while this was being saved/)).toBeInTheDocument();
+  });
+
+  it('sends the second step\'s proof with the change when one is on, and mails a code on request', async () => {
+    profileApi.get.mockResolvedValue({ ...PROFILE, twoStep: true });
+    steps.proofRequest.mockResolvedValue(undefined);
+    model.changePassword.mockResolvedValue({ tokens: null });
+    open();
+    const user = userEvent.setup();
+    const region = within(await screen.findByRole('region', { name: 'Master password' }));
+    await user.click(region.getByRole('button', { name: 'Email me a code' }));
+    expect(steps.proofRequest).toHaveBeenCalledOnce();
+    await user.type(region.getByLabelText('Current master password'), 'the current password');
+    await user.type(region.getByLabelText('New master password'), 'a brand new password');
+    await user.type(region.getByLabelText('Type it again'), 'a brand new password');
+    await user.type(region.getByLabelText('Second-step code'), '123456');
+    await user.click(region.getByRole('button', { name: 'Change master password' }));
+    await screen.findByText(/Your master password is changed/);
+    expect(model.changePassword).toHaveBeenCalledWith(expect.anything(), {
+      email: 'sam@example.org',
+      current: 'the current password',
+      next: 'a brand new password',
+      signOutOthers: true,
+      proof: '123456',
+    });
+  });
+
+  it('does not show a failed request for a mailed code, since another proof will do', async () => {
+    profileApi.get.mockResolvedValue({ ...PROFILE, twoStep: true });
+    steps.proofRequest.mockRejectedValue(new ApiError(409, undefined));
+    open();
+    const region = within(await screen.findByRole('region', { name: 'Master password' }));
+    await userEvent.setup().click(region.getByRole('button', { name: 'Email me a code' }));
+    expect(steps.proofRequest).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('says why a Bitwarden-shared account is refused', async () => {

@@ -197,6 +197,19 @@ describe('changing the master password', () => {
     expect(wrong.crypto.release).toHaveBeenCalledOnce();
   });
 
+  it('sends the second step\'s proof when it is given, and none when it is not', async () => {
+    const proved = deps();
+    await changePassword(proved.wiring, { ...input, proof: '123456' });
+    expect(proved.api.changePassword).toHaveBeenCalledWith(expect.objectContaining({ proof: '123456' }));
+    const key = deps();
+    const answer = { webauthn: { id: 'key-1' } };
+    await changePassword(key.wiring, { ...input, proof: answer });
+    expect(key.api.changePassword).toHaveBeenCalledWith(expect.objectContaining({ proof: answer }));
+    const bare = deps();
+    await changePassword(bare.wiring, input);
+    expect(bare.api.changePassword.mock.calls[0]?.[0]).not.toHaveProperty('proof');
+  });
+
   it('sends the choice of leaving the other devices signed in', async () => {
     const { wiring, api } = deps();
     await changePassword(wiring, { ...input, signOutOthers: false });
@@ -249,6 +262,15 @@ describe('changing the address', () => {
       wrappedRootKey: encodeB64(utf8('wrap')),
     });
     expect(asked.pendingEmail).toBe('new@example.org');
+  });
+
+  it('sends the second step\'s proof with the request when it is given', async () => {
+    const { wiring, api } = deps();
+    await requestEmailChange(wiring, { ...input, proof: '654321' });
+    expect(api.requestEmailChange).toHaveBeenCalledWith(expect.objectContaining({ proof: '654321' }));
+    const bare = deps();
+    await requestEmailChange(bare.wiring, input);
+    expect(bare.api.requestEmailChange.mock.calls[0]?.[0]).not.toHaveProperty('proof');
   });
 
   it('proves the password for the address in force, not the new one', async () => {
