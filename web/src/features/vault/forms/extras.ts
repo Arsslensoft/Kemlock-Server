@@ -22,6 +22,8 @@ export interface FieldValue {
   value: string;
   /** The admin's field this one was made from, when it was. */
   adminField?: string | undefined;
+  /** Where the field was in the body's list; absent for a field added in the form. */
+  origin?: number | undefined;
 }
 
 export interface ExtrasValues {
@@ -91,10 +93,10 @@ function editable(
 /** The custom fields a form edits: those of the body it can read, in the order it holds them. */
 export function readFieldValues(data: ItemData | null | undefined): FieldValue[] {
   const out: FieldValue[] = [];
-  for (const entry of asEntries(data)) {
+  asEntries(data).forEach((entry, origin) => {
     const field = editable(entry);
-    if (field) out.push({ key: newFieldKey(), ...field });
-  }
+    if (field) out.push({ key: newFieldKey(), ...field, origin });
+  });
   return out;
 }
 
@@ -105,22 +107,75 @@ export function fieldProblem(field: FieldValue): MessageId | undefined {
   return field.name.trim() === '' && filled ? 'itemForm.fields.nameNeeded' : undefined;
 }
 
+function checkboxText(value: string): string {
+  return value === 'true' ? 'true' : 'false';
+}
+
+/** The entry for a row the person added: the keys the importer and the item page read. */
+function newEntry(row: FieldValue): Record<string, unknown> {
+  return {
+    name: row.name.trim(),
+    value: row.type === 'checkbox' ? checkboxText(row.value) : row.value,
+    kind: BODY_KIND[row.type],
+    ...(row.adminField ? { adminField: row.adminField } : {}),
+  };
+}
+
+/** The row as the original entry reads: nothing the person changed. */
+function untouched(parsed: NonNullable<ReturnType<typeof editable>>, row: FieldValue): boolean {
+  return (
+    row.name === parsed.name &&
+    row.value === parsed.value &&
+    row.type === parsed.type &&
+    (row.adminField ?? undefined) === parsed.adminField
+  );
+}
+
+/** The original entry with only what was edited changed: its other keys, and their order, stay. */
+function edited(original: Record<string, unknown>, parsed: NonNullable<ReturnType<typeof editable>>, row: FieldValue) {
+  const out: Record<string, unknown> = { ...original, name: row.name.trim() };
+  if (row.type === 'checkbox') {
+    out['value'] = typeof original['value'] === 'boolean' ? row.value === 'true' : checkboxText(row.value);
+  } else {
+    out['value'] = row.value;
+  }
+  if (row.type !== parsed.type) {
+    // A new type is written the way the importer writes it, in the key the entry already used.
+    const used = 'type' in original && !('kind' in original) ? 'type' : 'kind';
+    out[used] = BODY_KIND[row.type];
+  }
+  if (row.adminField && original['adminField'] !== row.adminField) out['adminField'] = row.adminField;
+  return out;
+}
+
 /**
- * The `fields` member for the form's rows. A row with no name is left out; the entries this form
- * cannot edit (a linked field, a kind from a newer app) stay after the others, as they were.
+ * The `fields` member for the form's rows, built on the entries the body holds. An entry the person
+ * did not change is written as it was, the same object. An edited one keeps its other keys. A
+ * removed row (or one whose name was cleared) is dropped, and an entry this form cannot edit (a
+ * linked field, a kind from a newer app, one with no name) stays where it was. Rows added in the form
+ * come after, in the order they were added.
  */
 export function writeFieldValues(values: readonly FieldValue[], existing: ItemData | null | undefined): ItemData {
-  const written = values
-    .filter((field) => field.name.trim() !== '')
-    .map((field) => ({
-      name: field.name.trim(),
-      value: field.type === 'checkbox' ? (field.value === 'true' ? 'true' : 'false') : field.value,
-      kind: BODY_KIND[field.type],
-      ...(field.adminField ? { adminField: field.adminField } : {}),
-    }));
-  const kept = asEntries(existing).filter((entry) => editable(entry) === undefined);
-  const all = [...written, ...kept];
-  return { fields: all.length > 0 ? all : undefined };
+  const original = asEntries(existing);
+  const byOrigin = new Map<number, FieldValue>();
+  const added: FieldValue[] = [];
+  for (const row of values) {
+    if (row.origin !== undefined && row.origin < original.length) byOrigin.set(row.origin, row);
+    else added.push(row);
+  }
+  const out: unknown[] = [];
+  original.forEach((entry, index) => {
+    const parsed = editable(entry);
+    if (parsed === undefined) {
+      out.push(entry);
+      return;
+    }
+    const row = byOrigin.get(index);
+    if (row === undefined || row.name.trim() === '') return;
+    out.push(untouched(parsed, row) ? entry : edited(entry as Record<string, unknown>, parsed, row));
+  });
+  for (const row of added) if (row.name.trim() !== '') out.push(newEntry(row));
+  return { fields: out.length > 0 ? out : undefined };
 }
 
 /** The admin's fields offered for a kind that the item does not hold yet. */
@@ -176,6 +231,7 @@ export const fieldValueSchema = z.object({
   type: z.enum(['text', 'hidden', 'checkbox']),
   value: z.string().max(10000, 'error.tooLong'),
   adminField: z.string().optional(),
+  origin: z.number().optional(),
 });
 
 /** The members every form's schema carries for fields and links. */
