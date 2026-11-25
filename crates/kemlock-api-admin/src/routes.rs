@@ -794,13 +794,14 @@ where
             kemlock_app::RECORDED_DOMAIN_KEY,
         )
         .await?
-            .into_iter()
-            .find(|(key, _)| key == kemlock_app::RECORDED_DOMAIN_KEY)
-            .map(|(_, value)| value);
+        .into_iter()
+        .find(|(key, _)| key == kemlock_app::RECORDED_DOMAIN_KEY)
+        .map(|(_, value)| value);
         let domain = env.api.config.domain.clone();
-        let differs = recorded
-            .as_deref()
-            .is_some_and(|r| !r.trim_end_matches('/').eq_ignore_ascii_case(domain.trim_end_matches('/')));
+        let differs = recorded.as_deref().is_some_and(|r| {
+            !r.trim_end_matches('/')
+                .eq_ignore_ascii_case(domain.trim_end_matches('/'))
+        });
         json_ok(ServerAddressDto {
             domain,
             recorded_domain: recorded,
@@ -863,10 +864,10 @@ where
         // environment sets it (then it is the operator's to change).
         let mut forget = BTreeMap::new();
         forget.insert("kemlock_push_relay".to_owned(), Change::Reset);
-        if env.settings().apply(&forget).await.is_ok() {
-            if let Some(saved) = &env.rt.settings_saved {
-                saved();
-            }
+        if env.settings().apply(&forget).await.is_ok()
+            && let Some(saved) = &env.rt.settings_saved
+        {
+            saved();
         }
         env.audit()
             .record(

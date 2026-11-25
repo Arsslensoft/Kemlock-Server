@@ -452,6 +452,23 @@ impl IdentityRotator for FileRotator {
     }
 }
 
+/// `LocalIdentity::new`, listing what this server answers beyond version 1 (`Sends`) after its
+/// suites, so a peer that answers it too knows to ask.
+fn advertising_identity(
+    server: ServerId,
+    signing: sig1::SigningKey,
+    kems: Vec<KemPair>,
+    params: DescriptorParams,
+) -> Result<LocalIdentity, kemlock_federation::FedError> {
+    LocalIdentity::new_advertising(
+        server,
+        signing,
+        kems,
+        params,
+        &[kemlock_federation::sendsync::SENDS_CAPABILITY],
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,21 +670,4 @@ mod tests {
             load_or_create(dir.path(), &seal, ServerId::random(), &params(), NOW).expect("made");
         assert_eq!(identity.suites(), Suite::IMPLEMENTED.to_vec());
     }
-}
-
-/// `LocalIdentity::new`, listing what this server answers beyond version 1 (`Sends`) after its
-/// suites, so a peer that answers it too knows to ask.
-fn advertising_identity(
-    server: ServerId,
-    signing: sig1::SigningKey,
-    kems: Vec<KemPair>,
-    params: DescriptorParams,
-) -> Result<LocalIdentity, kemlock_federation::FedError> {
-    LocalIdentity::new_advertising(
-        server,
-        signing,
-        kems,
-        params,
-        &[kemlock_federation::sendsync::SENDS_CAPABILITY],
-    )
 }

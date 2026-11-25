@@ -84,7 +84,10 @@ impl Pair {
 async fn what_the_peer_has_not_been_given_is_counted_per_vault() {
     let t = pair().await;
     let empty = t.a.waiting_for(t.b_id, t.vault).await.expect("count");
-    assert_eq!((empty.changes, empty.at_least, empty.oldest_at), (0, false, None));
+    assert_eq!(
+        (empty.changes, empty.at_least, empty.oldest_at),
+        (0, false, None)
+    );
 
     for at in [1_000_000, 2_000_000, 3_000_000] {
         t.write(at);
@@ -119,7 +122,10 @@ async fn a_cancel_keeps_what_is_held_from_that_peer_and_only_that() {
     t.write(2_000_000);
     let before = t.a.store().latest(t.vault).await.expect("latest");
 
-    let cancelled = t.a.cancel_waiting(t.b_id, t.vault, NOW).await.expect("cancel");
+    let cancelled =
+        t.a.cancel_waiting(t.b_id, t.vault, NOW)
+            .await
+            .expect("cancel");
     assert_eq!(
         cancelled,
         Some(Cancelled {
@@ -132,9 +138,8 @@ async fn a_cancel_keeps_what_is_held_from_that_peer_and_only_that() {
 
     // The peer pulls and gets none of them; asking for the item by id gets nothing either.
     assert_eq!(t.b_pulls().await, 0);
-    let fetched = t
-        .a
-        .serve(
+    let fetched =
+        t.a.serve(
             t.b_id,
             &Request::Fetch {
                 vault: t.vault,
@@ -148,7 +153,12 @@ async fn a_cancel_keeps_what_is_held_from_that_peer_and_only_that() {
 
     // Nothing here was deleted: this server holds both, and a third server could still get them.
     assert_eq!(t.a.store().latest(t.vault).await.expect("latest"), before);
-    assert!(t.a.store().export_items(t.vault, &[kept]).await.is_ok_and(|e| e.len() == 1));
+    assert!(
+        t.a.store()
+            .export_items(t.vault, &[kept])
+            .await
+            .is_ok_and(|e| e.len() == 1)
+    );
     let held = t.a.store().withheld(t.b_id, t.vault).await.expect("read");
     assert_eq!(held.map(|w| (w.upto, w.at)), Some((before, NOW)));
     let third = ServerId::random();
@@ -165,7 +175,9 @@ async fn a_cancel_keeps_what_is_held_from_that_peer_and_only_that() {
 async fn cancelling_with_nothing_waiting_or_for_a_stranger_does_nothing() {
     let t = pair().await;
     assert_eq!(
-        t.a.cancel_waiting(t.b_id, t.vault, NOW).await.expect("cancel"),
+        t.a.cancel_waiting(t.b_id, t.vault, NOW)
+            .await
+            .expect("cancel"),
         None,
         "nothing waits"
     );
@@ -179,7 +191,10 @@ async fn cancelling_with_nothing_waiting_or_for_a_stranger_does_nothing() {
     assert_eq!(t.a.store().withheld(t.b_id, t.vault).await, Ok(None));
     // And the change is still waiting.
     assert_eq!(
-        t.a.waiting_for(t.b_id, t.vault).await.expect("count").changes,
+        t.a.waiting_for(t.b_id, t.vault)
+            .await
+            .expect("count")
+            .changes,
         1
     );
 }
@@ -188,9 +203,14 @@ async fn cancelling_with_nothing_waiting_or_for_a_stranger_does_nothing() {
 async fn a_second_cancel_adds_to_the_first_and_an_unpair_forgets_it() {
     let t = pair().await;
     t.write(1_000_000);
-    t.a.cancel_waiting(t.b_id, t.vault, NOW).await.expect("cancel");
+    t.a.cancel_waiting(t.b_id, t.vault, NOW)
+        .await
+        .expect("cancel");
     t.write(2_000_000);
-    let again = t.a.cancel_waiting(t.b_id, t.vault, NOW + 5).await.expect("cancel");
+    let again =
+        t.a.cancel_waiting(t.b_id, t.vault, NOW + 5)
+            .await
+            .expect("cancel");
     assert_eq!(
         again,
         Some(Cancelled {
@@ -217,7 +237,9 @@ async fn a_resume_offers_the_withheld_changes_again_through_the_next_comparison(
     let t = pair().await;
     let first = t.write(1_000_000);
     t.write(2_000_000);
-    t.a.cancel_waiting(t.b_id, t.vault, NOW).await.expect("cancel");
+    t.a.cancel_waiting(t.b_id, t.vault, NOW)
+        .await
+        .expect("cancel");
     // The peer's cursor moved past them: a pull alone will not bring them, even after a resume.
     assert_eq!(t.b_pulls().await, 0);
 
@@ -230,18 +252,19 @@ async fn a_resume_offers_the_withheld_changes_again_through_the_next_comparison(
     assert_eq!(t.b_pulls().await, 0);
 
     // The comparison of the two copies finds the items the peer lacks and fetches them by id.
-    let mut channel = ToA {
-        a: &t.a,
-        b: t.b_id,
-    };
-    let report = t
-        .b
-        .reconcile(&mut channel, t.a_id, t.vault)
-        .await
-        .expect("reconcile");
+    let mut channel = ToA { a: &t.a, b: t.b_id };
+    let report =
+        t.b.reconcile(&mut channel, t.a_id, t.vault)
+            .await
+            .expect("reconcile");
     assert!(!report.in_step);
     assert_eq!(report.fetched.applied, 2);
-    assert!(t.b.store().export_items(t.vault, &[first]).await.is_ok_and(|e| e.len() == 1));
+    assert!(
+        t.b.store()
+            .export_items(t.vault, &[first])
+            .await
+            .is_ok_and(|e| e.len() == 1)
+    );
     assert!(
         t.b.reconcile(&mut channel, t.a_id, t.vault)
             .await

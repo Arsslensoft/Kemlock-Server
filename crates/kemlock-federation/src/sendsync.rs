@@ -228,10 +228,7 @@ pub trait SendSync: Send + Sync {
 
     /// Deletes a Send that was copied from a peer, returning its file's blob if it had one. The
     /// file's bytes are the caller's to delete.
-    fn drop_replicated_send(
-        &self,
-        _id: SendId,
-    ) -> impl Future<Output = R<Option<BlobId>>> + Send {
+    fn drop_replicated_send(&self, _id: SendId) -> impl Future<Output = R<Option<BlobId>>> + Send {
         ready(Ok(None))
     }
 }
@@ -729,12 +726,13 @@ mod tests {
         let ob = opaque.file.expect("file").blob;
         assert_eq!(t.b_files.get(kb), t.a_files.get(kb));
         assert_eq!(t.b_files.get(ob), t.a_files.get(ob));
-        let raw = t.b_files.raw.lock().expect("lock");
-        assert!(
-            raw.contains(&ob) && !raw.contains(&kb),
-            "only the opaque file skips the KMA1 check"
-        );
-        drop(raw);
+        {
+            let raw = t.b_files.raw.lock().expect("lock");
+            assert!(
+                raw.contains(&ob) && !raw.contains(&kb),
+                "only the opaque file skips the KMA1 check"
+            );
+        }
 
         // A second visit has nothing to do.
         assert_eq!(t.sync().await, Ok(SendReport::default()));
@@ -842,9 +840,8 @@ mod tests {
 
         // A server that is not paired may not list the Sends.
         let stranger = identity(9, NOW, &Suite::IMPLEMENTED);
-        let asked = t
-            .a
-            .serve(
+        let asked =
+            t.a.serve(
                 stranger.server,
                 &Request::Sends {
                     vault: t.vault,
@@ -901,7 +898,10 @@ mod tests {
             .await
             .expect("answer");
         // ...and the copy is not among them, so the home can't take it back.
-        assert!(matches!(&listed, Response::Sends { entries, .. } if entries.is_empty()), "{listed:?}");
+        assert!(
+            matches!(&listed, Response::Sends { entries, .. } if entries.is_empty()),
+            "{listed:?}"
+        );
         // The replica drops it at its next visit.
         assert_eq!(t.sync().await.expect("sync").removed, 1);
 
@@ -916,7 +916,9 @@ mod tests {
             })
             .await
             .expect("answer");
-        assert!(matches!(&listed, Response::Sends { entries, .. } if entries.len() == 1 && entries[0].id == local.id));
+        assert!(
+            matches!(&listed, Response::Sends { entries, .. } if entries.len() == 1 && entries[0].id == local.id)
+        );
     }
 
     #[tokio::test]
@@ -985,7 +987,9 @@ mod tests {
             .with_blob_files(t.a_files.clone());
         c.pin_peer(&ia.descriptor, NOW).await.expect("pin");
         home.pin_peer(&ic.descriptor, NOW).await.expect("pin");
-        home.federate(t.vault, vec![ic.server]).await.expect("federate");
+        home.federate(t.vault, vec![ic.server])
+            .await
+            .expect("federate");
         c.accept_vault(t.vault, ia.server, vec![ic.server])
             .await
             .expect("accept");
@@ -1006,6 +1010,9 @@ mod tests {
             .expect("sync");
         assert_eq!((report.rows, report.skipped), (1, 1));
         assert!(c.store.send(note.id).is_some());
-        assert!(c.store.send(file.id).is_none(), "no row for a file it can't hold");
+        assert!(
+            c.store.send(file.id).is_none(),
+            "no row for a file it can't hold"
+        );
     }
 }

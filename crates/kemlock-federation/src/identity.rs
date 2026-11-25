@@ -196,10 +196,21 @@ mod tests {
         assert!(as_peer(&newer).advertises(crate::sendsync::SENDS_CAPABILITY));
         // ...and listing it changes neither the suites a server accepts nor the descriptor's check.
         assert_eq!(newer.suites(), plain.suites());
-        newer.descriptor.verify(now, Some(&newer.public)).expect("verify");
+        newer
+            .descriptor
+            .verify(now, Some(&newer.public))
+            .expect("verify");
         assert_eq!(
-            newer.descriptor.descriptor.negotiate(&Suite::IMPLEMENTED).ok(),
-            plain.descriptor.descriptor.negotiate(&Suite::IMPLEMENTED).ok()
+            newer
+                .descriptor
+                .descriptor
+                .negotiate(&Suite::IMPLEMENTED)
+                .ok(),
+            plain
+                .descriptor
+                .descriptor
+                .negotiate(&Suite::IMPLEMENTED)
+                .ok()
         );
     }
 

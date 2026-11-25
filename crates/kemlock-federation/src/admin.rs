@@ -19,7 +19,6 @@ use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::job::{Connector, LEASE_SECS, PeerRunner, PeerStatus, RunOutcome, lease_name};
 use crate::keyrecs::{IdentityRotator, revocation_record, rotation_record};
-use crate::outbox::Withholding;
 use crate::net::Http;
 use crate::pairing::Fingerprint;
 use crate::ports::{HomeStatus, LogSwitches, Peer, PeerState, StoredHomeRecord};

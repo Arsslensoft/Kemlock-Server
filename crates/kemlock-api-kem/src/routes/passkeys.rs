@@ -936,7 +936,7 @@ where
 /// `POST /kem/v1/account/two-factor/proof/webauthn/options`: the request options for answering a
 /// fresh proof with a security key or passkey of the signed-in account. `404` when it has none.
 /// A new challenge replaces the older one; it is good once and for two minutes.
-async fn handle_proof_options<S, P, K, R, W, M>(
+async fn handle_proof_options<S, P, K>(
     State(api): State<Api<S, P, K>>,
     authed: Authed,
 ) -> Result<Json<RequestOptionsResponse>, Problem>
@@ -944,9 +944,6 @@ where
     S: Store,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
-    R: PasskeyStore,
-    W: WebAuthn + Clone + 'static,
-    M: Send + Sync + 'static,
 {
     let now = api.now();
     guard(&api.limits.sign_in, &ip_key(authed.ip), now)?;
@@ -1044,7 +1041,7 @@ where
         )
         .route(
             "/kem/v1/account/two-factor/proof/webauthn/options",
-            post(handle_proof_options::<S, P, K, R, W, M>),
+            post(handle_proof_options::<S, P, K>),
         )
         .route(
             "/kem/v1/auth/two-factor/webauthn/options",

@@ -22,11 +22,11 @@ use crate::home::{self, HomeRecord, Policy, PromotionRecord, VaultFederation, Ve
 use crate::identity::LocalIdentity;
 use crate::keyrecs::KeyStore;
 use crate::message::{MAX_LEAVES, MAX_PAGE, Request, Response, code};
+use crate::outbox::Withholding;
 use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
     VaultRepo,
 };
-use crate::outbox::Withholding;
 use crate::relay::OriginKeys;
 use crate::sendsync::SendSync;
 use crate::signed::Signed;
@@ -563,7 +563,9 @@ impl<S: FedStore> Replica<S> {
                 limit,
             } => {
                 self.authorize(peer, *vault).await?;
-                Ok(answer(self.serve_sends(peer, *vault, *after, *limit).await?))
+                Ok(answer(
+                    self.serve_sends(peer, *vault, *after, *limit).await?,
+                ))
             }
         }
     }

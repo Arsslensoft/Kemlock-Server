@@ -204,7 +204,8 @@ impl PeerHealth {
 
     /// Sets when the next probe is due, `random` being any 64 random bits.
     pub fn schedule(&mut self, now: u64, config: &HealthConfig, random: u64) {
-        self.next_probe_at = now.saturating_add(next_delay(config, self.consecutive_failures, random));
+        self.next_probe_at =
+            now.saturating_add(next_delay(config, self.consecutive_failures, random));
     }
 }
 
@@ -261,7 +262,10 @@ mod tests {
         let mut health = PeerHealth::default();
         health.record_answer(NOW, Some(120));
         assert_eq!(health.status(NOW, &config()), HealthStatus::Online);
-        assert_eq!((health.last_seen, health.latency_ms), (Some(NOW), Some(120)));
+        assert_eq!(
+            (health.last_seen, health.latency_ms),
+            (Some(NOW), Some(120))
+        );
         health.record_answer(NOW + 60, Some(config().slow_ms + 1));
         assert_eq!(health.status(NOW + 60, &config()), HealthStatus::Degraded);
         // An answer that wasn't timed (a visit) keeps the last latency.
@@ -353,7 +357,10 @@ mod tests {
         let cfg = config();
         let mut health = PeerHealth::default();
         health.record_answer(NOW, Some(50));
-        health.record_key_mismatch(NOW + 60, "the peer's identity key does not match".to_owned());
+        health.record_key_mismatch(
+            NOW + 60,
+            "the peer's identity key does not match".to_owned(),
+        );
         assert_eq!(health.status(NOW + 60, &cfg), HealthStatus::KeyMismatch);
         assert_eq!(health.status(NOW + 60, &cfg).as_str(), "key-mismatch");
         // Repeated, it stays a mismatch and never turns offline.

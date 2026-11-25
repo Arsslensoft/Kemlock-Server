@@ -238,7 +238,9 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         self.state()
             .health
             .get(&peer)
-            .map_or(HealthStatus::Unknown, |h| h.status(now, &self.health_config))
+            .map_or(HealthStatus::Unknown, |h| {
+                h.status(now, &self.health_config)
+            })
     }
 
     /// Probes `peer` now: one call with a timeout, recorded in its health. Returns whether it
@@ -258,7 +260,9 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                 .await
             {
                 Ok(result) => result,
-                Err(_) => Err(FedError::Remote("the peer did not answer in time".to_owned())),
+                Err(_) => Err(FedError::Remote(
+                    "the peer did not answer in time".to_owned(),
+                )),
             };
         let latency = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let answered = result.is_ok();
@@ -288,11 +292,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         };
         let mut out = Vec::new();
         for peer in peers.into_iter().filter(|p| p.state == PeerState::Paired) {
-            let due = self
-                .state()
-                .health
-                .get(&peer.id)
-                .is_none_or(|h| h.due(now));
+            let due = self.state().health.get(&peer.id).is_none_or(|h| h.due(now));
             if due && let Some(answered) = self.probe_peer(peer.id, now).await {
                 out.push((peer.id, answered));
             }

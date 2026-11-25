@@ -18,7 +18,6 @@
 use crate::admin::Waiting;
 use crate::error::Result;
 use crate::home::Policy;
-use crate::ports::{ReplicaStore, VaultRepo};
 use crate::replicate::{FedStore, Replica};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{ChangeId, Owner, ServerId, VersionVector};
@@ -118,7 +117,10 @@ impl<S: FedStore> Replica<S> {
         // Pages of what the peer lacks, skipping what was cancelled, until the count has what it
         // needs. The pages are bounded: a vault with a long cancelled queue still answers.
         for _ in 0..MAX_PAGES {
-            let page = self.store.export_since(vault, &since, WAITING_LIMIT).await?;
+            let page = self
+                .store
+                .export_since(vault, &since, WAITING_LIMIT)
+                .await?;
             for entry in &page.entries {
                 since.observe(&entry.item.change);
                 if withheld
