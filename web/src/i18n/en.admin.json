@@ -31,8 +31,8 @@
   "admin.settings.hint.signups_allowed": "When off, people join only by an invitation or through SSO.",
   "admin.settings.hint.signups_verify": "Sends a link to the new address. The account can't sign in until the link is opened.",
   "admin.settings.hint.invitations_allowed": "Admins can invite people from Users & spaces, even while sign-up is off.",
-  "admin.settings.hint.push_enabled": "Bitwarden's apps learn of a change through Bitwarden's push relay, so they sync at once and not on a timer. The relay sees that a server has something to say, never what it is.",
-  "admin.settings.hint.kemlock_push_relay": "Kemlock's mobile apps learn of a change through Kemlock's push relay, so they sync at once and not on a timer. The relay sees that a server has something to say, never what it is.",
+  "admin.settings.hint.push_enabled": "Wakes Bitwarden's phone apps through Bitwarden's push relay, which becomes a processor of these pushes. It is sent the user, device and item ids and the kind of change, never an item's contents. Kemlock's apps are woken by this server itself, whatever this says.",
+  "admin.settings.hint.kemlock_push_relay": "This server pushes to Kemlock's iPhones (Apple push) and Android phones (UnifiedPush) itself. The relay is only an optional fallback for iPhones on a server with no Apple key, and a server with an Apple key never uses it. It is sent a push token and this server's installation id, never an item or an email.",
 
   "admin.fields": "Custom fields",
   "admin.fields.lede": "Fields people can add to their items. They pick from this list, or make their own if you allow it.",
