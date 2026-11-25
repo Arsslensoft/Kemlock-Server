@@ -67,6 +67,7 @@ built into the binary.
 | [Cryptography](docs/crypto.md) | The byte formats every client and the server agree on |
 | [Federation](docs/federation.md) | The formats two servers agree on to copy vaults to each other |
 | [Push relay](docs/push-relay.md) | The contract with the optional hosted relay, a fallback for iPhones on a server with no Apple key |
+| [Custom fields and trusted devices](docs/custom-fields.md) | The fields an admin offers for items, and stopping trust in a device: what the apps read |
 | [Security policy](SECURITY.md) | Reporting a vulnerability |
 
 ## Status
