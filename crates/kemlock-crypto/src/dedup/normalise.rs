@@ -422,11 +422,11 @@ mod tests {
         // A certificate's SHA-256 thumbprint is printed as colon-separated hex; it makes the same
         // `key` value however it is spelled.
         let hex = "ab".repeat(32);
-        let colons = vec!["AB"; 32].join(":");
+        let colons = ["AB"; 32].join(":");
         assert_eq!(fingerprint(&colons), Some(hex.to_ascii_uppercase()));
         assert_eq!(fingerprint(&colons), fingerprint(&hex));
         // The older SHA-1 thumbprint (20 bytes) is accepted the same way.
-        let sha1 = vec!["0f"; 20].join(":");
+        let sha1 = ["0f"; 20].join(":");
         assert_eq!(fingerprint(&sha1), Some("0F".repeat(20)));
     }
 

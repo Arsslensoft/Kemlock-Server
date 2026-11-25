@@ -727,7 +727,7 @@ mod tests {
         );
         assert_eq!(file_tag(&k, "short"), None);
         // A certificate's thumbprint is a `key` tag, whichever way it is written.
-        let colons = vec!["EF"; 32].join(":");
+        let colons = ["EF"; 32].join(":");
         assert_eq!(key_tag(&k, &colons), key_tag(&k, &hash));
         assert_eq!(
             key_tag(&k, &colons),
