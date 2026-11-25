@@ -416,4 +416,58 @@ mod tests {
     fn identity_text_is_a_username() {
         assert_eq!(identity_text(" Alice M\u{dc}ller "), "alice m\u{fc}ller");
     }
+
+    #[test]
+    fn a_certificate_fingerprint_follows_the_key_fingerprint_rule() {
+        // A certificate's SHA-256 thumbprint is printed as colon-separated hex; it makes the same
+        // `key` value however it is spelled.
+        let hex = "ab".repeat(32);
+        let colons = vec!["AB"; 32].join(":");
+        assert_eq!(fingerprint(&colons), Some(hex.to_ascii_uppercase()));
+        assert_eq!(fingerprint(&colons), fingerprint(&hex));
+        // The older SHA-1 thumbprint (20 bytes) is accepted the same way.
+        let sha1 = vec!["0f"; 20].join(":");
+        assert_eq!(fingerprint(&sha1), Some("0F".repeat(20)));
+    }
+
+    #[test]
+    fn contact_emails_are_usernames_and_phones_are_digits() {
+        assert_eq!(email("  Alex.Chen@Example.ORG "), "alex.chen@example.org");
+        assert_eq!(email("Cafe\u{301}@x.example"), "caf\u{e9}@x.example");
+        assert_eq!(phone("+1 (555) 0142"), "15550142");
+        assert_eq!(phone("1-555-0142"), "15550142");
+        assert_eq!(phone("\u{664}12"), "12");
+        assert_eq!(phone("call me"), "");
+    }
+
+    #[test]
+    fn document_numbers_keep_letters_and_digits_in_lower_case() {
+        assert_eq!(document_number("X 1234-567"), Some("x1234567".to_owned()));
+        assert_eq!(document_number("x1234567"), Some("x1234567".to_owned()));
+        assert_eq!(document_number(" ab.12 "), Some("ab12".to_owned()));
+        assert_eq!(
+            document_number("Cafe\u{301}9"),
+            Some("caf\u{e9}9".to_owned())
+        );
+        // Fewer than four letters and digits is no number to match on.
+        assert_eq!(document_number("123"), None);
+        assert_eq!(document_number("1-2-3"), None);
+        assert_eq!(document_number("--  "), None);
+        assert_eq!(document_number(""), None);
+    }
+
+    #[test]
+    fn content_hashes_are_sha256_hex_in_lower_case() {
+        let hex = "0123456789ABCDEF".repeat(4);
+        assert_eq!(content_hash(&hex), Some(hex.to_ascii_lowercase()));
+        assert_eq!(
+            content_hash(&format!(" {} ", hex.to_ascii_lowercase())),
+            content_hash(&hex)
+        );
+        assert_eq!(content_hash(&hex[..63]), None);
+        assert_eq!(content_hash(&format!("{hex}0")), None);
+        assert_eq!(content_hash(&"zz".repeat(32)), None);
+        assert_eq!(content_hash("sha256:abc"), None);
+        assert_eq!(content_hash(""), None);
+    }
 }

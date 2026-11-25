@@ -655,6 +655,87 @@ mod tests {
     }
 
     #[test]
+    fn contacts_documents_and_files_have_their_documented_inputs() {
+        assert_eq!(
+            contact_input(" Alex@Example.ORG ", "+1 (555) 0142"),
+            Some(br#"["contact","alex@example.org","15550142"]"#.to_vec())
+        );
+        // One of the two is enough; the other stays an empty string, so it can't run into it.
+        assert_eq!(
+            contact_input("a@b.c", ""),
+            Some(br#"["contact","a@b.c",""]"#.to_vec())
+        );
+        assert_eq!(
+            contact_input("", "555 0142"),
+            Some(br#"["contact","","5550142"]"#.to_vec())
+        );
+        assert_eq!(contact_input("  ", "call me"), None);
+        assert_ne!(contact_input("a@b.c", ""), contact_input("", "a@b.c"));
+
+        assert_eq!(
+            document_input("X 1234-567"),
+            Some(br#"["document","x1234567"]"#.to_vec())
+        );
+        assert_eq!(document_input("12"), None);
+
+        let hash = "0123456789ABCDEF".repeat(4);
+        assert_eq!(
+            file_input(&hash),
+            Some(format!(r#"["file","{}"]"#, hash.to_ascii_lowercase()).into_bytes())
+        );
+        assert_eq!(file_input("not a hash"), None);
+    }
+
+    #[test]
+    fn the_new_tag_names_keep_a_value_from_matching_another_kind() {
+        let k = key();
+        let hash = "ab".repeat(32);
+        assert_ne!(
+            file_tag(&k, &hash),
+            key_tag(&k, &hash),
+            "a file's hash and a key's fingerprint are different tags"
+        );
+        assert_ne!(
+            document_tag(&k, "abcd1234"),
+            note_tag(&k, "abcd1234"),
+            "a document number and a note are different tags"
+        );
+        assert_ne!(
+            contact_tag(&k, "a@b.c", ""),
+            identity_tag(&k, "a@b.c", ""),
+            "a contact and an identity are different tags"
+        );
+    }
+
+    #[test]
+    fn tags_of_the_new_kinds_are_the_tags_of_their_inputs() {
+        let k = key();
+        assert_eq!(
+            contact_tag(&k, "A@B.C", "+1 5"),
+            Some(tag_for(&k, name::CONTACT, &["a@b.c", "15"]))
+        );
+        assert_eq!(contact_tag(&k, "", ""), None);
+        assert_eq!(
+            document_tag(&k, "AB-12 34"),
+            Some(tag_for(&k, name::DOCUMENT, &["ab1234"]))
+        );
+        assert_eq!(document_tag(&k, "1"), None);
+        let hash = "ef".repeat(32);
+        assert_eq!(
+            file_tag(&k, &hash.to_ascii_uppercase()),
+            Some(tag_for(&k, name::FILE, &[hash.as_str()]))
+        );
+        assert_eq!(file_tag(&k, "short"), None);
+        // A certificate's thumbprint is a `key` tag, whichever way it is written.
+        let colons = vec!["EF"; 32].join(":");
+        assert_eq!(key_tag(&k, &colons), key_tag(&k, &hash));
+        assert_eq!(
+            key_tag(&k, &colons),
+            Some(tag_for(&k, name::KEY, &[hash.to_ascii_uppercase().as_str()]))
+        );
+    }
+
+    #[test]
     fn straße_and_strasse_are_two_usernames() {
         let none: [&str; 0] = [];
         let site = [web("example.com")];
