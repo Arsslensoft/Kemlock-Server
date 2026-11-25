@@ -37,7 +37,7 @@ describe('WhereToFind', () => {
       expect(screen.getByText(name, { selector: 'b' })).toBeInTheDocument();
     }
     expect(screen.getByText('docker compose logs kemlock | grep -i "setup code"')).toBeInTheDocument();
-    expect(screen.getByText("grep -i 'setup code' /var/log/kemlock-server.log")).toBeInTheDocument();
+    expect(screen.getByText("grep -i 'setup code' /var/log/kemlock-server.log | tail -n 1")).toBeInTheDocument();
     expect(screen.getByText('Docker tab, the kemlock icon, then Logs.')).toBeInTheDocument();
   });
 
