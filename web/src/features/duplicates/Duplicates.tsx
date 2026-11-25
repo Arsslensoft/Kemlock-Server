@@ -30,6 +30,7 @@ import {
   hasUnionMembers,
   keepInVault,
   planMerge,
+  resultName,
   vaultsOf,
   websiteKey,
 } from './merge';
@@ -98,7 +99,7 @@ function Preview({
   const foldersDiffer = new Set(folders.map((f) => f.folder)).size > 1;
   const plan = planMerge(group.items, picks, new Date());
   const trashedNames = plan ? plan.trashed.map(itemName).join(', ') : '';
-  const keptName = plan ? itemName(plan.kept) : '';
+  const keptName = plan ? resultName(plan) || itemName(plan.kept) : '';
   const siteChecked = (rule: WebsiteRule) => picks.websites.includes(websiteKey(rule));
   const toggleSite = (rule: WebsiteRule) => {
     const key = websiteKey(rule);
@@ -508,7 +509,7 @@ export default function Duplicates() {
             setSelectedId(undefined);
             setToast({
               id: 'dup.toast.merged',
-              values: { kept: itemName(plan.kept), trashed: plan.trashed.map(itemName).join(', ') },
+              values: { kept: resultName(plan) || itemName(plan.kept), trashed: plan.trashed.map(itemName).join(', ') },
               onUndo: () =>
                 undo.mutate(merged, {
                   onSuccess: () => setToast(undefined),

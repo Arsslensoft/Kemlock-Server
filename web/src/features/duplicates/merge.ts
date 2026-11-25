@@ -247,6 +247,14 @@ export function planMerge(items: VaultItem[], picks: MergePicks, now: Date): Mer
   return { kept, trashed, fields, before, retired };
 }
 
+/** The name the kept item has once merged: the picked one, else its own. */
+export function resultName(plan: MergePlan): string {
+  const name = plan.fields['name'];
+  if (typeof name === 'string' && name !== '') return name;
+  const own = plan.kept.data?.['name'];
+  return typeof own === 'string' ? own : '';
+}
+
 /** The saves of a merge: the kept item's new revision, the others into the Trash. */
 export function mergeWrites(plan: MergePlan, now: Date): SaveInput[] {
   return [
