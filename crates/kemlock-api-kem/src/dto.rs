@@ -711,6 +711,36 @@ pub struct ResolveResponse {
     pub resolved: u64,
 }
 
+/// A fresh proof that it is the account's owner at a keyboard, not only a session. Either a code
+/// (the mailed one, a current code of the authenticator app, or, where the route takes it, the
+/// recovery code) as a string, or the answer of a security key or passkey as
+/// `{ "webauthn": <PublicKeyCredential.toJSON()> }`, to the options at
+/// `POST /kem/v1/account/two-factor/proof/webauthn/options`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum FreshProof {
+    /// A code, as typed.
+    Code(String),
+    /// A security key's or passkey's assertion.
+    Assertion(KeyAssertion),
+}
+
+/// The answer of a security key or passkey, as the browser makes it.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeyAssertion {
+    /// The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.get`.
+    #[schema(value_type = Object)]
+    pub webauthn: serde_json::Value,
+}
+
+impl FreshProof {
+    /// Whether it is a code with nothing in it.
+    pub fn is_blank(&self) -> bool {
+        matches!(self, FreshProof::Code(code) if code.trim().is_empty())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,35 +853,5 @@ mod tests {
         let kdf = KdfParams::new_account([9; 16]);
         let dto = KdfDto::from_params(&kdf);
         assert_eq!(dto.to_params().expect("converts"), kdf);
-    }
-}
-
-/// A fresh proof that it is the account's owner at a keyboard, not only a session. Either a code
-/// (the mailed one, a current code of the authenticator app, or, where the route takes it, the
-/// recovery code) as a string, or the answer of a security key or passkey as
-/// `{ "webauthn": <PublicKeyCredential.toJSON()> }`, to the options at
-/// `POST /kem/v1/account/two-factor/proof/webauthn/options`.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
-#[serde(untagged)]
-pub enum FreshProof {
-    /// A code, as typed.
-    Code(String),
-    /// A security key's or passkey's assertion.
-    Assertion(KeyAssertion),
-}
-
-/// The answer of a security key or passkey, as the browser makes it.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct KeyAssertion {
-    /// The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.get`.
-    #[schema(value_type = Object)]
-    pub webauthn: serde_json::Value,
-}
-
-impl FreshProof {
-    /// Whether it is a code with nothing in it.
-    pub fn is_blank(&self) -> bool {
-        matches!(self, FreshProof::Code(code) if code.trim().is_empty())
     }
 }
