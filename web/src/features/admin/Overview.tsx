@@ -1,8 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
 import { configQuery, hostOf } from '@/app/services';
 import type { AdminOverview } from '@/api/admin';
+import type { ConfigResponse } from '@/api/types';
 import { type MessageId, useT } from '@/i18n';
-import { Icon } from '@/ui/Icon';
+import { Icon, type IconName } from '@/ui/Icon';
 import { admin } from './client';
 import { count } from './format';
 import { PushRelayPanel } from './PushRelay';
@@ -59,6 +60,75 @@ export function AttentionCard({ items, unavailable }: { items: Attention[]; unav
   );
 }
 
+/** One number of the Overview, with the icon of what it counts. */
+export function StatCard({
+  icon,
+  value,
+  label,
+  hint,
+}: {
+  icon: IconName;
+  value: string | number;
+  label: string;
+  hint?: string | undefined;
+}) {
+  return (
+    <div className="stat">
+      <span className="si" aria-hidden="true">
+        <Icon name={icon} />
+      </span>
+      <b>{value}</b>
+      <span>{label}</span>
+      {hint ? <span className="hint">{hint}</span> : null}
+    </div>
+  );
+}
+
+/**
+ * What the server holds, in one row: users, devices, spaces, the last day's events and the
+ * features it serves. Each has its icon. The version is in the page's subtitle, not a card.
+ */
+export function OverviewStats({
+  config,
+  overview,
+}: {
+  config: Pick<ConfigResponse, 'features'> | undefined;
+  overview: AdminOverview | undefined;
+}) {
+  const t = useT();
+  if (!config && !overview) return null;
+  return (
+    <div className="stats adm-stats">
+      {overview ? (
+        <>
+          <StatCard
+            icon="users"
+            value={count(overview.users)}
+            label={t('admin.stat.users')}
+            hint={t('admin.stat.admins', { count: overview.admins })}
+          />
+          <StatCard icon="device" value={count(overview.devices)} label={t('admin.stat.devices')} />
+          <StatCard
+            icon="building"
+            value={count(overview.spaces)}
+            label={t('admin.stat.spaces')}
+            hint={t('admin.stat.items', { count: overview.liveItems })}
+          />
+          <StatCard icon="list" value={count(overview.events24h)} label={t('admin.stat.events')} />
+        </>
+      ) : null}
+      {config ? (
+        <StatCard
+          icon="settings"
+          value={config.features.length}
+          label={t('admin.stat.features')}
+          hint={config.features.join(', ')}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 function Check({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
   const t = useT();
   return (
@@ -87,48 +157,7 @@ export default function Overview() {
         </p>
       </div>
 
-      {config ? (
-        <div className="stats">
-          <div className="stat">
-            <b>{config.version}</b>
-            <span>{t('admin.stat.version')}</span>
-            <span className="hint">{config.apiVersions.join(', ')}</span>
-          </div>
-          <div className="stat">
-            <b>{config.setup === 'complete' ? t('admin.stat.ready') : t('admin.stat.unfinished')}</b>
-            <span>{t('admin.stat.setup')}</span>
-            <span className="hint">{config.signupsAllowed ? t('admin.stat.signupsOpen') : t('admin.stat.signupsClosed')}</span>
-          </div>
-          <div className="stat">
-            <b>{config.features.length}</b>
-            <span>{t('admin.stat.features')}</span>
-            <span className="hint">{config.features.join(', ')}</span>
-          </div>
-        </div>
-      ) : null}
-
-      {attention.data ? (
-        <div className="stats">
-          <div className="stat">
-            <b>{count(attention.data.users)}</b>
-            <span>{t('admin.stat.users')}</span>
-            <span className="hint">{t('admin.stat.admins', { count: attention.data.admins })}</span>
-          </div>
-          <div className="stat">
-            <b>{count(attention.data.devices)}</b>
-            <span>{t('admin.stat.devices')}</span>
-          </div>
-          <div className="stat">
-            <b>{count(attention.data.spaces)}</b>
-            <span>{t('admin.stat.spaces')}</span>
-            <span className="hint">{t('admin.stat.items', { count: attention.data.liveItems })}</span>
-          </div>
-          <div className="stat">
-            <b>{count(attention.data.events24h)}</b>
-            <span>{t('admin.stat.events')}</span>
-          </div>
-        </div>
-      ) : null}
+      <OverviewStats config={config} overview={attention.data} />
 
       <section className="card" aria-labelledby="h-checks">
         <div className="card-head">
