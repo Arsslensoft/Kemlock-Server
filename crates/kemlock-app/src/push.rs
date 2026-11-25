@@ -388,3 +388,64 @@ mod tests {
         assert_eq!(PushKind::parse("sms"), None);
     }
 }
+
+/// Whether `text` is an address a push relay may be reached at. The installation key goes to it
+/// with every request, so it must be `https`, or `http` only for the loopback host itself
+/// (`localhost`, `127.0.0.1` or `[::1]`, for tests and a relay behind a local proxy), and carry no
+/// user name or password. The host is read from the parsed address: `http://localhost.evil.org`
+/// and `http://127.0.0.1@evil.org` are other hosts, and refused.
+pub fn is_relay_url(text: &str) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use url::Host;
+    let Ok(url) = url::Url::parse(text.trim()) else {
+        return false;
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    match (url.scheme(), url.host()) {
+        ("https", Some(_)) => true,
+        ("http", Some(Host::Domain("localhost"))) => true,
+        ("http", Some(Host::Ipv4(ip))) => ip == Ipv4Addr::LOCALHOST,
+        ("http", Some(Host::Ipv6(ip))) => ip == Ipv6Addr::LOCALHOST,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod relay_url_tests {
+    use super::is_relay_url;
+
+    #[test]
+    fn https_and_the_loopback_host_are_allowed() {
+        for ok in [
+            "https://push.example.org",
+            "https://push.example.org/base/",
+            "http://localhost:9000",
+            "http://127.0.0.1:9000",
+            "http://[::1]:9000",
+            " https://push.example.org ",
+        ] {
+            assert!(is_relay_url(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn look_alike_hosts_user_info_and_other_schemes_are_refused() {
+        for bad in [
+            "http://localhost.evil.org",
+            "http://127.0.0.1.evil.org",
+            "http://127.0.0.1@evil.org",
+            "http://localhost@evil.org",
+            "https://user:pw@push.example.org",
+            "http://push.example.org",
+            "http://127.0.0.2",
+            "ftp://push.example.org",
+            "https://",
+            "push.example.org",
+            "",
+        ] {
+            assert!(!is_relay_url(bad), "{bad}");
+        }
+    }
+}

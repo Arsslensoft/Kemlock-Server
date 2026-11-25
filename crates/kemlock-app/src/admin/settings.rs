@@ -489,10 +489,7 @@ fn clean_domains(raw: &str) -> Result<String, AdminError> {
 /// Whether `value` is an address the push relays may be reached at: https, or plain http on the
 /// loopback address (the installation key travels with every request).
 fn is_relay_url(value: &str) -> bool {
-    value.starts_with("https://")
-        || value.starts_with("http://127.0.0.1")
-        || value.starts_with("http://localhost")
-        || value.starts_with("http://[::1]")
+    crate::push::is_relay_url(value)
 }
 
 /// A folder inside the data folder: relative, with no `..` and no drive or `s3://` prefix.

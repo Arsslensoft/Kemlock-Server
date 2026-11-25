@@ -83,10 +83,10 @@ impl BitwardenPushConfig {
             .trim_end_matches('/')
             .to_owned();
         // The key goes to both services: they must be https.
-        if !(relay_uri.starts_with("https://") || relay_uri.starts_with("http://127.0.0.1")) {
+        if !kemlock_app::push::is_relay_url(&relay_uri) {
             return Err(PushConfigError::NotHttps("PUSH_RELAY_URI"));
         }
-        if !(identity_uri.starts_with("https://") || identity_uri.starts_with("http://127.0.0.1")) {
+        if !kemlock_app::push::is_relay_url(&identity_uri) {
             return Err(PushConfigError::NotHttps("PUSH_IDENTITY_URI"));
         }
         Ok(Some(BitwardenPushConfig {

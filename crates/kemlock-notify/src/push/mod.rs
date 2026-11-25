@@ -117,10 +117,7 @@ pub struct RelayClient {
 }
 
 fn allowed_url(url: &str) -> bool {
-    url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-        || url.starts_with("http://[::1]")
+    kemlock_app::push::is_relay_url(url)
 }
 
 impl RelayClient {
