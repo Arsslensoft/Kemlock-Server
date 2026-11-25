@@ -10,6 +10,7 @@ mod bw_docs;
 mod bw_user_key_ids;
 mod dedup;
 mod devices;
+mod email_changes;
 mod emergency;
 mod event_reader;
 mod events;
