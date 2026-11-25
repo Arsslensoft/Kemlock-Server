@@ -9,7 +9,7 @@ import { encodeB64 } from '@/lib/b64url';
 import { uuidBytes } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import { DevicesView } from './DevicesView';
-import { approveRequest, loadApprovals, otherDevices } from './devicesModel';
+import { approveRequest, leaveThisBrowser, loadApprovals, otherDevices } from './devicesModel';
 import { describeAccountError } from './errors';
 import { useRun } from './useRun';
 
@@ -73,11 +73,14 @@ export default function Devices() {
         setLeaving(true);
         void (async () => {
           try {
-            // The server forgets this device and its key copy; if it can't be reached, the browser
-            // still lets go of its own session.
-            if (device) await devicesApi.signOut(device).catch(() => undefined);
-            await signOut();
-            await navigate({ to: '/sign-in' });
+            await leaveThisBrowser(
+              {
+                signOutDevice: (id) => devicesApi.signOut(id),
+                endSession: signOut,
+                goToSignIn: () => navigate({ to: '/sign-in' }),
+              },
+              device,
+            );
           } finally {
             setLeaving(false);
           }

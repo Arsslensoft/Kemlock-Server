@@ -117,6 +117,24 @@ export function deviceKindLabelId(kind: DeviceKind): MessageId {
   }
 }
 
+/**
+ * Signs this browser out: the server forgets this device and its key copy, then the session ends
+ * here, then the page goes to the sign-in. When the server can't be reached the browser still lets
+ * go of its own session, so a person is never stuck signed in.
+ */
+export async function leaveThisBrowser(
+  steps: {
+    signOutDevice: (deviceId: string) => Promise<unknown>;
+    endSession: () => Promise<unknown>;
+    goToSignIn: () => Promise<unknown>;
+  },
+  deviceId: string | null,
+): Promise<void> {
+  if (deviceId) await steps.signOutDevice(deviceId).catch(() => undefined);
+  await steps.endSession();
+  await steps.goToSignIn();
+}
+
 /** The devices other than this one, newest sync first. */
 export function otherDevices(devices: DeviceEntryDto[], currentId: string | null): DeviceEntryDto[] {
   return devices
