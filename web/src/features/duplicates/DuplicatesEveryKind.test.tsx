@@ -59,8 +59,8 @@ function everyKind(): DuplicateGroup[] {
     ),
     ...pair(
       'certificate',
-      { name: 'Workstation', fingerprint: 'AB:CD:EF:01' },
-      { name: 'Client cert', fingerprint: 'abcdef01' },
+      { name: 'Workstation', fingerprint: HASH.toUpperCase().replace(/(..)(?=.)/g, '$1:') },
+      { name: 'Client cert', fingerprint: HASH },
     ),
     ...pair(
       'ssh-key',

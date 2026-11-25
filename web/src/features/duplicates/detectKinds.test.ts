@@ -141,8 +141,8 @@ describe('contacts', () => {
     expect(groupOf('contact', { email: 'a@b.c', phone: '111' }, { email: 'a@b.c', phone: '222' })).toBeUndefined();
   });
 
-  it('read the email a key-only contact came from', () => {
-    expect(groupOf('contact', { sourceEmail: 'a@b.c' }, { email: 'a@b.c' })?.why).toBe('contactEmail');
+  it('do not read the address a key was found by as the contact\'s own', () => {
+    expect(groupOf('contact', { sourceEmail: 'a@b.c' }, { sourceEmail: 'a@b.c' })).toBeUndefined();
   });
 
   it('match on the PGP key they hold, as the Kemlock app does, whoever they are called', () => {
@@ -152,7 +152,7 @@ describe('contacts', () => {
     const facts: DerivedFacts = new Map([
       [a.id, { fingerprint: '9F3A 77C1 0B2E 45D6 8A19 C0DE 12F4 5B6A 7788 9900' }],
       [b.id, { fingerprint: '9f3a77c10b2e45d68a19c0de12f45b6a77889900' }],
-      [none.id, { fingerprint: '1111 2222' }],
+      [none.id, { fingerprint: '1111 2222 3333 4444 5555 6666 7777 8888 9999 0000' }],
     ]);
     expect(findDuplicates([a, b, none])).toEqual([]);
     const groups = findDuplicates([a, b, none], facts);
@@ -209,6 +209,11 @@ describe('keys and certificates', () => {
       vaultItem('certificate', { fingerprint: HASH }),
     ]);
     expect(groups).toEqual([]);
+  });
+
+  it('give a value that is no fingerprint nothing to match on, as in Rust', () => {
+    expect(groupOf('certificate', { fingerprint: 'AB:CD' }, { fingerprint: 'AB:CD' })).toBeUndefined();
+    expect(groupOf('ssh-key', { fingerprint: 'MD5:ab:cd' }, { fingerprint: 'MD5:ab:cd' })).toBeUndefined();
   });
 
   it('give a key with no fingerprint nothing to match on', () => {

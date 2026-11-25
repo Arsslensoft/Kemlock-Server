@@ -1864,7 +1864,8 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 - **fingerprint**: an SSH key's OpenSSH `SHA256:…` fingerprint, or a PGP key's v4 or v6
   fingerprint as upper-case hex. A certificate's fingerprint is the same: its SHA-256 (or SHA-1)
   thumbprint of the DER, as upper-case hex with the colons, spaces and a leading `0x` left out, so
-  `AB:CD:…` and `abcd…` are one value. A certificate makes a `key` tag.
+  `AB:CD:…` and `abcd…` are one value. A certificate makes a `key` tag. A value that is neither
+  an `SHA256:…` fingerprint nor 40 or 64 hex digits has no tag.
 - **each code** (backup codes): trimmed, empty ones and duplicates dropped, sorted by code point,
   one value each.
 - **full name** and **email** (identity): trimmed, NFC, lower case.

@@ -57,11 +57,29 @@ describe('key and certificate fingerprints', () => {
     expect(normaliseFingerprint(colons)).toBe(hex.toUpperCase());
     expect(normaliseFingerprint(hex)).toBe(hex.toUpperCase());
     expect(normaliseFingerprint(`0x${hex}`)).toBe(hex.toUpperCase());
-    expect(normaliseFingerprint('9f3a 77c1 0b2e')).toBe('9F3A77C10B2E');
+    expect(normaliseFingerprint('9f3a 77c1 0b2e 45d6 8a19 c0de 12f4 5b6a 7788 9900')).toBe(
+      '9F3A77C10B2E45D68A19C0DE12F45B6A77889900',
+    );
+  });
+
+  it('take a SHA-1 thumbprint of 40 digits as well as a SHA-256 one of 64', () => {
+    const sha1 = Array.from({ length: 20 }, () => '0f').join(':');
+    expect(normaliseFingerprint(sha1)).toBe('0F'.repeat(20));
   });
 
   it('leave an SSH fingerprint exactly as it is', () => {
     expect(normaliseFingerprint(' SHA256:q38FRmSR0cmF/Hng ')).toBe('SHA256:q38FRmSR0cmF/Hng');
+  });
+
+  it('are nothing when they are no fingerprint, as in Rust', () => {
+    expect(normaliseFingerprint('')).toBe('');
+    expect(normaliseFingerprint('SHA256:')).toBe('');
+    // The SSH prefix is case sensitive.
+    expect(normaliseFingerprint('sha256:q38FRmSR0cmF/Hng')).toBe('');
+    expect(normaliseFingerprint('MD5:ab:cd')).toBe('');
+    expect(normaliseFingerprint('AB:CD:EF:01')).toBe('');
+    expect(normaliseFingerprint('zz'.repeat(20))).toBe('');
+    expect(normaliseFingerprint('ab'.repeat(41))).toBe('');
   });
 });
 

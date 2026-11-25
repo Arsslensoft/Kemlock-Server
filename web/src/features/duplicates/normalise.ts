@@ -138,14 +138,17 @@ export function normaliseExpiry(month: unknown, year: unknown): string {
 }
 
 /**
- * An SSH `SHA256:...` fingerprint as is; a PGP key's or a certificate's as upper-case hex, without
- * the spaces, the colons and a leading `0x` (`AB:CD:…` and `abcd…` are one value).
+ * A key's or a certificate's fingerprint, as the Rust side reads one: an OpenSSH `SHA256:…` (the
+ * prefix in capitals) as it is, or 40 or 64 hex digits (a PGP v4 or v6 fingerprint, a certificate's
+ * SHA-1 or SHA-256 thumbprint) as upper case, without the spaces, the colons and a leading `0x`
+ * (`AB:CD:…` and `abcd…` are one value). `""` for anything else, which makes no tag.
  */
 export function normaliseFingerprint(text: string): string {
   const trimmed = text.trim();
-  if (/^SHA256:/i.test(trimmed)) return `SHA256:${trimmed.slice(7)}`;
-  const hex = trimmed.replace(/[\s:]+/g, '').toUpperCase();
-  return hex.startsWith('0X') ? hex.slice(2) : hex;
+  if (trimmed.startsWith('SHA256:')) return trimmed.length > 'SHA256:'.length ? trimmed : '';
+  const squeezed = trimmed.replace(/[\s:]+/g, '').toUpperCase();
+  const hex = squeezed.startsWith('0X') ? squeezed.slice(2) : squeezed;
+  return /^(?:[0-9A-F]{40}|[0-9A-F]{64})$/.test(hex) ? hex : '';
 }
 
 /** A contact's phone: its ASCII digits only, so `+1 (555) 0142` and `15550142` are one number. */

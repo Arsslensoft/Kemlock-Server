@@ -92,7 +92,11 @@ describe('other values', () => {
   it('writes credential ids as base64url and fingerprints canonically', () => {
     expect(normaliseCredentialId('ab+/cd==')).toBe('ab-_cd');
     expect(normaliseFingerprint('SHA256:AbC+/xyz')).toBe('SHA256:AbC+/xyz');
-    expect(normaliseFingerprint('ab12 cd34')).toBe('AB12CD34');
+    expect(normaliseFingerprint(' 9f3a 77c1 0b2e 45d6 8a19 c0de 12f4 5b6a 7788 9900')).toBe(
+      '9F3A77C10B2E45D68A19C0DE12F45B6A77889900',
+    );
+    // Not a fingerprint: no value, as in Rust, so two items with one such value are not copies.
+    expect(normaliseFingerprint('ab12 cd34')).toBe('');
   });
 });
 
