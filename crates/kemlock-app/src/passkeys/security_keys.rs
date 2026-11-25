@@ -178,6 +178,112 @@ struct Loaded {
     keys: Vec<StoredKey>,
 }
 
+/// The account's stored keys: the enabled `webauthn` row, opened; none when there is no row.
+async fn load_keys<F: TwoFactorRepo, S: SecretSeal>(
+    two_factor: &F,
+    seal: &S,
+    user: UserId,
+) -> Result<Loaded, AppError> {
+    let rows = two_factor.list(user).await?;
+    let row = rows
+        .into_iter()
+        .find(|t| t.method == TwoFactorMethod::WebAuthn && t.enabled);
+    let (created_at, keys) = match row {
+        Some(row) => {
+            let plain = seal
+                .open(PURPOSE_WEBAUTHN, &row.sealed_secret)
+                .map_err(|_| {
+                    AppError::Store("a stored security key list doesn't open".to_owned())
+                })?;
+            let stored: StoredKeys = serde_json::from_slice(&plain).map_err(|_| {
+                AppError::Store("a stored security key list isn't valid".to_owned())
+            })?;
+            (Some(row.created_at), stored.keys)
+        }
+        None => (None, Vec::new()),
+    };
+    Ok(Loaded { created_at, keys })
+}
+
+/// Writes the list back; an empty list removes the row, so the method is off.
+async fn save_keys<F: TwoFactorRepo, S: SecretSeal, E: Platform>(
+    two_factor: &F,
+    seal: &S,
+    env: &E,
+    user: UserId,
+    created_at: Option<OffsetDateTime>,
+    keys: Vec<StoredKey>,
+) -> Result<(), AppError> {
+    if keys.is_empty() {
+        two_factor.remove(user, TwoFactorMethod::WebAuthn).await?;
+        return Ok(());
+    }
+    let plain = serde_json::to_vec(&StoredKeys { keys })
+        .map_err(|_| AppError::Store("couldn't encode the security key list".to_owned()))?;
+    two_factor
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::WebAuthn,
+            sealed_secret: seal.seal(PURPOSE_WEBAUTHN, &plain),
+            enabled: true,
+            created_at: created_at.unwrap_or_else(|| env.now()),
+        })
+        .await?;
+    Ok(())
+}
+
+/// An account's security keys as a ceremony that only reads and answers them needs them: their
+/// credentials, and the counter kept after an answer. The admin console's step-up uses it, so a
+/// security key confirms a change as a passkey or a code does.
+#[derive(Debug, Clone)]
+pub struct KeyCredentials<F, S, E> {
+    pub two_factor: F,
+    pub seal: S,
+    pub env: E,
+}
+
+impl<F: TwoFactorRepo, S: SecretSeal, E: Platform> KeyCredentials<F, S, E> {
+    /// Each key's credential id and credential.
+    pub async fn credentials_of(&self, user: UserId) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+        let invalid = || AppError::Store("a stored security key isn't valid".to_owned());
+        load_keys(&self.two_factor, &self.seal, user)
+            .await?
+            .keys
+            .iter()
+            .map(|k| {
+                Ok((
+                    b64url::decode(&k.credential_id).ok_or_else(invalid)?,
+                    b64url::decode(&k.credential).ok_or_else(invalid)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Stores the credential after an answer (its counter moved) for the key with this id.
+    pub async fn record_use(
+        &self,
+        user: UserId,
+        credential_id: &[u8],
+        credential: &[u8],
+    ) -> Result<(), AppError> {
+        let mut loaded = load_keys(&self.two_factor, &self.seal, user).await?;
+        let id = b64url::encode(credential_id);
+        if let Some(key) = loaded.keys.iter_mut().find(|k| k.credential_id == id) {
+            key.credential = b64url::encode(credential);
+            save_keys(
+                &self.two_factor,
+                &self.seal,
+                &self.env,
+                user,
+                loaded.created_at,
+                loaded.keys,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+}
+
 /// An account's security keys over their ports.
 #[derive(Debug)]
 pub struct SecurityKeys<U, F, C, W, S, E> {
@@ -200,26 +306,7 @@ where
     E: Platform,
 {
     async fn load(&self, user: UserId) -> Result<Loaded, AppError> {
-        let rows = self.two_factor.list(user).await?;
-        let row = rows
-            .into_iter()
-            .find(|t| t.method == TwoFactorMethod::WebAuthn && t.enabled);
-        let (created_at, keys) = match row {
-            Some(row) => {
-                let plain = self
-                    .seal
-                    .open(PURPOSE_WEBAUTHN, &row.sealed_secret)
-                    .map_err(|_| {
-                        AppError::Store("a stored security key list doesn't open".to_owned())
-                    })?;
-                let stored: StoredKeys = serde_json::from_slice(&plain).map_err(|_| {
-                    AppError::Store("a stored security key list isn't valid".to_owned())
-                })?;
-                (Some(row.created_at), stored.keys)
-            }
-            None => (None, Vec::new()),
-        };
-        Ok(Loaded { created_at, keys })
+        load_keys(&self.two_factor, &self.seal, user).await
     }
 
     /// Writes the list back; an empty list removes the row, so the method is off.
@@ -229,24 +316,15 @@ where
         created_at: Option<OffsetDateTime>,
         keys: Vec<StoredKey>,
     ) -> Result<(), AppError> {
-        if keys.is_empty() {
-            self.two_factor
-                .remove(user, TwoFactorMethod::WebAuthn)
-                .await?;
-            return Ok(());
-        }
-        let plain = serde_json::to_vec(&StoredKeys { keys })
-            .map_err(|_| AppError::Store("couldn't encode the security key list".to_owned()))?;
-        self.two_factor
-            .put(&TwoFactor {
-                user,
-                method: TwoFactorMethod::WebAuthn,
-                sealed_secret: self.seal.seal(PURPOSE_WEBAUTHN, &plain),
-                enabled: true,
-                created_at: created_at.unwrap_or_else(|| self.env.now()),
-            })
-            .await?;
-        Ok(())
+        save_keys(
+            &self.two_factor,
+            &self.seal,
+            &self.env,
+            user,
+            created_at,
+            keys,
+        )
+        .await
     }
 
     /// The credentials of `keys`, as the relying party reads them.

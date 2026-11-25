@@ -25,8 +25,8 @@ pub use ports::{ChallengeKind, ChallengeRepo, PasskeyRepo, PasskeyStore};
 pub use proof::{AssertionProof, PROOF_TTL};
 pub use second_step::SecurityKeyStep;
 pub use security_keys::{
-    ImportedKey, KeyList, MAX_KEYS, PURPOSE_WEBAUTHN, SecurityKeyError, SecurityKeyInfo,
-    SecurityKeys, encode_key_list,
+    ImportedKey, KeyCredentials, KeyList, MAX_KEYS, PURPOSE_WEBAUTHN, SecurityKeyError,
+    SecurityKeyInfo, SecurityKeys, encode_key_list,
 };
 pub use sign_in::{
     PURPOSE_PASSKEY_CHALLENGE, PasskeyChallenge, PasskeySignIn, PasskeySignedIn, PasskeyVerifyInput,
