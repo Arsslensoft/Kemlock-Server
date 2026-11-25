@@ -201,6 +201,37 @@ async fn the_built_server_serves_the_hub_and_the_push_token_routes() {
 }
 
 #[tokio::test]
+async fn the_built_server_serves_the_custom_fields_and_untrust_routes() {
+    let dir = TempDir::new("custom-fields");
+    let built = build(&config(&dir.0)).await.expect("builds");
+    // Each exists and asks for a token (a missing route would be a 404, a missing method a 405).
+    for (method, path) in [
+        ("GET", "/kem/v1/custom-fields"),
+        ("GET", "/admin/v1/custom-fields"),
+        ("POST", "/admin/v1/custom-fields"),
+        ("PUT", "/admin/v1/custom-fields/allow-own"),
+        (
+            "PUT",
+            "/admin/v1/custom-fields/7d0f3a52-6c1d-4f3b-9a58-2e3b5a0a9c11",
+        ),
+        (
+            "DELETE",
+            "/admin/v1/custom-fields/7d0f3a52-6c1d-4f3b-9a58-2e3b5a0a9c11",
+        ),
+        (
+            "DELETE",
+            "/kem/v1/devices/7d0f3a52-6c1d-4f3b-9a58-2e3b5a0a9c11/key-copy",
+        ),
+    ] {
+        assert_eq!(
+            status(&built.router, method, path).await,
+            StatusCode::UNAUTHORIZED,
+            "{method} {path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn bitwardens_push_relay_is_off_unless_push_is_enabled() {
     let dir = TempDir::new("no-push");
     let started = notify::start(&config(&dir.0), &env(&[]), &memory_store().await, &crypto())

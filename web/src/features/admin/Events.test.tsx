@@ -58,6 +58,26 @@ describe('EventsView', () => {
     expect(screen.getAllByText('203.0.113.0')).toHaveLength(2);
   });
 
+  it('words the device and custom field changes, and shows what each names', () => {
+    view({
+      events: [
+        event({ id: 'u', action: 'device.untrust', target: '50000000-0000-4000-8000-0000000000a1' }),
+        event({ id: 'c', action: 'admin.custom_field.create', target: '7d0f3a52-6c1d-4f3b-9a58-2e3b5a0a9c11' }),
+        event({ id: 'e', action: 'admin.custom_field.update' }),
+        event({ id: 'd', action: 'admin.custom_field.delete' }),
+        event({ id: 'o', action: 'admin.custom_field.allow_own', target: 'false' }),
+      ],
+    });
+    expect(screen.getByText('Stopped trusting a device')).toBeInTheDocument();
+    expect(screen.getByText('Added a custom field')).toBeInTheDocument();
+    expect(screen.getByText('Changed a custom field')).toBeInTheDocument();
+    expect(screen.getByText('Removed a custom field')).toBeInTheDocument();
+    expect(screen.getByText('Changed whether people may add their own fields')).toBeInTheDocument();
+    expect(screen.getByText('7d0f3a52-6c1d-4f3b-9a58-2e3b5a0a9c11')).toBeInTheDocument();
+    expect(screen.queryByText('device.untrust')).toBeNull();
+    expect(screen.queryByText('admin.custom_field.create')).toBeNull();
+  });
+
   it('changes a filter without losing the others', async () => {
     const { onFilters } = view();
     const user = userEvent.setup();

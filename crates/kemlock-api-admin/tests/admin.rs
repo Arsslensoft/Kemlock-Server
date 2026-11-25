@@ -100,6 +100,26 @@ fn writes(target: &str) -> Vec<(&'static str, String, Option<Value>)> {
             "/admin/v1/migration/start".into(),
             Some(json!({"from": "/nowhere"})),
         ),
+        (
+            "POST",
+            "/admin/v1/custom-fields".into(),
+            Some(json!({"name": "Employee ID", "type": "text", "kinds": "all"})),
+        ),
+        (
+            "PUT",
+            format!("/admin/v1/custom-fields/{}", Uuid::new_v4()),
+            Some(json!({"name": "Employee ID", "type": "text", "kinds": "all"})),
+        ),
+        (
+            "DELETE",
+            format!("/admin/v1/custom-fields/{}", Uuid::new_v4()),
+            None,
+        ),
+        (
+            "PUT",
+            "/admin/v1/custom-fields/allow-own".into(),
+            Some(json!({"allow": false})),
+        ),
         ("POST", "/admin/v1/push-relay/enable".into(), None),
         ("POST", "/admin/v1/push-relay/disable".into(), None),
         (
@@ -122,6 +142,7 @@ const READS: &[&str] = &[
     "/admin/v1/users",
     "/admin/v1/invitations",
     "/admin/v1/spaces",
+    "/admin/v1/custom-fields",
     "/admin/v1/events",
     "/admin/v1/settings",
     "/admin/v1/sso",
@@ -2149,7 +2170,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             }
         }
     }
-    assert_eq!(operations, 41, "every operation is documented once");
+    assert_eq!(operations, 46, "every operation is documented once");
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"
@@ -2518,5 +2539,364 @@ async fn the_push_installation_id_and_key_are_never_returned() {
         }
         let text = body.to_string();
         assert!(!text.contains("sekret"), "{text}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Custom fields
+
+fn field_body(name: &str, field_type: &str, kinds: Value) -> Value {
+    json!({"name": name, "type": field_type, "kinds": kinds})
+}
+
+#[tokio::test]
+async fn an_admin_adds_changes_and_removes_custom_fields() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+
+    // Nothing yet, and people may add their own until an admin says no.
+    let empty = root.get("/admin/v1/custom-fields").await;
+    assert_eq!(empty.status, StatusCode::OK, "{:?}", empty.json());
+    assert_eq!(empty.json(), json!({"fields": [], "allowOwn": true}));
+
+    // The answer has the shape clients read: id, name, type, and kinds as "all" or a list.
+    let all = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("  Employee   ID ", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(all.status, StatusCode::CREATED, "{:?}", all.json());
+    let all_id = all.json()["id"].as_str().expect("an id").to_owned();
+    assert_eq!(
+        all.json(),
+        json!({"id": all_id, "name": "Employee ID", "type": "text", "kinds": "all"})
+    );
+    let some = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body(
+                "Cost center",
+                "hidden",
+                json!(["card", "login", "card"]),
+            )),
+            &token,
+        )
+        .await;
+    assert_eq!(some.status, StatusCode::CREATED, "{:?}", some.json());
+    let some_id = some.json()["id"].as_str().expect("an id").to_owned();
+    assert_eq!(some.json()["kinds"], json!(["login", "card"]));
+    assert_eq!(rig.admin.custom_fields_now().len(), 2);
+
+    let listed = root.get("/admin/v1/custom-fields").await.json();
+    assert_eq!(listed["allowOwn"], true);
+    let names: Vec<&str> = listed["fields"]
+        .as_array()
+        .expect("fields")
+        .iter()
+        .map(|f| f["name"].as_str().expect("a name"))
+        .collect();
+    assert_eq!(names, ["Employee ID", "Cost center"]);
+
+    // A change keeps the id.
+    let changed = root
+        .write(
+            "PUT",
+            &format!("/admin/v1/custom-fields/{some_id}"),
+            Some(field_body("Cost centre", "checkbox", json!(["card"]))),
+            &token,
+        )
+        .await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
+    assert_eq!(
+        changed.json(),
+        json!({"id": some_id, "name": "Cost centre", "type": "checkbox", "kinds": ["card"]})
+    );
+
+    // A removed field is gone, and removing it twice is a 404.
+    let uri = format!("/admin/v1/custom-fields/{all_id}");
+    let removed = root.write("DELETE", &uri, None, &token).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    let again = root.write("DELETE", &uri, None, &token).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND);
+    assert_eq!(rig.admin.custom_fields_now().len(), 1);
+
+    // Every change is in the event log; the refused one is not.
+    assert_eq!(
+        rig.admin.actions(),
+        [
+            "admin.custom_field.create",
+            "admin.custom_field.create",
+            "admin.custom_field.update",
+            "admin.custom_field.delete",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_custom_field_typed_wrongly_is_refused_and_not_recorded() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+
+    for (why, body) in [
+        ("an empty name", field_body("   ", "text", json!("all"))),
+        (
+            "a name of 65 characters",
+            field_body(&"x".repeat(65), "text", json!("all")),
+        ),
+        (
+            "a control character in the name",
+            field_body("a\u{7}b", "text", json!("all")),
+        ),
+        ("a type that isn't one", field_body("Pin", "password", json!("all"))),
+        ("no kinds", field_body("Pin", "text", json!([]))),
+        (
+            "a word that isn't all",
+            field_body("Pin", "text", json!("everything")),
+        ),
+        ("a passkey", field_body("Pin", "text", json!(["passkey"]))),
+        ("a file", field_body("Pin", "text", json!(["file"]))),
+        (
+            "a required flag: nothing is ever required",
+            json!({"name": "Pin", "type": "text", "kinds": "all", "required": true}),
+        ),
+    ] {
+        let reply = root
+            .write("POST", "/admin/v1/custom-fields", Some(body), &token)
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{why}: {:?}",
+            reply.json()
+        );
+    }
+    assert!(rig.admin.custom_fields_now().is_empty());
+    assert!(rig.admin.actions().is_empty());
+}
+
+#[tokio::test]
+async fn two_custom_fields_can_not_share_a_name_whatever_the_case() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let first = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("Employee ID", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED);
+    let second = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("EMPLOYEE id", "hidden", json!(["login"]))),
+            &token,
+        )
+        .await;
+    assert_eq!(second.status, StatusCode::CONFLICT);
+    assert!(
+        second.json()["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("name")
+    );
+    let other = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("Cost center", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    let other_id = other.json()["id"].as_str().expect("an id").to_owned();
+    let uri = format!("/admin/v1/custom-fields/{other_id}");
+
+    // Taking the other's name in a change is the same refusal; keeping one's own is fine.
+    let clash = root
+        .write(
+            "PUT",
+            &uri,
+            Some(field_body("employee id", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(clash.status, StatusCode::CONFLICT);
+    let same = root
+        .write(
+            "PUT",
+            &uri,
+            Some(field_body("COST CENTER", "hidden", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(same.status, StatusCode::OK, "{:?}", same.json());
+    assert_eq!(rig.admin.custom_fields_now().len(), 2);
+
+    // A field that isn't there can't be changed, and an id that isn't one is a 400.
+    let ghost = root
+        .write(
+            "PUT",
+            &format!("/admin/v1/custom-fields/{}", Uuid::new_v4()),
+            Some(field_body("Ghost", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(ghost.status, StatusCode::NOT_FOUND);
+    let bad_id = root
+        .write("DELETE", "/admin/v1/custom-fields/not-a-uuid", None, &token)
+        .await;
+    assert_eq!(bad_id.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_server_holds_at_most_a_hundred_custom_fields() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    for n in 0..100 {
+        let reply = root
+            .write(
+                "POST",
+                "/admin/v1/custom-fields",
+                Some(field_body(&format!("Field {n}"), "text", json!("all"))),
+                &token,
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{n}: {:?}", reply.json());
+    }
+    let over = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("One too many", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(over.status, StatusCode::CONFLICT);
+    assert_eq!(rig.admin.custom_fields_now().len(), 100);
+}
+
+#[tokio::test]
+async fn an_admin_turns_people_adding_their_own_fields_off_and_on() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let uri = "/admin/v1/custom-fields/allow-own";
+
+    let off = root
+        .write("PUT", uri, Some(json!({"allow": false})), &token)
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
+    assert_eq!(off.json(), json!({"allowOwn": false}));
+    assert_eq!(
+        rig.admin.saved_setting("custom_fields.allow_own"),
+        Some("false".to_owned())
+    );
+    assert_eq!(
+        root.get("/admin/v1/custom-fields").await.json()["allowOwn"],
+        false
+    );
+
+    let on = root
+        .write("PUT", uri, Some(json!({"allow": true})), &token)
+        .await;
+    assert_eq!(on.json(), json!({"allowOwn": true}));
+    assert_eq!(
+        root.get("/admin/v1/custom-fields").await.json()["allowOwn"],
+        true
+    );
+
+    // Not a flag: refused, and not recorded.
+    let bad = root
+        .write("PUT", uri, Some(json!({"allow": "no"})), &token)
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        rig.admin.actions(),
+        [
+            "admin.custom_field.allow_own",
+            "admin.custom_field.allow_own"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_custom_field_change_asks_for_a_step_up_and_tells_the_other_admins() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let _second = rig.admin("second@kemlock.test").await;
+
+    let without = root
+        .send(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("Employee ID", "text", json!("all"))),
+            None,
+        )
+        .await;
+    assert_eq!(without.status, StatusCode::FORBIDDEN);
+    assert_eq!(slug(&without), "step-up-required");
+    assert!(rig.admin.custom_fields_now().is_empty());
+
+    let token = root.step_up(&rig).await;
+    let made = root
+        .write(
+            "POST",
+            "/admin/v1/custom-fields",
+            Some(field_body("Employee ID", "text", json!("all"))),
+            &token,
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED);
+    let events = rig.admin.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "admin.custom_field.create");
+    assert_eq!(
+        events[0].target.as_deref(),
+        made.json()["id"].as_str(),
+        "the log names the field by its id"
+    );
+    let mails = rig.mail.sent();
+    assert_eq!(mails.len(), 1, "the other admin is told");
+    assert_eq!(mails[0].to.as_str(), "second@kemlock.test");
+    assert!(mails[0].subject.contains("added a custom field"));
+}
+
+#[tokio::test]
+async fn the_document_describes_the_custom_fields_routes() {
+    let doc = serde_json::to_value(kemlock_api_admin::admin_openapi()).expect("a document");
+    for (path, method) in [
+        ("/admin/v1/custom-fields", "get"),
+        ("/admin/v1/custom-fields", "post"),
+        ("/admin/v1/custom-fields/{id}", "put"),
+        ("/admin/v1/custom-fields/{id}", "delete"),
+        ("/admin/v1/custom-fields/allow-own", "put"),
+    ] {
+        assert!(
+            doc["paths"][path][method].is_object(),
+            "{method} {path} is documented"
+        );
+    }
+    for schema in [
+        "CustomFieldRequest",
+        "CustomFieldDto",
+        "CustomFieldsDto",
+        "KindsDto",
+        "AllowOwnRequest",
+        "AllowOwnDto",
+    ] {
+        assert!(
+            doc["components"]["schemas"][schema].is_object(),
+            "{schema} is in the components"
+        );
     }
 }

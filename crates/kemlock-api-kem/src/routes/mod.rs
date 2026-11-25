@@ -7,6 +7,7 @@ mod auth;
 pub(crate) mod connector;
 pub(crate) mod contract;
 mod contract_crypto;
+pub(crate) mod custom_fields;
 pub(crate) mod devices;
 pub(crate) mod duplicates;
 pub(crate) mod emergency;

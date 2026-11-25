@@ -3,7 +3,9 @@
 //! return `impl Future + Send` and every method is cancel-safe.
 
 use crate::ports::StoreError;
-use kemlock_domain::{AccountMode, DeviceId, Email, Role, SpaceId, UserId};
+use kemlock_domain::{
+    AccountMode, CustomField, CustomFieldId, DeviceId, Email, Role, SpaceId, UserId,
+};
 use std::future::Future;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -304,6 +306,43 @@ pub trait SettingsRepo: Send + Sync {
         value: &str,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
     fn delete_setting(&self, key: &str) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Custom fields
+
+/// The custom fields an admin defined (`custom_fields`). Names and types are not secret and are
+/// kept in the clear; the values live in the items, which the server can't read.
+pub trait CustomFieldRepo: Send + Sync {
+    /// Every definition, oldest first.
+    fn custom_fields(&self) -> impl Future<Output = Result<Vec<CustomField>, StoreError>> + Send;
+
+    fn custom_field(
+        &self,
+        id: CustomFieldId,
+    ) -> impl Future<Output = Result<Option<CustomField>, StoreError>> + Send;
+
+    /// Stores the definition, unless the server already holds `limit` of them: then nothing is
+    /// stored and the answer is `false`. Counting and storing are one step, so two admins can't
+    /// both take the last place. `Duplicate` when another has the same name, whatever the case.
+    fn insert_custom_field(
+        &self,
+        field: &CustomField,
+        limit: usize,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// Replaces the name, type, kinds and update time of the definition with the same id.
+    /// `NotFound` when it is gone; `Duplicate` when another has the new name.
+    fn update_custom_field(
+        &self,
+        field: &CustomField,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Deletes the definition; `false` when there was none.
+    fn remove_custom_field(
+        &self,
+        id: CustomFieldId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
 
 // ---------------------------------------------------------------------------------------------

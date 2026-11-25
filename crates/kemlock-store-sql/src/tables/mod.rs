@@ -14,6 +14,7 @@ pub(crate) mod bw_devices;
 pub(crate) mod bw_docs;
 pub(crate) mod bw_user_key_ids;
 pub(crate) mod changes;
+pub(crate) mod custom_fields;
 pub(crate) mod dedup_owners;
 pub(crate) mod device_api_use;
 pub(crate) mod device_key_copies;

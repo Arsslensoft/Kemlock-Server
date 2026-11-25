@@ -8,6 +8,7 @@ mod bw_accounts;
 mod bw_devices;
 mod bw_docs;
 mod bw_user_key_ids;
+mod custom_fields;
 mod dedup;
 mod devices;
 mod emergency;

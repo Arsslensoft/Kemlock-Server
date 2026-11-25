@@ -23,9 +23,12 @@
 //!   largest file), changed without a restart; [`invites::InviteGate`]: registration by
 //!   invitation token.
 //! - [`push_relay::PushRelayControl`]: Kemlock's push relay, on or off.
+//! - [`custom_fields::CustomFields`]: the fields an admin offers for items, and whether people may
+//!   add their own; [`custom_fields::CustomFieldsView`] is what every signed-in client reads.
 
 pub mod audit;
 pub mod compliance;
+pub mod custom_fields;
 pub mod error;
 pub mod events;
 pub mod invites;
@@ -43,6 +46,9 @@ pub mod users;
 
 pub use audit::Audit;
 pub use compliance::{Compliance, NewRequest, RequestUpdate};
+pub use custom_fields::{
+    ALLOW_OWN_KEY, CustomFields, CustomFieldsView, FieldDefinitions, FieldInput,
+};
 pub use error::AdminError;
 pub use events::{EventLogView, EventRetention};
 pub use invites::{AcceptInvite, InviteGate, InviteTicket};
@@ -54,9 +60,10 @@ pub use overview::{Overview, OverviewCounts};
 pub use passkey_step_up::{PasskeyStepUp, PasskeyStepUpChallenge, PasskeyStepper, StepUpKeys};
 pub use ports::{
     AdminContact, AdminEvent, AdminEventRepo, AdminSpaceRepo, AdminSpaceRow, AdminUserRepo,
-    AdminUserRow, ComplianceCounts, ComplianceRepo, ComplianceRequest, EventCursor, EventFilter,
-    EventPage, EventRecord, Invite, InviteRepo, MailError, Mailer, NoMail, Notice, RequestKind,
-    RequestStatus, SettingsRepo, SpaceOwner, SpacePage, UserCounts, UserPage, UserQuery,
+    AdminUserRow, ComplianceCounts, ComplianceRepo, ComplianceRequest, CustomFieldRepo, EventCursor,
+    EventFilter, EventPage, EventRecord, Invite, InviteRepo, MailError, Mailer, NoMail, Notice,
+    RequestKind, RequestStatus, SettingsRepo, SpaceOwner, SpacePage, UserCounts, UserPage,
+    UserQuery,
 };
 pub use push_relay::{PushRelayControl, RelayStatus};
 pub use settings::{Change, EnvSettings, FnEnv, NoEnv, SettingView, Settings, Source};
@@ -73,6 +80,7 @@ pub trait AdminRepos:
     + AdminEventRepo
     + SettingsRepo
     + ComplianceRepo
+    + CustomFieldRepo
     + Clone
     + 'static
 {
@@ -85,6 +93,7 @@ impl<T> AdminRepos for T where
         + AdminEventRepo
         + SettingsRepo
         + ComplianceRepo
+        + CustomFieldRepo
         + Clone
         + 'static
 {

@@ -244,6 +244,9 @@ export function AdminShell() {
           <Link to="/admin/settings" activeOptions={{ exact: true }}>
             <Item icon="settings">{t('admin.settings')}</Item>
           </Link>
+          <Link to="/admin/fields" activeOptions={{ exact: true }}>
+            <Item icon="fields">{t('admin.fields')}</Item>
+          </Link>
           <h2>{t('admin.nav.federation')}</h2>
           <Link to="/admin/federation">
             <Item icon="globe">{t('admin.federation')}</Item>

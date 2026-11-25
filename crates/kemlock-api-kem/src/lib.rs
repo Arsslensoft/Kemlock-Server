@@ -28,6 +28,9 @@ pub use live::LiveHub;
 pub use problem::Problem;
 pub use routes::account::{AccountServices, router as account_router};
 pub use routes::api_key::{ApiKeyApiDoc, api_key_router};
+pub use routes::custom_fields::{
+    CustomFieldDto, CustomFieldsDto, KindsDto, router as custom_fields_router,
+};
 pub use routes::duplicates::{
     DedupRepo, openapi as duplicates_openapi, router as duplicates_router,
 };

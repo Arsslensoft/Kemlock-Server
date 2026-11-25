@@ -80,6 +80,21 @@ export function isKemlockApp(kind: DeviceKind): boolean {
   );
 }
 
+/** What a row's menu can do. */
+export type DeviceMenuAction = 'trust' | 'untrust' | 'sign-out';
+
+/**
+ * The items of a device row's menu, in order. Trust is for Kemlock apps only: the Bitwarden-API
+ * apps (Bitwarden, Amethystora Vault) get Sign out alone. A trusted copy of the key is wrapped by a
+ * key only its device holds, so this browser can start trusting itself but no other device: another
+ * Kemlock app that is trusted can be taken off, and one that is not still lists Trust this device,
+ * which the screen shows off with the reason, because only that app can turn it on.
+ */
+export function deviceMenu(device: { kind: DeviceKind; trusted: boolean; current: boolean }): DeviceMenuAction[] {
+  if (!isKemlockApp(device.kind)) return ['sign-out'];
+  return device.trusted ? ['untrust', 'sign-out'] : ['trust', 'sign-out'];
+}
+
 /** The message that names what kind of app a device is, for the devices list. */
 export function deviceKindLabelId(kind: DeviceKind): MessageId {
   switch (kind) {
@@ -100,6 +115,24 @@ export function deviceKindLabelId(kind: DeviceKind): MessageId {
     default:
       return 'devices.kind.other';
   }
+}
+
+/**
+ * Signs this browser out: the server forgets this device and its key copy, then the session ends
+ * here, then the page goes to the sign-in. When the server can't be reached the browser still lets
+ * go of its own session, so a person is never stuck signed in.
+ */
+export async function leaveThisBrowser(
+  steps: {
+    signOutDevice: (deviceId: string) => Promise<unknown>;
+    endSession: () => Promise<unknown>;
+    goToSignIn: () => Promise<unknown>;
+  },
+  deviceId: string | null,
+): Promise<void> {
+  if (deviceId) await steps.signOutDevice(deviceId).catch(() => undefined);
+  await steps.endSession();
+  await steps.goToSignIn();
 }
 
 /** The devices other than this one, newest sync first. */

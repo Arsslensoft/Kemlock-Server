@@ -1,6 +1,7 @@
 //! The JSON bodies of `/admin/v1`. Names are camelCase, times are Unix seconds, ids are UUIDs,
 //! binary values are base64url without padding; request bodies refuse unknown fields.
 
+use kemlock_api_kem::KindsDto;
 use kemlock_app::admin::settings::{Kind, SettingView};
 use kemlock_app::admin::{
     AdminSpaceRow, AdminUserRow, ComplianceRequest, EventRecord, Invite, InviteIssued,
@@ -305,6 +306,33 @@ pub struct ChangeOwnerRequest {
 
 fn default_true() -> bool {
     true
+}
+
+// ---- custom fields ----
+
+/// A field an admin offers, as the console sends it to add or change one.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CustomFieldRequest {
+    /// 1 to 64 characters, no control characters, unique whatever the case.
+    pub name: String,
+    /// `text`, `hidden` or `checkbox`.
+    #[serde(rename = "type")]
+    pub field_type: String,
+    pub kinds: KindsDto,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AllowOwnRequest {
+    /// Whether people may add fields of their own to an item.
+    pub allow: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AllowOwnDto {
+    pub allow_own: bool,
 }
 
 // ---- events ----

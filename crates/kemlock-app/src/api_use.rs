@@ -74,6 +74,8 @@ pub struct DeviceEntry {
     pub current: bool,
     /// Whether the device keeps a trusted-device copy of the root key on the server.
     pub trusted: bool,
+    /// When the device made that copy, if it holds one.
+    pub trusted_since: Option<OffsetDateTime>,
 }
 
 /// Lists the signed-in account's devices.
@@ -97,8 +99,12 @@ impl<D: DeviceRepo, U: ApiUseRepo, K: KeyCopyRepo> ListDevices<D, U, K> {
                 .find(|u| u.device == device.id)
                 .copied()
                 .unwrap_or_else(|| DeviceApiUse::none(device.id));
-            let trusted = self.copies.key_copy(device.id).await?.is_some();
-            entries.push(entry(device, &usage, actor.device, trusted));
+            let trusted_since = self
+                .copies
+                .key_copy(device.id)
+                .await?
+                .map(|copy| copy.created_at);
+            entries.push(entry(device, &usage, actor.device, trusted_since));
         }
         entries.sort_by(|a, b| {
             b.last_seen_at
@@ -120,7 +126,12 @@ fn last_bitwarden_use(device: &Device, usage: &DeviceApiUse) -> Option<OffsetDat
         .or_else(|| only_bitwarden.then_some(device.last_seen_at))
 }
 
-fn entry(device: Device, usage: &DeviceApiUse, current: DeviceId, trusted: bool) -> DeviceEntry {
+fn entry(
+    device: Device,
+    usage: &DeviceApiUse,
+    current: DeviceId,
+    trusted_since: Option<OffsetDateTime>,
+) -> DeviceEntry {
     DeviceEntry {
         id: device.id,
         last_seen_at: device
@@ -129,7 +140,8 @@ fn entry(device: Device, usage: &DeviceApiUse, current: DeviceId, trusted: bool)
         last_kemlock_use_at: usage.kemlock,
         last_bitwarden_use_at: last_bitwarden_use(&device, usage),
         current: device.id == current,
-        trusted,
+        trusted: trusted_since.is_some(),
+        trusted_since,
         name: device.name,
         kind: device.kind,
         created_at: device.created_at,
@@ -162,11 +174,13 @@ mod tests {
             kemlock: Some(datetime!(2026-04-01 00:00:00 UTC)),
             bitwarden: Some(datetime!(2026-02-01 00:00:00 UTC)),
         };
-        let e = entry(d.clone(), &usage, d.id, true);
+        let since = datetime!(2026-02-01 00:00:00 UTC);
+        let e = entry(d.clone(), &usage, d.id, Some(since));
         assert_eq!(e.last_seen_at, datetime!(2026-04-01 00:00:00 UTC));
         assert_eq!(e.last_kemlock_use_at, usage.kemlock);
         assert_eq!(e.last_bitwarden_use_at, usage.bitwarden);
         assert!(e.current && e.trusted);
+        assert_eq!(e.trusted_since, Some(since));
     }
 
     #[test]
@@ -176,11 +190,12 @@ mod tests {
             d.clone(),
             &DeviceApiUse::none(d.id),
             DeviceId::random(),
-            false,
+            None,
         );
         assert_eq!(e.last_seen_at, d.last_seen_at);
         assert_eq!(e.last_kemlock_use_at, None);
         assert!(!e.current && !e.trusted);
+        assert_eq!(e.trusted_since, None);
     }
 
     #[test]
@@ -191,7 +206,7 @@ mod tests {
             d.clone(),
             &DeviceApiUse::none(d.id),
             DeviceId::random(),
-            false,
+            None,
         );
         assert_eq!(e.last_bitwarden_use_at, Some(seen));
         assert_eq!(e.last_kemlock_use_at, None);
@@ -203,7 +218,7 @@ mod tests {
             kemlock: None,
             bitwarden: Some(used),
         };
-        let e = entry(d.clone(), &usage, DeviceId::random(), false);
+        let e = entry(d.clone(), &usage, DeviceId::random(), None);
         assert_eq!(e.last_bitwarden_use_at, Some(used));
         assert_eq!(e.last_seen_at, used);
     }
@@ -216,7 +231,7 @@ mod tests {
             d.clone(),
             &DeviceApiUse::none(d.id),
             DeviceId::random(),
-            false,
+            None,
         );
         assert_eq!(e.last_bitwarden_use_at, None);
 
@@ -228,7 +243,7 @@ mod tests {
             kemlock: Some(datetime!(2026-03-02 00:00:00 UTC)),
             bitwarden: None,
         };
-        let e = entry(d, &usage, DeviceId::random(), false);
+        let e = entry(d, &usage, DeviceId::random(), None);
         assert_eq!(e.last_bitwarden_use_at, None);
     }
 }

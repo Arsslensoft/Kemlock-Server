@@ -236,6 +236,33 @@ const ICONS = {
     </>
   ),
   download: <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />,
+  shieldCheck: (
+    <>
+      <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" />
+      <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  shieldOff: (
+    <>
+      <path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6l-7-3Z" />
+      <path d="M9.5 9.5l5 5M14.5 9.5l-5 5" />
+    </>
+  ),
+  sliders: (
+    <>
+      <path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12" />
+      <circle cx="16" cy="6" r="2" />
+      <circle cx="10" cy="12" r="2" />
+      <circle cx="18" cy="18" r="2" />
+    </>
+  ),
+  fields: (
+    <>
+      <rect x="3" y="5" width="18" height="5" rx="1.5" />
+      <rect x="3" y="14" width="18" height="5" rx="1.5" />
+      <path d="M7 7.5h4M7 16.5h7" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof ICONS;

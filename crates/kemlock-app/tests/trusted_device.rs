@@ -239,3 +239,86 @@ async fn another_accounts_device_can_not_be_signed_out() {
     assert_eq!(result, Err(AppError::NotFound));
     assert_eq!(s.world.store.devices_of(s.user).len(), 1);
 }
+
+#[tokio::test]
+async fn one_device_can_stop_trusting_another_and_its_session_goes_on() {
+    let s = scene().await;
+    let SignedIn::Tokens(other) = sign_in_with(&s.world, EMAIL, &PASSWORD, device("iPad"), "jkt-2")
+        .await
+        .expect("signs in")
+    else {
+        panic!("tokens expected");
+    };
+    let other_actor = Actor {
+        device: other.device,
+        ..s.me
+    };
+    let copies = key_copies(&s.world);
+    for actor in [&other_actor, &s.me] {
+        copies
+            .put(actor, wrapped(), KeyProtection::SecureEnclave)
+            .await
+            .expect("stores");
+    }
+
+    untrust_device(&s.world)
+        .execute(&s.me, other.device)
+        .await
+        .expect("stops trusting the iPad");
+
+    assert_eq!(s.world.store.key_copy_of(other.device), None);
+    assert!(
+        DeviceRepo::get(&s.world.store, other.device)
+            .await
+            .expect("reads")
+            .is_some(),
+        "the iPad stays signed in"
+    );
+    s.world
+        .refresh()
+        .execute(&other.refresh_token, "jkt-2")
+        .await
+        .expect("its refresh token still works");
+    // This device is untouched.
+    assert!(s.world.store.key_copy_of(s.me.device).is_some());
+    let events = s.world.store.events();
+    let event = events
+        .iter()
+        .find(|e| e.action == "device.untrust")
+        .expect("the change is in the event log");
+    assert_eq!(event.actor, Some(s.user));
+    assert_eq!(event.device, Some(s.me.device));
+    assert_eq!(event.target, Some(other.device.to_string()));
+}
+
+#[tokio::test]
+async fn stopping_trust_in_a_device_with_no_copy_is_not_an_error() {
+    let s = scene().await;
+    untrust_device(&s.world)
+        .execute(&s.me, s.me.device)
+        .await
+        .expect("nothing to remove is fine");
+    assert_eq!(s.world.store.key_copy_of(s.me.device), None);
+}
+
+#[tokio::test]
+async fn another_accounts_device_can_not_be_untrusted() {
+    let s = scene().await;
+    copies_put(&s).await;
+    let stranger = make_user(&s.world, "kim@example.org").await;
+    let result = untrust_device(&s.world)
+        .execute(&actor(stranger), s.me.device)
+        .await;
+    assert_eq!(result, Err(AppError::NotFound));
+    assert!(
+        s.world.store.key_copy_of(s.me.device).is_some(),
+        "its copy is still there"
+    );
+}
+
+async fn copies_put(s: &Scene) {
+    key_copies(&s.world)
+        .put(&s.me, wrapped(), KeyProtection::Keystore)
+        .await
+        .expect("stores");
+}

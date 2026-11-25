@@ -886,6 +886,52 @@
         ],
         "type": "object"
       },
+      "CustomFieldDto": {
+        "description": "One field an admin offers.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kinds": {
+            "$ref": "#/components/schemas/KindsDto"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "description": "`text`, `hidden` or `checkbox`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "kinds"
+        ],
+        "type": "object"
+      },
+      "CustomFieldsDto": {
+        "description": "The fields an admin offers, oldest first, and whether people may add their own.",
+        "properties": {
+          "allowOwn": {
+            "description": "Whether people may add fields of their own to an item. Off only when an admin turned it\noff; fields already on items stay.",
+            "type": "boolean"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "fields",
+          "allowOwn"
+        ],
+        "type": "object"
+      },
       "DeviceChallengeRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1007,6 +1053,13 @@
           "trusted": {
             "description": "Whether the device keeps a trusted-device copy of the root key on the server.",
             "type": "boolean"
+          },
+          "trustedSince": {
+            "description": "When the device made that copy; absent when it holds none.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2241,6 +2294,22 @@
           "credential"
         ],
         "type": "object"
+      },
+      "KindsDto": {
+        "description": "The item types a field applies to.",
+        "oneOf": [
+          {
+            "description": "The word `all`: every type that takes custom fields, now and later.",
+            "type": "string"
+          },
+          {
+            "description": "These item kinds only, such as `login` or `card`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
       },
       "KitDto": {
         "properties": {
@@ -10765,6 +10834,69 @@
         ]
       }
     },
+    "/kem/v1/custom-fields": {
+      "get": {
+        "operationId": "doc_custom_fields_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomFieldsDto"
+                }
+              }
+            },
+            "description": "The fields the admin offers for items, oldest first, and whether people may add their own. Names and types are in the clear; the values live in the items and never reach the server. Nothing is required"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "custom-fields"
+        ]
+      }
+    },
     "/kem/v1/devices": {
       "get": {
         "operationId": "doc_devices_list",
@@ -11416,6 +11548,107 @@
         "responses": {
           "204": {
             "description": "The device's tokens, key copy and row are gone"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "No such device on this account"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "trusted-device"
+        ]
+      }
+    },
+    "/kem/v1/devices/{id}/key-copy": {
+      "delete": {
+        "operationId": "doc_device_untrust",
+        "parameters": [
+          {
+            "description": "The device's id, from the device list",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "That device's copy of the root key is gone; its session goes on"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The id isn't a UUID"
           },
           "401": {
             "content": {

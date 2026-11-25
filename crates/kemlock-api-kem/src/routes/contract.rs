@@ -102,6 +102,8 @@ pub(crate) struct DeviceListEntry {
     pub(crate) current: bool,
     /// Whether the device keeps a trusted-device copy of the root key on the server.
     pub(crate) trusted: bool,
+    /// When the device made that copy; absent when it holds none.
+    pub(crate) trusted_since: Option<String>,
 }
 
 impl DeviceListEntry {
@@ -116,6 +118,7 @@ impl DeviceListEntry {
             last_bitwarden_use_at: e.last_bitwarden_use_at.and_then(rfc3339),
             current: e.current,
             trusted: e.trusted,
+            trusted_since: e.trusted_since.and_then(rfc3339),
         }
     }
 }
