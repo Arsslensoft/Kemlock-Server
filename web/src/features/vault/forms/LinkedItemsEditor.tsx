@@ -111,7 +111,7 @@ function Picker({
         {t('itemForm.links.add')}
       </Button>
       {open ? (
-        <div className="pick" role="dialog" aria-label={t('itemForm.links.add')} tabIndex={-1}>
+        <div className="link-pick" role="dialog" aria-label={t('itemForm.links.add')} tabIndex={-1}>
           <div className="field">
             <label className="sr" htmlFor="link-search">
               {t('itemForm.links.search')}
@@ -130,12 +130,12 @@ function Picker({
           {candidates.length === 0 ? (
             <p className="hint">{t('itemForm.links.noCandidates')}</p>
           ) : (
-            <ul className="plain pick-list">
+            <ul className="plain link-pick-list">
               {candidates.map((item) => (
                 <li key={item.id}>
                   <button
                     type="button"
-                    className="pick-row"
+                    className="link-pick-row"
                     onClick={() => {
                       onPick(item.id.toLowerCase());
                       close();

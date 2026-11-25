@@ -168,7 +168,7 @@ export default function Item() {
             {ageText ? ` · ${ageText}` : ''}
           </p>
         </div>
-        <div className="head-actions">
+        <div className="item-actions">
           {trashed ? (
             writable ? (
               <Button variant="primary" isDisabled={restore.isPending} onPress={() => restore.mutate(item)}>

@@ -203,7 +203,7 @@
 .link-picker > .btn {
   align-self: flex-start;
 }
-.pick {
+.link-pick {
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -213,14 +213,14 @@
   border: 1px solid var(--border-input);
   background: var(--bg);
 }
-.pick-list {
+.link-pick-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
   max-height: 260px;
   overflow-y: auto;
 }
-.pick-row {
+.link-pick-row {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -235,10 +235,10 @@
   text-align: left;
   cursor: pointer;
 }
-.pick-row:hover {
+.link-pick-row:hover {
   background: var(--hover-wash);
 }
-.pick-row .link-kind {
+.link-pick-row .link-kind {
   margin-left: auto;
 }
 

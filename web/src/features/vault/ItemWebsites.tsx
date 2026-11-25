@@ -64,7 +64,7 @@ export function WebsitesView({
           <h1 className="page-title">{t('sites.title', { name })}</h1>
           <p className="lede">{t('sites.lede', { count: filled.length })}</p>
         </div>
-        <div className="head-actions">
+        <div className="item-actions">
           <Button onPress={onCancel}>{t('action.cancel')}</Button>
           <Button variant="primary" isDisabled={pending} onPress={onSave}>
             {t('action.save')}
