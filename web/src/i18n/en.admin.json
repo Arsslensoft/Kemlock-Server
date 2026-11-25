@@ -11,6 +11,12 @@
   "admin.reauth.code": "Code from your authenticator app",
   "admin.reauth.confirm": "Confirm",
   "admin.reauth.wrong": "That code didn't match. Wait for the next one and try again.",
+  "admin.reauth.bodyCode": "Every change here asks again, even though you're signed in. Type the 6-digit code from your authenticator app.",
+  "admin.reauth.bodyPasskey": "Every change here asks again, even though you're signed in. Your browser asks for your passkey.",
+  "admin.reauth.loading": "Checking how you can confirm…",
+  "admin.reauth.none": "Your account has no authenticator app or passkey this browser can use. Add a passkey in Account security, then try again.",
+  "admin.reauth.passkeyCancelledOnly": "The passkey was not used. Press Use a passkey to try again.",
+  "admin.reauth.passkeyUnavailableOnly": "This browser can not use a passkey here. Use a browser that can, or add an authenticator app in Account security.",
 
   "admin.attention.overdue": "{count, plural, one {# request is} other {# requests are}} past its due date",
   "admin.attention.requests": "{count, plural, one {# privacy request is} other {# privacy requests are}} open",
