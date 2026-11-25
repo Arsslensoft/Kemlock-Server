@@ -29,6 +29,7 @@ export const EDITABLE_KINDS: EditableKind[] = [
 const KIND_LABELS: Record<string, MessageId> = {
   login: 'kind.login',
   note: 'kind.note',
+  file: 'kind.file',
   otp: 'kind.code',
   'backup-codes': 'kind.backupCodes',
   passkey: 'kind.passkey',
@@ -50,10 +51,26 @@ export function kindIcon(kind: string): IconName {
       return 'login';
     case 'note':
       return 'note';
-    case 'ssh-key':
-    case 'pgp-key':
+    case 'file':
+      return 'paperclip';
+    case 'otp':
+      return 'clock';
+    case 'backup-codes':
+      return 'backup';
     case 'passkey':
+      return 'passkey';
+    case 'card':
+      return 'card';
+    case 'identity':
+      return 'identity';
+    case 'contact':
+      return 'contact';
+    case 'certificate':
+      return 'certificate';
+    case 'ssh-key':
       return 'key';
+    case 'pgp-key':
+      return 'pgp';
     default:
       return 'items';
   }
