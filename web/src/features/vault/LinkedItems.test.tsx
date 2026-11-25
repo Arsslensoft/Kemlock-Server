@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,8 +6,10 @@ import { useT } from '@/i18n';
 import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
 import { renderWithIntl } from '@/test/render';
 import { saveBatch } from './batch';
+import { formatSize } from './details/files';
+import { namedIds, unlinkPair } from './itemLinks';
 import { LinkedItems, sublineOf } from './LinkedItems';
-import { linkInputs, readLinks, unlinkInputs } from './links';
+import { linkInputs } from './links';
 import { type VaultDeps, VaultStore, type VaultItem } from './vault';
 
 // The card only needs its links to be anchors to the item.
@@ -38,11 +40,12 @@ const CODE = '00000000-0000-4000-8000-0000000000a2';
 const BACKUP = '00000000-0000-4000-8000-0000000000a3';
 const PASSKEY = '00000000-0000-4000-8000-0000000000a4';
 const OLD = '00000000-0000-4000-8000-0000000000a5';
+const SECRET = 'JBSWY3DPEHPK3PXP';
 
 function vault(): VaultItem[] {
   return [
     vaultItem('login', { name: 'GitHub', username: 'sam@example.org', urls: ['https://github.com'] }, { id: LOGIN }),
-    vaultItem('otp', { name: 'GitHub code', issuer: 'GitHub', period: 30, urls: ['https://github.com'] }, { id: CODE }),
+    vaultItem('otp', { name: 'GitHub code', issuer: 'GitHub', secret: SECRET, period: 30, urls: ['https://github.com'] }, { id: CODE }),
     vaultItem(
       'backup-codes',
       {
@@ -111,11 +114,11 @@ function Page({
         }}
         onUnlink={async (other) => {
           if (failUnlink) throw new Error('refused');
-          await saveBatch(deps, store, unlinkInputs(open, other));
+          await saveBatch(deps, store, unlinkPair(open, other));
           setAll([...store.items.values()]);
         }}
       />
-      <output data-testid="stored">{JSON.stringify([...store.items.values()].map((i) => [i.id, readLinks(i.data)]))}</output>
+      <output data-testid="stored">{JSON.stringify([...store.items.values()].map((i) => [i.id, namedIds(i.data)]))}</output>
     </>
   );
 }
@@ -124,12 +127,13 @@ const stored = () => JSON.parse(screen.getByTestId('stored').textContent ?? '[]'
 const linksOf = (id: string) => stored().find(([key]) => key === id)?.[1] ?? [];
 
 describe('sublineOf', () => {
-  function Sub({ item }: { item: VaultItem }) {
+  const size = (bytes: number) => formatSize(bytes, 'en', (unit, value) => `${value} ${unit.toUpperCase()}`);
+  function Sub({ item, site }: { item: VaultItem; site?: string }) {
     const t = useT();
-    return <p data-testid="sub">{sublineOf(item, t)}</p>;
+    return <p data-testid="sub">{sublineOf(item, t, { size, site })}</p>;
   }
-  const line = (item: VaultItem) => {
-    const { unmount } = renderWithIntl(<Sub item={item} />);
+  const line = (item: VaultItem, site?: string) => {
+    const { unmount } = renderWithIntl(<Sub item={item} {...(site ? { site } : {})} />);
     const text = screen.getByTestId('sub').textContent;
     unmount();
     return text;
@@ -138,7 +142,7 @@ describe('sublineOf', () => {
   it('says the type and one fact about the item', () => {
     const [login, code, backup, passkey, old] = vault() as [VaultItem, VaultItem, VaultItem, VaultItem, VaultItem];
     expect(line(login)).toBe('Login · sam@example.org');
-    expect(line(code)).toBe('MFA code · github.com · every 30 s');
+    expect(line(code, 'https://github.com')).toBe('MFA code · github.com · every 30 s');
     expect(line(backup)).toBe('Backup codes · 3 codes, 2 unused');
     expect(line(passkey)).toBe('Passkey · github.com');
     expect(line(old)).toBe('Login · In the Trash');
@@ -146,6 +150,16 @@ describe('sublineOf', () => {
     expect(line(vaultItem('contact', { name: 'Ada', company: 'Analytical Engines' }))).toBe('Contact · Analytical Engines');
     expect(line(vaultItem('file', { name: 'Lease', file: { name: 'a.pdf', size: 2_400_000, key: 'k' } }))).toBe('File · 2.4 MB');
     expect(line(vaultItem('ssh-key', { name: 'k' }))).toBe('SSH key');
+  });
+
+  it('says the period of an MFA code from its own settings, and none for a counter or an unreadable secret', () => {
+    const code = (data: Record<string, unknown>) => vaultItem('otp', { name: 'c', ...data });
+    expect(line(code({ secret: SECRET, period: 60 }), 'https://work.example')).toBe('MFA code · work.example · every 60 s');
+    // A code that gives no period is every 30 seconds, as the page shows it.
+    expect(line(code({ secret: SECRET }))).toBe('MFA code · every 30 s');
+    expect(line(code({ secret: SECRET, type: 'hotp', counter: 4 }))).toBe('MFA code');
+    expect(line(code({ secret: '!!!', period: 60 }))).toBe('MFA code');
+    expect(line(code({ period: 60 }))).toBe('MFA code');
   });
 });
 
@@ -304,5 +318,112 @@ describe('Unlink', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Unlink GitHub code' }));
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(screen.getByRole('link')).toHaveTextContent('GitHub code');
+  });
+});
+
+describe('the older link', () => {
+  // A code the importer made from a login's TOTP names the login in `linkedLoginId` and nothing else.
+  function imported() {
+    const items = vault();
+    items[1] = vaultItem('otp', { name: 'GitHub code', secret: SECRET, linkedLoginId: LOGIN }, { id: CODE });
+    return items;
+  }
+
+  it('is listed on the code and, the other way round, on the login', async () => {
+    renderWithIntl(<Page items={imported()} start={CODE} />);
+    expect(within(screen.getByRole('region', { name: 'Linked items' })).getByRole('link')).toHaveTextContent('GitHub');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'open the login' }));
+    expect(within(screen.getByRole('region', { name: 'Linked items' })).getByRole('link')).toHaveTextContent('GitHub code');
+  });
+
+  it('takes its website and period for the code from the login it names', async () => {
+    renderWithIntl(<Page items={imported()} start={LOGIN} />);
+    expect(within(screen.getByRole('region', { name: 'Linked items' })).getByRole('link')).toHaveTextContent(
+      'GitHub codeMFA code · github.com · every 30 s',
+    );
+  });
+
+  it('is cleared by an unlink from either side', async () => {
+    renderWithIntl(<Page items={imported()} start={LOGIN} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Unlink GitHub code' }));
+    await waitFor(() => expect(linksOf(CODE)).toEqual([]));
+    expect(screen.getByText('Nothing linked yet.')).toBeInTheDocument();
+  });
+
+  it('is not offered again by the picker', async () => {
+    renderWithIntl(<Page items={imported()} start={LOGIN} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Link an item' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: 'Link GitHub code' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Link GitHub passkey' })).toBeInTheDocument();
+  });
+});
+
+describe('who may unlink', () => {
+  const linkedLogin = () => {
+    const items = vault();
+    items[0] = vaultItem('login', { name: 'GitHub', links: [{ id: CODE }, { id: PASSKEY }] }, { id: LOGIN });
+    return items;
+  };
+
+  it('offers Unlink only where the other end may be changed', () => {
+    renderWithIntl(<Page items={linkedLogin()} start={LOGIN} canWrite={(item) => item.id !== CODE} />);
+    const card = screen.getByRole('region', { name: 'Linked items' });
+    expect(within(card).getAllByRole('link')).toHaveLength(2);
+    expect(within(card).queryByRole('button', { name: 'Unlink GitHub code' })).not.toBeInTheDocument();
+    expect(within(card).getByRole('button', { name: 'Unlink GitHub passkey' })).toBeInTheDocument();
+  });
+
+  it('offers no Unlink for an item that could not be read, and still lists it', () => {
+    const items = linkedLogin();
+    items[3] = { ...(items[3] as VaultItem), data: null };
+    renderWithIntl(<Page items={items} start={LOGIN} />);
+    const card = screen.getByRole('region', { name: 'Linked items' });
+    expect(within(card).getAllByRole('link')).toHaveLength(2);
+    expect(within(card).getAllByRole('button', { name: /^Unlink / })).toHaveLength(1);
+  });
+});
+
+describe('Unlink, pressed twice and focused after', () => {
+  it('writes once while the first press is going', async () => {
+    const items = vault();
+    items[0] = vaultItem('login', { name: 'GitHub', links: [{ id: CODE }] }, { id: LOGIN });
+    const onUnlink = vi.fn(() => new Promise<void>(() => undefined));
+    renderWithIntl(
+      <LinkedItems item={items[0] as VaultItem} all={items} canWrite={() => true} onLink={vi.fn()} onUnlink={onUnlink} />,
+    );
+    const user = userEvent.setup();
+    const unlink = screen.getByRole('button', { name: 'Unlink GitHub code' });
+    await user.click(unlink);
+    expect(unlink).toBeDisabled();
+    await user.click(unlink);
+    fireEvent.click(unlink);
+    expect(onUnlink).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts focus on the next Unlink, then on Link an item when none is left', async () => {
+    const items = vault();
+    items[0] = vaultItem('login', { name: 'GitHub', links: [{ id: CODE }, { id: PASSKEY }, { id: BACKUP }] }, { id: LOGIN });
+    renderWithIntl(<Page items={items} start={LOGIN} />);
+    const user = userEvent.setup();
+    // Sorted by name: the code, the passkey, the recovery codes. The first goes: the passkey takes its place.
+    await user.click(screen.getByRole('button', { name: 'Unlink GitHub code' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unlink GitHub passkey' })).toHaveFocus());
+    // The last goes: focus steps back to the one before it.
+    await user.click(screen.getByRole('button', { name: 'Unlink GitHub recovery codes' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Unlink GitHub passkey' })).toHaveFocus());
+    await user.click(screen.getByRole('button', { name: 'Unlink GitHub passkey' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Link an item' })).toHaveFocus());
+  });
+
+  it('leaves focus alone when the unlink fails', async () => {
+    const items = vault();
+    items[0] = vaultItem('login', { name: 'GitHub', links: [{ id: CODE }, { id: PASSKEY }] }, { id: LOGIN });
+    renderWithIntl(<Page items={items} start={LOGIN} failUnlink />);
+    const unlink = screen.getByRole('button', { name: 'Unlink GitHub code' });
+    await userEvent.setup().click(unlink);
+    await screen.findByRole('alert');
+    expect(unlink).toHaveFocus();
   });
 });

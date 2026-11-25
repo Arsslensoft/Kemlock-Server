@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { readCustomFields } from './customFields';
+import type { AdminFieldDef } from '@/api/customFields';
+import { readCustomFields, resolveAdminFields } from './customFields';
 
 describe('readCustomFields', () => {
   it('reads the fields the import writes, in order', () => {
@@ -18,15 +19,17 @@ describe('readCustomFields', () => {
     ]);
   });
 
-  it('marks the fields the admin defined', () => {
+  it('marks a field the admin defined by `adminField`, the id of its definition, and by nothing else', () => {
     const fields = readCustomFields({
       fields: [
         { name: 'Employee ID', value: '42', kind: 'text', adminField: 'f1' },
-        { name: 'Cost center', value: 'R&D', kind: 'text', admin: true },
+        { name: 'A guess', value: 'x', kind: 'text', admin: true },
+        { name: 'Another guess', value: 'x', kind: 'text', adminFieldId: 'f2', adminId: 'f3' },
         { name: 'Mine', value: 'x', kind: 'text', adminField: '' },
       ],
     });
-    expect(fields.map((f) => f.admin)).toEqual([true, true, false]);
+    expect(fields.map((f) => f.admin)).toEqual([true, false, false, false]);
+    expect(fields[0]?.adminField).toBe('f1');
   });
 
   it('reads a checkbox as true or false, whatever it was saved as', () => {
@@ -72,5 +75,37 @@ describe('readCustomFields', () => {
     expect(readCustomFields({})).toEqual([]);
     expect(readCustomFields({ fields: 'nope' })).toEqual([]);
     expect(readCustomFields(null)).toEqual([]);
+  });
+});
+
+describe('resolveAdminFields', () => {
+  const defs: AdminFieldDef[] = [
+    { id: 'f1', name: 'Staff number', type: 'text', kinds: 'all' },
+    { id: 'f2', name: 'Badge', type: 'checkbox', kinds: 'all' },
+  ];
+  const stored = readCustomFields({
+    fields: [
+      { name: 'Employee ID', value: '42', kind: 'text', adminField: 'f1' },
+      { name: 'Old name', value: 'blue', kind: 'hidden', adminField: 'f2' },
+      { name: 'Deleted by the admin', value: 'x', kind: 'hidden', adminField: 'zz' },
+      { name: 'Mine', value: 'y', kind: 'text' },
+    ],
+  });
+
+  it('shows the name and type the admin has now, and leaves the person\'s value', () => {
+    const resolved = resolveAdminFields(stored, defs);
+    expect(resolved[0]).toMatchObject({ name: 'Staff number', kind: 'text', value: '42', admin: true });
+    // A text value under a field that is a checkbox now reads as unchecked.
+    expect(resolved[1]).toMatchObject({ name: 'Badge', kind: 'checkbox', value: 'false', admin: true });
+  });
+
+  it('keeps what the item holds for a field the admin no longer has, and for the person\'s own', () => {
+    const resolved = resolveAdminFields(stored, defs);
+    expect(resolved[2]).toMatchObject({ name: 'Deleted by the admin', kind: 'hidden', value: 'x', admin: true });
+    expect(resolved[3]).toMatchObject({ name: 'Mine', kind: 'text', admin: false });
+  });
+
+  it('changes nothing while the definitions are not there', () => {
+    expect(resolveAdminFields(stored, [])).toEqual(stored);
   });
 });
