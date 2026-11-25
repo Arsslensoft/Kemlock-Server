@@ -6,12 +6,14 @@ import { type MessageId, useT } from '@/i18n';
 import { IconButton } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
+import type { SiteInfo } from '../itemLinks';
 import type { ItemData, VaultItem } from '../vault';
 import type { DownloadFile } from './files';
 import { FileDetail } from './FileDetails';
 import { type CertInfo, type PgpInfo, type SshInfo, armor, certInfo, pgpInfo, sshInfo } from './keyInfo';
 import { type OtpParams, codeAt, otpParamsOf, secondsLeft } from './otp';
 import { Card, ExtraRows, Row, SecretRow } from './rows';
+import { WebsiteRow } from './WebsiteRow';
 
 function text(data: ItemData | null, key: string): string {
   const value = data?.[key];
@@ -25,7 +27,7 @@ function strings(data: ItemData | null, key: string): string[] {
 
 // ---- one-time code ----
 
-function OtpDetail({ data }: { data: ItemData | null }) {
+function OtpDetail({ data, sites }: { data: ItemData | null; sites: SiteInfo | undefined }) {
   const t = useT();
   const params: OtpParams | undefined = otpParamsOf(data);
   const [now, setNow] = useState(() => Date.now());
@@ -78,6 +80,7 @@ function OtpDetail({ data }: { data: ItemData | null }) {
           <div className="muted">{t('detail.otp.unreadable')}</div>
         </Row>
       )}
+      <WebsiteRow sites={sites} />
     </Card>
   );
 }
@@ -97,7 +100,7 @@ export function backupCodesOf(data: ItemData | null): BackupCode[] {
     .map((e) => ({ code: e['code'] as string, used: e['used'] === true }));
 }
 
-function BackupDetail({ data }: { data: ItemData | null }) {
+function BackupDetail({ data, sites }: { data: ItemData | null; sites: SiteInfo | undefined }) {
   const t = useT();
   const codes = backupCodesOf(data);
   const unused = codes.filter((c) => !c.used);
@@ -143,6 +146,7 @@ function BackupDetail({ data }: { data: ItemData | null }) {
           <CopyButton value={unused.map((c) => c.code).join('\n')} secret label={t('detail.backup.copyUnused')} />
         </div>
       )}
+      <WebsiteRow sites={sites} />
     </Card>
   );
 }
@@ -570,28 +574,36 @@ function ContactDetail({ data }: { data: ItemData | null }) {
 /**
  * The detail card of an item of any kind but a login or a note (those have their own view).
  * `extra` is added at the end of the card: the item's custom fields. `download` fetches a file.
+ * `sites` is the Website row of an MFA code or backup codes, which come before the custom fields.
  */
 export function KindDetails({
   item,
   extra,
   download,
+  sites,
 }: {
   item: VaultItem;
   extra?: ReactNode;
   download?: DownloadFile | undefined;
+  sites?: SiteInfo | undefined;
 }) {
   const data = item.data;
-  return <ExtraRows.Provider value={extra ?? null}>{detailOf(item.kind, data, download)}</ExtraRows.Provider>;
+  return <ExtraRows.Provider value={extra ?? null}>{detailOf(item.kind, data, download, sites)}</ExtraRows.Provider>;
 }
 
-function detailOf(kind: string, data: ItemData | null, download: DownloadFile | undefined): ReactNode {
+function detailOf(
+  kind: string,
+  data: ItemData | null,
+  download: DownloadFile | undefined,
+  sites: SiteInfo | undefined,
+): ReactNode {
   switch (kind) {
     case 'file':
       return <FileDetail data={data} download={download} />;
     case 'otp':
-      return <OtpDetail data={data} />;
+      return <OtpDetail data={data} sites={sites} />;
     case 'backup-codes':
-      return <BackupDetail data={data} />;
+      return <BackupDetail data={data} sites={sites} />;
     case 'card':
       return <CardDetail data={data} />;
     case 'identity':

@@ -6,6 +6,7 @@
 // No React in here.
 import { LinkError, linkCandidates, readLinks, writeLinks } from './links';
 import { type ItemData, type SaveInput, type VaultItem, itemName } from './vault';
+import { readWebsites } from './websites';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -38,6 +39,28 @@ export function connectedItems(item: VaultItem, all: readonly VaultItem[]): Vaul
   return all
     .filter((other) => other.id !== item.id && (mine.has(other.id.toLowerCase()) || namesItem(other, item.id)))
     .sort((x, y) => itemName(x).localeCompare(itemName(y)) || x.id.localeCompare(y.id));
+}
+
+/** The websites an item shows, and the login they come from when they are not its own. */
+export interface SiteInfo {
+  urls: string[];
+  /** The name of the linked login the websites belong to; absent for the item's own. */
+  fromLogin?: string | undefined;
+}
+
+/**
+ * The websites of an MFA code or backup codes: their own (`uris`, `websites` or `urls`), else the
+ * websites of a login they are linked to, which only that login changes. Undefined when there are none.
+ */
+export function siteInfoOf(item: VaultItem, all: readonly VaultItem[]): SiteInfo | undefined {
+  const own = readWebsites(item.data).map((rule) => rule.uri).filter((uri) => uri !== '');
+  if (own.length > 0) return { urls: own };
+  for (const other of connectedItems(item, all)) {
+    if (other.kind !== 'login') continue;
+    const urls = readWebsites(other.data).map((rule) => rule.uri).filter((uri) => uri !== '');
+    if (urls.length > 0) return { urls, fromLogin: itemName(other) };
+  }
+  return undefined;
 }
 
 /** What the picker offers: `linkCandidates`, without the items already connected the older way. */
