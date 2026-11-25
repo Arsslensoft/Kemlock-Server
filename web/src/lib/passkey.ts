@@ -14,6 +14,17 @@ export class PasskeyError extends Error {
   }
 }
 
+/**
+ * The server refused a security key's answer at the second step (a key not on the account, or a
+ * stale answer). The sealed challenge still holds: the key can be tried again without the password.
+ */
+export class SecurityKeyRejectedError extends Error {
+  constructor() {
+    super('the security key was refused');
+    this.name = 'SecurityKeyRejectedError';
+  }
+}
+
 /** Whether this browser can ask for a passkey at all. */
 export function passkeysAvailable(): boolean {
   return (

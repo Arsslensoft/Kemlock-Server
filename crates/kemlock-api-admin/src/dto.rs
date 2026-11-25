@@ -732,16 +732,24 @@ pub struct UpdateRequestRequest {
 
 // ---- push relay ----
 
-/// Where Kemlock's push relay stands.
+/// Where push stands: the Apple push and UnifiedPush the server sends itself, and Kemlock's
+/// optional relay.
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PushRelayDto {
-    /// Whether this server has registered with the relay, so pushes to the mobile apps go out.
+    /// Whether this server has registered with the optional relay, so iPhones it has no Apple key
+    /// for are pushed to through it.
     pub enabled: bool,
     /// The relay's id for this server. The key it holds is never shown.
     pub installation_id: Option<String>,
     /// The relay the server talks to.
     pub relay_url: String,
+    /// Whether the server holds an Apple push key and sends to iPhones itself, with no relay.
+    pub apns_configured: bool,
+    /// Whether that Apple key pushes through Apple's sandbox, for development builds of the app.
+    pub apns_sandbox: bool,
+    /// Always true: the server pushes to Android phones through UnifiedPush itself.
+    pub unified_push: bool,
 }
 
 impl From<&RelayStatus> for PushRelayDto {
@@ -750,6 +758,9 @@ impl From<&RelayStatus> for PushRelayDto {
             enabled: status.enabled,
             installation_id: status.installation_id.clone(),
             relay_url: status.relay_url.clone(),
+            apns_configured: status.apns_configured,
+            apns_sandbox: status.apns_sandbox,
+            unified_push: true,
         }
     }
 }

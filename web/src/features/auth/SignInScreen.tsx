@@ -10,7 +10,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type MessageId, useT } from '@/i18n';
 import { thisDevice } from '@/lib/device';
 import { describeError } from '@/lib/errors';
-import { PasskeyError, assertWithPasskeyAndPrf, passkeysAvailable } from '@/lib/passkey';
+import { assertWithPasskeyAndPrf, passkeysAvailable } from '@/lib/passkey';
 import { type EmailValues, emailSchema } from '@/lib/schemas';
 import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
@@ -18,6 +18,7 @@ import { Field } from '@/ui/fields';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import { afterSignIn } from './afterSignIn';
+import { describePasskeySignInError, describeSignInError } from './describeSignIn';
 import { signInWithPasskey } from './passkeySignIn';
 import { unlockWithTrustedDevice } from './trustedDevice';
 import { beginSso } from './ssoFlow';
@@ -65,12 +66,58 @@ export function EmailForm({
   );
 }
 
-/** The words for a passkey that did not answer; anything else is described as everywhere else. */
-function describeSignInError(error: unknown): ReturnType<typeof describeError> {
-  if (error instanceof PasskeyError) {
-    return { id: error.reason === 'cancelled' ? 'signIn.passkeyCancelled' : 'signIn.passkeyUnavailable' };
-  }
-  return describeError(error);
+/** The other ways in, stacked as full-width buttons, the organisation's SSO first. */
+export function Alternatives({
+  methods,
+  provider,
+  passkey,
+  pending,
+  onSso,
+  onPasskey,
+  onDevice,
+  onPassword,
+}: {
+  methods: string[];
+  provider?: string | undefined;
+  /** Whether this browser has passkeys. */
+  passkey: boolean;
+  pending?: boolean;
+  onSso: () => void;
+  onPasskey: () => void;
+  onDevice: () => void;
+  onPassword: () => void;
+}) {
+  const t = useT();
+  const sso = methods.includes('sso');
+  const withPasskey = methods.includes('passkey') && passkey;
+  const withPassword = methods.includes('password');
+  const ssoButton = sso ? (
+    <Button block isDisabled={pending} onPress={onSso}>
+      <Icon name="key" />
+      {t('signIn.ssoNamed', { provider: provider ?? '' })}
+    </Button>
+  ) : null;
+  return (
+    <>
+      {ssoButton}
+      {withPasskey ? (
+        <Button block isDisabled={pending} onPress={onPasskey}>
+          <Icon name="login" />
+          {t('signIn.passkey')}
+        </Button>
+      ) : null}
+      <Button block onPress={onDevice}>
+        <Icon name="device" />
+        {t('signIn.approve')}
+      </Button>
+      {withPassword ? (
+        <Button block onPress={onPassword}>
+          <Icon name="lock" />
+          {t('signIn.password')}
+        </Button>
+      ) : null}
+    </>
+  );
 }
 
 export default function SignIn() {
@@ -133,7 +180,7 @@ export default function SignIn() {
         await navigate({ to: '/unlock', search: { next } });
       }
     } catch (caught) {
-      setError(describeSignInError(caught));
+      setError(describePasskeySignInError(caught));
     } finally {
       setPending(false);
     }
@@ -144,7 +191,7 @@ export default function SignIn() {
     setError(undefined);
     try {
       const address = await beginSso(
-        { sso: ssoApi, api, session, device: thisDevice, origin: location.origin },
+        { sso: ssoApi, origin: location.origin },
         email,
         next,
       );
@@ -165,38 +212,16 @@ export default function SignIn() {
       {offered ? (
         <div className="stack">
           <div className="or">{t('signIn.or')}</div>
-          {offered.methods.includes('sso') ? (
-            <Button block isDisabled={pending} onPress={() => void withSso(offered.email)}>
-              <Icon name="key" />
-              {t('signIn.ssoNamed', { provider: offered.provider ?? '' })}
-            </Button>
-          ) : null}
-          {offered.methods.includes('passkey') && passkeysAvailable() ? (
-            <Button block isDisabled={pending} onPress={() => void withPasskey(offered.email)}>
-              <Icon name="login" />
-              {t('signIn.passkey')}
-            </Button>
-          ) : null}
-          <Button
-            block
-            onPress={() =>
-              void navigate({ to: '/sign-in/device', search: { email: offered.email, next } })
-            }
-          >
-            <Icon name="device" />
-            {t('signIn.approve')}
-          </Button>
-          {offered.methods.includes('password') ? (
-            <Button
-              block
-              onPress={() =>
-                void navigate({ to: '/sign-in/password', search: { email: offered.email, next } })
-              }
-            >
-              <Icon name="lock" />
-              {t('signIn.password')}
-            </Button>
-          ) : null}
+          <Alternatives
+            methods={offered.methods}
+            provider={offered.provider}
+            passkey={passkeysAvailable()}
+            pending={pending}
+            onSso={() => void withSso(offered.email)}
+            onPasskey={() => void withPasskey(offered.email)}
+            onDevice={() => void navigate({ to: '/sign-in/device', search: { email: offered.email, next } })}
+            onPassword={() => void navigate({ to: '/sign-in/password', search: { email: offered.email, next } })}
+          />
         </div>
       ) : null}
       <p className="hint">{t('signIn.footer')}</p>

@@ -29,12 +29,15 @@ export function DeviceApprovalView({
   ended,
   onCancel,
   onRetry,
+  next,
 }: {
   email: string;
   progress: ApprovalProgress;
   ended?: Ended | undefined;
   onCancel: () => void;
   onRetry: () => void;
+  /** The page the person was headed for, kept when they go back to sign in. */
+  next?: string | undefined;
 }) {
   const t = useT();
   let failure: MessageId | undefined;
@@ -60,7 +63,7 @@ export function DeviceApprovalView({
           <Button variant="primary" size="large" block onPress={onRetry}>
             {t('deviceApproval.retry')}
           </Button>
-          <Link to="/sign-in" className="hint">
+          <Link to="/sign-in" search={{ next }} className="hint">
             {t('deviceApproval.back')}
           </Link>
         </>
@@ -135,6 +138,7 @@ export default function DeviceApproval({ deps = realDeps }: { deps?: DeviceAppro
       ended={ended}
       onCancel={cancel}
       onRetry={() => setAttempt((n) => n + 1)}
+      next={next}
     />
   );
 }

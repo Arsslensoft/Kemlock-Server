@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '@/api/errors';
+import { ApiError, NetworkError } from '@/api/errors';
 import { CredentialsError, describeError } from '@/lib/errors';
 import type { AccountKeysResponse, SignInResponse, TokenResponse } from '@/api/types';
 import { createSession } from '@/app/session';
 import { encodeB64 } from '@/lib/b64url';
+import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
 import { crypto, fakeCalls, isFakeLocked, resetFakeCrypto } from '@/test/fake-crypto';
 import { type SignInDeps, createSignIn } from './signIn';
 
@@ -44,14 +45,21 @@ function setup(finish: SignInResponse) {
       }),
     ),
   };
+  const securityKey = {
+    options: vi.fn(async (_challenge: string) => ({ challenge: 'key-challenge' }) as Record<string, unknown>),
+    verify: vi.fn(async (_body: { challenge: string; credential: Record<string, unknown> }) => tokens),
+  };
+  const assert = vi.fn(async (_options: Record<string, unknown>) => ({ id: 'cred' }) as Record<string, unknown>);
   const deps: SignInDeps = {
     api,
+    securityKey,
+    assert,
     crypto,
     session,
     device: () => ({ id: null, name: 'Web', kind: 'kemlock-web' }),
     now: () => 1_000,
   };
-  return { api, session, signIn: createSignIn(deps) };
+  return { api, securityKey, assert, session, signIn: createSignIn(deps) };
 }
 
 beforeEach(() => resetFakeCrypto());
@@ -150,6 +158,73 @@ describe('password sign-in', () => {
     await expect(signIn.secondStep('000000')).rejects.toBeInstanceOf(ApiError);
     await expect(signIn.secondStep('123456')).resolves.toMatchObject({ status: 'signed-in' });
     await expect(signIn.secondStep('123456')).rejects.toThrow('no sign-in waiting');
+  });
+
+  it('keeps the methods the account asks for, so a security key is not asked for a code', async () => {
+    const { signIn } = setup({ status: 'two_factor_required', challenge: 'chal', methods: ['webauthn'] });
+    expect(await signIn.password('sam@example.co', 'pw')).toEqual({
+      status: 'second-step',
+      methods: ['webauthn'],
+    });
+  });
+
+  it('finishes the second step with a security key: options, the key, then the tokens', async () => {
+    const { api, securityKey, assert, session, signIn } = setup({
+      status: 'two_factor_required',
+      challenge: 'chal',
+      methods: ['webauthn'],
+    });
+    await signIn.password('sam@example.co', 'pw');
+    const result = await signIn.securityKey();
+    expect(result).toEqual({ status: 'signed-in', admin: false });
+    expect(securityKey.options).toHaveBeenCalledWith('chal');
+    expect(assert).toHaveBeenCalledWith({ challenge: 'key-challenge' });
+    expect(securityKey.verify).toHaveBeenCalledWith({ challenge: 'chal', credential: { id: 'cred' } });
+    expect(api.twoFactor).not.toHaveBeenCalled();
+    expect(session.getState()).toMatchObject({ status: 'unlocked', userId: 'user-1', email: 'sam@example.co' });
+    expect(isFakeLocked()).toBe(false);
+  });
+
+  it('lets a key that was not touched be tried again, and a refused one too', async () => {
+    const { securityKey, assert, session, signIn } = setup({
+      status: 'two_factor_required',
+      challenge: 'chal',
+      methods: ['webauthn'],
+    });
+    await signIn.password('sam@example.co', 'pw');
+    assert.mockRejectedValueOnce(new PasskeyError('cancelled'));
+    await expect(signIn.securityKey()).rejects.toBeInstanceOf(PasskeyError);
+    expect(session.getState().status).toBe('signed-out');
+    securityKey.verify.mockRejectedValueOnce(
+      new ApiError(401, { type: 'urn:kemlock:problem:unauthorized', title: 'no', status: 401 }),
+    );
+    await expect(signIn.securityKey()).rejects.toBeInstanceOf(SecurityKeyRejectedError);
+    await expect(signIn.securityKey()).resolves.toMatchObject({ status: 'signed-in' });
+    expect(securityKey.options).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the sign-in when the connection drops during the key step', async () => {
+    const { securityKey, signIn } = setup({
+      status: 'two_factor_required',
+      challenge: 'chal',
+      methods: ['webauthn'],
+    });
+    await signIn.password('sam@example.co', 'pw');
+    securityKey.options.mockRejectedValueOnce(new NetworkError(new Error('offline')));
+    await expect(signIn.securityKey()).rejects.toBeInstanceOf(NetworkError);
+    await expect(signIn.securityKey()).resolves.toMatchObject({ status: 'signed-in' });
+  });
+
+  it('forgets the sign-in when the key step fails for another reason', async () => {
+    const { securityKey, signIn } = setup({
+      status: 'two_factor_required',
+      challenge: 'chal',
+      methods: ['webauthn'],
+    });
+    await signIn.password('sam@example.co', 'pw');
+    securityKey.options.mockRejectedValueOnce(new Error('boom'));
+    await expect(signIn.securityKey()).rejects.toThrow('boom');
+    await expect(signIn.securityKey()).rejects.toThrow('no sign-in waiting');
   });
 
   it('reports a wrong password as wrong credentials, not as a crash', async () => {

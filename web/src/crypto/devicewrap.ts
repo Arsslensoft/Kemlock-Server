@@ -61,8 +61,12 @@ export function createDeviceWrap(deps: DeviceWrapDeps): DeviceWrap {
     const held = await deps.store.load();
     if (held || !make) return held;
     const fresh = await subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
-    await deps.store.save(fresh);
-    return fresh;
+    // Another tab may have made its key since the load: its key stays, and ours is thrown away,
+    // or whichever put came last would win and the other tab's copies would stop opening.
+    if (await deps.store.add(fresh)) return fresh;
+    const winner = await deps.store.load();
+    if (!winner) throw new CryptoError('unavailable');
+    return winner;
   }
 
   return {

@@ -830,6 +830,9 @@ where
                 enabled: false,
                 installation_id: None,
                 relay_url: DEFAULT_PUSH_RELAY_URL.to_owned(),
+                apns_configured: false,
+                apns_sandbox: false,
+                unified_push: true,
             });
         };
         let status = relay.status().await?;

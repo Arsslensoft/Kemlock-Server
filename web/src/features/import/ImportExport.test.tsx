@@ -5,7 +5,7 @@ import { createImportClient } from '@/import/client';
 import { ME, SPACE, login, vaultItem } from '@/test/tools-fixtures';
 import { createFakeImportWorker, FAKE_EXPORT_PASSWORD } from '@/test/fake-import-worker';
 import { renderWithIntl } from '@/test/render';
-import { ImportExportScreen, type ImportFlowDeps, type Scope } from './ImportExport';
+import { ImportExportScreen, type ImportFlowDeps, type Scope, importThenPublish } from './ImportExport';
 
 const BITWARDEN = JSON.stringify({
   items: [
@@ -151,5 +151,23 @@ describe('Export', () => {
     expect(mime).toBe('text/csv');
     expect(String(csv)).toContain('login,GitHub');
     expect(String(csv)).toContain('login,Family Netflix');
+  });
+});
+
+describe('importThenPublish', () => {
+  it('publishes the vault after a success and returns the count', async () => {
+    const publish = vi.fn();
+    await expect(importThenPublish(async () => ({ imported: 3 }), publish)).resolves.toBe(3);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it('publishes the items saved before a failure, then lets the failure through', async () => {
+    const publish = vi.fn();
+    await expect(
+      importThenPublish(async () => {
+        throw new Error('the server went away');
+      }, publish),
+    ).rejects.toThrow('the server went away');
+    expect(publish).toHaveBeenCalledOnce();
   });
 });

@@ -1,7 +1,7 @@
 import { isFavorite } from './favorite';
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
 import { useMemo } from 'react';
-import { useT } from '@/i18n';
+import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button, buttonClass } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
@@ -58,7 +58,11 @@ export default function Main() {
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const current = Math.min(page, pages);
   const shown = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
-  const title = kind === 'login' ? t('nav.logins') : kind === 'note' ? t('nav.notes') : t('nav.all');
+  // Any kind gets its own heading and a pressed chip, not just logins and notes; an unknown kind
+  // reads as "Item", the same as in the Kind column.
+  const filters: readonly { kind: string | undefined; label: MessageId }[] =
+    !kind || FILTERS.some((filter) => filter.kind === kind) ? FILTERS : [...FILTERS, { kind, label: kindLabel(kind) }];
+  const title = t(filters.find((filter) => filter.kind === (kind || undefined))?.label ?? 'nav.all');
 
   return (
     <>
@@ -73,14 +77,14 @@ export default function Main() {
       </div>
 
       <div className="chips" role="group" aria-label={t('main.kind')}>
-        {FILTERS.map((filter) => (
+        {filters.map((filter) => (
           <button
             key={filter.label}
             type="button"
             className="chip"
-            aria-pressed={kind === filter.kind}
+            aria-pressed={(kind || undefined) === filter.kind}
             onClick={() =>
-              void navigate({ to: '/vault', search: { kind: filter.kind, q: q || undefined } })
+              void navigate({ to: '/vault', search: { kind: filter.kind, q: q || undefined, fav } })
             }
           >
             {t(filter.label)}
@@ -184,7 +188,7 @@ export default function Main() {
                   size="small"
                   isDisabled={current <= 1}
                   onPress={() =>
-                    void navigate({ to: '/vault', search: { kind, q: q || undefined, page: current - 1 } })
+                    void navigate({ to: '/vault', search: { kind, q: q || undefined, fav, page: current - 1 } })
                   }
                 >
                   {t('action.previous')}
@@ -193,7 +197,7 @@ export default function Main() {
                   size="small"
                   isDisabled={current >= pages}
                   onPress={() =>
-                    void navigate({ to: '/vault', search: { kind, q: q || undefined, page: current + 1 } })
+                    void navigate({ to: '/vault', search: { kind, q: q || undefined, fav, page: current + 1 } })
                   }
                 >
                   {t('action.next')}

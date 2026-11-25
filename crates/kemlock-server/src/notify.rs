@@ -1,5 +1,5 @@
 //! Wires `kemlock-notify` into the server: mail for the notices the API raises, the live hub
-//! and its fan-out between replicas, Kemlock's push relay, Bitwarden's `/notifications/hub` and
+//! and its fan-out between replicas, push to the phones, Bitwarden's `/notifications/hub` and
 //! the events the Bitwarden API publishes to it, with Bitwarden's own push relay (`PUSH_*`).
 //!
 //! Settings are Vaultwarden's where they exist: `SMTP_HOST`, `SMTP_FROM`, `SMTP_FROM_NAME`,
@@ -7,9 +7,12 @@
 //! `SMTP_ACCEPT_INVALID_CERTS` and `SMTP_ACCEPT_INVALID_HOSTNAMES`; `PUSH_ENABLED`,
 //! `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY`, `PUSH_RELAY_URI`, `PUSH_IDENTITY_URI` and
 //! `REQUIRE_DEVICE_EMAIL`.
-//! Kemlock's own: `KEMLOCK_PUSH_RELAY`
-//! (`true` registers this server with the relay at start when it hasn't yet) and
-//! `KEMLOCK_PUSH_RELAY_URL` (another relay than Kemlock's).
+//! Kemlock's own: the server pushes to iPhones itself with an Apple key,
+//! `KEMLOCK_APNS_KEY_FILE`, `KEMLOCK_APNS_KEY_ID` and `KEMLOCK_APNS_TEAM_ID` (all three or none),
+//! `KEMLOCK_APNS_TOPIC` (default `com.kemlock.app`) and `KEMLOCK_APNS_SANDBOX` (default false); to
+//! Android phones through UnifiedPush with no setting. The hosted relay is an optional fallback for
+//! iPhones, off unless turned on: `KEMLOCK_PUSH_RELAY` (`true` registers this server with the relay
+//! at start when it hasn't yet) and `KEMLOCK_PUSH_RELAY_URL` (another relay than Kemlock's).
 
 use crate::adapters::ServerCrypto;
 use crate::app::RunError;
@@ -36,7 +39,8 @@ use kemlock_notify::mail::{
     AdminMail, Branding, LogMailer, MailOutbox, Mailer, SmtpConfig, SmtpMailer,
 };
 use kemlock_notify::push::{
-    DEFAULT_RELAY_URL, PushDispatcher, PushRelayAdmin, RelayClient, enable_relay,
+    ApnsConfig, ApnsSender, BuiltInPush, DEFAULT_RELAY_URL, DirectSenders, PushDispatcher,
+    PushRelayAdmin, RelayClient, UnifiedPushSender, enable_relay,
 };
 use kemlock_store_sql::SqlStore;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -61,7 +65,8 @@ pub struct Notifications {
     /// The same SMTP server for the admin console's alerts and invitations to the server; says no
     /// mail is set up without `SMTP_HOST`.
     pub admin_mail: AdminMail,
-    /// Turns Kemlock's push relay on and off for the admin console (`/admin/v1/push-relay`).
+    /// Shows push for the admin console and turns Kemlock's optional relay on and off
+    /// (`/admin/v1/push-relay`).
     pub push_relay: Arc<dyn PushRelayControl>,
     /// Applies the saved push settings to the running relays.
     pub push_follower: PushFollower,
@@ -193,7 +198,26 @@ pub async fn start(
         .map_err(|e| RunError::Store(format!("can't set up live sync between replicas: {e}")))?;
     tracing::info!(transport = ?fanout.transport(), "live sync is set up");
 
-    // Kemlock's push relay. It does nothing until the server has registered with it.
+    // The server's own Apple push, when it has a key. A bad setting stops the start.
+    let apns = ApnsConfig::from_lookup(env)
+        .map_err(|e| RunError::Config(e.to_string()))?
+        .map(ApnsSender::new)
+        .transpose()
+        .map_err(|e| RunError::Config(format!("KEMLOCK_APNS_*: {e}")))?;
+    match &apns {
+        Some(apns) => tracing::info!(
+            sandbox = apns.sandbox(),
+            "iPhones are pushed to through Apple"
+        ),
+        None => tracing::info!("no Apple push key (KEMLOCK_APNS_*): iPhones need the relay"),
+    }
+    let built_in = BuiltInPush::of(apns.as_ref());
+    let direct = DirectSenders {
+        apns,
+        unified_push: UnifiedPushSender::from_lookup(env).map_err(RunError::Config)?,
+    };
+
+    // Kemlock's optional push relay. It does nothing until the server has registered with it.
     let relay_url = env("KEMLOCK_PUSH_RELAY_URL")
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned());
@@ -206,12 +230,14 @@ pub async fn start(
         crypto.clone(),
         client.clone(),
         relay_url.clone(),
+        built_in,
     ));
     let push = PushDispatcher::start(
         store.clone(),
         SpaceMembers(store.clone()),
         crypto.clone(),
         client.clone(),
+        direct,
         kemlock_notify::push::DEFAULT_WINDOW,
     );
     let notify = Notify::new(fanout, Some(push));

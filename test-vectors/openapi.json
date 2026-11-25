@@ -3563,11 +3563,11 @@
         "description": "The body of `POST /kem/v1/devices/push-token`.",
         "properties": {
           "kind": {
-            "description": "`\"fcm\"` (Android) or `\"apns\"` (iOS).",
+            "description": "`\"apns\"` (iOS) or `\"unifiedpush\"` (Android). `\"fcm\"` is no longer accepted.",
             "type": "string"
           },
           "token": {
-            "description": "The token the push service gave the app, 1 to 512 characters with no whitespace.",
+            "description": "The token the push service gave the app, 1 to 512 characters with no whitespace. For\n`\"unifiedpush\"` it is the endpoint URL the distributor gave: `https` on port 443 or 8443,\nno user name or password. The server sends \"sync now\" to it itself.",
             "type": "string"
           }
         },
@@ -11349,7 +11349,7 @@
                 }
               }
             },
-            "description": "Not fcm or apns, or a token that isn't 1 to 512 characters with no whitespace"
+            "description": "Not apns or unifiedpush (fcm is no longer accepted), a token that isn't 1 to 512 characters with no whitespace, or a UnifiedPush endpoint that isn't an https URL on port 443 or 8443 (or the account already has 20)"
           },
           "401": {
             "content": {

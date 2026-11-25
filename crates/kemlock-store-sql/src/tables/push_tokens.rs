@@ -1,4 +1,4 @@
-//! `push_tokens`: a device's token for the push relay.
+//! `push_tokens`: a device's push token (APNs or UnifiedPush), for the server's own push and the optional relay.
 
 use crate::convert::{corrupt, utc};
 use kemlock_app::ports::StoreError;

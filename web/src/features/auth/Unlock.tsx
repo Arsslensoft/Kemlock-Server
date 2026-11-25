@@ -1,23 +1,25 @@
 import { Link, getRouteApi, useNavigate, useRouter } from '@tanstack/react-router';
 import { useEffect, useMemo, useState } from 'react';
+import { createSecurityKeyStepApi } from '@/api/passkeys';
 import { signOut } from '@/app/actions';
 import { api, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { vaultCrypto } from '@/crypto-port';
 import { useT } from '@/i18n';
-import { describeError } from '@/lib/errors';
 import { thisDevice } from '@/lib/device';
 import { safeNext } from '@/lib/safe-next';
 import { AuthPage } from '@/ui/AuthPage';
-import { CodeForm } from '@/ui/CodeForm';
 import { Icon, type IconName } from '@/ui/Icon';
 import { afterSignIn } from './afterSignIn';
+import { describeSignInError, secondStepIsOver } from './describeSignIn';
 import { PasswordForm } from './PasswordForm';
 import { kitAccount } from './kitUnlock';
 import { RecoveryKitUnlock } from './RecoveryKitUnlock';
+import { SecondStep } from './SecondStep';
 import { type SignInStatus, createSignIn } from './signIn';
 
 const route = getRouteApi('/unlock');
+const securityKey = createSecurityKeyStepApi(api);
 
 /** One of the other ways to open the vault; with no `onPress` it is drawn but off. */
 export function Way({
@@ -59,24 +61,30 @@ export default function Unlock() {
   // The kit opens one account's vault: wait until the session knows which, never ask with ''.
   const kitUser = kitAccount(state.userId);
   const signIn = useMemo(
-    () => createSignIn({ api, crypto: vaultCrypto, session, device: thisDevice }),
+    () => createSignIn({ api, securityKey, crypto: vaultCrypto, session, device: thisDevice }),
     [],
   );
   useEffect(() => () => signIn.abandon(), [signIn]);
   const [step, setStep] = useState<'password' | 'code'>('password');
+  const [methods, setMethods] = useState<string[]>([]);
   const [useKit, setUseKit] = useState(false);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<ReturnType<typeof describeError>>();
+  const [error, setError] = useState<ReturnType<typeof describeSignInError>>();
 
   async function run(attempt: () => Promise<SignInStatus>) {
     setPending(true);
     setError(undefined);
     try {
       const result = await attempt();
-      if (result.status === 'second-step') setStep('code');
-      else await afterSignIn(router, result, next);
+      if (result.status === 'second-step') {
+        setMethods(result.methods);
+        setStep('code');
+      } else await afterSignIn(router, result, next);
     } catch (caught) {
-      setError(describeError(caught));
+      const described = describeSignInError(caught);
+      // A challenge that has expired or been used can't be retried: start again from the password.
+      if (step === 'code' && secondStepIsOver(caught, described)) setStep('password');
+      setError(described);
     } finally {
       setPending(false);
     }
@@ -94,8 +102,8 @@ export default function Unlock() {
           onBack={() => setUseKit(false)}
           onUnlocked={() => {
             const target = safeNext(next);
-            if (target) router.history.push(target);
-            else void navigate({ to: '/vault' });
+            if (target) router.history.replace(target);
+            else void navigate({ to: '/vault', replace: true });
           }}
         />
       ) : step === 'password' ? (
@@ -109,12 +117,13 @@ export default function Unlock() {
           />
         </section>
       ) : (
-        <CodeForm
-          label={t('password.codeLabel')}
-          submitLabel={t('password.codeSubmit')}
+        <SecondStep
+          methods={methods}
+          source="password"
           pending={pending}
           error={error}
-          onSubmit={(code) => void run(() => signIn.secondStep(code))}
+          onCode={(code) => void run(() => signIn.secondStep(code))}
+          onSecurityKey={() => void run(() => signIn.securityKey())}
         />
       )}
       <div className="stack">
