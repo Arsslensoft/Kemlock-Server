@@ -132,6 +132,46 @@
         ],
         "type": "object"
       },
+      "ApiKeyDto": {
+        "description": "The key with its secret.",
+        "properties": {
+          "clientId": {
+            "type": "string"
+          },
+          "clientSecret": {
+            "description": "The secret (`client_secret`). Shown on request only.",
+            "type": "string"
+          },
+          "revisionDate": {
+            "description": "The account's revision date, RFC 3339.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "clientId",
+          "clientSecret",
+          "revisionDate"
+        ],
+        "type": "object"
+      },
+      "ApiKeyInfoDto": {
+        "description": "What an account's key looks like without its secret.",
+        "properties": {
+          "clientId": {
+            "description": "`user.<id>`: what the CLI calls `client_id`.",
+            "type": "string"
+          },
+          "set": {
+            "description": "Whether the key was made yet.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "clientId",
+          "set"
+        ],
+        "type": "object"
+      },
       "AppendRequestDto": {
         "additionalProperties": false,
         "properties": {
@@ -393,6 +433,21 @@
           "response",
           "ticket",
           "twoFactor"
+        ],
+        "type": "object"
+      },
+      "CancelledDto": {
+        "description": "What dropping the waiting changes did.",
+        "properties": {
+          "dropped": {
+            "description": "How many waiting changes will not be sent to that server, counted to a limit.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dropped"
         ],
         "type": "object"
       },
@@ -1091,10 +1146,14 @@
             ]
           },
           "proof": {
-            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, as a removal takes: needed when another second step is on already."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -1263,10 +1322,14 @@
             "type": "string"
           },
           "proof": {
-            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, as a removal takes: needed when another second step is on already."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -1482,6 +1545,17 @@
           "loginState": {
             "description": "What `POST /auth/opaque/start` answered, unread.",
             "type": "string"
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, needed beside the password when the account has a second step on: the code\nmailed by `POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app,\nthe recovery code, or a security key's or passkey's answer. A code works once."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1606,6 +1680,19 @@
           "mfaViaSso"
         ],
         "type": "object"
+      },
+      "FreshProof": {
+        "description": "A fresh proof that it is the account's owner at a keyboard, not only a session. Either a code\n(the mailed one, a current code of the authenticator app, or, where the route takes it, the\nrecovery code) as a string, or the answer of a security key or passkey as\n`{ \"webauthn\": <PublicKeyCredential.toJSON()> }`, to the options at\n`POST /kem/v1/account/two-factor/proof/webauthn/options`.",
+        "oneOf": [
+          {
+            "description": "A code, as typed.",
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/KeyAssertion",
+            "description": "A security key's or passkey's assertion."
+          }
+        ]
       },
       "GrantDto": {
         "properties": {
@@ -1962,6 +2049,20 @@
           "iterations",
           "parallelism",
           "salt"
+        ],
+        "type": "object"
+      },
+      "KeyAssertion": {
+        "additionalProperties": false,
+        "description": "The answer of a security key or passkey, as the browser makes it.",
+        "properties": {
+          "webauthn": {
+            "description": "The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.get`.",
+            "type": "object"
+          }
+        },
+        "required": [
+          "webauthn"
         ],
         "type": "object"
       },
@@ -3047,6 +3148,30 @@
         ],
         "type": "object"
       },
+      "PlacementPendingDto": {
+        "properties": {
+          "askedAt": {
+            "description": "When the oldest was written.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "description": "The id of the server they wait for: what `DELETE .../pending/{change}` takes.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "What waits, in words.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "summary"
+        ],
+        "type": "object"
+      },
       "PlacementServerDto": {
         "properties": {
           "id": {
@@ -3057,11 +3182,28 @@
             "description": "The apps of this vault are on it right now.",
             "type": "boolean"
           },
+          "lastSeen": {
+            "description": "When the peer last answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "latencyMs": {
+            "description": "How long its last answer took, in milliseconds.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "name": {
             "description": "The host of its address.",
             "type": "string"
           },
           "offlineSince": {
+            "description": "When the peer started failing its probes, while it is `offline`.",
             "type": [
               "string",
               "null"
@@ -3079,8 +3221,12 @@
             "type": "string"
           },
           "status": {
-            "description": "`unknown`: this server has no liveness probe of its peers yet, so it never says online or\noffline.",
+            "description": "`online`, `degraded`, `offline` or `unknown` (not probed yet), from this server's probes of\nthe peer. This server itself is always `online`.",
             "type": "string"
+          },
+          "withheld": {
+            "description": "A cancel is in force: this vault's waiting changes are being withheld from this server, and\n`POST .../pending/{id}/resume` offers them again.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3088,6 +3234,7 @@
           "name",
           "role",
           "status",
+          "withheld",
           "inUse"
         ],
         "type": "object"
@@ -3102,7 +3249,15 @@
             "type": "string"
           },
           "pending": {
-            "description": "The server keeps no waiting changes per vault yet: always `null`."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PlacementPendingDto",
+                "description": "Changes of this vault that haven't reached a server that holds it, the ones waiting for a\nserver that is down first; `null` when none wait."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "servers": {
             "description": "Home first, then the replicas in order.",
@@ -3394,8 +3549,8 @@
         "description": "What proves it is the account's owner at a keyboard who turns a second step off, not only a\nsession: the one-time code mailed by `POST /kem/v1/account/two-factor/proof`, as Vaultwarden\ntakes a mailed code for the master password (`PasswordOrOtpData`).",
         "properties": {
           "proof": {
-            "description": "The code that was mailed; it works once.",
-            "type": "string"
+            "$ref": "#/components/schemas/FreshProof",
+            "description": "The code that was mailed (it works once), a current code of the authenticator app, the\nrecovery code where the route takes it, or `{\"webauthn\": ...}`, the answer of a security key\nor passkey to the options at `POST /kem/v1/account/two-factor/proof/webauthn/options`."
           }
         },
         "required": [
@@ -3452,10 +3607,14 @@
         "description": "Asks for the account's recovery code.",
         "properties": {
           "proof": {
-            "description": "A fresh proof that is not the recovery code itself: a code mailed by\n`POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not\nneeded while the account holds no recovery code.",
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof that is not the recovery code itself: a code mailed by\n`POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not\nneeded while the account holds no recovery code."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -3692,8 +3851,8 @@
             "type": "string"
           },
           "proof": {
-            "description": "The code mailed by `POST /kem/v1/account/two-factor/proof`; it works once.",
-            "type": "string"
+            "$ref": "#/components/schemas/FreshProof",
+            "description": "A fresh proof: the code mailed by `POST /kem/v1/account/two-factor/proof` (it works once), a\ncurrent code of the authenticator app, or `{\"webauthn\": ...}`, the answer of a security key\nor passkey."
           },
           "wrappedKey": {
             "type": "string"
@@ -3781,6 +3940,19 @@
         },
         "required": [
           "resolved"
+        ],
+        "type": "object"
+      },
+      "ResumedDto": {
+        "description": "What taking back a cancel did.",
+        "properties": {
+          "resumed": {
+            "description": "The withheld changes are offered to that server again, at the next comparison of the two\ncopies of the vault.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "resumed"
         ],
         "type": "object"
       },
@@ -3883,10 +4055,14 @@
             "type": "string"
           },
           "proof": {
-            "description": "A fresh proof, as a removal takes: needed when a second step is on already.",
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, as a removal takes: needed when a second step is on already."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -4051,8 +4227,28 @@
         "type": "object"
       },
       "ServerBasicsDto": {
-        "description": "The server basics a setup screen sends. Fields the server has no setting for (the public\naddress, push, file folder, backups) are accepted and ignored, so a client may send its whole\nform.",
+        "description": "The server basics a setup screen sends. The public address is only recorded (the server's\n`DOMAIN` is configuration). The file folder has no setting and is accepted and ignored, so a\nclient may send its whole form.",
         "properties": {
+          "address": {
+            "description": "The public address chosen at setup; recorded for the console, not applied.",
+            "type": "string"
+          },
+          "backupEvery": {
+            "description": "`night` or `six-hours`.",
+            "type": "string"
+          },
+          "backupKeep": {
+            "description": "`7`, `14` or `30`.",
+            "type": "string"
+          },
+          "backupRecipient": {
+            "description": "The age recipient the backups are encrypted to.",
+            "type": "string"
+          },
+          "backups": {
+            "description": "Turn scheduled backups on.",
+            "type": "boolean"
+          },
           "join": {
             "description": "`invite`, `domains` or `anyone`.",
             "type": "string"
@@ -4077,6 +4273,10 @@
           },
           "mailUser": {
             "type": "string"
+          },
+          "push": {
+            "description": "Register with Kemlock's push relay.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -4743,10 +4943,14 @@
             "type": "string"
           },
           "proof": {
-            "description": "The recovery code, when another second step is on already: a session alone may add the\nfirst step, and a fresh proof is needed beside one that is on.",
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "The recovery code, when another second step is on already: a session alone may add the\nfirst step, and a fresh proof is needed beside one that is on."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -5032,10 +5236,14 @@
             "type": "array"
           },
           "proof": {
-            "description": "A fresh proof, as a removal takes: needed when another second step is on already.",
-            "type": [
-              "string",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, as a removal takes: needed when another second step is on already."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -5112,7 +5320,7 @@
                 }
               }
             },
-            "description": "The login state was used before, or isn't well formed"
+            "description": "The login state was used before, or isn't well formed; a second step is on and the proof is missing, wrong or spent; or the account is the only owner of a space with other members"
           },
           "401": {
             "content": {
@@ -5152,6 +5360,305 @@
         ],
         "tags": [
           "account"
+        ]
+      }
+    },
+    "/kem/v1/account/api-key": {
+      "get": {
+        "operationId": "doc_show",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyInfoDto"
+                }
+              }
+            },
+            "description": "The client id, and whether a key was made"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no Bitwarden record, so no key"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "api-key"
+        ]
+      },
+      "post": {
+        "operationId": "doc_reveal",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyDto"
+                }
+              }
+            },
+            "description": "The key with its secret; made now when there was none"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The proof is wrong or spent"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no Bitwarden record, so no key"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "api-key"
+        ]
+      }
+    },
+    "/kem/v1/account/api-key/rotate": {
+      "post": {
+        "operationId": "doc_rotate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyDto"
+                }
+              }
+            },
+            "description": "A new key; the old secret no longer signs in"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The proof is wrong or spent"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no Bitwarden record, so no key"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "api-key"
         ]
       }
     },
@@ -6901,6 +7408,91 @@
         ]
       }
     },
+    "/kem/v1/account/two-factor/proof/webauthn/options": {
+      "post": {
+        "operationId": "doc_proof_options",
+        "parameters": [
+          {
+            "description": "A DPoP proof (RFC 9449) signed by the device key",
+            "in": "header",
+            "name": "DPoP",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestOptionsResponse"
+                }
+              }
+            },
+            "description": "Options for `navigator.credentials.get`, listing the account's security keys and passkeys. Send the answer as `{\"webauthn\": <PublicKeyCredential.toJSON()>}` in the `proof` of any request that takes a fresh proof. The challenge is good once and for two minutes; asking again replaces it"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no security key or passkey"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/kem/v1/account/two-factor/recovery-code": {
       "post": {
         "operationId": "doc_recovery_code",
@@ -7317,7 +7909,7 @@
                 }
               }
             },
-            "description": "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code)"
+            "description": "The key is registered and the method is on. With a second step on already, the request carries a fresh `proof` (a mailed code, a current code of the authenticator app, or the recovery code), or the answer of a security key or passkey as `{\"webauthn\": ...}`"
           },
           "400": {
             "content": {
@@ -13777,7 +14369,7 @@
             }
           },
           {
-            "description": "The waiting change's id",
+            "description": "The id of the server the changes wait for, as `pending.id` says",
             "in": "path",
             "name": "change",
             "required": true,
@@ -13787,6 +14379,16 @@
           }
         ],
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelledDto"
+                }
+              }
+            },
+            "description": "The queued push to that server was dropped; nothing held here was deleted"
+          },
           "401": {
             "content": {
               "application/problem+json": {
@@ -13811,6 +14413,16 @@
               }
             }
           },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The vault is a space, and the caller is not one of its owners or admins"
+          },
           "404": {
             "content": {
               "application/problem+json": {
@@ -13819,7 +14431,134 @@
                 }
               }
             },
-            "description": "The server keeps no waiting changes per vault yet"
+            "description": "Nothing waits for that server, or the vault isn't federated with it"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "That server is answering its probes: only changes queued for a server that is down can be dropped"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "failover"
+        ]
+      }
+    },
+    "/kem/v1/placement/{vault}/pending/{change}/resume": {
+      "post": {
+        "operationId": "doc_resume_pending",
+        "parameters": [
+          {
+            "description": "`me` or a space id",
+            "in": "path",
+            "name": "vault",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The id of the server whose changes were withheld",
+            "in": "path",
+            "name": "change",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResumedDto"
+                }
+              }
+            },
+            "description": "The withheld changes are offered to that server again"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The vault is a space, and the caller is not one of its owners or admins"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Nothing is withheld from that server, or the vault isn't federated with it"
           },
           "429": {
             "content": {
