@@ -14,18 +14,17 @@
 
 use super::hub::BwHub;
 use super::message::{Message, UpdateType};
-use super::relay::{BitwardenPush, BwPush};
+use super::relay::{BwPush, BwPushSwitch};
 use crate::Notify;
 use kemlock_app::bw_events::{
     Acting, BwDeviceRepo, BwEvent, BwEvents, Change, CipherEvent, FolderEvent, SendEvent, UserSync,
 };
 use kemlock_domain::{Owner, UserId};
-use std::sync::Arc;
 use time::OffsetDateTime;
 
 /// Bitwarden's push relay and where the phones registered with it are kept.
 pub struct BwPushing<R> {
-    pub relay: Arc<BitwardenPush>,
+    pub relay: BwPushSwitch,
     pub devices: R,
 }
 
@@ -104,7 +103,10 @@ impl<R: BwDeviceRepo + Clone + 'static> BwNotifier<R> {
                 .filter(|_| with_identifier)
                 .and_then(|a| a.identifier);
             let push = push.from_device(push_uuid, identifier);
-            if let Err(error) = pushing.relay.send(&push).await {
+            let Some(relay) = pushing.relay.get() else {
+                return;
+            };
+            if let Err(error) = relay.send(&push).await {
                 tracing::debug!(%error, "Bitwarden's push relay didn't take a push");
             }
         });

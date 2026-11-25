@@ -372,6 +372,69 @@ impl BitwardenPush {
     }
 }
 
+/// Bitwarden's push relay that can be switched on, off or to other settings while the server
+/// runs. Every clone shares the one slot; the notifier and the device routes hold clones.
+#[derive(Clone, Default)]
+pub struct BwPushSwitch {
+    current: std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<BitwardenPush>>>>,
+}
+
+impl std::fmt::Debug for BwPushSwitch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BwPushSwitch")
+            .field("on", &self.get().is_some())
+            .finish()
+    }
+}
+
+impl BwPushSwitch {
+    pub fn new(relay: Option<std::sync::Arc<BitwardenPush>>) -> BwPushSwitch {
+        BwPushSwitch {
+            current: std::sync::Arc::new(std::sync::RwLock::new(relay)),
+        }
+    }
+
+    /// Pushes go through `relay` from now on; `None` turns them off.
+    pub fn set(&self, relay: Option<std::sync::Arc<BitwardenPush>>) {
+        *self
+            .current
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = relay;
+    }
+
+    /// The relay in use, when pushes are on.
+    pub fn get(&self) -> Option<std::sync::Arc<BitwardenPush>> {
+        self.current
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl BwRelay for BwPushSwitch {
+    fn enabled(&self) -> bool {
+        self.get().is_some()
+    }
+
+    fn register<'a>(&'a self, device: &'a BwDevice) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            match self.get() {
+                Some(relay) => relay.register(device).await,
+                None => Err("Bitwarden's push relay is off".to_owned()),
+            }
+        })
+    }
+
+    fn unregister(&self, push_uuid: Uuid) -> BoxFuture<'_, Result<(), String>> {
+        Box::pin(async move {
+            match self.get() {
+                Some(relay) => relay.unregister(push_uuid).await,
+                None => Err("Bitwarden's push relay is off".to_owned()),
+            }
+        })
+    }
+}
+
 /// The device routes register and forget phones through this.
 impl BwRelay for BitwardenPush {
     fn register<'a>(&'a self, device: &'a BwDevice) -> BoxFuture<'a, Result<(), String>> {

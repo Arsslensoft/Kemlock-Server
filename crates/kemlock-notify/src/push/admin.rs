@@ -44,7 +44,7 @@ impl<R: PushRepo, S: SecretSeal> PushRelayAdmin<R, S> {
         Ok(RelayStatus {
             enabled: installation.is_some(),
             installation_id: installation.map(|i| i.id),
-            relay_url: self.url.clone(),
+            relay_url: self.client.base(),
         })
     }
 }
