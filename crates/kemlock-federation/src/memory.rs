@@ -1220,6 +1220,7 @@ impl SendSync for MemoryStore {
         owner: Owner,
         after: SendId,
         limit: u32,
+        not_from: ServerId,
     ) -> Result<Vec<SendRecord>, StoreError> {
         let Owner::User(user) = owner else {
             return Ok(Vec::new());
@@ -1229,6 +1230,7 @@ impl SendSync for MemoryStore {
             .sends
             .values()
             .filter(|s| s.owner == user && s.id > after && s.file.is_none_or(|f| f.ready))
+            .filter(|s| extras.send_marks.get(&s.id) != Some(&not_from))
             .take(usize::try_from(limit).unwrap_or(usize::MAX))
             .cloned()
             .collect())

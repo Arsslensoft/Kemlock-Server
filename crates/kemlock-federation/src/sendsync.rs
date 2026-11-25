@@ -179,12 +179,14 @@ pub enum SendApply {
 /// What federation needs from storage to move Sends. The defaults say there are none.
 pub trait SendSync: Send + Sync {
     /// The Sends of `owner` with an id after `after`, in id order, at most `limit`: those that are
-    /// text, and the file Sends whose bytes are here. Nothing for a space.
+    /// text, and the file Sends whose bytes are here. Nothing for a space. A copy that came from
+    /// `not_from` is left out: handing a server its own Sends back would bring a deleted one to life.
     fn sends_after(
         &self,
         _owner: Owner,
         _after: SendId,
         _limit: u32,
+        _not_from: ServerId,
     ) -> impl Future<Output = R<Vec<SendRecord>>> + Send {
         ready(Ok(Vec::new()))
     }
@@ -250,6 +252,7 @@ impl<S: FedStore> Replica<S> {
     /// Serves a page of the Sends of `vault` to a peer.
     pub(crate) async fn serve_sends(
         &self,
+        peer: ServerId,
         vault: Owner,
         after: [u8; 16],
         limit: u32,
@@ -261,6 +264,7 @@ impl<S: FedStore> Replica<S> {
                 vault,
                 SendId(uuid::Uuid::from_bytes(after)),
                 (page as u32).saturating_add(1),
+                peer,
             )
             .await?;
         let mut entries = Vec::new();
@@ -291,7 +295,7 @@ impl<S: FedStore> Replica<S> {
         peer: ServerId,
         vault: Owner,
     ) -> Result<SendReport> {
-        let settings = self.authorize(peer, vault).await?;
+        self.authorize(peer, vault).await?;
         let Owner::User(owner) = vault else {
             return Ok(SendReport::default());
         };
@@ -334,7 +338,9 @@ impl<S: FedStore> Replica<S> {
                 break;
             }
         }
-        if complete && settings.home == peer && settings.home != self.server_id() {
+        // A copy is deleted when the server it came from no longer lists it, whichever server
+        // that is: a Send deleted at the home, and a copy made from a replica's relay of it.
+        if complete {
             for id in self.store.replicated_send_ids(vault, peer).await? {
                 if seen.contains(&id) {
                     continue;
@@ -851,5 +857,46 @@ mod tests {
         );
         let wrong = t.a.serve(t.b_id, &ask(other), NOW).await.response;
         assert!(matches!(wrong, Response::Error { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_copy_is_not_handed_back_so_a_send_deleted_at_home_stays_deleted() {
+        let t = pair().await;
+        let gone = t.send(None);
+        t.a.store.put_send(gone.clone());
+        t.sync().await.expect("sync");
+        assert!(t.b.store.send(gone.id).is_some());
+
+        // The owner deletes it at the home. The home asks the replica for its Sends...
+        t.a.store.remove_send(gone.id);
+        let mut to_b = Direct {
+            remote: &t.b,
+            caller: t.a_id,
+        };
+        let listed = to_b
+            .call(&Request::Sends {
+                vault: t.vault,
+                after: [0; 16],
+                limit: 50,
+            })
+            .await
+            .expect("answer");
+        // ...and the copy is not among them, so the home can't take it back.
+        assert!(matches!(&listed, Response::Sends { entries, .. } if entries.is_empty()), "{listed:?}");
+        // The replica drops it at its next visit.
+        assert_eq!(t.sync().await.expect("sync").removed, 1);
+
+        // A Send made at the replica is listed to the home.
+        let local = t.send(None);
+        t.b.store.put_send(local.clone());
+        let listed = to_b
+            .call(&Request::Sends {
+                vault: t.vault,
+                after: [0; 16],
+                limit: 50,
+            })
+            .await
+            .expect("answer");
+        assert!(matches!(&listed, Response::Sends { entries, .. } if entries.len() == 1 && entries[0].id == local.id));
     }
 }

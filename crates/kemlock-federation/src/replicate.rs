@@ -563,7 +563,7 @@ impl<S: FedStore> Replica<S> {
                 limit,
             } => {
                 self.authorize(peer, *vault).await?;
-                Ok(answer(self.serve_sends(*vault, *after, *limit).await?))
+                Ok(answer(self.serve_sends(peer, *vault, *after, *limit).await?))
             }
         }
     }

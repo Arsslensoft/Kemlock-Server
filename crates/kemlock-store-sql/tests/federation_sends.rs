@@ -69,7 +69,7 @@ async fn only_what_is_open_to_a_peer_is_listed_in_id_order(store: &SqlStore) {
         SendRepo::add_send(store, send).await.expect("add");
     }
     let listed = store
-        .sends_after(Owner::User(user), SendId(uuid::Uuid::nil()), 10)
+        .sends_after(Owner::User(user), SendId(uuid::Uuid::nil()), 10, ServerId::random())
         .await
         .expect("list");
     let mut want = vec![first.id, ready.id];
@@ -79,12 +79,12 @@ async fn only_what_is_open_to_a_peer_is_listed_in_id_order(store: &SqlStore) {
 
     // A page after the first id has the other one only.
     let page = store
-        .sends_after(Owner::User(user), want[0], 10)
+        .sends_after(Owner::User(user), want[0], 10, ServerId::random())
         .await
         .expect("page");
     assert_eq!(page.iter().map(|s| s.id).collect::<Vec<_>>(), vec![want[1]]);
     let one = store
-        .sends_after(Owner::User(user), SendId(uuid::Uuid::nil()), 1)
+        .sends_after(Owner::User(user), SendId(uuid::Uuid::nil()), 1, ServerId::random())
         .await
         .expect("limited");
     assert_eq!(one.len(), 1);
@@ -95,7 +95,8 @@ async fn only_what_is_open_to_a_peer_is_listed_in_id_order(store: &SqlStore) {
             .sends_after(
                 Owner::Space(kemlock_domain::SpaceId::random()),
                 SendId(uuid::Uuid::nil()),
-                10
+                10,
+                ServerId::random()
             )
             .await
             .expect("space")
@@ -104,6 +105,37 @@ async fn only_what_is_open_to_a_peer_is_listed_in_id_order(store: &SqlStore) {
     let blob = ready.file.expect("file").blob;
     assert_eq!(store.send_of_blob(blob).await, Ok(Some(ready)));
     assert_eq!(store.send_of_blob(BlobId::random()).await, Ok(None));
+}
+
+async fn a_copy_is_not_handed_back_to_the_server_it_came_from(store: &SqlStore) {
+    let user = owner(store).await;
+    let (home, third) = (ServerId::random(), ServerId::random());
+    let copied = note(user);
+    let own = note(user);
+    SendRepo::add_send(store, &own).await.expect("own");
+    assert_eq!(
+        store.apply_replicated_send(home, &copied).await,
+        Ok(SendApply::Added)
+    );
+    let nil = SendId(uuid::Uuid::nil());
+    let ids = |sends: Vec<SendRecord>| {
+        let mut ids: Vec<SendId> = sends.iter().map(|s| s.id).collect();
+        ids.sort();
+        ids
+    };
+    // The home gets only what was made here; any other server gets both.
+    let to_home = store
+        .sends_after(Owner::User(user), nil, 10, home)
+        .await
+        .expect("to home");
+    assert_eq!(ids(to_home), vec![own.id]);
+    let to_third = store
+        .sends_after(Owner::User(user), nil, 10, third)
+        .await
+        .expect("to third");
+    let mut both = vec![own.id, copied.id];
+    both.sort();
+    assert_eq!(ids(to_third), both);
 }
 
 async fn a_copy_is_added_updated_and_dropped_but_a_local_send_is_not(store: &SqlStore) {
@@ -171,6 +203,7 @@ async fn a_copy_is_added_updated_and_dropped_but_a_local_send_is_not(store: &Sql
 
 async fn run_all(store: &SqlStore) {
     only_what_is_open_to_a_peer_is_listed_in_id_order(store).await;
+    a_copy_is_not_handed_back_to_the_server_it_came_from(store).await;
     a_copy_is_added_updated_and_dropped_but_a_local_send_is_not(store).await;
 }
 

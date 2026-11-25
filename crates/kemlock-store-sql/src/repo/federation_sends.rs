@@ -19,13 +19,27 @@ impl SendSync for SqlStore {
         owner: Owner,
         after: SendId,
         limit: u32,
+        not_from: ServerId,
     ) -> Result<Vec<SendRecord>, StoreError> {
         let Owner::User(user) = owner else {
             return Ok(Vec::new());
         };
-        sends::Entity::find()
+        // The copies that came from the asker: it holds the originals.
+        let theirs: Vec<uuid::Uuid> = replicated::Entity::find()
+            .filter(replicated::Column::FromServer.eq(not_from.0))
+            .all(self.reader())
+            .await
+            .store()?
+            .into_iter()
+            .map(|m| m.send_id)
+            .collect();
+        let mut query = sends::Entity::find()
             .filter(sends::Column::OwnerId.eq(user.0))
-            .filter(sends::Column::Id.gt(after.0))
+            .filter(sends::Column::Id.gt(after.0));
+        if !theirs.is_empty() {
+            query = query.filter(sends::Column::Id.is_not_in(theirs));
+        }
+        query
             // A note, or a file Send whose bytes have arrived.
             .filter(
                 Condition::any()
