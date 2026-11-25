@@ -48,7 +48,14 @@ describe('cancelling an erasure', () => {
 
 describe('the push relay', () => {
   it('reads where it stands, and turns it on and off with the token', async () => {
-    const off = { enabled: false, installationId: null, relayUrl: 'https://push.example' };
+    const off = {
+      enabled: false,
+      installationId: null,
+      relayUrl: 'https://push.example',
+      apnsConfigured: false,
+      apnsSandbox: false,
+      unifiedPush: true,
+    };
     const on = { ...off, enabled: true, installationId: 'inst' };
     const { admin, calls } = transport({
       [`GET ${BASE}/push-relay`]: off,

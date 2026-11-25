@@ -128,14 +128,23 @@ export interface AdminUser {
   erasurePending: boolean;
 }
 
-/** Where Kemlock's push relay stands (`GET /admin/v1/push-relay`). */
+/**
+ * Where push stands (`GET /admin/v1/push-relay`): the Apple push and UnifiedPush the server sends
+ * itself, and Kemlock's optional relay.
+ */
 export interface PushRelay {
-  /** Whether this server has registered with the relay, so pushes to the mobile apps go out. */
+  /** Whether this server has registered with the optional relay (iPhones it has no Apple key for). */
   enabled: boolean;
   /** The relay's id for this server. The key it holds is never shown. */
   installationId: string | null;
   /** The relay the server talks to. */
   relayUrl: string;
+  /** Whether the server holds an Apple push key and pushes to iPhones itself. */
+  apnsConfigured: boolean;
+  /** Whether that Apple key pushes through Apple's sandbox (development builds of the app). */
+  apnsSandbox: boolean;
+  /** Always true: the server pushes to Android phones through UnifiedPush itself. */
+  unifiedPush: boolean;
 }
 
 export interface UsersQuery {
