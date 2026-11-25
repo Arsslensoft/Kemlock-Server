@@ -10,6 +10,7 @@
   "detail.otp.unreadable": "The secret of this code cannot be read, so no code is shown.",
   "detail.backup.title": "Backup codes",
   "detail.backup.left": "{left} of {total} not used yet",
+  "detail.backup.codes": "the codes",
   "detail.backup.used": "used",
   "detail.backup.copyUnused": "Copy the codes not used yet",
   "detail.backup.none": "This item holds no codes.",

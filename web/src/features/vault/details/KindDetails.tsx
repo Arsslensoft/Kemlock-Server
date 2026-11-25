@@ -172,6 +172,7 @@ function BackupDetail({ data }: { data: ItemData | null }) {
   const codes = backupCodesOf(data);
   const unused = codes.filter((c) => !c.used);
   const service = text(data, 'serviceName');
+  const [shown, setShown] = useState(false);
   return (
     <Card id="h-backup" title={t('detail.backup.title')}>
       {service ? (
@@ -184,26 +185,34 @@ function BackupDetail({ data }: { data: ItemData | null }) {
           <p className="grow muted">{t('detail.backup.none')}</p>
         </div>
       ) : (
-        <Row
-          label={t('detail.backup.left', { left: unused.length, total: codes.length })}
-          copy={unused.map((c) => c.code).join('\n')}
-          copyLabel={t('detail.backup.copyUnused')}
-          secret
-        >
-          <ul className="plain mono">
-            {codes.map((c) => (
-              <li key={c.code}>
-                {c.used ? (
-                  <>
-                    <s>{c.code}</s> <span className="muted">{t('detail.backup.used')}</span>
-                  </>
-                ) : (
-                  c.code
-                )}
-              </li>
-            ))}
-          </ul>
-        </Row>
+        <div className="row">
+          <div className="grow">
+            <div className="lbl">{t('detail.backup.left', { left: unused.length, total: codes.length })}</div>
+            <ul className="plain mono">
+              {codes.map((c) => (
+                <li key={c.code}>
+                  {!shown ? (
+                    '•'.repeat(c.code.length)
+                  ) : c.used ? (
+                    <>
+                      <s>{c.code}</s> <span className="muted">{t('detail.backup.used')}</span>
+                    </>
+                  ) : (
+                    c.code
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <IconButton
+            aria-label={t(shown ? 'detail.hide' : 'detail.show', { field: t('detail.backup.codes') })}
+            onPress={() => setShown((v) => !v)}
+          >
+            <Icon name={shown ? 'eyeOff' : 'eye'} />
+          </IconButton>
+          <CopyButton value={unused.map((c) => c.code).join('
+')} secret label={t('detail.backup.copyUnused')} />
+        </div>
       )}
     </Card>
   );

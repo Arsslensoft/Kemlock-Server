@@ -25,7 +25,7 @@ describe('KindDetails', () => {
     expect(screen.getByRole('button', { name: 'Copy code' })).toBeInTheDocument();
   });
 
-  it('strikes the used backup codes through and counts the rest', () => {
+  it('masks the backup codes, then strikes the used ones through and counts the rest', async () => {
     renderWithIntl(
       <KindDetails
         item={item('backup-codes', {
@@ -37,6 +37,8 @@ describe('KindDetails', () => {
         })}
       />,
     );
+    expect(screen.queryByText('bbbb-2222')).not.toBeInTheDocument();
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show the codes' }));
     expect(screen.getByText('aaaa-1111').tagName).toBe('S');
     expect(screen.getByText('bbbb-2222').tagName).toBe('LI');
     expect(screen.getByText('1 of 2 not used yet')).toBeInTheDocument();
