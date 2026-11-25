@@ -5,8 +5,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { certInfo, pgpInfo, sshInfo } from './details/keyInfo';
 import type { ItemData, VaultItem } from './vault';
 
-/** The kinds that have a fingerprint. */
-export const KEY_KINDS: readonly string[] = ['ssh-key', 'pgp-key', 'certificate'];
+/** The kinds that have a fingerprint. A contact has one when it holds a PGP public key. */
+export const KEY_KINDS: readonly string[] = ['ssh-key', 'pgp-key', 'certificate', 'contact'];
 
 export interface KeyFacts {
   /** As the kind prints it: `SHA256:…`, hex in groups of four, or colon-separated hex. */
@@ -45,6 +45,13 @@ export async function keyFactsOf(item: Pick<VaultItem, 'kind' | 'data'>): Promis
     const userId = info?.userIds[0];
     return fingerprint ? { fingerprint, ...(userId ? { userId } : {}) } : undefined;
   }
+  if (item.kind === 'contact') {
+    // The key a contact holds, if it holds one: the Kemlock app tells contacts apart by it.
+    const pub = text(data, 'public');
+    const info = pub === '' ? undefined : await pgpInfo(pub);
+    const userId = info?.userIds[0];
+    return info?.fingerprint ? { fingerprint: info.fingerprint, ...(userId ? { userId } : {}) } : undefined;
+  }
   if (item.kind === 'certificate') {
     const info = await certInfo(text(data, 'certificate'));
     const fingerprint = stored || info?.fingerprint;
@@ -82,7 +89,8 @@ export interface KeyFactsState {
   pending: boolean;
 }
 
-const isKeyItem = (item: VaultItem): boolean => KEY_KINDS.includes(item.kind) && item.data !== null;
+const isKeyItem = (item: VaultItem): boolean =>
+  KEY_KINDS.includes(item.kind) && item.data !== null && (item.kind !== 'contact' || typeof item.data['public'] === 'string');
 
 /** The facts of every key item in `items`. Read in the browser; the page may show before they are. */
 export function useKeyFacts(items: readonly VaultItem[]): KeyFactsState {

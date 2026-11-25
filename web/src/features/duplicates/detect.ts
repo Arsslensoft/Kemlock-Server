@@ -7,7 +7,8 @@
 //   MFA code     same secret                 backup codes  same codes
 //   note         same text                   passkey       same website and credential id
 //   card         same number and expiry      identity      same document number (or name and email)
-//   contact      same email and phone        file          same content hash (`file.sha256`)
+//   contact      same email and phone, or    file          same content hash (`file.sha256`)
+//                the same PGP key
 //   certificate  same fingerprint            SSH, PGP key  same fingerprint
 import type { MessageId } from '@/i18n';
 import type { ItemData, VaultItem } from '@/features/vault/vault';
@@ -166,6 +167,9 @@ export function tagsOf(item: VaultItem, facts?: DerivedFacts): Tag[] {
       if (email !== '' || phone !== '') {
         tags.push({ name: 'contact', input: canonicalInput('contact', [email, phone]) });
       }
+      // A contact that holds a PGP key is told by the key too, as the Kemlock app does.
+      const fingerprint = text(data, 'public') === '' ? '' : normaliseFingerprint(fingerprintOf(item, facts));
+      if (fingerprint !== '') tags.push({ name: 'key', input: canonicalInput('key', [fingerprint]) });
       break;
     }
     case 'file': {
@@ -272,6 +276,8 @@ function groupingTags(item: VaultItem, tags: Tag[]): Tag[] {
   if (item.kind === 'identity' && tags.some((tag) => tag.name === 'document')) {
     return tags.filter((tag) => tag.name === 'document');
   }
+  // A contact is the same by its email and phone, or by the key it holds.
+  if (item.kind === 'contact') return tags.filter((tag) => tag.name === 'contact' || tag.name === 'key');
   const primary = PRIMARY[item.kind];
   return tags.filter((tag) => tag.name === primary);
 }
@@ -320,6 +326,13 @@ function whyOf(kind: string, component: VaultItem[], tags: Map<string, Tag[]>): 
         ? 'document'
         : 'identity';
     case 'contact': {
+      // Every member shares the key of another: the key is what they have in common.
+      const sameKey = component.every((item) =>
+        component.some(
+          (other) => other.id !== item.id && sharedInputs(tags.get(item.id) ?? [], tags.get(other.id) ?? [], 'key'),
+        ),
+      );
+      if (sameKey) return 'key';
       // Members of one group share the whole tag, so the first says which of the two it holds.
       const first = component[0];
       const email = normaliseUsername(text(first?.data ?? null, 'email') || text(first?.data ?? null, 'sourceEmail'));
