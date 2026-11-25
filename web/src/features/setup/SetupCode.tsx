@@ -10,12 +10,10 @@ import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Field } from '@/ui/fields';
-import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import { SetupSteps } from '@/ui/SetupSteps';
+import { LOG_SOURCES } from './logSources';
 import { setupMemory } from './memory';
-
-const LOG_COMMAND = 'docker logs kemlock | grep "setup code"';
 
 /** The code box and Continue. Takes no router or network, so it is easy to test. */
 export function SetupCodeForm({
@@ -62,6 +60,49 @@ export function SetupCodeForm({
   );
 }
 
+function CommandLine({ command, label }: { command: string; label: string }) {
+  return (
+    <div className="cmd">
+      {/* Focusable so the keyboard can scroll it when it overflows. */}
+      <code tabIndex={0}>{command}</code>
+      <CopyButton value={command} label={label} />
+    </div>
+  );
+}
+
+/** A collapsed panel: the sample log line, then one entry per way of running the server. */
+export function WhereToFind() {
+  const t = useT();
+  return (
+    <details className="where">
+      <summary>{t('setup.code.find')}</summary>
+      <div className="stack">
+        <p className="pre">{t('setup.code.sample')}</p>
+        <ul className="stack" aria-label={t('setup.code.elsewhere')}>
+          {LOG_SOURCES.map((source) => {
+            const target = t(source.target);
+            return (
+              <li key={source.id} className="stack">
+                <b>{target}</b>
+                {source.command ? (
+                  <CommandLine command={source.command} label={t('setup.code.copyNamed', { target })} />
+                ) : null}
+                {source.alpine ? (
+                  <>
+                    <span className="hint">{t('setup.code.alpine')}</span>
+                    <CommandLine command={source.alpine} label={t('setup.code.copyNamed', { target: `${target} (Alpine)` })} />
+                  </>
+                ) : null}
+                {source.where ? <span>{t(source.where)}</span> : null}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </details>
+  );
+}
+
 export default function SetupCode() {
   const t = useT();
   const rich = useRich();
@@ -85,16 +126,7 @@ export default function SetupCode() {
   }
 
   return (
-    <AuthPage
-      badge="setup"
-      width={560}
-      footnote={
-        <p className="footnote">
-          <Icon name="lock" />
-          <span>{rich('setup.code.https')}</span>
-        </p>
-      }
-    >
+    <AuthPage badge="setup" width={560}>
       <SetupSteps current={1} />
       <div>
         <h1>{t('setup.code.title')}</h1>
@@ -107,28 +139,7 @@ export default function SetupCode() {
         </Notice>
       )}
 
-      <section className="stack" aria-labelledby="h-find">
-        <h2 id="h-find">
-          {t('setup.code.find')}
-        </h2>
-        <div className="cmd">
-          {/* Focusable so the keyboard can scroll it when it overflows. */}
-          <code tabIndex={0}>{LOG_COMMAND}</code>
-          <CopyButton value={LOG_COMMAND} label={t('setup.code.copyCommand')} big />
-        </div>
-        <p className="pre">{t('setup.code.sample')}</p>
-        <ul className="stack" aria-label={t('setup.code.elsewhere')}>
-          <li>
-            <b>Unraid</b> {t('setup.code.unraid')}
-          </li>
-          <li>
-            <b>TrueNAS</b> {t('setup.code.truenas')}
-          </li>
-          <li>
-            <b>Compose</b> <span className="mono">docker compose logs kemlock</span>
-          </li>
-        </ul>
-      </section>
+      <WhereToFind />
 
       <SetupCodeForm
         onSubmit={(code) => void verify(code)}
