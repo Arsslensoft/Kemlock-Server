@@ -29,6 +29,7 @@ export function Row({
   copyLabel,
   secret,
   tag,
+  name,
 }: {
   label: string;
   children: ReactNode;
@@ -37,6 +38,8 @@ export function Row({
   secret?: boolean;
   /** Shown after the label, such as the Admin tag. */
   tag?: ReactNode;
+  /** The field as the buttons name it ("Copy the …"); a field the person named keeps its own case. */
+  name?: string;
 }) {
   const t = useT();
   return (
@@ -51,7 +54,7 @@ export function Row({
       {copy ? (
         <CopyButton
           value={copy}
-          label={copyLabel ?? t('detail.copy', { field: label.toLowerCase() })}
+          label={copyLabel ?? t('detail.copy', { field: name ?? label.toLowerCase() })}
           secret={secret ?? false}
         />
       ) : null}
@@ -67,6 +70,7 @@ export function SecretRow({
   mono = true,
   copyValue,
   tag,
+  name,
 }: {
   label: string;
   value: string;
@@ -75,9 +79,12 @@ export function SecretRow({
   /** What Copy puts on the clipboard, when it is not what is shown. */
   copyValue?: string;
   tag?: ReactNode;
+  /** The field as the buttons name it ("Show the …"); a field the person named keeps its own case. */
+  name?: string;
 }) {
   const t = useT();
   const [shown, setShown] = useState(false);
+  const field = name ?? label.toLowerCase();
   const cls = mono ? 'mono' : undefined;
   return (
     <div className="row">
@@ -89,12 +96,12 @@ export function SecretRow({
         <div className={`${cls ?? ''} wrap`.trim()}>{shown ? value : masked}</div>
       </div>
       <IconButton
-        aria-label={t(shown ? 'detail.hide' : 'detail.show', { field: label.toLowerCase() })}
+        aria-label={t(shown ? 'detail.hide' : 'detail.show', { field })}
         onPress={() => setShown((v) => !v)}
       >
         <Icon name={shown ? 'eyeOff' : 'eye'} />
       </IconButton>
-      <CopyButton value={copyValue ?? value} secret label={t('detail.copy', { field: label.toLowerCase() })} />
+      <CopyButton value={copyValue ?? value} secret label={t('detail.copy', { field })} />
     </div>
   );
 }

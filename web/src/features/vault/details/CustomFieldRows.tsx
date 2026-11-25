@@ -13,7 +13,7 @@ export function CustomFieldRows({ fields }: { fields: CustomField[] }) {
         const key = `${index}-${field.name}`;
         const tag = field.admin ? <AdminTag /> : undefined;
         if (field.kind === 'hidden') {
-          return <SecretRow key={key} label={field.name} value={field.value} tag={tag} />;
+          return <SecretRow key={key} label={field.name} name={field.name} value={field.value} tag={tag} />;
         }
         if (field.kind === 'checkbox') {
           return (
@@ -28,7 +28,7 @@ export function CustomFieldRows({ fields }: { fields: CustomField[] }) {
             label={field.name}
             tag={tag}
             copy={field.value}
-            copyLabel={t('detail.copy', { field: field.name.toLowerCase() })}
+            name={field.name}
           >
             <div className="wrap pre-wrap">{field.value}</div>
           </Row>
