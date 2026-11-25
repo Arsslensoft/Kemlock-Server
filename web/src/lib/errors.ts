@@ -41,6 +41,13 @@ export function describeError(error: unknown): Described {
         return { id: 'error.stale' };
       case 'forbidden':
         return { id: 'error.forbidden' };
+      // The attachment quota (crates/kemlock-api-kem/src/routes/files.rs).
+      case 'storage-disabled':
+        return { id: 'error.storageDisabled' };
+      case 'storage-limit-reached':
+        return { id: 'error.storageFull' };
+      case 'storage-limit-exceeded':
+        return { id: 'error.storageTooBig' };
       default:
         return { id: error.status >= 500 ? 'error.server' : 'error.generic' };
     }
