@@ -50,7 +50,11 @@ impl Default for BwLive {
 impl std::fmt::Debug for BwLive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BwLive")
-            .field("relay", &self.relay.is_some())
+            // Whether pushes go out now: the switch is always there, the relay behind it may not be.
+            .field(
+                "relay",
+                &self.relay.as_ref().is_some_and(|relay| relay.enabled()),
+            )
             .field("notices", &self.notices)
             .field("require_device_email", &self.require_device_email)
             .field("erasure", &self.erasure.is_some())
