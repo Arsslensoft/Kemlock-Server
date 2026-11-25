@@ -357,8 +357,22 @@ export function unwritable(items: readonly VaultItem[], canWrite: ((item: VaultI
 }
 
 /**
- * The saves of a merge: the kept item's new revision, the others into the Trash, and the items that
- * pointed at an item that goes now pointing at the kept one: one batch, all or none.
+ * The saves that keep links whole: each item that pointed at an item that goes now points at the
+ * kept one (and each item the kept one links to links back), an MFA code's `linkedLoginId` and a
+ * login's `accountId` follow it. Items the person may not write are not among them.
+ */
+export function relinkWrites(plan: MergePlan): SaveInput[] {
+  return plan.relinks.map(({ item, after }) => ({
+    existing: item,
+    kind: item.kind,
+    owner: item.owner,
+    fields: after,
+  }));
+}
+
+/**
+ * The saves of a merge: the kept item's new revision, the others into the Trash, and the relinked
+ * items (`relinkWrites`): one batch, all or none.
  */
 export function mergeWrites(plan: MergePlan, now: Date): SaveInput[] {
   return [
@@ -369,12 +383,7 @@ export function mergeWrites(plan: MergePlan, now: Date): SaveInput[] {
       owner: item.owner,
       fields: { trashedAt: now.toISOString() },
     })),
-    ...plan.relinks.map(({ item, after }) => ({
-      existing: item,
-      kind: item.kind,
-      owner: item.owner,
-      fields: after,
-    })),
+    ...relinkWrites(plan),
   ];
 }
 
