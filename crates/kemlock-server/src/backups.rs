@@ -249,7 +249,7 @@ pub fn folder_inside(data_folder: &Path, folder: &str) -> Result<PathBuf, String
         .canonicalize()
         .map_err(|e| format!("the data folder can't be resolved: {e}"))?;
     let mut target = root.clone();
-    for part in folder.replace('\', "/").split('/').filter(|p| !p.is_empty()) {
+    for part in folder.replace('\\', "/").split('/').filter(|p| !p.is_empty()) {
         if part == "." || part == ".." {
             return Err(bad("must not use . or .."));
         }
