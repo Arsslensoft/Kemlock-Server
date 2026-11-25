@@ -10,6 +10,7 @@
 // (approvalFlow.ts). An account that SSO has just made has no keys at all: this device makes them
 // (enrolKeys.ts).
 import type { Api } from '@/api/client';
+import { isApiError } from '@/api/errors';
 import { tokensFromResponse } from '@/api/client';
 import type { SecurityKeyStepApi } from '@/api/passkeys';
 import type { SsoApi } from '@/api/sso';
@@ -17,7 +18,7 @@ import type { DeviceDto, TokenResponse } from '@/api/types';
 import type { Session } from '@/app/session';
 import { encodeB64 } from '@/lib/b64url';
 import { rememberDeviceId } from '@/lib/device';
-import { assertWithPasskey } from '@/lib/passkey';
+import { SecurityKeyRejectedError, assertWithPasskey } from '@/lib/passkey';
 
 const KEY = 'kemlock.sso';
 /** Where the provider's trip ends: a path of this server, which the web vault serves. */
@@ -148,7 +149,9 @@ export async function secondSsoKeyStep(deps: SsoDeps, email: string): Promise<Ss
   const { challenge, next } = waiting;
   const options = await deps.securityKey.options(challenge);
   const credential = await (deps.assert ?? assertWithPasskey)(options);
-  const tokens = await deps.securityKey.verify({ challenge, credential });
+  const tokens = await deps.securityKey.verify({ challenge, credential }).catch((error: unknown) => {
+    throw isApiError(error) && error.status === 401 ? new SecurityKeyRejectedError() : error;
+  });
   waiting = undefined;
   signedIn(deps, email, tokens);
   return { status: 'signed-in', email, admin: tokens.admin, next };

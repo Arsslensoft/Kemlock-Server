@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, NetworkError } from '@/api/errors';
-import { PasskeyError } from '@/lib/passkey';
+import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
 import { describePasskeySignInError, describeSignInError } from './describeSignIn';
 
 const unauthorized = () =>
@@ -19,6 +19,10 @@ describe('describeSignInError', () => {
 });
 
 describe('describePasskeySignInError', () => {
+  it('does not call a refused security key a wrong password', () => {
+    expect(describeSignInError(new SecurityKeyRejectedError()).id).toBe('password.keyRejected');
+  });
+
   it('does not call a refused passkey a wrong password', () => {
     // The browser offered a security key added as a second step: /auth/passkey/verify says 401.
     expect(describePasskeySignInError(unauthorized()).id).toBe('signIn.passkeyRejected');

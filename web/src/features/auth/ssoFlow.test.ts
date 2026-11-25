@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { createSession } from '@/app/session';
-import { PasskeyError } from '@/lib/passkey';
+import { ApiError } from '@/api/errors';
+import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
 import { SSO_RETURN_PATH, beginSso, completeSso, secondSsoKeyStep, secondSsoStep } from './ssoFlow';
 
 const TOKENS = {
@@ -172,6 +173,22 @@ describe('single sign-on', () => {
     env.assert.mockRejectedValueOnce(new PasskeyError('cancelled'));
     await expect(secondSsoKeyStep(env.deps, 'sam@example.co')).rejects.toBeInstanceOf(PasskeyError);
     expect(env.session.getState().status).toBe('signed-out');
+    await expect(secondSsoKeyStep(env.deps, 'sam@example.co')).resolves.toMatchObject({ status: 'signed-in' });
+  });
+
+  it('says a refused key is a key problem and lets it be tried again', async () => {
+    const env = setup({
+      status: 'two_factor_required',
+      tokens: null,
+      challenge: 'sealed-key',
+      methods: ['webauthn'],
+    });
+    const started = await begin(env);
+    await completeSso(env.deps, { code: 'c', state: started.state });
+    env.securityKey.verify.mockRejectedValueOnce(
+      new ApiError(401, { type: 'urn:kemlock:problem:unauthorized', title: 'no', status: 401 }),
+    );
+    await expect(secondSsoKeyStep(env.deps, 'sam@example.co')).rejects.toBeInstanceOf(SecurityKeyRejectedError);
     await expect(secondSsoKeyStep(env.deps, 'sam@example.co')).resolves.toMatchObject({ status: 'signed-in' });
   });
 });

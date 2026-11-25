@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError } from '@/api/errors';
+import { ApiError, NetworkError } from '@/api/errors';
 import { CredentialsError, describeError } from '@/lib/errors';
 import type { AccountKeysResponse, SignInResponse, TokenResponse } from '@/api/types';
 import { createSession } from '@/app/session';
 import { encodeB64 } from '@/lib/b64url';
-import { PasskeyError } from '@/lib/passkey';
+import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
 import { crypto, fakeCalls, isFakeLocked, resetFakeCrypto } from '@/test/fake-crypto';
 import { type SignInDeps, createSignIn } from './signIn';
 
@@ -198,9 +198,21 @@ describe('password sign-in', () => {
     securityKey.verify.mockRejectedValueOnce(
       new ApiError(401, { type: 'urn:kemlock:problem:unauthorized', title: 'no', status: 401 }),
     );
-    await expect(signIn.securityKey()).rejects.toBeInstanceOf(ApiError);
+    await expect(signIn.securityKey()).rejects.toBeInstanceOf(SecurityKeyRejectedError);
     await expect(signIn.securityKey()).resolves.toMatchObject({ status: 'signed-in' });
     expect(securityKey.options).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the sign-in when the connection drops during the key step', async () => {
+    const { securityKey, signIn } = setup({
+      status: 'two_factor_required',
+      challenge: 'chal',
+      methods: ['webauthn'],
+    });
+    await signIn.password('sam@example.co', 'pw');
+    securityKey.options.mockRejectedValueOnce(new NetworkError(new Error('offline')));
+    await expect(signIn.securityKey()).rejects.toBeInstanceOf(NetworkError);
+    await expect(signIn.securityKey()).resolves.toMatchObject({ status: 'signed-in' });
   });
 
   it('forgets the sign-in when the key step fails for another reason', async () => {

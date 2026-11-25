@@ -1,10 +1,12 @@
 // The words for a sign-in that did not go through, for the screens that ask an authenticator.
 import { isApiError } from '@/api/errors';
 import { type Described, describeError } from '@/lib/errors';
-import { PasskeyError } from '@/lib/passkey';
+import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
 
 /** The words for a passkey or key that did not answer; anything else is described as everywhere else. */
 export function describeSignInError(error: unknown): Described {
+  // Not "wrong password": the password was right, and the key can be tried again from here.
+  if (error instanceof SecurityKeyRejectedError) return { id: 'password.keyRejected' };
   if (error instanceof PasskeyError) {
     return { id: error.reason === 'cancelled' ? 'signIn.passkeyCancelled' : 'signIn.passkeyUnavailable' };
   }

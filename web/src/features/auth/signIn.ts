@@ -3,7 +3,7 @@
 // Secrets (the master key and OPAQUE's export key) live in the closure only until the vault is
 // open, then are overwritten. They are handles for the crypto worker, not the keys themselves.
 import { type Api, tokensFromResponse } from '@/api/client';
-import { isApiError } from '@/api/errors';
+import { NetworkError, isApiError } from '@/api/errors';
 import type { SecurityKeyStepApi } from '@/api/passkeys';
 import type { DeviceDto, TokenResponse } from '@/api/types';
 import type { Session } from '@/app/session';
@@ -11,7 +11,7 @@ import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
 import { rememberDeviceId } from '@/lib/device';
 import { CredentialsError } from '@/lib/errors';
-import { PasskeyError, assertWithPasskey } from '@/lib/passkey';
+import { PasskeyError, SecurityKeyRejectedError, assertWithPasskey } from '@/lib/passkey';
 
 export interface SignInDeps {
   api: Pick<Api, 'prelogin' | 'opaqueStart' | 'opaqueFinish' | 'twoFactor' | 'accountKeys'>;
@@ -165,7 +165,10 @@ export function createSignIn(deps: SignInDeps) {
         const tokens = await deps.securityKey.verify({ challenge, credential });
         return await unlock(tokens);
       } catch (error) {
-        if (!isApiError(error) && !(error instanceof PasskeyError)) forget();
+        // The challenge survives a refusal, a closed prompt or a dropped connection: the key can be
+        // tried again. Anything else ends the sign-in.
+        if (!isApiError(error) && !(error instanceof PasskeyError) && !(error instanceof NetworkError)) forget();
+        if (isApiError(error) && error.status === 401) throw new SecurityKeyRejectedError();
         throw error;
       }
     },

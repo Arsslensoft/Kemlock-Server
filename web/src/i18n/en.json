@@ -275,6 +275,7 @@
   "password.keyNote": "Your account asks for a security key as its second step. Press the button, then touch the key or approve the passkey when your browser asks.",
   "password.eitherNote": "Your account asks for a second step. Use your security key, or type the code your authenticator app shows for this server.",
   "password.keySubmit": "Use your security key",
+  "password.keyRejected": "That security key wasn't accepted. Try again with the key you added to this account.",
 
   "unlock.title": "Open your vault",
   "unlock.lede": "You're signed in as {email}. This browser still needs your vault key, and only your master password makes it.",
