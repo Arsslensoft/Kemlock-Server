@@ -859,6 +859,15 @@ where
         writer: Writer,
     ) -> Result<Json<PushRelayDto>, ApiError> {
         let status = env.push_relay()?.disable().await?;
+        // Switched off here, it stays off after a restart: the saved switch is cleared, unless the
+        // environment sets it (then it is the operator's to change).
+        let mut forget = BTreeMap::new();
+        forget.insert("kemlock_push_relay".to_owned(), Change::Reset);
+        if env.settings().apply(&forget).await.is_ok() {
+            if let Some(saved) = &env.rt.settings_saved {
+                saved();
+            }
+        }
         env.audit()
             .record(
                 &writer.actor,

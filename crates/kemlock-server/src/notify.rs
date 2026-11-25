@@ -242,7 +242,6 @@ pub async fn start(
 #[derive(Default)]
 struct Followed {
     bitwarden: Option<PushValues>,
-    url: Option<String>,
     registered: bool,
 }
 
@@ -315,22 +314,47 @@ impl PushFollower {
         } else {
             snapshot.kemlock_relay_url.trim().to_owned()
         };
-        if followed.url.as_ref() != Some(&url) {
-            match self.client.set_base(&url) {
-                Ok(()) => followed.url = Some(url),
-                Err(error) => {
-                    tracing::warn!(%error, "the Kemlock push relay address is unusable; the old one stays");
+        let url = url.trim_end_matches('/').to_owned();
+        let move_to = (url != self.client.base()).then_some(url);
+        let register = snapshot.kemlock_relay && !followed.registered;
+        followed.registered = snapshot.kemlock_relay;
+        drop(followed);
+        if move_to.is_none() && !register {
+            return;
+        }
+        let (store, crypto, client) = (self.store.clone(), self.crypto.clone(), self.client.clone());
+        tokio::spawn(async move {
+            if let Some(url) = move_to {
+                // The installation key goes to whatever relay the client talks to, and turning
+                // the relay off erases the installation there: another address is taken only by
+                // a server that isn't registered, so the key never reaches a relay that didn't
+                // issue it. Turn the relay off first.
+                match kemlock_app::push::PushRepo::installation(&store).await {
+                    Ok(None) => {
+                        if let Err(error) = client.set_base(&url) {
+                            tracing::warn!(%error, "the Kemlock push relay address is unusable; the old one stays");
+                            return;
+                        }
+                    }
+                    Ok(Some(_)) => {
+                        tracing::warn!(
+                            "the server is registered with the push relay, so its address stays; turn the relay off before changing it"
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "couldn't read the push installation; the relay address stays");
+                        return;
+                    }
                 }
             }
-        }
-        if snapshot.kemlock_relay && !followed.registered {
-            followed.registered = true;
-            register_with_relay(self.store.clone(), self.crypto.clone(), self.client.clone());
-        } else if !snapshot.kemlock_relay {
-            followed.registered = false;
-        }
+            if register {
+                register_with_relay(store, crypto, client);
+            }
+        });
     }
 }
+
 
 /// Registers with the relay in the background when the server hasn't, so start isn't held up by
 /// a network call. A failure is logged; the next start tries again.
