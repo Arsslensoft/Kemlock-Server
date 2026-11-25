@@ -775,7 +775,7 @@ doc!(
     responses(
         (
             status = 200,
-            description = "Where Kemlock's push relay stands",
+            description = "Where push stands: the Apple push and UnifiedPush the server sends itself, and Kemlock's optional relay",
             body = PushRelayDto
         ),
         (

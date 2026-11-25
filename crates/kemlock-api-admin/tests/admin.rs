@@ -2256,6 +2256,8 @@ impl FakeRelay {
             enabled: installation.is_some(),
             installation_id: installation,
             relay_url: "https://push.kemlock.test".to_owned(),
+            apns_configured: true,
+            apns_sandbox: false,
         }
     }
 }
@@ -2313,6 +2315,10 @@ async fn the_push_relay_is_turned_on_and_off_with_a_step_up_and_each_is_logged()
     assert_eq!(off.json()["enabled"], false);
     assert_eq!(off.json()["installationId"], Value::Null);
     assert_eq!(off.json()["relayUrl"], "https://push.kemlock.test");
+    // The server's own pushes show beside the relay.
+    assert_eq!(off.json()["apnsConfigured"], true);
+    assert_eq!(off.json()["apnsSandbox"], false);
+    assert_eq!(off.json()["unifiedPush"], true);
 
     // A write without a step-up token is refused.
     let refused = root
@@ -2384,6 +2390,8 @@ async fn a_server_with_no_relay_to_control_says_so() {
     let read = root.get("/admin/v1/push-relay").await;
     assert_eq!(read.status, StatusCode::OK);
     assert_eq!(read.json()["enabled"], false);
+    assert_eq!(read.json()["apnsConfigured"], false);
+    assert_eq!(read.json()["unifiedPush"], true);
     for action in ["enable", "disable"] {
         let reply = root
             .write(
