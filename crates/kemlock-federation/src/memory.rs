@@ -1310,3 +1310,10 @@ impl SendSync for MemoryStore {
             .map(|f| f.blob))
     }
 }
+
+impl MemoryStore {
+    /// Deletes a Send, as its owner did here.
+    pub fn remove_send(&self, id: SendId) {
+        self.extras().sends.remove(&id);
+    }
+}

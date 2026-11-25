@@ -1041,6 +1041,11 @@ mod tests {
                 vault: vault(),
                 items: vec![ItemId::random(), ItemId::random()],
             },
+            Request::Sends {
+                vault: vault(),
+                after: [7; 16],
+                limit: 50,
+            },
         ];
         for r in requests {
             assert_eq!(Request::decode(&r.encode()), Ok(r.clone()), "{r:?}");
@@ -1150,6 +1155,32 @@ mod tests {
                     version: 2,
                     tags: vec![[1; 32], [2; 32]],
                 }],
+            },
+            {
+                let user = UserId::random();
+                let at = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("time");
+                Response::Sends {
+                    vault: Owner::User(user),
+                    entries: vec![SendRecord {
+                        id: kemlock_domain::sends::SendId::random(),
+                        owner: user,
+                        kind: kemlock_domain::sends::SendKind::Text,
+                        meta: vec![1; 10],
+                        sealed_key: vec![2; 64],
+                        payload: vec![3; 20],
+                        file: None,
+                        password: None,
+                        max_access: None,
+                        access_count: 0,
+                        hide_email: false,
+                        disabled: false,
+                        expires_at: None,
+                        deletion_at: at,
+                        created_at: at,
+                        revised_at: at,
+                    }],
+                    more: true,
+                }
             },
         ];
         for r in responses {

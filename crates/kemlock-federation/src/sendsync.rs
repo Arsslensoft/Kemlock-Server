@@ -521,4 +521,335 @@ mod tests {
         empty.file = empty.file.map(|f| SendFile { size: 0, ..f });
         assert!(send_from_value(&send_to_value(&empty), empty.owner).is_err());
     }
+
+    // ---- replication between two in-memory servers ----
+
+    use crate::blobs::BlobFiles;
+    use crate::memory::MemoryStore;
+    use crate::suite::Suite;
+    use crate::testing::identity;
+    use kemlock_app::federation_view::BoxFut;
+    use kemlock_app::files::BlobError;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+
+    const NOW: u64 = 1_800_000_000;
+
+    /// File storage in memory, remembering which files were stored without the `KMA1` check.
+    #[derive(Default)]
+    struct Files {
+        held: Mutex<HashMap<BlobId, Vec<u8>>>,
+        raw: Mutex<HashSet<BlobId>>,
+    }
+
+    impl Files {
+        fn put(&self, blob: BlobId, data: Vec<u8>) {
+            self.held.lock().expect("lock").insert(blob, data);
+        }
+
+        fn get(&self, blob: BlobId) -> Option<Vec<u8>> {
+            self.held.lock().expect("lock").get(&blob).cloned()
+        }
+    }
+
+    impl BlobFiles for Files {
+        fn read_chunk(
+            &self,
+            blob: BlobId,
+            offset: u64,
+            len: u32,
+        ) -> BoxFut<'_, std::result::Result<(u64, Vec<u8>), BlobError>> {
+            Box::pin(async move {
+                let held = self.held.lock().expect("lock");
+                let data = held.get(&blob).ok_or(BlobError::NotFound)?;
+                let start = usize::try_from(offset)
+                    .unwrap_or(usize::MAX)
+                    .min(data.len());
+                let end = start.saturating_add(len as usize).min(data.len());
+                Ok((data.len() as u64, data[start..end].to_vec()))
+            })
+        }
+
+        fn has(&self, blob: BlobId) -> BoxFut<'_, std::result::Result<bool, BlobError>> {
+            Box::pin(async move { Ok(self.get(blob).is_some()) })
+        }
+
+        fn store(
+            &self,
+            blob: BlobId,
+            data: Vec<u8>,
+        ) -> BoxFut<'_, std::result::Result<(), BlobError>> {
+            Box::pin(async move {
+                self.put(blob, data);
+                Ok(())
+            })
+        }
+
+        fn store_raw(
+            &self,
+            blob: BlobId,
+            data: Vec<u8>,
+        ) -> BoxFut<'_, std::result::Result<(), BlobError>> {
+            Box::pin(async move {
+                self.raw.lock().expect("lock").insert(blob);
+                self.put(blob, data);
+                Ok(())
+            })
+        }
+
+        fn delete(&self, blob: BlobId) -> BoxFut<'_, std::result::Result<(), BlobError>> {
+            Box::pin(async move {
+                self.held.lock().expect("lock").remove(&blob);
+                Ok(())
+            })
+        }
+    }
+
+    struct Direct<'a> {
+        remote: &'a Replica<MemoryStore>,
+        caller: ServerId,
+    }
+
+    impl Channel for Direct<'_> {
+        async fn call(&mut self, request: &Request) -> Result<Response> {
+            Ok(self.remote.serve(self.caller, request, NOW).await.response)
+        }
+    }
+
+    struct Pair {
+        a: Replica<MemoryStore>,
+        b: Replica<MemoryStore>,
+        a_files: Arc<Files>,
+        b_files: Arc<Files>,
+        a_id: ServerId,
+        b_id: ServerId,
+        vault: Owner,
+        user: UserId,
+    }
+
+    /// A is the home of a personal vault, B its replica.
+    async fn pair() -> Pair {
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (a_files, b_files) = (Arc::new(Files::default()), Arc::new(Files::default()));
+        let a = Replica::new(MemoryStore::new(ia.server), Arc::new(ia.clone()))
+            .with_blob_files(a_files.clone());
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()))
+            .with_blob_files(b_files.clone());
+        a.pin_peer(&ib.descriptor, NOW).await.expect("pin");
+        b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let user = UserId::random();
+        let vault = Owner::User(user);
+        a.federate(vault, vec![ib.server]).await.expect("federate");
+        b.accept_vault(vault, ia.server, vec![ib.server])
+            .await
+            .expect("accept");
+        Pair {
+            a,
+            b,
+            a_files,
+            b_files,
+            a_id: ia.server,
+            b_id: ib.server,
+            vault,
+            user,
+        }
+    }
+
+    impl Pair {
+        fn send(&self, file: Option<(u64, SendFileFormat)>) -> SendRecord {
+            let mut send = sample(file.map(|(size, format)| SendFile {
+                blob: BlobId::random(),
+                size,
+                format,
+                ready: true,
+            }));
+            send.owner = self.user;
+            send
+        }
+
+        /// A file Send at A whose bytes are there.
+        fn file_send(&self, len: usize, format: SendFileFormat) -> SendRecord {
+            let send = self.send(Some((len as u64, format)));
+            let blob = send.file.map(|f| f.blob).expect("file");
+            self.a_files
+                .put(blob, (0..len).map(|i| (i % 251) as u8).collect());
+            self.a.store.put_send(send.clone());
+            send
+        }
+
+        async fn sync(&self) -> Result<SendReport> {
+            let mut channel = Direct {
+                remote: &self.a,
+                caller: self.b_id,
+            };
+            self.b.sync_sends(&mut channel, self.a_id, self.vault).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_note_and_both_kinds_of_file_send_copy_to_the_replica() {
+        let t = pair().await;
+        let note = t.send(None);
+        t.a.store.put_send(note.clone());
+        let kma1 = t.file_send(5000, SendFileFormat::Kma1);
+        let opaque = t.file_send(300, SendFileFormat::Opaque);
+
+        let report = t.sync().await.expect("sync");
+        assert_eq!((report.rows, report.fetched, report.skipped), (3, 2, 0));
+        for sent in [&note, &kma1, &opaque] {
+            assert_eq!(t.b.store.send(sent.id).as_ref(), Some(sent));
+        }
+        let kb = kma1.file.expect("file").blob;
+        let ob = opaque.file.expect("file").blob;
+        assert_eq!(t.b_files.get(kb), t.a_files.get(kb));
+        assert_eq!(t.b_files.get(ob), t.a_files.get(ob));
+        let raw = t.b_files.raw.lock().expect("lock");
+        assert!(
+            raw.contains(&ob) && !raw.contains(&kb),
+            "only the opaque file skips the KMA1 check"
+        );
+        drop(raw);
+
+        // A second visit has nothing to do.
+        assert_eq!(t.sync().await, Ok(SendReport::default()));
+    }
+
+    #[tokio::test]
+    async fn a_file_over_the_threshold_gets_its_row_and_waits_for_first_use() {
+        let t = pair().await;
+        let big = t.send(Some((ON_DEMAND_THRESHOLD + 1, SendFileFormat::Kma1)));
+        t.a.store.put_send(big.clone());
+        let report = t.sync().await.expect("sync");
+        assert_eq!((report.rows, report.fetched, report.deferred), (1, 0, 1));
+        assert!(t.b.store.send(big.id).is_some());
+        assert_eq!(t.b_files.get(big.file.expect("file").blob), None);
+    }
+
+    #[tokio::test]
+    async fn a_file_that_cannot_be_fetched_leaves_its_send_out_and_the_rest_go_on() {
+        let t = pair().await;
+        // The row is listed at A, but its bytes are gone there.
+        let lost = t.send(Some((4000, SendFileFormat::Kma1)));
+        t.a.store.put_send(lost.clone());
+        let fine = t.send(None);
+        t.a.store.put_send(fine.clone());
+        let report = t.sync().await.expect("sync");
+        assert_eq!((report.rows, report.skipped), (1, 1));
+        assert!(t.b.store.send(lost.id).is_none());
+        assert!(t.b.store.send(fine.id).is_some());
+
+        // A file past the cap is never taken.
+        let huge = t.send(Some((MAX_FETCH + 1, SendFileFormat::Kma1)));
+        t.a.store.put_send(huge.clone());
+        let report = t.sync().await.expect("sync");
+        assert!(t.b.store.send(huge.id).is_none());
+        assert_eq!(
+            report.skipped, 2,
+            "the lost one is tried again, the huge one is refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_newer_revision_and_a_higher_view_count_reach_the_replica() {
+        let t = pair().await;
+        let send = t.send(None);
+        t.a.store.put_send(send.clone());
+        t.sync().await.expect("sync");
+
+        // Views used at the replica don't go backwards when A has fewer.
+        let mut at_b = t.b.store.send(send.id).expect("copied");
+        at_b.access_count = 4;
+        t.b.store.put_send(at_b);
+        let mut edited = send.clone();
+        edited.disabled = true;
+        edited.max_access = Some(9);
+        edited.revised_at = send.revised_at + time::Duration::hours(1);
+        t.a.store.put_send(edited.clone());
+        let report = t.sync().await.expect("sync");
+        assert_eq!((report.rows, report.updated), (0, 1));
+        let now = t.b.store.send(send.id).expect("held");
+        assert!(now.disabled);
+        assert_eq!(now.max_access, Some(9));
+        assert_eq!(now.access_count, 4);
+
+        // And A's higher count reaches B.
+        let mut counted = edited;
+        counted.access_count = 7;
+        t.a.store.put_send(counted);
+        t.sync().await.expect("sync");
+        assert_eq!(t.b.store.send(send.id).expect("held").access_count, 7);
+    }
+
+    #[tokio::test]
+    async fn a_send_the_home_dropped_goes_from_the_replica_but_one_made_there_stays() {
+        let t = pair().await;
+        let gone = t.file_send(600, SendFileFormat::Kma1);
+        let kept = t.send(None);
+        t.a.store.put_send(kept.clone());
+        t.sync().await.expect("sync");
+        let blob = gone.file.expect("file").blob;
+        assert!(t.b_files.get(blob).is_some());
+
+        // The owner made another Send at the replica itself.
+        let local = t.send(None);
+        t.b.store.put_send(local.clone());
+
+        t.a.store.remove_send(gone.id);
+        let report = t.sync().await.expect("sync");
+        assert_eq!(report.removed, 1);
+        assert!(t.b.store.send(gone.id).is_none());
+        assert_eq!(t.b_files.get(blob), None, "the file went with it");
+        assert!(t.b.store.send(kept.id).is_some());
+        assert!(t.b.store.send(local.id).is_some());
+    }
+
+    #[tokio::test]
+    async fn an_unfederated_vault_and_a_stranger_get_nothing() {
+        let t = pair().await;
+        let space = Owner::Space(kemlock_domain::SpaceId::random());
+        let mut channel = Direct {
+            remote: &t.a,
+            caller: t.b_id,
+        };
+        // Not a vault either server federates: refused before anything is asked.
+        assert!(t.b.sync_sends(&mut channel, t.a_id, space).await.is_err());
+
+        // A server that is not paired may not list the Sends.
+        let stranger = identity(9, NOW, &Suite::IMPLEMENTED);
+        let asked = t
+            .a
+            .serve(
+                stranger.server,
+                &Request::Sends {
+                    vault: t.vault,
+                    after: [0; 16],
+                    limit: 50,
+                },
+                NOW,
+            )
+            .await;
+        assert!(matches!(asked.response, Response::Error { .. }));
+    }
+
+    #[tokio::test]
+    async fn a_file_is_only_served_to_the_vault_of_its_owner() {
+        let t = pair().await;
+        let send = t.file_send(500, SendFileFormat::Kma1);
+        let blob = send.file.expect("file").blob;
+        let other = Owner::User(UserId::random());
+        let ask = |vault| Request::Blob {
+            vault,
+            blob,
+            offset: 0,
+            len: 100,
+        };
+        let mine = t.a.serve(t.b_id, &ask(t.vault), NOW).await.response;
+        assert!(
+            matches!(mine, Response::BlobChunk { size: 500, .. }),
+            "{mine:?}"
+        );
+        let wrong = t.a.serve(t.b_id, &ask(other), NOW).await.response;
+        assert!(matches!(wrong, Response::Error { .. }));
+    }
 }
