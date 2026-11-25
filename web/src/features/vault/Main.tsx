@@ -230,7 +230,7 @@ export default function Main() {
   const { facts } = useKeyFacts(active);
 
   const t = useT();
-  const typeNames = useCallback((of: string) => [t(kindLabel(of)), t(kindPluralLabel(of))], [t]);
+  const typeNames = useCallback((id: string) => [t(kindLabel(id)), t(kindPluralLabel(id))], [t]);
   const filtered = useMemo(
     () => filterItems(active, { kind, vault, fav, q, typeNames }),
     [active, kind, vault, fav, q, typeNames],
