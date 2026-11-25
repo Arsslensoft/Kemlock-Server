@@ -219,3 +219,7 @@ ul.picker {
   max-height: min(360px, 50vh);
   overflow-y: auto;
 }
+.im-item[data-disabled] {
+  opacity: 0.55;
+  cursor: default;
+}

@@ -1,6 +1,7 @@
 // The `⋯` menu of the item page: Websites and rules (logins), Move to a space, Make a copy, What
-// the server holds, then Move to Trash in red. An item in the Trash has only What the server
-// holds. React Aria's menu gives it the keyboard (arrows,
+// the server holds, then Move to Trash in red. The page says which of them this item and this
+// person get: an item in the Trash, one that can't be read or one the person may not change has
+// fewer, down to What the server holds alone. React Aria's menu gives it the keyboard (arrows,
 // typeahead, Escape closing it with focus back on the button) and the menu roles.
 //
 // A choice is acted on once the menu has closed, with focus put back on the button first, so a
@@ -15,20 +16,26 @@ import { TRASH_DAYS } from './vault';
 
 export type ItemAction = 'websites' | 'move' | 'copy' | 'server' | 'trash';
 
+/** What the menu offers besides What the server holds, which is always there. */
+export interface ItemMenuEntries {
+  /** Logins only. */
+  websites: boolean;
+  move: boolean;
+  /** Not for a passkey or a file, which can't be copied, nor an item that can't be read. */
+  copy: boolean;
+  trash: boolean;
+}
+
 export function ItemMenu({
   name,
-  trashed,
-  websites,
-  copy,
+  entries,
+  trashing = false,
   onAction,
 }: {
   name: string;
-  /** In the Trash: nothing to move, copy or trash. */
-  trashed: boolean;
-  /** Logins only. */
-  websites: boolean;
-  /** Not for a passkey or a file, which can't be copied. */
-  copy: boolean;
+  entries: ItemMenuEntries;
+  /** The item is being moved to the Trash: asking again would do it twice. */
+  trashing?: boolean;
   onAction: (action: ItemAction) => void;
 }) {
   const t = useT();
@@ -69,13 +76,18 @@ export function ItemMenu({
             picked.current = key as ItemAction;
           }}
         >
-          {websites && !trashed ? item('websites', 'globe', t('sites.open')) : null}
-          {trashed ? null : item('move', 'building', t('detail.menu.move'))}
-          {copy && !trashed ? item('copy', 'copy', t('detail.menu.copy')) : null}
+          {entries.websites ? item('websites', 'globe', t('sites.open')) : null}
+          {entries.move ? item('move', 'building', t('detail.menu.move')) : null}
+          {entries.copy ? item('copy', 'copy', t('detail.menu.copy')) : null}
           {item('server', 'server', t('item.server.title'))}
-          {trashed ? null : <Separator className="im-sep" />}
-          {trashed ? null : (
-            <MenuItem id="trash" className="im-item im-danger" textValue={t('item.moveToTrash')}>
+          {entries.trash ? <Separator className="im-sep" /> : null}
+          {entries.trash ? (
+            <MenuItem
+              id="trash"
+              className="im-item im-danger"
+              textValue={t('item.moveToTrash')}
+              isDisabled={trashing}
+            >
               <Icon name="trash" />
               <span className="im-text">
                 <Text slot="label" className="im-title">
@@ -86,7 +98,7 @@ export function ItemMenu({
                 </Text>
               </span>
             </MenuItem>
-          )}
+          ) : null}
         </Menu>
       </Popover>
     </MenuTrigger>

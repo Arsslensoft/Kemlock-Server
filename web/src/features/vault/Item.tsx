@@ -2,9 +2,11 @@
 // space, make a copy, what the server holds, move to Trash) is in the `⋯` menu. A round lock beside
 // the title carries the end-to-end encryption note, and the record the server keeps opens in a
 // dialog. The first card ends with the item's custom fields; linked items are their own card.
+//
+// What the page offers follows the item and the person: one in the Trash or one that can't be read
+// has little, and one the person may only read (a collection they can view) has no Edit, Move or Trash.
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
 import { useCallback, useState } from 'react';
-import { api } from '@/app/services';
 import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button, IconButton, buttonClass } from '@/ui/Button';
@@ -14,13 +16,14 @@ import { LockBadge } from '@/ui/LockBadge';
 import { Notice } from '@/ui/Notice';
 import '@/styles/item.css';
 import { useBackToList } from './backNav';
-import { readCustomFields } from './customFields';
+import { readCustomFields, resolveAdminFields } from './customFields';
 import { CustomFieldRows } from './details/CustomFieldRows';
 import { AttachmentsCard } from './details/FileDetails';
 import { KindDetails } from './details/KindDetails';
 import type { AttachedFile } from './details/files';
 import { downloadFile } from './details/fileDownload';
-import { useCanWrite, useVault, useVaultActions, useVaultItem } from './hooks';
+import { itemFiles, useAdminFields, useCanWrite, useVault, useVaultActions, useVaultItem } from './hooks';
+import { siteInfoOf } from './itemLinks';
 import { ItemMenu, type ItemAction } from './ItemMenu';
 import { LinkedItems } from './LinkedItems';
 import { MoveDialog } from './MoveDialog';
@@ -28,6 +31,7 @@ import { ServerHolds } from './ServerHolds';
 import { canCopy } from './copy';
 import { hostOfUrl, isEditable, isWebUrl, kindLabel, tileLetter, timeAgo } from './kinds';
 import { isTrashed, itemName, loginOf, noteOf } from './vault';
+import { readWebsites } from './websites';
 
 const route = getRouteApi('/_vault/vault/$itemId');
 
@@ -59,10 +63,11 @@ export default function Item() {
   const { item, isLoading } = useVaultItem(itemId);
   const { all } = useVault();
   const canWrite = useCanWrite();
+  const adminFields = useAdminFields();
   const { trash, restore, link } = useVaultActions();
   const [dialog, setDialog] = useState<'server' | 'move' | null>(null);
   const failure = trash.error ?? restore.error;
-  const download = useCallback((file: AttachedFile) => downloadFile(api, itemId, file), [itemId]);
+  const download = useCallback((file: AttachedFile) => downloadFile(itemFiles, itemId, file), [itemId]);
 
   if (isLoading) {
     return (
@@ -95,8 +100,17 @@ export default function Item() {
           ? (item.data['note'] as string)
           : '';
   const ageText = timeAgo(item.data?.updatedAt);
-  const custom = readCustomFields(item.data);
+  // The admin's fields show under the name and type the admin has for them now.
+  const custom = resolveAdminFields(readCustomFields(item.data), adminFields);
   const customRows = custom.length > 0 ? <CustomFieldRows fields={custom} /> : null;
+  // A login's websites, wherever its body keeps them (`uris`, `websites` or `urls`).
+  const websites = login ? readWebsites(item.data).map((rule) => rule.uri).filter((uri) => uri !== '') : [];
+  // An MFA code or backup codes show their own websites, or their linked login's, read-only.
+  const sites = item.kind === 'otp' || item.kind === 'backup-codes' ? siteInfoOf(item, all) : undefined;
+  const readable = item.data !== null;
+  const writable = canWrite(item);
+  // Changing an item takes an item that can be read, is not in the Trash and that this person may write.
+  const canChange = readable && writable && !trashed;
 
   function onAction(action: ItemAction) {
     if (!item) return;
@@ -114,7 +128,7 @@ export default function Item() {
         setDialog('server');
         break;
       case 'trash':
-        trash.mutate(item, { onSuccess: backToList });
+        if (!trash.isPending) trash.mutate(item, { onSuccess: backToList });
         break;
     }
   }
@@ -156,11 +170,13 @@ export default function Item() {
         </div>
         <div className="head-actions">
           {trashed ? (
-            <Button variant="primary" isDisabled={restore.isPending} onPress={() => restore.mutate(item)}>
-              <Icon name="restore" />
-              {t('action.restore')}
-            </Button>
-          ) : isEditable(item.kind) ? (
+            writable ? (
+              <Button variant="primary" isDisabled={restore.isPending} onPress={() => restore.mutate(item)}>
+                <Icon name="restore" />
+                {t('action.restore')}
+              </Button>
+            ) : null
+          ) : canChange && isEditable(item.kind) ? (
             <Link to="/vault/$itemId/edit" params={{ itemId: item.id }} className={buttonClass({ variant: 'primary' })}>
               <Icon name="edit" />
               {t('action.edit')}
@@ -168,9 +184,13 @@ export default function Item() {
           ) : null}
           <ItemMenu
             name={name}
-            trashed={trashed}
-            websites={item.kind === 'login'}
-            copy={canCopy(item) && isEditable(item.kind)}
+            trashing={trash.isPending}
+            entries={{
+              websites: item.kind === 'login' && canChange,
+              move: canChange,
+              copy: canCopy(item) && isEditable(item.kind),
+              trash: canChange,
+            }}
             onAction={onAction}
           />
         </div>
@@ -191,6 +211,11 @@ export default function Item() {
           <p>{t('item.unreadable')}</p>
         </Notice>
       ) : null}
+      {readable && !writable && !trashed ? (
+        <Notice>
+          <p>{t('detail.readOnly')}</p>
+        </Notice>
+      ) : null}
 
       {login ? (
         <section className="card" aria-labelledby="h-signin">
@@ -205,11 +230,11 @@ export default function Item() {
             {login.username ? <CopyButton value={login.username} label={t('item.copyUsername')} /> : null}
           </div>
           {login.password ? <PasswordRow password={login.password} /> : null}
-          {login.urls.length > 0 ? (
+          {websites.length > 0 ? (
             <div className="row">
               <div className="grow">
                 <div className="lbl">{t('item.website')}</div>
-                {login.urls.map((url) => (
+                {websites.map((url) => (
                   <div key={url}>
                     {isWebUrl(url) ? (
                       <a href={url} target="_blank" rel="noreferrer noopener">
@@ -228,7 +253,7 @@ export default function Item() {
       ) : null}
 
       {item.kind !== 'login' && item.kind !== 'note' ? (
-        <KindDetails item={item} extra={customRows} download={download} />
+        <KindDetails item={item} extra={customRows} download={download} sites={sites} />
       ) : null}
 
       {item.kind === 'note' && (notes || custom.length > 0) ? (
@@ -259,7 +284,7 @@ export default function Item() {
         item={item}
         all={all}
         canWrite={canWrite}
-        readOnly={trashed || item.data === null}
+        readOnly={!canChange}
         onLink={async (other) => {
           await link.mutateAsync({ a: item, b: other, linked: true });
         }}

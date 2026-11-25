@@ -1,6 +1,7 @@
 // "Move to a space": pick where the item should live (the account's own vault, or a collection of a
 // space this person may add items to) and move it. The move seals it again under the key of its
-// new place; see move.ts. An item that holds a file stays where it is, and the dialog says so.
+// new place and keeps its links; see move.ts. An item that holds files has them sent again, which
+// takes a moment, and the dialog says so. A contact stays in the account's own vault.
 import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { Radio, RadioGroup } from 'react-aria-components';
@@ -13,8 +14,8 @@ import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/item.css';
 import { useCanWrite, useVault, useVaultActions, useWritableCollections } from './hooks';
-import { linkedItems } from './links';
-import { type MoveTarget, isHere, moveRefusal } from './move';
+import { connectedItems, namesItem } from './itemLinks';
+import { MAX_RELINKS, type MoveTarget, holdsFiles, isHere, moveRefusal } from './move';
 import { type VaultItem, spaceOf } from './vault';
 
 interface Place {
@@ -31,12 +32,14 @@ export function MoveDialog({ item, name, onClose }: { item: VaultItem; name: str
   const canWrite = useCanWrite();
   const { move } = useVaultActions();
   const userId = session.getState().userId;
+  const writable = canWrite(item);
 
   const places: Place[] = [];
   if (spaceOf(item.owner) !== null && userId) {
     places.push({ value: 'vault', label: t('newItem.where.vault'), target: { owner: `user:${userId}` } });
   }
-  for (const c of collections.data ?? []) {
+  // A contact is one person's own statement: it never goes into a space.
+  for (const c of item.kind === 'contact' ? [] : (collections.data ?? [])) {
     const target: MoveTarget = { owner: `space:${c.spaceId}`, collectionId: c.collectionId };
     if (isHere(item, target)) continue;
     places.push({
@@ -46,23 +49,25 @@ export function MoveDialog({ item, name, onClose }: { item: VaultItem; name: str
     });
   }
 
-  const refusal = moveRefusal(item);
+  // The items that name this one and that this person may change: each names the new id after a move.
+  const linked = connectedItems(item, all).filter((other) => other.data !== null && canWrite(other));
+  const tooMany = linked.filter((other) => namesItem(other, item.id)).length > MAX_RELINKS;
+  const refusal = moveRefusal(item, writable);
   const [chosen, setChosen] = useState<string | undefined>(undefined);
   const place = places.find((p) => p.value === (chosen ?? places[0]?.value));
   const failure = move.error ? describeError(move.error) : undefined;
+  const blocked = refusal !== undefined || tooMany;
 
-  function submit() {
+  async function submit() {
     if (!place) return;
-    const linked = linkedItems(item, all).filter(canWrite);
-    move.mutate(
-      { item, target: place.target, linked },
-      {
-        onSuccess: (moved) => {
-          onClose();
-          void navigate({ to: '/vault/$itemId', params: { itemId: moved.id }, replace: true });
-        },
-      },
-    );
+    try {
+      const moved = await move.mutateAsync({ item, target: place.target, linked, writable });
+      // Where the item is now, then out of the dialog: closing first would leave a page for an id that is gone.
+      await navigate({ to: '/vault/$itemId', params: { itemId: moved.id }, replace: true });
+      onClose();
+    } catch {
+      // Why it failed is shown in the dialog, which stays open.
+    }
   }
 
   return (
@@ -79,30 +84,41 @@ export function MoveDialog({ item, name, onClose }: { item: VaultItem; name: str
           <Button isDisabled={move.isPending} onPress={onClose}>
             {t('action.cancel')}
           </Button>
-          <Button variant="primary" isDisabled={!place || refusal !== undefined || move.isPending} onPress={submit}>
+          <Button variant="primary" isDisabled={!place || blocked || move.isPending} onPress={() => void submit()}>
             {t('detail.move.confirm')}
           </Button>
         </>
       }
     >
       <p className="muted">{t('detail.move.lede', { name })}</p>
-      {refusal === 'files' ? (
+      {refusal === 'read-only' ? (
         <Notice tone="warn">
-          <p>{t('detail.move.files')}</p>
+          <p>{t('detail.move.readOnly')}</p>
         </Notice>
       ) : refusal !== undefined ? (
         <Notice tone="warn">
           <p>{t('detail.move.cant')}</p>
         </Notice>
+      ) : tooMany ? (
+        <Notice tone="warn">
+          <p>{t('detail.move.tooMany')}</p>
+        </Notice>
       ) : places.length === 0 ? (
         <Notice>
-          <p>{collections.isPending ? t('main.loading') : t('detail.move.none')}</p>
+          <p>
+            {collections.isPending
+              ? t('main.loading')
+              : item.kind === 'contact'
+                ? t('detail.move.contact')
+                : t('detail.move.none')}
+          </p>
         </Notice>
       ) : (
         <RadioGroup
           aria-label={t('detail.move.where')}
           value={place?.value ?? ''}
           onChange={setChosen}
+          isDisabled={move.isPending}
           className="opts"
         >
           {places.map((option) => (
@@ -120,6 +136,11 @@ export function MoveDialog({ item, name, onClose }: { item: VaultItem; name: str
           ))}
         </RadioGroup>
       )}
+      {move.isPending && holdsFiles(item) ? (
+        <p className="muted" role="status">
+          {t('detail.move.working')}
+        </p>
+      ) : null}
       {failure ? (
         <Notice tone="error" live>
           <p>{t(failure.id, failure.values)}</p>

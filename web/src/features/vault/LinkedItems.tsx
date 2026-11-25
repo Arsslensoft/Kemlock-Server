@@ -1,9 +1,10 @@
 // The "Linked items" card of the item page: every item linked to this one (icon, name, type and a
-// line about it) as a link to that item, an Unlink button on each, and "Link an item", which opens
-// a picker that searches the vault. A link is two-way (links.ts): linking and unlinking write both
-// items, so the other item shows this one too.
+// line about it) as a link to that item, an Unlink button on each that can be unlinked, and "Link
+// an item", which opens a picker that searches the vault. A link is two-way (links.ts): linking and
+// unlinking write both items, so the other item shows this one too. An item that links here, or
+// that this one links to the older way (`linkedLoginId`), is listed as well (itemLinks.ts).
 import { Link } from '@tanstack/react-router';
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { AppDialog } from '@/ui/AppDialog';
@@ -12,38 +13,47 @@ import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/item.css';
 import { backupCodesOf } from './details/KindDetails';
-import { formatSize, fileOf } from './details/files';
+import { fileOf } from './details/files';
+import { otpParamsOf } from './details/otp';
+import { useFormatSize } from './details/useFormatSize';
+import { connectedItems, pickableItems, siteInfoOf } from './itemLinks';
 import { hostOfUrl, kindIcon, kindLabel } from './kinds';
-import { linkCandidates, linkedItems } from './links';
 import { type ItemData, type VaultItem, isTrashed, itemName } from './vault';
-import { readWebsites } from './websites';
 
 type T = (id: MessageId, values?: Record<string, string | number>) => string;
 
+export interface SublineContext {
+  /** A size in bytes as the language writes it. */
+  size: (bytes: number) => string;
+  /** The item's website, or the one of the login it is linked to. */
+  site?: string | undefined;
+}
+
 /** What to say about an item under its name: its type, then one fact about it. */
-export function sublineOf(item: VaultItem, t: T): string {
+export function sublineOf(item: VaultItem, t: T, context: SublineContext): string {
   const data: ItemData = item.data ?? {};
   const text = (key: string) => (typeof data[key] === 'string' ? (data[key] as string) : '');
-  const site = readWebsites(item.data)[0]?.uri;
+  const host = context.site ? hostOfUrl(context.site) : '';
   const parts: string[] = [t(kindLabel(item.kind))];
   switch (item.kind) {
     case 'login':
       parts.push(text('username'));
       break;
     case 'otp': {
-      if (site) parts.push(hostOfUrl(site));
-      const period = typeof data['period'] === 'number' ? data['period'] : 30;
-      parts.push(t('detail.links.every', { seconds: period }));
+      parts.push(host);
+      // A counter code has no period; a code whose secret can't be read has no settings at all.
+      const params = otpParamsOf(data);
+      if (params && params.type !== 'hotp') parts.push(t('detail.links.every', { seconds: params.period }));
       break;
     }
     case 'backup-codes': {
       const codes = backupCodesOf(item.data);
-      parts.push(site ? hostOfUrl(site) : text('serviceName'));
+      parts.push(host || text('serviceName'));
       parts.push(t('detail.links.codes', { total: codes.length, unused: codes.filter((c) => !c.used).length }));
       break;
     }
     case 'passkey':
-      parts.push(text('rpId') || (site ? hostOfUrl(site) : ''));
+      parts.push(text('rpId') || host);
       break;
     case 'card': {
       const digits = text('number');
@@ -56,7 +66,7 @@ export function sublineOf(item: VaultItem, t: T): string {
       break;
     case 'file': {
       const file = fileOf(item.data);
-      parts.push(file ? formatSize(file.size) : '');
+      parts.push(file ? context.size(file.size) : '');
       break;
     }
     default:
@@ -66,8 +76,10 @@ export function sublineOf(item: VaultItem, t: T): string {
   return parts.filter((part) => part !== '').join(' · ');
 }
 
-function Entry({ item }: { item: VaultItem }) {
+function Entry({ item, all }: { item: VaultItem; all: readonly VaultItem[] }) {
   const t = useT();
+  const size = useFormatSize();
+  const site = siteInfoOf(item, all)?.urls[0];
   return (
     <>
       <span className="linked-icon" aria-hidden="true">
@@ -75,7 +87,7 @@ function Entry({ item }: { item: VaultItem }) {
       </span>
       <span className="linked-text">
         <span className="linked-name">{itemName(item)}</span>
-        <span className="linked-sub">{sublineOf(item, t)}</span>
+        <span className="linked-sub">{sublineOf(item, t, { size, site })}</span>
       </span>
     </>
   );
@@ -99,7 +111,7 @@ function Picker({
   const [query, setQuery] = useState('');
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<unknown>(undefined);
-  const results = linkCandidates(item, all, query, canWrite);
+  const results = pickableItems(item, all, query, canWrite);
   const error = failure === undefined ? undefined : describeError(failure);
 
   async function pick(candidate: VaultItem) {
@@ -161,7 +173,7 @@ function Picker({
                 aria-label={t('detail.links.pick', { name: itemName(candidate) })}
                 onClick={() => void pick(candidate)}
               >
-                <Entry item={candidate} />
+                <Entry item={candidate} all={all} />
               </button>
             </li>
           ))}
@@ -185,33 +197,57 @@ export function LinkedItems({
   canWrite: (candidate: VaultItem) => boolean;
   onLink: (other: VaultItem) => Promise<void>;
   onUnlink: (other: VaultItem) => Promise<void>;
-  /** The item is in the Trash or can't be read: it lists its links and changes none. */
+  /** The item is in the Trash, can't be read or can't be changed by this person: it lists its links and changes none. */
   readOnly?: boolean;
 }) {
   const t = useT();
+  const card = useRef<HTMLElement>(null);
   const [picking, setPicking] = useState(false);
   const [failure, setFailure] = useState<unknown>(undefined);
-  const linked = linkedItems(item, all);
+  // The items being unlinked, so a second press on the same one can't write it twice.
+  const [unlinking, setUnlinking] = useState<ReadonlySet<string>>(new Set());
+  // After an unlink the focus would fall with the row: it goes to the next Unlink, or to Link an item.
+  const [refocus, setRefocus] = useState<{ id: string; index: number } | null>(null);
+  const linked = connectedItems(item, all);
   const error = failure === undefined ? undefined : describeError(failure);
+  // Only an item that can be read and changed has its end written.
+  const unlinkable = (other: VaultItem) => !readOnly && other.data !== null && canWrite(other);
 
-  async function unlink(other: VaultItem) {
+  useEffect(() => {
+    if (!refocus || linked.some((other) => other.id === refocus.id)) return;
+    const buttons = card.current?.querySelectorAll<HTMLElement>('[data-unlink]');
+    const next = buttons && buttons.length > 0 ? buttons[Math.min(refocus.index, buttons.length - 1)] : undefined;
+    (next ?? card.current?.querySelector<HTMLElement>('[data-link-add]'))?.focus();
+    setRefocus(null);
+  });
+
+  async function unlink(other: VaultItem, index: number) {
+    if (unlinking.has(other.id)) return;
+    setUnlinking((held) => new Set(held).add(other.id));
     setFailure(undefined);
     try {
       await onUnlink(other);
+      setRefocus({ id: other.id, index });
     } catch (caught) {
       setFailure(caught);
+    } finally {
+      setUnlinking((held) => {
+        const rest = new Set(held);
+        rest.delete(other.id);
+        return rest;
+      });
     }
   }
 
   return (
-    <section className="card pad linked" aria-labelledby="h-links">
+    <section ref={card} className="card pad linked" aria-labelledby="h-links">
       <div className="linked-head">
         <span className="linked-head-icon" aria-hidden="true">
           <Icon name="link" />
         </span>
         <h2 id="h-links">{t('detail.links.title')}</h2>
         {readOnly ? null : (
-          <Button size="small" onPress={() => setPicking(true)}>
+          <Button size="small" data-link-add="" onPress={() => setPicking(true)}>
             {t('detail.links.add')}
           </Button>
         )}
@@ -225,19 +261,21 @@ export function LinkedItems({
         <p className="muted">{t('detail.links.none')}</p>
       ) : (
         <ul className="linked-list">
-          {linked.map((other) => (
+          {linked.map((other, index) => (
             <li key={other.id} className="linked-row">
               <Link to="/vault/$itemId" params={{ itemId: other.id }} className="linked-link">
-                <Entry item={other} />
+                <Entry item={other} all={all} />
               </Link>
-              {readOnly ? null : (
+              {unlinkable(other) ? (
                 <IconButton
+                  data-unlink=""
                   aria-label={t('detail.links.unlink', { name: itemName(other) })}
-                  onPress={() => void unlink(other)}
+                  isDisabled={unlinking.has(other.id)}
+                  onPress={() => void unlink(other, index)}
                 >
                   <Icon name="close" />
                 </IconButton>
-              )}
+              ) : null}
             </li>
           ))}
         </ul>
