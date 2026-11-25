@@ -1,0 +1,33 @@
+/* The Profile page: two cards, a name and address and a master password. */
+.profile-card {
+  max-width: 760px;
+  gap: 16px;
+}
+.profile-form {
+  gap: 16px;
+}
+.profile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 16px;
+}
+.profile-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.check-row.top {
+  align-items: flex-start;
+}
+.check-row.top input {
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  flex: none;
+}
+.check-row .t {
+  display: block;
+  font-weight: 600;
+}
+.check-row .hint {
+  display: block;
+}

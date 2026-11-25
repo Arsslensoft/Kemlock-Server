@@ -20,6 +20,7 @@ pub(crate) mod device_api_use;
 pub(crate) mod device_key_copies;
 pub(crate) mod devices;
 pub(crate) mod duplicate_dismissals;
+pub(crate) mod email_changes;
 pub(crate) mod emergency_access;
 pub(crate) mod events;
 pub(crate) mod federation;

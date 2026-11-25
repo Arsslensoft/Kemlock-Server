@@ -321,6 +321,27 @@ impl Session {
         })
     }
 
+    /// Wraps the open account's root key under a new master key and OPAQUE export key, for a
+    /// change of master password or of sign-in address (docs/crypto.md, "Changing the master
+    /// password and the sign-in address"). The root key stays, and so do the key version and the
+    /// wrap's associated data: only the key that wraps it is new. Consumes both handles on
+    /// success, and keeps them when it fails, so the page can try again or release them.
+    pub(crate) fn rewrap_root(&mut self, master: u32, export: u32) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let master_key = self.master(master)?;
+        let export_key = self.export(export)?;
+        let wrapped = password_wrap::seal(
+            &master_key,
+            &export_key,
+            &unlocked.root,
+            &unlocked.account_id,
+            unlocked.key_version,
+        )?;
+        self.slots.remove(&master);
+        self.slots.remove(&export);
+        Ok(wrapped)
+    }
+
     /// Opens the password wrap of the root key and keeps what items need in memory: the root key
     /// opens the wrap only if both the master key and the export key are right. With the sealed
     /// private keys it opens those too. Consumes the master and export handles on success.
@@ -852,5 +873,100 @@ mod send_tests {
             session.open_send_meta(&[4; 16], Kind::Text, &[0; 64], &[0; 40]),
             Err(Error::Locked)
         );
+    }
+}
+
+#[cfg(test)]
+mod rewrap_tests {
+    use super::*;
+
+    const ACCOUNT: [u8; 16] = [0x61; 16];
+
+    fn unlocked_session(key_version: u32) -> Session {
+        let mut session = Session::new();
+        session.unlocked = Some(Unlocked {
+            account_id: ACCOUNT,
+            key_version,
+            root: RootKey::from_bytes(&[0x44; 64]),
+            item_wrap: SecretKey::from_bytes(&[2; 32]),
+            private: None,
+            spaces: SpaceKeys::default(),
+        });
+        session
+    }
+
+    #[test]
+    fn a_locked_session_wraps_nothing_and_keeps_the_handles() {
+        let mut session = Session::new();
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        assert_eq!(session.rewrap_root(master, export), Err(Error::Locked));
+        assert!(session.master(master).is_ok());
+        assert!(session.export(export).is_ok());
+    }
+
+    #[test]
+    fn the_wrap_opens_under_the_new_keys_and_only_them() {
+        let mut session = unlocked_session(3);
+        let master = session.insert_master([7; 32]).expect("handle");
+        let export = session.insert_export([8; 64]).expect("handle");
+
+        let wrapped = session.rewrap_root(master, export).expect("wraps");
+
+        assert_eq!(wrapped.len(), password_wrap::WRAPPED_LEN);
+        // The same root key, for the same account and key version.
+        let opened =
+            password_wrap::open(&[7; 32], &[8; 64], &wrapped, &ACCOUNT, 3).expect("opens");
+        assert_eq!(opened.as_bytes(), &[0x44u8; 64]);
+        // Another master key, export key, account or key version opens nothing.
+        let wrong_master = password_wrap::open(&[9; 32], &[8; 64], &wrapped, &ACCOUNT, 3);
+        assert!(wrong_master.is_err());
+        let wrong_export = password_wrap::open(&[7; 32], &[9; 64], &wrapped, &ACCOUNT, 3);
+        assert!(wrong_export.is_err());
+        let wrong_account = password_wrap::open(&[7; 32], &[8; 64], &wrapped, &[0x62; 16], 3);
+        assert!(wrong_account.is_err());
+        let wrong_version = password_wrap::open(&[7; 32], &[8; 64], &wrapped, &ACCOUNT, 4);
+        assert!(wrong_version.is_err());
+    }
+
+    #[test]
+    fn the_next_sign_in_unlocks_with_the_new_keys() {
+        let mut session = unlocked_session(1);
+        let master = session.insert_master([7; 32]).expect("handle");
+        let export = session.insert_export([8; 64]).expect("handle");
+        let wrapped = session.rewrap_root(master, export).expect("wraps");
+
+        // The open session carries on: the root key is the same one.
+        assert!(session.is_unlocked());
+        let mut next = Session::new();
+        let m = next.insert_master([7; 32]).expect("handle");
+        let e = next.insert_export([8; 64]).expect("handle");
+        next.unlock(&ACCOUNT, &wrapped, m, e, 1, None)
+            .expect("unlocks");
+        assert!(next.is_unlocked());
+        // The old keys no longer unlock with this wrap.
+        let mut old = Session::new();
+        let m = old.insert_master([1; 32]).expect("handle");
+        let e = old.insert_export([2; 64]).expect("handle");
+        assert!(old.unlock(&ACCOUNT, &wrapped, m, e, 1, None).is_err());
+        assert!(!old.is_unlocked());
+    }
+
+    #[test]
+    fn both_handles_are_spent_and_a_wrong_handle_spends_nothing() {
+        let mut session = unlocked_session(1);
+        let master = session.insert_master([7; 32]).expect("handle");
+        let export = session.insert_export([8; 64]).expect("handle");
+
+        // A handle of the other kind, or none at all.
+        assert_eq!(session.rewrap_root(export, master), Err(Error::Invalid));
+        assert_eq!(session.rewrap_root(master, 9_999), Err(Error::Invalid));
+        assert!(session.master(master).is_ok());
+        assert!(session.export(export).is_ok());
+
+        session.rewrap_root(master, export).expect("wraps");
+        assert!(session.master(master).is_err());
+        assert!(session.export(export).is_err());
+        assert_eq!(session.rewrap_root(master, export), Err(Error::Invalid));
     }
 }

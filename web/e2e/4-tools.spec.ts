@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { type Page, expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem, signInAsAdmin } from './signin';
 import type { Placement } from '../src/api/placement';
 
 // The canvas's vault tools after sign-in: Duplicates and DuplicateMerge, ItemWebsites, Vault
@@ -14,7 +14,7 @@ import type { Placement } from '../src/api/placement';
 const PASSWORD = 'Tools-journey-pass-1!';
 
 async function newLogin(page: Page, name: string, website: string): Promise<void> {
-  await page.getByRole('link', { name: 'New item' }).first().click();
+  await newItem(page, 'Login');
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   await page.getByLabel('Name', { exact: true }).fill(name);
   await page.getByLabel('Username').fill('tools@example.org');

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { type Page, expect, test } from '@playwright/test';
 import { expectAccessible, freshCode, watchForCspProblems } from './helpers';
-import { choosePassword } from './signin';
+import { choosePassword, chooseFromAccountMenu } from './signin';
 import { ADMIN, readState, saveState } from './state';
 
 // The canvas's account screens (Account security, Spaces, Devices & apps) after sign-in. The
@@ -97,7 +97,7 @@ test('account security, spaces and devices & apps', async ({ page }) => {
   await signIn(page);
 
   // Account security: the admin turned on an authenticator app during setup.
-  await page.getByRole('link', { name: 'Account security' }).first().click();
+  await chooseFromAccountMenu(page, 'Security');
   await expect(page.getByRole('heading', { name: 'Account security', level: 1 })).toBeVisible();
   await expect(page.getByText('Authenticator app')).toBeVisible();
   // The app's own row: the second-step card lists the recovery code as On too.
@@ -127,7 +127,7 @@ test('account security, spaces and devices & apps', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Example Co', level: 1 })).toBeVisible({ timeout: 60_000 });
 
   // Devices & apps: this browser, the stubbed device, and the approval with its client-side words.
-  await page.getByRole('link', { name: 'Devices & apps' }).first().click();
+  await chooseFromAccountMenu(page, 'Devices & apps');
   await expect(page.getByRole('heading', { name: 'Devices & apps', level: 1 })).toBeVisible();
   await expect(page.getByText('This browser', { exact: true })).toBeVisible();
   await expect(page.getByText('Bitwarden extension in Firefox')).toBeVisible();

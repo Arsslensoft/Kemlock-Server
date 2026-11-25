@@ -11,6 +11,7 @@ mod bw_user_key_ids;
 mod custom_fields;
 mod dedup;
 mod devices;
+mod email_changes;
 mod emergency;
 mod event_reader;
 mod events;

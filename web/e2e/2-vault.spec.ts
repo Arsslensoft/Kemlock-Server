@@ -1,6 +1,6 @@
 import { type Page, expect, test } from '@playwright/test';
 import { expectAccessible, freshCode, watchForCspProblems } from './helpers';
-import { choosePassword } from './signin';
+import { choosePassword, chooseFromAccountMenu, newItem } from './signin';
 import { ADMIN, readState, saveState } from './state';
 
 async function signInWithPassword(page: Page, email: string, password: string): Promise<void> {
@@ -43,7 +43,7 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await expectAccessible(page);
 
   // NewItem: a login, with a generated password. The item is sealed in the worker.
-  await page.getByRole('link', { name: 'New item' }).first().click();
+  await newItem(page, 'Login');
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   await page.getByLabel('Name', { exact: true }).fill('GitHub');
   await page.getByLabel('Username').fill('sam@example.org');
@@ -85,7 +85,7 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await expect(page.getByText('The Trash is empty')).toBeVisible();
 
   // Lock: the keys are forgotten; the master password and a fresh code open the vault again.
-  await page.getByRole('button', { name: 'Lock the vault' }).click();
+  await chooseFromAccountMenu(page, 'Lock the vault');
   await expect(page).toHaveURL(/\/unlock/);
   await expect(page.getByRole('heading', { name: 'Open your vault' })).toBeVisible();
   await expectAccessible(page);
@@ -101,7 +101,7 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await expect(page.getByRole('row', { name: /GitHub/ })).toBeVisible();
 
   // The admin console shell is there for an admin.
-  await page.getByRole('link', { name: 'Admin console' }).click();
+  await chooseFromAccountMenu(page, 'Admin console');
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   await expectAccessible(page);
 

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem, signInAsAdmin } from './signin';
 
 // Items for a space owner: New item offers the collections the account may write to, and the item
 // is sealed in the worker under that collection's key and written with its `collectionId`.
@@ -26,7 +26,7 @@ test('a login saved to a space collection is sealed there and can be edited', as
   await expect(page.getByText('Item space').first()).toBeVisible({ timeout: 60_000 });
 
   // New item: pick the collection, and watch what the server is sent.
-  await page.getByRole('link', { name: 'New item' }).first().click();
+  await newItem(page, 'Login');
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   const where = page.getByLabel('Save to');
   await expect(where).toBeVisible({ timeout: 60_000 });

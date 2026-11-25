@@ -3,7 +3,7 @@
 import type { EraseAccountApi, PasswordProof } from '@/api/eraseAccount';
 import type { Api } from '@/api/client';
 import type { CryptoPort } from '@/crypto-port';
-import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
+import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { CredentialsError } from '@/lib/errors';
 
 /** Whether what was typed is the account's address: the check that this is no slip of a finger. */
@@ -14,21 +14,30 @@ export function confirmsEmail(typed: string, email: string): boolean {
 
 export interface DeleteDeps {
   api: Pick<EraseAccountApi, 'erase'> & Pick<Api, 'prelogin' | 'opaqueStart'>;
-  crypto: Pick<CryptoPort, 'masterKey' | 'opaqueLoginStart' | 'opaqueLoginFinish'>;
+  crypto: Pick<CryptoPort, 'masterKey' | 'opaqueLoginStart' | 'opaqueLoginFinish' | 'release'>;
   signOut: () => Promise<void>;
+}
+
+/** What proving the password again needs: the server's KDF settings and OPAQUE login, and the worker. */
+export interface ReauthDeps {
+  api: Pick<Api, 'prelogin' | 'opaqueStart'>;
+  crypto: Pick<CryptoPort, 'masterKey' | 'opaqueLoginStart' | 'opaqueLoginFinish' | 'release'>;
 }
 
 /**
  * The password again, as sign-in asks it: the master key from the server's KDF settings, then the
  * OPAQUE exchange, whose last message the server checks. A wrong password fails here, in the
- * client, as at sign-in.
+ * client, as at sign-in. Both keys the check makes (the master key and the OPAQUE export key) are
+ * handed back to the worker whatever happens: they are handles into its memory, and nothing else
+ * would ever free them.
  */
 export async function reauthenticate(
-  deps: Pick<DeleteDeps, 'api' | 'crypto'>,
+  deps: ReauthDeps,
   email: string,
   password: string,
 ): Promise<PasswordProof> {
   const dto = await deps.api.prelogin(email);
+  let exportKey: Uint8Array | undefined;
   const key = await deps.crypto.masterKey(password.normalize('NFC'), {
     memoryKib: dto.memoryKib,
     iterations: dto.iterations,
@@ -43,10 +52,11 @@ export async function reauthenticate(
       .catch(() => {
         throw new CredentialsError();
       });
-    wipe(last.exportKey);
+    exportKey = last.exportKey;
     return { loginState: started.loginState, finalization: encodeB64(last.finalization) };
   } finally {
-    wipe(key);
+    await deps.crypto.release(key).catch(() => undefined);
+    if (exportKey) await deps.crypto.release(exportKey).catch(() => undefined);
   }
 }
 

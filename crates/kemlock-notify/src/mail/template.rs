@@ -1,14 +1,17 @@
 //! The words of every mail. Each notice becomes a subject, a plain-text body and an HTML body.
 //!
 //! A mail says enough for the account's owner to recognise their own activity and nothing that
-//! could open the vault: no keys, no item names, no links that carry a secret. Text from outside
-//! (a device name) is escaped in the HTML and kept out of subjects.
+//! could open the vault: no keys, no item names, no links that carry a secret. The one link that
+//! does is the one that confirms a new sign-in address: its token proves the mailbox is the
+//! person's, opens nothing by itself, and works once. Text from outside (a device name) is
+//! escaped in the HTML and kept out of subjects.
 
 use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
-    InvitationNotice, Notice, ProtectedActionNotice, TwoStepChangedNotice, TwoStepCodeNotice,
-    TwoStepRecoveredNotice,
+    EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice,
+    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, TwoStepChangedNotice,
+    TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -362,6 +365,106 @@ fn protected_action(notice: &ProtectedActionNotice, brand: &Branding) -> Rendere
     )
 }
 
+fn email_change(notice: &EmailChangeNotice, brand: &Branding) -> Rendered {
+    // The token is base64url, so it needs no escaping in an address.
+    let link = format!(
+        "{}/confirm-email?token={}",
+        brand.domain.trim_end_matches('/'),
+        notice.token
+    );
+    let body = Body::new(&[
+        "Open this link to make this address the one you sign in with:",
+        &link,
+        "It works once and runs out in 24 hours. Until you open it nothing changes, and after you do, every device signs in again with the new address. If you didn't ask for this, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("Confirm your new {} sign-in address", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+fn email_change_requested(notice: &EmailChangeRequestedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, a change of the sign-in address of your account to {} was asked for.",
+        when(notice.at),
+        notice.new_address.as_str()
+    );
+    let body = Body::new(&[
+        &lead,
+        "Nothing changes until the link mailed to that address is opened. If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!(
+            "A new sign-in address was asked for on your {} account",
+            brand.app_name
+        ),
+        &body,
+        brand,
+    )
+}
+
+fn email_taken(notice: &EmailTakenNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, someone asked to use this address as the sign-in address of another {} account.",
+        when(notice.at),
+        brand.app_name
+    );
+    let body = Body::new(&[
+        &lead,
+        "This address already has an account, so nothing was changed and there is no link to open. If it was you, sign in with this address as you always do. If it wasn't, ignore this mail: no one can use your account because of it.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("This address already has a {} account", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+fn email_changed(notice: &EmailChangedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, the sign-in address of your account was changed to {}.",
+        when(notice.at),
+        notice.new_address.as_str()
+    );
+    let body = Body::new(&[
+        &lead,
+        "Every device was signed out and signs in again with the new address. If this was you, there is nothing to do. If it wasn't, someone has your account: ask your server's admin for help right away.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("The sign-in address of your {} account changed", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, the master password of your account was changed.",
+        when(notice.at)
+    );
+    let devices = if notice.others_signed_out {
+        "Your other devices were signed out and ask for the new password."
+    } else {
+        "Your other devices stay signed in and ask for the new password the next time they open."
+    };
+    let body = Body::new(&[
+        &lead,
+        devices,
+        "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("The master password of your {} account changed", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
 /// Writes a notice out as a mail.
 pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
     match notice {
@@ -373,6 +476,11 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::ProtectedAction(n) => protected_action(n, brand),
         Notice::TwoStepRecovered(n) => two_step_recovered(n, brand),
         Notice::TwoStepChanged(n) => two_step_changed(n, brand),
+        Notice::EmailChange(n) => email_change(n, brand),
+        Notice::EmailChangeRequested(n) => email_change_requested(n, brand),
+        Notice::EmailTaken(n) => email_taken(n, brand),
+        Notice::EmailChanged(n) => email_changed(n, brand),
+        Notice::PasswordChanged(n) => password_changed(n, brand),
     }
 }
 
@@ -618,6 +726,108 @@ mod tests {
         );
         assert!(r.text.contains("Duo was turned off"), "{}", r.text);
         assert!(r.text.contains("2026-11-26 09:05 UTC"));
+    }
+
+    #[test]
+    fn the_mail_to_a_new_address_carries_the_link_and_nothing_else_that_opens_anything() {
+        let r = render(
+            &Notice::EmailChange(EmailChangeNotice {
+                to: Email::parse("new@example.com").expect("email"),
+                token: "tok_en-123".to_owned(),
+            }),
+            &Branding::new("https://vault.example.com/"),
+        );
+        assert_eq!(r.to, "new@example.com");
+        assert_eq!(r.subject, "Confirm your new Kemlock sign-in address");
+        let link = "https://vault.example.com/confirm-email?token=tok_en-123";
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.html.contains(link), "{}", r.html);
+        assert!(!r.subject.contains("tok_en"));
+        assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_mail_to_the_old_address_names_the_new_one_and_carries_no_link() {
+        let r = render(
+            &Notice::EmailChangeRequested(EmailChangeRequestedNotice {
+                to: email(),
+                new_address: Email::parse("new@example.com").expect("email"),
+                at: datetime!(2026-11-26 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(r.to, "ada@example.com");
+        assert_eq!(
+            r.subject,
+            "A new sign-in address was asked for on your Kemlock account"
+        );
+        assert!(r.text.contains("new@example.com"), "{}", r.text);
+        assert!(r.text.contains("2026-11-26 09:05 UTC"));
+        assert!(!r.text.contains("confirm-email"));
+    }
+
+    #[test]
+    fn the_mail_to_an_address_that_has_an_account_says_so_and_carries_no_link() {
+        let r = render(
+            &Notice::EmailTaken(EmailTakenNotice {
+                to: Email::parse("kim@example.com").expect("email"),
+                at: datetime!(2026-11-26 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(r.to, "kim@example.com");
+        assert_eq!(r.subject, "This address already has a Kemlock account");
+        assert!(r.text.contains("already has an account"), "{}", r.text);
+        assert!(r.text.contains("nothing was changed"), "{}", r.text);
+        assert!(r.text.contains("2026-11-26 09:05 UTC"));
+        assert!(!r.text.contains("confirm-email"));
+        assert!(!r.html.contains("confirm-email"));
+        assert!(!r.text.contains("token"));
+    }
+
+    #[test]
+    fn the_mail_to_the_old_address_after_a_change_names_the_new_one_and_carries_no_link() {
+        let r = render(
+            &Notice::EmailChanged(EmailChangedNotice {
+                to: email(),
+                new_address: Email::parse("new@example.com").expect("email"),
+                at: datetime!(2026-11-26 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(r.to, "ada@example.com");
+        assert_eq!(
+            r.subject,
+            "The sign-in address of your Kemlock account changed"
+        );
+        assert!(r.text.contains("new@example.com"), "{}", r.text);
+        assert!(r.text.contains("2026-11-26 09:05 UTC"));
+        assert!(!r.text.contains("confirm-email"));
+    }
+
+    #[test]
+    fn the_mail_about_a_new_password_says_what_happened_to_the_other_devices() {
+        let render_with = |others_signed_out| {
+            render(
+                &Notice::PasswordChanged(PasswordChangedNotice {
+                    to: email(),
+                    at: datetime!(2026-11-26 10:05 +01:00),
+                    others_signed_out,
+                }),
+                &brand(),
+            )
+        };
+        let signed_out = render_with(true);
+        assert_eq!(signed_out.to, "ada@example.com");
+        assert_eq!(
+            signed_out.subject,
+            "The master password of your Kemlock account changed"
+        );
+        assert!(signed_out.text.contains("2026-11-26 09:05 UTC"));
+        assert!(signed_out.text.contains("other devices were signed out"));
+        let kept = render_with(false);
+        assert!(kept.text.contains("stay signed in"), "{}", kept.text);
+        assert!(!kept.text.contains("confirm-email"), "{}", kept.text);
     }
 
     #[test]

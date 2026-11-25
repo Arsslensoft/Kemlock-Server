@@ -1,0 +1,147 @@
+/* The avatar menu and the New menu: a button with a panel under it (ui/Popup.tsx). */
+.popup {
+  position: relative;
+}
+.popup-panel {
+  position: absolute;
+  z-index: 20;
+  top: 52px;
+  right: 0;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  padding: 8px;
+  border-radius: 16px;
+  border: 1px solid var(--border-input);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.popup-panel a,
+.popup-panel button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 14px;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.popup-panel a:hover,
+.popup-panel button:hover {
+  background: var(--hover-wash);
+  color: var(--text);
+  text-decoration: none;
+}
+.popup-panel a[aria-current='page'] {
+  background: var(--accent-wash-strong);
+  color: var(--text);
+}
+.popup-panel nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.popup-sep {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--border);
+}
+.popup-tag {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+/* Who is signed in, at the top of the avatar menu. */
+.popup-who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.popup-who .who-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.popup-who .who-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.popup-who .who-sub {
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.avatar-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--accent-wash-strong);
+  color: var(--accent-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.avatar-mark.amber {
+  background: var(--warn-wash);
+  color: var(--warn-text);
+}
+
+/* The round button that opens it. */
+button.avatar {
+  padding: 0;
+  cursor: pointer;
+}
+button.avatar[aria-expanded='true'] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-wash-strong);
+}
+
+/* The + button and its menu of every type, two to a row. */
+.btn.icon-only {
+  width: 44px;
+  padding: 0;
+}
+.btn.icon-only[aria-expanded='true'] {
+  box-shadow: 0 0 0 3px var(--accent-wash-strong);
+}
+.popup-panel.types {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+}
+.popup-panel.types h2 {
+  grid-column: 1 / -1;
+  margin: 4px 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.popup-panel.types a {
+  gap: 10px;
+  padding: 0 10px;
+}

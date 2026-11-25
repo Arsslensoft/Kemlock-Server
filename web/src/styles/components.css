@@ -646,7 +646,6 @@
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  max-width: 560px;
   font-size: 13px;
   color: var(--muted);
   text-wrap: pretty;

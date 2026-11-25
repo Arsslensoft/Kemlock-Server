@@ -142,4 +142,18 @@ impl<D: DeviceRepo, C: KeyCopyRepo, T: TokenRepo, E: Clock, V: EventLog>
         }
         Ok(())
     }
+
+    /// Signs out every device of the account but the one asking, as a password change with "Sign
+    /// out my other devices" does. Returns how many went. The asking device keeps its tokens and
+    /// its key copy.
+    pub async fn execute_others(&self, actor: &Actor) -> Result<usize, AppError> {
+        let mut signed_out = 0;
+        for device in self.devices.list(actor.user).await? {
+            if device.id != actor.device {
+                self.execute(actor, device.id).await?;
+                signed_out += 1;
+            }
+        }
+        Ok(signed_out)
+    }
 }

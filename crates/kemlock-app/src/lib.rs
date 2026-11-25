@@ -39,6 +39,7 @@ pub mod policies;
 pub mod ports;
 pub mod prelogin;
 pub mod privacy;
+pub mod profile;
 pub mod push;
 pub mod put_batch;
 pub mod put_item;

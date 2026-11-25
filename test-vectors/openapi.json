@@ -451,6 +451,79 @@
         ],
         "type": "object"
       },
+      "ChangeEmailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "description": "The new sign-in address.",
+            "type": "string"
+          },
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`, with the current password.",
+            "type": "string"
+          },
+          "kdf": {
+            "$ref": "#/components/schemas/KdfDto"
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread.",
+            "type": "string"
+          },
+          "upload": {
+            "description": "OPAQUE's `RegistrationUpload`, registered under the new address, base64url.",
+            "type": "string"
+          },
+          "wrappedRootKey": {
+            "description": "The root key wrapped under that master key and the new record's export key, base64url.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "loginState",
+          "finalization",
+          "upload",
+          "kdf",
+          "wrappedRootKey"
+        ],
+        "type": "object"
+      },
+      "ChangePasswordRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`, with the current password.",
+            "type": "string"
+          },
+          "kdf": {
+            "$ref": "#/components/schemas/KdfDto"
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread.",
+            "type": "string"
+          },
+          "signOutOthers": {
+            "description": "End the sessions of every other device. Defaults to false.",
+            "type": "boolean"
+          },
+          "upload": {
+            "description": "OPAQUE's `RegistrationUpload` for the new password, base64url.",
+            "type": "string"
+          },
+          "wrappedRootKey": {
+            "description": "The root key wrapped under the new master key and export key, base64url, 92 bytes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loginState",
+          "finalization",
+          "upload",
+          "kdf",
+          "wrappedRootKey"
+        ],
+        "type": "object"
+      },
       "CollectionDto": {
         "properties": {
           "id": {
@@ -587,6 +660,19 @@
         ],
         "type": "object"
       },
+      "ConfirmEmailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "description": "The token in the mailed link.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
+      },
       "ConfirmRequest": {
         "additionalProperties": false,
         "properties": {
@@ -654,6 +740,18 @@
           "memberKeyVersion",
           "statement",
           "signature"
+        ],
+        "type": "object"
+      },
+      "ConfirmedEmailDto": {
+        "properties": {
+          "email": {
+            "description": "The address the account signs in with now.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
         ],
         "type": "object"
       },
@@ -1361,6 +1459,23 @@
         },
         "required": [
           "address"
+        ],
+        "type": "object"
+      },
+      "EmailChangeAskedDto": {
+        "properties": {
+          "expiresAt": {
+            "description": "When the link runs out, RFC 3339.",
+            "type": "string"
+          },
+          "pendingEmail": {
+            "description": "The address the link was mailed to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pendingEmail",
+          "expiresAt"
         ],
         "type": "object"
       },
@@ -3613,6 +3728,53 @@
         ],
         "type": "object"
       },
+      "ProfileDto": {
+        "description": "The profile: what it holds and which parts may change.",
+        "properties": {
+          "compatible": {
+            "description": "The account is shared with the Bitwarden apps, which hold its password: it is changed there.",
+            "type": "boolean"
+          },
+          "email": {
+            "description": "The address the account signs in with.",
+            "type": "string"
+          },
+          "hasPassword": {
+            "description": "The account has a master password to change.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The display name, or null when the account has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pendingEmail": {
+            "description": "The address a link was mailed to, while it can still be opened.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sso": {
+            "description": "A single sign-on identity is linked: the name and the address are the identity provider's.",
+            "type": "boolean"
+          },
+          "userId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "sso",
+          "hasPassword",
+          "compatible"
+        ],
+        "type": "object"
+      },
       "ProofRequest": {
         "additionalProperties": false,
         "description": "What proves it is the account's owner at a keyboard who turns a second step off, not only a\nsession: the one-time code mailed by `POST /kem/v1/account/two-factor/proof`, as Vaultwarden\ntakes a mailed code for the master password (`PasswordOrOtpData`).",
@@ -3892,6 +4054,19 @@
           "collection",
           "keyVersion",
           "keys"
+        ],
+        "type": "object"
+      },
+      "RenameProfileRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "The new name; blank clears it. At most 100 characters.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -5731,6 +5906,382 @@
         ]
       }
     },
+    "/kem/v1/account/credentials/start": {
+      "post": {
+        "operationId": "doc_credentials_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialsStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialsStartResponse"
+                }
+              }
+            },
+            "description": "OPAQUE's registration response, bound to the new address when one was given, else to the account's own"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The request or the address is malformed, or the address is the account's own"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed` (a new address for an identity provider's account), `compatible-account` or `no-password`"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`email-taken`: another account has the address"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/email": {
+      "delete": {
+        "operationId": "doc_cancel_email",
+        "responses": {
+          "204": {
+            "description": "No change of address is waiting: there was none, or its link no longer works"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "doc_request_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailChangeAskedDto"
+                }
+              }
+            },
+            "description": "The link is mailed to the new address; nothing changes until it is opened"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The login state was used before, or isn't well formed; the address, the settings, the wrap or the upload are malformed, or the address is the account's own"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed`, `compatible-account` or `no-password`"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`email-taken`, or `mail-off`: the server sends no mail"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`mail-failed`: the mail with the link could not be sent"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/email/confirm": {
+      "post": {
+        "operationId": "doc_confirm_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmedEmailDto"
+                }
+              }
+            },
+            "description": "The address is the account's now, and every session has ended: sign in again with it"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`email-change-invalid`: the token is unknown, used or out of time"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`email-taken`: someone took the address meanwhile; the ask is dropped"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/kem/v1/account/export": {
       "get": {
         "operationId": "doc_export",
@@ -6550,6 +7101,274 @@
         ],
         "tags": [
           "passkeys"
+        ]
+      }
+    },
+    "/kem/v1/account/password": {
+      "put": {
+        "operationId": "doc_change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The password's records are replaced; the root key, its version and the sessions' stamp stay"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The login state was used before, or isn't well formed; the settings, the wrap or the upload are malformed"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`compatible-account` or `no-password`"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/profile": {
+      "get": {
+        "operationId": "doc_profile_show",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDto"
+                }
+              }
+            },
+            "description": "The profile: name, address and what may change"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "patch": {
+        "operationId": "doc_profile_rename",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDto"
+                }
+              }
+            },
+            "description": "The profile, with the new name"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The name is longer than 100 characters or holds control characters"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed`: the name comes from the identity provider"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
         ]
       }
     },

@@ -91,6 +91,142 @@ wrapped  = AES-256-GCM(wrap key, nonce, root key, aad)
 The export key is OPAQUE's 64-byte export key. Neither the master key nor the export key alone
 opens the wrap, so a stolen database allows no offline guessing without the OPAQUE server secret.
 
+### Changing the master password and the sign-in address
+
+The root key does not change when the master password does. The browser makes a new master key and
+a new OPAQUE record, wraps the same root key again, and sends the three; the server swaps them in
+together. Nothing else the root key protects is touched: the key version, the public bundle and its
+signature, the sealed private keys, the Recovery Kit, the passkey PRF wraps, the trusted-device
+copies and every item stay byte for byte, because they hang off the root key and not off the master
+key. No item format changes.
+
+- **The new master key** is `Argon2id(new password, new salt, m = 65536, t = 3, p = 4, L = 32)`
+  with a new random 16-byte salt. The server accepts exactly these settings and a 16-byte salt, as
+  at registration, so prelogin answers an account no differently from an unknown email.
+- **The new wrap** is the password wrap above, `wrap key = HKDF(ikm = new master key ‖ new OPAQUE
+  export key, …)`, over the same root key, with the **same** `aad` (`"kemlock/v1/root-wrap"` ‖
+  account id ‖ `u32be(key version)`; the key version does not move) and a new random nonce. The key
+  worker makes it from the handles of the new master key and export key and the open account's root
+  key (`rewrapRoot`); the root key is never in JavaScript.
+- **The new OPAQUE record** is a registration of the new master key. OPAQUE binds the record to its
+  credential identifier, which is the account's email (lower-cased, `opaque1` above), so a change of
+  **address** needs a new record too: it is registered under the new address while the browser still
+  has the password. That is why changing the address asks for the master password, and why it
+  cannot be done for an account that has none.
+
+The routes need a session (`DPoP` and an access token); the one marked "no session" is opened from
+the mail client. Every change that writes also needs the password again, as erasing the account does:
+`loginState` and `finalization` are the last two messages of a fresh OPAQUE login
+(`POST /kem/v1/auth/opaque/start` first, with the same device key). A login state works once, a
+wrong password counts against the account like a wrong sign-in. With a second step on, a fresh
+proof of it is asked beside the password, exactly as erasing the account asks it: `proof` is the code mailed by
+`POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app, the recovery code,
+or a security key's or passkey's answer as `{"webauthn": …}`, and works once. The profile says
+whether one is on (`twoStep`). A request with a second step on and no proof is refused with
+`400 invalid-request` before the login state is spent; the proof is checked once the password is. A
+stolen session and a guessed password are therefore not enough to take the account's password or
+address over.
+
+| Route | |
+|---|---|
+| `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail, twoStep}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened, `twoStep` when the account has a second step on. |
+| `PATCH /kem/v1/account/profile` | `{name}`: trimmed, blank clears it, at most 100 characters and no control characters. Answers the profile. `403 sso-managed` for an identity provider's account. Event `account.name_changed`. |
+| `POST /kem/v1/account/credentials/start` | `{request, email?}`: OPAQUE's `RegistrationResponse` for the account's own address, or for `email`, which must be well formed and not the account's own (`400`). Answers `{response, ticket}`, and answers the same for an address another account has (see "No account enumeration"). |
+| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked when `signOutOthers` was true, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
+| `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?}` with `upload` registered under `email` and `ticket` asked for it: keeps the change as pending and mails the new address. `202 {pendingEmail, expiresAt}`, for an address that has an account too. Three asks an hour per account. Event `account.email_change_requested`. |
+| `DELETE /kem/v1/account/email` | Takes the pending change back. `204`, also when there was none. |
+| `POST /kem/v1/account/email/confirm` | **No session.** `{token}`: opens the link. `200 {email}`. `409 account-changed` when the account was written meanwhile (the link still works). Event `account.email_changed`. |
+
+`upload` is OPAQUE's `RegistrationUpload`, `kdf` is `{memoryKib, iterations, parallelism, salt}`, and
+`wrappedRootKey` is the 92-byte wrap, all base64url as everywhere. The server checks the settings and
+the lengths and never opens anything.
+
+**The ticket.** `credentials/start` hands out, with the server's half of the registration, a ticket
+sealed under `server.key` (purpose `"profile-registration"`, as the login state is, so the server keeps
+nothing between the two messages). It holds the account, the DPoP key that asked, the address the
+registration was asked for (none for a password), the SHA-256 of the credential identifier the OPRF
+was evaluated for, and an expiry: as long as a login state lasts, five minutes. `PUT /password` and
+`POST /email` must send it back as `ticket`, and it is checked before the password is spent: a ticket
+that is missing, unreadable, run out, made for another account or another DPoP key, made for an
+address when a password is changed or for a different address than the request's `email` (compared
+the same way whether or not that address has an account), or made for an address the account no
+longer has, is `400 invalid-request`. A registration made for one use can't be spent on another.
+
+**`signOutOthers`** (default false) ends every other session of the account at once. The new
+records and a **new security stamp** are written in the same conditional write, so every access token
+and every refresh token the account holds stops working with it, the asking device's too; nothing
+waits for a token to run out. The answer carries the asking device's new tokens (`tokens`, the same
+as `POST /kem/v1/auth/token` answers), bound to its DPoP key and its device id, and its old refresh
+tokens are deleted. The other devices, their trusted-device copies and their tokens are deleted as
+`POST /kem/v1/devices/sign-out` does for one, after the write and best effort: they are dead by their
+stamp whether or not that works, and the change is not reported failed if it does not. Without
+`signOutOthers` the stamp stays, every device goes on and asks for the new password the next time it
+unlocks with it; `tokens` is `null`. An access token whose device has been signed out is refused too,
+whatever its stamp.
+
+**Writes are conditional.** The password's records and the address change each update the account's
+row only while it still has the `updated_at` and security stamp that were read, in one transaction
+with the deletion of the pending change (and, for an address, the spending of this very link and the
+move of the emergency grants), writing only the sign-in columns. A write that finds the row changed
+writes nothing and answers `409 account-changed`: asking again is safe, and a link is not spent by a
+change that did not happen.
+
+**The address changes only when the link is opened.** Asking keeps one pending change per account (a
+new ask replaces the old one, whose link stops working): the new address, the new record, settings
+and wrap, and the SHA-256 of the link's token, which is 32 random bytes as base64url and is never
+stored. The mail to the new address carries `<DOMAIN>/confirm-email?token=<token>`, good once and for
+24 hours; the mail to the old address says a change was asked for, names the new address and carries
+no link. The server must be able to send mail (`409 mail-off` otherwise), and a mail that cannot be
+sent leaves nothing pending (`502 mail-failed`). Three asks an hour per account are accepted, counted
+whether the address is free or not, on top of the limits every password check has; the fourth is
+`429 rate-limited`, before the password is spent.
+
+Opening the link looks at the account again, as it is now. An account that has been disabled or is
+being deleted gets `400 email-change-invalid`, as an unknown token does. One that has since been linked
+to an identity provider, shared with the Bitwarden apps or left with no password gets the refusal the
+ask would have had (`403`), and its pending change is dropped, since it can never be applied; so does
+an address another account has taken meanwhile (`409 email-taken`). Otherwise one conditional write
+replaces the account's address, record, settings and wrap with the pending ones, gives it a **new
+security stamp** (so every access and refresh token it holds stops working), spends the link, and
+points the **emergency-access grants** at the new address: the grants in which the account is the
+contact, and invitations still waiting at the old address, now name the new one (a grantor who already
+has a grant to the new address keeps both as they were). Every device's tokens are then deleted, so
+every device signs in again with the new address and password. A change of master password drops a
+pending change of address, which was made from the old password and would put it back. Erasing the
+account deletes it. Events carry no address.
+
+**No account enumeration.** Asking for an address another account has looks, to whoever asks, like
+asking for a free one. `credentials/start` evaluates the server's half of OPAQUE for random bytes
+instead of that address and never for another account's identifier, and the ticket has the same size;
+`POST /account/email` answers `202` with the same body, keeps a pending change that shows on the
+profile as any other does, and tells the old address as ever. The address itself is mailed a notice
+that it already has an account, that nothing was changed, and no link; the pending change that
+stands in for the real one has a token nobody was given, so nothing opens it. The checks that can
+fail (the ticket, the settings, the wrap, the rate limit, the password) come in the same order for
+both. Only opening a link can say `email-taken`, when someone took the address between the ask and
+the link.
+
+**Notices.** Every mail is best effort and none carries a secret or a link but the one that confirms
+the address: a new master password is mailed to the account's address (saying whether the other
+devices were signed out), and a change of address that was made is mailed to the address it had,
+naming the new one.
+
+Who may change what:
+
+- An account an identity provider owns (an SSO identity is linked) cannot change its name or its
+  address: `403 sso-managed`. It may change its master password, if it has one.
+- An account shared with the Bitwarden apps (`compatible`) holds its password hash and key in the
+  Bitwarden account record, so its password and address are changed there: `403 compatible-account`.
+- An account with no master password (single sign-on made it) has none to change, and a new address
+  needs one: `403 no-password`. Adding a password to such an account is a separate change.
+
+Other refusals: `400 invalid-request` for a malformed body, settings, wrap, upload, address, name or
+ticket, or a login state that was used or has run out; `401 unauthorized` for a wrong password;
+`400 email-change-invalid` for a token that is unknown, used or out of time, or whose account is
+disabled or being deleted (never which); `409 email-taken` when someone took the address between the
+ask and the link (the ask is then dropped); `409 account-changed` for a write that lost a race with
+another write of the account; `429 rate-limited` for the fourth ask in an hour.
+
 ### The account's private keys
 
 The kx1 and sig1 private keys are sealed under the user key's `"kemlock/v1/private-keys"` child:

@@ -41,6 +41,7 @@ pub use routes::passkeys::{PasskeyRuntime, PasskeysApiDoc, passkeys_router};
 pub use routes::policies::{
     MasterPasswordDto, PoliciesDoc, PoliciesDto, SpacePoliciesDto, policies_router, with_join_guard,
 };
+pub use routes::profile::{ProfileApiDoc, profile_router};
 pub use routes::push::router as push_router;
 pub use routes::recovery_kit::{RecoveryKitApiDoc, recovery_kit_router};
 pub use routes::sends::{

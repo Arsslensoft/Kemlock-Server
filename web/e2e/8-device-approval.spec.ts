@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { choosePassword, signInAsAdmin } from './signin';
+import { chooseFromAccountMenu, choosePassword, signInAsAdmin } from './signin';
 import { ADMIN } from './state';
 
 // Signing in on a new device with another device (docs/crypto.md, "Device-approval phrase"). Two
@@ -39,7 +39,7 @@ test('a new browser signs in through an open device, with the phrase matching on
   await expectAccessible(fresh);
 
   // The open device lists the request, shows the phrase it worked out itself, and approves.
-  await page.getByRole('link', { name: 'Devices & apps' }).click();
+  await chooseFromAccountMenu(page, 'Devices & apps');
   await expect(page.getByRole('heading', { name: 'Devices & apps', level: 1 })).toBeVisible();
   const approver = page.getByLabel("The phrase worked out from the request's key");
   await expect(approver.first()).toHaveText(words, { timeout: 60_000 });
@@ -47,7 +47,7 @@ test('a new browser signs in through an open device, with the phrase matching on
 
   // The new device signs in with the key it was sent, without the master password.
   await expect(fresh).toHaveURL(/\/vault$/, { timeout: 90_000 });
-  await expect(fresh.getByRole('link', { name: 'New item' }).first()).toBeVisible();
+  await expect(fresh.getByRole('button', { name: 'New item' })).toBeVisible();
   expect(problems).toEqual([]);
   await context.close();
 });

@@ -18,6 +18,8 @@ export interface WasmVault {
   opaqueLoginStart(master: number): string;
   opaqueLoginFinish(state: number, master: number, response: string): string;
   newAccount(accountId: string, master: number, exportKey: number): string;
+  /** The open account's root key under a new master key and export key: base64url, 92 bytes. */
+  rewrapRoot(master: number, exportKey: number): string;
   /** Like `newAccount` with no password wrap, leaving the account unlocked. */
   newSsoAccount(accountId: string): string;
   /** The open account's root key, base64url: for the worker to seal under the device's key. */

@@ -75,6 +75,37 @@ describe('a sign-in screen with no email', () => {
   });
 });
 
+describe('Profile', () => {
+  it('opens for a person with the vault open', async () => {
+    expect((await visit('/profile', 'unlocked')).pathname).toBe('/profile');
+  });
+
+  it('asks a locked vault to open first, and a signed-out person to sign in, keeping the page', async () => {
+    const locked = await visit('/profile', 'locked');
+    expect(locked.pathname).toBe('/unlock');
+    expect(locked.search['next']).toBe('/profile');
+    const out = await visit('/profile', 'signed-out');
+    expect(out.pathname).toBe('/sign-in');
+    expect(out.search['next']).toBe('/profile');
+  });
+});
+
+describe('the link mailed to a new address', () => {
+  it('needs no sign-in, and keeps the token it carries', async () => {
+    for (const status of ['signed-out', 'locked', 'unlocked'] as const) {
+      const at = await visit('/confirm-email?token=abc_DEF-123', status);
+      expect(at.pathname, status).toBe('/confirm-email');
+      expect(at.search['token'], status).toBe('abc_DEF-123');
+    }
+  });
+
+  it('opens with no token too, to say the link is incomplete', async () => {
+    const at = await visit('/confirm-email', 'signed-out');
+    expect(at.pathname).toBe('/confirm-email');
+    expect(at.search['token']).toBeUndefined();
+  });
+});
+
 describe('the new item route', () => {
   it('opens the form of any kind named in its search', async () => {
     for (const kind of ['login', 'note', 'file', 'otp', 'backup-codes', 'passkey', 'card', 'identity', 'contact', 'certificate', 'ssh-key', 'pgp-key']) {

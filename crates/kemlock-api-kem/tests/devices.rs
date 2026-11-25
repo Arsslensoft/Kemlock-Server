@@ -473,6 +473,11 @@ async fn signing_a_device_out_deletes_its_tokens_and_its_copy() {
     assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
 
     assert!(app.store.key_copy_of(other_id).is_none());
+    // Its access token has not run out and carries the account's stamp, and opens nothing now.
+    let used = other
+        .get_authed("/kem/v1/devices/key-copy", &other_session.access_token)
+        .await;
+    assert_eq!(used.status, StatusCode::UNAUTHORIZED, "{:?}", used.json());
     let refreshed = other
         .post(
             "/kem/v1/auth/token",
