@@ -48,19 +48,23 @@ export function fileOf(data: ItemData | null | undefined): AttachedFile | undefi
   return attached(data?.['file']) ?? filesOf(data)[0];
 }
 
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
+export type SizeUnit = 'b' | 'kb' | 'mb' | 'gb' | 'tb';
+const UNITS: SizeUnit[] = ['b', 'kb', 'mb', 'gb', 'tb'];
 
-/** `2.4 MB`: decimal units, one decimal from a megabyte up. */
-export function formatSize(bytes: number): string {
+/**
+ * `2.4 MB`: decimal units, one decimal from a megabyte up. The number is written for `locale` and
+ * `unit` words the whole, so a message can put them in the order the language wants.
+ */
+export function formatSize(bytes: number, locale: string, unit: (name: SizeUnit, value: string) => string): string {
   let value = bytes;
-  let unit = 0;
-  while (value >= 1000 && unit < UNITS.length - 1) {
+  let index = 0;
+  while (value >= 1000 && index < UNITS.length - 1) {
     value /= 1000;
-    unit += 1;
+    index += 1;
   }
-  const digits = unit >= 2 && value < 100 ? 1 : 0;
-  const number = new Intl.NumberFormat('en', { maximumFractionDigits: digits, minimumFractionDigits: digits });
-  return `${number.format(value)} ${UNITS[unit]}`;
+  const digits = index >= 2 && value < 100 ? 1 : 0;
+  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits });
+  return unit(UNITS[index] ?? 'b', number.format(value));
 }
 
 /** `PDF` for `lease.pdf`; the media type's subtype when the name has no extension. */

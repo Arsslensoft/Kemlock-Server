@@ -7,8 +7,9 @@ import { Button } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import type { ItemData } from '../vault';
-import { type AttachedFile, type DownloadFile, fileOf, filesOf, formatSize, typeLabel } from './files';
+import { type AttachedFile, type DownloadFile, fileOf, filesOf, typeLabel } from './files';
 import { Card, Row } from './rows';
+import { useFormatSize } from './useFormatSize';
 
 /** Download one file: idle, working, or failed (with a message under the button). */
 function DownloadButton({
@@ -27,7 +28,8 @@ function DownloadButton({
       <Button
         size="small"
         isDisabled={!download || state === 'busy' || !file.serverId}
-        aria-label={label}
+        // While it works the button reads "Preparing…", and its name says the same.
+        aria-label={state === 'busy' ? undefined : label}
         onPress={() => {
           if (!download) return;
           setState('busy');
@@ -49,13 +51,14 @@ function DownloadButton({
   );
 }
 
-function summary(file: AttachedFile): string {
-  return [typeLabel(file), formatSize(file.size)].filter((part) => part !== '').join(' · ');
+function summary(file: AttachedFile, size: (bytes: number) => string): string {
+  return [typeLabel(file), size(file.size)].filter((part) => part !== '').join(' · ');
 }
 
 /** A File item: the file, with its name, type, size and a Download button. */
 export function FileDetail({ data, download }: { data: ItemData | null; download: DownloadFile | undefined }) {
   const t = useT();
+  const size = useFormatSize();
   const file = fileOf(data);
   return (
     <Card id="h-file" title={t('detail.file.title')}>
@@ -70,7 +73,7 @@ export function FileDetail({ data, download }: { data: ItemData | null; download
             </Row>
           ) : null}
           <Row label={t('detail.file.size')}>
-            <div>{formatSize(file.size)}</div>
+            <div>{size(file.size)}</div>
           </Row>
           <div className="row">
             <DownloadButton file={file} download={download} label={t('detail.file.downloadNamed', { name: file.name })} />
@@ -89,6 +92,7 @@ export function FileDetail({ data, download }: { data: ItemData | null; download
 /** The files attached to a secure note, each with a Download button; nothing when it has none. */
 export function AttachmentsCard({ data, download }: { data: ItemData | null; download: DownloadFile | undefined }) {
   const t = useT();
+  const size = useFormatSize();
   const files = filesOf(data);
   if (files.length === 0) return null;
   return (
@@ -97,7 +101,7 @@ export function AttachmentsCard({ data, download }: { data: ItemData | null; dow
         <div className="row" key={`${file.id}-${i}`}>
           <div className="grow">
             <div className="wrap">{file.name || '—'}</div>
-            <div className="muted">{summary(file)}</div>
+            <div className="muted">{summary(file, size)}</div>
           </div>
           <DownloadButton file={file} download={download} label={t('detail.file.downloadNamed', { name: file.name })} />
         </div>
