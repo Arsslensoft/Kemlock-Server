@@ -3,6 +3,7 @@ import { expectAccessible, watchForCspProblems } from './helpers';
 import {
   chooseFromAccountMenu,
   enterCode,
+  nextCode,
   openAccountMenu,
   signInAsAdmin,
   signInWithPassword,
@@ -153,6 +154,10 @@ test('Profile: the name, the address and the master password', async ({ page }) 
   await expect(section.getByLabel('Current master password')).toBeVisible();
   await expect(section.getByRole('button', { name: 'Save' })).toBeDisabled();
   await section.getByLabel('Current master password').fill(ADMIN.password);
+  // The admin has an authenticator app on, so a new address asks a fresh code beside the password.
+  await expect(section.getByLabel('Second-step code')).toBeVisible();
+  await expect(section.getByRole('button', { name: 'Save' })).toBeDisabled();
+  await section.getByLabel('Second-step code').fill(await nextCode());
   await section.getByRole('button', { name: 'Save' }).click();
   // With the server's mail on, a link is sent and the change waits; with it off, the server says so.
   const sent = page.getByText(/We sent an email to sam\.new@example\.co/);
@@ -168,6 +173,11 @@ test('Profile: the name, the address and the master password', async ({ page }) 
   const pw = page.getByRole('region', { name: 'Master password' });
   await expect(pw.getByRole('checkbox', { name: /Sign out my other devices/ })).toBeChecked();
   await expect(pw.getByText('No one can reset it for you.')).toBeVisible();
+  // A second step is on: the change waits for its code, which works once.
+  await expect(pw.getByLabel('Second-step code')).toBeVisible();
+  await expect(pw.getByRole('button', { name: 'Change master password' })).toBeDisabled();
+  const code = await nextCode();
+  await pw.getByLabel('Second-step code').fill(code);
   await pw.getByLabel('Current master password').fill(ADMIN.password);
   await pw.getByLabel('New master password').fill('too short');
   await pw.getByLabel('Type it again').fill('too short');
@@ -185,18 +195,22 @@ test('Profile: the name, the address and the master password', async ({ page }) 
   await expect(page.getByText('That is not your current master password.')).toBeVisible({ timeout: 60_000 });
   await expect(pw.getByLabel('New master password')).toHaveValue(NEW_PASSWORD);
 
-  // The change: the boxes empty, and the account opens with the new password.
+  // The change: the boxes empty, and the account opens with the new password. The code was not
+  // spent by the refusals, which never reached the server, but a failed try empties its box.
   await pw.getByLabel('Current master password').fill(ADMIN.password);
+  await pw.getByLabel('Second-step code').fill(code);
   await pw.getByRole('button', { name: 'Change master password' }).click();
   await expect(page.getByText('Your master password is changed, and your other devices are signed out.')).toBeVisible({
     timeout: 60_000,
   });
   await expect(pw.getByLabel('Current master password')).toHaveValue('');
+  await expect(pw.getByLabel('Second-step code')).toHaveValue('');
 
   // Back to the old one, with this tab still signed in: then a sign-in proves the final record.
   await pw.getByLabel('Current master password').fill(NEW_PASSWORD);
   await pw.getByLabel('New master password').fill(ADMIN.password);
   await pw.getByLabel('Type it again').fill(ADMIN.password);
+  await pw.getByLabel('Second-step code').fill(await nextCode());
   await pw.getByRole('checkbox', { name: /Sign out my other devices/ }).uncheck();
   await pw.getByRole('button', { name: 'Change master password' }).click();
   await expect(page.getByText('Your master password is changed.', { exact: true })).toBeVisible({ timeout: 60_000 });

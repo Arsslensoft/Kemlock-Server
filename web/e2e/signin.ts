@@ -35,6 +35,18 @@ export async function enterCode(page: Page): Promise<void> {
   saveState({ totpStep: step });
 }
 
+/**
+ * A fresh code of the admin's authenticator, for a proof a page asks beside the password (changing
+ * the master password or the address). It waits for a step the server has not used yet.
+ */
+export async function nextCode(): Promise<string> {
+  const { totpSecret, totpStep } = readState();
+  if (!totpSecret) throw new Error('the setup journey has not run');
+  const { code, step } = await freshCode(totpSecret, totpStep);
+  saveState({ totpStep: step });
+  return code;
+}
+
 /** Opens the avatar menu at the top right of a shell, and returns the menu. */
 export async function openAccountMenu(page: Page): Promise<Locator> {
   const avatar = page.getByRole('button', { name: /^Account menu for / });
