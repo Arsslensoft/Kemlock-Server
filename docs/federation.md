@@ -234,6 +234,7 @@ error response that does not say whether the vault exists.
 | 14 | Origin keys | 1 vault |
 | 15 | Tags | 1 vault, 2 item ids (array of at most 256 16-byte ids) |
 | 16 | Erase | 1 vault: the home tells a replica its vault was erased, so the replica deletes its copy (answered with an Ack) |
+| 17 | Sends | 1 vault (a personal vault), 2 after (a Send id, 16 bytes, all zeros for the first page), 3 limit (1 to 500; the responder serves at most 50) |
 
 | Type | Response | Fields |
 | --- | --- | --- |
@@ -249,6 +250,7 @@ error response that does not say whether the vault exists.
 | 110 | Forgotten | 1 vaults, 2 items, 3 accounts: what the responder says it deleted |
 | 111 | Origin keys | 1 vault, 2 attestations (array of at most 32 signed envelopes) |
 | 112 | Tags | 1 vault, 2 entries (array of at most 256 maps `{0: item id, 1: revision, 2: dedup key version, 3: the tags, 32 bytes each, packed, sorted, at most 64}`) |
+| 113 | Sends | 1 vault, 2 entries (array of at most 50 maps, see "Sends" below), 3 more |
 | 199 | Error | 1 code (1 refused, 2 bad request, 3 internal, 4 unknown vault), 2 detail (at most 256 bytes) |
 
 A peer's cursor is the opaque version-vector form of `kemlock-domain`, one per vault (a device's
@@ -493,6 +495,32 @@ upload). A larger file gets its row only, and its bytes are fetched from a peer 
 is downloaded. A peer serves a blob only of a vault it may read, and the file's owner must be that
 vault.
 
+**Sends.** A Send of a personal vault (a space has none) travels with the vault, as ciphertext,
+so a Send link keeps working when the vault fails over to a replica. `Sends` pages through the
+Sends of the vault's owner in Send id order, 50 a page and about 1.5 MB at most; only a note, or a
+file Send whose bytes have arrived, is listed. An entry is a deterministic CBOR map: 0 Send id (16
+bytes, the access id of the link), 1 kind (0 note, 1 file), 2 meta, 3 sealed key, 4 payload (the
+sealed parts of `docs/crypto.md`, opaque here, at most 1 MiB each and 256 bytes for the key), 5 file
+(absent for a note: `{0: blob id, 1: size in bytes, 2: "kma1" or "opaque"}`), 6 password (absent
+when none: `{0: salt, 1: hash}`, 32 bytes each), 7 view limit (absent for none), 8 view count,
+9 hide email, 10 disabled, 11 expires at (absent for none), 12 deletion at, 13 created at, 14
+revised at; times are Unix milliseconds. A receiver checks every length, that a file Send has a
+file and a note has none, and refuses unknown fields.
+
+A replica adds a row for each Send it lacks, with the same id and so the same link, and copies a
+file as it copies an attachment: `Blob` requests of at most 2 MiB (the responder serves the blob of
+a Send of the vault's owner whose bytes have arrived), only up to 50 MiB, and a larger file gets its
+row only and is fetched from a peer the first time someone opens the Send. A file of more than 512
+MiB is not taken. A `kma1` file is stored through the blob store's `KMA1` check, as an upload is; an
+`opaque` file (a Bitwarden app's own format, which the server can't read) is held to the announced
+size alone. A file that can't be fetched or fails its check leaves its Send out until the next
+visit, and the other Sends go on. A row already held takes the peer's newer revision (the options
+and the password, never the owner, key or file) and the larger of the two view counts, so a view
+limit used up at one server stays used up at the other. At a visit to the Send's home, a replica
+deletes the copies it made that the home no longer holds (the owner deleted the Send there) and
+their files; a Send made at the replica itself is never deleted this way (table
+`federation_replicated_sends` records which rows are copies).
+
 **Member accounts.** The home publishes one home record of kind `member-account` per member of the
 vault (for a personal vault, its account; for a space, its confirmed members) whenever the account
 changes. The payload is deterministic CBOR (`kemlock-federation`, `members.rs`): the user id, email,
@@ -730,4 +758,4 @@ document at `/admin/v1/federation/openapi.json`.
 
 ## Not built yet
 
-- Send files.
+Nothing is open.
