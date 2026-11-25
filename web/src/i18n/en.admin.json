@@ -306,7 +306,7 @@
   "admin.settings.mail.testOk": "The test email was sent.",
   "admin.settings.push.title": "Push & live sync",
   "admin.settings.push.kemlock": "Push to Kemlock apps",
-  "admin.settings.push.kemlockHint": "Through Kemlock's push relay. A push says only \"sync now\", never what changed.",
+  "admin.settings.push.kemlockHint": "Sent by this server: to iPhones with your APNs key, to Android through UnifiedPush; the hosted relay is an optional fallback. A push says only \"sync now\", never what changed.",
   "admin.settings.push.websocket": "Live sync over WebSocket",
   "admin.settings.push.websocketHint": "For the web vault, desktop apps and browser extensions.",
   "admin.settings.push.installationId": "Bitwarden push installation ID",
