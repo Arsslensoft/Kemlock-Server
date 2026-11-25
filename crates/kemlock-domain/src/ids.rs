@@ -65,3 +65,7 @@ id_type!(
     /// so federation needs no migration of items later.
     ServerId
 );
+id_type!(
+    /// A custom field an admin defined for the server's items.
+    CustomFieldId
+);
