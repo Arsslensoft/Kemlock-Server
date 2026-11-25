@@ -81,6 +81,6 @@ export function useVaults(items: readonly Pick<VaultItem, 'owner'>[]): Vaults {
   return useMemo(() => {
     const words = { personal, space };
     const options = vaultOptions(rows ?? [], items, words);
-    return { options, labelOf: (owner) => vaultLabel(owner, options, words) };
+    return { options, labelOf: (owner: string) => vaultLabel(owner, options, words) };
   }, [rows, items, personal, space]);
 }

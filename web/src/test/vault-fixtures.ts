@@ -11,5 +11,5 @@ const options = vaultOptions([{ id: FAMILY_ID, name: 'Family', state: 'confirmed
 
 export const VAULTS: Vaults = {
   options,
-  labelOf: (owner) => vaultLabel(owner, options, WORDS),
+  labelOf: (owner: string) => vaultLabel(owner, options, WORDS),
 };
