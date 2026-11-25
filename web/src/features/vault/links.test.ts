@@ -3,11 +3,15 @@ import {
   LinkError,
   formLinkCandidates,
   formLinks,
+  incomingLinks,
   isLinked,
+  legacyLink,
   linkCandidates,
   linkInputs,
+  linkWriteFields,
   linkedItems,
   linksFields,
+  linksOf,
   planLinkWrites,
   readLinks,
   unlinkInputs,
@@ -34,6 +38,14 @@ describe('readLinks and writeLinks', () => {
   it('write {id} entries sorted by id, and nothing at all for no links', () => {
     expect(writeLinks({}, [C, A, A])).toEqual([{ id: A }, { id: C }]);
     expect(writeLinks({ links: [{ id: A }] }, [])).toBeUndefined();
+  });
+
+  it('keep an entry they cannot read, after the others, and the member when only those are left', () => {
+    const odd = { who: 'knows', note: 'a link of another shape' };
+    const data = { links: [{ id: C }, odd, 'x', { id: 'not-a-uuid' }] };
+    expect(writeLinks(data, [A, C])).toEqual([{ id: A }, { id: C }, odd, 'x', { id: 'not-a-uuid' }]);
+    expect(writeLinks(data, [])).toEqual([odd, 'x', { id: 'not-a-uuid' }]);
+    expect(writeLinks({ links: ['x'] }, [])).toEqual(['x']);
   });
 
   it('keep what an entry already carried', () => {
@@ -105,18 +117,69 @@ describe('what a form holds and writes', () => {
     expect(formLinks({ linkedLoginId: 'nope' })).toEqual([]);
   });
 
-  it('writes links, leaves linkedLoginId while it is linked and drops it when unlinked', () => {
+  it('keeps the login of a code in linkedLoginId, out of links, and drops it when unlinked', () => {
     const existing = { linkedLoginId: A, links: [{ id: B }] };
-    expect(linksFields(existing, [A, B])).toEqual({ links: [{ id: A }, { id: B }] });
+    const kept = linksFields(existing, [A, B]);
+    expect(kept).toEqual({ links: [{ id: B }] });
+    expect('linkedLoginId' in kept).toBe(false);
     const unlinked = linksFields(existing, [B]);
     expect(unlinked['links']).toEqual([{ id: B }]);
     expect('linkedLoginId' in unlinked && unlinked['linkedLoginId'] === undefined).toBe(true);
+  });
+
+  it('puts the login in links only when links held it already, or the person linked it again', () => {
+    expect(linksFields({ linkedLoginId: A, links: [{ id: A }] }, [A])).toEqual({ links: [{ id: A }] });
+    // Unlinked and linked again by a later save: the old id is gone, so it is an ordinary link.
+    expect(linksFields({ links: [{ id: B }] }, [A, B])).toEqual({ links: [{ id: A }, { id: B }] });
   });
 
   it('leaves the member out for an item with no links', () => {
     const fields = linksFields({}, []);
     expect(fields['links']).toBeUndefined();
     expect('linkedLoginId' in fields).toBe(false);
+  });
+});
+
+describe('linkedLoginId as a link', () => {
+  const login = item(A, 'login', { name: 'GitHub' });
+  const code = item(B, 'otp', { issuer: 'GitHub', linkedLoginId: A });
+
+  it('is read as a link by both ends', () => {
+    expect(legacyLink(code.data)).toBe(A);
+    expect(legacyLink({ linkedLoginId: 'nope' })).toBeUndefined();
+    expect(linksOf(code.data)).toEqual([A]);
+    expect(readLinks(code.data)).toEqual([]);
+    expect(isLinked(code, login)).toBe(true);
+    expect(linkedItems(login, [login, code]).map((other) => other.id)).toEqual([B]);
+    expect(linkCandidates(login, [login, code], '').map((other) => other.id)).toEqual([]);
+    expect(incomingLinks(A, [login, code])).toEqual([B]);
+    expect(incomingLinks(B, [login, code])).toEqual([]);
+  });
+
+  it('needs only the login written to link the two: the code already names the login', () => {
+    expect(linkInputs(login, code).map((input) => input.existing?.id)).toEqual([A]);
+  });
+
+  it('is cleared from the code when the two are unlinked from either side', () => {
+    for (const [first, second] of [
+      [login, code],
+      [code, login],
+    ] as const) {
+      const inputs = unlinkInputs(first, second);
+      const written = inputs.find((input) => input.existing?.id === B);
+      expect(written?.fields['links']).toBeUndefined();
+      expect('linkedLoginId' in (written?.fields ?? {})).toBe(true);
+      expect(written?.fields['linkedLoginId']).toBeUndefined();
+      expect(inputs.some((input) => input.existing?.id === A)).toBe(false);
+    }
+  });
+
+  it('is cleared by the plan when the form drops the code, and is not asked to name the login again', () => {
+    const lookup = (id: string) => [login, code].find((other) => other.id === id);
+    const [removal] = planLinkWrites(A, [B], [], lookup);
+    expect(removal).toMatchObject({ links: [], clearLegacy: true });
+    expect(linkWriteFields(removal as NonNullable<typeof removal>)).toEqual({ links: undefined, linkedLoginId: undefined });
+    expect(planLinkWrites(A, [B], [B], lookup)).toEqual([]);
   });
 });
 
@@ -136,7 +199,7 @@ describe('planLinkWrites', () => {
   it('takes the new item out of an item it no longer links to', () => {
     const b = item(B, 'otp', { links: [{ id: A }, { id: C }] });
     const writes = planLinkWrites(A, [B], [], lookupIn([b]));
-    expect(writes).toEqual([{ item: b, links: [C] }]);
+    expect(writes).toEqual([{ item: b, links: [C], clearLegacy: false }]);
   });
 
   it('leaves out an end that is right already, so a retry does what is left', () => {
