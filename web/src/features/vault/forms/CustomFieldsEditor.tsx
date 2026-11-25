@@ -208,6 +208,10 @@ function AddFieldMenu({
     <div
       className="af"
       ref={wrap}
+      // The panel closes when focus leaves it (a Tab past its end, a click elsewhere).
+      onBlur={(event) => {
+        if (open && !event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && open) {
           event.stopPropagation();
@@ -216,12 +220,12 @@ function AddFieldMenu({
         }
       }}
     >
-      <Button size="small" aria-expanded={open} aria-haspopup="true" onPress={() => setOpen((was) => !was)}>
+      <Button size="small" aria-expanded={open} aria-haspopup="dialog" onPress={() => setOpen((was) => !was)}>
         <Icon name="plus" />
         {t('itemForm.fields.add')}
       </Button>
       {open ? (
-        <div className="af-menu" role="group" aria-label={t('itemForm.fields.add')}>
+        <div className="af-menu" role="dialog" aria-label={t('itemForm.fields.add')} tabIndex={-1}>
           {choices.length > 0 ? (
             <>
               <h3>{t('itemForm.fields.fromAdmin')}</h3>

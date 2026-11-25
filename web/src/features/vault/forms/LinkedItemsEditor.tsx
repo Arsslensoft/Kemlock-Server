@@ -94,6 +94,10 @@ function Picker({
     <div
       className="link-picker"
       ref={wrap}
+      // The picker closes when focus leaves it (a Tab past its end, a click elsewhere).
+      onBlur={(event) => {
+        if (open && !event.currentTarget.contains(event.relatedTarget)) close();
+      }}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && open) {
           event.stopPropagation();
@@ -102,12 +106,12 @@ function Picker({
         }
       }}
     >
-      <Button size="small" aria-expanded={open} aria-haspopup="true" onPress={() => (open ? close() : setOpen(true))}>
+      <Button size="small" aria-expanded={open} aria-haspopup="dialog" onPress={() => (open ? close() : setOpen(true))}>
         <Icon name="link" />
         {t('itemForm.links.add')}
       </Button>
       {open ? (
-        <div className="pick" role="group" aria-label={t('itemForm.links.add')}>
+        <div className="pick" role="dialog" aria-label={t('itemForm.links.add')} tabIndex={-1}>
           <div className="field">
             <label className="sr" htmlFor="link-search">
               {t('itemForm.links.search')}
