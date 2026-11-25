@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { createEmergencyApi, type GrantViewDto } from '@/api/emergency';
 import { createPasskeysApi } from '@/api/passkeys';
@@ -14,6 +15,8 @@ import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
 import { confirmEmergencyContact } from './emergencyModel';
+import { useApiKey } from './useApiKey';
+import { useDeleteAccount } from './useDeleteAccount';
 import { useRecoveryKit } from './useRecoveryKit';
 import { useRun } from './useRun';
 import { useSecondSteps } from './useSecondSteps';
@@ -43,6 +46,9 @@ export default function Security() {
   const { run, pending, error } = useRun();
   const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes, methods?.includes('totp') ?? false);
   const recoveryKit = useRecoveryKit();
+  const apiKey = useApiKey();
+  const navigate = useNavigate();
+  const deleteAccount = useDeleteAccount(email, () => void navigate({ to: '/sign-in' }));
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
 
@@ -79,10 +85,22 @@ export default function Security() {
       host={hostOf(config.data?.domain)}
       methods={methods}
       totp={totp}
-      busy={pending || totpRun.pending || passkeyRun.pending || secondSteps.props.busy || recoveryKit.props.busy}
-      error={error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error}
+      busy={
+        pending ||
+        totpRun.pending ||
+        passkeyRun.pending ||
+        secondSteps.props.busy ||
+        recoveryKit.props.busy ||
+        apiKey.props.busy ||
+        deleteAccount.props.busy
+      }
+      error={
+        error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error ?? apiKey.error ?? deleteAccount.error
+      }
       secondSteps={secondSteps.props}
       recoveryKit={recoveryKit.props}
+      apiKey={apiKey.props}
+      deleteAccount={deleteAccount.props}
       totpError={totpRun.error}
       onStartTotp={() => {
         setTotp({ open: true, enrol: undefined });

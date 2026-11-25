@@ -7,6 +7,8 @@ import { CopyButton } from '@/ui/CopyButton';
 import { Notice } from '@/ui/Notice';
 import { QrCode } from '@/ui/QrCode';
 import '@/styles/account.css';
+import { ApiKeyCard, type ApiKeyProps } from './ApiKeyCard';
+import { DeleteAccountCard, type DeleteAccountProps } from './DeleteAccountCard';
 import { EmergencyCard, type EmergencyCardProps } from './EmergencyCard';
 import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
@@ -42,6 +44,10 @@ export interface SecurityViewProps {
   secondSteps?: SecondStepsProps | undefined;
   /** The Recovery Kit: make, make again, remove. */
   recoveryKit?: RecoveryKitProps | undefined;
+  /** The personal API key for the Bitwarden CLI: show, copy, replace. */
+  apiKey?: ApiKeyProps | undefined;
+  /** The danger zone: delete the account. */
+  deleteAccount?: DeleteAccountProps | undefined;
 }
 
 /** The methods drawn as "Later" where the screen is given no way to set them up. */
@@ -62,6 +68,8 @@ export function SecurityView({
   passkeys,
   secondSteps,
   recoveryKit,
+  apiKey,
+  deleteAccount,
 }: SecurityViewProps) {
   const t = useT();
   const totpOn = methods?.includes('totp') ?? false;
@@ -196,23 +204,8 @@ export function SecurityView({
         <div className="acct-col">
           <EmergencyCard {...emergency} />
 
-          <section className="card" aria-labelledby="h-later">
-            <div className="card-head">
-              <div className="grow">
-                <h2 id="h-later">{t('security.notBuilt.title')}</h2>
-                <p className="hint">{t('security.notBuilt.lede')}</p>
-              </div>
-            </div>
-            {(['apiKey', 'delete'] as const).map((item) => (
-              <div className="row" key={item}>
-                <div className="grow">
-                  <div>{t(`security.notBuilt.${item}`)}</div>
-                  <div className="hint">{t(`security.notBuilt.${item}.hint`)}</div>
-                </div>
-                <span className="tag off">{t('security.later')}</span>
-              </div>
-            ))}
-          </section>
+          {apiKey ? <ApiKeyCard {...apiKey} /> : null}
+          {deleteAccount ? <DeleteAccountCard {...deleteAccount} /> : null}
         </div>
       </div>
     </>
