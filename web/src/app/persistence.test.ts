@@ -30,8 +30,8 @@ function leave(storage: TabStorage, secondsAgo = 1) {
   storage.setItem('kemlock.session.leftAt', String(NOW - secondsAgo * 1000));
 }
 
-function setup(storage: TabStorage, navigationType = 'reload') {
-  const session = createSession({ storage, now: () => NOW, navigationType: () => navigationType });
+function setup(storage: TabStorage, navigationType: string | null = 'reload') {
+  const session = createSession({ storage, now: () => NOW, navigationType: () => navigationType ?? undefined });
   const api = { accountKeys: vi.fn(async () => ({ keyVersion: 1, sealedPrivateKeys: 'c2s' }) as never) };
   const deps = { session, api, crypto: fake };
   return { session, api, deps };
@@ -314,11 +314,11 @@ describe('keeping the vault open across a reload', () => {
       return storage;
     }
 
-    for (const type of ['navigate', 'back_forward', 'prerender', undefined]) {
+    for (const type of ['navigate', 'back_forward', 'prerender', null]) {
       it(`drops everything for a load that is ${type ?? 'of an unknown type'}, as a restored or duplicated tab is`, async () => {
         const storage = await leftBehind();
         leave(storage);
-        const next = setup(storage, type as string);
+        const next = setup(storage, type);
         await restoreSession(next.deps);
         expect(next.session.getState().status).toBe('signed-out');
         expect(next.session.tokenStore.get()).toBeUndefined();
