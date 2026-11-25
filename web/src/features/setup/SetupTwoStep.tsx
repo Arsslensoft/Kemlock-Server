@@ -106,6 +106,8 @@ export default function SetupTwoStep() {
     setError(undefined);
     try {
       const { passkeyFailed } = await confirmSecurityKey(deps);
+      // A second step is on now, so the server counts the account as an admin.
+      session.adminConfirmed();
       // Say so before moving on: the key is on, but the passkey they ticked was not made.
       if (passkeyFailed) setWarned(true);
       else await navigate({ to: '/setup/server' });
@@ -121,6 +123,7 @@ export default function SetupTwoStep() {
     setError(undefined);
     try {
       const { passkeyFailed } = await confirmAuthenticatorApp(deps, code);
+      session.adminConfirmed();
       // Say so before moving on: the app is confirmed, but the passkey they ticked was not made.
       if (passkeyFailed) setWarned(true);
       else await navigate({ to: '/setup/server' });
