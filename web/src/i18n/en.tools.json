@@ -1,6 +1,6 @@
 {
   "send.title": "Send",
-  "send.lede": "Share a text or a file through a link. It's encrypted in this browser, and its key travels after the # in the link, which never reaches the server.",
+  "send.lede": "Share a text, a file or an item from your vault through a link. It's encrypted in this browser, and its key travels after the # in the link, which never reaches the server.",
   "send.yours": "Your Sends",
   "send.none": "No Sends yet. Make one on this page and its link shows up here.",
   "send.new": "New Send",
@@ -350,5 +350,9 @@
   "sendItem.field.codes": "Codes",
   "sendItem.field.publicKey": "Public key",
   "sendItem.field.privateKey": "Private key",
-  "sendItem.field.certificate": "Certificate"
+  "sendItem.field.certificate": "Certificate",
+  "sendItem.choose": "Item to send",
+  "sendItem.pick": "Choose an item",
+  "sendItem.none": "No items of this kind in your vault",
+  "sendItem.hint": "Only the fields of the item go in the Send: no history, and nothing from other items."
 }
