@@ -338,7 +338,7 @@ export function restoreItem(
   });
 }
 
-function tombstone(item: VaultItem): ItemDto {
+export function tombstone(item: VaultItem): ItemDto {
   return {
     id: item.id,
     owner: item.owner,
