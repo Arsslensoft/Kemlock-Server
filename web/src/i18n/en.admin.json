@@ -502,6 +502,7 @@
 
   "admin.pair.title": "Pair a server",
   "admin.pair.lede": "Two paired Kemlock Servers copy the vaults you choose to each other, as ciphertext. This server is {name}.",
+  "admin.pair.ledeBare": "Two paired Kemlock Servers copy the vaults you choose to each other, as ciphertext.",
   "admin.pair.step1": "Connect the two servers",
   "admin.pair.giveCode": "Give the other admin this code",
   "admin.pair.codeExpires": "Works once. Expires at {at}, in {minutes, plural, one {# minute} other {# minutes}}.",
