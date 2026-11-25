@@ -826,6 +826,45 @@ mod tests {
     }
 
     #[test]
+    fn push_settings_are_in_their_group_and_the_id_and_key_are_secrets() {
+        for key in ["push_installation_id", "push_installation_key"] {
+            assert_eq!(def(key).kind, Kind::Secret);
+            assert_eq!(def(key).group, "push");
+        }
+        assert_eq!(def("push_enabled").env, "PUSH_ENABLED");
+        assert_eq!(def("kemlock_push_relay").env, "KEMLOCK_PUSH_RELAY");
+        assert_eq!(validate(def("push_enabled"), "on"), Ok("true".into()));
+    }
+
+    #[test]
+    fn push_addresses_must_be_https() {
+        for key in ["push_relay_uri", "push_identity_uri", "kemlock_push_relay_url"] {
+            let d = def(key);
+            assert!(validate(d, "https://push.example.org").is_ok(), "{key}");
+            assert!(validate(d, "http://127.0.0.1:9000").is_ok(), "{key}");
+            assert!(validate(d, "http://push.example.org").is_err(), "{key}");
+        }
+        assert!(validate(def("kemlock_push_relay_url"), "").is_ok());
+    }
+
+    #[test]
+    fn backups_follow_the_environment_names_and_stay_inside_the_data_folder() {
+        assert_eq!(def("backup_schedule").env, "KEMLOCK_BACKUP_SCHEDULE");
+        assert_eq!(validate(def("backup_schedule"), "6h"), Ok("6h".into()));
+        assert!(validate(def("backup_schedule"), "weekly").is_err());
+        assert!(validate(def("backup_keep"), "14").is_ok());
+        assert!(validate(def("backup_keep"), "10").is_err());
+        let dest = def("backup_destination");
+        assert!(validate(dest, "").is_ok());
+        assert!(validate(dest, "nas/backups").is_ok());
+        for bad in ["/mnt/nas", "../outside", "a/../../b", "s3://bucket/x", "C:\backups", "..\x"] {
+            assert!(validate(dest, bad).is_err(), "{bad}");
+        }
+        assert!(validate(def("backup_recipient"), "age1abc").is_ok());
+        assert!(validate(def("backup_recipient"), "ssh-ed25519 AAAA").is_err());
+    }
+
+    #[test]
     fn control_characters_are_refused() {
         assert!(validate(def("smtp_host"), "mail\n.example.org").is_err());
         assert!(validate(def("smtp_password"), "").is_err());

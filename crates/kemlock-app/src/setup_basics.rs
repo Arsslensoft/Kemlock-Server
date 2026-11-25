@@ -306,6 +306,59 @@ mod tests {
         assert!(kept.contains_key("invitations_allowed"));
     }
     #[test]
+    fn push_and_backups_become_settings() {
+        let mut b = basics(JoinPolicy::Invite);
+        b.push = true;
+        b.backups = Some(BackupBasics {
+            every: "six-hours".into(),
+            keep: "14".into(),
+            recipient: "age1qqqqqqqq".into(),
+        });
+        let changes = b.changes().expect("valid");
+        assert_eq!(value(&changes, "kemlock_push_relay").as_deref(), Some("true"));
+        assert_eq!(value(&changes, "backup_schedule").as_deref(), Some("6h"));
+        assert_eq!(value(&changes, "backup_keep").as_deref(), Some("14"));
+        b.backups = None;
+        b.push = false;
+        let changes = b.changes().expect("valid");
+        assert_eq!(changes.get("backup_schedule"), Some(&Change::Reset));
+        assert_eq!(changes.get("kemlock_push_relay"), Some(&Change::Reset));
+    }
+
+    #[test]
+    fn bad_backup_choices_are_refused() {
+        let mut b = basics(JoinPolicy::Invite);
+        for (every, keep, recipient) in [
+            ("weekly", "7", "age1x"),
+            ("night", "9", "age1x"),
+            ("night", "7", ""),
+            ("night", "7", "ssh-rsa x"),
+        ] {
+            b.backups = Some(BackupBasics {
+                every: every.into(),
+                keep: keep.into(),
+                recipient: recipient.into(),
+            });
+            assert!(b.changes().is_err(), "{every} {keep} {recipient}");
+        }
+    }
+
+    #[test]
+    fn the_address_is_recorded_cleaned_and_checked() {
+        let mut b = basics(JoinPolicy::Invite);
+        assert_eq!(b.recorded_domain(), Ok(None));
+        b.address = " https://Vault.example.org/ ".into();
+        assert_eq!(
+            b.recorded_domain(),
+            Ok(Some("https://Vault.example.org".into()))
+        );
+        b.address = "vault.example.org".into();
+        assert!(b.recorded_domain().is_err());
+        // An address never turns into a setting: DOMAIN is configuration.
+        assert!(b.changes().expect("valid").keys().all(|k| k != "domain"));
+    }
+
+    #[test]
     fn join_words_parse() {
         assert_eq!(JoinPolicy::parse("anyone"), Some(JoinPolicy::Anyone));
         assert_eq!(JoinPolicy::parse("everyone"), None);
