@@ -7,7 +7,8 @@ import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
 import { describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
-import { spaceDeps, spacesKey } from './deps';
+import { spaceDeps } from './deps';
+import { refreshSpaces } from './refresh';
 import {
   type SpaceDetail as Detail,
   confirmMember,
@@ -37,8 +38,7 @@ export default function SpaceDetail() {
   async function change<T>(action: () => Promise<T>): Promise<T | undefined> {
     const result = await run(action);
     if (result !== undefined) {
-      await queryClient.invalidateQueries({ queryKey: key });
-      await queryClient.invalidateQueries({ queryKey: spacesKey });
+      await refreshSpaces(queryClient);
     }
     return result;
   }

@@ -6,5 +6,4 @@ import type { SpaceDeps } from './model';
 /** The real clients, for the screens' thin wrappers. Tests build their own `SpaceDeps`. */
 export const spaceDeps: SpaceDeps = { api: createSpacesApi(api), crypto: spaceCrypto };
 
-/** The query key of the space list; one space is ['spaces', id]. */
-export const spacesKey = ['spaces'] as const;
+export { spacesKey } from './refresh';
