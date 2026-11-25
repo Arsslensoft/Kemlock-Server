@@ -210,8 +210,7 @@ function BackupDetail({ data }: { data: ItemData | null }) {
           >
             <Icon name={shown ? 'eyeOff' : 'eye'} />
           </IconButton>
-          <CopyButton value={unused.map((c) => c.code).join('
-')} secret label={t('detail.backup.copyUnused')} />
+          <CopyButton value={unused.map((c) => c.code).join('\n')} secret label={t('detail.backup.copyUnused')} />
         </div>
       )}
     </Card>
@@ -550,8 +549,7 @@ function ContactDetail({ data }: { data: ItemData | null }) {
         </Row>
       ) : null}
       {addresses.length > 0 ? (
-        <Row label={t('detail.contact.checkedAddresses')} copy={addresses.join('
-')}>
+        <Row label={t('detail.contact.checkedAddresses')} copy={addresses.join('\n')}>
           {addresses.map((address) => (
             <div key={address}>{address}</div>
           ))}

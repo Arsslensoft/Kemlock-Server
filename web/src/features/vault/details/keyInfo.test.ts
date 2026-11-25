@@ -86,7 +86,7 @@ describe('certificate info', () => {
     expect(info?.issuer).toBe('CN=Test CA');
     expect(info?.notBefore?.toISOString()).toBe('2024-01-01T00:00:00.000Z');
     expect(info?.notAfter?.toISOString()).toBe('2030-06-15T12:00:00.000Z');
-    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', cert));
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', cert as Uint8Array<ArrayBuffer>));
     expect(info?.fingerprint).toBe(Array.from(digest, (b) => b.toString(16).padStart(2, '0').toUpperCase()).join(':'));
   });
 
