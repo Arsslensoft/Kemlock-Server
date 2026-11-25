@@ -156,7 +156,8 @@ const setupDone = createRoute({
 function leaveWhenUnlocked({ context, search }: { context: RouterContext; search: { next?: string | undefined } }) {
   if (context.session.getState().status !== 'unlocked') return;
   const target = safeNext(search.next);
-  throw redirect(target ? { href: target } : { to: '/vault' });
+  // `href` takes a whole path with its query; the typed options only know route ids.
+  throw redirect(target ? ({ href: target } as unknown as Parameters<typeof redirect>[0]) : { to: '/vault' });
 }
 
 const signIn = createRoute({
