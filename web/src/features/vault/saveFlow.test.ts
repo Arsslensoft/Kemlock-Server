@@ -17,9 +17,13 @@ function world(initial: VaultItem[] = []) {
   const items = new Map(initial.map((entry) => [entry.id, entry]));
   const inputs: SaveInput[] = [];
   let made = 0;
+  let calls = 0;
   const failOn = new Set<string>();
+  const failCall = new Set<number>();
   const save = vi.fn(async (input: SaveInput): Promise<VaultItem> => {
     inputs.push(input);
+    calls += 1;
+    if (failCall.has(calls)) throw new Error('refused');
     if (input.existing && failOn.has(input.existing.id)) throw new Error('refused');
     made += 1;
     const id = input.existing?.id ?? `99999999-9999-4999-8999-99999999999${made}`;
@@ -32,15 +36,19 @@ function world(initial: VaultItem[] = []) {
     items.set(id, saved);
     return saved;
   });
+  let sentFiles = 0;
   const files = {
-    start: vi.fn(async (itemId: string, size: number) => ({
-      fileId: `file-${itemId.slice(-1)}`,
-      itemId,
-      size,
-      maxSize: 1_000_000,
-      uploadUrl: '',
-      presigned: false,
-    })),
+    start: vi.fn(async (itemId: string, size: number) => {
+      sentFiles += 1;
+      return {
+        fileId: `file-${sentFiles}`,
+        itemId,
+        size,
+        maxSize: 1_000_000,
+        uploadUrl: '',
+        presigned: false,
+      };
+    }),
     upload: vi.fn(async (itemId: string, fileId: string) => ({ fileId, itemId, size: 0, status: 'ready' as const })),
     remove: vi.fn(async () => undefined),
   };
@@ -48,7 +56,17 @@ function world(initial: VaultItem[] = []) {
     items.delete(gone.id);
   });
   const read = vi.fn(async () => new TextEncoder().encode('abc'));
-  return { items, inputs, failOn, save, files, removeItem, read, deps: { save, lookup: (id: string) => items.get(id), files, removeItem, read } };
+  return {
+    items,
+    inputs,
+    failOn,
+    failCall,
+    save,
+    files,
+    removeItem,
+    read,
+    deps: { save, lookup: (id: string) => items.get(id), files, removeItem, read },
+  };
 }
 
 function result(over: Partial<FormResult> = {}): FormResult {
@@ -56,15 +74,21 @@ function result(over: Partial<FormResult> = {}): FormResult {
     fields: { name: 'GitHub' },
     entry: false,
     links: [],
+    files: [],
     uploads: [],
-    removedFiles: [],
     withUploaded: () => ({}),
     rollbackOnFailure: false,
     ...over,
   };
 }
 
-const request = (over: { result: FormResult; existing?: VaultItem; linksBefore?: string[] }) => ({
+const request = (over: {
+  result: FormResult;
+  existing?: VaultItem;
+  linksBefore?: string[];
+  filesBefore?: string[];
+  uploaded?: AttachmentEntry[];
+}) => ({
   kind: 'login',
   owner: 'user:u',
   linksBefore: [],
@@ -114,6 +138,14 @@ describe('links are written on both items', () => {
     expect(w.items.get(A)?.data?.['links']).toBeUndefined();
   });
 
+  it('clears linkedLoginId on a code whose login is unlinked', async () => {
+    const mine = item(A, 'login', { name: 'GitHub' });
+    const code = item(B, 'otp', { issuer: 'GitHub', linkedLoginId: A });
+    const w = world([mine, code]);
+    await saveWithExtras(w.deps, request({ result: result(), existing: mine, linksBefore: [B] }));
+    expect('linkedLoginId' in (w.items.get(B)?.data ?? {})).toBe(false);
+  });
+
   it('does not write an item whose end is right already', async () => {
     const mine = item(A, 'login', { links: [{ id: B }] });
     const other = item(B, 'otp', { links: [{ id: A }] });
@@ -141,9 +173,9 @@ describe('links are written on both items', () => {
 
 describe('files are sent after the item is saved', () => {
   const key = fileKeyText(new Uint8Array(32).fill(7));
-  const chosen = (): AttachmentEntry => ({
-    id: 'attachment-1',
-    name: 'notes.txt',
+  const chosen = (id = 'attachment-1', name = 'notes.txt'): AttachmentEntry => ({
+    id,
+    name,
     size: 3,
     type: 'text/plain',
     key,
@@ -151,11 +183,18 @@ describe('files are sent after the item is saved', () => {
     file: new Blob(['abc']),
   });
 
-  function note(uploads: AttachmentEntry[], over: Partial<FormResult> = {}): FormResult {
+  /** A note's result: the entries are the form's, in order, and the sent ones come back named. */
+  function note(entries: AttachmentEntry[], over: Partial<FormResult> = {}): FormResult {
+    const body = (list: AttachmentEntry[]) => list.filter((e) => e.file === undefined).map(entryBody);
     return result({
       fields: { name: 'Plan', attachments: undefined },
-      uploads,
-      withUploaded: (uploaded) => ({ attachments: uploaded.map(entryBody) }),
+      files: entries,
+      uploads: entries.filter((entry) => entry.file !== undefined),
+      withUploaded: (uploaded) => {
+        const sent = new Map(uploaded.map((entry) => [entry.id, entry]));
+        const list = body(entries.map((entry) => sent.get(entry.id) ?? entry));
+        return { attachments: list.length > 0 ? list : undefined };
+      },
       ...over,
     });
   }
@@ -186,12 +225,14 @@ describe('files are sent after the item is saved', () => {
 
   it('writes a File item\'s one file as file, with its hash', async () => {
     const w = world();
+    const entry = chosen();
     const outcome = await saveWithExtras(
       w.deps,
       request({
         result: result({
           fields: { name: 'Lease' },
-          uploads: [chosen()],
+          files: [entry],
+          uploads: [entry],
           withUploaded: (uploaded) => ({ file: entryBody(uploaded[0] as AttachmentEntry) }),
           rollbackOnFailure: true,
         }),
@@ -211,6 +252,7 @@ describe('files are sent after the item is saved', () => {
     const failure = await saveWithExtras(w.deps, request({ result: note([chosen()]) })).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(UploadError);
     expect((failure as UploadError).saved?.data?.['name']).toBe('Plan');
+    expect((failure as UploadError).uploaded).toEqual([]);
     expect(w.files.remove).toHaveBeenCalledOnce();
     expect(w.save).toHaveBeenCalledOnce();
     expect(w.removeItem).not.toHaveBeenCalled();
@@ -242,17 +284,198 @@ describe('files are sent after the item is saved', () => {
     const w = world([existing]);
     await saveWithExtras(
       w.deps,
-      request({ result: result({ fields: { name: 'Plan', attachments: undefined }, removedFiles: ['server-9'] }), existing }),
+      request({ result: result({ fields: { name: 'Plan', attachments: undefined } }), existing, filesBefore: ['server-9'] }),
     );
     expect(w.files.remove).toHaveBeenCalledWith(A, 'server-9');
     const order = [w.save.mock.invocationCallOrder[0] ?? 0, w.files.remove.mock.invocationCallOrder[0] ?? 0];
     expect(order[0]).toBeLessThan(order[1] ?? 0);
   });
 
+  it('keeps a file the form still holds, even one the item named when it opened', async () => {
+    const kept: AttachmentEntry = { id: 'old', name: 'old.txt', size: 1, key, addedAt: 1, kemlockFile: 'server-9' };
+    const existing = item(A, 'note', { name: 'Plan' });
+    const w = world([existing]);
+    await saveWithExtras(
+      w.deps,
+      request({ result: result({ files: [kept] }), existing, filesBefore: ['server-9', 'server-8'] }),
+    );
+    expect(w.files.remove).toHaveBeenCalledOnce();
+    expect(w.files.remove).toHaveBeenCalledWith(A, 'server-8');
+  });
+
   it('carries on when a file to delete cannot be', async () => {
     const w = world();
     w.files.remove.mockRejectedValueOnce(new Error('gone'));
-    const outcome = await saveWithExtras(w.deps, request({ result: result({ removedFiles: ['server-9'] }) }));
+    const outcome = await saveWithExtras(w.deps, request({ result: result(), filesBefore: ['server-9'] }));
     expect(outcome.item.data?.['name']).toBe('GitHub');
+  });
+
+  describe('when the second of two files cannot be sent', () => {
+    it('names the file that went up in the item, and carries it, so a retry sends only the other', async () => {
+      const w = world();
+      w.files.start.mockImplementationOnce(async (itemId: string, size: number) => ({
+        fileId: 'file-first',
+        itemId,
+        size,
+        maxSize: 1,
+        uploadUrl: '',
+        presigned: false,
+      }));
+      w.files.start.mockRejectedValueOnce(new Error('too large'));
+      const entries = [chosen('first', 'first.txt'), chosen('second', 'second.txt')];
+      const failure = (await saveWithExtras(w.deps, request({ result: note(entries) })).catch((e: unknown) => e)) as UploadError;
+      expect(failure).toBeInstanceOf(UploadError);
+      // Saved twice: the item, then the item naming the first file.
+      expect(w.save).toHaveBeenCalledTimes(2);
+      const named = failure.saved?.data?.['attachments'] as Array<Record<string, unknown>>;
+      expect(named.map((entry) => entry['id'])).toEqual(['first']);
+      expect(named[0]?.['kemlockFile']).toBe('file-first');
+      expect(failure.uploaded.map((entry) => entry.id)).toEqual(['first']);
+      expect(w.files.remove).not.toHaveBeenCalled();
+
+      // The retry is given what the error carried: it updates that item and sends the other file.
+      w.files.start.mockClear();
+      const outcome = await saveWithExtras(
+        w.deps,
+        request({ result: note(entries), existing: failure.saved, uploaded: failure.uploaded }),
+      );
+      expect(w.files.start).toHaveBeenCalledOnce();
+      const finished = outcome.item.data?.['attachments'] as Array<Record<string, unknown>>;
+      expect(finished.map((entry) => entry['id'])).toEqual(['first', 'second']);
+      expect(finished[0]?.['kemlockFile']).toBe('file-first');
+      expect(outcome.item.id).toBe(failure.saved?.id);
+    });
+
+    it('takes the file back off the server when the item cannot name it', async () => {
+      const w = world();
+      w.files.start.mockImplementationOnce(async (itemId: string, size: number) => ({
+        fileId: 'file-first',
+        itemId,
+        size,
+        maxSize: 1,
+        uploadUrl: '',
+        presigned: false,
+      }));
+      w.files.start.mockRejectedValueOnce(new Error('too large'));
+      w.failCall.add(2);
+      const entries = [chosen('first', 'first.txt'), chosen('second', 'second.txt')];
+      const failure = (await saveWithExtras(w.deps, request({ result: note(entries) })).catch((e: unknown) => e)) as UploadError;
+      expect(failure.uploaded).toEqual([]);
+      expect(w.files.remove).toHaveBeenCalledWith(failure.saved?.id, 'file-first');
+    });
+
+    it('takes every file back and does not keep a new item that is nothing without them', async () => {
+      const w = world();
+      w.files.start.mockImplementationOnce(async (itemId: string, size: number) => ({
+        fileId: 'file-first',
+        itemId,
+        size,
+        maxSize: 1,
+        uploadUrl: '',
+        presigned: false,
+      }));
+      w.files.start.mockRejectedValueOnce(new Error('too large'));
+      const entries = [chosen('first', 'first.txt'), chosen('second', 'second.txt')];
+      const failure = (await saveWithExtras(w.deps, request({ result: note(entries, { rollbackOnFailure: true }) })).catch(
+        (e: unknown) => e,
+      )) as UploadError;
+      expect(failure.saved).toBeUndefined();
+      expect(w.files.remove).toHaveBeenCalledWith(expect.any(String), 'file-first');
+      expect(w.removeItem).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('a retry', () => {
+    const named = (id: string, serverId: string) => ({
+      id,
+      name: `${id}.txt`,
+      size: 3,
+      key,
+      addedAt: 5,
+      sha256: 'ab'.repeat(32),
+      kemlockFile: serverId,
+    });
+
+    it('does not send a file the saved body already names, matched by its attachment id', async () => {
+      const existing = item(A, 'note', { name: 'Plan', attachments: [named('first', 'file-9')] });
+      const w = world([existing]);
+      const outcome = await saveWithExtras(
+        w.deps,
+        request({ result: note([chosen('first'), chosen('second')]), existing }),
+      );
+      expect(w.files.start).toHaveBeenCalledOnce();
+      // The first save already names the file that was up, so a failure after it loses nothing.
+      expect((w.inputs[0]?.fields['attachments'] as Array<Record<string, unknown>>).map((entry) => entry['id'])).toEqual(['first']);
+      const finished = outcome.item.data?.['attachments'] as Array<Record<string, unknown>>;
+      expect(finished.map((entry) => entry['id'])).toEqual(['first', 'second']);
+      expect(finished[0]).toEqual(named('first', 'file-9'));
+    });
+
+    it('sends nothing, and saves once, when every file is on the server already', async () => {
+      const existing = item(A, 'note', { name: 'Plan', attachments: [named('first', 'file-9')] });
+      const w = world([existing]);
+      await saveWithExtras(w.deps, request({ result: note([chosen('first')]), existing }));
+      expect(w.files.start).not.toHaveBeenCalled();
+      expect(w.save).toHaveBeenCalledOnce();
+    });
+
+    it('does not send a file an earlier try carried', async () => {
+      const existing = item(A, 'note', { name: 'Plan' });
+      const w = world([existing]);
+      const sent = { ...named('first', 'file-9') } as AttachmentEntry;
+      const outcome = await saveWithExtras(
+        w.deps,
+        request({ result: note([chosen('first')]), existing, uploaded: [sent] }),
+      );
+      expect(w.files.start).not.toHaveBeenCalled();
+      expect((outcome.item.data?.['attachments'] as Array<Record<string, unknown>>)[0]?.['kemlockFile']).toBe('file-9');
+    });
+  });
+
+  describe('when the second save fails', () => {
+    it('carries the item and the files that went up, so the next Save updates the item and sends nothing', async () => {
+      const w = world();
+      w.failCall.add(2);
+      const entries = [chosen('first')];
+      const failure = (await saveWithExtras(w.deps, request({ result: note(entries) })).catch((e: unknown) => e)) as UploadError;
+      expect(failure).toBeInstanceOf(UploadError);
+      expect(failure.saved?.data?.['name']).toBe('Plan');
+      expect(failure.uploaded.map((entry) => entry.id)).toEqual(['first']);
+      expect(failure.uploaded[0]?.kemlockFile).toMatch(/^file-/);
+      expect(w.files.remove).not.toHaveBeenCalled();
+
+      w.files.start.mockClear();
+      w.inputs.length = 0;
+      const outcome = await saveWithExtras(
+        w.deps,
+        request({ result: note(entries), existing: failure.saved, uploaded: failure.uploaded }),
+      );
+      // It updates the item that was saved, rather than making another, and sends no file again.
+      expect(w.inputs[0]?.existing?.id).toBe(failure.saved?.id);
+      expect(w.files.start).not.toHaveBeenCalled();
+      expect(outcome.item.id).toBe(failure.saved?.id);
+      expect((outcome.item.data?.['attachments'] as unknown[]).length).toBe(1);
+    });
+
+    it('does not keep a new item that is nothing without its file', async () => {
+      const w = world();
+      w.failCall.add(2);
+      const entry = chosen();
+      const failure = (await saveWithExtras(
+        w.deps,
+        request({
+          result: result({
+            fields: { name: 'Lease' },
+            files: [entry],
+            uploads: [entry],
+            withUploaded: (uploaded) => ({ file: entryBody(uploaded[0] as AttachmentEntry) }),
+            rollbackOnFailure: true,
+          }),
+        }),
+      ).catch((e: unknown) => e)) as UploadError;
+      expect(failure.saved).toBeUndefined();
+      expect(w.removeItem).toHaveBeenCalledOnce();
+      expect(w.files.remove).toHaveBeenCalledOnce();
+    });
   });
 });
