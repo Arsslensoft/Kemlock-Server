@@ -21,6 +21,11 @@ import { type AdminNav, useAdminNav } from './nav';
 import { useReauth } from './reauth';
 import { CheckBox, ErrorNotice, Loading, PageHead, TextBox, Toggle } from './ui';
 
+/** A host name or address, with an optional port. */
+const ADDRESS_PATTERN = '[A-Za-z0-9]([A-Za-z0-9.\\-]*[A-Za-z0-9])?(:[0-9]{1,5})?';
+/** The one-time code: three groups of four letters or digits. */
+const CODE_PATTERN = '[A-Za-z0-9]{4}-[A-Za-z0-9]{4}-[A-Za-z0-9]{4}';
+
 /** The words to compare, and each key's short form. */
 export interface Comparison {
   words: string;
@@ -111,6 +116,11 @@ export function PairView({
   const { code, session } = state;
   const [address, setAddress] = useState('');
   const [typed, setTyped] = useState('');
+  const [tried, setTried] = useState(false);
+  const addressError: MessageId | undefined =
+    tried && !new RegExp(`^${ADDRESS_PATTERN}$`).test(address.trim()) ? 'admin.pair.error.address' : undefined;
+  const codeError: MessageId | undefined =
+    tried && !new RegExp(`^${CODE_PATTERN}$`).test(typed.trim()) ? 'admin.pair.error.code' : undefined;
   const [wordsMatch, setWordsMatch] = useState(false);
   const [acks, setAcks] = useState<PairingAck[]>([]);
   const [offer, setOffer] = useState<string[]>([]);
@@ -209,12 +219,37 @@ export function PairView({
               noValidate
               onSubmit={(event) => {
                 event.preventDefault();
-                if (address.trim() !== '' && typed.trim() !== '') onConnect(address.trim(), typed.trim());
+                setTried(true);
+                const goodAddress = new RegExp(`^${ADDRESS_PATTERN}$`).test(address.trim());
+                const goodCode = new RegExp(`^${CODE_PATTERN}$`).test(typed.trim());
+                if (goodAddress && goodCode) onConnect(address.trim(), typed.trim());
               }}
             >
               <span>{t('admin.pair.enterCode')}</span>
-              <TextBox label={t('admin.pair.address')} mono value={address} onChange={setAddress} placeholder="vps.example.org" />
-              <TextBox label={t('admin.pair.theirCode')} mono value={typed} onChange={setTyped} />
+              <div className="adm-g2">
+                <TextBox
+                  label={t('admin.pair.address')}
+                  mono
+                  value={address}
+                  onChange={setAddress}
+                  placeholder="vps.example.org"
+                  pattern={ADDRESS_PATTERN}
+                  inputMode="url"
+                  required
+                  error={addressError}
+                />
+                <TextBox
+                  label={t('admin.pair.theirCode')}
+                  mono
+                  value={typed}
+                  onChange={setTyped}
+                  placeholder="XXXX-XXXX-XXXX"
+                  pattern={CODE_PATTERN}
+                  maxLength={14}
+                  required
+                  error={codeError}
+                />
+              </div>
               <div className="actions">
                 <Button type="submit" size="small" isDisabled={connecting || address.trim() === '' || typed.trim() === ''}>
                   {t('admin.pair.connect')}
