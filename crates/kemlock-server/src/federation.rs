@@ -22,10 +22,10 @@ use kemlock_api_kem::extract::Authed;
 use kemlock_api_kem::{Api, JwsTokenSigner};
 use kemlock_app::admin::StepUp;
 use kemlock_app::federation_view::{
-    BoxFut, FederationView, PeerHealthView, ServerEntry, ServerRole, SharedView, SiblingSet,
-    VaultServers,
+    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ServerEntry, ServerRole,
+    SharedView, SiblingSet, VaultServers, WaitingChanges,
 };
-use kemlock_app::ports::{ServerInfo, StoreError, Zeroizing};
+use kemlock_app::ports::{Event, EventLog, ServerInfo, StoreError, Zeroizing};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::{ItemId, Owner, ServerId, UserId};
 use kemlock_federation::blobs::{BlobFetcher, BlobFiles, StoreFiles};
@@ -385,6 +385,86 @@ impl FederationView for View {
 
     fn peer_health(&self, server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
         Box::pin(async move { Ok(self.runner.health(server)) })
+    }
+
+    fn waiting_changes(&self, vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let Some(settings) = VaultRepo::get_vault(self.replica.store(), vault).await? else {
+                return Ok(Vec::new());
+            };
+            if settings.policy != Policy::Federated || !settings.holds(me) {
+                return Ok(Vec::new());
+            }
+            let mut out = Vec::new();
+            for server in settings.order() {
+                if server == me {
+                    continue;
+                }
+                let waiting = self
+                    .replica
+                    .waiting_for(server, vault)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                if waiting.changes > 0 {
+                    out.push(WaitingChanges {
+                        peer: server,
+                        changes: waiting.changes,
+                        at_least: waiting.at_least,
+                        oldest_at: waiting.oldest_at,
+                    });
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn cancel_waiting(
+        &self,
+        vault: Owner,
+        peer: ServerId,
+        by: UserId,
+    ) -> BoxFut<'_, Result<CancelOutcome, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let store = self.replica.store();
+            let federated = VaultRepo::get_vault(store, vault)
+                .await?
+                .is_some_and(|v| v.policy == Policy::Federated && v.holds(me) && v.holds(peer));
+            if !federated || peer == me {
+                return Ok(CancelOutcome::Unknown);
+            }
+            // Only changes queued for a server that is down may be dropped: for one that answers
+            // they are on their way.
+            if self.runner.health(peer).status != PeerStatus::Offline {
+                return Ok(CancelOutcome::NotOffline);
+            }
+            let cancelled = self
+                .replica
+                .cancel_waiting(peer, vault, unix_now())
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let Some(cancelled) = cancelled else {
+                return Ok(CancelOutcome::NothingWaiting);
+            };
+            // For the account's record, and the operator's: which vault, which server, how many.
+            store
+                .record(Event {
+                    actor: Some(by),
+                    device: None,
+                    action: "federation.waiting_cancelled",
+                    target: Some(format!(
+                        "vault:{vault} peer:{peer} dropped:{}{}",
+                        cancelled.dropped,
+                        if cancelled.at_least { "+" } else { "" }
+                    )),
+                    at: time::OffsetDateTime::now_utc(),
+                })
+                .await?;
+            Ok(CancelOutcome::Cancelled {
+                dropped: cancelled.dropped,
+            })
+        })
     }
 }
 

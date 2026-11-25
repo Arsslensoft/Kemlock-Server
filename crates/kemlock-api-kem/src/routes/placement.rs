@@ -2,20 +2,29 @@
 //! failover banner and its "Where your vault is stored" page.
 //!
 //! A server that federates none of the account's vaults answers 404, which the web vault reads
-//! as "a single server" and shows nothing for. `DELETE .../pending/{change}` is routed so the
-//! web vault's cancel button gets a clean 404: the server keeps no waiting changes per vault yet.
+//! as "a single server" and shows nothing for.
+//!
+//! `DELETE /kem/v1/placement/{vault}/pending/{change}` drops the changes of a vault that wait for
+//! a server that is down (`change` is that server's id, as `pending.id` says). The vault is `me`,
+//! or a space the caller is a confirmed owner or admin of. Nothing held here is deleted: the
+//! changes stay in this server's copy and are only not sent to that server (`docs/federation.md`,
+//! "Waiting changes"). It answers 409 while the server answers its probes.
 
 use super::spaces::{Caller, Env, nonce_header};
 use super::view::MaybeView;
 use crate::openapi::ProblemDoc;
 use crate::problem::Problem;
 use crate::state::{Crypto, Store};
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use axum::routing::{delete, get};
 use axum::{Json, Router, middleware};
+use kemlock_app::federation_view::CancelOutcome;
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::SpaceRepo;
-use kemlock_app::{Placement, ReadPlacement};
+use kemlock_app::{AppError, Placement, ReadPlacement};
+use kemlock_domain::spaces::SpaceRole;
+use kemlock_domain::{Owner, ServerId, SpaceId};
 use serde::Serialize;
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -178,19 +187,69 @@ where
     Ok(Json(PlacementDto::from_app(placement)))
 }
 
-/// `DELETE /kem/v1/placement/{vault}/pending/{change}`: there is never a waiting change to
-/// cancel yet.
+/// What dropping the waiting changes did.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CancelledDto {
+    /// How many waiting changes will not be sent to that server, counted to a limit.
+    dropped: u64,
+}
+
+/// `DELETE /kem/v1/placement/{vault}/pending/{change}`.
 async fn cancel_pending<S, P, K, R>(
-    State(_env): State<Env<S, P, K, R>>,
-    _caller: Caller,
-) -> Result<(), Problem>
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    MaybeView(view): MaybeView,
+    Path((vault, change)): Path<(String, String)>,
+) -> Result<Json<CancelledDto>, Problem>
 where
     S: Store,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + Clone + 'static,
 {
-    Err(Problem::not_found())
+    let view = view.ok_or_else(Problem::not_found)?;
+    let user = caller.actor().user;
+    let owner = if vault == "me" {
+        Owner::User(user)
+    } else {
+        let space: SpaceId = vault
+            .parse()
+            .map_err(|_| Problem::bad_request("the vault is `me` or a space id"))?;
+        let member = env
+            .spaces
+            .memberships(user)
+            .await
+            .map_err(|e| Problem::from(AppError::from(e)))?
+            .into_iter()
+            .find(|m| m.space == space && m.is_confirmed())
+            .ok_or_else(Problem::not_found)?;
+        if !matches!(member.role, SpaceRole::Owner | SpaceRole::Admin) {
+            return Err(Problem::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "Only a space's owners and admins may drop its waiting changes",
+            ));
+        }
+        Owner::Space(space)
+    };
+    let peer = change
+        .parse::<uuid::Uuid>()
+        .map(ServerId)
+        .map_err(|_| Problem::bad_request("the change is the id of the server it waits for"))?;
+    match view
+        .cancel_waiting(owner, peer, user)
+        .await
+        .map_err(|e| Problem::from(AppError::from(e)))?
+    {
+        CancelOutcome::Cancelled { dropped } => Ok(Json(CancelledDto { dropped })),
+        CancelOutcome::NothingWaiting | CancelOutcome::Unknown => Err(Problem::not_found()),
+        CancelOutcome::NotOffline => Err(Problem::new(
+            StatusCode::CONFLICT,
+            "server-answering",
+            "That server is answering, so its changes are on their way",
+        )),
+    }
 }
 
 /// The placement routes.
@@ -233,10 +292,13 @@ fn doc_placement() {}
     security(("dpop" = [])),
     params(
         ("vault" = String, Path, description = "`me` or a space id"),
-        ("change" = String, Path, description = "The waiting change's id"),
+        ("change" = String, Path, description = "The id of the server the changes wait for, as `pending.id` says"),
     ),
     responses(
-        (status = 404, description = "The server keeps no waiting changes per vault yet", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 200, description = "The queued push to that server was dropped; nothing held here was deleted", body = CancelledDto),
+        (status = 403, description = "The vault is a space, and the caller is not one of its owners or admins", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "Nothing waits for that server, or the vault isn't federated with it", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "That server is answering its probes: only changes queued for a server that is down can be dropped", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -250,6 +312,7 @@ fn doc_cancel_pending() {}
         PlacementVaultDto,
         PlacementServerDto,
         PlacementPendingDto,
+        CancelledDto,
         PlacementAppDto
     ))
 )]
