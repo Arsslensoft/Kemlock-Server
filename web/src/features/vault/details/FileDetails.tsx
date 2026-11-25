@@ -7,7 +7,8 @@ import { Button } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import type { ItemData } from '../vault';
-import { type AttachedFile, type DownloadFile, fileOf, filesOf, typeLabel } from './files';
+import { typeLabel } from '../attachments';
+import { type AttachedFile, type DownloadFile, fileOf, filesOf } from './files';
 import { Card, Row } from './rows';
 import { useFormatSize } from './useFormatSize';
 

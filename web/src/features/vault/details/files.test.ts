@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 import type { ItemFiles } from '@/api/itemFiles';
 import { fetchFile, downloadFile, NoServerFileError, saveBytes } from './fileDownload';
-import { type AttachedFile, fileOf, filesOf, formatSize, typeLabel } from './files';
+import { type AttachedFile, fileOf, filesOf, formatSize } from './files';
 
 const dir = new URL('../../../../../crates/kemlock-blob/tests/fixtures/', import.meta.url);
 const KEY = JSON.parse(readFileSync(fileURLToPath(new URL('kma1.json', dir)), 'utf8')).key as string;
@@ -53,13 +53,6 @@ describe('the files an item holds', () => {
     const german = (bytes: number) => formatSize(bytes, 'de', (unit, value) => `${value} ${unit === 'mb' ? 'Mio. Byte' : unit}`);
     expect(german(2_400_000)).toBe('2,4 Mio. Byte');
     expect(formatSize(2_400_000, 'en', (unit, value) => `${unit}:${value}`)).toBe('mb:2.4');
-  });
-
-  it('names a type by the extension, or by the media type', () => {
-    expect(typeLabel({ name: 'Lease agreement.pdf', type: 'application/pdf' })).toBe('PDF');
-    expect(typeLabel({ name: 'photo', type: 'image/png' })).toBe('PNG');
-    expect(typeLabel({ name: 'archive.tar.gz', type: '' })).toBe('GZ');
-    expect(typeLabel({ name: 'README', type: '' })).toBe('');
   });
 });
 

@@ -2,10 +2,10 @@
 // this browser before upload. Only a note has attachments; a File item holds its one file in its
 // own form (file.tsx).
 import { useId, useRef } from 'react';
-import { useIntl } from 'react-intl';
 import { useT } from '@/i18n';
 import { Icon } from '@/ui/Icon';
-import { type AttachmentEntry, MAX_ATTACHMENTS, formatSize, newAttachment, typeLabel } from '../attachments';
+import { type AttachmentEntry, MAX_ATTACHMENTS, newAttachment, typeLabel } from '../attachments';
+import { useFormatSize } from '../details/useFormatSize';
 
 /** One file: its icon, name, "PDF · 2.4 MB" and the Remove button. */
 export function FileRow({
@@ -19,8 +19,8 @@ export function FileRow({
   onRemove: () => void;
 }) {
   const t = useT();
-  const { locale } = useIntl();
-  const detail = [typeLabel(entry), formatSize(entry.size, locale), status].filter((part) => part !== undefined && part !== '');
+  const size = useFormatSize();
+  const detail = [typeLabel(entry), size(entry.size), status].filter((part) => part !== undefined && part !== '');
   return (
     <div className="file-row">
       <span className="file-icon" aria-hidden="true">

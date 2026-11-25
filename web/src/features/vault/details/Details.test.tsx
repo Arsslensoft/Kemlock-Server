@@ -205,8 +205,8 @@ describe('the attachments of a note', () => {
     };
     const { unmount } = renderWithIntl(<AttachmentsCard data={data} download={download} />);
     const card = screen.getByRole('region', { name: 'Attachments' });
-    expect(card).toHaveTextContent('TXT · 3 B');
-    expect(card).toHaveTextContent('PNG · 1.5 MB');
+    expect(card).toHaveTextContent('Text · 3 B');
+    expect(card).toHaveTextContent('Image · 1.5 MB');
     await user().click(screen.getByRole('button', { name: 'Download b.png' }));
     expect(download).toHaveBeenCalledWith(expect.objectContaining({ name: 'b.png', serverId: 'f2' }));
     unmount();

@@ -67,13 +67,5 @@ export function formatSize(bytes: number, locale: string, unit: (name: SizeUnit,
   return unit(UNITS[index] ?? 'b', number.format(value));
 }
 
-/** `PDF` for `lease.pdf`; the media type's subtype when the name has no extension. */
-export function typeLabel(file: Pick<AttachedFile, 'name' | 'type'>): string {
-  const sub = file.type.split('/')[1]?.split(/[;+]/)[0] ?? '';
-  const ext = file.name.includes('.') ? (file.name.split('.').pop() ?? '') : '';
-  const label = ext.length > 0 && ext.length <= 5 ? ext : sub;
-  return label ? label.toUpperCase() : '';
-}
-
 /** Fetches, opens and saves one file; rejects when it can't. */
 export type DownloadFile = (file: AttachedFile) => Promise<void>;

@@ -264,7 +264,7 @@ describe('the first section', () => {
     const text = screen.getByRole('region', { name: 'Text' });
     expect(text).toHaveTextContent('Wi-Fi: hunter2');
     expect(text).toHaveTextContent('Room');
-    expect(screen.getByRole('region', { name: 'Attachments' })).toHaveTextContent('PNG · 2 KB');
+    expect(screen.getByRole('region', { name: 'Attachments' })).toHaveTextContent('Image · 2 KB');
   });
 });
 

@@ -202,21 +202,6 @@ export function noteAttachmentFields(
   return { attachments: out.length > 0 ? out : undefined };
 }
 
-const UNITS = ['B', 'KB', 'MB', 'GB', 'TB'];
-
-/** `2.4 MB`: decimal units, one decimal from a megabyte up, the number written for `locale`. */
-export function formatSize(bytes: number, locale = 'en'): string {
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1000 && unit < UNITS.length - 1) {
-    value /= 1000;
-    unit += 1;
-  }
-  const digits = unit >= 2 && value < 100 ? 1 : 0;
-  const number = new Intl.NumberFormat(locale, { maximumFractionDigits: digits, minimumFractionDigits: digits });
-  return `${number.format(value)} ${UNITS[unit]}`;
-}
-
 const KINDS_BY_EXTENSION: Record<string, string> = {
   txt: 'Text',
   md: 'Text',

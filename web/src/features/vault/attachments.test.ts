@@ -3,7 +3,6 @@ import {
   type AttachmentEntry,
   copiedEntries,
   entryBody,
-  formatSize,
   namedEntries,
   newAttachment,
   noteAttachmentFields,
@@ -128,15 +127,10 @@ describe('writing the files of a body', () => {
 });
 
 describe('how a file is described', () => {
-  it('writes sizes in decimal units, the number as the locale writes it', () => {
-    expect(formatSize(5)).toBe('5 B');
-    expect(formatSize(2048)).toBe('2 KB');
-    expect(formatSize(2_400_000)).toBe('2.4 MB');
-    expect(formatSize(2_400_000, 'de')).toBe('2,4 MB');
-    expect(formatSize(1_500_000_000)).toBe('1.5 GB');
-  });
-
-  it('names the kind of file in a word, as the mockup does', () => {
+  it('names the kind of file in a word, as the mockup does, on the form and on the item page', () => {
+    expect(typeLabel({ name: 'photo', type: 'image/png' })).toBe('Image');
+    expect(typeLabel({ name: 'archive.tar.gz', type: '' })).toBe('GZ');
+    expect(typeLabel({ name: 'README', type: '' })).toBe('');
     expect(typeLabel({ name: 'recovery-codes.txt', type: 'text/plain' })).toBe('Text');
     expect(typeLabel({ name: 'README', type: 'text/plain' })).toBe('Text');
     expect(typeLabel({ name: 'notes.txt' })).toBe('Text');
