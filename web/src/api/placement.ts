@@ -3,8 +3,10 @@
 // `GET /kem/v1/placement` answers from the federation state: the servers of the account's own
 // vault and its spaces (home first), and the apps that use this server. A server that federates
 // none of them answers 404 and the web vault shows nothing, which is right for a single server.
-// The server does not yet know a peer is down (`status` is always `unknown`), keeps no waiting
-// changes (`pending` is null; cancelling one answers 404), and has no place or name for a server
+// The server probes each peer: `status` is `unknown` until the first probe, then `online`,
+// `degraded` or `offline`, or `key-mismatch` when the server met a key other than the pinned one
+// (not an outage: no banner, and nothing waiting for it can be dropped). `pending` is the changes of a vault waiting for another server, and
+// cancelling them drops the queued push to a server that is offline. A server has no place or name
 // beyond the host of its address.
 import type { Api } from './client';
 import { isApiError } from './errors';
@@ -19,20 +21,26 @@ export interface PlacementServer {
   place?: string | null;
   /** Its position in the vault's set: the home first, then the replicas in order. */
   role: ServerRole;
-  /** `unknown` when the server has no way to tell (a single server never has to). */
-  status: 'online' | 'offline' | 'unknown';
+  /** `unknown` until the server's first probe of it; this server itself is always `online`. */
+  status: 'online' | 'degraded' | 'offline' | 'key-mismatch' | 'unknown';
   /** ISO time it went offline, while it is. */
   offlineSince?: string | null;
+  /** ISO time it last answered. */
+  lastSeen?: string | null;
+  /** How long its last answer took, in milliseconds. */
+  latencyMs?: number | null;
+  /** A cancel is in force: this vault's waiting changes are withheld from this server. */
+  withheld?: boolean;
   /** The apps of this vault are on it right now. */
   inUse: boolean;
 }
 
 export interface PendingChange {
   id: string;
-  /** What was asked, in words the server wrote: "Adding jordan@example.org to Family". */
+  /** What waits, in words the server wrote: "3 changes waiting for vps.example.net". */
   summary: string;
-  /** ISO time it was asked. */
-  askedAt: string;
+  /** ISO time the oldest was written. */
+  askedAt?: string | null;
 }
 
 export interface PlacementVault {
@@ -64,6 +72,8 @@ export interface Placement {
 export interface PlacementApi {
   placement(): Promise<Placement | null>;
   cancelPending(vault: string, change: string): Promise<void>;
+  /** Takes back a cancel: the changes withheld from that server are offered to it again. */
+  resumePending(vault: string, server: string): Promise<void>;
 }
 
 export function createPlacementApi(api: Pick<Api, 'request' | 'send'>): PlacementApi {
@@ -77,6 +87,11 @@ export function createPlacementApi(api: Pick<Api, 'request' | 'send'>): Placemen
         throw error;
       }
     },
+    resumePending: (vault, server) =>
+      api.send({
+        method: 'POST',
+        path: `/kem/v1/placement/${encodeURIComponent(vault)}/pending/${encodeURIComponent(server)}/resume`,
+      }),
     cancelPending: (vault, change) =>
       api.send({
         method: 'DELETE',

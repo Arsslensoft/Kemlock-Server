@@ -13,11 +13,13 @@ use crate::error::{FedError, Result};
 use crate::eventsync::PeerEvent;
 use crate::extra::{Acknowledgement, Leases, StoredOffer};
 use crate::forget::{CANT_FORCE, PeerReport};
+use crate::health::{HealthStatus, PeerHealth};
 use crate::home::{MAX_REPLICAS, Policy, VaultFederation};
 use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::job::{Connector, LEASE_SECS, PeerRunner, PeerStatus, RunOutcome, lease_name};
 use crate::keyrecs::{IdentityRotator, revocation_record, rotation_record};
+use crate::outbox::Withholding;
 use crate::net::Http;
 use crate::pairing::Fingerprint;
 use crate::ports::{HomeStatus, LogSwitches, Peer, PeerState, StoredHomeRecord};
@@ -31,8 +33,6 @@ use std::sync::Arc;
 
 /// Who holds the lease while the console compares hash trees by hand.
 const CONSOLE_HOLDER: &str = "admin-console";
-/// The most versions read to say how many a peer is waiting for.
-const WAITING_LIMIT: u32 = 100;
 /// The most events read of a vault to see whether a peer sends its logs.
 const EVENTS_LOOKED_AT: u32 = 200;
 
@@ -71,7 +71,7 @@ pub struct ServerProfile {
 pub struct PeerActivity {
     /// Versions of the vaults shared with the peer that this server holds and that its last pull
     /// from the peer did not cover: what it may still be waiting for. Counted to
-    /// [`WAITING_LIMIT`] per vault.
+    /// [`WAITING_LIMIT`](crate::outbox::WAITING_LIMIT) per vault.
     pub lag_changes: u64,
     /// The age of the oldest of those versions, `None` when no vault is shared with the peer.
     pub lag_seconds: Option<u64>,
@@ -100,6 +100,10 @@ pub struct PeerView {
     pub acknowledgement: Option<Acknowledgement>,
     /// What the last runs found, if the peer has been visited since the server started.
     pub status: Option<PeerStatus>,
+    /// Whether the peer answers, as the probes and visits found: `unknown` until the first.
+    pub health: HealthStatus,
+    /// What those found: when it last answered, how long that took, why it last failed.
+    pub probe: Option<PeerHealth>,
     pub activity: PeerActivity,
     /// Whether this server holds event-log entries the peer sent: it takes our Pull switch and the
     /// peer's Send switch both being on for any to arrive. The peer's switch itself isn't ours to
@@ -418,6 +422,8 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                 switches,
                 acknowledgement: self.replica.store().acknowledgement(peer.id).await?,
                 status: self.runner.status_of(peer.id),
+                health: self.runner.health_status(peer.id, unix_now()),
+                probe: self.runner.health_of(peer.id),
                 fingerprint,
                 activity,
                 they_send_logs,
@@ -570,6 +576,7 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// Removes a peer with its cursors and switches.
     pub async fn remove_peer(&self, peer: ServerId) -> Result<bool> {
         let removed = self.replica.store().remove_peer(peer).await?;
+        self.replica.store().forget_withheld(peer).await?;
         self.runner.forget(peer);
         Ok(removed)
     }
@@ -595,19 +602,7 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// last pull from the peer did not cover, counted to a limit. Not exact, since what the peer
     /// holds is only known as of that pull, but it falls to nothing once the peer has caught up.
     async fn waiting_for(&self, peer: ServerId, vault: Owner) -> Result<Waiting> {
-        let store = self.replica.store();
-        let cursor = store.peer_cursor(peer, vault).await?;
-        let page = store.export_since(vault, &cursor, WAITING_LIMIT).await?;
-        let oldest_at = page
-            .entries
-            .iter()
-            .filter_map(|e| u64::try_from(e.item.updated_at.unix_timestamp()).ok())
-            .min();
-        Ok(Waiting {
-            changes: page.entries.len() as u64,
-            at_least: page.more,
-            oldest_at,
-        })
+        self.replica.waiting_for(peer, vault).await
     }
 
     /// The most waiting for any other server of a federated vault this server holds.

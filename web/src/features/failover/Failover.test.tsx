@@ -42,12 +42,25 @@ describe('StorageView', () => {
     expect(within(space).getAllByRole('listitem')[1]).toHaveTextContent('Online');
   });
 
-  it('shows a change waiting for the home server and cancels it', async () => {
+  it('shows the changes waiting for the home server and stops sending them', async () => {
     const onCancelPending = vi.fn();
     await renderInRouter(<StorageView placement={PLACEMENT} onCancelPending={onCancelPending} />);
-    expect(screen.getByText(/Adding jordan@example\.org to Family/)).toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Cancel this change' }));
-    expect(onCancelPending).toHaveBeenCalledWith('me', 'c1');
+    expect(screen.getByText(/3 changes waiting for Home server/)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Do not send these changes' }));
+    // The id is the server the changes wait for.
+    expect(onCancelPending).toHaveBeenCalledWith('me', 's1');
+  });
+
+  it('does not offer to drop changes while every server answers', async () => {
+    const placement: Placement = {
+      ...PLACEMENT,
+      vaults: PLACEMENT.vaults.map((vault) => ({
+        ...vault,
+        servers: vault.servers.map((server) => ({ ...server, status: 'online' as const })),
+      })),
+    };
+    await renderInRouter(<StorageView placement={placement} onCancelPending={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Do not send these changes' })).toBeDisabled();
   });
 
   it('says what each app is using', async () => {
@@ -66,6 +79,82 @@ describe('StorageView', () => {
   it('explains a single server', async () => {
     await renderInRouter(<StorageView placement={null} onCancelPending={vi.fn()} />);
     expect(screen.getByRole('heading', { name: 'One server' })).toBeInTheDocument();
+  });
+});
+
+describe('a server that answers slowly', () => {
+  const slow: Placement = {
+    ...PLACEMENT,
+    vaults: PLACEMENT.vaults.map((vault) => ({
+      ...vault,
+      servers: vault.servers.map((server) =>
+        server.role === 'home'
+          ? { ...server, status: 'degraded' as const, offlineSince: null, lastSeen: '2026-11-22T09:10:00Z' }
+          : server,
+      ),
+    })),
+  };
+
+  it('does not raise the banner: it is still the home', async () => {
+    await renderInRouter(<FailoverBannerView placement={slow} />);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('is listed as slow, with when it was last seen', async () => {
+    await renderInRouter(<StorageView placement={slow} onCancelPending={vi.fn()} />);
+    const yours = screen.getByRole('list', { name: 'Servers of Your vault' });
+    expect(within(yours).getAllByRole('listitem')[0]).toHaveTextContent(/Slow or unsteady · seen /);
+  });
+});
+
+describe('changes held back from a server', () => {
+  const held: Placement = {
+    ...PLACEMENT,
+    vaults: PLACEMENT.vaults.map((vault) => ({
+      ...vault,
+      pending: null,
+      servers: vault.servers.map((server) =>
+        server.id === 's1' && vault.id === 'me' ? { ...server, withheld: true } : server,
+      ),
+    })),
+  };
+
+  it('offers Resume for that vault and server, and calls it with both', async () => {
+    const onResume = vi.fn();
+    await renderInRouter(<StorageView placement={held} onCancelPending={vi.fn()} onResume={onResume} />);
+    const group = screen.getByRole('group', { name: 'Changes held back from Home server' });
+    expect(group).toHaveTextContent(/still on this server/);
+    await userEvent.setup().click(within(group).getByRole('button', { name: 'Resume' }));
+    expect(onResume).toHaveBeenCalledWith('me', 's1');
+  });
+
+  it('offers nothing to resume where nothing is held back', async () => {
+    await renderInRouter(<StorageView placement={PLACEMENT} onCancelPending={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
+  });
+});
+
+describe('a server that met another key', () => {
+  const mismatch: Placement = {
+    ...PLACEMENT,
+    vaults: PLACEMENT.vaults.map((vault) => ({
+      ...vault,
+      servers: vault.servers.map((server) =>
+        server.role === 'home' ? { ...server, status: 'key-mismatch' as const, offlineSince: null } : server,
+      ),
+    })),
+  };
+
+  it('is not an outage: no banner', async () => {
+    await renderInRouter(<FailoverBannerView placement={mismatch} />);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('is listed as a key that does not match, and waiting changes are not offered for dropping', async () => {
+    await renderInRouter(<StorageView placement={mismatch} onCancelPending={vi.fn()} />);
+    const yours = screen.getByRole('list', { name: 'Servers of Your vault' });
+    expect(within(yours).getAllByRole('listitem')[0]).toHaveTextContent('Key does not match');
+    expect(screen.getByRole('button', { name: 'Do not send these changes' })).toBeDisabled();
   });
 });
 

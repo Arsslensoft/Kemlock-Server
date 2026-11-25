@@ -65,6 +65,19 @@ impl LocalIdentity {
         kems: Vec<KemPair>,
         params: DescriptorParams,
     ) -> Result<LocalIdentity> {
+        LocalIdentity::new_advertising(server, signing, kems, params, &[])
+    }
+
+    /// As [`new`](Self::new), listing `extras` after the suites in the descriptor: names of what
+    /// this server does beyond version 1's requests (see `sendsync::SENDS_CAPABILITY`). The
+    /// handshake skips names it doesn't know, so they change no negotiation.
+    pub fn new_advertising(
+        server: ServerId,
+        signing: sig1::SigningKey,
+        kems: Vec<KemPair>,
+        params: DescriptorParams,
+        extras: &[&str],
+    ) -> Result<LocalIdentity> {
         let public = crypto::sign_public(&signing)?;
         let current = kems.first().ok_or(crate::error::FedError::Invalid(
             "an identity needs a KEM key",
@@ -74,7 +87,11 @@ impl LocalIdentity {
                 server,
                 identity_key: public.clone(),
                 kem_key: current.public.clone(),
-                suites: suite_names(&params.suites),
+                suites: {
+                    let mut names = suite_names(&params.suites);
+                    names.extend(extras.iter().map(|e| (*e).to_owned()));
+                    names
+                },
                 addresses: params.addresses,
                 operator: params.operator,
                 not_before: params.not_before,
@@ -143,6 +160,47 @@ mod tests {
         assert_eq!(id.suites(), Suite::IMPLEMENTED.to_vec());
         assert!(id.kem(&kem.id()).is_some());
         assert!(id.kem(&[0; 32]).is_none());
+    }
+
+    #[test]
+    fn a_server_lists_what_it_answers_beyond_version_1_and_only_then() {
+        let now = 1_800_000_000;
+        let kem = KemPair::generate().expect("kem");
+        let plain = LocalIdentity::new(
+            ServerId::random(),
+            sig1::SigningKey::from_bytes(&[6; 64]),
+            vec![kem.clone()],
+            params(now),
+        )
+        .expect("identity");
+        let newer = LocalIdentity::new_advertising(
+            ServerId::random(),
+            sig1::SigningKey::from_bytes(&[6; 64]),
+            vec![kem],
+            params(now),
+            &[crate::sendsync::SENDS_CAPABILITY],
+        )
+        .expect("identity");
+        let as_peer = |id: &LocalIdentity| crate::ports::Peer {
+            id: id.server,
+            operator: String::new(),
+            identity_key: id.public.as_bytes().to_vec(),
+            addresses: Vec::new(),
+            suites: id.descriptor.descriptor.suites.clone(),
+            state: crate::ports::PeerState::Paired,
+            paired_at: now,
+            last_seen: None,
+        };
+        // An older server's descriptor doesn't list it, so no `Sends` request is sent to it...
+        assert!(!as_peer(&plain).advertises(crate::sendsync::SENDS_CAPABILITY));
+        assert!(as_peer(&newer).advertises(crate::sendsync::SENDS_CAPABILITY));
+        // ...and listing it changes neither the suites a server accepts nor the descriptor's check.
+        assert_eq!(newer.suites(), plain.suites());
+        newer.descriptor.verify(now, Some(&newer.public)).expect("verify");
+        assert_eq!(
+            newer.descriptor.descriptor.negotiate(&Suite::IMPLEMENTED).ok(),
+            plain.descriptor.descriptor.negotiate(&Suite::IMPLEMENTED).ok()
+        );
     }
 
     #[test]

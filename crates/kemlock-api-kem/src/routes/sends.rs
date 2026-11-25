@@ -28,6 +28,7 @@ use crate::dto::decode;
 use crate::extract::{Authed, Body, DPOP_NONCE};
 use crate::openapi::ProblemDoc;
 use crate::problem::{Problem, rate_limited};
+use super::view::MaybeView;
 use crate::ratelimit::Limiter;
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, BodyDataStream, Bytes};
@@ -44,7 +45,7 @@ use kemlock_app::ports::TokenSigner;
 use kemlock_app::sends::{
     AccessSend, CreateSend, CreateSendInput, DeleteSend, GetSend, ListSends, SendBlobs,
     SendPolicies, SendRepo, SendsConfig, SendsError, UpdateSend, UpdateSendInput, UploadSendFile,
-    access_id,
+    access_id, parse_access_id,
 };
 use kemlock_crypto::{kma1, send as format};
 use kemlock_domain::sends::{NewSend, SendFileFormat, SendId, SendKind, SendOptions, SendRecord};
@@ -562,6 +563,43 @@ where
         problem(&self.0.config, error)
     }
 
+    /// A Send with a view limit is opened at its home only: a replica that counted views of its
+    /// own would allow the whole limit again. Says where to go, and that it can be tried again
+    /// when the home is back. A Send without a limit, or on a server that isn't a replica, passes.
+    async fn refuse_if_limited_elsewhere(
+        &self,
+        view: Option<kemlock_app::federation_view::SharedView>,
+        access_id: &str,
+    ) -> Result<(), Problem> {
+        let Some(view) = view else { return Ok(()) };
+        let Some(id) = parse_access_id(access_id) else {
+            return Ok(());
+        };
+        let send = self
+            .0
+            .sends
+            .send_by_id(id)
+            .await
+            .map_err(|e| self.problem(SendsError::from(e)))?;
+        let Some(send) = send.filter(|s| s.max_access.is_some()) else {
+            return Ok(());
+        };
+        let home = view
+            .limited_send_home(send.owner)
+            .await
+            .map_err(|e| self.problem(SendsError::from(e)))?;
+        match home {
+            None => Ok(()),
+            Some(home) => Err(Problem::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "send-home-unavailable",
+                "This link has a view limit, so only its home server can open it",
+            )
+            .detail(format!("Try again when the home server is back: {home}"))
+            .with("home", json!(home))),
+        }
+    }
+
     /// This server's own URL of a file Send's upload.
     fn upload_url(&self, id: SendId) -> String {
         format!(
@@ -749,10 +787,12 @@ where
     pub(crate) async fn handle_access(
         State(sends): State<Self>,
         Path(access_id): Path<String>,
+        MaybeView(view): MaybeView,
         body: Body,
     ) -> Result<Response, Problem> {
         let proof = proof_of(&body)?;
         sends.count_try(&access_id, &proof)?;
+        sends.refuse_if_limited_elsewhere(view, &access_id).await?;
         let opened = sends
             .access()
             .execute(&access_id, proof.as_deref())
@@ -782,10 +822,12 @@ where
     pub(crate) async fn handle_download(
         State(sends): State<Self>,
         Path(access_id): Path<String>,
+        MaybeView(view): MaybeView,
         body: Body,
     ) -> Result<Response, Problem> {
         let proof = proof_of(&body)?;
         sends.count_try(&access_id, &proof)?;
+        sends.refuse_if_limited_elsewhere(view, &access_id).await?;
         let downloaded = sends
             .access()
             .download(&access_id, proof.as_deref())

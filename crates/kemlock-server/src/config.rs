@@ -8,6 +8,7 @@
 //! file, default `<DATA_FOLDER>/kemlock.toml`), `KEMLOCK_LOG_FORMAT` (`text` or `json`),
 //! `KEMLOCK_TRUSTED_PROXIES` (comma-separated addresses), `KEMLOCK_BROWSER_EXTENSION_IDS`
 //! (comma-separated ids of the Kemlock browser extensions that may take an SSO code),
+//! `KEMLOCK_FEDERATION_PROBE_SECONDS` (how often peers are probed, default 60, 0 is off),
 //! `KEMLOCK_SOURCE_URL` (where the source
 //! of the running code is offered, see `source`) and `KEMLOCK_SERVER_KEY` (see `keys`) of
 //! Kemlock's own. A Vaultwarden name with no use here, such as `ADMIN_TOKEN`, is listed in
@@ -15,7 +16,7 @@
 //!
 //! The TOML file uses the lower-case names without the `KEMLOCK_` prefix: `domain`,
 //! `database_url`, `data_folder`, `address` (or `rocket_address`), `port` (or `rocket_port`),
-//! `signups_allowed`, `log_level`, `log_format`, `trusted_proxies`, `ip_header`, `browser_extension_ids` and `source_url`.
+//! `signups_allowed`, `log_level`, `log_format`, `trusted_proxies`, `ip_header`, `browser_extension_ids`, `source_url` and `federation_probe_seconds`.
 
 use kemlock_app::admin::settings::DEFINITIONS;
 use serde::Deserialize;
@@ -90,6 +91,9 @@ pub struct Config {
     /// had, when it isn't the project's own (AGPL-3.0 section 13). `None` offers the project's
     /// repository at the commit or release this build is from (see `source`).
     pub source_url: Option<String>,
+    /// `KEMLOCK_FEDERATION_PROBE_SECONDS`: how often this server probes each paired peer's health, in
+    /// seconds; 0 turns the probes off. Default 60. Failed probes back off up to ten minutes.
+    pub federation_probe_seconds: u64,
     /// Vaultwarden settings that were set and are not used.
     pub ignored: Vec<String>,
     /// The TOML file that was read, if any.
@@ -122,6 +126,7 @@ struct FileConfig {
     ip_header: Option<String>,
     browser_extension_ids: Option<Vec<String>>,
     source_url: Option<String>,
+    federation_probe_seconds: Option<u64>,
 }
 
 fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {
@@ -340,6 +345,14 @@ impl Config {
             .or(file.source_url.filter(|v| !v.trim().is_empty()))
             .map(|value| parse_source_url(&value))
             .transpose()?;
+        let federation_probe_seconds = match lookup(env, "KEMLOCK_FEDERATION_PROBE_SECONDS") {
+            Some(value) => value.trim().parse().map_err(|_| ConfigError::Bad {
+                name: "KEMLOCK_FEDERATION_PROBE_SECONDS",
+                expected: "a number of seconds, 0 to turn the probes off",
+                value: value.clone(),
+            })?,
+            None => file.federation_probe_seconds.unwrap_or(60),
+        };
         let ignored = IGNORED_VAULTWARDEN_VARS
             .iter()
             .filter(|name| lookup(env, name).is_some())
@@ -365,6 +378,7 @@ impl Config {
             ip_header: lookup(env, "IP_HEADER").or(file.ip_header),
             browser_extension_ids,
             source_url,
+            federation_probe_seconds,
             ignored,
             config_file: None,
             settings_env,
@@ -606,6 +620,29 @@ mod tests {
                 "192.168.1.2".parse::<IpAddr>().expect("ip")
             ]
         );
+    }
+
+    #[test]
+    fn peers_are_probed_every_minute_unless_the_operator_says_otherwise() {
+        assert_eq!(config(&[], None).expect("valid").federation_probe_seconds, 60);
+        let c = config(&[("KEMLOCK_FEDERATION_PROBE_SECONDS", " 15 ")], None).expect("valid");
+        assert_eq!(c.federation_probe_seconds, 15);
+        let c = config(&[], Some("federation_probe_seconds = 120\n")).expect("valid");
+        assert_eq!(c.federation_probe_seconds, 120);
+        // The environment outranks the file, and 0 turns the probes off.
+        let c = config(
+            &[("KEMLOCK_FEDERATION_PROBE_SECONDS", "0")],
+            Some("federation_probe_seconds = 120\n"),
+        )
+        .expect("valid");
+        assert_eq!(c.federation_probe_seconds, 0);
+        assert!(matches!(
+            config(&[("KEMLOCK_FEDERATION_PROBE_SECONDS", "often")], None),
+            Err(ConfigError::Bad {
+                name: "KEMLOCK_FEDERATION_PROBE_SECONDS",
+                ..
+            })
+        ));
     }
 
     #[test]

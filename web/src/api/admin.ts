@@ -420,7 +420,7 @@ export interface UpdateRequestRequest {
 
 // ---- Federation ---------------------------------------------------------------------------
 
-export type PeerState = 'online' | 'offline' | 'catching-up' | 'revoked';
+export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked';
 export type PeerOperator = 'own' | 'other';
 
 /** A server's identity as the console shows it. `identityKey` is the `sig1` public key, base64url. */
@@ -438,6 +438,10 @@ export interface ServerView {
 export interface Peer extends ServerView {
   state: PeerState;
   offlineSince: number | null;
+  /** When the peer last answered this server (a session or a probe), Unix seconds. */
+  lastSeen: number | null;
+  /** How long its last answer took, in milliseconds. */
+  latencyMs: number | null;
   lagSeconds: number | null;
   lagChanges: number | null;
   lastChangeAt: number | null;

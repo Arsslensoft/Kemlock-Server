@@ -18,6 +18,7 @@ use crate::replicate::{Channel, FedStore, Replica};
 use bytes::Bytes;
 use kemlock_app::federation_view::BoxFut;
 use kemlock_app::files::{BlobError, BlobRead, BlobStore, BlobUpload, PresignedUrl};
+use kemlock_app::sends::SendBlobs;
 use kemlock_domain::{Attachment, AttachmentId, AttachmentStatus, BlobId, Owner, ServerId};
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -42,6 +43,16 @@ pub trait BlobFiles: Send + Sync {
 
     /// Stores a whole file. The blob store checks it is a `KMA1` file.
     fn store(&self, blob: BlobId, data: Vec<u8>) -> BoxFut<'_, std::result::Result<(), BlobError>>;
+
+    /// Stores a whole file of a format storage can't check, a Bitwarden app's Send file: only its
+    /// size is checked. The default checks it as a `KMA1` file.
+    fn store_raw(
+        &self,
+        blob: BlobId,
+        data: Vec<u8>,
+    ) -> BoxFut<'_, std::result::Result<(), BlobError>> {
+        self.store(blob, data)
+    }
 
     /// Deletes a file, for a vault its home erased. One that is already gone is not an error. The
     /// default keeps nothing to delete.
@@ -81,7 +92,7 @@ async fn read_range(
     Ok((size, out))
 }
 
-impl<B: BlobStore + 'static> BlobFiles for StoreFiles<B> {
+impl<B: SendBlobs + 'static> BlobFiles for StoreFiles<B> {
     fn read_chunk(
         &self,
         blob: BlobId,
@@ -107,6 +118,21 @@ impl<B: BlobStore + 'static> BlobFiles for StoreFiles<B> {
     fn store(&self, blob: BlobId, data: Vec<u8>) -> BoxFut<'_, std::result::Result<(), BlobError>> {
         Box::pin(async move {
             let mut upload = self.0.begin(blob, data.len() as u64).await?;
+            if let Err(e) = upload.write(Bytes::from(data)).await {
+                upload.abort().await;
+                return Err(e);
+            }
+            upload.finish().await.map(|_| ())
+        })
+    }
+
+    fn store_raw(
+        &self,
+        blob: BlobId,
+        data: Vec<u8>,
+    ) -> BoxFut<'_, std::result::Result<(), BlobError>> {
+        Box::pin(async move {
+            let mut upload = self.0.begin_raw(blob, data.len() as u64).await?;
             if let Err(e) = upload.write(Bytes::from(data)).await {
                 upload.abort().await;
                 return Err(e);
@@ -262,14 +288,26 @@ impl<S: FedStore> Replica<S> {
             .files
             .as_ref()
             .ok_or(FedError::Refused("this server doesn't serve files"))?;
-        let attachment = self
+        let held = match self
             .store
             .attachment_of_blob(blob)
             .await?
             .filter(|a| a.owner == vault && a.is_ready())
-            .ok_or(FedError::Refused("no such file"))?;
+        {
+            Some(attachment) => attachment.blob,
+            // The file of a Send of the vault's owner, whose bytes have arrived.
+            None => self
+                .store
+                .send_of_blob(blob)
+                .await?
+                .filter(|s| Owner::User(s.owner) == vault)
+                .and_then(|s| s.file)
+                .filter(|f| f.ready)
+                .map(|f| f.blob)
+                .ok_or(FedError::Refused("no such file"))?,
+        };
         let (size, data) = files
-            .read_chunk(attachment.blob, offset, len.min(MAX_CHUNK))
+            .read_chunk(held, offset, len.min(MAX_CHUNK))
             .await
             .map_err(|e| blob_error(&e))?;
         Ok(Response::BlobChunk {
@@ -288,6 +326,19 @@ impl<S: FedStore> Replica<S> {
         vault: Owner,
         blob: BlobId,
         size: u64,
+    ) -> Result<()> {
+        self.fetch_file(channel, vault, blob, size, false).await
+    }
+
+    /// As [`fetch_blob`](Self::fetch_blob); `raw` is the file of a Send in a format storage can't
+    /// check (a Bitwarden app's), held to its size alone.
+    pub(crate) async fn fetch_file<C: Channel>(
+        &self,
+        channel: &mut C,
+        vault: Owner,
+        blob: BlobId,
+        size: u64,
+        raw: bool,
     ) -> Result<()> {
         let files = self
             .files
@@ -325,7 +376,12 @@ impl<S: FedStore> Replica<S> {
                 _ => return Err(FedError::Malformed("an unexpected response to a chunk")),
             }
         }
-        files.store(blob, data).await.map_err(|e| blob_error(&e))
+        let stored = if raw {
+            files.store_raw(blob, data).await
+        } else {
+            files.store(blob, data).await
+        };
+        stored.map_err(|e| blob_error(&e))
     }
 
     /// Copies the attachments of `vault` that `peer` holds: a row for each one we lack, and the

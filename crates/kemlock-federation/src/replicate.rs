@@ -26,7 +26,9 @@ use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
     VaultRepo,
 };
+use crate::outbox::Withholding;
 use crate::relay::OriginKeys;
+use crate::sendsync::SendSync;
 use crate::signed::Signed;
 use crate::spaces::SpaceMirror;
 use crate::tagsync::TagSync;
@@ -53,6 +55,8 @@ pub trait FedStore:
     + KeyStore
     + OriginKeys
     + TagSync
+    + SendSync
+    + Withholding
 {
 }
 impl<
@@ -69,7 +73,9 @@ impl<
         + Forgetting
         + KeyStore
         + OriginKeys
-        + TagSync,
+        + TagSync
+        + SendSync
+        + Withholding,
 > FedStore for T
 {
 }
@@ -357,7 +363,17 @@ impl<S: FedStore> Replica<S> {
                 let mut records = Vec::new();
                 let mut bytes = 0usize;
                 let mut cut = false;
+                // Versions this server was told not to send this peer (see `outbox`) are passed
+                // over: the cursor moves past them, so the peer doesn't ask for them again.
+                let withheld = self.store.withheld(peer, *vault).await?;
                 for entry in &page.entries {
+                    if withheld
+                        .as_ref()
+                        .is_some_and(|w| w.covers(&entry.item.change))
+                    {
+                        next.observe(&entry.item.change);
+                        continue;
+                    }
                     let envelope = self.signed_record(entry).await?;
                     if !records.is_empty() && bytes + envelope.len() > PAGE_BYTES {
                         cut = true;
@@ -411,7 +427,14 @@ impl<S: FedStore> Replica<S> {
             Request::Fetch { vault, items } => {
                 self.authorize(peer, *vault).await?;
                 let mut records = Vec::new();
+                let withheld = self.store.withheld(peer, *vault).await?;
                 for entry in self.store.export_items(*vault, items).await? {
+                    if withheld
+                        .as_ref()
+                        .is_some_and(|w| w.covers(&entry.item.change))
+                    {
+                        continue;
+                    }
                     records.push(self.signed_record(&entry).await?);
                 }
                 Ok(answer(Response::Changes {
@@ -533,6 +556,14 @@ impl<S: FedStore> Replica<S> {
             Request::Tags { vault, items } => {
                 self.authorize(peer, *vault).await?;
                 Ok(answer(self.serve_tags(peer, *vault, items).await?))
+            }
+            Request::Sends {
+                vault,
+                after,
+                limit,
+            } => {
+                self.authorize(peer, *vault).await?;
+                Ok(answer(self.serve_sends(peer, *vault, *after, *limit).await?))
             }
         }
     }

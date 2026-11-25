@@ -14,6 +14,8 @@ import { placementApi, placementQuery } from './queries';
 function statusOf(server: PlacementServer): { label: MessageId; tone: 'on' | 'off' | 'idle' } {
   if (server.status === 'offline') return { label: 'failover.status.offline', tone: 'off' };
   if (server.status === 'unknown') return { label: 'failover.status.unknown', tone: 'idle' };
+  if (server.status === 'degraded') return { label: 'failover.status.degraded', tone: 'off' };
+  if (server.status === 'key-mismatch') return { label: 'failover.status.keyMismatch', tone: 'off' };
   return server.inUse
     ? { label: 'failover.status.inUse', tone: 'on' }
     : { label: 'failover.status.online', tone: 'idle' };
@@ -22,11 +24,14 @@ function statusOf(server: PlacementServer): { label: MessageId; tone: 'on' | 'of
 export function StorageView({
   placement,
   onCancelPending,
+  onResume,
   cancelling,
   error,
 }: {
   placement: Placement | null | undefined;
   onCancelPending: (vault: string, change: string) => void;
+  /** Takes back a cancel for a server whose changes are being withheld. */
+  onResume?: (vault: string, server: string) => void;
   cancelling?: boolean;
   error?: { id: MessageId; values?: Record<string, string | number> } | undefined;
 }) {
@@ -81,6 +86,9 @@ export function StorageView({
                           {server.status === 'offline' && server.offlineSince
                             ? ` · ${timeAgo(server.offlineSince)}`
                             : ''}
+                          {server.status === 'degraded' && server.lastSeen
+                            ? ` · ${t('failover.lastSeen', { when: timeAgo(server.lastSeen) })}`
+                            : ''}
                         </span>
                       </li>
                     );
@@ -90,17 +98,37 @@ export function StorageView({
                   <div className="waiting" role="group" aria-label={t('failover.waiting')}>
                     <strong>{t('failover.waiting')}</strong>
                     <span>
-                      {vault.pending.summary} {t('failover.askedAt', { when: timeAgo(vault.pending.askedAt) })}
+                      {vault.pending.summary}
+                      {vault.pending.askedAt
+                        ? ` ${t('failover.oldest', { when: timeAgo(vault.pending.askedAt) })}`
+                        : ''}
                     </span>
                     <Button
                       size="small"
-                      isDisabled={cancelling}
+                      // Only a server that is down has changes queued for it that may be dropped.
+                      isDisabled={cancelling || !vault.servers.some((server) => server.status === 'offline')}
                       onPress={() => onCancelPending(vault.id, vault.pending?.id ?? '')}
                     >
                       {t('failover.cancelChange')}
                     </Button>
                   </div>
                 ) : null}
+                {vault.servers
+                  .filter((server) => server.withheld)
+                  .map((server) => (
+                    <div
+                      key={server.id}
+                      className="waiting"
+                      role="group"
+                      aria-label={t('failover.withheldFor', { name: server.name })}
+                    >
+                      <strong>{t('failover.withheldFor', { name: server.name })}</strong>
+                      <span>{t('failover.withheldBody')}</span>
+                      <Button size="small" isDisabled={cancelling} onPress={() => onResume?.(vault.id, server.id)}>
+                        {t('failover.resume')}
+                      </Button>
+                    </div>
+                  ))}
               </div>
             ))}
             <Link to="/security">{t('failover.seeSecurity')}</Link>
@@ -140,6 +168,11 @@ export default function Storage() {
       placementApi.cancelPending(vault, change),
     onSuccess: () => client.invalidateQueries({ queryKey: placementQuery.queryKey }),
   });
+  const resume = useMutation({
+    mutationFn: ({ vault, server }: { vault: string; server: string }) =>
+      placementApi.resumePending(vault, server),
+    onSuccess: () => client.invalidateQueries({ queryKey: placementQuery.queryKey }),
+  });
   if (isLoading) {
     return (
       <p className="empty" role="status">
@@ -147,13 +180,14 @@ export default function Storage() {
       </p>
     );
   }
-  const failure = cancel.error ?? error;
+  const failure = cancel.error ?? resume.error ?? error;
   return (
     <StorageView
       placement={data}
-      cancelling={cancel.isPending}
+      cancelling={cancel.isPending || resume.isPending}
       error={failure ? describeError(failure) : undefined}
       onCancelPending={(vault, change) => cancel.mutate({ vault, change })}
+      onResume={(vault, server) => resume.mutate({ vault, server })}
     />
   );
 }

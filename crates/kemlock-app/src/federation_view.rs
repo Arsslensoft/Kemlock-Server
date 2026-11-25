@@ -68,6 +68,96 @@ pub struct SiblingSet {
     pub siblings: Vec<Item>,
 }
 
+/// Whether a peer server answers, as this server's probes of it say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerStatus {
+    /// Not probed yet.
+    Unknown,
+    Online,
+    /// It answers, slowly, or it missed a probe or two.
+    Degraded,
+    /// Several probes in a row failed.
+    Offline,
+    /// It answered with an identity key other than the pinned one.
+    KeyMismatch,
+}
+
+impl PeerStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PeerStatus::Unknown => "unknown",
+            PeerStatus::Online => "online",
+            PeerStatus::Degraded => "degraded",
+            PeerStatus::Offline => "offline",
+            PeerStatus::KeyMismatch => "key-mismatch",
+        }
+    }
+}
+
+/// What this server knows of a peer's health.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PeerHealthView {
+    pub status: PeerStatus,
+    /// Unix seconds of the last time the peer answered.
+    pub last_seen: Option<u64>,
+    /// How long its last answer took, in milliseconds.
+    pub latency_ms: Option<u64>,
+    /// Why the last probe failed, while it is failing.
+    pub last_error: Option<String>,
+    /// Unix seconds since when it has been failing.
+    pub offline_since: Option<u64>,
+}
+
+impl PeerHealthView {
+    /// A server nothing is known of.
+    pub fn unknown() -> PeerHealthView {
+        PeerHealthView {
+            status: PeerStatus::Unknown,
+            last_seen: None,
+            latency_ms: None,
+            last_error: None,
+            offline_since: None,
+        }
+    }
+}
+
+/// The changes of a vault that one peer has not been given yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WaitingChanges {
+    /// The server they wait for.
+    pub peer: ServerId,
+    /// How many, counted to a limit.
+    pub changes: u64,
+    /// The count stopped at the limit.
+    pub at_least: bool,
+    /// When the oldest was written, Unix seconds.
+    pub oldest_at: Option<u64>,
+}
+
+/// What taking back a cancel did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumeOutcome {
+    /// The withheld changes are offered to the peer again.
+    Resumed,
+    /// Nothing was withheld from that peer.
+    NothingHeld,
+    /// This server doesn't federate the vault with that peer.
+    Unknown,
+}
+
+/// What cancelling the changes waiting for a peer did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// The queued push to the peer was dropped: this many changes will not be sent to it.
+    Cancelled { dropped: u64 },
+    /// Nothing was waiting for that server.
+    NothingWaiting,
+    /// The peer is not offline, so its changes are on their way: nothing is dropped.
+    NotOffline,
+    /// This server doesn't federate the vault with that peer.
+    Unknown,
+}
+
 /// Read access to federation state for the Kemlock API, and the one write a device may make: saying
 /// it merged an item's siblings.
 pub trait FederationView: Send + Sync {
@@ -85,6 +175,54 @@ pub trait FederationView: Send + Sync {
     /// Whether `user`'s account on this server was copied from its home (a federated vault's
     /// member), so that it has no OPAQUE record here and signs in with its device key.
     fn is_replica_account(&self, user: UserId) -> BoxFut<'_, Result<bool, StoreError>>;
+
+    /// How a server answers this server's probes. Nothing is known of a server that isn't a paired
+    /// peer, nor before the first probe.
+    fn peer_health(&self, _server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
+        Box::pin(async { Ok(PeerHealthView::unknown()) })
+    }
+
+    /// The changes of `vault` waiting for each other server that holds it, those with something
+    /// waiting only.
+    fn waiting_changes(&self, _vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// The servers `vault`'s changes are being withheld from (a cancel not yet taken back).
+    fn withheld_from(&self, _vault: Owner) -> BoxFut<'_, Result<Vec<ServerId>, StoreError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Takes back a cancel: the changes withheld from `peer` in `vault` are offered to it again.
+    /// Allowed at any time, whether or not the peer is back.
+    fn resume_waiting(
+        &self,
+        _vault: Owner,
+        _peer: ServerId,
+        _by: UserId,
+    ) -> BoxFut<'_, Result<ResumeOutcome, StoreError>> {
+        Box::pin(async { Ok(ResumeOutcome::Unknown) })
+    }
+
+    /// Where an account's Sends that have a view limit are served from, when it isn't here: the
+    /// address of the home of the account's vault, if this server holds the vault as a replica.
+    /// `None` when the vault isn't federated here or this server is its home. A view limit is kept
+    /// by one server, since two counting apart would each allow the whole limit.
+    fn limited_send_home(&self, _owner: UserId) -> BoxFut<'_, Result<Option<String>, StoreError>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Drops the changes of `vault` that wait for `peer`, which must be offline, on behalf of
+    /// `by`. Nothing held here is deleted: the changes stay in this server's copy and are only
+    /// not sent to that peer. See `docs/federation.md`, "Waiting changes".
+    fn cancel_waiting(
+        &self,
+        _vault: Owner,
+        _peer: ServerId,
+        _by: UserId,
+    ) -> BoxFut<'_, Result<CancelOutcome, StoreError>> {
+        Box::pin(async { Ok(CancelOutcome::Unknown) })
+    }
 }
 
 /// The view as the API holds it, in a request extension.
