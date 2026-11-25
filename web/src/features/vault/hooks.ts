@@ -6,6 +6,8 @@ import { vaultCrypto } from '@/crypto-port';
 import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
+import { forgetKeyFacts } from './keyFacts';
+import { type KindCounts, countByKind } from './listFilters';
 import {
   type ItemData,
   type SaveInput,
@@ -48,6 +50,7 @@ function publish(): void {
 export function clearVault(): void {
   vaultStore.reset();
   spaceKeys.forget();
+  forgetKeyFacts();
   queryClient.removeQueries({ queryKey: writableCollectionsKey });
   queryClient.removeQueries({ queryKey: vaultKey });
 }
@@ -65,6 +68,25 @@ export function useVault() {
       refetch: query.refetch,
     };
   }, [all, query.isPending, query.error, query.refetch]);
+}
+
+export interface SidebarCounts extends KindCounts {
+  /** Items in the Trash. */
+  trashed: number;
+  isLoading: boolean;
+}
+
+/**
+ * The numbers the sidebar shows: every item, how many of each kind (by stored kind id: `login`,
+ * `otp`, `backup-codes`…; a kind with none is absent, so read `byKind[kind] ?? 0`) and how many
+ * are in the Trash. Items in the Trash count in neither the total nor a kind.
+ */
+export function useKindCounts(): SidebarCounts {
+  const { active, trashed, isLoading } = useVault();
+  return useMemo(
+    () => ({ ...countByKind(active), trashed: trashed.length, isLoading }),
+    [active, trashed, isLoading],
+  );
 }
 
 /** The collections of the account's spaces that a new item may be saved to. */
