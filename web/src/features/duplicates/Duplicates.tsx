@@ -1,4 +1,6 @@
 // Duplicates (canvas: Duplicates). Found in this browser from the opened vault; nothing is sent.
+// Every item type is checked, each group says why it matched, and the chips and the Vault filter
+// narrow the list. A group whose copies sit in two vaults lets the person pick which one keeps it.
 import { Link } from '@tanstack/react-router';
 import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
@@ -7,17 +9,28 @@ import { Button, buttonClass } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
+import '@/styles/lists.css';
 import { useVault } from '@/features/vault/hooks';
+import { detailParts } from '@/features/vault/itemDetails';
+import { type KeyFacts, useKeyFacts } from '@/features/vault/keyFacts';
+import { KIND_ORDER, kindPlural } from '@/features/vault/kindList';
 import { kindLabel, tileLetter, timeAgo } from '@/features/vault/kinds';
+import { ALL_VAULTS, PERSONAL, inVault, knownVault, vaultIdOf } from '@/features/vault/listFilters';
+import { VaultSelect } from '@/features/vault/VaultSelect';
+import { useVaultFilter } from '@/features/vault/vaultFilter';
+import { type Vaults, useVaults } from '@/features/vault/vaults';
 import { type VaultItem, itemName, loginOf } from '@/features/vault/vault';
-import { type WebsiteRule, readWebsites, ruleLabel } from '@/features/vault/websites';
-import { type DuplicateGroup, WHY_LABEL, findDuplicates } from './detect';
+import { type WebsiteRule, ruleLabel } from '@/features/vault/websites';
+import { type DuplicateGroup, SAME_LABEL, WHY_LABEL, findDuplicates } from './detect';
 import { dismissedGroups } from './dismissed';
 import {
   type MergePicks,
   allWebsites,
   defaultPicks,
+  hasUnionMembers,
+  keepInVault,
   planMerge,
+  vaultsOf,
   websiteKey,
 } from './merge';
 import { type Merged, useMergeActions } from './useMerge';
@@ -27,9 +40,7 @@ export type { DuplicateFilter } from './viewState';
 
 const FILTERS: Array<{ id: DuplicateFilter; label: MessageId }> = [
   { id: 'all', label: 'dup.filter.all' },
-  { id: 'login', label: 'dup.filter.logins' },
-  { id: 'otp', label: 'dup.filter.codes' },
-  { id: 'note', label: 'dup.filter.notes' },
+  ...KIND_ORDER.map((kind) => ({ id: kind, label: kindPlural(kind) })),
   { id: 'places', label: 'dup.filter.places' },
 ];
 
@@ -39,8 +50,14 @@ export function matchesFilter(group: DuplicateGroup, filter: DuplicateFilter): b
   return group.kind === filter;
 }
 
-export function ownerLabel(owner: string): MessageId {
-  return owner.startsWith('space:') ? 'dup.owner.space' : 'dup.owner.me';
+/** Whether a group has a copy in the vault the filter picks (`all` picks every group). */
+export function groupInVault(group: DuplicateGroup, vault: string): boolean {
+  return group.items.some((item) => inVault(item, vault));
+}
+
+/** Where an item lives, for a line about it: "Your vault", or the space's name. */
+export function ownerName(owner: string, vaults: Vaults, mine: string): string {
+  return vaultIdOf(owner) === PERSONAL ? mine : vaults.labelOf(owner);
 }
 
 export function groupTitle(group: DuplicateGroup): string {
@@ -57,11 +74,13 @@ function PasswordMask({ password }: { password: string }) {
 
 function Preview({
   group,
+  vaults,
   onMerge,
   onDismiss,
   pending,
 }: {
   group: DuplicateGroup;
+  vaults: Vaults;
   onMerge: (picks: MergePicks) => void;
   onDismiss: () => void;
   pending?: boolean;
@@ -103,22 +122,37 @@ function Preview({
     </label>
   );
   const gid = group.id;
+  const mine = t('dup.owner.me');
+  // Copies in two vaults: a login's "Keep" radios choose the item and so its vault; any other kind
+  // picks the name on its own and where the kept item lives below it.
+  const keepPicksItem = !group.crossOwner || isLogin;
+  const groupVaults = vaultsOf(group.items);
+  const vaultName = (vault: string) => {
+    const item = group.items.find((candidate) => vaultIdOf(candidate.owner) === vault);
+    return item ? ownerName(item.owner, vaults, mine) : vault;
+  };
+  const keptVault = plan ? vaultIdOf(plan.kept.owner) : '';
   return (
     <div className="stack">
       <p>{t(isLogin ? 'dup.preview.login' : 'dup.preview.other')}</p>
 
       <fieldset className="pick">
-        <legend>{t(group.crossOwner ? 'dup.pick.keep' : 'dup.pick.name')}</legend>
+        <legend>{t(group.crossOwner && isLogin ? 'dup.pick.keep' : 'dup.pick.name')}</legend>
         {group.items.map((item) =>
           radio(
             `${gid}-name`,
             item.id,
-            picks.keepId === item.id,
-            () => setPicks({ ...picks, keepId: item.id, nameFrom: item.id }),
+            keepPicksItem ? picks.keepId === item.id : picks.nameFrom === item.id,
+            () =>
+              setPicks(
+                keepPicksItem
+                  ? { ...picks, keepId: item.id, nameFrom: item.id }
+                  : { ...picks, nameFrom: item.id },
+              ),
             <>
               <span>{itemName(item)}</span>
               <span className="hint">
-                {group.crossOwner ? `${t(ownerLabel(item.owner))} · ` : ''}
+                {group.crossOwner && isLogin ? `${ownerName(item.owner, vaults, mine)} · ` : ''}
                 {timeAgo(item.data?.['updatedAt'])}
               </span>
             </>,
@@ -142,10 +176,17 @@ function Preview({
             ),
           )}
         </fieldset>
-      ) : isLogin ? (
+      ) : (
         <div className="same">
-          <span className="lbl">{t('dup.pick.userAndPassword')}</span>
+          <span className="lbl">{t(SAME_LABEL[group.why])}</span>
           <span>{t('dup.pick.same')}</span>
+        </div>
+      )}
+
+      {hasUnionMembers(group.items) ? (
+        <div className="same">
+          <span className="lbl">{t('dup.same.union')}</span>
+          <span>{t('dup.same.unionValue')}</span>
         </div>
       ) : null}
 
@@ -177,34 +218,33 @@ function Preview({
         </fieldset>
       ) : null}
 
+      {group.crossOwner && !isLogin ? (
+        <fieldset className="pick">
+          <legend>{t('dup.pick.keepIn')}</legend>
+          {groupVaults.map((vault) =>
+            radio(
+              `${gid}-vault`,
+              vault,
+              keptVault === vault,
+              () => setPicks(keepInVault(group.items, picks, vault)),
+              vaultName(vault),
+            ),
+          )}
+        </fieldset>
+      ) : null}
+
       <p>{t('dup.preview.result', { name: keptName, trashed: trashedNames })}</p>
       <div className="actions">
-        <Button
-          variant="primary"
-          isDisabled={pending || !plan}
-          onPress={() => onMerge(picks)}
-        >
+        <Button variant="primary" isDisabled={pending || !plan} onPress={() => onMerge(picks)}>
           {t('dup.merge')}
         </Button>
-        <Link
-          to="/duplicates/$groupId"
-          params={{ groupId: group.id }}
-          className={buttonClass()}
-        >
+        <Link to="/duplicates/$groupId" params={{ groupId: group.id }} className={buttonClass()}>
           {t('dup.chooseEvery')}
         </Link>
         <Button onPress={onDismiss}>{t('dup.notDuplicates')}</Button>
       </div>
     </div>
   );
-}
-
-function memberSub(item: VaultItem): string {
-  if (item.kind === 'login') {
-    const hosts = readWebsites(item.data).map((r) => r.uri);
-    return hosts.join(', ');
-  }
-  return '';
 }
 
 export interface ToastState {
@@ -218,6 +258,10 @@ export function DuplicatesView({
   total,
   filter,
   onFilter,
+  vault = ALL_VAULTS,
+  onVault,
+  vaults,
+  facts,
   selectedId,
   onSelect,
   onMerge,
@@ -231,6 +275,12 @@ export function DuplicatesView({
   total: number;
   filter: DuplicateFilter;
   onFilter: (filter: DuplicateFilter) => void;
+  /** The Vault filter: `all`, `personal` or a space's id. */
+  vault?: string;
+  onVault: (vault: string) => void;
+  vaults: Vaults;
+  /** The worked-out facts of key items, for their line in a group. */
+  facts?: ReadonlyMap<string, KeyFacts> | undefined;
   selectedId: string | undefined;
   onSelect: (id: string) => void;
   onMerge: (group: DuplicateGroup, picks: MergePicks) => void;
@@ -241,8 +291,18 @@ export function DuplicatesView({
   error?: { id: MessageId; values?: Record<string, string | number> } | undefined;
 }) {
   const t = useT();
-  const shown = groups.filter((group) => matchesFilter(group, filter));
-  const selected = shown.find((group) => group.id === selectedId);
+  const shown = groups.filter((group) => matchesFilter(group, filter) && groupInVault(group, vault));
+  // With nothing picked, or the pick filtered away, the first group on show is the one reviewed.
+  const selected = shown.find((group) => group.id === selectedId) ?? shown[0];
+  const mine = t('dup.owner.me');
+  const line = (item: VaultItem): string => {
+    const detail = detailParts(item, facts?.get(item.id))
+      .map((part) => ('text' in part ? part.text : t(part.id, part.values)))
+      .join(' · ');
+    return [ownerName(item.owner, vaults, mine), detail, timeAgo(item.data?.['updatedAt'])]
+      .filter((part) => part !== '')
+      .join(' · ');
+  };
   return (
     <>
       <div className="page-head">
@@ -292,6 +352,8 @@ export function DuplicatesView({
         </div>
       </section>
 
+      <VaultSelect value={vault} options={vaults.options} onChange={onVault} />
+
       <div className="chips" role="group" aria-label={t('dup.filter.label')}>
         {FILTERS.map((entry) => (
           <button
@@ -310,13 +372,13 @@ export function DuplicatesView({
         <div className="stack">
           <h2 className="sr">{t('dup.groups')}</h2>
           {shown.length === 0 ? (
-            <div className="card pad">{t('dup.none')}</div>
+            <div className="card pad">{t(groups.length === 0 ? 'dup.none' : 'dup.noneHere')}</div>
           ) : (
             shown.map((group) => (
               <article
                 key={group.id}
                 className="card group"
-                aria-current={group.id === selectedId ? 'true' : undefined}
+                aria-current={group.id === selected?.id ? 'true' : undefined}
                 aria-labelledby={`g-${group.id}`}
               >
                 <div className="group-head">
@@ -337,11 +399,7 @@ export function DuplicatesView({
                       <Link to="/vault/$itemId" params={{ itemId: item.id }}>
                         {itemName(item)}
                       </Link>
-                      <div className="hint">
-                        {[t(ownerLabel(item.owner)), memberSub(item), timeAgo(item.data?.['updatedAt'])]
-                          .filter((part) => part !== '')
-                          .join(' · ')}
-                      </div>
+                      <div className="hint">{line(item)}</div>
                     </div>
                     <span className="kind">{t(kindLabel(item.kind))}</span>
                   </div>
@@ -364,6 +422,7 @@ export function DuplicatesView({
             <Preview
               key={selected.id}
               group={selected}
+              vaults={vaults}
               pending={pending}
               onMerge={(picks) => onMerge(selected, picks)}
               onDismiss={() => onDismiss(selected)}
@@ -381,6 +440,11 @@ export default function Duplicates() {
   const t = useT();
   const { active, isLoading, error, refetch } = useVault();
   const { merge, undo } = useMergeActions();
+  const vaults = useVaults(active);
+  const [chosen, setVault] = useVaultFilter('duplicates');
+  const vault = knownVault(chosen, vaults.options);
+  // The fingerprints of keys and certificates are worked out here, once per revision.
+  const { facts, pending: readingKeys } = useKeyFacts(active);
   // Kept for the tab, so a trip into a group's merge screen and back finds the list as it was.
   const [{ filter, selectedId }, setView] = useState(() => duplicatesViewStore.load());
   const setFilter = (next: DuplicateFilter) => setView((view) => ({ ...view, filter: next }));
@@ -392,10 +456,10 @@ export default function Duplicates() {
   // The dismissed set lives outside React; this counter re-reads it.
   const [version, setVersion] = useState(0);
   const groups = useMemo(
-    () => findDuplicates(active).filter((group) => !dismissedGroups.has(group.id)),
-    [active, version],
+    () => findDuplicates(active, facts).filter((group) => !dismissedGroups.has(group.id)),
+    [active, facts, version],
   );
-  if (isLoading) {
+  if (isLoading || readingKeys) {
     return (
       <p className="empty" role="status">
         {t('main.loading')}
@@ -409,7 +473,11 @@ export default function Duplicates() {
       total={active.length}
       filter={filter}
       onFilter={setFilter}
-      selectedId={groups.some((group) => group.id === selectedId) ? selectedId : groups[0]?.id}
+      vault={vault}
+      onVault={setVault}
+      vaults={vaults}
+      facts={facts}
+      selectedId={selectedId}
       onSelect={setSelectedId}
       pending={merge.isPending || undo.isPending}
       error={failure ? describeError(failure) : undefined}
