@@ -25,6 +25,14 @@ export interface SignInDeps {
   now?: () => number;
 }
 
+/** The second step was asked for with no first step behind it: it expired, was used or was dropped. */
+export class NoSignInWaiting extends Error {
+  constructor(what: 'code' | 'key') {
+    super(`there is no sign-in waiting for a ${what}`);
+    this.name = 'NoSignInWaiting';
+  }
+}
+
 export type SignInStatus =
   | { status: 'signed-in'; admin: boolean }
   | { status: 'second-step'; methods: string[] };
@@ -142,7 +150,7 @@ export function createSignIn(deps: SignInDeps) {
     start,
     /** The second step, with the challenge the first one returned. */
     async secondStep(code: string): Promise<SignInStatus> {
-      if (!challenge) throw new Error('there is no sign-in waiting for a code');
+      if (!challenge) throw new NoSignInWaiting('code');
       try {
         const tokens = await deps.api.twoFactor({ challenge, method: 'totp', code });
         return await unlock(tokens);
@@ -157,7 +165,7 @@ export function createSignIn(deps: SignInDeps) {
      * not touched (`PasskeyError`) or a refusal leaves the challenge, so it can be tried again.
      */
     async securityKey(): Promise<SignInStatus> {
-      if (!challenge) throw new Error('there is no sign-in waiting for a key');
+      if (!challenge) throw new NoSignInWaiting('key');
       const assert = deps.assert ?? assertWithPasskey;
       try {
         const options = await deps.securityKey.options(challenge);

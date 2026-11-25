@@ -2,6 +2,15 @@
 import { isApiError } from '@/api/errors';
 import { type Described, describeError } from '@/lib/errors';
 import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
+import { NoSignInWaiting } from './signIn';
+
+/**
+ * Whether a failed second step cannot be tried again and the person has to start from the password:
+ * the challenge expired or was used (the server refuses it as credentials), or it is gone here.
+ */
+export function secondStepIsOver(error: unknown, described: Described): boolean {
+  return error instanceof NoSignInWaiting || described.id === 'error.credentials';
+}
 
 /** The words for a passkey or key that did not answer; anything else is described as everywhere else. */
 export function describeSignInError(error: unknown): Described {

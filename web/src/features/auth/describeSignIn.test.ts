@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, NetworkError } from '@/api/errors';
 import { PasskeyError, SecurityKeyRejectedError } from '@/lib/passkey';
-import { describePasskeySignInError, describeSignInError } from './describeSignIn';
+import { describePasskeySignInError, describeSignInError, secondStepIsOver } from './describeSignIn';
+import { NoSignInWaiting } from './signIn';
 
 const unauthorized = () =>
   new ApiError(401, { type: 'urn:kemlock:problem:unauthorized', title: 'no', status: 401 });
@@ -34,5 +35,21 @@ describe('describePasskeySignInError', () => {
     expect(
       describePasskeySignInError(new ApiError(500, { type: 'urn:kemlock:problem:internal', title: 'x', status: 500 })).id,
     ).toBe('error.server');
+  });
+});
+
+describe('secondStepIsOver', () => {
+  it('sends the person back to the password when the challenge expired, was used or is gone', () => {
+    const expired = unauthorized();
+    expect(secondStepIsOver(expired, describeSignInError(expired))).toBe(true);
+    const gone = new NoSignInWaiting('code');
+    expect(secondStepIsOver(gone, describeSignInError(gone))).toBe(true);
+  });
+
+  it('lets a dropped connection or a missing key be tried again', () => {
+    const offline = new NetworkError(new Error('offline'));
+    expect(secondStepIsOver(offline, describeSignInError(offline))).toBe(false);
+    const key = new SecurityKeyRejectedError();
+    expect(secondStepIsOver(key, describeSignInError(key))).toBe(false);
   });
 });

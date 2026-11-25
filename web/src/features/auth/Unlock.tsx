@@ -11,7 +11,7 @@ import { safeNext } from '@/lib/safe-next';
 import { AuthPage } from '@/ui/AuthPage';
 import { Icon, type IconName } from '@/ui/Icon';
 import { afterSignIn } from './afterSignIn';
-import { describeSignInError } from './describeSignIn';
+import { describeSignInError, secondStepIsOver } from './describeSignIn';
 import { PasswordForm } from './PasswordForm';
 import { kitAccount } from './kitUnlock';
 import { RecoveryKitUnlock } from './RecoveryKitUnlock';
@@ -81,7 +81,10 @@ export default function Unlock() {
         setStep('code');
       } else await afterSignIn(router, result, next);
     } catch (caught) {
-      setError(describeSignInError(caught));
+      const described = describeSignInError(caught);
+      // A challenge that has expired or been used can't be retried: start again from the password.
+      if (step === 'code' && secondStepIsOver(caught, described)) setStep('password');
+      setError(described);
     } finally {
       setPending(false);
     }

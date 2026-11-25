@@ -9,7 +9,7 @@ import { AuthPage } from '@/ui/AuthPage';
 import { PasswordForm } from './PasswordForm';
 import { SecondStep } from './SecondStep';
 import { afterSignIn } from './afterSignIn';
-import { describeSignInError } from './describeSignIn';
+import { describeSignInError, secondStepIsOver } from './describeSignIn';
 import { type SignInStatus, createSignIn } from './signIn';
 
 const route = getRouteApi('/sign-in/password');
@@ -42,7 +42,7 @@ export default function Password() {
     } catch (caught) {
       const described = describeSignInError(caught);
       // A challenge that has expired or been used can't be retried: start again.
-      if (step === 'code' && described.id === 'error.credentials') setStep('password');
+      if (step === 'code' && secondStepIsOver(caught, described)) setStep('password');
       setError(described);
     } finally {
       setPending(false);
