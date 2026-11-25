@@ -295,6 +295,7 @@
   "security.delete.start": "Delete my account",
   "security.delete.warn": "This erases your vault, its files, your Sends, your devices and sessions, your second steps, passkeys, emergency contacts and recovery kit. It cannot be undone.",
   "security.delete.spaces": "You leave every space you are in. If you are the only owner of a space that others are still in, hand it over or delete it first.",
+  "security.delete.password": "Your master password",
   "security.delete.type": "Type {email} to confirm",
   "security.delete.confirm": "Delete the account for good",
   "security.delete.lastOwner": "You are the only owner of a space with other members. Hand it over to another owner, or delete the space, then try again.",

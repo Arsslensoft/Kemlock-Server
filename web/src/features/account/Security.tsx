@@ -48,7 +48,7 @@ export default function Security() {
   const recoveryKit = useRecoveryKit();
   const apiKey = useApiKey();
   const navigate = useNavigate();
-  const deleteAccount = useDeleteAccount(email, () => void navigate({ to: '/sign-in' }));
+  const deleteAccount = useDeleteAccount(email, (methods?.length ?? 0) > 0, () => void navigate({ to: '/sign-in' }));
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
   const [released, setReleased] = useState<{ grantor: string; kind: 'view' | 'takeover' } | null>(null);
 
