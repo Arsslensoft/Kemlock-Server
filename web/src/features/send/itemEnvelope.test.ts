@@ -103,6 +103,13 @@ describe('parseEnvelope', () => {
     }
   });
 
+  it('answers null for an envelope over 64 KiB or with more than 32 fields', () => {
+    const big = JSON.stringify({ kemlockSend: 1, kind: 'note', name: 'n', fields: { text: 'x'.repeat(70_000) } });
+    expect(parseEnvelope(big)).toBeNull();
+    const many = Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`k${i}`, 'v']));
+    expect(parseEnvelope(JSON.stringify({ kemlockSend: 1, kind: 'note', name: 'n', fields: many }))).toBeNull();
+  });
+
   it('drops a key the kind does not define, so a crafted key never shows', () => {
     const parsed = parseEnvelope(
       JSON.stringify({

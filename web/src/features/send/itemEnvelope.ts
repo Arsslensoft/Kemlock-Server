@@ -11,6 +11,9 @@ import type { MessageId } from '@/i18n';
 import type { EditableKind } from '@/features/vault/kinds';
 
 export const ENVELOPE_VERSION = 1;
+/** A larger envelope, or one with more fields, is shown as plain text. */
+export const MAX_ENVELOPE_CHARS = 64 * 1024;
+export const MAX_ENVELOPE_FIELDS = 32;
 
 export interface ItemEnvelope {
   kemlockSend: typeof ENVELOPE_VERSION;
@@ -181,7 +184,7 @@ export function serializeEnvelope(envelope: ItemEnvelope): string {
  * version, a kind this page does not know), so the page falls back to showing the text.
  */
 export function parseEnvelope(raw: string): ItemEnvelope | null {
-  if (!raw.trimStart().startsWith('{')) return null;
+  if (raw.length > MAX_ENVELOPE_CHARS || !raw.trimStart().startsWith('{')) return null;
   let value: unknown;
   try {
     value = JSON.parse(raw);
@@ -193,6 +196,7 @@ export function parseEnvelope(raw: string): ItemEnvelope | null {
   const kind = top['kind'];
   if (typeof kind !== 'string' || !isSendableKind(kind) || typeof top['name'] !== 'string') return null;
   if (typeof top['fields'] !== 'object' || top['fields'] === null || Array.isArray(top['fields'])) return null;
+  if (Object.keys(top['fields'] as object).length > MAX_ENVELOPE_FIELDS) return null;
   const fields: Record<string, string> = {};
   // Only the keys the kind defines are kept: nothing else is shown, so a crafted key can't pose as a label.
   const known = FIELD_SPECS[kind].map((spec) => spec.key);
