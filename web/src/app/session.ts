@@ -259,6 +259,19 @@ export function createSession(options: SessionOptions = {}) {
       });
       set(next);
     },
+    /** The person changed their name on Profile: the avatar and its menu show the new one. */
+    renamed(name: string | null): void {
+      if (state.status === 'signed-out') return;
+      const next: SessionState = { ...state, name };
+      write(INFO_KEY, {
+        email: next.email,
+        name: next.name,
+        userId: next.userId,
+        deviceId: next.deviceId,
+        admin: next.admin,
+      });
+      set(next);
+    },
     unlocked(): void {
       if (state.status !== 'signed-out') set({ ...state, status: 'unlocked' });
     },
