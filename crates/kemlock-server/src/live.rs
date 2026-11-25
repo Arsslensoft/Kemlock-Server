@@ -699,8 +699,8 @@ mod tests {
             .expect("an in-memory store connects")
     }
 
-    /// Saves settings the way the console does.
-    async fn save(store: &SqlStore, pairs: &[(&str, &str)]) {
+    /// Saves settings the way the console does, and says whether they were taken.
+    async fn try_save(store: &SqlStore, pairs: &[(&str, &str)]) -> bool {
         let settings = Settings {
             repo: store.clone(),
             seal: crypto(),
@@ -710,7 +710,12 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), Change::Set((*v).to_owned())))
             .collect();
-        settings.apply(&changes).await.expect("saved");
+        settings.apply(&changes).await.is_ok()
+    }
+
+    /// Saves settings the way the console does.
+    async fn save(store: &SqlStore, pairs: &[(&str, &str)]) {
+        assert!(try_save(store, pairs).await, "saved: {pairs:?}");
     }
 
     async fn watching(store: &SqlStore, env: Layered) -> Arc<SettingsWatch> {
@@ -769,11 +774,17 @@ mod tests {
                 folder: std::path::PathBuf::from("/mnt/elsewhere")
             }
         );
-        // A saved folder that leaves the data folder is refused when it is used.
-        save(&store, &[("backup_destination", "attachments")]).await;
+        // One of the store's own folders is refused when it is saved (13c9656), and the saved
+        // folder stays the one before.
+        assert!(!try_save(&store, &[("backup_destination", "attachments")]).await);
         let saved = watching(&store, layered(&[], &[])).await;
-        assert!(
-            crate::backups::settings_from_snapshot(&saved.current(), &|_| None, &root).is_err()
+        let s = crate::backups::settings_from_snapshot(&saved.current(), &|_| None, &root)
+            .expect("valid");
+        assert_eq!(
+            s.destination,
+            DestinationConfig::Local {
+                folder: root.join("nas").join("b")
+            }
         );
     }
 
