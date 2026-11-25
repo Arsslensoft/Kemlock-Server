@@ -21,6 +21,8 @@ const KEY = 'kemlock.duplicates.view';
 export interface ViewStore {
   load(): DuplicatesView;
   save(view: DuplicatesView): void;
+  /** Forgets the filter and the selected group (on lock and sign-out). */
+  reset(): void;
 }
 
 /** A store over any `Storage`-like object; every access is guarded, since storage may be blocked. */
@@ -46,6 +48,13 @@ export function createViewStore(storage: Pick<Storage, 'getItem' | 'setItem'> | 
         storage?.setItem(KEY, JSON.stringify(view));
       } catch {
         // Not remembered; the list still works.
+      }
+    },
+    reset() {
+      try {
+        storage?.setItem(KEY, JSON.stringify({ filter: 'all' }));
+      } catch {
+        // Nothing was kept that could be cleared.
       }
     },
   };

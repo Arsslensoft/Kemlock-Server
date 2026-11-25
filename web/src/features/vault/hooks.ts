@@ -6,8 +6,10 @@ import { vaultCrypto } from '@/crypto-port';
 import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
+import { duplicatesViewStore } from '@/features/duplicates/viewState';
 import { forgetKeyFacts } from './keyFacts';
 import { type KindCounts, countByKind } from './listFilters';
+import { vaultFilterStore } from './vaultFilter';
 import {
   type ItemData,
   type SaveInput,
@@ -51,6 +53,9 @@ export function clearVault(): void {
   vaultStore.reset();
   spaceKeys.forget();
   forgetKeyFacts();
+  // What the person had narrowed the lists to is theirs, not the next person's at this browser.
+  vaultFilterStore.reset();
+  duplicatesViewStore.reset();
   queryClient.removeQueries({ queryKey: writableCollectionsKey });
   queryClient.removeQueries({ queryKey: vaultKey });
 }

@@ -14,6 +14,8 @@ const KEY = 'kemlock.vault.filter';
 export interface VaultFilterStore {
   get(page: FilterPage): string;
   set(page: FilterPage, vault: string): void;
+  /** Forgets every page's choice (on lock and sign-out). */
+  reset(): void;
   subscribe(listener: () => void): () => void;
 }
 
@@ -53,6 +55,15 @@ export function createVaultFilterStore(
         storage?.setItem(KEY, JSON.stringify(current));
       } catch {
         // Not remembered across a reload; this page keeps it.
+      }
+      for (const listener of listeners) listener();
+    },
+    reset() {
+      chosen = {};
+      try {
+        storage?.setItem(KEY, '{}');
+      } catch {
+        // Nothing was kept that could be cleared.
       }
       for (const listener of listeners) listener();
     },
