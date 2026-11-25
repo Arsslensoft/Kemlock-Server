@@ -68,9 +68,21 @@ export function siteProblem(row: SiteRow): MessageId | undefined {
 /**
  * The `urls`, `uris` and `websites` members for the rows. `urls` is always written (an empty list
  * for a login with no website); `uris` and `websites` only when there is something in them.
+ *
+ * A login that was kept as `urls` alone, and whose rows are all still on the default rule, is
+ * written as `urls` alone: opening and saving it adds no `uris`. `websites` is written only when
+ * the body already had it.
  */
-export function sitesFields(rows: readonly SiteRow[]): ItemData {
+export function sitesFields(rows: readonly SiteRow[], existing?: ItemData | null): ItemData {
   const written = writeWebsites(rows.map((row) => ({ uri: row.uri, match: row.match })));
+  const hadUris = Array.isArray(existing?.['uris']);
+  if (!hadUris && rows.every((row) => row.match === 'default')) {
+    const hadWebsites = Array.isArray(existing?.['websites']);
+    return {
+      urls: written.urls,
+      websites: hadWebsites && written.websites.length > 0 ? written.websites : undefined,
+    };
+  }
   return {
     urls: written.urls,
     uris: written.uris.length > 0 ? written.uris : undefined,

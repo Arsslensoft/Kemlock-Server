@@ -42,7 +42,7 @@ export function loginFields(values: LoginFormValues, existing?: VaultItem): Item
     name: values.name,
     username: values.username,
     password: values.password,
-    ...sitesFields(values.websites),
+    ...sitesFields(values.websites, existing?.data),
     notes: values.notes === '' ? undefined : values.notes,
     favorite: values.favorite ? true : undefined,
     ...extrasFields(values, existing),
