@@ -635,6 +635,16 @@ the attachment `id`) again. It deletes from the server the files a person remove
 body names them. Files count against the person's attachment
 quota, and the server refuses a file over its size limit.
 
+The server keeps a file under one item's id, so a client that makes a new item from an old one (a
+copy of a note, a move to another owner, a merge of notes) sends each file again under the new item.
+It reads the sealed bytes (`GET /kem/v1/items/{id}/files/{fileId}`) and sends them as they are: the
+chunks of a `KMA1` file are not bound to the item, so they open with the same key, and nothing is
+decrypted. The new entry keeps `id`, `name`, `size`, `type`, `key`, `addedAt` and `sha256`, and
+names the file the server made for it in `kemlockFile`. As for any upload, the new item is saved
+first without the files, and a body never names a file the server lacks. A copy makes the new
+item's name the original's, unchanged, and leaves behind what belongs to the original alone: its
+`id`, `links`, `linkedLoginId`, `passkeys` and `passwordHistory`, and its dates.
+
 ### Contact
 
 A contact is a person, with an optional OpenPGP public key:
