@@ -14,7 +14,7 @@ pub enum AppError {
     Unauthorized,
     /// A session ended for a reason the device should show: `"refresh-token-reuse"`,
     /// `"device-key-changed"`, `"expired"`, `"account-disabled"`, `"account-being-deleted"` or
-    /// `"security-stamp-changed"`.
+    /// `"security-stamp-changed"` or `"signed-out"`.
     #[error("session ended: {0}")]
     SessionEnded(&'static str),
     #[error("forbidden")]

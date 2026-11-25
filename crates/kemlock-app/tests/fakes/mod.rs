@@ -999,9 +999,10 @@ impl World {
 
     pub(crate) fn authenticate(
         &self,
-    ) -> Authenticate<FakeStore, FakeStore, FakeTokenSigner, FakeEnv> {
+    ) -> Authenticate<FakeStore, FakeStore, FakeStore, FakeTokenSigner, FakeEnv> {
         Authenticate {
             users: self.store.clone(),
+            devices: self.store.clone(),
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.env.clone(),

@@ -419,9 +419,10 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         }
     }
 
-    pub(crate) fn authenticate(&self) -> Authenticate<S, S, K, P> {
+    pub(crate) fn authenticate(&self) -> Authenticate<S, S, S, K, P> {
         Authenticate {
             users: self.store.clone(),
+            devices: self.store.clone(),
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.crypto.clone(),
