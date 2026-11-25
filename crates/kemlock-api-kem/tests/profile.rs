@@ -333,6 +333,7 @@ async fn the_profile_is_shown_and_the_name_changes() {
     assert_eq!(profile["sso"], false);
     assert_eq!(profile["hasPassword"], true);
     assert_eq!(profile["compatible"], false);
+    assert_eq!(profile["twoStep"], false);
     assert!(profile["pendingEmail"].is_null());
 
     let renamed = sam
@@ -643,6 +644,129 @@ async fn a_write_of_another_request_in_between_is_a_conflict_that_changes_nothin
     let again = sam.password_body(false).await;
     let changed = sam.call("PUT", "/kem/v1/account/password", Some(again)).await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
+}
+
+// ---- the second step ----
+
+/// The secret of an authenticator app (RFC 6238's) and the same in base32, as an app holds it.
+const TOTP_SECRET: &[u8] = b"12345678901234567890";
+const TOTP_SECRET_BASE32: &str = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+
+/// Turns the account's authenticator app on, the way the move from Vaultwarden writes it.
+async fn turn_totp_on(rig: &Rig, user: UserId) {
+    use kemlock_app::ports::{Clock, SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo};
+    rig.app
+        .store
+        .put(&TwoFactor {
+            user,
+            method: TwoFactorMethod::Totp,
+            sealed_secret: rig
+                .app
+                .crypto
+                .seal(kemlock_app::sealed::PURPOSE_TOTP, TOTP_SECRET),
+            enabled: true,
+            created_at: rig.app.clock.now(),
+        })
+        .await
+        .expect("the second step is stored");
+}
+
+/// The code the authenticator app shows now.
+fn code(rig: &Rig) -> String {
+    common::totp_now(&rig.app, TOTP_SECRET_BASE32)
+}
+
+/// The wrap of the account's root key the server holds.
+fn wrap_of(rig: &Rig, user: UserId) -> Vec<u8> {
+    rig.app.store.user(user).expect("the account").wrapped_root_key
+}
+
+#[tokio::test]
+async fn with_a_second_step_on_changing_the_password_asks_its_proof_beside_the_password() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+    turn_totp_on(&rig, sam.id).await;
+    let shown = sam.call("GET", "/kem/v1/account/profile", None).await;
+    assert_eq!(shown.json()["twoStep"], true);
+    let before = wrap_of(&rig, sam.id);
+
+    // No proof, or a blank one: refused before the password is spent.
+    let body = sam.password_body(false).await;
+    let bare = sam
+        .call("PUT", "/kem/v1/account/password", Some(body.clone()))
+        .await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
+    assert_eq!(bare.problem(), "invalid-request");
+    let mut blank = body.clone();
+    blank["proof"] = json!("   ");
+    let refused = sam.call("PUT", "/kem/v1/account/password", Some(blank)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+
+    // A wrong code is refused, and nothing is written.
+    let mut wrong = sam.password_body(false).await;
+    wrong["proof"] = json!("000000");
+    let refused = sam.call("PUT", "/kem/v1/account/password", Some(wrong)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(wrap_of(&rig, sam.id), before);
+
+    // The first body went unspent by the two refusals before the password: with the proof it works.
+    let mut good = body;
+    good["proof"] = json!(code(&rig));
+    let changed = sam.call("PUT", "/kem/v1/account/password", Some(good.clone())).await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
+    assert_eq!(wrap_of(&rig, sam.id), vec![0x44u8; WRAPPED_ROOT_KEY_LEN]);
+    assert!(actions(&rig).contains(&"account.password_changed"));
+    // And a code, like the login state it came with, is good once.
+    let again = sam.call("PUT", "/kem/v1/account/password", Some(good)).await;
+    assert_eq!(again.status, StatusCode::BAD_REQUEST, "{:?}", again.json());
+}
+
+#[tokio::test]
+async fn with_a_second_step_on_changing_the_address_asks_its_proof_too() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+    turn_totp_on(&rig, sam.id).await;
+
+    let body = sam.email_body(NEW_EMAIL).await;
+    let bare = sam
+        .call("POST", "/kem/v1/account/email", Some(body.clone()))
+        .await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
+    assert_eq!(bare.problem(), "invalid-request");
+    assert!(
+        rig.repo.pending(sam.id).is_none(),
+        "nothing is kept without the proof"
+    );
+
+    let mut wrong = sam.email_body(NEW_EMAIL).await;
+    wrong["proof"] = json!("000000");
+    let refused = sam.call("POST", "/kem/v1/account/email", Some(wrong)).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert!(rig.repo.pending(sam.id).is_none());
+
+    let mut good = body;
+    good["proof"] = json!(code(&rig));
+    let asked = sam.call("POST", "/kem/v1/account/email", Some(good)).await;
+    assert_eq!(asked.status, StatusCode::ACCEPTED, "{:?}", asked.json());
+    assert_eq!(asked.json()["pendingEmail"], NEW_EMAIL);
+    assert!(rig.repo.pending(sam.id).is_some());
+}
+
+#[tokio::test]
+async fn with_no_second_step_no_proof_is_asked_and_one_sent_is_not_read() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+
+    let mut body = sam.password_body(false).await;
+    body["proof"] = json!("123456");
+    let changed = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
+    sam.password.set(NEW_PASSWORD);
+
+    let mut asked = sam.email_body(NEW_EMAIL).await;
+    asked["proof"] = json!("not a code");
+    let reply = sam.call("POST", "/kem/v1/account/email", Some(asked)).await;
+    assert_eq!(reply.status, StatusCode::ACCEPTED, "{:?}", reply.json());
 }
 
 #[tokio::test]
