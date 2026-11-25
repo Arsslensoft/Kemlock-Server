@@ -71,6 +71,15 @@ const LABELS: Record<string, MessageId> = {
   security_encryption: 'admin.settings.key.security_encryption',
 };
 
+/** The gray line under each switch's label: what turning it on or off does. */
+export const SWITCH_HINTS: Record<string, MessageId> = {
+  signups_allowed: 'admin.settings.hint.signups_allowed',
+  signups_verify: 'admin.settings.hint.signups_verify',
+  invitations_allowed: 'admin.settings.hint.invitations_allowed',
+  push_enabled: 'admin.settings.hint.push_enabled',
+  kemlock_push_relay: 'admin.settings.hint.kemlock_push_relay',
+};
+
 /** A switch, a list of domains or a long text keeps the full width of the grid. */
 function isWide(setting: AdminSetting): boolean {
   return setting.kind === 'bool' || setting.kind === 'domains' || setting.key === 'security_encryption';
@@ -99,7 +108,9 @@ function Field({
       ? t('admin.settings.placeholder.days', range)
       : t('admin.settings.placeholder.range', range);
   const suffix = setting.key.endsWith('_kib') ? 'KiB' : setting.key.endsWith('_mib') ? 'MiB' : undefined;
+  const switchHint = SWITCH_HINTS[setting.key];
   const hints = [
+    setting.kind === 'bool' && switchHint ? t(switchHint) : '',
     setting.readOnly ? t('admin.settings.env', { name: setting.env }) : '',
     setting.kind === 'secret' ? t('admin.secretHint') : '',
     setting.kind === 'int' && setting.min === 0 && setting.key.endsWith('_kib') ? t('admin.settings.noLimitHint') : '',
