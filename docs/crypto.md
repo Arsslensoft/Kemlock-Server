@@ -1943,8 +1943,12 @@ tag       = HMAC-SHA256(dedup key, canonical input)
 ```
 
 The canonical input is a JSON array whose first element is the tag's name (`cred`, `account`,
-`secret`, `passkey`, `card`, `note`, `key`, `codes`), followed by the normalised values as strings,
-serialised as RFC 8785 (JCS) without whitespace. Tags are the full 32 bytes.
+`secret`, `passkey`, `card`, `note`, `key`, `codes`, `identity`, `contact`, `document`, `file`),
+followed by the normalised values as strings, serialised as RFC 8785 (JCS) without whitespace. Tags
+are the full 32 bytes.
+
+`contact`, `document` and `file` are later additions. A client that doesn't know a tag name makes
+none of that name, and the items that already have tags keep them unchanged.
 
 ### Normalisation
 
@@ -1966,6 +1970,9 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 | `key` | fingerprint |
 | `codes` | each code |
 | `identity` | full name, email |
+| `contact` | email, phone |
+| `document` | number |
+| `file` | content hash |
 
 - **site**: one per website: the registrable domain by the Public Suffix List (ICANN and private
   sections), lower case, Punycode; the whole host instead for an IP address or a host under the
@@ -1992,18 +1999,43 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 - **text** (note): NFC; CRLF and lone CR become LF; spaces and tabs at the end of each line
   removed; blank lines at the end removed.
 - **fingerprint**: an SSH key's OpenSSH `SHA256:…` fingerprint, or a PGP key's v4 or v6
-  fingerprint as upper-case hex.
+  fingerprint as upper-case hex. A certificate's fingerprint is the same: its SHA-256 (or SHA-1)
+  thumbprint of the DER, as upper-case hex with the colons, spaces and a leading `0x` left out, so
+  `AB:CD:…` and `abcd…` are one value. A certificate makes a `key` tag. A value that is neither
+  an `SHA256:…` fingerprint nor 40 or 64 hex digits has no tag.
 - **each code** (backup codes): trimmed, empty ones and duplicates dropped, sorted by code point,
   one value each.
 - **full name** and **email** (identity): trimmed, NFC, lower case.
+- **email** (contact): trimmed, NFC, lower case, as a username is. **phone**: its ASCII digits
+  only, so `+1 (555) 0142` and `15550142` are one value. A contact whose email and phone are both
+  empty has no tag; with one of them, the other is the empty string. The email is the contact's
+  own `email`; the address a public key was looked up by (`sourceEmail`) is not read. A contact
+  that holds a PGP public key also makes a `key` tag with that key's fingerprint, as a PGP key
+  item does.
+- **number** (`document`, one per identity document): NFC, lower case, and only its letters and
+  digits (Unicode alphabetic and numeric characters), so `X 1234-567` and `x1234567` are one
+  value. A number of fewer than four letters and digits has no tag.
+- **content hash** (`file`): the SHA-256 of the file's plaintext, as 64 hex digits in lower case
+  (any case on input). A File item's `file` entry may hold it as `sha256`, beside its `name`,
+  `size` and `key`; a file without one has no tag.
 
 A login has one `cred` and one `account` tag per site, each site once; a login with no site has
-none. A card, note, key, code or identity with nothing to hash (no digits, no text, an unreadable
-fingerprint or secret, no codes, an empty name and email) has no tag.
+none. An identity has one `identity` tag and one `document` tag per document number, each number
+once. A client that groups identities does so by `document`: two identities that share one are
+copies. An identity with no document is a copy of every identity with no document that shares its
+`identity` tag, and of the one identity with documents that shares it; with several identities with
+documents it is a copy of none of them (it could be of any), and two identities that both have
+documents are never copies by `identity` alone, since one person's passport and licence share a name
+and an email. A card, note, key, certificate, code, contact, file or identity with nothing to hash (no
+digits, no text, an unreadable fingerprint or secret, no codes, an empty name and email, an empty
+email and phone, no hash) has no tag.
 
 `dedup-normalise.json` in test-vectors pins raw values in and canonical inputs out, including
 `İstanbul`, `ΣΑΣ`, `Straße` against `STRASSE`, a decomposed `é`, a base32 secret with spaces,
-lower case and padding, a note with CRLF and trailing blanks, and duplicate backup codes.
+lower case and padding, a note with CRLF and trailing blanks, duplicate backup codes, a
+certificate's SHA-256 and SHA-1 thumbprints with colons, in lower case and after `0x`, a contact's
+phone with punctuation next to an email-only and a phone-only contact, a document number with
+spaces and dashes (and one too short to count), and a file's hash in upper case.
 
 ## Sync cursor
 

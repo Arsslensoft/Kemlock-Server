@@ -246,6 +246,65 @@ pub(crate) fn raw_cases() -> Vec<Raw> {
             "identity",
             json!({ "full_name": " Zoe\u{308} M\u{dc}ller ", "email": " Zoe@Example.COM " }),
         ),
+        // A certificate's thumbprint is a `key` value, however it is written.
+        plain(
+            "key-certificate-sha256-colons",
+            "key",
+            json!({ "fingerprint": "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89" }),
+        ),
+        plain(
+            "key-certificate-sha256-lower-case-no-colons",
+            "key",
+            json!({ "fingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789" }),
+        ),
+        plain(
+            "key-certificate-sha1-colons",
+            "key",
+            json!({ "fingerprint": "0f:1e:2d:3c:4b:5a:69:78:87:96:a5:b4:c3:d2:e1:f0:01:12:23:34" }),
+        ),
+        plain(
+            "key-certificate-0x-prefix",
+            "key",
+            json!({ "fingerprint": "0x0f1e2d3c4b5a69788796a5b4c3d2e1f001122334" }),
+        ),
+        plain("key-certificate-too-short", "key", json!({ "fingerprint": "AB:CD:EF:01" })),
+        plain(
+            "contact-email-and-phone",
+            "contact",
+            json!({ "email": " Alex.Chen@Example.ORG ", "phone": "+1 (555) 0142" }),
+        ),
+        plain(
+            "contact-email-only",
+            "contact",
+            json!({ "email": "Cafe\u{301}@x.example", "phone": "" }),
+        ),
+        plain(
+            "contact-phone-only",
+            "contact",
+            json!({ "email": "  ", "phone": "1-555-0142" }),
+        ),
+        plain(
+            "contact-nothing-to-hash",
+            "contact",
+            json!({ "email": " ", "phone": "call me" }),
+        ),
+        plain(
+            "document-spaces-and-dashes",
+            "document",
+            json!({ "number": "X 1234-567" }),
+        ),
+        plain(
+            "document-decomposed-e",
+            "document",
+            json!({ "number": "Cafe\u{301} 9" }),
+        ),
+        plain("document-too-short", "document", json!({ "number": "1-2-3" })),
+        plain(
+            "file-upper-case-hash",
+            "file",
+            json!({ "content_hash": " 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF " }),
+        ),
+        plain("file-not-a-hash", "file", json!({ "content_hash": "sha256:abc" })),
     ]);
     cases
 }
@@ -305,6 +364,15 @@ pub(crate) fn inputs(tag: &str, raw: &Value, shared_hosts: &[String]) -> Vec<Vec
             dedup::codes_input(&codes).into_iter().collect()
         }
         dedup::name::IDENTITY => dedup::identity_input(text(raw, "full_name"), text(raw, "email"))
+            .into_iter()
+            .collect(),
+        dedup::name::CONTACT => dedup::contact_input(text(raw, "email"), text(raw, "phone"))
+            .into_iter()
+            .collect(),
+        dedup::name::DOCUMENT => dedup::document_input(text(raw, "number"))
+            .into_iter()
+            .collect(),
+        dedup::name::FILE => dedup::file_input(text(raw, "content_hash"))
             .into_iter()
             .collect(),
         other => panic!("unknown tag {other}"),

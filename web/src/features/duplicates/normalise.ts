@@ -13,7 +13,10 @@ export type TagName =
   | 'note'
   | 'key'
   | 'codes'
-  | 'identity';
+  | 'identity'
+  | 'contact'
+  | 'document'
+  | 'file';
 
 const WHITE_SPACE = /^\p{White_Space}+|\p{White_Space}+$/gu;
 
@@ -134,11 +137,41 @@ export function normaliseExpiry(month: unknown, year: unknown): string {
   return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
 }
 
-/** An SSH `SHA256:...` fingerprint as is, a PGP fingerprint as upper-case hex. */
+/**
+ * A key's or a certificate's fingerprint, as the Rust side reads one: an OpenSSH `SHA256:…` (the
+ * prefix in capitals) as it is, or 40 or 64 hex digits (a PGP v4 or v6 fingerprint, a certificate's
+ * SHA-1 or SHA-256 thumbprint) as upper case, without the spaces, the colons and a leading `0x`
+ * (`AB:CD:…` and `abcd…` are one value). `""` for anything else, which makes no tag.
+ */
 export function normaliseFingerprint(text: string): string {
   const trimmed = text.trim();
-  if (/^SHA256:/i.test(trimmed)) return `SHA256:${trimmed.slice(7)}`;
-  return trimmed.replace(/\s+/g, '').toUpperCase();
+  if (trimmed.startsWith('SHA256:')) return trimmed.length > 'SHA256:'.length ? trimmed : '';
+  const squeezed = trimmed.replace(/[\s:]+/g, '').toUpperCase();
+  const hex = squeezed.startsWith('0X') ? squeezed.slice(2) : squeezed;
+  return /^(?:[0-9A-F]{40}|[0-9A-F]{64})$/.test(hex) ? hex : '';
+}
+
+/** A contact's phone: its ASCII digits only, so `+1 (555) 0142` and `15550142` are one number. */
+export function normalisePhone(text: string): string {
+  return text.replace(/[^0-9]/g, '');
+}
+
+/** The fewest letters and digits an identity document's number needs to make a tag. */
+const MIN_DOCUMENT_NUMBER = 4;
+
+/**
+ * An identity document's number: NFC, lower case, only its letters and digits. `""` below four of
+ * them: a placeholder would match unrelated papers.
+ */
+export function normaliseDocumentNumber(text: string): string {
+  const kept = lowerSimple(nfc(text)).replace(/[^\p{Alphabetic}\p{N}]/gu, '');
+  return [...kept].length >= MIN_DOCUMENT_NUMBER ? kept : '';
+}
+
+/** A file's content hash: the SHA-256 of its plaintext as 64 hex digits in lower case, else `""`. */
+export function normaliseContentHash(text: string): string {
+  const trimmed = text.trim();
+  return /^[0-9a-fA-F]{64}$/.test(trimmed) ? trimmed.toLowerCase() : '';
 }
 
 /** Backup codes: trimmed, duplicates dropped, sorted by code point. */

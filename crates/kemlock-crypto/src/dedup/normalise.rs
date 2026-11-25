@@ -239,6 +239,38 @@ pub fn identity_text(raw: &str) -> String {
     username(raw)
 }
 
+/// A contact's **email**: trimmed, NFC, lower case, as a username is.
+pub fn email(raw: &str) -> String {
+    username(raw)
+}
+
+/// A contact's **phone**: its ASCII digits only, so `+1 (555) 0142` and `15550142` are one number.
+pub fn phone(raw: &str) -> String {
+    raw.chars().filter(char::is_ascii_digit).collect()
+}
+
+/// The fewest letters and digits a document number needs to make a tag. A shorter one (a lone
+/// `0`, a placeholder) would match unrelated documents.
+const MIN_DOCUMENT_NUMBER: usize = 4;
+
+/// An identity document's **number**: NFC, lower case, and only its letters and digits, so spaces,
+/// dashes and dots in `X 1234-567` don't matter. `None` below four letters and digits.
+pub fn document_number(raw: &str) -> Option<String> {
+    let kept: String = lower(&nfc(raw))
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    (kept.chars().count() >= MIN_DOCUMENT_NUMBER).then_some(kept)
+}
+
+/// A file's **content hash**: the SHA-256 of its plaintext as 64 hex digits, any case, written
+/// lower case. `None` for anything else.
+pub fn content_hash(raw: &str) -> Option<String> {
+    let text = raw.trim();
+    (text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| text.to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +415,59 @@ mod tests {
     #[test]
     fn identity_text_is_a_username() {
         assert_eq!(identity_text(" Alice M\u{dc}ller "), "alice m\u{fc}ller");
+    }
+
+    #[test]
+    fn a_certificate_fingerprint_follows_the_key_fingerprint_rule() {
+        // A certificate's SHA-256 thumbprint is printed as colon-separated hex; it makes the same
+        // `key` value however it is spelled.
+        let hex = "ab".repeat(32);
+        let colons = ["AB"; 32].join(":");
+        assert_eq!(fingerprint(&colons), Some(hex.to_ascii_uppercase()));
+        assert_eq!(fingerprint(&colons), fingerprint(&hex));
+        // The older SHA-1 thumbprint (20 bytes) is accepted the same way.
+        let sha1 = ["0f"; 20].join(":");
+        assert_eq!(fingerprint(&sha1), Some("0F".repeat(20)));
+    }
+
+    #[test]
+    fn contact_emails_are_usernames_and_phones_are_digits() {
+        assert_eq!(email("  Alex.Chen@Example.ORG "), "alex.chen@example.org");
+        assert_eq!(email("Cafe\u{301}@x.example"), "caf\u{e9}@x.example");
+        assert_eq!(phone("+1 (555) 0142"), "15550142");
+        assert_eq!(phone("1-555-0142"), "15550142");
+        assert_eq!(phone("\u{664}12"), "12");
+        assert_eq!(phone("call me"), "");
+    }
+
+    #[test]
+    fn document_numbers_keep_letters_and_digits_in_lower_case() {
+        assert_eq!(document_number("X 1234-567"), Some("x1234567".to_owned()));
+        assert_eq!(document_number("x1234567"), Some("x1234567".to_owned()));
+        assert_eq!(document_number(" ab.12 "), Some("ab12".to_owned()));
+        assert_eq!(
+            document_number("Cafe\u{301}9"),
+            Some("caf\u{e9}9".to_owned())
+        );
+        // Fewer than four letters and digits is no number to match on.
+        assert_eq!(document_number("123"), None);
+        assert_eq!(document_number("1-2-3"), None);
+        assert_eq!(document_number("--  "), None);
+        assert_eq!(document_number(""), None);
+    }
+
+    #[test]
+    fn content_hashes_are_sha256_hex_in_lower_case() {
+        let hex = "0123456789ABCDEF".repeat(4);
+        assert_eq!(content_hash(&hex), Some(hex.to_ascii_lowercase()));
+        assert_eq!(
+            content_hash(&format!(" {} ", hex.to_ascii_lowercase())),
+            content_hash(&hex)
+        );
+        assert_eq!(content_hash(&hex[..63]), None);
+        assert_eq!(content_hash(&format!("{hex}0")), None);
+        assert_eq!(content_hash(&"zz".repeat(32)), None);
+        assert_eq!(content_hash("sha256:abc"), None);
+        assert_eq!(content_hash(""), None);
     }
 }

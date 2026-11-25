@@ -63,7 +63,27 @@ export interface PgpInfo {
   /** Upper-case hex, in groups of four. */
   fingerprint?: string;
   userIds: string[];
+  /** The primary key's algorithm as a name (`ed25519`, `RSA`), when it is one this knows. */
+  algorithm?: string;
+  /** How many subkeys the key holds. */
+  subkeys?: number;
 }
+
+/** OpenPGP public-key algorithm ids (RFC 9580, section 9.1) by the name a person knows them by. */
+const PGP_ALGORITHMS: Record<number, string> = {
+  1: 'RSA',
+  2: 'RSA',
+  3: 'RSA',
+  16: 'Elgamal',
+  17: 'DSA',
+  18: 'ECDH',
+  19: 'ECDSA',
+  22: 'ed25519',
+  25: 'x25519',
+  26: 'x448',
+  27: 'ed25519',
+  28: 'ed448',
+};
 
 interface Packet {
   tag: number;
@@ -115,14 +135,20 @@ function packets(b: Uint8Array): Packet[] {
 export async function pgpInfo(base64: string): Promise<PgpInfo> {
   const userIds: string[] = [];
   let fingerprint: string | undefined;
+  let algorithm: string | undefined;
+  let subkeys: number | undefined;
   try {
     const all = packets(fromB64(base64));
     for (const packet of all) {
       if (packet.tag === 13) userIds.push(new TextDecoder().decode(packet.body));
     }
+    // A public subkey packet is tag 14, a secret one tag 7.
+    subkeys = all.filter((p) => p.tag === 14 || p.tag === 7).length;
     const key = all.find((p) => p.tag === 6 || p.tag === 5);
     if (key) {
       const b = key.body;
+      // Version, creation time (4 bytes), then the algorithm: the same place in versions 4 and 6.
+      algorithm = PGP_ALGORITHMS[b[5] ?? 0];
       let pub: Uint8Array | undefined;
       if (key.tag === 6) pub = b;
       else if (b[0] === 4) {
@@ -144,6 +170,8 @@ export async function pgpInfo(base64: string): Promise<PgpInfo> {
   }
   return {
     userIds,
+    ...(subkeys !== undefined ? { subkeys } : {}),
+    ...(algorithm ? { algorithm } : {}),
     ...(fingerprint ? { fingerprint: fingerprint.toUpperCase().replace(/(.{4})(?=.)/g, '$1 ') } : {}),
   };
 }

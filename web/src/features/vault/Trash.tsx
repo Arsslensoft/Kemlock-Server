@@ -5,17 +5,99 @@ import { describeError } from '@/lib/errors';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { Notice } from '@/ui/Notice';
+import '@/styles/lists.css';
 import { useVault, useVaultActions } from './hooks';
 import { kindLabel, shortDate, tileLetter, timeAgo } from './kinds';
+import { inVault, knownVault } from './listFilters';
+import { VaultPill, VaultSelect } from './VaultSelect';
+import { useVaultFilter } from './vaultFilter';
+import { type Vaults, useVaults } from './vaults';
 import { type VaultItem, goneOn, itemName } from './vault';
 
 type Pending = { type: 'empty' } | { type: 'one'; item: VaultItem } | null;
+
+/** The Trash's rows: what was deleted, from which vault, when, and when it goes for good. */
+export function TrashTable({
+  rows,
+  vaults,
+  restoring = false,
+  onRestore,
+  onDelete,
+}: {
+  rows: VaultItem[];
+  vaults: Vaults;
+  restoring?: boolean;
+  onRestore: (item: VaultItem) => void;
+  onDelete: (item: VaultItem) => void;
+}) {
+  const t = useT();
+  return (
+    <div className="table-wrap">
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th scope="col">{t('table.name')}</th>
+            <th scope="col">{t('table.kind')}</th>
+            <th scope="col">{t('lists.trash.from')}</th>
+            <th scope="col">{t('trash.deleted')}</th>
+            <th scope="col">{t('trash.goneOn')}</th>
+            <th scope="col">
+              <span className="sr">{t('table.actions')}</span>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((item) => {
+            const name = itemName(item);
+            const gone = goneOn(item);
+            return (
+              <tr key={item.id}>
+                <td>
+                  <Link to="/vault/$itemId" params={{ itemId: item.id }} className="name">
+                    <span className="tile" aria-hidden="true">
+                      {tileLetter(name)}
+                    </span>
+                    <span>{name}</span>
+                  </Link>
+                </td>
+                <td>{t(kindLabel(item.kind))}</td>
+                <td>
+                  <VaultPill label={vaults.labelOf(item.owner)} />
+                </td>
+                <td className="when">{timeAgo(item.data?.trashedAt)}</td>
+                <td className="when">{gone ? shortDate(gone) : '—'}</td>
+                <td>
+                  <div className="actions">
+                    <Button
+                      size="small"
+                      isDisabled={restoring}
+                      aria-label={t('trash.restoreItem', { name })}
+                      onPress={() => onRestore(item)}
+                    >
+                      {t('action.restore')}
+                    </Button>
+                    <Button size="small" aria-label={t('trash.deleteItem', { name })} onPress={() => onDelete(item)}>
+                      {t('trash.deleteNow')}
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 export default function Trash() {
   const t = useT();
   const { trashed, isLoading } = useVault();
   const { restore, remove, empty } = useVaultActions();
   const [confirm, setConfirm] = useState<Pending>(null);
+  const vaults = useVaults(trashed);
+  const [chosen, setVault] = useVaultFilter('trash');
+  const vault = knownVault(chosen, vaults.options);
   const failure = restore.error ?? remove.error ?? empty.error;
   const confirmFailure = remove.error ?? empty.error;
   const confirmError = confirmFailure ? describeError(confirmFailure) : null;
@@ -25,9 +107,10 @@ export default function Trash() {
     empty.reset();
     setConfirm(next);
   }
-  const sorted = [...trashed].sort((a, b) =>
-    String(b.data?.trashedAt ?? '').localeCompare(String(a.data?.trashedAt ?? '')),
-  );
+  // Newest first, within the vault the filter picks. "Empty trash" empties what is shown.
+  const sorted = trashed
+    .filter((item) => inVault(item, vault))
+    .sort((a, b) => String(b.data?.trashedAt ?? '').localeCompare(String(a.data?.trashedAt ?? '')));
 
   return (
     <>
@@ -51,6 +134,8 @@ export default function Trash() {
         </Notice>
       ) : null}
 
+      <VaultSelect value={vault} options={vaults.options} onChange={setVault} />
+
       <div className="card">
         {isLoading ? (
           <p className="empty" role="status">
@@ -58,65 +143,17 @@ export default function Trash() {
           </p>
         ) : sorted.length === 0 ? (
           <div className="empty">
-            <h2>{t('trash.none.title')}</h2>
-            <p>{t('trash.none.body')}</p>
+            <h2>{trashed.length > 0 ? t('lists.trash.vaultNone.title') : t('trash.none.title')}</h2>
+            <p>{trashed.length > 0 ? t('lists.trash.vaultNone.body') : t('trash.none.body')}</p>
           </div>
         ) : (
-          <div className="table-wrap">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th scope="col">{t('table.name')}</th>
-                  <th scope="col">{t('table.kind')}</th>
-                  <th scope="col">{t('trash.deleted')}</th>
-                  <th scope="col">{t('trash.goneOn')}</th>
-                  <th scope="col">
-                    <span className="sr">{t('table.actions')}</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {sorted.map((item) => {
-                  const name = itemName(item);
-                  const gone = goneOn(item);
-                  return (
-                    <tr key={item.id}>
-                      <td>
-                        <Link to="/vault/$itemId" params={{ itemId: item.id }} className="name">
-                          <span className="tile" aria-hidden="true">
-                            {tileLetter(name)}
-                          </span>
-                          <span>{name}</span>
-                        </Link>
-                      </td>
-                      <td>{t(kindLabel(item.kind))}</td>
-                      <td>{timeAgo(item.data?.trashedAt)}</td>
-                      <td>{gone ? shortDate(gone) : '—'}</td>
-                      <td>
-                        <div className="actions">
-                          <Button
-                            size="small"
-                            isDisabled={restore.isPending}
-                            aria-label={t('trash.restoreItem', { name })}
-                            onPress={() => restore.mutate(item)}
-                          >
-                            {t('action.restore')}
-                          </Button>
-                          <Button
-                            size="small"
-                            aria-label={t('trash.deleteItem', { name })}
-                            onPress={() => ask({ type: 'one', item })}
-                          >
-                            {t('trash.deleteNow')}
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <TrashTable
+            rows={sorted}
+            vaults={vaults}
+            restoring={restore.isPending}
+            onRestore={(item) => restore.mutate(item)}
+            onDelete={(item) => ask({ type: 'one', item })}
+          />
         )}
       </div>
 

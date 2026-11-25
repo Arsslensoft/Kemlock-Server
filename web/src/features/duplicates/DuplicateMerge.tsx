@@ -1,5 +1,6 @@
-// DuplicateMerge (canvas): choose every field of the kept login. Nothing is lost: the password
-// that isn't kept goes into its history and the other items wait in the Trash for 30 days.
+// DuplicateMerge (canvas): choose every field of the kept item. Nothing is lost: the password
+// that isn't kept goes into its history, the linked items and custom fields of every item join the
+// kept one's, and the other items wait in the Trash for 30 days.
 import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { type ReactNode, useMemo, useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
@@ -8,21 +9,29 @@ import { Button, buttonClass } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
-import { useVault } from '@/features/vault/hooks';
+import { useVault, useWritableCollections } from '@/features/vault/hooks';
+import { useKeyFacts } from '@/features/vault/keyFacts';
 import { tileLetter, timeAgo } from '@/features/vault/kinds';
+import { type Vaults, useVaults } from '@/features/vault/vaults';
 import { type VaultItem, itemName, loginOf } from '@/features/vault/vault';
 import { readWebsites, ruleLabel } from '@/features/vault/websites';
+import { canWriteItem } from '@/features/vault/writeAccess';
 import { type DuplicateGroup, WHY_LABEL, findDuplicates } from './detect';
 import { dismissedGroups } from './dismissed';
+import { ownerName } from './Duplicates';
 import {
+  type MergeContext,
   type MergePicks,
   defaultPicks,
+  hasUnionMembers,
   passkeyId,
   passkeysOf,
   planMerge,
+  unwritable,
   websiteKey,
 } from './merge';
-import { ownerLabel } from './Duplicates';
+import { FIELD_LABELS, chosenFrom, fieldConflicts, showValue } from './mergeFill';
+import { sameLabel } from './sameLabel';
 import { type Merged, useMergeActions } from './useMerge';
 
 function note(item: VaultItem): string {
@@ -37,6 +46,8 @@ function folder(item: VaultItem): string {
 
 export function MergeView({
   group,
+  vaults,
+  context,
   onMerge,
   onDismiss,
   onCancel,
@@ -45,6 +56,9 @@ export function MergeView({
   done,
 }: {
   group: DuplicateGroup;
+  vaults: Vaults;
+  /** The whole vault and what the person may write: what a merge rewrites besides the copies. */
+  context?: MergeContext | undefined;
   onMerge: (picks: MergePicks) => void;
   onDismiss: () => void;
   onCancel: () => void;
@@ -57,7 +71,14 @@ export function MergeView({
   const [picks, setPicks] = useState<MergePicks>(() => defaultPicks(group.items));
   const items = group.items;
   const isLogin = group.kind === 'login';
-  const plan = planMerge(items, picks, new Date());
+  const mine = t('dup.owner.me');
+  // Copies in two vaults: a login's name pick also picks the item that stays; any other kind picks
+  // the name on its own and the vault the kept item stays in on a row of its own.
+  const namePicksItem = !group.crossOwner || isLogin;
+  const plan = planMerge(items, picks, new Date(), context);
+  const conflicts = useMemo(() => fieldConflicts(items), [items]);
+  // A merge writes every copy: one the person may only read stops it, and the reason is said.
+  const blocked = unwritable(items, context?.canWrite);
   const keptSites = plan ? readWebsites({ uris: plan.fields['uris'] as unknown }) : [];
   const nameField: unknown = plan?.fields['name'];
   const folderField: unknown = plan?.fields['folder'];
@@ -88,7 +109,7 @@ export function MergeView({
   ) => {
     switch (field) {
       case 'nameFrom':
-        setPicks({ ...picks, nameFrom: id, keepId: id });
+        setPicks(namePicksItem ? { ...picks, nameFrom: id, keepId: id } : { ...picks, nameFrom: id });
         break;
       case 'passwordFrom':
         setPicks({ ...picks, passwordFrom: id });
@@ -172,7 +193,7 @@ export function MergeView({
                         <span>
                           <span>{itemName(item)}</span>
                           <span className="sub">
-                            {[t(ownerLabel(item.owner)), timeAgo(item.data?.['updatedAt'])]
+                            {[ownerName(item.owner, vaults, mine), timeAgo(item.data?.['updatedAt'])]
                               .filter((part) => part !== '')
                               .join(' · ')}
                           </span>
@@ -189,6 +210,74 @@ export function MergeView({
                     <td key={item.id}>{radioCell('nameFrom', item, itemName(item))}</td>
                   ))}
                 </tr>
+                {group.crossOwner && !isLogin ? (
+                  <tr>
+                    <th scope="row">{t('dup.pick.keepIn')}</th>
+                    {items.map((item) => (
+                      <td key={item.id}>
+                        <label className="pick-opt">
+                          <input
+                            type="radio"
+                            name="m-keepIn"
+                            checked={picks.keepId === item.id}
+                            onChange={() => setPicks({ ...picks, keepId: item.id })}
+                          />
+                          <span>{ownerName(item.owner, vaults, mine)}</span>
+                        </label>
+                      </td>
+                    ))}
+                  </tr>
+                ) : null}
+                {!isLogin ? (
+                  <tr>
+                    <th scope="row">{t(sameLabel(group))}</th>
+                    <td colSpan={items.length}>
+                      <span className="sub">{t('merge.sameAll')}</span>
+                    </td>
+                  </tr>
+                ) : null}
+                {conflicts.map((conflict) => {
+                  const label = FIELD_LABELS[conflict.key];
+                  if (!label) return null;
+                  // The first holder of the chosen value carries the radio when several hold it.
+                  const chosen = chosenFrom(conflict, picks.valuesFrom, picks.keepId);
+                  const holder = conflict.options.find((option) => option.from.includes(chosen))?.from[0];
+                  return (
+                    <tr key={conflict.key}>
+                      <th scope="row">{t(label)}</th>
+                      {items.map((item) => {
+                        const option = conflict.options.find((candidate) => candidate.from.includes(item.id));
+                        return (
+                          <td key={item.id}>
+                            {option ? (
+                              <label className="pick-opt">
+                                <input
+                                  type="radio"
+                                  name={`m-${conflict.key}`}
+                                  checked={holder === item.id}
+                                  onChange={() =>
+                                    setPicks({ ...picks, valuesFrom: { ...picks.valuesFrom, [conflict.key]: item.id } })
+                                  }
+                                />
+                                <span className="mono">{showValue(conflict.key, option.value)}</span>
+                              </label>
+                            ) : (
+                              <span className="sub">{t('merge.none')}</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+                {hasUnionMembers(items) ? (
+                  <tr>
+                    <th scope="row">{t('dup.same.union')}</th>
+                    <td colSpan={items.length}>
+                      <span className="sub">{t('dup.same.unionValue')}</span>
+                    </td>
+                  </tr>
+                ) : null}
                 {isLogin ? (
                   <>
                     <tr>
@@ -305,7 +394,9 @@ export function MergeView({
                 <div className="grow">
                   <div>{keptName}</div>
                   <div className="hint">
-                    {keptFolder || t('dup.pick.noFolder')}
+                    {[group.crossOwner ? ownerName(plan.kept.owner, vaults, mine) : '', keptFolder || t('dup.pick.noFolder')]
+                      .filter((part) => part !== '')
+                      .join(' · ')}
                   </div>
                 </div>
               </div>
@@ -331,8 +422,23 @@ export function MergeView({
                 <div className="lbl">{t('merge.trash')}</div>
                 <div>{t('merge.trashBody', { names: plan.trashed.map(itemName).join(', ') })}</div>
               </div>
+              {plan.relinks.length > 0 ? (
+                <p>{t('dup.preview.relinked', { count: plan.relinks.length, name: keptName })}</p>
+              ) : null}
+              {plan.copies.length > 0 ? (
+                <p>{t('dup.preview.copies', { count: plan.copies.length, name: keptName })}</p>
+              ) : null}
+              {blocked.length > 0 ? (
+                <Notice tone="warn">
+                  <p>{t('dup.readOnly', { names: blocked.map(itemName).join(', ') })}</p>
+                </Notice>
+              ) : null}
               <div className="actions">
-                <Button variant="primary" isDisabled={pending || Boolean(done)} onPress={() => onMerge(picks)}>
+                <Button
+                  variant="primary"
+                  isDisabled={pending || Boolean(done) || blocked.length > 0}
+                  onPress={() => onMerge(picks)}
+                >
                   {t('dup.merge')}
                 </Button>
                 <Button onPress={onDismiss}>{t('dup.notDuplicates')}</Button>
@@ -351,17 +457,24 @@ export default function DuplicateMerge() {
   const t = useT();
   const navigate = useNavigate();
   const { groupId } = useParams({ strict: false }) as { groupId?: string };
-  const { active, isLoading } = useVault();
+  const { active, trashed, isLoading } = useVault();
+  const vaults = useVaults(active);
+  const writable = useWritableCollections().data;
+  const context = useMemo<MergeContext>(
+    () => ({ all: [...active, ...trashed], canWrite: (item) => canWriteItem(item, writable) }),
+    [active, trashed, writable],
+  );
+  const { facts, pending: readingKeys } = useKeyFacts(active);
   const { merge, undo } = useMergeActions();
   const [done, setDone] = useState<{ kept: string; trashed: string; merged: Merged } | undefined>(
     undefined,
   );
   const group = useMemo(
-    () => findDuplicates(active).find((candidate) => candidate.id === groupId),
-    [active, groupId],
+    () => findDuplicates(active, facts).find((candidate) => candidate.id === groupId),
+    [active, facts, groupId],
   );
   // Right after a merge the group is gone (its twin is in the Trash): keep showing what was merged.
-  if (isLoading) {
+  if (isLoading || readingKeys) {
     return (
       <p className="empty" role="status">
         {t('main.loading')}
@@ -399,6 +512,8 @@ export default function DuplicateMerge() {
     <MergeView
       key={group.id}
       group={group}
+      vaults={vaults}
+      context={context}
       pending={merge.isPending}
       error={failure ? describeError(failure) : undefined}
       done={undefined}
@@ -408,8 +523,8 @@ export default function DuplicateMerge() {
         void navigate({ to: '/duplicates' });
       }}
       onMerge={(picks) => {
-        const plan = planMerge(group.items, picks, new Date());
-        if (!plan) return;
+        const plan = planMerge(group.items, picks, new Date(), context);
+        if (!plan || unwritable(group.items, context.canWrite).length > 0) return;
         merge.mutate(plan, {
           onSuccess: (merged) =>
             setDone({

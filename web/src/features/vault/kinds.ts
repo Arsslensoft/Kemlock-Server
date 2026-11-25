@@ -89,7 +89,7 @@ export function kindLabel(kind: string): MessageId {
 
 /** "Logins", "MFA codes": the plural name, for the sidebar and the list titles. */
 export function kindPluralLabel(kind: string): MessageId {
-  return isKnownKind(kind) ? KIND_PLURALS[kind] : 'kind.other';
+  return isKnownKind(kind) ? KIND_PLURALS[kind] : 'kind.plural.other';
 }
 
 export function kindIcon(kind: string): IconName {

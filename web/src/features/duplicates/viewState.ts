@@ -5,7 +5,10 @@
 // way back can't know where the person came from. Nothing here is a secret (a filter name and a
 // group id), and a damaged or blocked store just means starting from the defaults.
 
-export const DUPLICATE_FILTERS = ['all', 'login', 'otp', 'note', 'places'] as const;
+import { KIND_ORDER } from '@/features/vault/kinds';
+
+/** Every item type has its chip, in the order the design fixes; `places` is the groups in two vaults. */
+export const DUPLICATE_FILTERS = ['all', ...KIND_ORDER, 'places'] as const;
 export type DuplicateFilter = (typeof DUPLICATE_FILTERS)[number];
 
 export interface DuplicatesView {
@@ -18,6 +21,8 @@ const KEY = 'kemlock.duplicates.view';
 export interface ViewStore {
   load(): DuplicatesView;
   save(view: DuplicatesView): void;
+  /** Forgets the filter and the selected group (on lock and sign-out). */
+  reset(): void;
 }
 
 /** A store over any `Storage`-like object; every access is guarded, since storage may be blocked. */
@@ -43,6 +48,13 @@ export function createViewStore(storage: Pick<Storage, 'getItem' | 'setItem'> | 
         storage?.setItem(KEY, JSON.stringify(view));
       } catch {
         // Not remembered; the list still works.
+      }
+    },
+    reset() {
+      try {
+        storage?.setItem(KEY, JSON.stringify({ filter: 'all' }));
+      } catch {
+        // Nothing was kept that could be cleared.
       }
     },
   };
