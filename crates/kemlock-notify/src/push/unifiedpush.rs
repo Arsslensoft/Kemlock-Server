@@ -13,12 +13,22 @@
 use super::SendOutcome;
 use kemlock_app::push::check_unifiedpush_endpoint;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use url::{Host, Url};
 
-/// How many endpoints are pushed to at once.
-const PARALLEL: usize = 16;
+/// How many endpoints are pushed to at once, across every send in flight.
+const MAX_IN_FLIGHT: usize = 32;
+
+/// How long a name lookup may take.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long a connection may take to open, and how long a whole push may take. A distributor that
+/// is slower is unreachable as far as a "sync now" is concerned.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the distributor keeps the push for a phone that is off, in seconds.
 const TTL_SECONDS: &str = "86400";
@@ -135,6 +145,8 @@ pub struct UnifiedPushSender {
     allow_local: bool,
     /// Also reaches private (LAN) addresses: the operator's own ntfy or Gotify.
     allow_private: bool,
+    /// Limits the sends in flight; clones share it.
+    in_flight: Arc<Semaphore>,
 }
 
 impl Default for UnifiedPushSender {
@@ -148,6 +160,7 @@ impl UnifiedPushSender {
         UnifiedPushSender {
             allow_local: false,
             allow_private: false,
+            in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
         }
     }
 
@@ -180,6 +193,7 @@ impl UnifiedPushSender {
         UnifiedPushSender {
             allow_local: true,
             allow_private: false,
+            in_flight: Arc::new(Semaphore::new(MAX_IN_FLIGHT)),
         }
     }
 
@@ -192,24 +206,24 @@ impl UnifiedPushSender {
     /// 410), comes back in `rejected`. A failure is logged and not retried.
     pub async fn send_sync(&self, endpoints: &[String]) -> SendOutcome {
         let mut outcome = SendOutcome::default();
-        for chunk in endpoints.chunks(PARALLEL) {
-            let mut sends = JoinSet::new();
-            for endpoint in chunk {
-                let (sender, endpoint) = (self.clone(), endpoint.clone());
-                sends.spawn(async move {
-                    let delivery = sender.send_one(&endpoint).await;
-                    (endpoint, delivery)
-                });
-            }
-            while let Some(done) = sends.join_next().await {
-                let Ok((endpoint, delivery)) = done else {
-                    continue;
-                };
-                match delivery {
-                    Delivery::Accepted => outcome.accepted += 1,
-                    Delivery::Forget => outcome.rejected.push(endpoint),
-                    Delivery::Failed => {}
-                }
+        let mut sends = JoinSet::new();
+        for endpoint in endpoints {
+            let (sender, endpoint) = (self.clone(), endpoint.clone());
+            sends.spawn(async move {
+                // At most `MAX_IN_FLIGHT` sends run at once across every clone of this sender.
+                let _permit = sender.in_flight.acquire().await.ok();
+                let delivery = sender.send_one(&endpoint).await;
+                (endpoint, delivery)
+            });
+        }
+        while let Some(done) = sends.join_next().await {
+            let Ok((endpoint, delivery)) = done else {
+                continue;
+            };
+            match delivery {
+                Delivery::Accepted => outcome.accepted += 1,
+                Delivery::Forget => outcome.rejected.push(endpoint),
+                Delivery::Failed => {}
             }
         }
         outcome
@@ -233,7 +247,7 @@ impl UnifiedPushSender {
             Some(Host::Ipv6(ip)) => self.literal(IpAddr::V6(ip)),
             Some(Host::Domain(name)) => {
                 let found = tokio::time::timeout(
-                    Duration::from_secs(5),
+                    LOOKUP_TIMEOUT,
                     tokio::net::lookup_host((name, port)),
                 )
                 .await;
@@ -287,8 +301,8 @@ impl UnifiedPushSender {
             Err(delivery) => return delivery,
         };
         let mut http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .connect_timeout(Duration::from_secs(5))
+            .timeout(SEND_TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
             .user_agent(concat!("kemlock-server/", env!("CARGO_PKG_VERSION")))
             // A redirect could lead to an address the checks above never saw.
             .redirect(reqwest::redirect::Policy::none());
@@ -646,7 +660,7 @@ mod tests {
     async fn many_endpoints_are_sent_in_parallel_batches() {
         let (seen, base) = fake().await;
         let sender = UnifiedPushSender::allowing_local();
-        let targets: Vec<String> = (0..PARALLEL * 2 + 3)
+        let targets: Vec<String> = (0..MAX_IN_FLIGHT * 2 + 3)
             .map(|i| format!("{base}/device{i}"))
             .collect();
         let outcome = sender.send_sync(&targets).await;

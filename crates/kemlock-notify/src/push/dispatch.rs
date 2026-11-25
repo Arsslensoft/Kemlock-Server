@@ -8,7 +8,8 @@
 //!
 //! - `apns`: straight to Apple when the server holds an Apple key; else through the optional relay
 //!   when the operator turned it on; else nothing;
-//! - `unifiedpush`: straight to the endpoint, always;
+//! - `unifiedpush`: straight to the endpoint, always, from a task of its own so a slow endpoint
+//!   holds up nothing else;
 //! - `fcm` (an old row): nothing, Kemlock doesn't use Firebase.
 
 use super::{
@@ -28,6 +29,9 @@ use tokio::time::Instant;
 
 /// How long nudges are gathered before one send.
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(1);
+
+/// How long one flush's UnifiedPush sends may take in all, queueing included.
+const UNIFIEDPUSH_DEADLINE: Duration = Duration::from_secs(20);
 
 /// The senders that need no relay: Apple's push, when the operator gave the server a key, and
 /// UnifiedPush.
@@ -72,7 +76,7 @@ impl PushDispatcher {
     {
         let (queue, rx) = mpsc::unbounded_channel();
         let worker = Worker {
-            repo,
+            repo: Arc::new(repo),
             audience,
             seal,
             relay,
@@ -93,14 +97,14 @@ impl PushDispatcher {
 }
 
 struct Worker<R, A, S> {
-    repo: R,
+    repo: Arc<R>,
     audience: A,
     seal: S,
     relay: RelayClient,
     direct: DirectSenders,
 }
 
-impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
+impl<R: PushRepo + 'static, A: Audience, S: SecretSeal> Worker<R, A, S> {
     async fn run(self, mut queue: mpsc::UnboundedReceiver<Owner>, window: Duration) {
         while let Some(first) = queue.recv().await {
             let mut owners = HashSet::from([first]);
@@ -146,13 +150,29 @@ impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
         if !iphones.is_empty() {
             self.push_iphones(&iphones).await;
         }
-        let androids = of_kind(PushKind::UnifiedPush);
+        let androids: Vec<PushRegistration> =
+            of_kind(PushKind::UnifiedPush).into_iter().cloned().collect();
         if !androids.is_empty() {
-            let endpoints: Vec<String> = androids.iter().map(|r| r.token.clone()).collect();
-            let outcome = self.direct.unified_push.send_sync(&endpoints).await;
-            self.forget(&androids, &outcome).await;
+            self.push_androids(androids);
         }
         // Firebase rows (`fcm`, from an older server) are left alone: nothing sends to them.
+    }
+
+    /// UnifiedPush, in a task of its own. The endpoints are the phones' distributors, anyone's
+    /// servers, and a slow one must not hold up the iPhones, the relay or the next flush. The
+    /// sends have a deadline, and the sender bounds how many run at once.
+    fn push_androids(&self, androids: Vec<PushRegistration>) {
+        let (repo, sender) = (self.repo.clone(), self.direct.unified_push.clone());
+        tokio::spawn(async move {
+            let endpoints: Vec<String> = androids.iter().map(|r| r.token.clone()).collect();
+            match tokio::time::timeout(UNIFIEDPUSH_DEADLINE, sender.send_sync(&endpoints)).await {
+                Ok(outcome) => {
+                    let sent: Vec<&PushRegistration> = androids.iter().collect();
+                    forget(&*repo, &sent, &outcome).await;
+                }
+                Err(_) => tracing::warn!("UnifiedPush endpoints took too long; the push was cut"),
+            }
+        });
     }
 
     /// Apple's push when the server has a key, else the relay if the operator turned it on.
@@ -163,7 +183,7 @@ impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
             self.forget(iphones, &outcome).await;
             return;
         }
-        let installation = match open_installation(&self.repo, &self.seal).await {
+        let installation = match open_installation(&*self.repo, &self.seal).await {
             Ok(Some(installation)) => installation,
             // No Apple key and not opted in to the relay: nothing to send through.
             Ok(None) => return,
@@ -192,11 +212,15 @@ impl<R: PushRepo, A: Audience, S: SecretSeal> Worker<R, A, S> {
 
     /// Forgets the devices whose tokens the push service no longer knows.
     async fn forget(&self, sent: &[&PushRegistration], outcome: &SendOutcome) {
-        for dead in &outcome.rejected {
-            for registration in sent.iter().filter(|r| &r.token == dead) {
-                if let Err(error) = self.repo.remove_registration(registration.device).await {
-                    tracing::warn!(%error, "couldn't forget a dead push token");
-                }
+        forget(&*self.repo, sent, outcome).await;
+    }
+}
+
+async fn forget<R: PushRepo>(repo: &R, sent: &[&PushRegistration], outcome: &SendOutcome) {
+    for dead in &outcome.rejected {
+        for registration in sent.iter().filter(|r| &r.token == dead) {
+            if let Err(error) = repo.remove_registration(registration.device).await {
+                tracing::warn!(%error, "couldn't forget a dead push token");
             }
         }
     }

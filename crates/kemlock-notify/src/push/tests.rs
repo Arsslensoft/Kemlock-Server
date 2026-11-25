@@ -9,6 +9,7 @@ use axum::routing::{delete, post};
 use axum::{Json, Router};
 use kemlock_domain::{Owner, SpaceId, UserId};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The `Authorization` header for `inst-1:key-1`.
@@ -408,6 +409,8 @@ async fn pushes_continue_after_the_relay_failed_once() {
 struct Pushed {
     apple: Mutex<Vec<String>>,
     distributor: Mutex<Vec<String>>,
+    /// Set when the distributor has answered `/slow`.
+    slow_answered: AtomicBool,
 }
 
 async fn apple(State(pushed): State<Arc<Pushed>>, Path(token): Path<String>) -> Response {
@@ -426,6 +429,10 @@ async fn distributor(State(pushed): State<Arc<Pushed>>, uri: axum::http::Uri) ->
         .push(uri.path().to_owned());
     if uri.path() == "/gone" {
         return StatusCode::GONE.into_response();
+    }
+    if uri.path() == "/slow" {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        pushed.slow_answered.store(true, Ordering::SeqCst);
     }
     StatusCode::CREATED.into_response()
 }
@@ -574,4 +581,25 @@ async fn tokens_that_apple_or_a_distributor_no_longer_know_are_forgotten() {
     let mut kept = vec!["c0ffee01".to_owned(), fine];
     kept.sort();
     eventually(|| repo.tokens() == kept).await;
+}
+
+#[tokio::test]
+async fn a_slow_unifiedpush_endpoint_holds_up_no_other_push() {
+    let (pushed, _, base, repo, dispatcher) = everything(true, false).await;
+    let ada = UserId::random();
+    repo.add(ada, "c0ffee01");
+    repo.add_kind(ada, PushKind::UnifiedPush, &format!("{base}/slow"));
+    dispatcher.nudge(Owner::User(ada));
+    eventually(|| pushed.distributor.lock().expect("lock").len() == 1).await;
+    eventually(|| pushed.apple.lock().expect("lock").len() == 1).await;
+    // The slow endpoint is still thinking, and the next flush goes ahead: the second push to the
+    // iPhone arrives well before the endpoint answers.
+    dispatcher.nudge(Owner::User(ada));
+    tokio::time::sleep(WINDOW * 10).await;
+    assert!(!pushed.slow_answered.load(Ordering::SeqCst), "still waiting");
+    assert_eq!(
+        *pushed.apple.lock().expect("lock"),
+        ["c0ffee01", "c0ffee01"],
+        "the second flush wasn't held up by the slow endpoint"
+    );
 }
