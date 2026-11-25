@@ -15,14 +15,14 @@ import { backupCodesOf } from './details/KindDetails';
 import { formatSize, fileOf } from './details/files';
 import { hostOfUrl, kindIcon, kindLabel } from './kinds';
 import { linkCandidates, linkedItems } from './links';
-import { type VaultItem, isTrashed, itemName } from './vault';
+import { type ItemData, type VaultItem, isTrashed, itemName } from './vault';
 import { readWebsites } from './websites';
 
 type T = (id: MessageId, values?: Record<string, string | number>) => string;
 
 /** What to say about an item under its name: its type, then one fact about it. */
 export function sublineOf(item: VaultItem, t: T): string {
-  const data = item.data ?? {};
+  const data: ItemData = item.data ?? {};
   const text = (key: string) => (typeof data[key] === 'string' ? (data[key] as string) : '');
   const site = readWebsites(item.data)[0]?.uri;
   const parts: string[] = [t(kindLabel(item.kind))];

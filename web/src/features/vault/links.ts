@@ -114,7 +114,7 @@ export function linkedItems(item: VaultItem, all: readonly VaultItem[]): VaultIt
 const PICKER_LIMIT = 50;
 
 function haystack(item: VaultItem): string {
-  const data = item.data ?? {};
+  const data: ItemData = item.data ?? {};
   const parts = [itemName(item)];
   for (const key of ['username', 'issuer', 'label', 'serviceName', 'email', 'company', 'cardholder']) {
     const value = data[key];
