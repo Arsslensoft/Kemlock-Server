@@ -8,6 +8,7 @@ pub mod attachment;
 pub mod change;
 pub mod dedup;
 pub mod device;
+pub mod email_change;
 pub mod ids;
 pub mod item;
 pub mod manifest;
@@ -30,6 +31,7 @@ pub use attachment::{
 pub use change::{BadCursor, ChangeId, Hlc, VersionVector};
 pub use dedup::{DedupTag, Dismissal, DismissalId, DuplicateGroup, MatchingSettings, TagSet};
 pub use device::{BROWSER_DEVICE_TYPES, Device, DeviceKind, browser_name};
+pub use email_change::EmailChange;
 pub use ids::{DeviceId, ItemId, ServerId, SpaceId, UserId};
 pub use item::{
     Item, ItemDraft, ItemError, ItemFormat, ItemKind, ItemLimits, ItemWrite, Revision, Sealed,
