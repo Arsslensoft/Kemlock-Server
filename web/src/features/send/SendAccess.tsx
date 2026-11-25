@@ -239,7 +239,7 @@ export function ItemView({ envelope, onCopy }: { envelope: ItemEnvelope; onCopy:
     <div className="stack">
       <p className="hint">{t(kindLabel(envelope.kind))}</p>
       {shownFields(envelope).map((field) => {
-        const label = field.label ? t(field.label) : field.key;
+        const label = t(field.label);
         const revealed = !field.secret || shown.has(field.key);
         const id = `send-item-${field.key}`;
         return (

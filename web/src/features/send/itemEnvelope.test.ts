@@ -103,6 +103,18 @@ describe('parseEnvelope', () => {
     }
   });
 
+  it('drops a key the kind does not define, so a crafted key never shows', () => {
+    const parsed = parseEnvelope(
+      JSON.stringify({
+        kemlockSend: 1,
+        kind: 'note',
+        name: 'n',
+        fields: { text: 'a', 'Kemlock: verify at evil.example': 'click here' },
+      }),
+    );
+    expect(parsed?.fields).toEqual({ text: 'a' });
+  });
+
   it('drops fields that are not text', () => {
     const parsed = parseEnvelope('{"kemlockSend":1,"kind":"note","name":"n","fields":{"text":"a","x":5,"y":""}}');
     expect(parsed?.fields).toEqual({ text: 'a' });
@@ -110,19 +122,17 @@ describe('parseEnvelope', () => {
 });
 
 describe('shownFields', () => {
-  it('lists known fields in order with their secrecy, then unknown keys masked', () => {
+  it('lists the fields of the kind in order with their secrecy', () => {
     const shown = shownFields({
       kemlockSend: 1,
       kind: 'card',
       name: 'Visa',
-      fields: { code: '123', zzz: 'x', number: '4111', cardholder: 'Sam' },
+      fields: { code: '123', number: '4111', cardholder: 'Sam' },
     });
     expect(shown.map((f) => [f.key, f.secret])).toEqual([
       ['cardholder', false],
       ['number', true],
       ['code', true],
-      ['zzz', true],
     ]);
-    expect(shown[3]?.label).toBeNull();
   });
 });

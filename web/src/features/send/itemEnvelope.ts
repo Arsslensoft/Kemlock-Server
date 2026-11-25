@@ -194,22 +194,23 @@ export function parseEnvelope(raw: string): ItemEnvelope | null {
   if (typeof kind !== 'string' || !isSendableKind(kind) || typeof top['name'] !== 'string') return null;
   if (typeof top['fields'] !== 'object' || top['fields'] === null || Array.isArray(top['fields'])) return null;
   const fields: Record<string, string> = {};
+  // Only the keys the kind defines are kept: nothing else is shown, so a crafted key can't pose as a label.
+  const known = FIELD_SPECS[kind].map((spec) => spec.key);
   for (const [key, entry] of Object.entries(top['fields'] as Record<string, unknown>)) {
-    if (typeof entry === 'string' && entry !== '') fields[key] = entry;
+    if (known.includes(key) && typeof entry === 'string' && entry !== '') fields[key] = entry;
   }
   return { kemlockSend: ENVELOPE_VERSION, kind, name: top['name'], fields };
 }
 
 export interface ShownField {
   key: string;
-  /** null for a field this page has no label for: `key` is shown instead. */
-  label: MessageId | null;
+  label: MessageId;
   value: string;
   secret: boolean;
   multiline: boolean;
 }
 
-/** The fields to show, known ones in order, then any other key (masked: it may be a secret). */
+/** The fields to show, in the order of the kind. */
 export function shownFields(envelope: ItemEnvelope): ShownField[] {
   const known = FIELD_SPECS[envelope.kind];
   const out: ShownField[] = [];
@@ -223,10 +224,6 @@ export function shownFields(envelope: ItemEnvelope): ShownField[] {
       secret: spec.secret === true,
       multiline: spec.multiline === true,
     });
-  }
-  for (const [key, value] of Object.entries(envelope.fields)) {
-    if (known.some((spec) => spec.key === key)) continue;
-    out.push({ key, label: null, value, secret: true, multiline: value.includes('\n') });
   }
   return out;
 }

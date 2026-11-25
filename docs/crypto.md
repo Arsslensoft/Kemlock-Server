@@ -1670,7 +1670,7 @@ Bitwarden client are unchanged; a client that doesn't know the envelope shows th
 
 The access page shows the item read-only: labelled fields, the secrets (`password`, `number`,
 `code`, `pin`, `secret`, `codes`, `private`) masked until shown, and a copy button on each. A key
-it doesn't know is shown too, masked. Numbers are written as decimal text. The owner's list entry
+the kind doesn't define is dropped. Numbers are written as decimal text. The owner's list entry
 (`meta`) names the Send as the person typed it; the envelope is only in `payload`.
 
 ### What the server checks
