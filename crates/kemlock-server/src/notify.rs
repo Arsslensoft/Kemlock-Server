@@ -203,7 +203,10 @@ pub async fn start(
         .transpose()
         .map_err(|e| RunError::Config(format!("KEMLOCK_APNS_*: {e}")))?;
     match &apns {
-        Some(apns) => tracing::info!(sandbox = apns.sandbox(), "iPhones are pushed to through Apple"),
+        Some(apns) => tracing::info!(
+            sandbox = apns.sandbox(),
+            "iPhones are pushed to through Apple"
+        ),
         None => tracing::info!("no Apple push key (KEMLOCK_APNS_*): iPhones need the relay"),
     }
     let built_in = BuiltInPush::of(apns.as_ref());

@@ -182,7 +182,9 @@ impl UnifiedPushSender {
                 }
                 // One private answer is enough to refuse: the client could be handed it.
                 if !self.allow_local && found.iter().any(|a| !is_public_ip(a.ip())) {
-                    tracing::warn!("forgot a UnifiedPush endpoint that resolves to a non-public address");
+                    tracing::warn!(
+                        "forgot a UnifiedPush endpoint that resolves to a non-public address"
+                    );
                     return Err(Delivery::Forget);
                 }
                 Ok(Some(found))
@@ -393,7 +395,10 @@ mod tests {
         assert_eq!(outcome.accepted, 1);
         let mut rejected = outcome.rejected;
         rejected.sort();
-        assert_eq!(rejected, [format!("{base}/gone"), format!("{base}/missing")]);
+        assert_eq!(
+            rejected,
+            [format!("{base}/gone"), format!("{base}/missing")]
+        );
         assert_eq!(seen.requests.lock().expect("lock").len(), 4, "no retry");
     }
 
@@ -402,7 +407,11 @@ mod tests {
         let (seen, base) = fake().await;
         let sender = UnifiedPushSender::allowing_local();
         let outcome = sender.send_sync(&[format!("{base}/moved")]).await;
-        assert_eq!(outcome, SendOutcome::default(), "a failure, nothing forgotten");
+        assert_eq!(
+            outcome,
+            SendOutcome::default(),
+            "a failure, nothing forgotten"
+        );
         assert_eq!(seen.requests.lock().expect("lock").len(), 1);
     }
 

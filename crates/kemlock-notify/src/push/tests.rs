@@ -113,13 +113,7 @@ async fn the_server_registers_and_gets_an_id_and_a_key() {
 async fn a_send_carries_tokens_and_the_nudge_and_nothing_else() {
     let (state, client) = relay().await;
     let outcome = client
-        .send_sync(
-            &good(),
-            &[
-                target("tok-a"),
-                target("tok-b"),
-            ],
-        )
+        .send_sync(&good(), &[target("tok-a"), target("tok-b")])
         .await
         .expect("sends");
     assert_eq!(outcome.accepted, 2);
@@ -442,7 +436,13 @@ async fn distributor(State(pushed): State<Arc<Pushed>>, uri: axum::http::Uri) ->
 async fn everything(
     with_apple: bool,
     opted_in: bool,
-) -> (Arc<Pushed>, Arc<FakeRelay>, String, MemoryPush, PushDispatcher) {
+) -> (
+    Arc<Pushed>,
+    Arc<FakeRelay>,
+    String,
+    MemoryPush,
+    PushDispatcher,
+) {
     let pushed = Arc::new(Pushed::default());
     let apple_address = serve(
         Router::new()

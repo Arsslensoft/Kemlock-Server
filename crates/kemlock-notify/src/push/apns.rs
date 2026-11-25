@@ -41,7 +41,9 @@ const PARALLEL: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ApnsConfigError {
-    #[error("{0} is not set (KEMLOCK_APNS_KEY_FILE, KEMLOCK_APNS_KEY_ID and KEMLOCK_APNS_TEAM_ID go together)")]
+    #[error(
+        "{0} is not set (KEMLOCK_APNS_KEY_FILE, KEMLOCK_APNS_KEY_ID and KEMLOCK_APNS_TEAM_ID go together)"
+    )]
     Missing(&'static str),
     #[error("{0} is not valid: {1}")]
     Invalid(&'static str, String),
@@ -240,10 +242,7 @@ impl ApnsSender {
     }
 
     /// A sender to another host (a test server).
-    pub(super) fn with_base(
-        config: ApnsConfig,
-        base: &str,
-    ) -> Result<ApnsSender, ApnsConfigError> {
+    pub(super) fn with_base(config: ApnsConfig, base: &str) -> Result<ApnsSender, ApnsConfigError> {
         let mut http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(5))
@@ -435,8 +434,9 @@ mod tests {
 
     /// A fresh key as the `.p8` text Apple gives, and its public half.
     pub(super) fn make_key() -> (String, Vec<u8>) {
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
-            .expect("generates");
+        let pkcs8 =
+            EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &SystemRandom::new())
+                .expect("generates");
         let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref())
             .expect("loads");
         let body = b64::encode_standard(pkcs8.as_ref());
@@ -470,7 +470,10 @@ mod tests {
         let sender = ApnsSender::with_base(config(&pem), "http://127.0.0.1:1").expect("sender");
         let jwt = sender.bearer_at(1_800_000_000).expect("signs");
         assert_eq!(part(&jwt, 0), json!({"alg": "ES256", "kid": "KEY1234567"}));
-        assert_eq!(part(&jwt, 1), json!({"iss": "TEAM123456", "iat": 1_800_000_000}));
+        assert_eq!(
+            part(&jwt, 1),
+            json!({"iss": "TEAM123456", "iat": 1_800_000_000})
+        );
         let (signing_input, signature) = jwt.rsplit_once('.').expect("three parts");
         let signature = b64::decode(signature).expect("base64");
         assert_eq!(signature.len(), 64, "r and s, not DER");
@@ -507,7 +510,10 @@ mod tests {
         let body = pem.lines().nth(1).expect("a line");
         assert!(!shown.contains(body));
         assert!(ApnsKey::from_pem("hello").is_err());
-        assert!(ApnsKey::from_pem("-----BEGIN PRIVATE KEY-----\n!!\n-----END PRIVATE KEY-----").is_err());
+        assert!(
+            ApnsKey::from_pem("-----BEGIN PRIVATE KEY-----\n!!\n-----END PRIVATE KEY-----")
+                .is_err()
+        );
         // Valid base64 that is no key.
         assert!(
             ApnsKey::from_pem("-----BEGIN PRIVATE KEY-----\nZm9vYmFy\n-----END PRIVATE KEY-----")
@@ -536,7 +542,9 @@ mod tests {
             .expect("lock")
             .push((token.clone(), headers, body));
         match token.as_str() {
-            "dead0410" => (StatusCode::GONE, Json(json!({"reason": "Unregistered"}))).into_response(),
+            "dead0410" => {
+                (StatusCode::GONE, Json(json!({"reason": "Unregistered"}))).into_response()
+            }
             "bad0400" => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"reason": "BadDeviceToken"})),
@@ -713,7 +721,12 @@ mod tests {
 
     #[test]
     fn no_apple_settings_means_no_apple_key() {
-        assert_eq!(ApnsConfig::from_lookup(&lookup(&[])).expect("ok").map(|_| ()), None);
+        assert_eq!(
+            ApnsConfig::from_lookup(&lookup(&[]))
+                .expect("ok")
+                .map(|_| ()),
+            None
+        );
         // The topic and sandbox alone don't make a key.
         assert!(
             ApnsConfig::from_lookup(&lookup(&[
@@ -792,18 +805,17 @@ mod tests {
             Err(ApnsConfigError::Invalid("KEMLOCK_APNS_TOPIC", _))
         ));
         assert!(matches!(
-            read(&[
-                ("KEMLOCK_APNS_KEY_FILE", "/no/such/key.p8"),
-                key_id,
-                team
-            ]),
+            read(&[("KEMLOCK_APNS_KEY_FILE", "/no/such/key.p8"), key_id, team]),
             Err(ApnsConfigError::Invalid("KEMLOCK_APNS_KEY_FILE", _))
         ));
         let not_a_key = KeyFile::new("junk", "this is not a key");
         let error = read(&[("KEMLOCK_APNS_KEY_FILE", not_a_key.path()), key_id, team])
             .map(|_| ())
             .expect_err("refused");
-        assert!(matches!(error, ApnsConfigError::Invalid("KEMLOCK_APNS_KEY_FILE", _)));
+        assert!(matches!(
+            error,
+            ApnsConfigError::Invalid("KEMLOCK_APNS_KEY_FILE", _)
+        ));
         assert!(
             !error.to_string().contains("this is not a key"),
             "the file's text is never repeated"

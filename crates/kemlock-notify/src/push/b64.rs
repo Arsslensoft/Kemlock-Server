@@ -88,10 +88,7 @@ mod tests {
         ] {
             assert_eq!(encode_standard(plain.as_bytes()), encoded);
             assert_eq!(decode(encoded).as_deref(), Some(plain.as_bytes()));
-            assert_eq!(
-                encode_url(plain.as_bytes()),
-                encoded.trim_end_matches('=')
-            );
+            assert_eq!(encode_url(plain.as_bytes()), encoded.trim_end_matches('='));
             assert_eq!(
                 decode(encoded.trim_end_matches('=')).as_deref(),
                 Some(plain.as_bytes())
@@ -105,12 +102,18 @@ mod tests {
         let encoded = encode_url(&bytes);
         assert!(!encoded.contains(['+', '/', '=']));
         assert_eq!(decode(&encoded).as_deref(), Some(bytes.as_slice()));
-        assert_eq!(decode(&encode_standard(&bytes)).as_deref(), Some(bytes.as_slice()));
+        assert_eq!(
+            decode(&encode_standard(&bytes)).as_deref(),
+            Some(bytes.as_slice())
+        );
     }
 
     #[test]
     fn whitespace_is_skipped_and_junk_is_refused() {
-        assert_eq!(decode("Zm9v\nYmFy\r\n").as_deref(), Some(b"foobar".as_slice()));
+        assert_eq!(
+            decode("Zm9v\nYmFy\r\n").as_deref(),
+            Some(b"foobar".as_slice())
+        );
         assert_eq!(decode("Zm9v!"), None);
         assert_eq!(decode("Zg==Zg"), None);
         assert_eq!(decode("Z"), None);
