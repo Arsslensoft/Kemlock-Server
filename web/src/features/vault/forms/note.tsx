@@ -38,7 +38,7 @@ export function noteFields(values: NoteFormValues, existing?: VaultItem): ItemDa
     name: values.name,
     text: values.text,
     favorite: values.favorite ? true : undefined,
-    ...noteAttachmentFields(values.attachments as AttachmentEntry[]),
+    ...noteAttachmentFields(values.attachments as AttachmentEntry[], existing?.data),
     ...extrasFields(values, existing),
   };
 }
