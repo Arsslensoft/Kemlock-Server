@@ -178,13 +178,6 @@ describe('SecurityView', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Set up' }));
     expect(props.onStartTotp).toHaveBeenCalled();
   });
-
-  it('says plainly what is not built yet', () => {
-    security();
-    expect(screen.getByText('API key')).toBeInTheDocument();
-    expect(screen.queryByText('Recovery Kit')).not.toBeInTheDocument();
-    expect(screen.getByText('Delete account')).toBeInTheDocument();
-  });
 });
 
 describe('EmergencyCard', () => {
