@@ -74,3 +74,19 @@ describe('a sign-in screen with no email', () => {
     }
   });
 });
+
+describe('the new item route', () => {
+  it('opens the form of any kind named in its search', async () => {
+    for (const kind of ['login', 'note', 'file', 'otp', 'backup-codes', 'passkey', 'card', 'identity', 'contact', 'certificate', 'ssh-key', 'pgp-key']) {
+      const at = await visit(`/vault/new?kind=${kind}`, 'unlocked');
+      expect(at.pathname, kind).toBe('/vault/new');
+      expect(at.search['kind'], kind).toBe(kind);
+    }
+  });
+
+  it('drops a kind it does not know, so the login form opens', async () => {
+    const at = await visit('/vault/new?kind=spaceship', 'unlocked');
+    expect(at.pathname).toBe('/vault/new');
+    expect(at.search['kind']).toBeUndefined();
+  });
+});
