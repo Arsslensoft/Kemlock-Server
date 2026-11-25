@@ -354,5 +354,12 @@
   "sendItem.choose": "Item to send",
   "sendItem.pick": "Choose an item",
   "sendItem.none": "No items of this kind in your vault",
-  "sendItem.hint": "Only the fields of the item go in the Send: no history, and nothing from other items."
+  "sendItem.hint": "Only the fields of the item go in the Send: no history, and nothing from other items.",
+  "sendAccess.item.show": "Show",
+  "sendAccess.item.hide": "Hide",
+  "sendAccess.item.showField": "Show {field}",
+  "sendAccess.item.hideField": "Hide {field}",
+  "sendAccess.item.copy": "Copy",
+  "sendAccess.item.copyField": "Copy {field}",
+  "sendAccess.item.hiddenValue": "Hidden"
 }
