@@ -99,6 +99,18 @@ describe('the search', () => {
     expect(matches(vaultItem('contact', { name: 'Alex', email: 'alex@example.org', company: 'Example Co' }), 'example co')).toBe(true);
   });
 
+  it('finds a type by the name a person reads, as well as by its stored id', () => {
+    const names = (kind: string) => (kind === 'otp' ? ['MFA code', 'MFA codes'] : kind === 'backup-codes' ? ['Backup codes', 'Backup codes'] : [kind]);
+    expect(matches(mineOtp, 'mfa', names)).toBe(true);
+    expect(matches(mineOtp, 'MFA codes', names)).toBe(true);
+    expect(matches(mineOtp, 'otp', names)).toBe(true);
+    expect(matches(mineNote, 'mfa', names)).toBe(false);
+    // Without the names, only the stored id is known.
+    expect(matches(mineOtp, 'mfa')).toBe(false);
+    const listed = filterItems(all, { q: 'mfa', typeNames: names });
+    expect(listed.map((item) => item.data?.name)).toEqual(['GitHub code']);
+  });
+
   it('never reads a secret: not a password, a note\'s text, a card number or a code\'s secret', () => {
     expect(matches(mineLogin, 'pw')).toBe(false);
     expect(matches(mineNote, 'secret words')).toBe(false);

@@ -114,15 +114,27 @@ describe('All items', () => {
     expect(within(rowOf('GitHub')).getByText('github.com')).toBeInTheDocument();
     expect(within(rowOf('GitHub code')).getByText('sam@example.org · every 30 s')).toBeInTheDocument();
     expect(within(rowOf('GitHub recovery codes')).getByText('2 codes, 1 unused')).toBeInTheDocument();
-    expect(within(rowOf('Passport scan.jpg')).getByText('JPG · 1.1 MB')).toBeInTheDocument();
+    expect(within(rowOf('Passport scan.jpg')).getByText('JPEG image · 1.1 MB')).toBeInTheDocument();
     expect(screen.queryByText(/JBSWY3DP/)).not.toBeInTheDocument();
   });
 
   it('has a copy button for a login\'s password and an MFA code, and for nothing else', async () => {
     await renderInRouter(<ItemListView {...props()} />);
     expect(screen.getByRole('button', { name: 'Copy the GitHub password' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Copy the code for GitHub code' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy the GitHub code' })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /^Copy/ })).toHaveLength(3);
+  });
+
+  it('names a code\'s copy button "Copy the Okta code", and not twice "code" when the name ends in it', async () => {
+    const okta = vaultItem('otp', { name: 'Okta', secret: 'JBSWY3DPEHPK3PXP' });
+    await renderInRouter(<ItemListView {...props({ rows: [okta], total: 1 })} />);
+    expect(screen.getByRole('button', { name: 'Copy the Okta code' })).toBeInTheDocument();
+  });
+
+  it('has no copy button for a counter code, which has no code of the moment', async () => {
+    const counter = vaultItem('otp', { name: 'Bank token', secret: 'JBSWY3DPEHPK3PXP', type: 'hotp', counter: 4 });
+    await renderInRouter(<ItemListView {...props({ rows: [counter], total: 1 })} />);
+    expect(screen.queryByRole('button', { name: /^Copy/ })).not.toBeInTheDocument();
   });
 
   it('says "Showing N of M" in the footer', async () => {
@@ -194,14 +206,14 @@ describe('the Vault filter', () => {
     expect(rowOf('Netflix')).toBeInTheDocument();
     expect(rowOf('Lease')).toBeInTheDocument();
     expect(screen.queryByText('GitHub')).not.toBeInTheDocument();
-    expect(screen.getByText('Showing 2 in Family')).toBeInTheDocument();
+    expect(screen.getByText('Showing 2 of 2 in Family')).toBeInTheDocument();
   });
 
   it('combines with the type: the notes of Family only', async () => {
     await renderInRouter(<ItemListView {...props({ kind: 'note', vault: FAMILY_ID })} />);
     expect(rowOf('Lease')).toBeInTheDocument();
     expect(screen.queryByText('Wi-Fi at home')).not.toBeInTheDocument();
-    expect(screen.getByText('Showing 1 in Family')).toBeInTheDocument();
+    expect(screen.getByText('Showing 1 of 1 in Family')).toBeInTheDocument();
   });
 
   it('says no item fits when the type and the vault leave none, not that the vault is empty', async () => {
