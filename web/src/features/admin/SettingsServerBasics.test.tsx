@@ -64,7 +64,7 @@ describe('push and backups in Settings', () => {
     const user = userEvent.setup();
     const push = screen.getByRole('region', { name: 'Push' });
     await user.type(within(push).getByLabelText('Bitwarden installation id'), 'abc-123');
-    await user.click(within(push).getByRole('button', { name: 'Save' }));
+    await user.click(within(push).getByRole('button', { name: /^Save/ }));
     expect(onSave).toHaveBeenCalledWith({ push_installation_id: 'abc-123' }, 'push');
   });
 
@@ -73,7 +73,7 @@ describe('push and backups in Settings', () => {
     const user = userEvent.setup();
     const backups = screen.getByRole('region', { name: 'Backups' });
     await user.selectOptions(within(backups).getByRole('combobox'), 'nightly');
-    await user.click(within(backups).getByRole('button', { name: 'Save' }));
+    await user.click(within(backups).getByRole('button', { name: /^Save/ }));
     expect(onSave).toHaveBeenCalledWith({ backup_schedule: 'nightly' }, 'backups');
   });
 });
@@ -86,7 +86,7 @@ describe('the address card', () => {
     expect(within(card).getByText('Address chosen at setup').nextElementSibling).toHaveTextContent('https://vault.example.org');
     expect(within(card).getByText('/data')).toBeInTheDocument();
     expect(within(card).getByText(/can't be changed here/)).toBeInTheDocument();
-    expect(within(card).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(within(card).queryByRole('button', { name: /^Save/ })).not.toBeInTheDocument();
     expect(within(card).queryByRole('alert')).not.toBeInTheDocument();
   });
 

@@ -15,7 +15,7 @@ function view(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
 
 /** The Save button of the card with this title. */
 function saveOf(title: string) {
-  return within(screen.getByRole('region', { name: title })).getByRole('button', { name: 'Save' });
+  return within(screen.getByRole('region', { name: title })).getByRole('button', { name: `Save ${title}` });
 }
 
 describe('the settings form', () => {
@@ -96,7 +96,7 @@ describe('SettingsView', () => {
     expect(largest).toBeDisabled();
     expect(screen.getByText(/Set by KEMLOCK_MAX_FILE_SIZE_MIB/)).toBeInTheDocument();
     const files = screen.getByRole('region', { name: 'Files' });
-    expect(within(files).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(within(files).queryByRole('button', { name: /^Save/ })).not.toBeInTheDocument();
   });
 
   it('refuses a bad port without sending anything', async () => {

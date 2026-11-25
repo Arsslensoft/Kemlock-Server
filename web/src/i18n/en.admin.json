@@ -86,6 +86,7 @@
   "admin.settings.group.retention": "Log retention",
   "admin.settings.group.rateLimits": "Rate limits",
   "admin.settings.env": "Set by {name}, so it can't be changed here.",
+  "admin.settings.saveSection": "Save {section}",
   "admin.settings.placeholder.range": "{min}–{max}",
   "admin.settings.placeholder.days": "{min}–{max} days",
   "admin.settings.noLimitHint": "0 means no limit.",

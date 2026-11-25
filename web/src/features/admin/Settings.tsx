@@ -246,7 +246,13 @@ function Group({
         {editable ? (
           <div className="actions">
             {dirty ? <Button onPress={() => setDraft(draftOf(settings))}>{t('admin.discard')}</Button> : null}
-            <Button type="submit" variant="primary" isDisabled={!dirty}>
+            <Button
+              type="submit"
+              variant="primary"
+              isDisabled={!dirty}
+              // Each group has its own Save: the name says which.
+              aria-label={t('admin.settings.saveSection', { section: title })}
+            >
               {t('action.save')}
             </Button>
           </div>
