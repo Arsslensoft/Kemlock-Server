@@ -1638,6 +1638,41 @@ constant time and counts wrong tries per Send (10 a minute, then doubling delays
 comes from `K`, so a copy of the database alone can't test guesses: it needs the link as well, and
 then each guess costs an Argon2id.
 
+### Sending an item
+
+A Send can share an item of the vault. It is a note Send (`kind` `text`) whose `text` is a JSON
+envelope the browser builds from the chosen item, so the sealing, the server, its routes and a
+Bitwarden client are unchanged; a client that doesn't know the envelope shows the JSON as text.
+
+```
+{"kemlockSend":1,"kind":"card","name":"Visa","fields":{"number":"4111 1111 1111 1111","expiry":"05/2029"}}
+```
+
+- `kemlockSend` is the envelope version, `1`. A reader that finds another value treats the text as
+  plain text.
+- `kind` is the item's kind: `login`, `note`, `card`, `identity`, `otp`, `backup-codes`, `ssh-key`,
+  `pgp-key`, `certificate` or `contact`. `name` is the item's name.
+- `fields` maps a field key to a non-empty string. Each kind sends only the keys it names, in this
+  order, and nothing else: no id, history, favorite, pin or timestamp.
+
+| kind | keys |
+| --- | --- |
+| `login` | `username`, `password`, `urls` (one per line), `notes` |
+| `note` | `text` |
+| `card` | `cardholder`, `number`, `brand`, `expiry` (`MM/YYYY`), `code`, `pin`, `note` |
+| `identity` | `title`, `givenName`, `middleName`, `familyName`, `company`, `email`, `phone`, `username`, `birthDate`, `address` (lines, one per line), `city`, `region`, `postalCode`, `country`, `note` |
+| `otp` | `type`, `issuer`, `label`, `secret`, `algorithm`, `digits`, `period`, `counter`, `note` |
+| `backup-codes` | `serviceName`, `codes` (the unused ones, one per line), `note` |
+| `ssh-key` | `algorithm`, `public`, `private`, `note` |
+| `pgp-key` | `public`, `private`, `note` |
+| `certificate` | `algorithm`, `certificate`, `private`, `note` |
+| `contact` | `public`, `note` |
+
+The access page shows the item read-only: labelled fields, the secrets (`password`, `number`,
+`code`, `pin`, `secret`, `codes`, `private`) masked until shown, and a copy button on each. A key
+it doesn't know is shown too, masked. Numbers are written as decimal text. The owner's list entry
+(`meta`) names the Send as the person typed it; the envelope is only in `payload`.
+
 ### What the server checks
 
 Lengths and shapes, never the seals: `id` is a version 4 UUID; `kind` is `text` or `file`; `meta`
