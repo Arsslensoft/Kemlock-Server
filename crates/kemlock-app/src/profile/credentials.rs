@@ -38,10 +38,9 @@ pub(super) fn check<P: PasswordAuth>(
     new: NewCredentials,
 ) -> Result<Checked, ProfileError> {
     if !new.kdf.is_account_default() {
-        return Err(AppError::Invalid(
-            "the KDF settings must be the defaults with a 16-byte salt",
-        )
-        .into());
+        return Err(
+            AppError::Invalid("the KDF settings must be the defaults with a 16-byte salt").into(),
+        );
     }
     if new.wrapped_root_key.len() != WRAPPED_ROOT_KEY_LEN {
         return Err(AppError::Invalid("the wrapped root key is malformed").into());
@@ -65,7 +64,8 @@ pub struct RegistrationStarted {
 
 impl std::fmt::Debug for RegistrationStarted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegistrationStarted").finish_non_exhaustive()
+        f.debug_struct("RegistrationStarted")
+            .finish_non_exhaustive()
     }
 }
 

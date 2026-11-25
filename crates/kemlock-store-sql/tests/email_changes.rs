@@ -121,13 +121,7 @@ async fn cascade(store: &SqlStore) {
         .put_email_change(&change(sam, &unique_email("cascade-new"), token_hash))
         .await
         .expect("keeps");
-    assert!(
-        store
-            .email_change_of(sam)
-            .await
-            .expect("reads")
-            .is_some()
-    );
+    assert!(store.email_change_of(sam).await.expect("reads").is_some());
     // Erasing the account leaves no pending change behind: the foreign key cascades.
     kemlock_app::privacy::AccountEraser::erase_user(
         store,

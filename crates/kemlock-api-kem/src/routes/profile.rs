@@ -28,10 +28,10 @@
 //! routes need the store of pending changes, so they have a router of their own: see
 //! [`profile_router`].
 
+use super::devices::token_response;
 use super::guard;
 use super::reauth::reauthenticate;
 use super::two_step::{nonce_header, require_proof_via_api};
-use super::devices::token_response;
 use crate::dto::{FreshProof, KdfDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, ClientIp};
 use crate::openapi::ProblemDoc;
@@ -44,7 +44,7 @@ use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router, middleware};
 use kemlock_app::AppError;
 use kemlock_app::devices::{KeyCopyRepo, SignOutDevice};
-use kemlock_app::ports::{Clock, Event, EventLog, TokenSigner, TwoFactorRepo, UserRepo};
+use kemlock_app::ports::{Event, EventLog, TokenSigner, TwoFactorRepo, UserRepo};
 use kemlock_app::profile::{
     ConfirmEmailChange, Credentials, EmailChanges, NewCredentials, OtherDevices, Profile,
     ProfileError, ProfileRepo, ProfileView,
@@ -288,10 +288,7 @@ where
     }
 }
 
-fn email_changes<S, P, K, R>(
-    api: &Api<S, P, K>,
-    repos: &Repos<R>,
-) -> EmailChanges<S, R, P, P, P>
+fn email_changes<S, P, K, R>(api: &Api<S, P, K>, repos: &Repos<R>) -> EmailChanges<S, R, P, P, P>
 where
     S: Store,
     P: Crypto,
@@ -327,10 +324,7 @@ where
     }
 }
 
-fn confirm<S, P, K, R>(
-    api: &Api<S, P, K>,
-    repos: &Repos<R>,
-) -> ConfirmEmailChange<S, R, S, S, P>
+fn confirm<S, P, K, R>(api: &Api<S, P, K>, repos: &Repos<R>) -> ConfirmEmailChange<S, R, S, S, P>
 where
     S: Store,
     P: Crypto,
@@ -648,7 +642,9 @@ where
     R: ProfileRepo + Clone + 'static,
 {
     guard(&api.limits.proof, &ip_key(authed.ip), api.now())?;
-    email_changes(&api, &repos).cancel(authed.actor.user).await?;
+    email_changes(&api, &repos)
+        .cancel(authed.actor.user)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

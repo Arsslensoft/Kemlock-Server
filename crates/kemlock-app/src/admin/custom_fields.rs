@@ -114,7 +114,9 @@ where
             .await
             .map_err(name_taken)?;
         if !stored {
-            return Err(AdminError::State("a server holds at most 100 custom fields"));
+            return Err(AdminError::State(
+                "a server holds at most 100 custom fields",
+            ));
         }
         self.audit()
             .record(

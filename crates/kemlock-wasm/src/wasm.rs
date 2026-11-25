@@ -827,10 +827,7 @@ impl Vault {
     /// master password and the sign-in address"). Consumes both handles on success.
     #[wasm_bindgen(js_name = rewrapRoot)]
     pub fn rewrap_root(&mut self, master: u32, export_key: u32) -> Result<String, JsError> {
-        let wrapped = self
-            .session
-            .rewrap_root(master, export_key)
-            .map_err(fail)?;
+        let wrapped = self.session.rewrap_root(master, export_key).map_err(fail)?;
         Ok(b64::encode(&wrapped))
     }
 

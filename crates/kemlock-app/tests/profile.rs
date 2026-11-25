@@ -164,15 +164,8 @@ async fn scene() -> Scene {
 type Creds = Credentials<FakeStore, FakeProfile, FakePassword, FakeSeal, FakeEnv>;
 type Changes = EmailChanges<FakeStore, FakeProfile, FakePassword, FakeSeal, FakeEnv>;
 type Confirm = ConfirmEmailChange<FakeStore, FakeProfile, FakeStore, FakeStore, FakeEnv>;
-type Others = OtherDevices<
-    FakeStore,
-    FakeStore,
-    FakeStore,
-    FakeTokenSigner,
-    FakeEnv,
-    FakeStore,
-    FakeStore,
->;
+type Others =
+    OtherDevices<FakeStore, FakeStore, FakeStore, FakeTokenSigner, FakeEnv, FakeStore, FakeStore>;
 
 fn invalid<T>(result: Result<T, ProfileError>) -> bool {
     matches!(result, Err(ProfileError::App(AppError::Invalid(_))))
@@ -556,9 +549,13 @@ async fn a_new_password_is_mailed_to_the_account_without_a_secret_in_it() {
     let s = scene().await;
 
     let registration = s.registration(None).await;
-    s.change_password(registration, false).await.expect("changes");
+    s.change_password(registration, false)
+        .await
+        .expect("changes");
     let registration = s.registration(None).await;
-    s.change_password(registration, true).await.expect("changes");
+    s.change_password(registration, true)
+        .await
+        .expect("changes");
 
     assert_eq!(
         s.mailbox.told_password(),
@@ -594,7 +591,13 @@ async fn a_registration_is_good_only_for_what_it_was_made_for() {
     let other_key = s.registration(None).await;
     assert!(invalid(
         s.credentials()
-            .change_password(s.user, other_key.new, &other_key.ticket, "another-key", false)
+            .change_password(
+                s.user,
+                other_key.new,
+                &other_key.ticket,
+                "another-key",
+                false
+            )
             .await
     ));
     for ticket in [Vec::new(), vec![1u8; 40], b"not a ticket".to_vec()] {
@@ -626,7 +629,13 @@ async fn a_registration_is_good_only_for_what_it_was_made_for() {
     let for_password = s.registration(None).await;
     assert!(invalid(
         s.changes()
-            .request(s.user, NEW_EMAIL, for_password.new, &for_password.ticket, JKT)
+            .request(
+                s.user,
+                NEW_EMAIL,
+                for_password.new,
+                &for_password.ticket,
+                JKT
+            )
             .await
     ));
 
@@ -674,9 +683,7 @@ async fn a_ticket_for_the_old_address_is_no_good_once_the_address_changed() {
 async fn the_ticket_checks_come_before_the_password_is_spent() {
     let s = scene().await;
     let registration = s.registration(None).await;
-    assert!(invalid(
-        s.credentials().check(s.user, b"nope", JKT).await
-    ));
+    assert!(invalid(s.credentials().check(s.user, b"nope", JKT).await));
     assert_eq!(
         s.credentials()
             .check(s.user, &registration.ticket, JKT)
@@ -736,10 +743,7 @@ async fn signing_the_other_devices_out_ends_every_session_in_the_same_write() {
             Err(AppError::SessionEnded("security-stamp-changed"))
         );
         assert_eq!(
-            s.world
-                .refresh()
-                .execute(&tokens.refresh_token, jkt)
-                .await,
+            s.world.refresh().execute(&tokens.refresh_token, jkt).await,
             Err(AppError::SessionEnded("security-stamp-changed"))
         );
     }
@@ -758,7 +762,10 @@ async fn signing_the_other_devices_out_ends_every_session_in_the_same_write() {
         .expect("new tokens");
     assert_eq!(renewed.device, laptop.device);
     assert!(s.is_signed_in(&renewed, "jkt-laptop").await);
-    assert!(!s.is_signed_in(&renewed, "jkt-phone").await, "bound to its key");
+    assert!(
+        !s.is_signed_in(&renewed, "jkt-phone").await,
+        "bound to its key"
+    );
     s.world
         .refresh()
         .execute(&renewed.refresh_token, "jkt-laptop")
@@ -801,7 +808,11 @@ async fn without_signing_the_others_out_every_session_goes_on() {
 
     assert!(!changed.others_signed_out);
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").security_stamp,
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .security_stamp,
         before.security_stamp
     );
     assert!(s.is_signed_in(&laptop, "jkt-laptop").await);
@@ -899,7 +910,10 @@ async fn a_link_is_good_once_and_only_its_own_token_opens_it() {
         s.confirm().confirm("").await,
         Err(ProfileError::EmailChangeInvalid)
     );
-    assert!(s.repo.pending(s.user).is_some(), "a wrong token spends nothing");
+    assert!(
+        s.repo.pending(s.user).is_some(),
+        "a wrong token spends nothing"
+    );
 
     s.confirm().confirm(&token).await.expect("opens");
     assert_eq!(
@@ -920,7 +934,12 @@ async fn a_link_runs_out_after_a_day() {
         Err(ProfileError::EmailChangeInvalid)
     );
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").email.as_str(),
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .email
+            .as_str(),
         EMAIL
     );
     // An ask that ran out is not shown as waiting.
@@ -952,7 +971,12 @@ async fn asking_again_replaces_the_ask_and_cancelling_takes_it_back() {
         Err(ProfileError::EmailChangeInvalid)
     );
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").email.as_str(),
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .email
+            .as_str(),
         EMAIL
     );
 }
@@ -968,7 +992,12 @@ async fn an_address_taken_in_the_meantime_is_not_given_away() {
         Err(ProfileError::EmailTaken)
     );
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").email.as_str(),
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .email
+            .as_str(),
         EMAIL
     );
     assert_eq!(s.repo.pending(s.user), None, "the ask is gone");
@@ -1117,20 +1146,16 @@ async fn asking_for_a_taken_address_looks_like_asking_for_a_free_one() {
         Some(NEW_EMAIL)
     );
     assert_eq!(pending_taken.expires_at, pending_free.expires_at);
-    assert_eq!(
-        told_taken,
-        vec![(EMAIL.to_owned(), TAKEN_EMAIL.to_owned())]
-    );
+    assert_eq!(told_taken, vec![(EMAIL.to_owned(), TAKEN_EMAIL.to_owned())]);
 
     // The address that has an account is told so, in a mail with no link; the free one gets the
     // link. The one pending change that stands in for the real one has a token nobody was given.
     assert_eq!(s.mailbox.told_taken(), vec![TAKEN_EMAIL.to_owned()]);
     assert_eq!(s.mailbox.links(), 1);
     assert!(
-        s.mailbox
-            .all()
-            .iter()
-            .all(|notice| !matches!(notice, Notice::EmailChange(n) if n.to.as_str() == TAKEN_EMAIL))
+        s.mailbox.all().iter().all(
+            |notice| !matches!(notice, Notice::EmailChange(n) if n.to.as_str() == TAKEN_EMAIL)
+        )
     );
 }
 
@@ -1152,7 +1177,12 @@ async fn the_stand_in_for_a_taken_address_opens_nothing() {
         );
     }
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").email.as_str(),
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .email
+            .as_str(),
         EMAIL
     );
     // It can be taken back like any other ask.
@@ -1245,7 +1275,12 @@ async fn a_write_of_another_request_in_between_changes_nothing_and_spends_no_lin
         Err(ProfileError::AccountChanged)
     );
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").email.as_str(),
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .email
+            .as_str(),
         EMAIL
     );
     assert!(s.repo.pending(s.user).is_some(), "the link was not spent");
@@ -1254,7 +1289,12 @@ async fn a_write_of_another_request_in_between_changes_nothing_and_spends_no_lin
     // Asking again: the link opens.
     s.confirm().confirm(&token).await.expect("opens");
     assert_eq!(
-        s.world.store.user(s.user).expect("the account").email.as_str(),
+        s.world
+            .store
+            .user(s.user)
+            .expect("the account")
+            .email
+            .as_str(),
         NEW_EMAIL
     );
 }
@@ -1281,12 +1321,19 @@ async fn a_new_password_does_not_overwrite_a_write_made_meanwhile() {
 
     // Asking again goes through.
     let registration = s.registration(None).await;
-    s.change_password(registration, false).await.expect("changes");
+    s.change_password(registration, false)
+        .await
+        .expect("changes");
 }
 
 // ---- emergency access follows the address ----
 
-fn grant(grantor: UserId, contact: &str, grantee: Option<UserId>, now: time::OffsetDateTime) -> EmergencyGrant {
+fn grant(
+    grantor: UserId,
+    contact: &str,
+    grantee: Option<UserId>,
+    now: time::OffsetDateTime,
+) -> EmergencyGrant {
     let mut grant = EmergencyGrant::invite(
         GrantId::random(),
         grantor,
@@ -1335,7 +1382,11 @@ async fn emergency_access_follows_the_new_address() {
             .to_owned()
     };
     assert_eq!(email_of(accepted.id), NEW_EMAIL, "a contact who accepted");
-    assert_eq!(email_of(waiting.id), NEW_EMAIL, "an invitation at the old address");
+    assert_eq!(
+        email_of(waiting.id),
+        NEW_EMAIL,
+        "an invitation at the old address"
+    );
     assert_eq!(
         email_of(kim_old.id),
         EMAIL,

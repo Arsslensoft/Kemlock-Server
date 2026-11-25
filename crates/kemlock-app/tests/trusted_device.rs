@@ -353,9 +353,15 @@ async fn signing_the_other_devices_out_keeps_the_one_asking() {
         .expect("stores");
     // Another account's device is no business of this one.
     let stranger = make_user(&s.world, "kim@example.org").await;
-    sign_in_with(&s.world, "kim@example.org", &PASSWORD, device("Pixel"), "jkt-9")
-        .await
-        .expect("signs in");
+    sign_in_with(
+        &s.world,
+        "kim@example.org",
+        &PASSWORD,
+        device("Pixel"),
+        "jkt-9",
+    )
+    .await
+    .expect("signs in");
 
     let signed_out = sign_out_device(&s.world)
         .execute_others(&s.me)
@@ -381,8 +387,5 @@ async fn signing_the_other_devices_out_keeps_the_one_asking() {
         .expect("its refresh token still works");
     assert_eq!(s.world.store.devices_of(stranger).len(), 1);
     // And with no other device there is nothing to do.
-    assert_eq!(
-        sign_out_device(&s.world).execute_others(&s.me).await,
-        Ok(0)
-    );
+    assert_eq!(sign_out_device(&s.world).execute_others(&s.me).await, Ok(0));
 }

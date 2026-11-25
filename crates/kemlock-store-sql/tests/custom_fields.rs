@@ -49,23 +49,29 @@ async fn fields(store: &SqlStore) {
     assert_eq!(store.custom_field(id.id).await, Ok(Some(id.clone())));
     assert_eq!(store.custom_field(cost.id).await, Ok(Some(cost.clone())));
     assert_eq!(
-        store.custom_field(cost.id).await.expect("read").expect("there").kinds,
+        store
+            .custom_field(cost.id)
+            .await
+            .expect("read")
+            .expect("there")
+            .kinds,
         FieldKinds::Only(vec!["login".to_owned(), "card".to_owned()])
     );
 
     // Oldest first, whatever the order they were stored in.
     let listed = store.custom_fields().await.expect("list");
     assert_eq!(listed.len(), before + 2);
-    let position = |wanted: CustomFieldId| {
-        listed
-            .iter()
-            .position(|f| f.id == wanted)
-            .expect("listed")
-    };
+    let position =
+        |wanted: CustomFieldId| listed.iter().position(|f| f.id == wanted).expect("listed");
     assert!(position(id.id) < position(cost.id));
 
     // A name another field has is taken, whatever the case.
-    let twin = field(&id_name.to_uppercase(), FieldType::Text, FieldKinds::All, T2);
+    let twin = field(
+        &id_name.to_uppercase(),
+        FieldType::Text,
+        FieldKinds::All,
+        T2,
+    );
     assert_eq!(
         store.insert_custom_field(&twin, LIMIT).await,
         Err(StoreError::Duplicate)
@@ -91,7 +97,12 @@ async fn fields(store: &SqlStore) {
     assert_eq!(read.created_at, T0);
     assert_eq!(read.updated_at, T2);
     let clash = cost
-        .revised(&revised.name.to_lowercase(), FieldType::Text, FieldKinds::All, T2)
+        .revised(
+            &revised.name.to_lowercase(),
+            FieldType::Text,
+            FieldKinds::All,
+            T2,
+        )
         .expect("revised");
     assert_eq!(
         store.update_custom_field(&clash).await,
@@ -99,7 +110,10 @@ async fn fields(store: &SqlStore) {
     );
     assert_eq!(store.custom_field(cost.id).await, Ok(Some(cost.clone())));
     // Saving it as it is changes nothing and is not an error.
-    store.update_custom_field(&revised).await.expect("same again");
+    store
+        .update_custom_field(&revised)
+        .await
+        .expect("same again");
 
     // A field that is gone can't be changed.
     let ghost = field(&unique("Ghost"), FieldType::Text, FieldKinds::All, T2);
@@ -148,7 +162,14 @@ async fn cap(store: &SqlStore) {
     let before = store.custom_fields().await.expect("list").len();
     let limit = before + 3;
     let made: Vec<CustomField> = (0..6)
-        .map(|n| field(&unique(&format!("Capped {n}")), FieldType::Text, FieldKinds::All, T0))
+        .map(|n| {
+            field(
+                &unique(&format!("Capped {n}")),
+                FieldType::Text,
+                FieldKinds::All,
+                T0,
+            )
+        })
         .collect();
     // All six at once, each from its own task.
     let tasks: Vec<_> = made
@@ -163,7 +184,11 @@ async fn cap(store: &SqlStore) {
     for task in tasks {
         stored.push(task.await.expect("the task ran").expect("answers"));
     }
-    assert_eq!(stored.iter().filter(|stored| **stored).count(), 3, "{stored:?}");
+    assert_eq!(
+        stored.iter().filter(|stored| **stored).count(),
+        3,
+        "{stored:?}"
+    );
     assert_eq!(store.custom_fields().await.expect("list").len(), limit);
     // Full: a field is turned away; after a delete there is room again.
     let extra = field(&unique("One more"), FieldType::Text, FieldKinds::All, T1);

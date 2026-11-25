@@ -44,7 +44,9 @@ mod tests {
         let sql = custom_fields_table(DbBackend::MySql).to_string(MysqlQueryBuilder);
         for column in ["name", "name_key"] {
             let wanted = format!("`{column}` varchar(");
-            let at = sql.find(&wanted).unwrap_or_else(|| panic!("{column} in {sql}"));
+            let at = sql
+                .find(&wanted)
+                .unwrap_or_else(|| panic!("{column} in {sql}"));
             let definition = &sql[at..];
             let end = definition.find(',').unwrap_or(definition.len());
             assert!(
@@ -54,7 +56,10 @@ mod tests {
         }
         // The unique key is on the exactly compared column.
         let key = &sql[sql.find("`name_key`").expect("name_key")..];
-        assert!(key[..key.find(',').expect("a comma")].contains("UNIQUE KEY"), "{sql}");
+        assert!(
+            key[..key.find(',').expect("a comma")].contains("UNIQUE KEY"),
+            "{sql}"
+        );
     }
 
     #[test]

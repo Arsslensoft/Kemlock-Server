@@ -915,8 +915,7 @@ mod rewrap_tests {
 
         assert_eq!(wrapped.len(), password_wrap::WRAPPED_LEN);
         // The same root key, for the same account and key version.
-        let opened =
-            password_wrap::open(&[7; 32], &[8; 64], &wrapped, &ACCOUNT, 3).expect("opens");
+        let opened = password_wrap::open(&[7; 32], &[8; 64], &wrapped, &ACCOUNT, 3).expect("opens");
         assert_eq!(opened.as_bytes(), &[0x44u8; 64]);
         // Another master key, export key, account or key version opens nothing.
         let wrong_master = password_wrap::open(&[9; 32], &[8; 64], &wrapped, &ACCOUNT, 3);

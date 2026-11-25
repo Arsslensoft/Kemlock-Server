@@ -236,7 +236,10 @@ mod tests {
 
     #[test]
     fn a_name_is_cleaned_and_bounded() {
-        assert_eq!(clean_name("  Cost \t center "), Ok("Cost center".to_owned()));
+        assert_eq!(
+            clean_name("  Cost \t center "),
+            Ok("Cost center".to_owned())
+        );
         assert_eq!(clean_name(""), Err(CustomFieldError::EmptyName));
         assert_eq!(clean_name(" \n "), Err(CustomFieldError::EmptyName));
         assert_eq!(clean_name("a\u{7}b"), Err(CustomFieldError::BadName));
@@ -278,7 +281,14 @@ mod tests {
         let some = FieldKinds::from_ids(&["ssh-key", "login"]).expect("kinds");
         assert_eq!(some.to_stored(), "login,ssh-key");
         assert_eq!(FieldKinds::from_stored("login,ssh-key"), Some(some));
-        for bad in ["", "login,", "card,login", "login,login", "passkey", "LOGIN"] {
+        for bad in [
+            "",
+            "login,",
+            "card,login",
+            "login,login",
+            "passkey",
+            "LOGIN",
+        ] {
             assert_eq!(FieldKinds::from_stored(bad), None, "{bad:?}");
         }
     }

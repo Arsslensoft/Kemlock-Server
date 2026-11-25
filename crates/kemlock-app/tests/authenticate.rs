@@ -101,11 +101,17 @@ async fn a_token_of_a_device_that_was_signed_out_is_refused_at_once() {
     // Its access token is still unexpired and still carries the account's stamp, and no longer
     // opens anything; the device that signed it out is untouched.
     assert_eq!(
-        world.authenticate().execute(&other.access_token, "jkt-2").await,
+        world
+            .authenticate()
+            .execute(&other.access_token, "jkt-2")
+            .await,
         Err(AppError::SessionEnded("signed-out"))
     );
     assert_eq!(
-        world.authenticate().execute(&tokens.access_token, JKT).await,
+        world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
         Ok(me)
     );
     assert_eq!(user, me.user);

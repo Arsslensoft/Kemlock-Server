@@ -517,7 +517,11 @@ doc!(
     )),
     request_body = CustomFieldRequest,
     responses(
-        (status = 201, description = "The field", body = CustomFieldDto),
+        (
+            status = 201,
+            description = "The field",
+            body = CustomFieldDto
+        ),
         (
             status = 400,
             description = "An empty or too long name, a type that isn't text, hidden or checkbox, or kinds that are empty or name a type that takes no custom fields",
@@ -549,7 +553,11 @@ doc!(
     ),
     request_body = CustomFieldRequest,
     responses(
-        (status = 200, description = "The field after the change", body = CustomFieldDto),
+        (
+            status = 200,
+            description = "The field after the change",
+            body = CustomFieldDto
+        ),
         (
             status = 404,
             description = "No such field",
@@ -607,7 +615,8 @@ doc!(
     request_body = AllowOwnRequest,
     responses((
         status = 200,
-        description = "Whether people may now add fields of their own. Fields already on items stay",
+        description =
+            "Whether people may now add fields of their own. Fields already on items stay",
         body = AllowOwnDto
     ))
 );

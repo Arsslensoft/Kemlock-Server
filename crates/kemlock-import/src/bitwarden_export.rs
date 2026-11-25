@@ -751,9 +751,11 @@ fn file_note(data: &Value, notes: Option<String>) -> String {
         .unwrap_or_else(|| "a file".to_string());
     let said = format!("The file {name} is not included: an export holds no file bytes.");
     match notes {
-        Some(notes) => format!("{notes}
+        Some(notes) => format!(
+            "{notes}
 
-{said}"),
+{said}"
+        ),
         None => said,
     }
 }
@@ -1204,13 +1206,26 @@ mod tests {
         let file = &root["items"][0];
         assert_eq!(file["type"], 2, "a note");
         let notes = file["notes"].as_str().expect("notes");
-        assert!(notes.starts_with("Signed
+        assert!(
+            notes.starts_with(
+                "Signed
 
-"), "{notes}");
-        assert!(notes.contains("Lease agreement.pdf is not included"), "{notes}");
+"
+            ),
+            "{notes}"
+        );
+        assert!(
+            notes.contains("Lease agreement.pdf is not included"),
+            "{notes}"
+        );
         assert!(notes.contains("no file bytes"), "{notes}");
         // No key, no server id and no link leaves in a field or anywhere else.
-        for secret in ["SECRETKEY", "OTHERKEY", "server-1", "11111111-1111-4111-8111-111111111111"] {
+        for secret in [
+            "SECRETKEY",
+            "OTHERKEY",
+            "server-1",
+            "11111111-1111-4111-8111-111111111111",
+        ] {
             assert!(!clear.contains(secret), "{secret} was exported");
         }
 

@@ -115,7 +115,10 @@ async fn a_signed_in_device_reads_the_fields_and_the_switch() {
         .insert_custom_field(&everywhere, 100)
         .await
         .expect("insert");
-    fields.insert_custom_field(&some, 100).await.expect("insert");
+    fields
+        .insert_custom_field(&some, 100)
+        .await
+        .expect("insert");
 
     let reply = client
         .get_authed("/kem/v1/custom-fields", &session.access_token)

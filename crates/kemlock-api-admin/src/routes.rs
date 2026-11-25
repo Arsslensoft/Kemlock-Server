@@ -23,8 +23,7 @@ use kemlock_api_kem::{Api, Crypto, CustomFieldDto, CustomFieldsDto, Problem, Sto
 use kemlock_app::admin::events::{cursor_text, filter as event_filter, parse_cursor};
 use kemlock_app::admin::{
     AdminError, AdminRepos, Change, FieldInput, Mailer, MigrationRequest, NewRequest,
-    PushRelayControl, RequestKind, RequestStatus, RequestUpdate, SecretChange, SsoInput,
-    UserQuery,
+    PushRelayControl, RequestKind, RequestStatus, RequestUpdate, SecretChange, SsoInput, UserQuery,
 };
 use kemlock_app::b64url;
 use kemlock_app::ports::TokenSigner;
@@ -551,7 +550,10 @@ where
             .custom_fields()
             .create(&writer.actor, Some(writer.ip), request.into_input()?)
             .await?;
-        Ok((StatusCode::CREATED, Json(CustomFieldDto::from_field(&field))))
+        Ok((
+            StatusCode::CREATED,
+            Json(CustomFieldDto::from_field(&field)),
+        ))
     }
 
     /// `PUT /admin/v1/custom-fields/{id}`: changes a field's name, type and kinds.

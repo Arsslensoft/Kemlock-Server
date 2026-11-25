@@ -731,7 +731,11 @@ mod tests {
         assert_eq!(key_tag(&k, &colons), key_tag(&k, &hash));
         assert_eq!(
             key_tag(&k, &colons),
-            Some(tag_for(&k, name::KEY, &[hash.to_ascii_uppercase().as_str()]))
+            Some(tag_for(
+                &k,
+                name::KEY,
+                &[hash.to_ascii_uppercase().as_str()]
+            ))
         );
     }
 

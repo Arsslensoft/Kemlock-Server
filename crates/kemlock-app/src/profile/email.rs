@@ -244,7 +244,11 @@ impl<U: UserRepo, R: ProfileRepo, D: DeviceRepo, T: TokenRepo, E: Platform>
             updated_at: now,
             ..account.clone()
         };
-        match self.repo.apply_email_change(&change, &account, &updated).await {
+        match self
+            .repo
+            .apply_email_change(&change, &account, &updated)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => return Err(ProfileError::AccountChanged),
             // The database refused the address: another account has it, as the check above could

@@ -571,7 +571,12 @@ async fn one_device_stops_trusting_another_and_the_list_says_since_when() {
     let untrusted = entry(&after, &other_session.device_id);
     assert_eq!(untrusted["trusted"], false);
     assert!(untrusted["trustedSince"].is_null());
-    assert!(app.store.events().iter().any(|e| e.action == "device.untrust"));
+    assert!(
+        app.store
+            .events()
+            .iter()
+            .any(|e| e.action == "device.untrust")
+    );
 
     // Nothing to take away is fine; a device that isn't there, or isn't an id, is refused.
     let again = open

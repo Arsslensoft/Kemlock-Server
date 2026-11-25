@@ -349,7 +349,11 @@ async fn the_profile_is_shown_and_the_name_changes() {
     assert_eq!(again.json()["name"], "Sam Rivera");
 
     let cleared = sam
-        .call("PATCH", "/kem/v1/account/profile", Some(json!({"name": ""})))
+        .call(
+            "PATCH",
+            "/kem/v1/account/profile",
+            Some(json!({"name": ""})),
+        )
         .await;
     assert_eq!(cleared.status, StatusCode::OK);
     assert!(cleared.json()["name"].is_null());
@@ -416,14 +420,20 @@ async fn a_single_sign_on_account_keeps_its_name_and_address_and_may_change_its_
     assert_eq!(address.status, StatusCode::FORBIDDEN);
     assert_eq!(address.problem(), "sso-managed");
     let email = sam
-        .call("POST", "/kem/v1/account/email", Some(sam.email_body_unchecked()))
+        .call(
+            "POST",
+            "/kem/v1/account/email",
+            Some(sam.email_body_unchecked()),
+        )
         .await;
     assert_eq!(email.status, StatusCode::FORBIDDEN);
     assert_eq!(email.problem(), "sso-managed");
 
     // The password stays the account's own to change.
     let body = sam.password_body(false).await;
-    let changed = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(body))
+        .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
 }
 
@@ -455,7 +465,10 @@ async fn a_new_password_signs_in_and_the_old_one_does_not() {
         .await;
 
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
-    assert!(changed.json()["tokens"].is_null(), "no new tokens: the stamp stayed");
+    assert!(
+        changed.json()["tokens"].is_null(),
+        "no new tokens: the stamp stayed"
+    );
     assert!(rig.signs_in(EMAIL, &NEW_PASSWORD).await);
     assert!(
         !rig.signs_in(EMAIL, &PASSWORD).await,
@@ -469,7 +482,9 @@ async fn a_new_password_signs_in_and_the_old_one_does_not() {
     assert!(rig.mailbox.told_password(EMAIL, false));
     assert_eq!(rig.mailbox.links(), 0);
     // The same proof can't be used twice.
-    let again = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
+    let again = sam
+        .call("PUT", "/kem/v1/account/password", Some(body))
+        .await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST, "{:?}", again.json());
 }
 
@@ -480,8 +495,15 @@ async fn the_password_stays_when_the_old_one_is_wrong_or_the_records_are_bad() {
 
     let mut wrong = sam.password_body(false).await;
     wrong["finalization"] = json!(b64(&[9u8; 64]));
-    let refused = sam.call("PUT", "/kem/v1/account/password", Some(wrong)).await;
-    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{:?}", refused.json());
+    let refused = sam
+        .call("PUT", "/kem/v1/account/password", Some(wrong))
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNAUTHORIZED,
+        "{:?}",
+        refused.json()
+    );
 
     let mut odd_kdf = sam.password_body(false).await;
     odd_kdf["kdf"]["iterations"] = json!(4);
@@ -580,7 +602,9 @@ async fn signing_the_other_devices_out_keeps_the_device_that_asked() {
 
     // Without the box ticked every device goes on, access tokens and refresh tokens alike.
     let kept = sam.password_body(false).await;
-    let changed = sam.call("PUT", "/kem/v1/account/password", Some(kept)).await;
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(kept))
+        .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
     assert!(changed.json()["tokens"].is_null());
     let theirs = other
@@ -596,7 +620,9 @@ async fn signing_the_other_devices_out_keeps_the_device_that_asked() {
     // this device's new one, bound to the same key and device.
     sam.password.set(NEW_PASSWORD);
     let ticked = sam.password_body(true).await;
-    let changed = sam.call("PUT", "/kem/v1/account/password", Some(ticked)).await;
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(ticked))
+        .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
     let renewed = Session::from_tokens(&changed.json()["tokens"]);
     assert_eq!(renewed.device_id, sam.session.device_id);
@@ -606,13 +632,21 @@ async fn signing_the_other_devices_out_keeps_the_device_that_asked() {
     let theirs = other
         .get_authed("/kem/v1/account/profile", &other_session.access_token)
         .await;
-    assert_eq!(theirs.status, StatusCode::UNAUTHORIZED, "{:?}", theirs.json());
+    assert_eq!(
+        theirs.status,
+        StatusCode::UNAUTHORIZED,
+        "{:?}",
+        theirs.json()
+    );
     let gone = refresh(&other, &other_session.refresh_token).await;
     assert_eq!(gone.status, StatusCode::UNAUTHORIZED);
-    let old_access = sam
-        .call("GET", "/kem/v1/account/profile", None)
-        .await;
-    assert_eq!(old_access.status, StatusCode::UNAUTHORIZED, "{:?}", old_access.json());
+    let old_access = sam.call("GET", "/kem/v1/account/profile", None).await;
+    assert_eq!(
+        old_access.status,
+        StatusCode::UNAUTHORIZED,
+        "{:?}",
+        old_access.json()
+    );
     let old_refresh = refresh(&sam.client, &sam.session.refresh_token).await;
     assert_eq!(old_refresh.status, StatusCode::UNAUTHORIZED);
 
@@ -633,16 +667,23 @@ async fn a_write_of_another_request_in_between_is_a_conflict_that_changes_nothin
     let body = sam.password_body(true).await;
 
     rig.repo.interfere_once();
-    let lost = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
+    let lost = sam
+        .call("PUT", "/kem/v1/account/password", Some(body))
+        .await;
 
     assert_eq!(lost.status, StatusCode::CONFLICT, "{:?}", lost.json());
     assert_eq!(lost.problem(), "account-changed");
-    assert!(rig.signs_in(EMAIL, &PASSWORD).await, "the password is as it was");
+    assert!(
+        rig.signs_in(EMAIL, &PASSWORD).await,
+        "the password is as it was"
+    );
     // The session that asked still has its tokens, and asking again goes through.
     let shown = sam.call("GET", "/kem/v1/account/profile", None).await;
     assert_eq!(shown.status, StatusCode::OK, "{:?}", shown.json());
     let again = sam.password_body(false).await;
-    let changed = sam.call("PUT", "/kem/v1/account/password", Some(again)).await;
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(again))
+        .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
 }
 
@@ -678,7 +719,11 @@ fn code(rig: &Rig) -> String {
 
 /// The wrap of the account's root key the server holds.
 fn wrap_of(rig: &Rig, user: UserId) -> Vec<u8> {
-    rig.app.store.user(user).expect("the account").wrapped_root_key
+    rig.app
+        .store
+        .user(user)
+        .expect("the account")
+        .wrapped_root_key
 }
 
 #[tokio::test]
@@ -699,25 +744,43 @@ async fn with_a_second_step_on_changing_the_password_asks_its_proof_beside_the_p
     assert_eq!(bare.problem(), "invalid-request");
     let mut blank = body.clone();
     blank["proof"] = json!("   ");
-    let refused = sam.call("PUT", "/kem/v1/account/password", Some(blank)).await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    let refused = sam
+        .call("PUT", "/kem/v1/account/password", Some(blank))
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
 
     // A wrong code is refused, and nothing is written.
     let mut wrong = sam.password_body(false).await;
     wrong["proof"] = json!("000000");
-    let refused = sam.call("PUT", "/kem/v1/account/password", Some(wrong)).await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    let refused = sam
+        .call("PUT", "/kem/v1/account/password", Some(wrong))
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
     assert_eq!(wrap_of(&rig, sam.id), before);
 
     // The first body went unspent by the two refusals before the password: with the proof it works.
     let mut good = body;
     good["proof"] = json!(code(&rig));
-    let changed = sam.call("PUT", "/kem/v1/account/password", Some(good.clone())).await;
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(good.clone()))
+        .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
     assert_eq!(wrap_of(&rig, sam.id), vec![0x44u8; WRAPPED_ROOT_KEY_LEN]);
     assert!(actions(&rig).contains(&"account.password_changed"));
     // And a code, like the login state it came with, is good once.
-    let again = sam.call("PUT", "/kem/v1/account/password", Some(good)).await;
+    let again = sam
+        .call("PUT", "/kem/v1/account/password", Some(good))
+        .await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST, "{:?}", again.json());
 }
 
@@ -741,7 +804,12 @@ async fn with_a_second_step_on_changing_the_address_asks_its_proof_too() {
     let mut wrong = sam.email_body(NEW_EMAIL).await;
     wrong["proof"] = json!("000000");
     let refused = sam.call("POST", "/kem/v1/account/email", Some(wrong)).await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
     assert!(rig.repo.pending(sam.id).is_none());
 
     let mut good = body;
@@ -759,7 +827,9 @@ async fn with_no_second_step_no_proof_is_asked_and_one_sent_is_not_read() {
 
     let mut body = sam.password_body(false).await;
     body["proof"] = json!("123456");
-    let changed = sam.call("PUT", "/kem/v1/account/password", Some(body)).await;
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(body))
+        .await;
     assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.json());
     sam.password.set(NEW_PASSWORD);
 
@@ -814,9 +884,7 @@ async fn an_address_changes_when_its_link_is_opened_and_every_session_ends() {
     let sam = rig.person(EMAIL).await;
     let body = sam.email_body(NEW_EMAIL).await;
 
-    let asked = sam
-        .call("POST", "/kem/v1/account/email", Some(body))
-        .await;
+    let asked = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
 
     assert_eq!(asked.status, StatusCode::ACCEPTED, "{:?}", asked.json());
     assert_eq!(asked.json()["pendingEmail"], NEW_EMAIL);
@@ -839,12 +907,20 @@ async fn an_address_changes_when_its_link_is_opened_and_every_session_ends() {
     assert_eq!(opened.json()["email"], NEW_EMAIL);
 
     assert!(rig.signs_in(NEW_EMAIL, &NEW_PASSWORD).await);
-    assert!(!rig.signs_in(EMAIL, &PASSWORD).await, "the old address is over");
+    assert!(
+        !rig.signs_in(EMAIL, &PASSWORD).await,
+        "the old address is over"
+    );
     assert!(!rig.signs_in(NEW_EMAIL, &PASSWORD).await);
     // The old address was told, and the access token of the session that asked is refused at once.
     assert!(rig.mailbox.told_changed(EMAIL, NEW_EMAIL));
     let old_access = sam.call("GET", "/kem/v1/account/profile", None).await;
-    assert_eq!(old_access.status, StatusCode::UNAUTHORIZED, "{:?}", old_access.json());
+    assert_eq!(
+        old_access.status,
+        StatusCode::UNAUTHORIZED,
+        "{:?}",
+        old_access.json()
+    );
     // Every session ended.
     let refreshed = sam
         .client
@@ -947,7 +1023,12 @@ async fn an_address_someone_has_is_answered_like_a_free_one_and_an_ask_can_be_ta
     assert_eq!(free.status, StatusCode::OK, "{:?}", free.json());
     let (taken_json, free_json) = (taken.json(), free.json());
     let keys = |json: &Value| {
-        let mut keys: Vec<String> = json.as_object().expect("an object").keys().cloned().collect();
+        let mut keys: Vec<String> = json
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
         keys.sort();
         keys
     };
@@ -976,7 +1057,12 @@ async fn an_address_someone_has_is_answered_like_a_free_one_and_an_ask_can_be_ta
     let asked_taken = sam
         .call("POST", "/kem/v1/account/email", Some(for_taken))
         .await;
-    assert_eq!(asked_taken.status, StatusCode::ACCEPTED, "{:?}", asked_taken.json());
+    assert_eq!(
+        asked_taken.status,
+        StatusCode::ACCEPTED,
+        "{:?}",
+        asked_taken.json()
+    );
     assert_eq!(asked_taken.json()["pendingEmail"], "kim@example.org");
     assert!(asked_taken.json()["expiresAt"].as_str().is_some());
     let shown = sam.call("GET", "/kem/v1/account/profile", None).await;
@@ -1022,7 +1108,12 @@ async fn a_wrong_password_changes_no_address() {
 
     let refused = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
 
-    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::UNAUTHORIZED,
+        "{:?}",
+        refused.json()
+    );
     assert!(rig.repo.pending(sam.id).is_none());
     assert!(rig.signs_in(EMAIL, &PASSWORD).await);
 }
@@ -1039,14 +1130,24 @@ async fn three_asks_an_hour_per_account_whether_or_not_the_address_is_free() {
     for address in [NEW_EMAIL, "kim@example.org", "sam@example.net"] {
         let body = sam.email_body(address).await;
         let asked = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
-        assert_eq!(asked.status, StatusCode::ACCEPTED, "{address}: {:?}", asked.json());
+        assert_eq!(
+            asked.status,
+            StatusCode::ACCEPTED,
+            "{address}: {:?}",
+            asked.json()
+        );
     }
 
     // The fourth is turned away, before the password is spent, whichever address it is for.
     for address in ["kim@example.org", "sam@example.org.uk"] {
         let body = sam.email_body(address).await;
         let fourth = sam.call("POST", "/kem/v1/account/email", Some(body)).await;
-        assert_eq!(fourth.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", fourth.json());
+        assert_eq!(
+            fourth.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{:?}",
+            fourth.json()
+        );
         assert_eq!(fourth.problem(), "rate-limited");
         assert!(fourth.header("retry-after").is_some());
     }

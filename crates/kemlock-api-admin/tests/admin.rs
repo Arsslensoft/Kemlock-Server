@@ -2653,7 +2653,10 @@ async fn a_custom_field_typed_wrongly_is_refused_and_not_recorded() {
             "a control character in the name",
             field_body("a\u{7}b", "text", json!("all")),
         ),
-        ("a type that isn't one", field_body("Pin", "password", json!("all"))),
+        (
+            "a type that isn't one",
+            field_body("Pin", "password", json!("all")),
+        ),
         ("no kinds", field_body("Pin", "text", json!([]))),
         (
             "a word that isn't all",

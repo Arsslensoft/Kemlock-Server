@@ -436,7 +436,10 @@ fn email_changed(notice: &EmailChangedNotice, brand: &Branding) -> Rendered {
     ]);
     finish(
         notice.to.as_str(),
-        format!("The sign-in address of your {} account changed", brand.app_name),
+        format!(
+            "The sign-in address of your {} account changed",
+            brand.app_name
+        ),
         &body,
         brand,
     )
@@ -459,7 +462,10 @@ fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendere
     ]);
     finish(
         notice.to.as_str(),
-        format!("The master password of your {} account changed", brand.app_name),
+        format!(
+            "The master password of your {} account changed",
+            brand.app_name
+        ),
         &body,
         brand,
     )

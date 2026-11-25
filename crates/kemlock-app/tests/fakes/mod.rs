@@ -157,7 +157,11 @@ impl FakeStore {
         address: bool,
     ) -> Result<bool, StoreError> {
         let mut g = self.lock();
-        if address && g.users.values().any(|u| u.id != before.id && u.email == after.email) {
+        if address
+            && g.users
+                .values()
+                .any(|u| u.id != before.id && u.email == after.email)
+        {
             return Err(StoreError::Duplicate);
         }
         let Some(row) = g.users.get_mut(&before.id) else {
