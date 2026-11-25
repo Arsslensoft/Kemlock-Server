@@ -6,6 +6,7 @@ import { describeError } from '@/lib/errors';
 import type { LoginValues, NoteValues } from '@/lib/schemas';
 import { buttonClass } from '@/ui/Button';
 import { LoginForm, NoteForm } from './ItemForm';
+import { canCopy, copyDraft } from './copy';
 import { ENTRY_KINDS, ENTRY_TITLES, EntryForm, isEntryKind } from './forms';
 import { KEY_KINDS, KeyItemForm, isKeyKind } from './forms/KeyItemForm';
 import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
@@ -73,18 +74,22 @@ export default function NewItem() {
   const router = useRouter();
   const canGoBack = useCanGoBack();
   const { itemId } = useParams({ strict: false }) as { itemId?: string };
-  const search = useSearch({ strict: false }) as { kind?: EditableKind };
-  const { item, isLoading } = useVaultItem(itemId);
+  const search = useSearch({ strict: false }) as { kind?: EditableKind; copyOf?: string };
+  const { item: found, isLoading } = useVaultItem(itemId ?? search.copyOf);
   const { save } = useVaultActions();
   const [chosen, setChosen] = useState<EditableKind>(search.kind ?? 'login');
   // Where a new item goes: '' is the account's own vault, otherwise `<space id>/<collection id>`.
   const [where, setWhere] = useState('');
   const collections = useWritableCollections();
   const editing = itemId !== undefined;
-  const kind: EditableKind = editing && item && isEditable(item.kind) ? item.kind : chosen;
+  // "Make a copy" fills the form from an item, without its ids, and saves a new item.
+  const draft = !editing && found && canCopy(found) ? copyDraft(found) : undefined;
+  const item = editing ? found : draft;
+  const existing = editing ? item : undefined;
+  const kind: EditableKind = item && isEditable(item.kind) ? item.kind : chosen;
   const error = save.error ? describeError(save.error) : undefined;
 
-  if (editing && isLoading) {
+  if ((editing || search.copyOf !== undefined) && isLoading) {
     return (
       <p className="empty" role="status">
         {t('main.loading')}
@@ -148,7 +153,7 @@ export default function NewItem() {
         <p className="lede">{t('newItem.lede')}</p>
       </div>
 
-      {editing ? null : (
+      {editing || draft ? null : (
         <div className="chips" role="group" aria-label={t('newItem.kind')}>
           {(['login', 'note', ...ENTRY_KINDS, ...KEY_KINDS] as const).map((option) => (
             <button
@@ -194,7 +199,7 @@ export default function NewItem() {
           error={error}
           onCancel={cancel}
           onSubmit={(fields) =>
-            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+            save.mutate({ existing, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
           }
         />
       ) : isKeyKind(kind) ? (
@@ -207,7 +212,7 @@ export default function NewItem() {
           error={error}
           onCancel={cancel}
           onSave={(fields) =>
-            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
+            save.mutate({ existing, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
           }
         />
       ) : kind === 'login' ? (
@@ -220,7 +225,7 @@ export default function NewItem() {
           onCancel={cancel}
           onSubmit={(values) =>
             save.mutate(
-              { existing: item, kind: 'login', owner, collectionId, fields: loginFields(values, item) },
+              { existing, kind: 'login', owner, collectionId, fields: loginFields(values, item) },
               { onSuccess: saved },
             )
           }
@@ -235,7 +240,7 @@ export default function NewItem() {
           onCancel={cancel}
           onSubmit={(values) =>
             save.mutate(
-              { existing: item, kind: 'note', owner, collectionId, fields: noteFields(values) },
+              { existing, kind: 'note', owner, collectionId, fields: noteFields(values) },
               { onSuccess: saved },
             )
           }

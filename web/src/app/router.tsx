@@ -14,6 +14,7 @@ import {
 import { z } from 'zod';
 import type { ConfigResponse } from '@/api/types';
 import { safeNext } from '@/lib/safe-next';
+import { EDITABLE_KINDS, type EditableKind } from '@/features/vault/kinds';
 import { configQuery } from './services';
 import type { Session } from './session';
 import { NotFound, PendingScreen, RouteError } from './states';
@@ -49,7 +50,9 @@ interface SsoSearch {
   error?: string;
 }
 interface NewItemSearch {
-  kind?: 'login' | 'note';
+  kind?: EditableKind;
+  /** The id of an item to fill the form from: "Make a copy". */
+  copyOf?: string;
 }
 
 const nextSearch = z.object({ next: optionalString });
@@ -61,7 +64,10 @@ const vaultSearch = z.object({
   page: z.number().int().min(1).optional().catch(undefined),
   fav: z.boolean().optional().catch(undefined),
 });
-const newItemSearch = z.object({ kind: z.enum(['login', 'note']).optional().catch(undefined) });
+const newItemSearch = z.object({
+  kind: z.enum(EDITABLE_KINDS as [EditableKind, ...EditableKind[]]).optional().catch(undefined),
+  copyOf: optionalString,
+});
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   beforeLoad: async ({ context, location }) => {
