@@ -3,12 +3,13 @@ import {
   type AttachmentEntry,
   entryBody,
   formatSize,
+  namedEntries,
   newAttachment,
   noteAttachmentFields,
   pendingEntries,
   readAttachments,
   readFileEntry,
-  removedServerFiles,
+  serverFileIds,
   storedEntries,
   typeLabel,
 } from './attachments';
@@ -26,9 +27,9 @@ const STORED = {
 };
 
 describe('reading the files of a body', () => {
-  it('reads the attachments of a note the way the Kemlock app writes them, keeping keys it does not know', () => {
+  it('reads the attachments of a note the way the Kemlock app writes them', () => {
     const [entry] = readAttachments({ attachments: [STORED, 'junk', null, { size: 3 }] });
-    expect(entry).toEqual({
+    expect(entry).toMatchObject({
       id: 'abcdefghijklmnopqrstuv',
       name: 'lease.pdf',
       size: 2400000,
@@ -37,7 +38,7 @@ describe('reading the files of a body', () => {
       addedAt: 5,
       sha256: 'ab'.repeat(32),
       kemlockFile: 'server-1',
-      extra: { vendor: { kept: true } },
+      origin: 0,
     });
     expect(readAttachments({ attachments: [STORED, 'junk', null, { size: 3 }] })).toHaveLength(1);
     expect(readAttachments({})).toEqual([]);
@@ -49,12 +50,27 @@ describe('reading the files of a body', () => {
     expect(readFileEntry({})).toBeUndefined();
     expect(readFileEntry({ file: 'x' })).toBeUndefined();
   });
+
+  it('names the entries the server holds a file for, and the ids of those files', () => {
+    const data = {
+      attachments: [STORED, { id: 'b', name: 'new.txt', size: 1, key: 'k', addedAt: 1 }],
+      file: { id: 'c', name: 'lease.pdf', size: 1, key: 'k', addedAt: 1, kemlockFile: 'server-2' },
+    };
+    expect(namedEntries(data).map((entry) => entry.id)).toEqual(['abcdefghijklmnopqrstuv', 'c']);
+    expect(serverFileIds(data)).toEqual(['server-1', 'server-2']);
+    expect(serverFileIds({})).toEqual([]);
+  });
 });
 
 describe('writing the files of a body', () => {
-  it('writes an entry back as it was read, with what it did not know', () => {
-    const [entry] = readAttachments({ attachments: [STORED] });
-    expect(entryBody(entry as AttachmentEntry)).toEqual(STORED);
+  it('writes a stored entry back exactly as it was: no key added, none moved, no value filled in', () => {
+    const odd = { name: 'odd.bin', kemlockFile: 'server-3', key: 'k', extra: 1, size: 'unknown' };
+    const [entry, other] = readAttachments({ attachments: [STORED, odd] });
+    expect(entryBody(entry as AttachmentEntry)).toBe(STORED);
+    expect(entryBody(other as AttachmentEntry)).toBe(odd);
+    // What the form shows of the odd one is filled in; what is written is not.
+    expect(other).toMatchObject({ id: '', size: 0, addedAt: 0 });
+    expect(Object.keys(entryBody(other as AttachmentEntry))).toEqual(['name', 'kemlockFile', 'key', 'extra', 'size']);
   });
 
   it('makes an entry for a chosen file with its own id and key, and the bytes still to send', () => {
@@ -70,6 +86,7 @@ describe('writing the files of a body', () => {
     expect(entry.sha256).toBeUndefined();
     // The bytes and the key never go in the body twice: the entry's body has no file.
     expect('file' in entryBody(entry)).toBe(false);
+    expect(Object.keys(entryBody(entry))).toEqual(['id', 'name', 'size', 'type', 'key', 'addedAt']);
   });
 
   it('leaves out a type the picker did not know', () => {
@@ -82,32 +99,53 @@ describe('writing the files of a body', () => {
     const entries = [stored as AttachmentEntry, chosen];
     expect(storedEntries(entries)).toEqual([stored]);
     expect(pendingEntries(entries)).toEqual([chosen]);
-    expect(noteAttachmentFields(entries)).toEqual({ attachments: [STORED] });
+    expect(noteAttachmentFields(entries, { attachments: [STORED] })).toEqual({ attachments: [STORED] });
     expect(noteAttachmentFields([chosen])).toEqual({ attachments: undefined });
   });
 
-  it('names the server files of the entries the person removed', () => {
-    const before = readAttachments({
-      attachments: [STORED, { ...STORED, id: 'second', kemlockFile: 'server-2' }, { ...STORED, id: 'third', kemlockFile: undefined }],
-    });
-    expect(removedServerFiles(before, [before[1] as AttachmentEntry])).toEqual(['server-1']);
-    expect(removedServerFiles(before, before)).toEqual([]);
-    expect(removedServerFiles([], before)).toEqual([]);
+  it('keeps each stored entry where it was in the list, and what the form cannot show with it', () => {
+    const second = { id: 'second', name: 'b.txt', size: 1, key: 'k', addedAt: 1, kemlockFile: 'server-2' };
+    const unreadable = { surprise: true };
+    const data = { attachments: [STORED, unreadable, second] };
+    const entries = readAttachments(data);
+    expect(entries.map((entry) => entry.origin)).toEqual([0, 2]);
+    // Both stay: same list, same order, the unreadable entry between them.
+    expect(noteAttachmentFields(entries, data)['attachments']).toEqual([STORED, unreadable, second]);
+    // The first is removed: the others keep their order.
+    expect(noteAttachmentFields(entries.slice(1), data)['attachments']).toEqual([unreadable, second]);
+    // A new file goes after what was there.
+    const chosen: AttachmentEntry = { id: 'new', name: 'x.txt', size: 1, key: 'k', addedAt: 1, kemlockFile: 'server-3' };
+    expect((noteAttachmentFields([...entries, chosen], data)['attachments'] as unknown[]).slice(-1)).toEqual([
+      entryBody(chosen),
+    ]);
+  });
+
+  it('writes nothing for a note left with no file and no entry it could not read', () => {
+    expect(noteAttachmentFields([], { attachments: [STORED] })).toEqual({ attachments: undefined });
+    expect(noteAttachmentFields([], { attachments: ['odd'] })).toEqual({ attachments: ['odd'] });
   });
 });
 
 describe('how a file is described', () => {
-  it('writes sizes in decimal units', () => {
+  it('writes sizes in decimal units, the number as the locale writes it', () => {
     expect(formatSize(5)).toBe('5 B');
     expect(formatSize(2048)).toBe('2 KB');
     expect(formatSize(2_400_000)).toBe('2.4 MB');
+    expect(formatSize(2_400_000, 'de')).toBe('2,4 MB');
     expect(formatSize(1_500_000_000)).toBe('1.5 GB');
   });
 
-  it('names the type from the extension, or the media type without one', () => {
+  it('names the kind of file in a word, as the mockup does', () => {
+    expect(typeLabel({ name: 'recovery-codes.txt', type: 'text/plain' })).toBe('Text');
+    expect(typeLabel({ name: 'README', type: 'text/plain' })).toBe('Text');
+    expect(typeLabel({ name: 'notes.txt' })).toBe('Text');
     expect(typeLabel({ name: 'lease.pdf', type: 'application/pdf' })).toBe('PDF');
-    expect(typeLabel({ name: 'README', type: 'text/plain' })).toBe('PLAIN');
-    expect(typeLabel({ name: 'README' })).toBe('');
+    expect(typeLabel({ name: 'photo.JPG', type: 'image/jpeg' })).toBe('Image');
+    expect(typeLabel({ name: 'photo.png' })).toBe('Image');
+    expect(typeLabel({ name: 'song.mp3', type: 'audio/mpeg' })).toBe('Audio');
+    expect(typeLabel({ name: 'clip.mov' })).toBe('Video');
+    expect(typeLabel({ name: 'backup.zip' })).toBe('ZIP');
     expect(typeLabel({ name: 'archive.tar.verylongext', type: 'application/zip' })).toBe('ZIP');
+    expect(typeLabel({ name: 'README' })).toBe('');
   });
 });
