@@ -25,21 +25,19 @@ const router = createAppRouter({ queryClient, session });
 const root = document.getElementById('root');
 if (!root) throw new Error('index.html has no #root');
 
-async function start(mount: HTMLElement): Promise<void> {
-  const persistence = { session, api, crypto: vaultCrypto };
-  keepRootSealed(persistence);
-  // A reload keeps the person signed in and the vault open. The route guards read the session
-  // synchronously, so it is back before the first page is chosen; on any failure it is just shut.
-  await restoreSession(persistence).catch(() => undefined);
-  createRoot(mount).render(
-    <StrictMode>
-      <I18nProvider>
-        <QueryClientProvider client={queryClient}>
-          <Root router={router} />
-        </QueryClientProvider>
-      </I18nProvider>
-    </StrictMode>,
-  );
-}
+const persistence = { session, api, crypto: vaultCrypto };
+keepRootSealed(persistence);
+// A reload keeps the person signed in and the vault open. The route guards read the session
+// synchronously, so the router waits for this (a spinner shows meanwhile, and a server that does not
+// answer is given up on after a few seconds); on any failure the vault is just shut.
+const restored = restoreSession(persistence).catch(() => undefined);
 
-void start(root);
+createRoot(root).render(
+  <StrictMode>
+    <I18nProvider>
+      <QueryClientProvider client={queryClient}>
+        <Root router={router} restored={restored} />
+      </QueryClientProvider>
+    </I18nProvider>
+  </StrictMode>,
+);

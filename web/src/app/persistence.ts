@@ -21,7 +21,7 @@ export interface PersistenceDeps {
   session: Session;
   /** Where the key version and the sealed private keys come from. */
   api: Pick<Api, 'accountKeys'>;
-  crypto: Pick<CryptoPort, 'deviceCopySeal' | 'deviceCopyOpen' | 'unlockWithRoot' | 'release'>;
+  crypto: Pick<CryptoPort, 'deviceCopySeal' | 'deviceCopyOpen' | 'unlockWithRoot' | 'release' | 'lock'>;
 }
 
 /** Seals the open vault's root key for this tab, unless it already is. Never throws. */
@@ -53,11 +53,37 @@ export function keepRootSealed(deps: PersistenceDeps): () => void {
   });
 }
 
+/** How long a restore may take before the vault is left shut and the page shows. */
+export const RESTORE_TIMEOUT_MS = 5000;
+
 /**
  * Brings back this tab's session: the tokens with the vault shut, then, when a sealed copy of the
- * root key is there, the open vault. Settles before the first page is chosen.
+ * root key is there, the open vault. Settles before the first page is chosen, and never later than
+ * `timeoutMs`: a server that does not answer leaves the vault shut (the master password opens it),
+ * and a restore that finishes after that cannot open it behind the person's back.
  */
-export async function restoreSession(deps: PersistenceDeps): Promise<void> {
+export async function restoreSession(
+  deps: PersistenceDeps,
+  timeoutMs: number = RESTORE_TIMEOUT_MS,
+): Promise<void> {
+  let late = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limit = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      late = true;
+      // The copy is not trusted any more than a shut vault is: a reload asks for the password.
+      deps.session.sealedRoot.clear();
+      resolve();
+    }, timeoutMs);
+  });
+  try {
+    await Promise.race([restore(deps, () => late), limit]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function restore(deps: PersistenceDeps, isLate: () => boolean): Promise<void> {
   const { session, api, crypto } = deps;
   if (!session.restore()) return;
   const held = session.sealedRoot.get();
@@ -77,6 +103,11 @@ export async function restoreSession(deps: PersistenceDeps): Promise<void> {
   } catch {
     if (root) await crypto.release(root).catch(() => undefined);
     session.sealedRoot.clear();
+    return;
+  }
+  if (isLate()) {
+    // The page is already showing a shut vault: shut the keys the worker just opened to match.
+    await crypto.lock().catch(() => undefined);
     return;
   }
   session.unlocked();

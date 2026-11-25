@@ -365,6 +365,39 @@ describe('keeping the vault open across a reload', () => {
     });
   });
 
+  describe('a server that does not answer', () => {
+    it('gives up after the limit and leaves the vault shut, with no sealed copy', async () => {
+      const storage = tabStore();
+      await signInAndUnlock(storage);
+      await fake.lock();
+      leave(storage);
+      const next = setup(storage);
+      next.api.accountKeys.mockImplementation(() => new Promise(() => undefined));
+      await restoreSession(next.deps, 10);
+      expect(next.session.getState().status).toBe('locked');
+      expect(next.session.tokenStore.get()).toEqual(tokens);
+      expect(next.session.sealedRoot.get()).toBeUndefined();
+    });
+
+    it('does not open the vault when the restore finishes after the limit, and shuts the keys', async () => {
+      const storage = tabStore();
+      await signInAndUnlock(storage);
+      await fake.lock();
+      leave(storage);
+      const next = setup(storage);
+      let answer: (value: never) => void = () => undefined;
+      next.api.accountKeys.mockImplementation(
+        () => new Promise((resolve) => (answer = resolve as (value: never) => void)),
+      );
+      const lock = vi.spyOn(fake, 'lock');
+      await restoreSession(next.deps, 10);
+      answer({ keyVersion: 1, sealedPrivateKeys: 'c2s' } as never);
+      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      expect(next.session.getState().status).toBe('locked');
+      lock.mockRestore();
+    });
+  });
+
   it('starts nothing when no tab storage has a session', async () => {
     const storage = tabStore();
     const next = setup(storage);
