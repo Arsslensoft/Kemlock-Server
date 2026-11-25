@@ -12,6 +12,8 @@ import {
   changesOf,
   draftOf,
   groupsOf,
+  HOST_PATTERN,
+  isDirty,
 } from './settingsForm';
 import { ErrorNotice, Loading, PageHead, SelectBox, TextBox, Toggle } from './ui';
 
@@ -56,6 +58,11 @@ const LABELS: Record<string, MessageId> = {
   security_encryption: 'admin.settings.key.security_encryption',
 };
 
+/** A switch, a list of domains or a long text keeps the full width of the grid. */
+function isWide(setting: AdminSetting): boolean {
+  return setting.kind === 'bool' || setting.kind === 'domains' || setting.key === 'security_encryption';
+}
+
 /** One setting as a control: by its kind, with what the server says about it. */
 function Field({
   setting,
@@ -71,11 +78,17 @@ function Field({
   const t = useT();
   const labelId = LABELS[setting.key];
   const label = labelId ? t(labelId) : setting.key;
+  const range = { min: setting.min ?? 0, max: setting.max ?? 0 };
+  const bounded = setting.kind === 'int' && setting.min != null && setting.max != null;
+  const placeholder = !bounded
+    ? undefined
+    : setting.key.endsWith('_kib')
+      ? t('admin.settings.placeholder.kib')
+      : setting.key.endsWith('_days')
+        ? t('admin.settings.placeholder.days', range)
+        : t('admin.settings.placeholder.range', range);
   const hints = [
     setting.readOnly ? t('admin.settings.env', { name: setting.env }) : '',
-    setting.kind === 'int' && setting.min != null && setting.max != null
-      ? t('admin.settings.range', { min: setting.min, max: setting.max })
-      : '',
     setting.kind === 'secret' ? t('admin.secretHint') : '',
   ].filter((hint) => hint !== '');
   const hint = hints.length > 0 ? hints.join(' ') : undefined;
@@ -115,11 +128,36 @@ function Field({
       );
     case 'int':
       return (
-        <TextBox label={label} type="number" value={value} onChange={onChange} hint={hint} error={error} disabled={setting.readOnly} />
+        <TextBox
+          label={label}
+          type="number"
+          inputMode="numeric"
+          value={value}
+          onChange={onChange}
+          hint={hint}
+          placeholder={placeholder}
+          error={error}
+          errorValues={range}
+          min={setting.min ?? undefined}
+          max={setting.max ?? undefined}
+          step={1}
+          required
+          disabled={setting.readOnly}
+        />
       );
     case 'email':
       return (
-        <TextBox label={label} type="email" value={value} onChange={onChange} hint={hint} error={error} disabled={setting.readOnly} />
+        <TextBox
+          label={label}
+          type="email"
+          inputMode="email"
+          value={value}
+          onChange={onChange}
+          hint={hint}
+          placeholder="name@example.co"
+          error={error}
+          disabled={setting.readOnly}
+        />
       );
     default:
       return (
@@ -130,6 +168,8 @@ function Field({
           onChange={onChange}
           hint={setting.kind === 'domains' ? [hint, t('admin.settings.domainsHint')].filter(Boolean).join(' ') : hint}
           error={error}
+          pattern={setting.key === 'smtp_host' ? HOST_PATTERN : undefined}
+          maxLength={setting.maxLength ?? undefined}
           disabled={setting.readOnly}
         />
       );
@@ -152,57 +192,50 @@ function Group({
   const titleId = GROUP_TITLES[group];
   const title = titleId ? t(titleId) : group;
   const [draft, setDraft] = useState<Draft>(() => draftOf(settings));
-  const [errors, setErrors] = useState<SettingErrors>({});
   const editable = settings.some((setting) => !setting.readOnly);
+  const dirty = isDirty(settings, draft);
+  // A changed field is checked as it is typed; a clean one has nothing to check.
+  const checked = changesOf(settings, draft);
+  const errors: SettingErrors = checked.ok ? {} : checked.errors;
   return (
     <section className="card" aria-labelledby={`h-${group}`}>
       <div className="adm-head">
         <h2 id={`h-${group}`}>{title}</h2>
       </div>
+      {saved && !dirty ? (
+        <div className="adm-saved">
+          <Notice tone="info" live>
+            <p>{t('admin.saved')}</p>
+          </Notice>
+        </div>
+      ) : null}
       <form
         className="adm-pad"
         noValidate
         onSubmit={(event) => {
           event.preventDefault();
-          const result = changesOf(settings, draft);
-          if (!result.ok) {
-            setErrors(result.errors);
-            return;
-          }
-          setErrors({});
-          if (Object.keys(result.changes).length > 0) onSave(result.changes, group);
+          if (checked.ok && Object.keys(checked.changes).length > 0) onSave(checked.changes, group);
         }}
       >
-        <div className="adm-cols">
+        <div className="adm-g2">
           {settings.map((setting) => (
-            <Field
-              key={setting.key}
-              setting={setting}
-              value={draft[setting.key] ?? ''}
-              error={errors[setting.key]}
-              onChange={(value) => setDraft((d) => ({ ...d, [setting.key]: value }))}
-            />
+            <div key={setting.key} className={isWide(setting) ? 'wide' : undefined}>
+              <Field
+                setting={setting}
+                value={draft[setting.key] ?? ''}
+                error={errors[setting.key]}
+                onChange={(value) => setDraft((d) => ({ ...d, [setting.key]: value }))}
+              />
+            </div>
           ))}
         </div>
         {editable ? (
           <div className="actions">
-            <Button
-              onPress={() => {
-                setDraft(draftOf(settings));
-                setErrors({});
-              }}
-            >
-              {t('admin.discard')}
-            </Button>
-            <Button type="submit" variant="primary">
-              {t('admin.settings.saveSection', { section: title })}
+            {dirty ? <Button onPress={() => setDraft(draftOf(settings))}>{t('admin.discard')}</Button> : null}
+            <Button type="submit" variant="primary" isDisabled={!dirty}>
+              {t('action.save')}
             </Button>
           </div>
-        ) : null}
-        {saved ? (
-          <Notice tone="info" live>
-            <p>{t('admin.saved')}</p>
-          </Notice>
         ) : null}
       </form>
     </section>

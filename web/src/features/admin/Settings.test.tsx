@@ -12,6 +12,11 @@ function view(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
   return { onSave };
 }
 
+/** The Save button of the card with this title. */
+function saveOf(title: string) {
+  return within(screen.getByRole('region', { name: title })).getByRole('button', { name: 'Save' });
+}
+
 describe('the settings form', () => {
   it('groups the catalogue in the console\'s order and puts a group it does not know last', () => {
     const extra = setting({ key: 'new_thing', group: 'later', kind: 'bool' });
@@ -84,7 +89,7 @@ describe('SettingsView', () => {
     expect(largest).toBeDisabled();
     expect(screen.getByText(/Set by KEMLOCK_MAX_FILE_SIZE_MIB/)).toBeInTheDocument();
     const files = screen.getByRole('region', { name: 'Files' });
-    expect(within(files).queryByRole('button', { name: /^Save/ })).not.toBeInTheDocument();
+    expect(within(files).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
   });
 
   it('refuses a bad port without sending anything', async () => {
@@ -93,8 +98,8 @@ describe('SettingsView', () => {
     const port = screen.getByLabelText('SMTP port');
     await user.clear(port);
     await user.type(port, '70000');
-    await user.click(screen.getByRole('button', { name: 'Save Email' }));
-    expect(await screen.findByText(/Type a whole number within the range/)).toBeInTheDocument();
+    await user.click(saveOf('Email'));
+    expect(await screen.findByText(/Type a whole number from 1 to 65535/)).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
   });
 
@@ -104,11 +109,11 @@ describe('SettingsView', () => {
     const host = screen.getByLabelText('SMTP server');
     await user.clear(host);
     await user.type(host, 'mail.example.org');
-    await user.click(screen.getByRole('button', { name: 'Save Email' }));
+    await user.click(saveOf('Email'));
     expect(onSave).toHaveBeenCalledTimes(1);
     expect(onSave).toHaveBeenLastCalledWith({ smtp_host: 'mail.example.org' }, 'smtp');
     await user.type(screen.getByLabelText('SMTP password'), 'hunter2');
-    await user.click(screen.getByRole('button', { name: 'Save Email' }));
+    await user.click(saveOf('Email'));
     expect(onSave).toHaveBeenLastCalledWith({ smtp_host: 'mail.example.org', smtp_password: 'hunter2' }, 'smtp');
   });
 
@@ -116,7 +121,7 @@ describe('SettingsView', () => {
     const { onSave } = view();
     const user = userEvent.setup();
     await user.click(screen.getByRole('switch', { name: 'Anyone may make an account' }));
-    await user.click(screen.getByRole('button', { name: 'Save Who can make an account' }));
+    await user.click(saveOf('Who can make an account'));
     expect(onSave).toHaveBeenCalledWith({ signups_allowed: 'true' }, 'signups');
   });
 

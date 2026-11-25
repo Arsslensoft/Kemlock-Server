@@ -37,6 +37,15 @@ export type Checked =
   | { ok: false; errors: SettingErrors };
 
 const WHOLE_NUMBER = /^-?\d+$/;
+/** A host name or address: no spaces and no slash, so no `https://` typed by mistake. */
+export const HOST_PATTERN = '[^\\s/]+';
+const HOST = new RegExp(`^${HOST_PATTERN}$`);
+
+/** Whether the draft differs from what is saved: a typed secret counts. */
+export function isDirty(settings: AdminSetting[], draft: Draft): boolean {
+  const saved = draftOf(settings);
+  return settings.some((setting) => !setting.readOnly && (draft[setting.key] ?? '') !== (saved[setting.key] ?? ''));
+}
 
 /** The error a typed value earns, or undefined. The server checks again, so this only spares a trip. */
 export function errorOf(setting: AdminSetting, text: string): MessageId | undefined {
@@ -54,6 +63,7 @@ export function errorOf(setting: AdminSetting, text: string): MessageId | undefi
     case 'email':
       return value === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? undefined : 'error.email';
     case 'text':
+      if (setting.key === 'smtp_host' && value !== '' && !HOST.test(value)) return 'admin.settings.error.host';
       return setting.maxLength != null && value.length > setting.maxLength
         ? 'admin.settings.error.tooLong'
         : undefined;
