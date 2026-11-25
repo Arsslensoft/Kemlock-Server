@@ -14,6 +14,7 @@ import { placementApi, placementQuery } from './queries';
 function statusOf(server: PlacementServer): { label: MessageId; tone: 'on' | 'off' | 'idle' } {
   if (server.status === 'offline') return { label: 'failover.status.offline', tone: 'off' };
   if (server.status === 'unknown') return { label: 'failover.status.unknown', tone: 'idle' };
+  if (server.status === 'degraded') return { label: 'failover.status.degraded', tone: 'off' };
   return server.inUse
     ? { label: 'failover.status.inUse', tone: 'on' }
     : { label: 'failover.status.online', tone: 'idle' };
@@ -81,6 +82,9 @@ export function StorageView({
                           {server.status === 'offline' && server.offlineSince
                             ? ` · ${timeAgo(server.offlineSince)}`
                             : ''}
+                          {server.status === 'degraded' && server.lastSeen
+                            ? ` · ${t('failover.lastSeen', { when: timeAgo(server.lastSeen) })}`
+                            : ''}
                         </span>
                       </li>
                     );
@@ -90,11 +94,15 @@ export function StorageView({
                   <div className="waiting" role="group" aria-label={t('failover.waiting')}>
                     <strong>{t('failover.waiting')}</strong>
                     <span>
-                      {vault.pending.summary} {t('failover.askedAt', { when: timeAgo(vault.pending.askedAt) })}
+                      {vault.pending.summary}
+                      {vault.pending.askedAt
+                        ? ` ${t('failover.oldest', { when: timeAgo(vault.pending.askedAt) })}`
+                        : ''}
                     </span>
                     <Button
                       size="small"
-                      isDisabled={cancelling}
+                      // Only a server that is down has changes queued for it that may be dropped.
+                      isDisabled={cancelling || !vault.servers.some((server) => server.status === 'offline')}
                       onPress={() => onCancelPending(vault.id, vault.pending?.id ?? '')}
                     >
                       {t('failover.cancelChange')}

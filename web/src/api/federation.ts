@@ -87,7 +87,16 @@ export interface WirePeer {
   /** The pinned `sig1` identity key, hex. */
   identityKey: string;
   pairedAt: number;
+  /** When the peer last answered: a session or a probe, whichever was later. */
   lastSeen: number | null;
+  /** Whether the peer answers, as the server's probes found (absent from servers that predate them). */
+  health?: 'unknown' | 'online' | 'degraded' | 'offline';
+  /** How long its last answer took, in milliseconds. */
+  latencyMs?: number | null;
+  /** Why the last probe failed, until one answers. */
+  probeError?: string | null;
+  /** Since when the probes have been failing, Unix seconds. */
+  failingSince?: number | null;
   /** The six words of the pairing. */
   fingerprint: string[];
   switches: { send: boolean; pull: boolean };
@@ -323,7 +332,9 @@ function serverView(
 function peerState(peer: WirePeer): PeerState {
   if (peer.state === 'revoked') return 'revoked';
   const status = peer.status;
+  if (peer.health === 'offline') return 'offline';
   if (status?.downSince !== null && status?.downSince !== undefined) return 'offline';
+  if (peer.health === 'degraded') return 'degraded';
   if (status?.vaults.some((vault) => vault.inStep === false || vault.behind)) return 'catching-up';
   return 'online';
 }
@@ -333,7 +344,9 @@ export function peerOf(peer: WirePeer, ownOperator: string): Peer {
   return {
     ...serverView(peer.id, peer.name, peer.operator, peer.addresses, peer.identityKey, ownOperator),
     state: peerState(peer),
-    offlineSince: status?.downSince ?? null,
+    offlineSince: peer.failingSince ?? status?.downSince ?? null,
+    lastSeen: peer.lastSeen,
+    latencyMs: peer.latencyMs ?? null,
     lagSeconds: peer.lagSeconds,
     lagChanges: peer.lagChanges,
     lastChangeAt: peer.lastChangeAt,
