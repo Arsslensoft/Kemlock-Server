@@ -1,9 +1,12 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { copyText } from '@/lib/clipboard';
 import { renderWithIntl } from '@/test/render';
 import type { VaultItem } from '../vault';
 import { KindDetails, groupDigits, maskedNumber } from './KindDetails';
+
+vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(() => Promise.resolve(true)) }));
 
 function item(kind: string, data: Record<string, unknown>): VaultItem {
   return { id: 'i1', owner: 'user:u1', kind, revision: 1, keyVersion: 1, data, sizes: { ciphertext: 0, itemKey: 0 } };
@@ -52,6 +55,12 @@ describe('KindDetails', () => {
     expect(screen.queryByText('123')).not.toBeInTheDocument();
     await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show card number' }));
     expect(screen.getByText('4111 1111 1111 1111')).toBeInTheDocument();
+  });
+
+  it('copies the card number as its digits, without the spaces', async () => {
+    renderWithIntl(<KindDetails item={item('card', { number: '4111111111111111' })} />);
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Copy card number' }));
+    expect(copyText).toHaveBeenCalledWith('4111111111111111', { secret: true });
   });
 
   it('shows an identity with its address', () => {

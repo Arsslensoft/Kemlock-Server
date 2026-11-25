@@ -53,13 +53,14 @@ function SecretRow({
   value,
   masked = MASK,
   mono = true,
-  noCopy,
+  copyValue,
 }: {
   label: string;
   value: string;
   masked?: string;
   mono?: boolean;
-  noCopy?: boolean;
+  /** What Copy puts on the clipboard, when it is not what is shown. */
+  copyValue?: string;
 }) {
   const t = useT();
   const [shown, setShown] = useState(false);
@@ -76,7 +77,7 @@ function SecretRow({
       >
         <Icon name={shown ? 'eyeOff' : 'eye'} />
       </IconButton>
-      {noCopy ? null : <CopyButton value={value} secret label={t('detail.copy', { field: label.toLowerCase() })} />}
+      <CopyButton value={copyValue ?? value} secret label={t('detail.copy', { field: label.toLowerCase() })} />
     </div>
   );
 }
@@ -242,7 +243,12 @@ function CardDetail({ data }: { data: ItemData | null }) {
         </Row>
       ) : null}
       {number ? (
-        <SecretRow label={t('detail.card.number')} value={groupDigits(number)} masked={maskedNumber(number)} />
+        <SecretRow
+          label={t('detail.card.number')}
+          value={groupDigits(number)}
+          masked={maskedNumber(number)}
+          copyValue={number}
+        />
       ) : null}
       {expiry ? (
         <Row label={t('detail.card.expiry')}>
