@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { DeviceEntryDto, KeyCopyResponse, PendingApprovalDto } from '@/api/devices';
 import { ApiError } from '@/api/errors';
 import { createDevicesApi } from '@/api/devices';
+import { I18nProvider } from '@/i18n';
 import { encodeB64, fromUtf8, decodeB64 } from '@/lib/b64url';
 import { renderWithIntl } from '@/test/render';
 import { fakeSharingCrypto } from '@/test/fake-space-crypto';
@@ -210,8 +211,8 @@ const KEY_COPY: KeyCopyResponse = {
   updatedAt: '2026-11-01T10:00:00Z',
 };
 
-function view(over: Partial<DevicesViewProps> = {}) {
-  const props: DevicesViewProps = {
+function baseProps(): DevicesViewProps {
+  return {
     address: 'https://vault.example.org',
     approvals: [],
     others: [],
@@ -227,8 +228,11 @@ function view(over: Partial<DevicesViewProps> = {}) {
     onTrust: vi.fn(),
     onUntrust: vi.fn(),
     onUntrustDevice: vi.fn(),
-    ...over,
   };
+}
+
+function view(over: Partial<DevicesViewProps> = {}) {
+  const props: DevicesViewProps = { ...baseProps(), ...over };
   renderWithIntl(<DevicesView {...props} />);
   return props;
 }
@@ -375,6 +379,51 @@ describe('the Connect dialog', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Connect an app or device' });
     expect(within(dialog).getByText('https://vault.example.co')).toBeInTheDocument();
     expect(within(dialog).queryByText('https://vault.example.org')).toBeNull();
+  });
+
+  it('waits for the server to say its address: a loading line, and nothing to copy', async () => {
+    copied.copyText.mockClear();
+    view({ address: undefined });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Connect an app or device' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect an app or device' });
+    expect(within(dialog).getByText("Loading this server's address…")).toHaveAttribute('role', 'status');
+    expect(within(dialog).getByRole('button', { name: 'Copy the address' })).toBeDisabled();
+    // The page's own address is no stand-in.
+    expect(within(dialog).queryByText(window.location.origin)).toBeNull();
+    expect(dialog.querySelector('code')).toBeNull();
+    await user.click(within(dialog).getByRole('button', { name: 'Copy the address' }));
+    expect(copied.copyText).not.toHaveBeenCalled();
+  });
+
+  it('says so when the server could not give its address, and still has nothing to copy', async () => {
+    view({ address: undefined, addressFailed: true });
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Connect an app or device' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect an app or device' });
+    expect(within(dialog).getByText(/Couldn't read this server's address/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Loading this server's address/)).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Copy the address' })).toBeDisabled();
+  });
+
+  it('turns Copy on when the address arrives', async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderWithIntl(
+      <DevicesView
+        {...baseProps()}
+        address={undefined}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect an app or device' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Connect an app or device' });
+    expect(within(dialog).getByRole('button', { name: 'Copy the address' })).toBeDisabled();
+    rerender(
+      <I18nProvider>
+        <DevicesView {...baseProps()} address="https://vault.example.org" />
+      </I18nProvider>,
+    );
+    expect(within(screen.getByRole('dialog')).getByText('https://vault.example.org')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Copy the address' })).toBeEnabled();
+    expect(screen.queryByText(/Loading this server's address/)).toBeNull();
   });
 
   it('copies the address and says so', async () => {
