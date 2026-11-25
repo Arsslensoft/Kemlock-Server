@@ -4,7 +4,7 @@
 // unlinking write both items, so the other item shows this one too. An item that links here, or
 // that this one links to the older way (`linkedLoginId`), is listed as well (itemLinks.ts).
 import { Link } from '@tanstack/react-router';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { AppDialog } from '@/ui/AppDialog';
@@ -201,7 +201,9 @@ export function LinkedItems({
   readOnly?: boolean;
 }) {
   const t = useT();
-  const card = useRef<HTMLElement>(null);
+  const base = useId();
+  const addId = `${base}-add`;
+  const unlinkId = (itemId: string) => `${base}-unlink-${itemId}`;
   const [picking, setPicking] = useState(false);
   const [failure, setFailure] = useState<unknown>(undefined);
   // The items being unlinked, so a second press on the same one can't write it twice.
@@ -215,9 +217,11 @@ export function LinkedItems({
 
   useEffect(() => {
     if (!refocus || linked.some((other) => other.id === refocus.id)) return;
-    const buttons = card.current?.querySelectorAll<HTMLElement>('[data-unlink]');
-    const next = buttons && buttons.length > 0 ? buttons[Math.min(refocus.index, buttons.length - 1)] : undefined;
-    (next ?? card.current?.querySelector<HTMLElement>('[data-link-add]'))?.focus();
+    // The Unlink that took the row's place, else the one before it, else Link an item.
+    const after = linked.slice(refocus.index).find(unlinkable);
+    const before = linked.slice(0, refocus.index).reverse().find(unlinkable);
+    const target = after ?? before;
+    document.getElementById(target ? unlinkId(target.id) : addId)?.focus();
     setRefocus(null);
   });
 
@@ -240,14 +244,14 @@ export function LinkedItems({
   }
 
   return (
-    <section ref={card} className="card pad linked" aria-labelledby="h-links">
+    <section className="card pad linked" aria-labelledby="h-links">
       <div className="linked-head">
         <span className="linked-head-icon" aria-hidden="true">
           <Icon name="link" />
         </span>
         <h2 id="h-links">{t('detail.links.title')}</h2>
         {readOnly ? null : (
-          <Button size="small" data-link-add="" onPress={() => setPicking(true)}>
+          <Button id={addId} size="small" onPress={() => setPicking(true)}>
             {t('detail.links.add')}
           </Button>
         )}
@@ -268,7 +272,7 @@ export function LinkedItems({
               </Link>
               {unlinkable(other) ? (
                 <IconButton
-                  data-unlink=""
+                  id={unlinkId(other.id)}
                   aria-label={t('detail.links.unlink', { name: itemName(other) })}
                   isDisabled={unlinking.has(other.id)}
                   onPress={() => void unlink(other, index)}
