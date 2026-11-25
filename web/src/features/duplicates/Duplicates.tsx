@@ -10,7 +10,7 @@ import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
 import '@/styles/lists.css';
-import { useVault } from '@/features/vault/hooks';
+import { useVault, useWritableCollections } from '@/features/vault/hooks';
 import { detailParts } from '@/features/vault/itemDetails';
 import { type KeyFacts, useKeyFacts } from '@/features/vault/keyFacts';
 import { KIND_ORDER, kindLabel, kindPluralLabel, tileLetter, timeAgo } from '@/features/vault/kinds';
@@ -20,9 +20,11 @@ import { useVaultFilter } from '@/features/vault/vaultFilter';
 import { type Vaults, useVaults } from '@/features/vault/vaults';
 import { type VaultItem, itemName, loginOf } from '@/features/vault/vault';
 import { type WebsiteRule, ruleLabel } from '@/features/vault/websites';
-import { type DuplicateGroup, SAME_LABEL, WHY_LABEL, findDuplicates } from './detect';
+import { canWriteItem } from '@/features/vault/writeAccess';
+import { type DuplicateGroup, WHY_LABEL, findDuplicates } from './detect';
 import { dismissedGroups } from './dismissed';
 import {
+  type MergeContext,
   type MergePicks,
   allWebsites,
   defaultPicks,
@@ -30,9 +32,12 @@ import {
   keepInVault,
   planMerge,
   resultName,
+  unwritable,
   vaultsOf,
   websiteKey,
 } from './merge';
+import { FIELD_LABELS, chosenFrom, fieldConflicts, showValue } from './mergeFill';
+import { sameLabel } from './sameLabel';
 import { type Merged, useMergeActions } from './useMerge';
 import { type DuplicateFilter, duplicatesViewStore } from './viewState';
 
@@ -75,12 +80,15 @@ function PasswordMask({ password }: { password: string }) {
 function Preview({
   group,
   vaults,
+  context,
   onMerge,
   onDismiss,
   pending,
 }: {
   group: DuplicateGroup;
   vaults: Vaults;
+  /** The whole vault and what the person may write: what a merge rewrites besides the copies. */
+  context?: MergeContext | undefined;
   onMerge: (picks: MergePicks) => void;
   onDismiss: () => void;
   pending?: boolean;
@@ -96,7 +104,11 @@ function Preview({
     return { item, folder: typeof folder === 'string' ? folder : '' };
   });
   const foldersDiffer = new Set(folders.map((f) => f.folder)).size > 1;
-  const plan = planMerge(group.items, picks, new Date());
+  const plan = planMerge(group.items, picks, new Date(), context);
+  const conflicts = useMemo(() => fieldConflicts(group.items), [group.items]);
+  // A merge writes every copy: one the person may only read stops it, and the reason is said.
+  const blocked = unwritable(group.items, context?.canWrite);
+  const mayWrite = (item: VaultItem) => context?.canWrite?.(item) ?? true;
   const trashedNames = plan ? plan.trashed.map(itemName).join(', ') : '';
   const keptName = plan ? resultName(plan) || itemName(plan.kept) : '';
   const siteChecked = (rule: WebsiteRule) => picks.websites.includes(websiteKey(rule));
@@ -115,9 +127,10 @@ function Preview({
     checked: boolean,
     onPick: () => void,
     children: ReactNode,
+    disabled = false,
   ) => (
     <label className="pick-opt" key={value}>
-      <input type="radio" name={name} checked={checked} onChange={onPick} />
+      <input type="radio" name={name} checked={checked} disabled={disabled} onChange={onPick} />
       <span>{children}</span>
     </label>
   );
@@ -154,8 +167,10 @@ function Preview({
               <span className="hint">
                 {group.crossOwner && isLogin ? `${ownerName(item.owner, vaults, mine)} · ` : ''}
                 {timeAgo(item.data?.['updatedAt'])}
+                {mayWrite(item) ? '' : ` · ${t('dup.pick.readOnly')}`}
               </span>
             </>,
+            keepPicksItem && !mayWrite(item),
           ),
         )}
       </fieldset>
@@ -178,10 +193,39 @@ function Preview({
         </fieldset>
       ) : (
         <div className="same">
-          <span className="lbl">{t(SAME_LABEL[group.why])}</span>
-          <span>{t('dup.pick.same')}</span>
+          <span className="lbl">{t(sameLabel(group))}</span>
+          <span>{t(group.items.length === 2 ? 'dup.pick.same' : 'merge.sameAll')}</span>
         </div>
       )}
+
+      {conflicts.map((conflict) => {
+        const label = FIELD_LABELS[conflict.key];
+        if (!label) return null;
+        const from = chosenFrom(conflict, picks.valuesFrom, picks.keepId);
+        return (
+          <fieldset className="pick" key={conflict.key}>
+            <legend>{t(label)}</legend>
+            {conflict.options.map((option) => {
+              const holder = option.from[0] ?? '';
+              const names = option.from
+                .map((id) => group.items.find((item) => item.id === id))
+                .filter((item): item is VaultItem => item !== undefined)
+                .map(itemName)
+                .join(', ');
+              return radio(
+                `${gid}-${conflict.key}`,
+                holder,
+                option.from.includes(from),
+                () => setPicks({ ...picks, valuesFrom: { ...picks.valuesFrom, [conflict.key]: holder } }),
+                <>
+                  <span className="mono">{showValue(conflict.key, option.value)}</span>
+                  <span className="hint">{t('dup.pick.from', { name: names })}</span>
+                </>,
+              );
+            })}
+          </fieldset>
+        );
+      })}
 
       {hasUnionMembers(group.items) ? (
         <div className="same">
@@ -221,21 +265,38 @@ function Preview({
       {group.crossOwner && !isLogin ? (
         <fieldset className="pick">
           <legend>{t('dup.pick.keepIn')}</legend>
-          {groupVaults.map((vault) =>
-            radio(
+          {groupVaults.map((vault) => {
+            // A vault holding a copy the person may only read can't keep the item: a merge changes it.
+            const readOnly = group.items.some((item) => vaultIdOf(item.owner) === vault && !mayWrite(item));
+            return radio(
               `${gid}-vault`,
               vault,
               keptVault === vault,
               () => setPicks(keepInVault(group.items, picks, vault)),
-              vaultName(vault),
-            ),
-          )}
+              <>
+                <span>{vaultName(vault)}</span>
+                {readOnly ? <span className="hint">{t('dup.pick.readOnly')}</span> : null}
+              </>,
+              readOnly,
+            );
+          })}
         </fieldset>
       ) : null}
 
       <p>{t('dup.preview.result', { name: keptName, trashed: trashedNames })}</p>
+      {plan && plan.relinks.length > 0 ? (
+        <p>{t('dup.preview.relinked', { count: plan.relinks.length, name: keptName })}</p>
+      ) : null}
+      {plan && plan.copies.length > 0 ? (
+        <p>{t('dup.preview.copies', { count: plan.copies.length, name: keptName })}</p>
+      ) : null}
+      {blocked.length > 0 ? (
+        <Notice tone="warn">
+          <p>{t('dup.readOnly', { names: blocked.map(itemName).join(', ') })}</p>
+        </Notice>
+      ) : null}
       <div className="actions">
-        <Button variant="primary" isDisabled={pending || !plan} onPress={() => onMerge(picks)}>
+        <Button variant="primary" isDisabled={pending || !plan || blocked.length > 0} onPress={() => onMerge(picks)}>
           {t('dup.merge')}
         </Button>
         <Link to="/duplicates/$groupId" params={{ groupId: group.id }} className={buttonClass()}>
@@ -262,6 +323,7 @@ export function DuplicatesView({
   onVault,
   vaults,
   facts,
+  context,
   selectedId,
   onSelect,
   onMerge,
@@ -281,6 +343,8 @@ export function DuplicatesView({
   vaults: Vaults;
   /** The worked-out facts of key items, for their line in a group. */
   facts?: ReadonlyMap<string, KeyFacts> | undefined;
+  /** The whole vault and what the person may write, for what a merge rewrites and who may merge. */
+  context?: MergeContext | undefined;
   selectedId: string | undefined;
   onSelect: (id: string) => void;
   onMerge: (group: DuplicateGroup, picks: MergePicks) => void;
@@ -423,6 +487,7 @@ export function DuplicatesView({
               key={selected.id}
               group={selected}
               vaults={vaults}
+              context={context}
               pending={pending}
               onMerge={(picks) => onMerge(selected, picks)}
               onDismiss={() => onDismiss(selected)}
@@ -438,9 +503,14 @@ export function DuplicatesView({
 
 export default function Duplicates() {
   const t = useT();
-  const { active, isLoading, error, refetch } = useVault();
+  const { active, trashed, isLoading, error, refetch } = useVault();
   const { merge, undo } = useMergeActions();
   const vaults = useVaults(active);
+  const writable = useWritableCollections().data;
+  const context = useMemo<MergeContext>(
+    () => ({ all: [...active, ...trashed], canWrite: (item) => canWriteItem(item, writable) }),
+    [active, trashed, writable],
+  );
   const [chosen, setVault] = useVaultFilter('duplicates');
   const vault = knownVault(chosen, vaults.options);
   // The fingerprints of keys and certificates are worked out here, once per revision.
@@ -477,6 +547,7 @@ export default function Duplicates() {
       onVault={setVault}
       vaults={vaults}
       facts={facts}
+      context={context}
       selectedId={selectedId}
       onSelect={setSelectedId}
       pending={merge.isPending || undo.isPending}
@@ -501,8 +572,8 @@ export default function Duplicates() {
         });
       }}
       onMerge={(group, picks) => {
-        const plan = planMerge(group.items, picks, new Date());
-        if (!plan) return;
+        const plan = planMerge(group.items, picks, new Date(), context);
+        if (!plan || unwritable(group.items, context.canWrite).length > 0) return;
         merge.mutate(plan, {
           onSuccess: (merged: Merged) => {
             setSelectedId(undefined);
