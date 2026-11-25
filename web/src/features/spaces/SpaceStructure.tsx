@@ -5,7 +5,9 @@ import type { CollectionPermission } from '@/api/spaces';
 import { COLLECTION_PERMISSIONS } from '@/api/spaces';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
+import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { CheckList, SelectInput, TextInput } from '../account/controls';
+import type { Described } from '../account/errors';
 import {
   type SpaceDetail,
   canCreateCollections,
@@ -13,14 +15,15 @@ import {
   canManageUsers,
   memberLabel,
 } from './model';
+import { type Done, succeeded, useAsk } from './outcome';
 
 export interface StructureActions {
-  createCollection: (name: string, parent?: string) => void;
-  renameCollection: (id: string, name: string) => void;
-  deleteCollection: (id: string) => void;
-  createGroup: (name: string, members: string[]) => void;
-  setGroupMembers: (id: string, members: string[]) => void;
-  deleteGroup: (id: string) => void;
+  createCollection: (name: string, parent?: string) => Done;
+  renameCollection: (id: string, name: string) => Done;
+  deleteCollection: (id: string) => Done;
+  createGroup: (name: string, members: string[]) => Done;
+  setGroupMembers: (id: string, members: string[]) => Done;
+  deleteGroup: (id: string) => Done;
   grant: (collection: string, grantee: string, permission: CollectionPermission) => void;
   revokeGrant: (collection: string, grantee: string) => void;
 }
@@ -28,10 +31,12 @@ export interface StructureActions {
 function CollectionsCard({
   detail,
   busy,
+  error,
   actions,
 }: {
   detail: SpaceDetail;
   busy: boolean;
+  error?: Described | undefined;
   actions: StructureActions;
 }) {
   const t = useT();
@@ -40,13 +45,16 @@ function CollectionsCard({
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const can = canCreateCollections(detail.view.me);
   const manage = canManageUsers(detail.view.me);
+  const removal = useAsk<{ id: string; title: string }>((target) => actions.deleteCollection(target.id));
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (name.trim() === '') return;
-    actions.createCollection(name.trim(), parent === '' ? undefined : parent);
-    setName('');
-    setParent('');
+    // Keep what was typed if it fails, so it can be sent again.
+    if (await succeeded(actions.createCollection(name.trim(), parent === '' ? undefined : parent))) {
+      setName('');
+      setParent('');
+    }
   }
 
   return (
@@ -89,8 +97,9 @@ function CollectionsCard({
                     variant="primary"
                     isDisabled={busy || renaming.name.trim() === ''}
                     onPress={() => {
-                      actions.renameCollection(collection.id, renaming.name.trim());
-                      setRenaming(null);
+                      void succeeded(actions.renameCollection(collection.id, renaming.name.trim())).then((ok) => {
+                        if (ok) setRenaming(null);
+                      });
                     }}
                   >
                     {t('action.save')}
@@ -111,7 +120,7 @@ function CollectionsCard({
                     variant="danger"
                     aria-label={t('space.collections.delete', { name: title })}
                     isDisabled={busy}
-                    onPress={() => actions.deleteCollection(collection.id)}
+                    onPress={() => removal.ask({ id: collection.id, title })}
                   >
                     {t('space.collections.deleteShort')}
                   </Button>
@@ -141,6 +150,19 @@ function CollectionsCard({
           </Button>
         </form>
       ) : null}
+      <ConfirmDialog
+        isOpen={removal.target !== null}
+        onOpenChange={(open) => {
+          if (!open) removal.close();
+        }}
+        title={t('space.collections.delete', { name: removal.target?.title ?? '' })}
+        confirmLabel={t('space.collections.deleteShort')}
+        pending={busy}
+        error={removal.tried && error ? t(error.id, error.values) : undefined}
+        onConfirm={() => void removal.confirm()}
+      >
+        <p>{t('space.collections.deleteBody')}</p>
+      </ConfirmDialog>
     </section>
   );
 }
@@ -148,10 +170,12 @@ function CollectionsCard({
 function GroupsCard({
   detail,
   busy,
+  error,
   actions,
 }: {
   detail: SpaceDetail;
   busy: boolean;
+  error?: Described | undefined;
   actions: StructureActions;
 }) {
   const t = useT();
@@ -162,13 +186,15 @@ function GroupsCard({
   const people = detail.members
     .filter((m) => m.state !== 'revoked')
     .map((m) => ({ value: m.user, label: m.name || m.email }));
+  const removal = useAsk<{ id: string; title: string }>((target) => actions.deleteGroup(target.id));
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (name.trim() === '') return;
-    actions.createGroup(name.trim(), chosen);
-    setName('');
-    setChosen([]);
+    if (await succeeded(actions.createGroup(name.trim(), chosen))) {
+      setName('');
+      setChosen([]);
+    }
   }
 
   return (
@@ -206,7 +232,7 @@ function GroupsCard({
                       variant="danger"
                       aria-label={t('space.groups.deleteFor', { name: title })}
                       isDisabled={busy}
-                      onPress={() => actions.deleteGroup(group.id)}
+                      onPress={() => removal.ask({ id: group.id, title })}
                     >
                       {t('space.groups.delete')}
                     </Button>
@@ -227,8 +253,9 @@ function GroupsCard({
                       variant="primary"
                       isDisabled={busy}
                       onPress={() => {
-                        actions.setGroupMembers(group.id, editing.members);
-                        setEditing(null);
+                        void succeeded(actions.setGroupMembers(group.id, editing.members)).then((ok) => {
+                          if (ok) setEditing(null);
+                        });
                       }}
                     >
                       {t('action.save')}
@@ -256,6 +283,19 @@ function GroupsCard({
           </div>
         </form>
       ) : null}
+      <ConfirmDialog
+        isOpen={removal.target !== null}
+        onOpenChange={(open) => {
+          if (!open) removal.close();
+        }}
+        title={t('space.groups.deleteFor', { name: removal.target?.title ?? '' })}
+        confirmLabel={t('space.groups.delete')}
+        pending={busy}
+        error={removal.tried && error ? t(error.id, error.values) : undefined}
+        onConfirm={() => void removal.confirm()}
+      >
+        <p>{t('space.groups.deleteBody')}</p>
+      </ConfirmDialog>
     </section>
   );
 }
@@ -370,17 +410,19 @@ function GrantsCard({
 export function SpaceStructure({
   detail,
   busy,
+  error,
   actions,
 }: {
   detail: SpaceDetail;
   busy: boolean;
+  error?: Described | undefined;
   actions: StructureActions;
 }) {
   return (
     <div className="acct-grid">
       <div className="acct-col">
-        <CollectionsCard detail={detail} busy={busy} actions={actions} />
-        <GroupsCard detail={detail} busy={busy} actions={actions} />
+        <CollectionsCard detail={detail} busy={busy} error={error} actions={actions} />
+        <GroupsCard detail={detail} busy={busy} error={error} actions={actions} />
       </div>
       <div className="acct-col">
         <GrantsCard detail={detail} busy={busy} actions={actions} />
