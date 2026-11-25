@@ -23,7 +23,7 @@ const items: VaultItem[] = [
   vaultItem('note', { name: 'Lease', text: 'x' }, { owner: SPACE }),
   vaultItem('otp', { name: 'GitHub code', secret: 'JBSWY3DPEHPK3PXP', label: 'sam@example.org', period: 30 }),
   vaultItem('backup-codes', { name: 'GitHub recovery codes', codes: [{ code: 'a' }, { code: 'b', used: true }] }),
-  vaultItem('file', { name: 'Passport scan.jpg', fileName: 'Passport scan.jpg', size: 1_100_000 }),
+  vaultItem('file', { name: 'Passport scan.jpg', file: { name: 'Passport scan.jpg', size: 1_100_000 } }),
 ];
 
 /** The view of `all` filtered the way the page does it. */

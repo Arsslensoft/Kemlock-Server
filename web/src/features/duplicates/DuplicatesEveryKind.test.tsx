@@ -28,8 +28,8 @@ function everyKind(): DuplicateGroup[] {
     ...pair('note', { name: 'Wi-Fi', text: 'pw' }, { name: 'Home Wi-Fi', text: 'pw' }),
     ...pair(
       'file',
-      { name: 'Lease.pdf', sha256: HASH },
-      { name: 'Lease copy.pdf', sha256: HASH.toUpperCase() },
+      { name: 'Lease.pdf', file: { name: 'Lease.pdf', size: 10, sha256: HASH } },
+      { name: 'Lease copy.pdf', file: { name: 'Lease copy.pdf', size: 10, sha256: HASH.toUpperCase() } },
     ),
     ...pair('otp', { name: 'AWS', secret: 'JBSWY3DPEHPK3PXP' }, { name: 'Amazon', secret: 'jbsw y3dp ehpk 3pxp' }),
     ...pair(

@@ -40,12 +40,17 @@ export function formatSize(bytes: number): string {
   return `${shown} ${SIZE_UNITS[unit] ?? 'B'}`;
 }
 
-function fileType(data: ItemData): string {
-  const name = text(data, 'fileName') || text(data, 'filename');
+/** The file a File item holds (`file: { name, size, type?, … }`, as the app writes an attachment). */
+function fileEntry(data: ItemData): ItemData {
+  const entry = data['file'];
+  return entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as ItemData) : {};
+}
+
+function fileType(file: ItemData): string {
+  const name = text(file, 'name');
   const dot = name.lastIndexOf('.');
   if (dot > 0 && dot < name.length - 1) return name.slice(dot + 1).toUpperCase();
-  const mime = text(data, 'mimeType') || text(data, 'mime');
-  const subtype = mime.split('/')[1];
+  const subtype = text(file, 'type').split('/')[1];
   return subtype ? subtype.toUpperCase() : '';
 }
 
@@ -111,8 +116,10 @@ export function detailParts(item: VaultItem, facts?: KeyFacts): DetailPart[] {
       );
     }
     case 'file': {
-      const size = typeof data['size'] === 'number' && data['size'] >= 0 ? formatSize(data['size']) : '';
-      const list = parts(fileType(data), size);
+      const file = fileEntry(data);
+      const bytes = file['size'];
+      const size = typeof bytes === 'number' && bytes >= 0 ? formatSize(bytes) : '';
+      const list = parts(fileType(file), size);
       return list.length > 0 ? list : other;
     }
     case 'otp': {

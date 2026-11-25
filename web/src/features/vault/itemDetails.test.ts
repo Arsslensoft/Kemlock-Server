@@ -26,8 +26,8 @@ describe('the details of each kind', () => {
   });
 
   it('are a file\'s type and size', () => {
-    expect(line('file', { name: 'Lease', fileName: 'Lease agreement.pdf', size: 2_400_000 })).toBe('PDF · 2.4 MB');
-    expect(line('file', { name: 'Scan', mimeType: 'image/jpeg', size: 860 })).toBe('JPEG · 860 B');
+    expect(line('file', { name: 'Lease', file: { name: 'Lease agreement.pdf', size: 2_400_000 } })).toBe('PDF · 2.4 MB');
+    expect(line('file', { name: 'Scan', file: { name: 'scan', type: 'image/jpeg', size: 860 } })).toBe('JPEG · 860 B');
     expect(line('file', { name: 'x' })).toBe('Item');
   });
 

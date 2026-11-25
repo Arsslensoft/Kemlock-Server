@@ -7,7 +7,7 @@
 //   MFA code     same secret                 backup codes  same codes
 //   note         same text                   passkey       same website and credential id
 //   card         same number and expiry      identity      same document number (or name and email)
-//   contact      same email and phone        file          same content hash (`sha256`)
+//   contact      same email and phone        file          same content hash (`file.sha256`)
 //   certificate  same fingerprint            SSH, PGP key  same fingerprint
 import type { MessageId } from '@/i18n';
 import type { ItemData, VaultItem } from '@/features/vault/vault';
@@ -169,7 +169,11 @@ export function tagsOf(item: VaultItem, facts?: DerivedFacts): Tag[] {
       break;
     }
     case 'file': {
-      const hash = normaliseContentHash(text(data, 'sha256'));
+      // The file's entry (`file: { name, size, type?, key, … }`) may hold the SHA-256 of the plaintext.
+      const entry = data['file'];
+      const inEntry =
+        entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as { sha256?: unknown }).sha256 : undefined;
+      const hash = normaliseContentHash(typeof inEntry === 'string' ? inEntry : text(data, 'sha256'));
       if (hash !== '') tags.push({ name: 'file', input: canonicalInput('file', [hash]) });
       break;
     }

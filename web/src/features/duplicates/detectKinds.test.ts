@@ -197,15 +197,29 @@ describe('keys and certificates', () => {
 });
 
 describe('files', () => {
-  it('match on the content hash, in either case', () => {
-    const group = groupOf('file', { name: 'Lease.pdf', sha256: HASH }, { name: 'Lease (1).pdf', sha256: HASH.toUpperCase() });
+  const entry = (sha256: string) => ({ id: 'x', name: 'Lease.pdf', size: 10, key: 'k', addedAt: 1, sha256 });
+
+  it('match on the content hash their file entry holds, in either case', () => {
+    const group = groupOf(
+      'file',
+      { name: 'Lease.pdf', file: entry(HASH) },
+      { name: 'Lease (1).pdf', file: entry(HASH.toUpperCase()) },
+    );
     expect(group?.why).toBe('file');
   });
 
+  it('also read a hash kept on the item itself', () => {
+    expect(groupOf('file', { name: 'a', sha256: HASH }, { name: 'b', file: entry(HASH) })?.why).toBe('file');
+  });
+
   it('are not copies without a hash, or with another one', () => {
+    // Two files of one name and size, each with a key of its own, say nothing about their contents.
+    expect(
+      groupOf('file', { name: 'a', file: { name: 'a.pdf', size: 10, key: 'k1' } }, { name: 'a', file: { name: 'a.pdf', size: 10, key: 'k2' } }),
+    ).toBeUndefined();
     expect(groupOf('file', { name: 'a' }, { name: 'a' })).toBeUndefined();
-    expect(groupOf('file', { sha256: HASH }, { sha256: '1'.repeat(64) })).toBeUndefined();
-    expect(groupOf('file', { sha256: 'abc' }, { sha256: 'abc' })).toBeUndefined();
+    expect(groupOf('file', { file: entry(HASH) }, { file: entry('1'.repeat(64)) })).toBeUndefined();
+    expect(groupOf('file', { file: entry('abc') }, { file: entry('abc') })).toBeUndefined();
   });
 });
 
