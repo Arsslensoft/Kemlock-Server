@@ -18,6 +18,7 @@ pub(crate) mod new_device;
 pub(crate) mod passkeys;
 pub(crate) mod placement;
 pub(crate) mod policies;
+pub(crate) mod profile;
 pub(crate) mod push;
 pub(crate) mod reauth;
 pub(crate) mod recovery_kit;

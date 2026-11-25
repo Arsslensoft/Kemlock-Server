@@ -335,6 +335,8 @@ where
         ))
         .merge(kemlock_api_kem::api_key_router(api.clone(), store.clone()))
         .merge(account_routes)
+        // The profile: name, master password and sign-in address.
+        .merge(kemlock_api_kem::profile_router(api.clone(), store.clone()))
         // /.well-known/security.txt, from the admin settings.
         .merge(crate::security_txt::router(
             kemlock_app::admin::Settings {

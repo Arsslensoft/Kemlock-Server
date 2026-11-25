@@ -109,7 +109,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
 
     /// `GET /kem/v1/openapi.json`: one document for every route: the API's own and the parts that
     /// live beside their routes: trusted devices, emergency access and the app contract, files,
-    /// single sign-on, spaces, your data, push tokens, passkeys, Sends, policies, the Recovery Kit and the duplicate
+    /// single sign-on, spaces, your data, the profile, push tokens, passkeys, Sends, policies, the Recovery Kit and the duplicate
     /// cleaner. `tests/openapi.rs` checks that every routed path is in it.
     pub(crate) async fn handle_openapi() -> Json<utoipa::openapi::OpenApi> {
         let mut document = ApiDoc::openapi()
@@ -120,6 +120,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .merge_from(super::space_chain::openapi())
             .merge_from(super::space_recovery::openapi())
             .merge_from(super::account::document())
+            .merge_from(super::profile::ProfileApiDoc::openapi())
             .merge_from(super::push::document())
             .merge_from(super::passkeys::PasskeysApiDoc::openapi())
             .merge_from(super::sends::SendsDoc::openapi())
