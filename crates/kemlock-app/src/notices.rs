@@ -79,6 +79,36 @@ impl fmt::Debug for ProtectedActionNotice {
     }
 }
 
+/// The link that makes an address the account's sign-in address. The token in it is the proof that
+/// the person owns the address, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EmailChangeNotice {
+    /// The new address: the mail goes there.
+    pub to: Email,
+    /// The secret of the link, base64url.
+    pub token: String,
+}
+
+impl fmt::Debug for EmailChangeNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EmailChangeNotice")
+            .field("to", &self.to)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// A change of the sign-in address was asked for. The mail goes to the old address, so a change
+/// the owner didn't ask for doesn't go unnoticed. It carries no link and no secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailChangeRequestedNotice {
+    /// The address in force: the mail goes there.
+    pub to: Email,
+    /// The address asked for.
+    pub new_address: Email,
+    pub at: OffsetDateTime,
+}
+
 /// Everything the server emails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
@@ -94,6 +124,10 @@ pub enum Notice {
     TwoStepRecovered(TwoStepRecoveredNotice),
     /// A second step was turned on or off.
     TwoStepChanged(TwoStepChangedNotice),
+    /// The link that confirms a new sign-in address, mailed to that address.
+    EmailChange(EmailChangeNotice),
+    /// A new sign-in address was asked for, mailed to the one in force.
+    EmailChangeRequested(EmailChangeRequestedNotice),
 }
 
 impl Notice {
@@ -108,6 +142,8 @@ impl Notice {
             Notice::ProtectedAction(_) => "protected-action",
             Notice::TwoStepRecovered(_) => "two-step-recovered",
             Notice::TwoStepChanged(_) => "two-step-changed",
+            Notice::EmailChange(_) => "email-change",
+            Notice::EmailChangeRequested(_) => "email-change-requested",
         }
     }
 }
@@ -297,5 +333,11 @@ mod tests {
         };
         assert!(!format!("{protected:?}").contains("654321"));
         assert!(!format!("{:?}", Notice::ProtectedAction(protected)).contains("654321"));
+        let change = EmailChangeNotice {
+            to: Email::parse("ada@example.com").expect("email"),
+            token: "s3cr3t-link-token".to_owned(),
+        };
+        assert!(!format!("{change:?}").contains("s3cr3t"));
+        assert!(!format!("{:?}", Notice::EmailChange(change)).contains("s3cr3t"));
     }
 }
