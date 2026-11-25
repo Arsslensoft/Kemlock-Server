@@ -144,3 +144,55 @@ describe('the rest of the card', () => {
     expect(cardFields(values, existing)).toMatchObject({ number: '4111111111111111', brand: 'Visa', expMonth: 5, expYear: 2029 });
   });
 });
+
+function stored(data: Record<string, unknown>): VaultItem {
+  return {
+    id: 'c',
+    owner: 'user:u',
+    kind: 'card',
+    revision: 2,
+    keyVersion: 1,
+    data,
+    sizes: { ciphertext: 0, itemKey: 0 },
+  };
+}
+
+describe('a card that is opened and saved as it was', () => {
+  it('keeps the brand it had when its number did not change, and takes the number\'s brand when it did', () => {
+    const existing = stored({ name: 'Old', number: '4111111111111111', brand: 'Visa Debit' });
+    const values = cardDefaults(existing);
+    expect(cardFields(values, existing)['brand']).toBe('Visa Debit');
+    // The person changed the number: the brand is the one the new number names.
+    const changed = cardFields({ ...values, number: '5555 5555 5555 4444' }, existing);
+    expect(changed['brand']).toBe('Mastercard');
+    // A card that had no brand takes the one its number names.
+    const none = stored({ name: 'Old', number: '4111111111111111' });
+    expect(cardFields(cardDefaults(none), none)['brand']).toBe('Visa');
+  });
+
+  it('is not checked again where nothing was changed: a short number and a long code are the card\'s own', async () => {
+    const existing = stored({ name: 'Old store card', number: '4111', code: '12345', cardholder: 'Sam' });
+    const { onSubmit, user } = setup(cardDefaults(existing));
+    expect(number().value).toBe('4111');
+    expect(code().value).toBe('12345');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+  });
+
+  it('is checked once the number is changed', async () => {
+    const existing = stored({ name: 'Old store card', number: '4111', cardholder: 'Sam' });
+    const { onSubmit, user } = setup(cardDefaults(existing));
+    await user.type(number(), '1');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('That is not a length this card number can have.')).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('never cuts a stored number short on opening, whatever its length', () => {
+    const digits = '9'.repeat(22);
+    const values = cardDefaults(stored({ name: 'Odd', number: digits }));
+    expect(values.number.replace(/ /g, '')).toBe(digits);
+    expect(cardFields(values, stored({ name: 'Odd', number: digits }))['number']).toBe(digits);
+  });
+});

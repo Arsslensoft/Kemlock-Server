@@ -126,6 +126,12 @@ describe('the security code', () => {
     expect(cvcStatus('1234', undefined, false).state).not.toBe('err');
   });
 
+  it('is wrong when a stored code is longer than any brand\'s, even one of no brand', () => {
+    expect(cvcStatus('12345', undefined, false)).toMatchObject({ state: 'err', message: 'itemForm.card.cvc.short' });
+    expect(cvcStatus('12345', detectBrand('4111111111111111'), false).state).toBe('err');
+    expect(cardCodeProblem('12345', '')).toBe('itemForm.card.cvc.short');
+  });
+
   it('says it is short once the box lost focus', () => {
     const amex = detectBrand('378282246310005');
     expect(cvcStatus('123', amex, false).state).toBe('hint');
