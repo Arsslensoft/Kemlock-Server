@@ -131,15 +131,9 @@ impl ApnsConfig {
         let file = non_empty("KEMLOCK_APNS_KEY_FILE");
         let key_id = non_empty("KEMLOCK_APNS_KEY_ID");
         let team_id = non_empty("KEMLOCK_APNS_TEAM_ID");
-        if file.is_none() && key_id.is_none() && team_id.is_none() {
-            return Ok(None);
-        }
-        let file = file.ok_or(ApnsConfigError::Missing("KEMLOCK_APNS_KEY_FILE"))?;
-        let key_id = key_id.ok_or(ApnsConfigError::Missing("KEMLOCK_APNS_KEY_ID"))?;
-        let team_id = team_id.ok_or(ApnsConfigError::Missing("KEMLOCK_APNS_TEAM_ID"))?;
-        let key_id = identifier("KEMLOCK_APNS_KEY_ID", key_id)?;
-        let team_id = identifier("KEMLOCK_APNS_TEAM_ID", team_id)?;
 
+        // The topic and sandbox are checked even with no key: a typo there stops the start rather
+        // than waiting for the day a key is added.
         let topic = non_empty("KEMLOCK_APNS_TOPIC").unwrap_or_else(|| DEFAULT_TOPIC.to_owned());
         if topic.len() > 255 || topic.chars().any(|c| c.is_whitespace() || c.is_control()) {
             return Err(ApnsConfigError::Invalid(
@@ -160,6 +154,15 @@ impl ApnsConfig {
                 ));
             }
         };
+
+        if file.is_none() && key_id.is_none() && team_id.is_none() {
+            return Ok(None);
+        }
+        let file = file.ok_or(ApnsConfigError::Missing("KEMLOCK_APNS_KEY_FILE"))?;
+        let key_id = key_id.ok_or(ApnsConfigError::Missing("KEMLOCK_APNS_KEY_ID"))?;
+        let team_id = team_id.ok_or(ApnsConfigError::Missing("KEMLOCK_APNS_TEAM_ID"))?;
+        let key_id = identifier("KEMLOCK_APNS_KEY_ID", key_id)?;
+        let team_id = identifier("KEMLOCK_APNS_TEAM_ID", team_id)?;
 
         let text = std::fs::read_to_string(&file).map_err(|e| {
             ApnsConfigError::Invalid("KEMLOCK_APNS_KEY_FILE", format!("can't read {file}: {e}"))
@@ -773,6 +776,18 @@ mod tests {
             .expect("ok")
             .is_none()
         );
+    }
+
+    #[test]
+    fn a_bad_topic_or_sandbox_stops_the_start_even_with_no_key() {
+        assert!(matches!(
+            ApnsConfig::from_lookup(&lookup(&[("KEMLOCK_APNS_SANDBOX", "maybe")])).map(|_| ()),
+            Err(ApnsConfigError::Invalid("KEMLOCK_APNS_SANDBOX", _))
+        ));
+        assert!(matches!(
+            ApnsConfig::from_lookup(&lookup(&[("KEMLOCK_APNS_TOPIC", "has space")])).map(|_| ()),
+            Err(ApnsConfigError::Invalid("KEMLOCK_APNS_TOPIC", _))
+        ));
     }
 
     #[test]
