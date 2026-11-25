@@ -197,3 +197,62 @@ async fn the_last_owner_of_an_organization_with_members_is_refused() {
         "the owner still has the organization"
     );
 }
+
+#[tokio::test]
+async fn the_deletion_is_at_once_whatever_grace_period_the_settings_give() {
+    use kemlock_app::privacy::PrivacySettings;
+    let h = Harness::new().await;
+    let mut retention = PrivacySettings::retention(&h.store).await.expect("the settings");
+    retention.deleted_account_grace_days = 7;
+    PrivacySettings::save_retention(&h.store, &retention)
+        .await
+        .expect("saved");
+    let (token, user) = h.signed_in(EMAIL).await;
+
+    let (status, body) = h
+        .json(
+            "DELETE",
+            "/api/accounts",
+            Some(&token),
+            Some(json!({"masterPasswordHash": HASH})),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(gone(&h, user).await, "erased now, not scheduled");
+}
+
+#[tokio::test]
+async fn the_last_owner_is_refused_even_when_no_one_else_is_in_the_organization() {
+    let h = Harness::new().await;
+    let (ada, ada_id) = h.signed_in(EMAIL).await;
+    let (status, org) = h
+        .json(
+            "POST",
+            "/api/organizations",
+            Some(&ada),
+            Some(json!({
+                "name": "Alone",
+                "billingEmail": EMAIL,
+                "key": "4.orgkeywrappedbythemember",
+                "collectionName": "2.collection",
+                "keys": {"publicKey": "pub", "encryptedPrivateKey": "2.priv"},
+                "planType": 0,
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{org}");
+
+    let (status, body) = h
+        .json(
+            "DELETE",
+            "/api/accounts",
+            Some(&ada),
+            Some(json!({"masterPasswordHash": HASH})),
+        )
+        .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "Can't delete last owner");
+    assert!(!gone(&h, ada_id).await, "nothing was touched");
+}

@@ -11,7 +11,9 @@ use kemlock_app::AppError;
 use kemlock_app::admin::{InviteGate, InviteTicket};
 use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::ports::{StoreError, TwoFactorRepo, UserRepo};
+use kemlock_app::spaces::SpaceRepo;
 use kemlock_crypto::hash;
+use kemlock_domain::spaces::SpaceRole;
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -621,17 +623,37 @@ pub(crate) async fn api_key<S: BwStore>(
 }
 
 /// `DELETE /api/accounts` and `POST /api/accounts/delete`: erases the account that asks, its vault,
-/// attachments, Sends, devices and the rest, as Vaultwarden's `User::delete` does. The caller has
-/// checked the password or code. An account that is the only owner of a space still shared with
-/// others is refused with Vaultwarden's words, and nothing is touched.
+/// attachments, Sends, devices and the rest, at once, as Vaultwarden's `User::delete` does (the
+/// grace period of a deleted account is the Kemlock API's, not this one's). The caller has checked
+/// the password or code.
+///
+/// As `User::delete` has it, the last confirmed owner of any organization is refused with
+/// "Can't delete last owner", even when no one else is in it, and nothing is touched.
 pub(crate) async fn delete_account<S: BwStore>(app: &App<S>, user: UserId) -> BwResult<()> {
     let Some(erasure) = app.erasure.as_ref() else {
         return Err(BwError::msg(
             "Deleting an account is not available on this server",
         ));
     };
+    for member in SpaceRepo::memberships(&app.store, user).await? {
+        if !member.is_confirmed() || member.role != SpaceRole::Owner {
+            continue;
+        }
+        let owners = SpaceRepo::load(&app.store, member.space)
+            .await?
+            .map_or(0, |state| {
+                state
+                    .members
+                    .iter()
+                    .filter(|m| m.is_confirmed() && m.role == SpaceRole::Owner)
+                    .count()
+            });
+        if owners <= 1 {
+            return Err(BwError::msg("Can't delete last owner"));
+        }
+    }
     erasure
-        .erase_own(user)
+        .erase_own_now(user)
         .await
         .map(|_| ())
         .map_err(|e| match e {

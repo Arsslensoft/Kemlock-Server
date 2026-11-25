@@ -157,6 +157,23 @@ where
         Ok(Erasure::Scheduled { due })
     }
 
+    /// Erases `user` at once, whatever grace period the settings give: for a caller whose own
+    /// protocol has none (the Bitwarden API, as Vaultwarden erases at once). The same refusal for
+    /// a space the account owns alone applies.
+    pub async fn execute_now(
+        &self,
+        user: UserId,
+        requested_by: Requester,
+    ) -> Result<Erasure, AppError> {
+        let account = self.users.by_id(user).await?.ok_or(AppError::NotFound)?;
+        if !self.eraser.blocking_spaces(user).await?.is_empty() {
+            return Err(AppError::Invalid(
+                "the account is the only owner of a space with other members: hand it over or delete the space first",
+            ));
+        }
+        self.erase_now(account, requested_by).await
+    }
+
     /// Erases an account that is due, or that an admin asked to erase. The retention job calls
     /// this for each account `due_erasures` names.
     pub async fn erase_due(&self, user: UserId) -> Result<Erasure, AppError> {
@@ -226,6 +243,9 @@ where
 pub trait OwnErasure: Send + Sync {
     /// Erases `user`, or schedules it. The caller has checked who is asking.
     fn erase_own(&self, user: UserId) -> BoxFuture<'_, Result<Erasure, AppError>>;
+
+    /// Erases `user` at once, with no grace period, for a protocol that has none.
+    fn erase_own_now(&self, user: UserId) -> BoxFuture<'_, Result<Erasure, AppError>>;
 }
 
 impl<U, E, S, F, P, L, C> OwnErasure for EraseAccount<U, E, S, F, P, L, C>
@@ -240,5 +260,9 @@ where
 {
     fn erase_own(&self, user: UserId) -> BoxFuture<'_, Result<Erasure, AppError>> {
         Box::pin(self.execute(user, Requester::Account))
+    }
+
+    fn erase_own_now(&self, user: UserId) -> BoxFuture<'_, Result<Erasure, AppError>> {
+        Box::pin(self.execute_now(user, Requester::Account))
     }
 }
