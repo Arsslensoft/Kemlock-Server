@@ -64,7 +64,7 @@ describe('SsoView', () => {
     const issuer = screen.getByLabelText('Issuer URL');
     await user.clear(issuer);
     await user.type(issuer, 'not a url');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText(/Type a web address that starts with/)).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
   });
@@ -74,13 +74,13 @@ describe('SsoView', () => {
     const user = userEvent.setup();
     await user.clear(screen.getByLabelText('Name people see'));
     await user.type(screen.getByLabelText('Name people see'), 'Staff');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(onSave).toHaveBeenCalledTimes(1);
     const first = onSave.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(first['displayName']).toBe('Staff');
     expect(first).not.toHaveProperty('clientSecret');
     await user.type(screen.getByLabelText('Client secret'), 'new-secret');
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     expect((onSave.mock.calls[1]?.[0] as Record<string, unknown>)['clientSecret']).toBe('new-secret');
   });
 
@@ -91,7 +91,7 @@ describe('SsoView', () => {
     expect(screen.getAllByLabelText('Provider group')).toHaveLength(2);
     await user.click(screen.getByRole('button', { name: 'Remove the rule for engineering' }));
     expect(screen.getAllByLabelText('Provider group')).toHaveLength(1);
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     const saved = onSave.mock.calls[0]?.[0] as { groupRules: Array<{ group: string; space: string; role: string; collections: string[] }> };
     expect(saved.groupRules).toEqual([{ group: '', space: 's1aaaaaaaa', role: 'member', collections: [] }]);
   });
@@ -100,7 +100,7 @@ describe('SsoView', () => {
     const { onSave } = view();
     const user = userEvent.setup();
     await user.click(screen.getByRole('checkbox', { name: /Only accept people whose email domain is verified here/ }));
-    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    await user.click(screen.getByRole('button', { name: 'Save' }));
     const saved = onSave.mock.calls[0]?.[0] as { requireVerifiedDomain: boolean };
     expect(saved.requireVerifiedDomain).toBe(false);
   });

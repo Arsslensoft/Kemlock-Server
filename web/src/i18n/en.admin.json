@@ -1,7 +1,6 @@
 {
   "admin.crumbs": "Breadcrumb",
   "admin.discard": "Discard",
-  "admin.saveChanges": "Save changes",
   "admin.saved": "Saved.",
   "admin.remove": "Remove",
   "admin.secretKept": "Kept. Type to replace it.",
@@ -231,6 +230,7 @@
   "admin.sso.idp": "Identity provider",
   "admin.sso.on": "SSO on",
   "admin.sso.protocol": "Protocol",
+  "admin.sso.namePlaceholder": "Staff sign-in",
   "admin.sso.name": "Name people see",
   "admin.sso.issuer": "Issuer URL",
   "admin.sso.issuerHint": "Works with Keycloak, Authentik, Microsoft Entra ID, Google Workspace, Okta, Zitadel and any other OpenID Connect provider.",

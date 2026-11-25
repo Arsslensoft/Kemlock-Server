@@ -104,6 +104,7 @@ export function SsoView({
   const [form, setForm] = useState<SsoForm>(() => formFrom(config));
   const [errors, setErrors] = useState<SsoErrors>({});
   const [domain, setDomain] = useState('');
+  const dirty = JSON.stringify(form) !== JSON.stringify(formFrom(config));
   const set = <K extends keyof SsoForm>(key: K, value: SsoForm[K]) => setForm((f) => ({ ...f, [key]: value }));
   const setRule = (index: number, patch: Partial<GroupRule>) =>
     set(
@@ -131,22 +132,24 @@ export function SsoView({
         lede={t('admin.sso.lede')}
         actions={
           <>
-            <Button
-              onPress={() => {
-                setForm(formFrom(config));
-                setErrors({});
-              }}
-            >
-              {t('admin.discard')}
-            </Button>
-            <Button variant="primary" isDisabled={saving} onPress={save}>
-              {t('admin.saveChanges')}
+            {dirty ? (
+              <Button
+                onPress={() => {
+                  setForm(formFrom(config));
+                  setErrors({});
+                }}
+              >
+                {t('admin.discard')}
+              </Button>
+            ) : null}
+            <Button variant="primary" isDisabled={saving || !dirty} onPress={save}>
+              {t('action.save')}
             </Button>
           </>
         }
       />
       {error ? <ErrorNotice error={error} /> : null}
-      {saved ? (
+      {saved && !dirty ? (
         <Notice tone="info" live>
           <p>{t('admin.saved')}</p>
         </Notice>
@@ -160,38 +163,61 @@ export function SsoView({
               <Toggle label={t('admin.sso.on')} checked={form.enabled} onChange={(v) => set('enabled', v)} />
             </div>
             <div className="adm-pad">
-              <TextBox label={t('admin.sso.protocol')} value="OpenID Connect" readOnly />
-              <TextBox
-                label={t('admin.sso.name')}
-                value={form.displayName}
-                onChange={(v) => set('displayName', v)}
-                error={errors.displayName}
-              />
-              <TextBox
-                label={t('admin.sso.issuer')}
-                type="url"
-                mono
-                value={form.issuer}
-                onChange={(v) => set('issuer', v)}
-                hint={t('admin.sso.issuerHint')}
-                error={errors.issuer}
-              />
-              <TextBox
-                label={t('admin.sso.clientId')}
-                mono
-                value={form.clientId}
-                onChange={(v) => set('clientId', v)}
-                error={errors.clientId}
-              />
-              <TextBox
-                label={t('admin.sso.clientSecret')}
-                type="password"
-                value={form.clientSecret}
-                onChange={(v) => set('clientSecret', v)}
-                placeholder={config.clientSecretSet ? t('admin.secretKept') : ''}
-                hint={t('admin.secretHint')}
-                autoComplete="new-password"
-              />
+              <div className="adm-g2">
+                <TextBox label={t('admin.sso.protocol')} value="OpenID Connect" readOnly />
+                <TextBox
+                  label={t('admin.sso.name')}
+                  value={form.displayName}
+                  onChange={(v) => set('displayName', v)}
+                  error={errors.displayName}
+                  placeholder={t('admin.sso.namePlaceholder')}
+                  required={form.enabled}
+                  maxLength={60}
+                />
+                <div className="wide">
+                  <TextBox
+                    label={t('admin.sso.issuer')}
+                    type="url"
+                    inputMode="url"
+                    mono
+                    value={form.issuer}
+                    onChange={(v) => set('issuer', v)}
+                    hint={t('admin.sso.issuerHint')}
+                    placeholder="https://id.example.co/realms/staff"
+                    pattern="https?://.+"
+                    required={form.enabled}
+                    error={errors.issuer}
+                  />
+                </div>
+                <TextBox
+                  label={t('admin.sso.clientId')}
+                  mono
+                  value={form.clientId}
+                  onChange={(v) => set('clientId', v)}
+                  required={form.enabled}
+                  error={errors.clientId}
+                />
+                <TextBox
+                  label={t('admin.sso.clientSecret')}
+                  type="password"
+                  value={form.clientSecret}
+                  onChange={(v) => set('clientSecret', v)}
+                  placeholder={config.clientSecretSet ? t('admin.secretKept') : ''}
+                  hint={t('admin.secretHint')}
+                  autoComplete="new-password"
+                />
+                <div className="wide">
+                  <TextBox
+                    label={t('admin.sso.scopes')}
+                    mono
+                    value={form.scopes}
+                    onChange={(v) => set('scopes', v)}
+                    placeholder="openid profile email"
+                    required={form.enabled}
+                    error={errors.scopes}
+                  />
+                </div>
+              </div>
               {config.clientSecretSet ? (
                 <CheckBox
                   label={t('admin.sso.clearSecret')}
@@ -200,13 +226,6 @@ export function SsoView({
                   onChange={(v) => set('clearClientSecret', v)}
                 />
               ) : null}
-              <TextBox
-                label={t('admin.sso.scopes')}
-                mono
-                value={form.scopes}
-                onChange={(v) => set('scopes', v)}
-                error={errors.scopes}
-              />
               <div className="field">
                 <span className="label">{t('admin.sso.redirect')}</span>
                 <div className="with-action">
