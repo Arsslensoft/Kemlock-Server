@@ -84,6 +84,15 @@ describe('the new item route', () => {
     }
   });
 
+  it('keeps the item a new one is filled from', async () => {
+    const at = await visit('/vault/new?kind=card&copyOf=7b1c2d3e', 'unlocked');
+    expect(at.search['kind']).toBe('card');
+    expect(at.search['copyOf']).toBe('7b1c2d3e');
+    const bare = await visit('/vault/new?copyOf=7b1c2d3e', 'unlocked');
+    expect(bare.search['kind']).toBeUndefined();
+    expect(bare.search['copyOf']).toBe('7b1c2d3e');
+  });
+
   it('drops a kind it does not know, so the login form opens', async () => {
     const at = await visit('/vault/new?kind=spaceship', 'unlocked');
     expect(at.pathname).toBe('/vault/new');
