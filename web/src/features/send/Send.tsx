@@ -16,6 +16,7 @@ import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
+import { PasswordInput } from '@/ui/PasswordInput';
 import '@/styles/tools.css';
 import { useVault } from '@/features/vault/hooks';
 import { SENDABLE_KIND_ORDER, type SendableKind, kindIcon, kindLabel, timeAgo } from '@/features/vault/kinds';
@@ -323,9 +324,8 @@ export function SendView({
               </div>
               <div className="field">
                 <label htmlFor="s-pw">{t('send.passwordOptional')}</label>
-                <input
+                <PasswordInput
                   id="s-pw"
-                  type="password"
                   autoComplete="new-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

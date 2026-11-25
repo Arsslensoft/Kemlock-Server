@@ -10,6 +10,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { Button } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
+import { PasswordInput } from '@/ui/PasswordInput';
 import '@/styles/tools.css';
 import { useVault, vaultKey } from '@/features/vault/hooks';
 import { type VaultItem, vaultStore } from '@/features/vault/vault';
@@ -190,9 +191,8 @@ export function ImportExportView({
 
             <div className="field">
               <label htmlFor="i-pw">{t('ie.password')}</label>
-              <input
+              <PasswordInput
                 id="i-pw"
-                type="password"
                 autoComplete="off"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -308,9 +308,8 @@ export function ImportExportView({
             {format !== 'csv' ? (
               <div className="field">
                 <label htmlFor="e-pw">{t('ie.newPassword')}</label>
-                <input
+                <PasswordInput
                   id="e-pw"
-                  type="password"
                   autoComplete="new-password"
                   value={exportPassword}
                   onChange={(e) => setExportPassword(e.target.value)}

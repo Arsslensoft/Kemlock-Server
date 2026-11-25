@@ -1,12 +1,13 @@
 // Controls and frames the admin screens share. Plain controlled inputs (the screens keep their
 // forms in state and check them with Zod before saving), styled by the same classes as src/ui/fields.
-import { type ReactNode, useId } from 'react';
+import { type ChangeEvent, type ReactNode, useId } from 'react';
 import { Checkbox, Radio, RadioGroup, Switch } from 'react-aria-components';
 import '@/styles/admin.css';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
+import { PasswordInput } from '@/ui/PasswordInput';
 
 export function PageHead({
   title,
@@ -98,6 +99,26 @@ export function TextBox({
   const t = useT();
   const id = useId();
   const described = [hint ? `${id}-h` : '', error ? `${id}-e` : ''].filter((x) => x !== '').join(' ');
+  const input = {
+    id,
+    className: mono ? 'mono' : undefined,
+    value,
+    placeholder,
+    autoComplete: autoComplete ?? 'off',
+    spellCheck: false,
+    disabled,
+    readOnly: readOnly ?? onChange === undefined,
+    inputMode,
+    required,
+    min,
+    max,
+    step,
+    pattern,
+    maxLength,
+    'aria-invalid': error ? true : undefined,
+    'aria-describedby': described || undefined,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => onChange?.(event.target.value),
+  };
   return (
     <div className="field" data-invalid={error ? true : undefined}>
       <label htmlFor={id}>{label}</label>
@@ -107,27 +128,7 @@ export function TextBox({
         </span>
       ) : null}
       <div className={suffix ? 'with-suffix' : 'contents'}>
-        <input
-          id={id}
-          className={mono ? 'mono' : undefined}
-          type={type}
-          value={value}
-          placeholder={placeholder}
-          autoComplete={autoComplete ?? 'off'}
-          spellCheck={false}
-          disabled={disabled}
-          readOnly={readOnly ?? onChange === undefined}
-          inputMode={inputMode}
-          required={required}
-          min={min}
-          max={max}
-          step={step}
-          pattern={pattern}
-          maxLength={maxLength}
-          aria-invalid={error ? true : undefined}
-          aria-describedby={described || undefined}
-          onChange={(event) => onChange?.(event.target.value)}
-        />
+        {type === 'password' ? <PasswordInput {...input} /> : <input type={type} {...input} />}
         {suffix ? <span className="unit">{suffix}</span> : null}
       </div>
       {error ? (

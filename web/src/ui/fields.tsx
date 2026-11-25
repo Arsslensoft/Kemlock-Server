@@ -22,6 +22,7 @@ import {
 } from 'react-hook-form';
 import { type MessageId, useT } from '@/i18n';
 import { Icon } from './Icon';
+import { PasswordInput } from './PasswordInput';
 
 interface FieldProps<T extends FieldValues> {
   control: Control<T>;
@@ -83,6 +84,9 @@ export function Field<T extends FieldValues>({
       autoCorrect="off"
       autoCapitalize="off"
     />
+  ) : type === 'password' ? (
+    // The eye is inside the box, here and in every other password field (PasswordInput).
+    <PasswordInput ref={field.ref} placeholder={placeholder} spellCheck={false} />
   ) : (
     <Input ref={field.ref} placeholder={placeholder} spellCheck={false} />
   );

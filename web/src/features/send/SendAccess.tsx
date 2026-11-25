@@ -10,6 +10,7 @@ import { copyText } from '@/lib/clipboard';
 import { Button } from '@/ui/Button';
 import { Icon, Wordmark } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
+import { PasswordInput } from '@/ui/PasswordInput';
 import '@/styles/about.css';
 import { kindLabel } from '@/features/vault/kinds';
 import { formatSize } from './Send';
@@ -127,9 +128,8 @@ export function SendAccessView({
           </div>
           <div className="field">
             <label htmlFor="send-access-password">{t('sendAccess.password.label')}</label>
-            <input
+            <PasswordInput
               id="send-access-password"
-              type="password"
               autoComplete="off"
               autoFocus
               value={password}
