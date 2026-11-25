@@ -154,9 +154,10 @@ export function pendingEntries(entries: readonly AttachmentEntry[]): AttachmentE
  */
 export function copiedEntries(entries: readonly AttachmentEntry[], sourceId: string): AttachmentEntry[] {
   return entries.map((entry) => {
-    if (entry.kemlockFile === undefined) return entry;
-    const { kemlockFile, ...rest } = entry;
-    return { ...rest, copyOf: { itemId: sourceId, fileId: kemlockFile } };
+    const fileId = entry.kemlockFile;
+    if (fileId === undefined) return entry;
+    const { kemlockFile: _held, ...rest } = entry;
+    return { ...rest, copyOf: { itemId: sourceId, fileId } };
   });
 }
 
