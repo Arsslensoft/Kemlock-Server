@@ -9,6 +9,15 @@ const params = (extra: Record<string, unknown> = {}) => {
   return p;
 };
 
+const b32 = (text: string) => {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const byte of new TextEncoder().encode(text)) bits += byte.toString(2).padStart(8, '0');
+  let out = '';
+  for (let i = 0; i < bits.length; i += 5) out += alphabet[Number.parseInt(bits.slice(i, i + 5).padEnd(5, '0'), 2)];
+  return out;
+};
+
 describe('one-time codes', () => {
   it('decodes base32', () => {
     expect(new TextDecoder().decode(base32Decode(SECRET))).toBe('12345678901234567890');
@@ -25,6 +34,16 @@ describe('one-time codes', () => {
   it('matches the RFC 6238 time vectors', async () => {
     expect(await codeAt(params({ digits: 8 }), 59_000)).toBe('94287082');
     expect(await codeAt(params({ digits: 8 }), 1_111_111_109_000)).toBe('07081804');
+  });
+
+  it('matches the RFC 6238 SHA-256 and SHA-512 vectors', async () => {
+    const sha256 = params({ secret: b32('12345678901234567890123456789012'), algorithm: 'SHA256', digits: 8 });
+    expect(await codeAt(sha256, 59_000)).toBe('46119246');
+    expect(await codeAt(sha256, 1_111_111_109_000)).toBe('68084774');
+    const key512 = '1234567890123456789012345678901234567890123456789012345678901234';
+    const sha512 = params({ secret: b32(key512), algorithm: 'SHA512', digits: 8 });
+    expect(await codeAt(sha512, 59_000)).toBe('90693936');
+    expect(await codeAt(sha512, 1_111_111_109_000)).toBe('25091201');
   });
 
   it('shows the code of the stored counter for a counter code', async () => {
