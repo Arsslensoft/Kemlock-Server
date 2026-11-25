@@ -8,7 +8,6 @@
 // A body names a file by `kemlockFile` (what the Kemlock app writes) or `fileId`, in `file` for a
 // File item and in each entry of `attachments` for a note. An entry that was never uploaded has
 // neither and is left as it is. No React in here: it is tested with a fake files client.
-import type { ItemFiles } from '@/api/itemFiles';
 import type { ItemData } from './vault';
 
 const KEYS = ['kemlockFile', 'fileId'] as const;
