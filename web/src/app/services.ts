@@ -14,6 +14,17 @@ window.addEventListener('pageshow', (event) => {
   if (event.persisted) session.returned();
 });
 
+let sessionEndedHandler: (() => void) | undefined;
+
+/**
+ * Called after the session has ended because the server refused the refresh token. The router is
+ * made in main.tsx, which services.ts must not import, so main.tsx registers what the page does:
+ * forget the decrypted data and go to the sign-in.
+ */
+export function onSessionEndedPage(handler: () => void): void {
+  sessionEndedHandler = handler;
+}
+
 export const api = createApi({
   origin: window.location.origin,
   tokens: session.tokenStore,
@@ -21,6 +32,7 @@ export const api = createApi({
   onSessionEnded: () => {
     session.end();
     void vaultCrypto.lock();
+    sessionEndedHandler?.();
   },
 });
 
