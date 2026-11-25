@@ -106,6 +106,11 @@ describe('LoginForm', () => {
     fireEvent.change(screen.getByLabelText('Length 20'), { target: { value: '32' } });
     expect(screen.getByText('Length 32')).toBeInTheDocument();
     for (const option of ['A to Z', 'a to z', '!@#$%^&*']) await user.click(screen.getByLabelText(option));
+    // The last kind of character left can't be turned off.
+    expect(screen.getByLabelText('0 to 9')).toBeDisabled();
+    expect(screen.getByLabelText('0 to 9')).toBeChecked();
+    await user.click(screen.getByLabelText('0 to 9'));
+    expect(screen.getByLabelText('0 to 9')).toBeChecked();
     await user.click(screen.getByRole('button', { name: 'Generate' }));
     const made = (screen.getByLabelText('Password') as HTMLInputElement).value;
     expect(made).toMatch(/^[2-9]{32}$/);
@@ -176,8 +181,26 @@ describe('loginFields', () => {
     const websites = [{ ...defaults.websites[0]!, uri: 'https://c.example' }, defaults.websites[1]!];
     const fields = loginFields({ ...defaults, websites, notes: '' }, existing);
     expect(fields['urls']).toEqual(['https://c.example', 'https://b.example']);
+    // The login was kept as urls alone and its websites are still on the default rule: no uris.
+    expect('uris' in fields).toBe(false);
+    expect(fields['websites']).toBeUndefined();
     expect(fields['notes']).toBeUndefined();
     expect('passwordHistory' in fields).toBe(false);
+  });
+
+  it('writes uris once a website has a rule of its own, and websites when the body had them', () => {
+    const plain = login({ name: 'P', urls: ['https://a.example'], websites: ['a.example'] });
+    const kept = loginFields(loginDefaults(plain), plain);
+    expect(kept['urls']).toEqual(['https://a.example']);
+    expect(kept['websites']).toEqual(['a.example']);
+    expect('uris' in kept).toBe(false);
+
+    const defaults = loginDefaults(plain);
+    const withRule = loginFields({ ...defaults, websites: [{ ...defaults.websites[0]!, match: 'host' }] }, plain);
+    expect(withRule['uris']).toEqual([{ uri: 'https://a.example', match: 1 }]);
+
+    const ruled = login({ name: 'R', uris: [{ uri: 'https://a.example' }] });
+    expect(loginFields(loginDefaults(ruled), ruled)['uris']).toEqual([{ uri: 'https://a.example' }]);
   });
 
   it('writes no fields and no links member for an item that has none, so it stays as it was', () => {
