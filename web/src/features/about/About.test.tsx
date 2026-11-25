@@ -94,6 +94,25 @@ describe('the about page', () => {
     expect(router.back).toHaveBeenCalledOnce();
   });
 
+  it('leaves a modified or middle click alone, so the link opens where the person asked', () => {
+    router.canGoBack = true;
+    router.back.mockClear();
+    renderWithIntl(<AboutView config={config} />);
+    const link = screen.getByRole('link', { name: 'Back' });
+    const seen: boolean[] = [];
+    const stop = (event: Event) => {
+      seen.push(event.defaultPrevented);
+      event.preventDefault();
+    };
+    document.addEventListener('click', stop);
+    for (const init of [{ ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+      fireEvent.click(link, init);
+    }
+    document.removeEventListener('click', stop);
+    expect(seen).toEqual([false, false, false, false, false]);
+    expect(router.back).not.toHaveBeenCalled();
+  });
+
   it('leads home when About was opened on its own', () => {
     router.canGoBack = false;
     router.back.mockClear();

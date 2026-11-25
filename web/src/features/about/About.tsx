@@ -30,7 +30,10 @@ function BackLink() {
     <Link
       to="/"
       onClick={(event) => {
-        if (!canGoBack) return;
+        // A new tab, a new window or a middle click keeps the link's own address.
+        if (!canGoBack || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+          return;
+        }
         event.preventDefault();
         router.history.back();
       }}
