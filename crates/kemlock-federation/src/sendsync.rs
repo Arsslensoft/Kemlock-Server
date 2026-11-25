@@ -352,6 +352,9 @@ impl<S: FedStore> Replica<S> {
                 let dropped = self.store.drop_replicated_send(id).await?;
                 if let Some(blob) = dropped
                     && let Some(files) = &self.files
+                    // Only a file no other row holds: a copy never deletes what it doesn't own.
+                    && self.store.send_of_blob(blob).await?.is_none()
+                    && self.store.attachment_of_blob(blob).await?.is_none()
                     && let Err(e) = files.delete(blob).await
                 {
                     tracing::info!(error = %e, "a deleted Send's file stayed in storage");
@@ -372,6 +375,17 @@ impl<S: FedStore> Replica<S> {
     ) -> Result<bool> {
         if let Some(file) = entry.file {
             if file.size > MAX_FETCH {
+                report.skipped += 1;
+                return Ok(false);
+            }
+            // A copy owns its file alone. A blob another Send or an attachment already holds is
+            // not taken: writing it would overwrite that file, and deleting the copy later
+            // would delete it.
+            let other_send = self.store.send_of_blob(file.blob).await?;
+            let held_elsewhere = other_send.is_some_and(|other| other.id != entry.id)
+                || self.store.attachment_of_blob(file.blob).await?.is_some();
+            if held_elsewhere {
+                tracing::info!(%peer, send = %entry.id, "a Send names a file another row holds");
                 report.skipped += 1;
                 return Ok(false);
             }
@@ -918,5 +932,44 @@ mod tests {
         let report = t.sync().await.expect("sync");
         assert_eq!((report.skipped, report.removed), (1, 1));
         assert!(t.b.store.send(gone.id).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_send_naming_a_file_another_row_holds_is_refused_and_that_file_is_left_alone() {
+        let t = pair().await;
+        // The replica holds a Send of its own, with a file.
+        let own = t.send(Some((300, SendFileFormat::Kma1)));
+        let blob = own.file.expect("file").blob;
+        t.b.store.put_send(own.clone());
+        t.b_files.put(blob, vec![7; 300]);
+
+        // The home's Send names the same blob, as a hostile or broken home could.
+        let mut stolen = t.send(Some((300, SendFileFormat::Kma1)));
+        stolen.file = stolen.file.map(|f| SendFile { blob, ..f });
+        t.a.store.put_send(stolen.clone());
+        t.a_files.put(blob, vec![9; 300]);
+
+        let report = t.sync().await.expect("sync");
+        assert_eq!((report.rows, report.skipped), (0, 1));
+        assert!(t.b.store.send(stolen.id).is_none());
+        assert_eq!(t.b_files.get(blob), Some(vec![7; 300]), "not overwritten");
+        assert!(t.b.store.send(own.id).is_some());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_copy_leaves_a_file_another_row_holds() {
+        let t = pair().await;
+        let copied = t.file_send(200, SendFileFormat::Kma1);
+        t.sync().await.expect("sync");
+        let blob = copied.file.expect("file").blob;
+        // Another Send here comes to name the same blob (a row from before the check).
+        let mut other = t.send(Some((200, SendFileFormat::Kma1)));
+        other.file = other.file.map(|f| SendFile { blob, ..f });
+        t.b.store.put_send(other.clone());
+
+        t.a.store.remove_send(copied.id);
+        let report = t.sync().await.expect("sync");
+        assert_eq!(report.removed, 1);
+        assert!(t.b_files.get(blob).is_some(), "the other row's file stays");
     }
 }
