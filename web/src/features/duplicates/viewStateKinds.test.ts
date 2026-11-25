@@ -11,6 +11,28 @@ function memory(initial?: string) {
   };
 }
 
+describe('the duplicates view on lock', () => {
+  it('is forgotten: the next load starts at All with nothing selected', () => {
+    const storage = memory();
+    const store = createViewStore(storage);
+    store.save({ filter: 'card', selectedId: 'g1' });
+    store.reset();
+    expect(createViewStore(storage).load()).toEqual({ filter: 'all', selectedId: undefined });
+  });
+
+  it('works with storage that throws', () => {
+    const blocked = {
+      getItem: () => {
+        throw new Error('blocked');
+      },
+      setItem: () => {
+        throw new Error('blocked');
+      },
+    };
+    expect(() => createViewStore(blocked).reset()).not.toThrow();
+  });
+});
+
 describe('the duplicates filters', () => {
   it('are All, every item type in the design\'s order, then "In two places"', () => {
     expect([...DUPLICATE_FILTERS]).toEqual(['all', ...KIND_ORDER, 'places']);

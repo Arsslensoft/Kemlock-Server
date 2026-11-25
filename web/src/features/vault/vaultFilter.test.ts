@@ -52,6 +52,21 @@ describe('the Vault filter of each page', () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
+  it('forgets every page on reset, and tells the listeners', () => {
+    const storage = memory();
+    const store = createVaultFilterStore(storage);
+    store.set('items', 'personal');
+    store.set('trash', 'family-id');
+    const listener = vi.fn();
+    store.subscribe(listener);
+    store.reset();
+    expect(store.get('items')).toBe('all');
+    expect(store.get('trash')).toBe('all');
+    expect(listener).toHaveBeenCalledTimes(1);
+    // Nor does a fresh store of the same tab find them again.
+    expect(createVaultFilterStore(storage).get('items')).toBe('all');
+  });
+
   it('ignores damaged text and values it does not know', () => {
     expect(createVaultFilterStore(memory('{not json')).get('items')).toBe('all');
     expect(createVaultFilterStore(memory('{"items":3,"nowhere":"x"}')).get('items')).toBe('all');
