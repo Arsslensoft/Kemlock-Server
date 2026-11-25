@@ -40,6 +40,16 @@ A server holds at most 100 definitions.
 items stay either way. Deleting a definition deletes no value: the server can't open an item, so an
 item keeps what it holds, and how an app shows a value whose definition is gone is the app's.
 
+### What the server can't enforce
+
+- **`allowOwn` is advisory.** The server can't open an item, so it can't see a field a person added
+  of their own, and it refuses nothing: an app (or a modified one) can still write one. The apps
+  read the switch and hide "Your own field" while it is off; that is the whole of it.
+- **Federated peers don't get the definitions.** A definition is this server's own setting and is
+  not part of what federation copies. A replicated item that carries an admin field reaches the
+  other server inside the item, and there, with no definition for it, the field shows as the
+  person's own.
+
 ### What the console writes
 
 All under `/admin/v1`, admins only, every write with a step-up token and recorded in the event log
@@ -68,3 +78,5 @@ the other devices can only take one away.
 - `DELETE /kem/v1/devices/key-copy` is the same for the signed-in device itself, as before.
 - Trust is for Kemlock apps only. Amethystora Vault and Bitwarden apps hold no copy, and the web
   vault offers them Sign out alone.
+- The web vault lists Trust this device in the menu of a Kemlock app that is not trusted yet, but
+  off, with the note "Only that device can turn this on: open Kemlock on it."
