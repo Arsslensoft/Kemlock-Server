@@ -10,7 +10,8 @@ use common::*;
 use kemlock_api_kem::testing::DpopSigner;
 use kemlock_app::b64url;
 use kemlock_app::federation_view::{
-    BoxFut, FederationView, ServerEntry, ServerRole, SharedView, SiblingSet, VaultServers,
+    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ServerEntry, ServerRole,
+    SharedView, SiblingSet, VaultServers, WaitingChanges,
 };
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{
@@ -32,6 +33,13 @@ struct FakeView {
     resolved: Mutex<Vec<(Owner, ItemId)>>,
     /// Makes `resolve_siblings` fail the way the store does for a head already sent to a peer.
     refuse_resolve: bool,
+    /// What the probes found of each server.
+    health: Mutex<HashMap<ServerId, PeerHealthView>>,
+    /// The changes waiting for other servers, per vault.
+    waiting: Mutex<HashMap<Owner, Vec<WaitingChanges>>>,
+    /// What cancelling answers (`Unknown` when unset), and what was asked.
+    cancel_outcome: Mutex<Option<CancelOutcome>>,
+    cancelled: Mutex<Vec<(Owner, ServerId, UserId)>>,
 }
 
 impl FederationView for FakeView {
@@ -74,6 +82,47 @@ impl FederationView for FakeView {
 
     fn is_replica_account(&self, user: UserId) -> BoxFut<'_, Result<bool, StoreError>> {
         Box::pin(async move { Ok(self.replica_accounts.lock().expect("lock").contains(&user)) })
+    }
+
+    fn peer_health(&self, server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .health
+                .lock()
+                .expect("lock")
+                .get(&server)
+                .cloned()
+                .unwrap_or_else(PeerHealthView::unknown))
+        })
+    }
+
+    fn waiting_changes(&self, vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
+        Box::pin(async move {
+            Ok(self
+                .waiting
+                .lock()
+                .expect("lock")
+                .get(&vault)
+                .cloned()
+                .unwrap_or_default())
+        })
+    }
+
+    fn cancel_waiting(
+        &self,
+        vault: Owner,
+        peer: ServerId,
+        by: UserId,
+    ) -> BoxFut<'_, Result<CancelOutcome, StoreError>> {
+        Box::pin(async move {
+            self.cancelled.lock().expect("lock").push((vault, peer, by));
+            Ok(self
+                .cancel_outcome
+                .lock()
+                .expect("lock")
+                .clone()
+                .unwrap_or(CancelOutcome::Unknown))
+        })
     }
 }
 
@@ -612,18 +661,140 @@ async fn placement_is_not_found_without_federation_or_for_a_vault_that_is_not_fe
         .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
 
-    // It needs a signed-in account, and a waiting change is never there to cancel.
+    // It needs a signed-in account, and a view with nothing waiting has nothing to cancel.
     let anonymous = client.get("/kem/v1/placement").await;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
-    let cancel = client
+    let cancel = cancel_request(&client, &session, "me", &ServerId::random().0.to_string()).await;
+    assert_eq!(cancel.status, StatusCode::NOT_FOUND);
+}
+
+async fn cancel_request(client: &Client, session: &Session, vault: &str, change: &str) -> Reply {
+    client
         .send(
             "DELETE",
-            "/kem/v1/placement/me/pending/c1",
+            &format!("/kem/v1/placement/{vault}/pending/{change}"),
             Req {
                 access_token: Some(&session.access_token),
                 ..Req::default()
             },
         )
-        .await;
-    assert_eq!(cancel.status, StatusCode::NOT_FOUND);
+        .await
+}
+
+#[tokio::test]
+async fn placement_says_which_server_is_down_and_what_waits_for_it() {
+    let view = Arc::new(FakeView::default());
+    let (_app, client) = with_view(view.clone());
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let owner = owner_of(&session);
+    let mut servers = servers_of(owner, 1, None);
+    servers.servers[1].address = format!("{DOMAIN}/");
+    let (home, replica) = (servers.servers[0].server, servers.servers[1].server);
+    view.late_vaults
+        .lock()
+        .expect("lock")
+        .insert(owner, servers);
+    view.health.lock().expect("lock").insert(
+        home,
+        PeerHealthView {
+            status: PeerStatus::Offline,
+            last_seen: Some(1_800_000_000),
+            latency_ms: Some(80),
+            last_error: Some("refused: 10.0.0.7".to_owned()),
+            offline_since: Some(1_800_000_300),
+        },
+    );
+    view.waiting.lock().expect("lock").insert(
+        owner,
+        vec![WaitingChanges {
+            peer: home,
+            changes: 3,
+            at_least: false,
+            oldest_at: Some(1_800_000_100),
+        }],
+    );
+
+    let json = client
+        .get_authed("/kem/v1/placement", &session.access_token)
+        .await
+        .json();
+    let vault = &json["vaults"][0];
+    let down = &vault["servers"][0];
+    assert_eq!(down["status"], "offline");
+    assert_eq!(down["offlineSince"], "2027-01-15T08:05:00Z");
+    assert_eq!(down["lastSeen"], "2027-01-15T08:00:00Z");
+    assert_eq!(down["latencyMs"], 80);
+    // A peer's error text is the operator's business, not the account's.
+    assert!(!json.to_string().contains("10.0.0.7"));
+    // The server answering is online without a probe.
+    assert_eq!(vault["servers"][1]["status"], "online");
+    assert_eq!(vault["servers"][1]["id"], replica.0.to_string());
+    assert_eq!(vault["pending"]["id"], home.0.to_string());
+    assert_eq!(vault["pending"]["summary"], "3 changes waiting for nas.example.org");
+    assert_eq!(vault["pending"]["askedAt"], "2027-01-15T08:01:40Z");
+
+    // A slow server is degraded, and says nothing of when it went down.
+    view.health.lock().expect("lock").insert(
+        home,
+        PeerHealthView {
+            status: PeerStatus::Degraded,
+            last_seen: Some(1_800_000_000),
+            latency_ms: Some(4_000),
+            last_error: None,
+            offline_since: None,
+        },
+    );
+    let json = client
+        .get_authed("/kem/v1/placement", &session.access_token)
+        .await
+        .json();
+    assert_eq!(json["vaults"][0]["servers"][0]["status"], "degraded");
+    assert!(json["vaults"][0]["servers"][0]["offlineSince"].is_null());
+}
+
+#[tokio::test]
+async fn cancelling_waiting_changes_asks_the_view_and_maps_its_answer() {
+    let view = Arc::new(FakeView::default());
+    let (_app, client) = with_view(view.clone());
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let owner = owner_of(&session);
+    let peer = ServerId::random();
+    let id = peer.0.to_string();
+
+    let outcome = |o: CancelOutcome| *view.cancel_outcome.lock().expect("lock") = Some(o);
+    outcome(CancelOutcome::Cancelled { dropped: 3 });
+    let done = cancel_request(&client, &session, "me", &id).await;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.json());
+    assert_eq!(done.json()["dropped"], 3);
+    let asked = view.cancelled.lock().expect("lock").clone();
+    assert_eq!(asked.len(), 1);
+    assert_eq!((asked[0].0, asked[0].1), (owner, peer));
+
+    outcome(CancelOutcome::NotOffline);
+    let answering = cancel_request(&client, &session, "me", &id).await;
+    assert_eq!(answering.status, StatusCode::CONFLICT);
+
+    for nothing in [CancelOutcome::NothingWaiting, CancelOutcome::Unknown] {
+        outcome(nothing);
+        let reply = cancel_request(&client, &session, "me", &id).await;
+        assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    }
+
+    // What is not a server id or a vault is a bad request, and nothing was asked of the view.
+    let before = view.cancelled.lock().expect("lock").len();
+    assert_eq!(
+        cancel_request(&client, &session, "me", "c1").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        cancel_request(&client, &session, "family", &id).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    // A space the account is not in is not found, not forbidden.
+    let stranger = kemlock_domain::SpaceId::random().to_string();
+    assert_eq!(
+        cancel_request(&client, &session, &stranger, &id).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(view.cancelled.lock().expect("lock").len(), before);
 }
