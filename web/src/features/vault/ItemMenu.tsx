@@ -3,9 +3,9 @@
 // holds. React Aria's menu gives it the keyboard (arrows,
 // typeahead, Escape closing it with focus back on the button) and the menu roles.
 //
-// A choice is acted on once the menu has closed and focus is back on the button, so a dialog that
-// opens from it takes focus from there and gives it back when it closes.
-import { useRef } from 'react';
+// A choice is acted on once the menu has closed, with focus put back on the button first, so a
+// dialog that opens from it remembers the button and gives focus back to it when it closes.
+import { useId, useRef } from 'react';
 import { Menu, MenuItem, MenuTrigger, Popover, Separator, Text } from 'react-aria-components';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -33,6 +33,7 @@ export function ItemMenu({
 }) {
   const t = useT();
   const picked = useRef<ItemAction | null>(null);
+  const triggerId = useId();
 
   function item(id: ItemAction, icon: IconName, label: string) {
     return (
@@ -49,11 +50,15 @@ export function ItemMenu({
         const action = picked.current;
         if (open || action === null) return;
         picked.current = null;
-        // After the menu has unmounted and given focus back to its button.
-        window.setTimeout(() => onAction(action), 0);
+        // After the menu has unmounted: focus goes to the button now, not on a later frame, so
+        // whatever the action opens finds it there.
+        window.setTimeout(() => {
+          document.getElementById(triggerId)?.focus();
+          onAction(action);
+        }, 0);
       }}
     >
-      <Button className="im-trigger" aria-label={t('detail.menu.label', { name })}>
+      <Button id={triggerId} className="im-trigger" aria-label={t('detail.menu.label', { name })}>
         <Icon name="more" />
       </Button>
       <Popover placement="bottom end" className="im-popover">

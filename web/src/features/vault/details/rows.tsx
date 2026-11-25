@@ -38,6 +38,7 @@ export function Row({
   /** Shown after the label, such as the Admin tag. */
   tag?: ReactNode;
 }) {
+  const t = useT();
   return (
     <div className="row">
       <div className="grow">
@@ -47,7 +48,13 @@ export function Row({
         </div>
         {children}
       </div>
-      {copy ? <CopyButton value={copy} label={copyLabel ?? label} secret={secret ?? false} /> : null}
+      {copy ? (
+        <CopyButton
+          value={copy}
+          label={copyLabel ?? t('detail.copy', { field: label.toLowerCase() })}
+          secret={secret ?? false}
+        />
+      ) : null}
     </div>
   );
 }
