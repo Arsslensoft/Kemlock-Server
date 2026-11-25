@@ -60,7 +60,8 @@ describe('openKma1', () => {
   });
 
   it('refuses reordered chunks', async () => {
-    const [first, second] = [twoChunks.slice(12, 12 + 65552), twoChunks.slice(12 + 65552)];
+    const first = twoChunks.slice(12, 12 + 65552);
+    const second = twoChunks.slice(12 + 65552);
     const swapped = new Uint8Array(twoChunks.length);
     swapped.set(twoChunks.slice(0, 12));
     swapped.set(second, 12);
