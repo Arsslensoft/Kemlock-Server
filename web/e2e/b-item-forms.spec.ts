@@ -94,7 +94,7 @@ test('every kind of item has its own form', async ({ page }) => {
     mimeType: 'text/plain',
     buffer: Buffer.from('4f2a-91c0\n7b3e-0d58\n'),
   });
-  await expect(page.getByText(/TXT · 20 B · ready to encrypt and upload/)).toBeVisible();
+  await expect(page.getByText(/Text · 20 B · ready to encrypt and upload/)).toBeVisible();
   const sent = page.waitForResponse(
     (response) => response.request().method() === 'PUT' && /\/kem\/v1\/items\/[^/]+\/files\//.test(response.url()),
   );
