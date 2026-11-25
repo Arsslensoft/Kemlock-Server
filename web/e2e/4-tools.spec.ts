@@ -72,7 +72,8 @@ test('two logins that hold the same values merge into one, and can be unmerged',
   // The kept login holds both websites, each with its own rule: ItemWebsites.
   await page.getByRole('link', { name: 'All items' }).first().click();
   await page.getByRole('row', { name: /Tools (One|Two)/ }).getByRole('link').first().click();
-  await page.getByRole('link', { name: 'Websites and rules' }).click();
+  await page.getByRole('button', { name: /^More actions for Tools (One|Two)$/ }).click();
+  await page.getByRole('menuitem', { name: 'Websites and rules' }).click();
   await expect(page.getByRole('heading', { name: /^Websites of Tools (One|Two)$/, level: 1 })).toBeVisible();
   await expect(page.getByLabel('Website 1', { exact: true })).toHaveValue(/tools-journey\.example/);
   await expect(page.getByLabel('Website 2', { exact: true })).toHaveValue(/tools-journey\.example/);
