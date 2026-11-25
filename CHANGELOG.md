@@ -25,6 +25,11 @@ merged changes by their commit titles. This file keeps the summary that people r
 - A device registers a push token of kind `apns` or `unifiedpush`. `fcm` is no longer accepted (a
   400), and nothing is sent to old `fcm` tokens: Kemlock uses no Firebase.
 - `GET /admin/v1/push-relay` also answers `apnsConfigured`, `apnsSandbox` and `unifiedPush`.
+- UnifiedPush endpoints must be `https` on port 443 or 8443, an account may register 20 of them, and
+  `KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE=true` lets the server push to endpoints on a private network
+  (a ntfy on your LAN).
+- Upgrade all replicas together. A replica still on the previous binary errors on the `unifiedpush`
+  push-token rows the new one stores.
 
 ## [0.1.2] - 2026-11-25
 
