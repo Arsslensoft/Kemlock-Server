@@ -715,6 +715,63 @@ mod tests {
             .expect("the settings are read")
     }
 
+    #[tokio::test]
+    async fn backup_settings_follow_the_snapshot_with_the_environment_first_and_a_saved_folder_joined() {
+        use kemlock_backup::{DestinationConfig, Schedule};
+        let dir = tempfile::tempdir().expect("a folder");
+        let root = dir.path().canonicalize().expect("resolves");
+        let store = new_store().await;
+        save(
+            &store,
+            &[
+                ("backup_schedule", "6h"),
+                ("backup_keep", "14"),
+                ("backup_destination", "nas/b"),
+                ("backup_recipient", "age1abc"),
+            ],
+        )
+        .await;
+        let saved = watching(&store, layered(&[], &[])).await;
+        let s = crate::backups::settings_from_snapshot(&saved.current(), &|_| None, &root)
+            .expect("valid");
+        assert_eq!(s.schedule, Schedule::EverySixHours);
+        assert_eq!(s.keep, 14);
+        assert_eq!(s.recipient, "age1abc");
+        assert_eq!(
+            s.destination,
+            DestinationConfig::Local {
+                folder: root.join("nas").join("b")
+            }
+        );
+        // The environment wins, and its folder is taken as written.
+        let env = watching(
+            &store,
+            layered(
+                &[
+                    ("KEMLOCK_BACKUP_SCHEDULE", "nightly"),
+                    ("KEMLOCK_BACKUP_DEST", "/mnt/elsewhere"),
+                ],
+                &[],
+            ),
+        )
+        .await;
+        let s = crate::backups::settings_from_snapshot(&env.current(), &|_| None, &root)
+            .expect("valid");
+        assert_eq!(s.schedule, Schedule::Nightly);
+        assert_eq!(
+            s.destination,
+            DestinationConfig::Local {
+                folder: std::path::PathBuf::from("/mnt/elsewhere")
+            }
+        );
+        // A saved folder that leaves the data folder is refused when it is used.
+        save(&store, &[("backup_destination", "attachments")]).await;
+        let saved = watching(&store, layered(&[], &[])).await;
+        assert!(
+            crate::backups::settings_from_snapshot(&saved.current(), &|_| None, &root).is_err()
+        );
+    }
+
     #[test]
     fn the_environment_outranks_the_file_and_names_map_to_settings() {
         let env = layered(
