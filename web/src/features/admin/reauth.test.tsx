@@ -1,9 +1,10 @@
-import { screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/errors';
 import { PasskeyError } from '@/lib/passkey';
+import { I18nProvider } from '@/i18n';
 import { renderWithIntl } from '@/test/render';
 import { ReauthDialogView, currentGrant, forgetGrant, rememberGrant, useReauth } from './reauth';
 
@@ -37,6 +38,29 @@ describe('ReauthDialogView', () => {
       <ReauthDialogView isOpen error={{ id: 'error.credentials' }} onSubmit={vi.fn()} onCancel={vi.fn()} />,
     );
     expect(screen.getByRole('alert')).toHaveTextContent(/email or password is wrong/);
+  });
+});
+
+describe('forgetGrant', () => {
+  it('drops the held grant', () => {
+    rememberGrant('G', 300);
+    forgetGrant();
+    expect(currentGrant(100_000)).toBeUndefined();
+  });
+});
+
+describe('ReauthDialogView reopened', () => {
+  it('opens empty, not with the code typed the last time', async () => {
+    const ui = (isOpen: boolean) => (
+      <I18nProvider>
+        <ReauthDialogView isOpen={isOpen} onSubmit={vi.fn()} onCancel={vi.fn()} />
+      </I18nProvider>
+    );
+    const { rerender } = render(ui(true));
+    await userEvent.setup().type(screen.getByLabelText('Code from your authenticator app'), '123456');
+    rerender(ui(false));
+    rerender(ui(true));
+    expect(screen.getByLabelText('Code from your authenticator app')).toHaveValue('');
   });
 });
 

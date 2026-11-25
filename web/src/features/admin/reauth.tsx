@@ -5,7 +5,7 @@
 // passkey route (`step-up/passkey/options` and `/finish`) is offered beside the code when the browser
 // has WebAuthn; the password route (`step-up/password/*`, two OPAQUE messages) is in the client but
 // not offered here.
-import { type ReactNode, useCallback, useRef, useState } from 'react';
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Dialog, Heading, Modal, ModalOverlay } from 'react-aria-components';
 import type { AdminApi } from '@/api/admin';
 import { isApiError } from '@/api/errors';
@@ -52,6 +52,10 @@ export function ReauthDialogView({
 }) {
   const t = useT();
   const [code, setCode] = useState('');
+  // The view stays mounted while closed, so each opening starts empty rather than with the last code.
+  useEffect(() => {
+    if (isOpen) setCode('');
+  }, [isOpen]);
   const valid = /^\d{6}$/.test(normaliseCode(code));
   return (
     <ModalOverlay
