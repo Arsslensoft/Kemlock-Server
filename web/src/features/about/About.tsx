@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Link } from '@tanstack/react-router';
+import { Link, useCanGoBack, useRouter } from '@tanstack/react-router';
 import type { ConfigResponse } from '@/api/types';
 import { configQuery } from '@/app/services';
 import { useT } from '@/i18n';
@@ -16,6 +16,29 @@ const SHORT_COMMIT = 12;
 const CONTRIBUTORS_URL = 'https://github.com/Arsslensoft/Kemlock-Server/graphs/contributors';
 
 const external = { target: '_blank', rel: 'noopener noreferrer' } as const;
+
+/**
+ * "Back" returns to the page the person came from (the admin console, Security, an item, the sign-in
+ * page), not to the vault. Only when About was opened on its own (a new tab, a typed address) is
+ * there nothing to go back to, and the link leads home.
+ */
+function BackLink() {
+  const t = useT();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
+  return (
+    <Link
+      to="/"
+      onClick={(event) => {
+        if (!canGoBack) return;
+        event.preventDefault();
+        router.history.back();
+      }}
+    >
+      {t('about.back')}
+    </Link>
+  );
+}
 
 /** What the page says: the licence, where the source of this version is, and who this is not. */
 export function AboutView({ config }: { config: AboutConfig | undefined }) {
@@ -82,7 +105,7 @@ export function AboutView({ config }: { config: AboutConfig | undefined }) {
         </p>
       )}
       <p className="hint">{t('about.notAffiliated')}</p>
-      <Link to="/">{t('about.back')}</Link>
+      <BackLink />
     </AuthPage>
   );
 }

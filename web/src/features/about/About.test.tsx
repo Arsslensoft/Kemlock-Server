@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
@@ -9,9 +9,24 @@ vi.mock('@/app/services', () => ({ configQuery: { queryKey: ['config'], queryFn:
 vi.mock('@/ui/AuthPage', () => ({
   AuthPage: ({ children }: { children: ReactNode }) => <main>{children}</main>,
 }));
+const router = vi.hoisted(() => ({ canGoBack: false, back: vi.fn() }));
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+  Link: ({
+    children,
+    to,
+    onClick,
+  }: {
+    children: ReactNode;
+    to: string;
+    onClick?: (event: { preventDefault: () => void }) => void;
+  }) => (
+    <a href={to} onClick={onClick}>
+      {children}
+    </a>
+  ),
+  useCanGoBack: () => router.canGoBack,
+  useRouter: () => ({ history: { back: router.back } }),
 }));
 
 const config: AboutConfig = {
@@ -68,5 +83,33 @@ describe('the about page', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('status')).toBeInTheDocument();
+  });
+
+  it('goes back to the page the person came from', () => {
+    router.canGoBack = true;
+    router.back.mockClear();
+    renderWithIntl(<AboutView config={config} />);
+    // fireEvent returns false when a handler cancelled the link's own navigation to the vault.
+    expect(fireEvent.click(screen.getByRole('link', { name: 'Back' }))).toBe(false);
+    expect(router.back).toHaveBeenCalledOnce();
+  });
+
+  it('leads home when About was opened on its own', () => {
+    router.canGoBack = false;
+    router.back.mockClear();
+    renderWithIntl(<AboutView config={config} />);
+    const link = screen.getByRole('link', { name: 'Back' });
+    expect(link).toHaveAttribute('href', '/');
+    // Seen after the link's handler: it left the navigation alone. Then stop jsdom following it.
+    let cancelled: boolean | undefined;
+    const stop = (event: Event) => {
+      cancelled = event.defaultPrevented;
+      event.preventDefault();
+    };
+    document.addEventListener('click', stop);
+    fireEvent.click(link);
+    document.removeEventListener('click', stop);
+    expect(cancelled).toBe(false);
+    expect(router.back).not.toHaveBeenCalled();
   });
 });
