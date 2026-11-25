@@ -1875,7 +1875,8 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
   digits (Unicode alphabetic and numeric characters), so `X 1234-567` and `x1234567` are one
   value. A number of fewer than four letters and digits has no tag.
 - **content hash** (`file`): the SHA-256 of the file's plaintext, as 64 hex digits in lower case
-  (any case on input). A file item may hold it as `sha256`; a file without one has no tag.
+  (any case on input). A File item's `file` entry may hold it as `sha256`, beside its `name`,
+  `size` and `key`; a file without one has no tag.
 
 A login has one `cred` and one `account` tag per site, each site once; a login with no site has
 none. An identity has one `identity` tag and one `document` tag per document number, each number
