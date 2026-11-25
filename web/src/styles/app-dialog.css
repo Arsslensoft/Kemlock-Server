@@ -1,0 +1,24 @@
+/* The frame of the item page's dialogs: heading row with a close button, content, buttons. */
+.dialog.app-dialog {
+  max-width: 640px;
+  gap: 14px;
+}
+.app-dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.app-dialog-head h2 {
+  flex: 1;
+  min-width: 0;
+}
+.app-dialog-icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+.app-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}

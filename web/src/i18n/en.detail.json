@@ -64,5 +64,6 @@
   "detail.contact.checked": "Fingerprint you checked",
   "detail.contact.matches": "It matches this key.",
   "detail.contact.differs": "It does not match this key. Do not trust it.",
-  "detail.contact.public": "Public key"
+  "detail.contact.public": "Public key",
+  "detail.close": "Close"
 }
