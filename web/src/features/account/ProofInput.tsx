@@ -26,12 +26,15 @@ export function ProofInput({
   keyProof,
   busy = false,
   required = true,
+  label,
 }: {
   value: Proof;
   onChange: (next: Proof) => void;
   keyProof?: KeyProof | undefined;
   busy?: boolean;
   required?: boolean;
+  /** Replaces the default label of the code field. */
+  label?: string;
 }) {
   const t = useT();
   if (typeof value !== 'string') {
@@ -50,7 +53,7 @@ export function ProofInput({
   }
   return (
     <>
-      <TextInput label={t('security.proof.code')} value={value} onChange={onChange} mono required={required} />
+      <TextInput label={label ?? t('security.proof.code')} value={value} onChange={onChange} mono required={required} />
       {keyProof ? (
         <div className="actions">
           <Button
