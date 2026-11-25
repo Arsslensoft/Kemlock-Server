@@ -108,30 +108,24 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
                 onStart(request);
               }}
             >
-              <div className="adm-g2">
-                <div className="wide">
-                  <TextBox
-                    label={t('admin.migrate.from')}
-                    mono
-                    value={from}
-                    onChange={setFrom}
-                    placeholder="/srv/vaultwarden/data"
-                    hint={t('admin.migrate.pathHint')}
-                    error={checkSource(from)}
-                    required
-                  />
-                </div>
-                <div className="wide">
-                  <TextBox
-                    label={t('admin.migrate.files')}
-                    mono
-                    value={files}
-                    onChange={setFiles}
-                    placeholder="/srv/vaultwarden/data"
-                    hint={t('admin.migrate.filesHint')}
-                  />
-                </div>
-              </div>
+              <TextBox
+                label={t('admin.migrate.from')}
+                mono
+                value={from}
+                onChange={setFrom}
+                placeholder="/srv/vaultwarden/data"
+                hint={t('admin.migrate.pathHint')}
+                error={checkSource(from)}
+                required
+              />
+              <TextBox
+                label={t('admin.migrate.files')}
+                mono
+                value={files}
+                onChange={setFiles}
+                placeholder="/srv/vaultwarden/files"
+                hint={t('admin.migrate.filesHint')}
+              />
               <div className="actions">
                 <Button type="submit" variant="primary" isDisabled={starting || !ready}>
                   {t('admin.migrate.check')}
