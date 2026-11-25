@@ -17,6 +17,8 @@ use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::{Placement, ReadPlacement};
 use serde::Serialize;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use utoipa::{OpenApi, ToSchema};
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -30,10 +32,15 @@ pub(crate) struct PlacementServerDto {
     place: Option<String>,
     /// `home` or `replica`.
     role: &'static str,
-    /// `unknown`: this server has no liveness probe of its peers yet, so it never says online or
-    /// offline.
+    /// `online`, `degraded`, `offline` or `unknown` (not probed yet), from this server's probes of
+    /// the peer. This server itself is always `online`.
     status: &'static str,
+    /// When the peer started failing its probes, while it is `offline`.
     offline_since: Option<String>,
+    /// When the peer last answered.
+    last_seen: Option<String>,
+    /// How long its last answer took, in milliseconds.
+    latency_ms: Option<u64>,
     /// The apps of this vault are on it right now.
     in_use: bool,
 }
@@ -46,8 +53,20 @@ pub(crate) struct PlacementVaultDto {
     name: String,
     /// Home first, then the replicas in order.
     servers: Vec<PlacementServerDto>,
-    /// The server keeps no waiting changes per vault yet: always `null`.
-    pending: Option<serde_json::Value>,
+    /// Changes of this vault that haven't reached a server that holds it, the ones waiting for a
+    /// server that is down first; `null` when none wait.
+    pending: Option<PlacementPendingDto>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PlacementPendingDto {
+    /// The id of the server they wait for: what `DELETE .../pending/{change}` takes.
+    id: String,
+    /// What waits, in words.
+    summary: String,
+    /// When the oldest was written.
+    asked_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -69,6 +88,26 @@ pub(crate) struct PlacementDto {
     apps: Vec<PlacementAppDto>,
 }
 
+/// A time as the web vault reads it.
+fn iso(secs: u64) -> Option<String> {
+    OffsetDateTime::from_unix_timestamp(i64::try_from(secs).ok()?)
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
+}
+
+/// "3 changes waiting for vps.example.net", "100+ changes ...", "1 change ...".
+fn waiting_summary(changes: u64, at_least: bool, server: &str) -> String {
+    let count = if at_least {
+        format!("{changes}+ changes")
+    } else if changes == 1 {
+        "1 change".to_owned()
+    } else {
+        format!("{changes} changes")
+    };
+    format!("{count} waiting for {server}")
+}
+
 impl PlacementDto {
     fn from_app(placement: Placement) -> Self {
         PlacementDto {
@@ -86,12 +125,18 @@ impl PlacementDto {
                             name: server.name,
                             place: None,
                             role: server.role.as_str(),
-                            status: "unknown",
-                            offline_since: None,
+                            status: server.health.status.as_str(),
+                            offline_since: server.health.offline_since.and_then(iso),
+                            last_seen: server.health.last_seen.and_then(iso),
+                            latency_ms: server.health.latency_ms,
                             in_use: server.in_use,
                         })
                         .collect(),
-                    pending: None,
+                    pending: vault.pending.map(|p| PlacementPendingDto {
+                        id: p.peer.to_string(),
+                        summary: waiting_summary(p.changes, p.at_least, &p.peer_name),
+                        asked_at: p.oldest_at.and_then(iso),
+                    }),
                 })
                 .collect(),
             apps: placement
@@ -200,7 +245,13 @@ fn doc_cancel_pending() {}
 #[derive(Debug, OpenApi)]
 #[openapi(
     paths(doc_placement, doc_cancel_pending),
-    components(schemas(PlacementDto, PlacementVaultDto, PlacementServerDto, PlacementAppDto))
+    components(schemas(
+        PlacementDto,
+        PlacementVaultDto,
+        PlacementServerDto,
+        PlacementPendingDto,
+        PlacementAppDto
+    ))
 )]
 struct PlacementDoc;
 
