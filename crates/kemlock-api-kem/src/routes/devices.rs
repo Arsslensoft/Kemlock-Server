@@ -16,11 +16,12 @@ use crate::signlog::token_ids;
 use crate::state::{Api, Crypto, Store};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use kemlock_app::devices::{
     Answer, AnswerApproval, ApprovalRequestInput, DeviceSignIn, DevicesStore, KeyCopies,
     ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
+    UntrustDevice,
 };
 use kemlock_app::notices::Notices;
 use kemlock_app::ports::TokenSigner;
@@ -286,6 +287,15 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         }
     }
 
+    fn untrust_device(&self) -> UntrustDevice<S, S, P, S> {
+        UntrustDevice {
+            devices: self.store.clone(),
+            copies: self.store.clone(),
+            clock: self.crypto.clone(),
+            events: self.store.clone(),
+        }
+    }
+
     fn sign_out_device(&self) -> SignOutDevice<S, S, S, P, S> {
         SignOutDevice {
             devices: self.store.clone(),
@@ -472,6 +482,22 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         Ok(StatusCode::NO_CONTENT)
     }
 
+    /// `DELETE /kem/v1/devices/{id}/key-copy`: stop trusting one of the account's devices. Its
+    /// session goes on; only the copy of the root key goes.
+    pub(crate) async fn handle_device_untrust(
+        State(api): State<Self>,
+        authed: Authed,
+        Path(id): Path<String>,
+    ) -> Result<StatusCode, Problem> {
+        let device = id
+            .parse::<Uuid>()
+            .map_err(|_| Problem::bad_request("the device id isn't a UUID"))?;
+        api.untrust_device()
+            .execute(&authed.actor, DeviceId(device))
+            .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     /// `POST /kem/v1/devices/sign-out`: ends a device's session and deletes its key copy.
     pub(crate) async fn handle_device_sign_out(
         State(api): State<Self>,
@@ -524,6 +550,10 @@ where
             get(A::<S, P, K>::handle_key_copy_get)
                 .put(A::<S, P, K>::handle_key_copy_put)
                 .delete(A::<S, P, K>::handle_key_copy_delete),
+        )
+        .route(
+            "/kem/v1/devices/{id}/key-copy",
+            delete(A::<S, P, K>::handle_device_untrust),
         )
         .route(
             "/kem/v1/devices/sign-out",
@@ -633,6 +663,19 @@ fn doc_key_copy_get() {}
 fn doc_key_copy_delete() {}
 
 #[utoipa::path(
+    delete, path = "/kem/v1/devices/{id}/key-copy", tag = "trusted-device",
+    security(("dpop" = [])),
+    params(("id" = String, Path, description = "The device's id, from the device list")),
+    responses(
+        (status = 204, description = "That device's copy of the root key is gone; its session goes on"),
+        (status = 400, description = "The id isn't a UUID", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "No such device on this account", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_device_untrust() {}
+
+#[utoipa::path(
     post, path = "/kem/v1/devices/sign-out", tag = "trusted-device",
     security(("dpop" = [])),
     request_body = SignOutRequest,
@@ -657,6 +700,7 @@ fn doc_device_sign_out() {}
         doc_key_copy_put,
         doc_key_copy_get,
         doc_key_copy_delete,
+        doc_device_untrust,
         doc_device_sign_out
     ),
     components(schemas(
