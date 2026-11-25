@@ -13,7 +13,7 @@ mod signin;
 
 use kemlock_domain::UserId;
 
-pub use erase::{EraseAccount, Erasure, ErasureReport, Reauthenticate};
+pub use erase::{EraseAccount, Erasure, ErasureReport, OwnErasure, Reauthenticate};
 pub use export::{AccountExport, EXPORT_FORMAT, ExportAccount};
 pub use grace::ensure_not_pending;
 pub use incident::{

@@ -13,6 +13,7 @@ use super::ports::{
     AccountEraser, ErasedRows, ErasureFiles, PrivacyLog, PrivacySettings, SendEraser,
 };
 use crate::error::AppError;
+use crate::notices::BoxFuture;
 use crate::platform::{Platform, random_uuid};
 use crate::ports::{Clock, Event, PasswordAuth, SecretSeal, UserRepo};
 use crate::sealed::{LoginState, PURPOSE_LOGIN};
@@ -215,5 +216,29 @@ where
         if let Err(e) = self.log.record_event(event, None).await {
             tracing::warn!(action, error = %e, "couldn't record an event");
         }
+    }
+}
+
+/// Erases the account that asks, for a caller that doesn't know the store (the Bitwarden API's
+/// `DELETE /api/accounts`). Object safe; [`EraseAccount`] implements it, acting as
+/// [`Requester::Account`], so the grace period and the refusal for a space the account owns alone
+/// are the ones the web vault's deletion has.
+pub trait OwnErasure: Send + Sync {
+    /// Erases `user`, or schedules it. The caller has checked who is asking.
+    fn erase_own(&self, user: UserId) -> BoxFuture<'_, Result<Erasure, AppError>>;
+}
+
+impl<U, E, S, F, P, L, C> OwnErasure for EraseAccount<U, E, S, F, P, L, C>
+where
+    U: UserRepo,
+    E: AccountEraser,
+    S: SendEraser,
+    F: ErasureFiles,
+    P: PrivacySettings,
+    L: PrivacyLog,
+    C: Platform,
+{
+    fn erase_own(&self, user: UserId) -> BoxFuture<'_, Result<Erasure, AppError>> {
+        Box::pin(self.execute(user, Requester::Account))
     }
 }
