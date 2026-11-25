@@ -78,7 +78,7 @@ describe('field builders', () => {
       kind: 'contact',
       revision: 2,
       keyVersion: 1,
-      data: { name: 'Sam', public: 'OLDKEY', source: 'qr', checkedFingerprint: 'AB' },
+      data: { name: 'Sam', public: 'OLDKEY', source: 'wkd', sourceEmail: 'sam@example.org', checkedFingerprint: 'AB' },
       sizes: { ciphertext: 0, itemKey: 0 },
     };
     const values = { ...contactDefaults(existing), company: 'Example Co' };
@@ -87,12 +87,16 @@ describe('field builders', () => {
     expect(kept).toMatchObject({ company: 'Example Co' });
     expect('public' in kept).toBe(false);
     expect('source' in kept).toBe(false);
+    expect('sourceEmail' in kept).toBe(false);
     const replaced = contactFields({ ...values, armor: PUBLIC }, existing);
     expect(replaced).toMatchObject({ public: BODY, source: 'paste' });
     expect(replaced['checkedFingerprint']).toBeUndefined();
+    // The address the old key was found for is not the new key's.
+    expect('sourceEmail' in replaced && replaced['sourceEmail'] === undefined).toBe(true);
     const removed = contactFields({ ...values, removeKey: true }, existing);
     expect(removed['public']).toBeUndefined();
     expect(removed).toMatchObject({ source: 'manual' });
+    expect('sourceEmail' in removed && removed['sourceEmail'] === undefined).toBe(true);
   });
 
   it('builds a pgp key whose halves are the binary keys', () => {

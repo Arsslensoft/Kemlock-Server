@@ -241,7 +241,7 @@ describe('the identity form, as the mockup draws it', () => {
     );
     const title = screen.getByLabelText('Title');
     expect([...title.querySelectorAll('option')].map((option) => option.textContent)).toEqual([
-      '',
+      'No title',
       'Mr',
       'Mrs',
       'Ms',
@@ -268,5 +268,15 @@ describe('the backup codes form, as the mockup draws it', () => {
   it('can be named and favorited, and keeps the name', () => {
     const fields = backupCodesFields({ ...backupCodesDefaults(), name: 'GitHub recovery codes', serviceName: 'GitHub', codes: 'a\nb', pinned: true });
     expect(fields).toMatchObject({ name: 'GitHub recovery codes', serviceName: 'GitHub', pinned: true });
+  });
+});
+
+describe('the MFA secret, as the mockup draws it', () => {
+  it('is a plain monospaced text box, with no eye', () => {
+    renderWithIntl(<OtpForm initial={otpDefaults()} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />);
+    const secret = screen.getByLabelText('Secret key');
+    expect(secret).toHaveAttribute('type', 'text');
+    expect(secret.closest('.field')).toHaveClass('mono');
+    expect(screen.queryByRole('button', { name: 'Show the password' })).not.toBeInTheDocument();
   });
 });

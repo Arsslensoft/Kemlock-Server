@@ -54,7 +54,7 @@ describe('NoteForm', () => {
       new File(['%PDF'], 'lease.pdf', { type: 'application/pdf' }),
     ]);
     expect(screen.getByText('hello.txt')).toBeInTheDocument();
-    expect(screen.getByText('TXT · 5 B · ready to encrypt and upload')).toBeInTheDocument();
+    expect(screen.getByText('Text · 5 B · ready to encrypt and upload')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Remove lease.pdf' }));
     expect(screen.queryByText('lease.pdf')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -164,7 +164,26 @@ describe('PasskeyPage', () => {
     expect(screen.getByText('Passkeys come from websites')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.getByText(/In a browser, use Kemlock for browsers/)).toBeInTheDocument();
+    // Nothing is saved from this page, so it offers no vault to pick.
+    expect(screen.queryByText(/you pick/)).not.toBeInTheDocument();
+    expect(screen.getByText(/saves it to your vault/)).toBeInTheDocument();
     await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Done' }));
     expect(onDone).toHaveBeenCalledOnce();
+  });
+});
+
+describe('the file pickers', () => {
+  it('show keyboard focus on their button: the hidden input comes right before its label', () => {
+    const first = renderWithIntl(
+      <NoteForm initial={noteDefaults()} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />,
+    );
+    const add = screen.getByLabelText('Add a file');
+    expect(add).toHaveClass('file-input');
+    expect(add.nextElementSibling).toBe(document.querySelector(`label[for="${add.id}"]`));
+    first.unmount();
+    renderWithIntl(<FileForm initial={fileDefaults()} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />);
+    const choose = screen.getByLabelText('Choose a file');
+    expect(choose).toHaveClass('file-input');
+    expect(choose.nextElementSibling).toBe(document.querySelector(`label[for="${choose.id}"]`));
   });
 });
