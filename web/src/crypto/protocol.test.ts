@@ -30,6 +30,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
         fingerprint: '12345 67890',
       }),
     ),
+    rewrapRoot: vi.fn(() => 'bmV3d3JhcA'),
     unlock: vi.fn(),
     isUnlocked: vi.fn(() => true),
     sealItem: vi.fn(() => JSON.stringify({ ciphertext: 'Y3Q', itemKey: 'aw', keyVersion: 1 })),
@@ -169,6 +170,13 @@ describe('the dispatcher', () => {
     const account = await dispatch('newAccount', [UUID, 7 as never, 9 as never]);
     expect(account.keyVersion).toBe(1);
     expect(account.fingerprint).toBe('12345 67890');
+  });
+
+  it('wraps the open root key under the new master and export keys, handing back the wrap', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('rewrapRoot', [7 as never, 9 as never])).toBe('bmV3d3JhcA');
+    expect(vault.rewrapRoot).toHaveBeenCalledWith(7, 9);
   });
 
   it('unlocks with key version 1 unless told otherwise', async () => {
