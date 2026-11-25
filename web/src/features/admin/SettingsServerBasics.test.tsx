@@ -82,7 +82,8 @@ describe('the address card', () => {
   it('shows the address in use, the one recorded and the data folder, and says they are configuration', () => {
     view(ADDRESS);
     const card = screen.getByRole('region', { name: 'Address and data folder' });
-    expect(within(card).getByText('https://vault.example.org', { selector: 'dd' })).toBeInTheDocument();
+    expect(within(card).getByText('Address in use (DOMAIN)').nextElementSibling).toHaveTextContent('https://vault.example.org');
+    expect(within(card).getByText('Address chosen at setup').nextElementSibling).toHaveTextContent('https://vault.example.org');
     expect(within(card).getByText('/data')).toBeInTheDocument();
     expect(within(card).getByText(/can't be changed here/)).toBeInTheDocument();
     expect(within(card).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
