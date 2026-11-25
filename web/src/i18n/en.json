@@ -130,6 +130,7 @@
   "setup.twoStep.keyHint": "Touch a USB or NFC key, or use a passkey",
   "setup.twoStep.keyPrompt": "Your browser asks you to touch the key or approve the passkey. Keep it somewhere safe: it is the second step each time you sign in.",
   "setup.twoStep.passkeyFailed": "Your authenticator app is on, but the passkey was not made. Add it later in Account security.",
+  "setup.twoStep.passkeyFailedKey": "Your security key is on, but the passkey was not made. Add it later in Account security.",
   "setup.twoStep.keyAdd": "Add a security key",
   "setup.twoStep.scanTitle": "Add this server to your authenticator app",
   "setup.twoStep.qr": "QR code that adds {host}, {email}, to an authenticator app",

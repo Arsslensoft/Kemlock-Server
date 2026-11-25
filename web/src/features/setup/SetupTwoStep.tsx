@@ -98,14 +98,17 @@ export default function SetupTwoStep() {
     keys: { keys: keysApi },
     totpConfirm: (code: string) => api.totpConfirm(code),
     name: t('security.passkeys.defaultName'),
+    keyName: t('security.webauthn.defaultName'),
   };
 
   async function addKey() {
     setPending(true);
     setError(undefined);
     try {
-      await confirmSecurityKey(deps);
-      await navigate({ to: '/setup/server' });
+      const { passkeyFailed } = await confirmSecurityKey(deps);
+      // Say so before moving on: the key is on, but the passkey they ticked was not made.
+      if (passkeyFailed) setWarned(true);
+      else await navigate({ to: '/setup/server' });
     } catch (caught) {
       setError(describePasskeyError(caught));
     } finally {
@@ -177,7 +180,7 @@ export default function SetupTwoStep() {
       {warned ? (
         <>
           <Notice tone="error" live>
-            <p>{t('setup.twoStep.passkeyFailed')}</p>
+            <p>{t(way === 'key' ? 'setup.twoStep.passkeyFailedKey' : 'setup.twoStep.passkeyFailed')}</p>
           </Notice>
           <Button variant="primary" size="large" block onPress={() => void navigate({ to: '/setup/server' })}>
             {t('action.continue')}
