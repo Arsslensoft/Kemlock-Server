@@ -49,7 +49,7 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await page.getByLabel('Username').fill('sam@example.org');
   await page.getByRole('button', { name: 'Generate' }).click();
   await expect(page.getByLabel('Password', { exact: true })).toHaveValue(/^.{20}$/);
-  await page.getByLabel('Website').fill('https://github.com');
+  await page.getByLabel('Website 1', { exact: true }).fill('https://github.com');
   await page.getByRole('button', { name: 'Save' }).click();
 
   // Item: opened from what the server returned, then shown.
