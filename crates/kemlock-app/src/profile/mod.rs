@@ -3,10 +3,13 @@
 //!
 //! - [`Profile`] shows the profile and changes the name.
 //! - [`Credentials`] answers the first OPAQUE registration message for a new password or a new
-//!   address and replaces the password's records. The master password is changed in the browser:
-//!   the root key does not change, so the page makes a new master key, a new OPAQUE record and a
-//!   new wrap of the same root key, and sends the three here (docs/crypto.md, "Changing the master
-//!   password and the sign-in address").
+//!   address, with a ticket that binds the registration to its use, and replaces the password's
+//!   records. The master password is changed in the browser: the root key does not change, so the
+//!   page makes a new master key, a new OPAQUE record and a new wrap of the same root key, and
+//!   sends the three here (docs/crypto.md, "Changing the master password and the sign-in
+//!   address").
+//! - [`OtherDevices`] signs the other devices out after a change that ended their sessions, and
+//!   gives the device that asked new tokens.
 //! - [`EmailChanges`] and [`ConfirmEmailChange`] hold a new address until the link mailed to it is
 //!   opened, then swap it in and end every session.
 //!
@@ -14,15 +17,19 @@
 //! [`crate::privacy::Reauthenticate`], which the API runs first, as it does for erasing the account.
 
 mod credentials;
+mod devices;
 mod email;
 mod error;
 pub mod ports;
+mod ticket;
 mod view;
 
-pub use credentials::{Credentials, NewCredentials};
+pub use credentials::{Credentials, NewCredentials, PasswordChanged, RegistrationStarted};
+pub use devices::OtherDevices;
 pub use email::{ConfirmEmailChange, EmailChangeAsked, EmailChangeDone, EmailChanges};
 pub use error::ProfileError;
 pub use ports::ProfileRepo;
+pub use ticket::PURPOSE_REGISTRATION;
 pub use view::{Profile, ProfileView};
 
 use crate::error::AppError;
@@ -47,18 +54,24 @@ fn changeable_password(account: &User) -> Result<(), ProfileError> {
     Ok(())
 }
 
-/// `raw` as the account's new sign-in address: well formed, not the one it has, and nobody else's.
-async fn free_address<U: UserRepo>(
-    users: &U,
-    account: &User,
-    raw: &str,
-) -> Result<Email, ProfileError> {
+/// `raw` as the account's new sign-in address: well formed, and not the one it has. Whether
+/// someone else has it is [`is_taken`]'s to say, and is never said to the one who asks.
+fn new_address(account: &User, raw: &str) -> Result<Email, ProfileError> {
     let email = Email::parse(raw).map_err(|_| AppError::Invalid("not an email"))?;
     if email == account.email {
         return Err(AppError::Invalid("that is already the address of the account").into());
     }
-    match users.by_email(&email).await? {
-        Some(other) if other.id != account.id => Err(ProfileError::EmailTaken),
-        _ => Ok(email),
-    }
+    Ok(email)
+}
+
+/// Whether another account has `email`.
+async fn is_taken<U: UserRepo>(
+    users: &U,
+    account: &User,
+    email: &Email,
+) -> Result<bool, ProfileError> {
+    Ok(users
+        .by_email(email)
+        .await?
+        .is_some_and(|other| other.id != account.id))
 }

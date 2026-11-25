@@ -18,9 +18,15 @@ pub enum ProfileError {
     /// to change.
     #[error("the account has no master password")]
     NoPassword,
-    /// Another account has that address.
+    /// Another account has that address. Said only when a link is opened for an address someone
+    /// took meanwhile: asking for an address never says it, or the request would tell who has an
+    /// account.
     #[error("that address belongs to another account")]
     EmailTaken,
+    /// The account changed while the change was being made (a write of its own, a second change at
+    /// once): nothing was written, and asking again is safe.
+    #[error("the account changed meanwhile")]
+    AccountChanged,
     /// The link's token is unknown, spent or out of time. Never says which.
     #[error("the link is not valid or has run out")]
     EmailChangeInvalid,

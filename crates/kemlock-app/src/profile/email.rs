@@ -4,13 +4,24 @@
 //! The link's token is 32 random bytes; the server keeps only its SHA-256, so a copy of the
 //! database opens no link. Opening it is the proof of owning the address, so no session is needed:
 //! it is opened from the mail client, often in another browser.
+//!
+//! Asking for an address another account has looks, to whoever asks, like asking for a free one:
+//! the same answer, the same pending change on the profile, the same mail to the old address. The
+//! mail to the address itself says it already has an account and carries no link, and the pending
+//! change that stands in for the real one has a token no one was given.
 
 use super::credentials::{NewCredentials, check};
-use super::{ProfileError, ProfileRepo, account, changeable_password, free_address};
+use super::ticket::Ticket;
+use super::{ProfileError, ProfileRepo, account, changeable_password, is_taken, new_address};
 use crate::b64url;
-use crate::notices::{EmailChangeNotice, EmailChangeRequestedNotice, Notice, Notices};
+use crate::config::AuthConfig;
+use crate::error::AppError;
+use crate::notices::{
+    EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice, Notice,
+    Notices,
+};
 use crate::platform::{Platform, random_uuid};
-use crate::ports::{DeviceRepo, StoreError, TokenRepo, UserRepo};
+use crate::ports::{DeviceRepo, PasswordAuth, SecretSeal, StoreError, TokenRepo, UserRepo};
 use kemlock_domain::{Email, EmailChange, User, UserId};
 use time::OffsetDateTime;
 
@@ -25,16 +36,19 @@ pub struct EmailChangeAsked {
 
 /// Asking for a change of address, and taking the ask back.
 #[derive(Debug)]
-pub struct EmailChanges<U, R, P, E> {
+pub struct EmailChanges<U, R, P, S, E> {
     pub users: U,
     pub repo: R,
     pub auth: P,
+    pub seal: S,
     pub env: E,
     pub notices: Notices,
+    /// Read only for the lifetime tickets have; the change's own is [`EmailChange::LIFETIME`].
+    pub config: AuthConfig,
 }
 
-impl<U: UserRepo, R: ProfileRepo, P: crate::ports::PasswordAuth, E: Platform>
-    EmailChanges<U, R, P, E>
+impl<U: UserRepo, R: ProfileRepo, P: PasswordAuth, S: SecretSeal, E: Platform>
+    EmailChanges<U, R, P, S, E>
 {
     /// The account, if its address may be changed here and a link can be mailed: it has a master
     /// password this API can change, no identity provider owns its address, and the server sends
@@ -51,22 +65,61 @@ impl<U: UserRepo, R: ProfileRepo, P: crate::ports::PasswordAuth, E: Platform>
         Ok(account)
     }
 
-    /// Whether the account's address may be changed at all. Asked before the password is spent,
-    /// so a refusal that can be known costs the person nothing.
-    pub async fn check(&self, user: UserId) -> Result<(), ProfileError> {
-        self.allowed(user).await.map(|_| ())
+    /// The ticket, if it is a good one for asking for `email`: handed to this account and this
+    /// DPoP key, not run out, and asked for this very address. The comparison is the same whether
+    /// the address is free or not, so it says nothing about who has an account.
+    fn open_ticket(
+        &self,
+        account: &User,
+        email: &Email,
+        sealed: &[u8],
+        jkt: &str,
+    ) -> Result<Ticket, ProfileError> {
+        let ticket = Ticket::open(&self.seal, sealed, self.env.now(), account.id, jkt)?;
+        if ticket.address.as_deref() != Some(email.as_str()) {
+            return Err(AppError::Invalid("the registration ticket is not valid").into());
+        }
+        Ok(ticket)
+    }
+
+    /// Whether the account's address may be changed at all, to `email`, with this ticket. Asked
+    /// before the password is spent, so a refusal that can be known costs the person nothing.
+    pub async fn check(
+        &self,
+        user: UserId,
+        email: &str,
+        ticket: &[u8],
+        jkt: &str,
+    ) -> Result<(), ProfileError> {
+        let account = self.allowed(user).await?;
+        let email = new_address(&account, email)?;
+        self.open_ticket(&account, &email, ticket, jkt)?;
+        Ok(())
     }
 
     /// Keeps `email` and the credentials made under it, and mails the link to it. A new ask
     /// replaces the one before: its link stops working. The old address is told, best effort.
+    ///
+    /// An address another account has is kept all the same, under a token nobody has, and mailed
+    /// the notice that it has an account instead of the link: the ask can't tell the person who
+    /// has an account.
     pub async fn request(
         &self,
         user: UserId,
         email: &str,
         new: NewCredentials,
+        ticket: &[u8],
+        jkt: &str,
     ) -> Result<EmailChangeAsked, ProfileError> {
         let account = self.allowed(user).await?;
-        let email = free_address(&self.users, &account, email).await?;
+        let email = new_address(&account, email)?;
+        let ticket = self.open_ticket(&account, &email, ticket, jkt)?;
+        let taken = is_taken(&self.users, &account, &email).await?;
+        // A registration for a free address was made for that address. (For a taken one it was made
+        // for random bytes, and nothing was going to be stored from it anyway.)
+        if !taken && ticket.credential != self.env.sha256(email.as_str().as_bytes()) {
+            return Err(AppError::Invalid("the registration ticket is not valid").into());
+        }
         let checked = check(&self.auth, new)?;
 
         let now = self.env.now();
@@ -83,16 +136,20 @@ impl<U: UserRepo, R: ProfileRepo, P: crate::ports::PasswordAuth, E: Platform>
         };
         self.repo.put_email_change(&change).await?;
 
-        let sent = self
-            .notices
-            .send_checked(Notice::EmailChange(EmailChangeNotice {
+        let notice = if taken {
+            Notice::EmailTaken(EmailTakenNotice {
+                to: email.clone(),
+                at: now,
+            })
+        } else {
+            Notice::EmailChange(EmailChangeNotice {
                 to: email.clone(),
                 token,
-            }))
-            .await;
-        if let Err(error) = sent {
+            })
+        };
+        if let Err(error) = self.notices.send_checked(notice).await {
             // A link that was never sent can't be opened: don't leave it pending.
-            tracing::warn!(%error, "the mail with the link of a change of address was not sent");
+            tracing::warn!(%error, "the mail of a change of address was not sent");
             self.repo.remove_email_change(user).await?;
             return Err(ProfileError::MailFailed);
         }
@@ -132,19 +189,28 @@ pub struct ConfirmEmailChange<U, R, D, T, E> {
     pub devices: D,
     pub tokens: T,
     pub env: E,
+    /// Tells the old address that the change was made.
+    pub notices: Notices,
 }
 
 impl<U: UserRepo, R: ProfileRepo, D: DeviceRepo, T: TokenRepo, E: Platform>
     ConfirmEmailChange<U, R, D, T, E>
 {
-    /// `token` is the one in the link. It is good once: the change is taken out of the store before
-    /// anything is written, so a failure after that means asking again. A token that is unknown,
-    /// spent or out of time is [`ProfileError::EmailChangeInvalid`], whichever it is.
+    /// `token` is the one in the link. It is good once, and it is spent by the write that makes
+    /// the change, not before: a write that does not happen
+    /// ([`ProfileError::AccountChanged`]) leaves the link good. A token that is unknown, spent or
+    /// out of time is [`ProfileError::EmailChangeInvalid`], whichever it is.
+    ///
+    /// The account is looked at again before anything is written, as it is now and not as it was
+    /// when the link was asked for: an account that was disabled or is being deleted gets
+    /// [`ProfileError::EmailChangeInvalid`] too, and one that has since been linked to an identity
+    /// provider, shared with the Bitwarden apps or left with no password gets the refusal the
+    /// request would have had, and its pending change is dropped, since it can never be applied.
     pub async fn confirm(&self, token: &str) -> Result<EmailChangeDone, ProfileError> {
         let now = self.env.now();
         let change = self
             .repo
-            .take_email_change(self.env.sha256(token.as_bytes()))
+            .email_change_by_token(self.env.sha256(token.as_bytes()))
             .await?
             .filter(|change| !change.is_expired(now))
             .ok_or(ProfileError::EmailChangeInvalid)?;
@@ -153,34 +219,76 @@ impl<U: UserRepo, R: ProfileRepo, D: DeviceRepo, T: TokenRepo, E: Platform>
             .by_id(change.user)
             .await?
             .ok_or(ProfileError::EmailChangeInvalid)?;
-        // Someone may have taken the address since: the pending change is gone, and so is the ask.
-        if let Some(other) = self.users.by_email(&change.email).await?
-            && other.id != account.id
+        if self.users.account_disabled(account.id).await?
+            || self.users.erasure_pending(account.id).await?.is_some()
         {
+            return Err(ProfileError::EmailChangeInvalid);
+        }
+        if let Err(refused) = self.changeable(&account).await {
+            self.repo.remove_email_change(account.id).await?;
+            return Err(refused);
+        }
+        // Someone may have taken the address since: the ask is dropped, as it can't be applied.
+        if is_taken(&self.users, &account, &change.email).await? {
+            self.repo.remove_email_change(account.id).await?;
             return Err(ProfileError::EmailTaken);
         }
 
-        let done = EmailChangeDone {
-            user: account.id,
-            email: change.email.clone(),
-        };
         let updated = User {
-            email: change.email,
-            opaque_record: Some(change.opaque_record),
-            kdf: change.kdf,
-            wrapped_root_key: change.wrapped_root_key,
+            email: change.email.clone(),
+            opaque_record: Some(change.opaque_record.clone()),
+            kdf: change.kdf.clone(),
+            wrapped_root_key: change.wrapped_root_key.clone(),
             // A new stamp makes every access and refresh token of the account stale.
             security_stamp: random_uuid(&self.env),
             updated_at: now,
-            ..account
+            ..account.clone()
         };
-        match self.users.update(&updated).await {
-            Err(StoreError::Duplicate) => return Err(ProfileError::EmailTaken),
-            other => other?,
+        match self.repo.apply_email_change(&change, &account, &updated).await {
+            Ok(true) => {}
+            Ok(false) => return Err(ProfileError::AccountChanged),
+            // The database refused the address: another account has it, as the check above could
+            // not know a moment ago.
+            Err(StoreError::Duplicate) => {
+                self.repo.remove_email_change(account.id).await?;
+                return Err(ProfileError::EmailTaken);
+            }
+            Err(other) => return Err(other.into()),
         }
-        for device in self.devices.list(done.user).await? {
-            self.tokens.revoke_device(device.id).await?;
+
+        // The change is made. What follows can't fail it: the new stamp already ended every
+        // session, and what is left is cleaning up and telling the old address.
+        match self.devices.list(account.id).await {
+            Ok(devices) => {
+                for device in devices {
+                    if let Err(error) = self.tokens.revoke_device(device.id).await {
+                        tracing::warn!(%error, "couldn't delete a device's tokens after a change of address");
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "couldn't list the devices after a change of address");
+            }
         }
-        Ok(done)
+        self.notices
+            .send(Notice::EmailChanged(EmailChangedNotice {
+                to: account.email,
+                new_address: change.email.clone(),
+                at: now,
+            }))
+            .await;
+        Ok(EmailChangeDone {
+            user: account.id,
+            email: change.email,
+        })
+    }
+
+    /// Whether the account is one whose address this API changes.
+    async fn changeable(&self, account: &User) -> Result<(), ProfileError> {
+        changeable_password(account)?;
+        if self.repo.has_sso_identity(account.id).await? {
+            return Err(ProfileError::SsoManaged);
+        }
+        Ok(())
     }
 }

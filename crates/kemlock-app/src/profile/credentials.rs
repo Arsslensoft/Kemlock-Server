@@ -1,9 +1,13 @@
 //! The password's records: the OPAQUE registration that makes a new record, and the replacement of
 //! the record, the KDF settings and the root-key wrap in one write.
 
-use super::{ProfileError, ProfileRepo, account, changeable_password, free_address};
+use super::ticket::Ticket;
+use super::{ProfileError, ProfileRepo, account, changeable_password, is_taken, new_address};
+use crate::config::AuthConfig;
 use crate::error::AppError;
-use crate::ports::{Clock, PasswordAuth, UserRepo};
+use crate::notices::{Notice, Notices, PasswordChangedNotice};
+use crate::platform::{Platform, random_uuid};
+use crate::ports::{PasswordAuth, SecretSeal, UserRepo};
 use crate::register::WRAPPED_ROOT_KEY_LEN;
 use kemlock_domain::{KdfParams, User, UserId};
 
@@ -49,71 +53,173 @@ pub(super) fn check<P: PasswordAuth>(
     })
 }
 
+/// The server's half of the first registration message, and the ticket to bring back with the last.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegistrationStarted {
+    /// OPAQUE's `RegistrationResponse`.
+    pub response: Vec<u8>,
+    /// The sealed ticket that binds the registration to the account, the DPoP key, the address
+    /// asked for (if any) and the next few minutes.
+    pub ticket: Vec<u8>,
+}
+
+impl std::fmt::Debug for RegistrationStarted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegistrationStarted").finish_non_exhaustive()
+    }
+}
+
+/// What a change of password did.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PasswordChanged {
+    /// The account as it is now, for the sessions that follow.
+    pub account: User,
+    /// The security stamp was replaced, so every session of the account ended with the write.
+    pub others_signed_out: bool,
+}
+
+impl std::fmt::Debug for PasswordChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The account holds the record and the wrap.
+        f.debug_struct("PasswordChanged")
+            .field("others_signed_out", &self.others_signed_out)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Changing the master password, and the first message of the registration that makes the new
 /// record for it or for a new address.
 #[derive(Debug)]
-pub struct Credentials<U, R, P, C> {
+pub struct Credentials<U, R, P, S, E> {
     pub users: U,
     pub repo: R,
     pub auth: P,
-    pub clock: C,
+    pub seal: S,
+    pub env: E,
+    pub notices: Notices,
+    /// Gives the ticket its lifetime: that of a login state.
+    pub config: AuthConfig,
 }
 
-impl<U: UserRepo, R: ProfileRepo, P: PasswordAuth, C: Clock> Credentials<U, R, P, C> {
-    /// Whether the account has a master password this API can change. Asked before the password
-    /// is spent, so a refusal that can be known costs the person nothing.
-    pub async fn check(&self, user: UserId) -> Result<(), ProfileError> {
-        changeable_password(&account(&self.users, user).await?)
+impl<U: UserRepo, R: ProfileRepo, P: PasswordAuth, S: SecretSeal, E: Platform>
+    Credentials<U, R, P, S, E>
+{
+    /// Whether the account has a master password this API can change, and `ticket` is a good one
+    /// for a change of it. Asked before the password is spent, so a refusal that can be known
+    /// costs the person nothing.
+    pub async fn check(&self, user: UserId, ticket: &[u8], jkt: &str) -> Result<(), ProfileError> {
+        let account = account(&self.users, user).await?;
+        changeable_password(&account)?;
+        self.open_for_password(&account, ticket, jkt)
     }
 
-    /// OPAQUE registration, first message: the server's `RegistrationResponse`. It is bound to the
-    /// account's own address, or to `email` when the registration is for a new address, which must
-    /// be free and may not be an identity provider's account's.
+    /// OPAQUE registration, first message. It is bound to the account's own address, or to `email`
+    /// when the registration is for a new address, which may not be an identity provider's
+    /// account's. An address another account has is answered as a free one is, so the answer says
+    /// nothing of who has an account: the server's half is evaluated for random bytes instead of
+    /// that address, and never for another account's identifier. The ticket says which it was.
     pub async fn start(
         &self,
         user: UserId,
         email: Option<&str>,
         request: &[u8],
-    ) -> Result<Vec<u8>, ProfileError> {
+        jkt: &str,
+    ) -> Result<RegistrationStarted, ProfileError> {
         let account = account(&self.users, user).await?;
         changeable_password(&account)?;
-        let credential = match email {
-            None => account.email.clone(),
+        let (address, credential) = match email {
+            None => (None, account.email.as_str().as_bytes().to_vec()),
             Some(raw) => {
                 if self.repo.has_sso_identity(user).await? {
                     return Err(ProfileError::SsoManaged);
                 }
-                free_address(&self.users, &account, raw).await?
+                let email = new_address(&account, raw)?;
+                let credential = if is_taken(&self.users, &account, &email).await? {
+                    self.env.bytes::<32>().to_vec()
+                } else {
+                    email.as_str().as_bytes().to_vec()
+                };
+                (Some(email), credential)
             }
         };
-        Ok(self
-            .auth
-            .registration_response(credential.as_str().as_bytes(), request)?)
+        let response = self.auth.registration_response(&credential, request)?;
+        let ticket = Ticket {
+            expires_at: (self.env.now() + self.config.challenge_ttl).unix_timestamp(),
+            user,
+            address: address.map(|email| email.as_str().to_owned()),
+            credential: self.env.sha256(&credential),
+            jkt: jkt.to_owned(),
+        }
+        .seal(&self.seal);
+        Ok(RegistrationStarted { response, ticket })
     }
 
-    /// Replaces the account's OPAQUE record, KDF settings and root-key wrap in one write. The key
-    /// version, the bundle, the sealed private keys and the security stamp stay: the root key is
-    /// the same, so the recovery kit, the passkey wraps and the trusted devices' copies still
-    /// open it. A change of address asked for before is dropped, since it was made from the old
-    /// password and would put it back.
+    /// Replaces the account's OPAQUE record, KDF settings and root-key wrap in one write, which is
+    /// conditional on nobody having written the account since it was read here
+    /// ([`ProfileError::AccountChanged`] otherwise, with nothing written). The key version, the
+    /// bundle and the sealed private keys stay: the root key is the same, so the recovery kit, the
+    /// passkey wraps and the trusted devices' copies still open it. With `sign_out_others` the
+    /// security stamp is replaced in the same write, which ends every session of the account at
+    /// once: the caller gives the device that asked new ones. A change of address asked for before
+    /// is dropped with it, since it was made from the old password and would put it back.
+    ///
+    /// Once the write is made nothing after it can fail the change: the notice is best effort.
     pub async fn change_password(
         &self,
         user: UserId,
         new: NewCredentials,
-    ) -> Result<(), ProfileError> {
+        ticket: &[u8],
+        jkt: &str,
+        sign_out_others: bool,
+    ) -> Result<PasswordChanged, ProfileError> {
         let account = account(&self.users, user).await?;
         changeable_password(&account)?;
+        self.open_for_password(&account, ticket, jkt)?;
         let checked = check(&self.auth, new)?;
-        self.users
-            .update(&User {
-                opaque_record: Some(checked.opaque_record),
-                kdf: checked.kdf,
-                wrapped_root_key: checked.wrapped_root_key,
-                updated_at: self.clock.now(),
-                ..account
-            })
-            .await?;
-        self.repo.remove_email_change(user).await?;
+        let now = self.env.now();
+        let after = User {
+            opaque_record: Some(checked.opaque_record),
+            kdf: checked.kdf,
+            wrapped_root_key: checked.wrapped_root_key,
+            security_stamp: if sign_out_others {
+                random_uuid(&self.env)
+            } else {
+                account.security_stamp
+            },
+            updated_at: now,
+            ..account.clone()
+        };
+        if !self.repo.replace_credentials(&account, &after).await? {
+            return Err(ProfileError::AccountChanged);
+        }
+        self.notices
+            .send(Notice::PasswordChanged(PasswordChangedNotice {
+                to: after.email.clone(),
+                at: now,
+                others_signed_out: sign_out_others,
+            }))
+            .await;
+        Ok(PasswordChanged {
+            account: after,
+            others_signed_out: sign_out_others,
+        })
+    }
+
+    /// The ticket, if it is a good one for a new password of `account`: handed to this account
+    /// and this DPoP key, not run out, asked for no address, and the server's half was made for
+    /// the address the account has now.
+    fn open_for_password(
+        &self,
+        account: &User,
+        ticket: &[u8],
+        jkt: &str,
+    ) -> Result<(), ProfileError> {
+        let ticket = Ticket::open(&self.seal, ticket, self.env.now(), account.id, jkt)?;
+        if ticket.address.is_some()
+            || ticket.credential != self.env.sha256(account.email.as_str().as_bytes())
+        {
+            return Err(AppError::Invalid("the registration ticket is not valid").into());
+        }
         Ok(())
     }
 }
