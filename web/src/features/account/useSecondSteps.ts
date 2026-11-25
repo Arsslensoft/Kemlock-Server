@@ -4,6 +4,7 @@ import { api } from '@/app/services';
 import { useT } from '@/i18n';
 import { passkeysAvailable } from '@/lib/passkey';
 import type { SecondStepsProps } from './SecondStepsCard';
+import { useKeyProof } from './useKeyProof';
 import { useRun } from './useRun';
 import { createSecurityKey } from '@/lib/webauthn';
 
@@ -20,6 +21,7 @@ export function useSecondSteps(hasRecoveryCode: boolean | undefined, totpOn = fa
     enabled: passkeysAvailable(),
   });
   const { run, pending, error } = useRun();
+  const keyProof = useKeyProof(run);
 
   // A change refreshes everything a method touches: the list of methods, what was set up, the keys.
   async function change(action: () => Promise<unknown>): Promise<boolean> {
@@ -39,6 +41,7 @@ export function useSecondSteps(hasRecoveryCode: boolean | undefined, totpOn = fa
     hasRecoveryCode,
     totpOn,
     busy: pending,
+    keyProof,
     actions: {
       addSecurityKey: (name, proof) =>
         change(async () => {

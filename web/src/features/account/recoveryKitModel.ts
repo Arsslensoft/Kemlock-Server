@@ -7,6 +7,7 @@
 //   3. only then is the record sent to the server (the wrap, the kit id, the key version), so a
 //      kit that was never confirmed is never kept. Replacing it takes a fresh proof.
 import type { RecoveryKitApi, RecoveryKitDto } from '@/api/recoveryKit';
+import type { Proof } from '@/api/twoStep';
 import type { CryptoPort } from '@/crypto-port';
 import { encodeB64 } from '@/lib/b64url';
 import { isOneOf } from '@/lib/kitPiece';
@@ -43,7 +44,7 @@ export function confirmsPiece(kit: PendingKit, typed: string): boolean {
 export function keepKit(
   api: Pick<RecoveryKitApi, 'create' | 'replace'>,
   kit: PendingKit,
-  proof?: string,
+  proof?: Proof,
 ): Promise<RecoveryKitDto> {
   const record = { kitId: kit.kitId, keyVersion: kit.keyVersion, wrappedKey: kit.wrappedKey };
   return proof === undefined ? api.create(record) : api.replace(record, proof);

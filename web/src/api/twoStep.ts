@@ -65,8 +65,15 @@ type SetupHttp = Pick<Api, 'request' | 'send'>;
 
 const factor = '/kem/v1/account/two-factor';
 
+/**
+ * A fresh proof: a code as typed, or the answer of a security key or passkey to the options of
+ * `proofKeyOptions`, which the server takes as `{ webauthn }`.
+ */
+export type WebauthnProof = { webauthn: Record<string, unknown> };
+export type Proof = string | WebauthnProof;
+
 /** A request that turns a method on carries `proof` only when a second step is on already. */
-function withProof<T extends object>(body: T, proof: string | undefined): T & { proof?: string } {
+function withProof<T extends object>(body: T, proof: Proof | undefined): T & { proof?: Proof } {
   return proof ? { ...body, proof } : body;
 }
 
@@ -81,42 +88,47 @@ export function createSecondStepsApi(http: SetupHttp) {
 
     emailBegin: (address: string) => http.send({ method: 'POST', path: `${factor}/email`, body: { address } }),
     /** With another second step on, `proof` is the fresh proof a removal takes (see `proofRequest`). */
-    emailConfirm: (address: string, code: string, proof?: string) =>
+    emailConfirm: (address: string, code: string, proof?: Proof) =>
       http.send({ method: 'POST', path: `${factor}/email/confirm`, body: withProof({ address, code }, proof) }),
     /** Mails the one-time code that proves the owner, which every turning off takes as `proof`. */
     proofRequest: () => http.send({ method: 'POST', path: `${factor}/proof` }),
+    /** The options for answering a fresh proof with a security key or passkey; 404 with none. */
+    proofKeyOptions: () =>
+      http
+        .request<{ options: Record<string, unknown> }>({ method: 'POST', path: `${factor}/proof/webauthn/options` })
+        .then((r) => r.options),
 
-    emailOff: (proof: string) => http.send({ method: 'DELETE', path: `${factor}/email`, body: { proof } }),
+    emailOff: (proof: Proof) => http.send({ method: 'DELETE', path: `${factor}/email`, body: { proof } }),
 
-    yubikeySet: (otps: string[], nfc: boolean, proof?: string) =>
+    yubikeySet: (otps: string[], nfc: boolean, proof?: Proof) =>
       http.request<{ keys: string[]; nfc: boolean }>({
         method: 'PUT',
         path: `${factor}/yubikey`,
         body: withProof({ otps, nfc }, proof),
       }),
-    yubikeyOff: (proof: string) =>
+    yubikeyOff: (proof: Proof) =>
       http.send({ method: 'DELETE', path: `${factor}/yubikey`, body: { proof } }),
 
-    duoSet: (keys: DuoKeysInput | null, proof?: string) =>
+    duoSet: (keys: DuoKeysInput | null, proof?: Proof) =>
       http.request<{ integration: 'own' | 'server'; host: string | null }>({
         method: 'PUT',
         path: `${factor}/duo`,
         body: withProof(keys ? { ...keys } : {}, proof),
       }),
-    duoOff: (proof: string) => http.send({ method: 'DELETE', path: `${factor}/duo`, body: { proof } }),
+    duoOff: (proof: Proof) => http.send({ method: 'DELETE', path: `${factor}/duo`, body: { proof } }),
 
     securityKeys: () => http.request<SecurityKeysDto>({ method: 'GET', path: `${factor}/webauthn` }),
     securityKeyOptions: () =>
       http
         .request<{ options: Record<string, unknown> }>({ method: 'POST', path: `${factor}/webauthn` })
         .then((r) => r.options),
-    securityKeyConfirm: (name: string, credential: Record<string, unknown>, proof?: string) =>
+    securityKeyConfirm: (name: string, credential: Record<string, unknown>, proof?: Proof) =>
       http.request<SecurityKeysDto>({
         method: 'POST',
         path: `${factor}/webauthn/confirm`,
         body: withProof({ name, credential }, proof),
       }),
-    securityKeyRemove: (slot: number, proof: string) =>
+    securityKeyRemove: (slot: number, proof: Proof) =>
       http.request<SecurityKeysDto>({
         method: 'DELETE',
         path: `${factor}/webauthn/${slot}`,
@@ -127,7 +139,7 @@ export function createSecondStepsApi(http: SetupHttp) {
      * The account's recovery code, or null when it has none (or has spent it). `proof` is a fresh
      * proof that is not the recovery code itself: a mailed code or an authenticator code.
      */
-    recoveryCode: (proof: string) =>
+    recoveryCode: (proof: Proof) =>
       http
         .request<{ code: string | null }>({ method: 'POST', path: `${factor}/recovery-code`, body: { proof } })
         .then((r) => r.code),
