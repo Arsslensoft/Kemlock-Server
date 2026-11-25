@@ -425,7 +425,10 @@ mod tests {
         ] {
             assert!(check_unifiedpush_endpoint(good).is_ok(), "{good}");
         }
-        for bad in ["https://ntfy.example.org:80/up", "https://ntfy.example.org:1/up"] {
+        for bad in [
+            "https://ntfy.example.org:80/up",
+            "https://ntfy.example.org:1/up",
+        ] {
             assert_eq!(
                 check_unifiedpush_endpoint(bad).map(|_| ()),
                 Err("the UnifiedPush endpoint must use port 443 or 8443"),

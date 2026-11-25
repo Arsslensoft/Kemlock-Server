@@ -127,7 +127,7 @@ enum Delivery {
 /// Whether `ip` is on a private network an operator may choose to reach: RFC 1918 IPv4, unique
 /// local IPv6, or an IPv6 address that carries a private IPv4 one. Never loopback, link-local,
 /// unspecified or multicast addresses, which are not public either.
-pub fn is_lan_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_lan_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => v4.is_private(),
         IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
@@ -246,11 +246,9 @@ impl UnifiedPushSender {
             Some(Host::Ipv4(ip)) => self.literal(IpAddr::V4(ip)),
             Some(Host::Ipv6(ip)) => self.literal(IpAddr::V6(ip)),
             Some(Host::Domain(name)) => {
-                let found = tokio::time::timeout(
-                    LOOKUP_TIMEOUT,
-                    tokio::net::lookup_host((name, port)),
-                )
-                .await;
+                let found =
+                    tokio::time::timeout(LOOKUP_TIMEOUT, tokio::net::lookup_host((name, port)))
+                        .await;
                 let found: Vec<SocketAddr> = match found {
                     Ok(Ok(found)) => found.collect(),
                     // The name may resolve next time.
@@ -560,17 +558,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_name_that_resolves_to_a_non_public_address_is_a_failure_not_a_forgetting() {
-        let (seen, base) = fake().await;
-        let port = base.rsplit(':').next().expect("a port");
+        let (seen, _base) = fake().await;
         // `localhost` answers loopback: a split-horizon name or a DNS blocker could answer so
         // for a moment, and the endpoint must survive it.
-        let endpoint = format!("https://localhost:{port}/up");
+        // The default port: endpoints may only use 443 or 8443, and that check comes first.
+        let endpoint = "https://localhost/up".to_owned();
         for sender in [
             UnifiedPushSender::new(),
             // Private networks allowed: loopback still never is.
             UnifiedPushSender::new().allowing_private(true),
         ] {
-            let outcome = sender.send_sync(&[endpoint.clone()]).await;
+            let outcome = sender.send_sync(std::slice::from_ref(&endpoint)).await;
             assert_eq!(outcome, SendOutcome::default());
         }
         assert!(seen.requests.lock().expect("lock").is_empty());
@@ -607,7 +605,10 @@ mod tests {
             assert!(!lan.may_reach(ip(text)), "{text}");
         }
         for text in ["8.8.8.8", "2606:4700:4700::1111"] {
-            assert!(strict.may_reach(ip(text)) && lan.may_reach(ip(text)), "{text}");
+            assert!(
+                strict.may_reach(ip(text)) && lan.may_reach(ip(text)),
+                "{text}"
+            );
         }
     }
 
@@ -626,7 +627,10 @@ mod tests {
         assert!(read(Some("true")).expect("ok").allow_private);
         assert!(read(Some(" ON ")).expect("ok").allow_private);
         let error = read(Some("maybe")).expect_err("refused");
-        assert!(error.starts_with("KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE"), "{error}");
+        assert!(
+            error.starts_with("KEMLOCK_UNIFIEDPUSH_ALLOW_PRIVATE"),
+            "{error}"
+        );
     }
 
     #[tokio::test]

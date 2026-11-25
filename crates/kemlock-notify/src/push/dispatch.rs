@@ -150,8 +150,10 @@ impl<R: PushRepo + 'static, A: Audience, S: SecretSeal> Worker<R, A, S> {
         if !iphones.is_empty() {
             self.push_iphones(&iphones).await;
         }
-        let androids: Vec<PushRegistration> =
-            of_kind(PushKind::UnifiedPush).into_iter().cloned().collect();
+        let androids: Vec<PushRegistration> = of_kind(PushKind::UnifiedPush)
+            .into_iter()
+            .cloned()
+            .collect();
         if !androids.is_empty() {
             self.push_androids(androids);
         }

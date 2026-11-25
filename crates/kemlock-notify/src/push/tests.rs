@@ -596,7 +596,10 @@ async fn a_slow_unifiedpush_endpoint_holds_up_no_other_push() {
     // iPhone arrives well before the endpoint answers.
     dispatcher.nudge(Owner::User(ada));
     tokio::time::sleep(WINDOW * 10).await;
-    assert!(!pushed.slow_answered.load(Ordering::SeqCst), "still waiting");
+    assert!(
+        !pushed.slow_answered.load(Ordering::SeqCst),
+        "still waiting"
+    );
     assert_eq!(
         *pushed.apple.lock().expect("lock"),
         ["c0ffee01", "c0ffee01"],
