@@ -22,7 +22,7 @@
   "lists.vault.all": "All vaults",
   "lists.vault.personal": "Personal",
   "lists.vault.space": "A space",
-  "lists.showingIn": "Showing {shown} in {vault}",
+  "lists.showingIn": "Showing {shown} of {total} in {vault}",
   "lists.trash.from": "Deleted from",
   "lists.trash.vaultNone.title": "Nothing deleted from this vault",
   "lists.trash.vaultNone.body": "Items deleted from other vaults are still in the Trash. Pick All vaults to see them.",

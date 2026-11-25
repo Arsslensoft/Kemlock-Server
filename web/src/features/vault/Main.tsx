@@ -89,7 +89,7 @@ export function ItemListView({
   const footer =
     vault === ALL_VAULTS
       ? t('main.showing', { shown: rows.length, total })
-      : t('lists.showingIn', { shown: total, vault: vaultName });
+      : t('lists.showingIn', { shown: rows.length, total, vault: vaultName });
 
   return (
     <>
