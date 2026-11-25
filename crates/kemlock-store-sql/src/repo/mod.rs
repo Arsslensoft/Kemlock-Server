@@ -19,6 +19,7 @@ mod federation_insight;
 mod federation_keys;
 mod federation_logs;
 mod federation_sends;
+mod federation_withheld;
 mod federation_spaces;
 mod federation_tags;
 mod federation_wiring;

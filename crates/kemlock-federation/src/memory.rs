@@ -16,6 +16,7 @@ use crate::ports::{
 };
 use crate::relay::{LearnedKey, OriginKeys};
 use crate::spaces::{SpaceMirror, SpaceRecord, SpaceSnapshot};
+use crate::outbox::{Withheld, Withholding};
 use crate::sendsync::{SendApply, SendSync};
 use crate::tagsync::{ItemTags, TagSync};
 use crate::wire::ChangeKey;
@@ -161,6 +162,7 @@ struct Extras {
     mismatches: HashMap<ServerId, MismatchRecord>,
     sends: BTreeMap<SendId, SendRecord>,
     send_marks: HashMap<SendId, ServerId>,
+    withheld: HashMap<(ServerId, Owner), Withheld>,
 }
 
 impl MemoryStore {
@@ -1315,5 +1317,30 @@ impl MemoryStore {
     /// Deletes a Send, as its owner did here.
     pub fn remove_send(&self, id: SendId) {
         self.extras().sends.remove(&id);
+    }
+}
+
+impl Withholding for MemoryStore {
+    async fn withheld(&self, peer: ServerId, vault: Owner) -> Result<Option<Withheld>, StoreError> {
+        Ok(self.extras().withheld.get(&(peer, vault)).cloned())
+    }
+
+    async fn withhold(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        upto: &VersionVector,
+        at: u64,
+    ) -> Result<(), StoreError> {
+        let mut extras = self.extras();
+        let held = extras.withheld.entry((peer, vault)).or_default();
+        held.upto.merge(upto);
+        held.at = at;
+        Ok(())
+    }
+
+    async fn forget_withheld(&self, peer: ServerId) -> Result<(), StoreError> {
+        self.extras().withheld.retain(|(p, _), _| *p != peer);
+        Ok(())
     }
 }

@@ -55,6 +55,7 @@ pub mod members;
 pub mod memory;
 pub mod message;
 pub mod net;
+pub mod outbox;
 pub mod pairing;
 pub mod ports;
 mod publish;

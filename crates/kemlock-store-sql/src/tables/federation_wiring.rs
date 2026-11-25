@@ -1,5 +1,5 @@
 //! `peer_acknowledgements`, `vault_offers`, `replicated_accounts`, `federation_erasures` and
-//! `federation_replicated_sends`: the
+//! `federation_replicated_sends` and `federation_withheld`: the
 //! rows behind consent, copied accounts and the erasures a home owes its replicas. Times are Unix
 //! seconds in 64-bit columns, like the rest of federation's.
 
@@ -182,6 +182,31 @@ pub(crate) mod federation_replicated_sends {
         pub send_id: Uuid,
         /// The server the copy came from.
         pub from_server: Uuid,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// `federation_withheld`: versions of a vault this server won't send one peer.
+pub(crate) mod federation_withheld {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "federation_withheld")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub peer: Uuid,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_type: i16,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub owner_id: Uuid,
+        /// A version vector cursor.
+        pub upto: Vec<u8>,
+        /// Unix seconds of the last cancel.
+        pub at: i64,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
