@@ -10,6 +10,22 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+### Added
+
+- The server sends mobile pushes itself. iPhones are pushed to through Apple with your own APNs key
+  (`KEMLOCK_APNS_KEY_FILE`, `KEMLOCK_APNS_KEY_ID`, `KEMLOCK_APNS_TEAM_ID`, and optionally
+  `KEMLOCK_APNS_TOPIC` and `KEMLOCK_APNS_SANDBOX`); Android phones through UnifiedPush, which needs
+  no setting. A push says only "sync now".
+- The admin console's Push card shows both, with the hosted relay under them.
+
+### Changed
+
+- Kemlock's hosted push relay is now an optional fallback for iPhones on a server with no Apple key.
+  It stays off unless you turn it on.
+- A device registers a push token of kind `apns` or `unifiedpush`. `fcm` is no longer accepted (a
+  400), and nothing is sent to old `fcm` tokens: Kemlock uses no Firebase.
+- `GET /admin/v1/push-relay` also answers `apnsConfigured`, `apnsSandbox` and `unifiedPush`.
+
 ## [0.1.2] - 2026-11-25
 
 ### Added

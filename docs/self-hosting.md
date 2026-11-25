@@ -72,7 +72,7 @@ extension runs on the server's own page, `/kem/v1/webauthn`, which needs no sett
 ## Mail, push and live sync
 
 None of this is required. Without `SMTP_HOST` the server only logs that a mail would have gone out
-(the subject, never the body or the address), and without a push relay an app with an open
+(the subject, never the body or the address), and without a push key an app with an open
 connection still updates at once, and the others when they next sync.
 
 ### Mail (`SMTP_*`)
@@ -99,39 +99,48 @@ name or a link that opens anything without signing in.
 A bad value stops the start and names the setting. The admin console shows whether mail is set up.
 The Kemlock API mails from a task of its own, so a slow SMTP server does not hold up a sign-in.
 
-### Kemlock's push relay (`KEMLOCK_PUSH_RELAY*`)
+### Push to phones
 
-The relay is a hosted service that wakes the Kemlock apps on a phone (`docs/push-relay.md` is its
-contract). It receives only a device's push token, this server's installation id and the nudge
-"sync now": no email, account id or item. Turn it on or off through the admin API
-(`POST /admin/v1/push-relay/enable` and `/disable`, behind the same password or code check as
-other changes, and `GET /admin/v1/push-relay` for where it stands; the console has no screen for
-it yet), or set `KEMLOCK_PUSH_RELAY=true` so the server registers at its next start. Turning it
-off erases the installation at the relay and here, and works even when the relay can't be reached.
+The server wakes the Kemlock apps itself, with a push that says only "sync now": no email, account
+id, item or name. Nothing passes through Kemlock or anyone else. The admin console's Push card shows
+where each stands.
+
+**iPhone (Apple push), `KEMLOCK_APNS_*`.** Make a key for the Apple Push Notification service in
+your own Apple developer account (Certificates, Identifiers & Profiles, Keys, with "Apple Push
+Notifications service (APNs)" ticked), download the `.p8` file once, and note the key's id and your
+team id. The server signs a short-lived token with it and posts to Apple's HTTP/2 API. Set all of
+`KEMLOCK_APNS_KEY_FILE`, `KEMLOCK_APNS_KEY_ID` and `KEMLOCK_APNS_TEAM_ID`, or none. A bad value
+stops the start and names the setting; the key never appears in logs. A server with no Apple key
+sends no push to iPhones unless you turn on the relay below.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `KEMLOCK_APNS_KEY_FILE` | unset | path to the `.p8` file |
+| `KEMLOCK_APNS_KEY_ID` | unset | the key's id (10 letters and digits) |
+| `KEMLOCK_APNS_TEAM_ID` | unset | your Apple developer team id |
+| `KEMLOCK_APNS_TOPIC` | `com.kemlock.app` | the app's bundle id |
+| `KEMLOCK_APNS_SANDBOX` | `false` | `true` pushes through Apple's sandbox, for development builds of the app |
+
+**Android (UnifiedPush), no setting.** Kemlock uses no Firebase. A phone with a UnifiedPush
+distributor (ntfy, Gotify, NextPush and others) registers the endpoint URL the distributor gave it,
+and the server posts an empty body to it (Web Push without a payload, RFC 8030). The endpoint must
+be `https`. The server resolves the name itself and refuses any address that is not public
+(loopback, private, link-local and the like), follows no redirect and times out quickly, so an
+endpoint can't be used to reach your own network. Without a distributor, the app keeps its live
+connection while it is open and syncs when opened.
+
+**Kemlock's hosted relay, optional, `KEMLOCK_PUSH_RELAY*`.** A fallback for iPhones on a server
+that has no Apple key (`docs/push-relay.md` is its contract). It is off unless you turn it on, and a
+server with an Apple key never uses it. It receives only a device's push token, this server's
+installation id and the nudge. Turn it on or off in the admin console's Push card (or
+`POST /admin/v1/push-relay/enable` and `/disable`, behind the same password or code check as other
+changes), or set `KEMLOCK_PUSH_RELAY=true` so the server registers at its next start. Turning it off
+erases the installation at the relay and here, and works even when the relay can't be reached.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | `KEMLOCK_PUSH_RELAY` | `false` | `true` registers this server with the relay at start when it hasn't yet |
 | `KEMLOCK_PUSH_RELAY_URL` | `https://push.kemlock.app` | another relay, such as your own; it must be `https`, because the installation key goes with every send |
-
-### Bitwarden's push relay (`PUSH_*`)
-
-Bitwarden's phone apps don't use Kemlock's relay. As with Vaultwarden you register an installation
-at <https://bitwarden.com/host> and set the three values below; Bitwarden is then a processor of
-those pushes, on its own terms. The server registers each phone's push token at the relay
-(`PUT /api/devices/identifier/{id}/token`) and sends it an update when its vault changes. The
-messages on `/notifications/hub` (the open sockets of the apps and the web vault) need none of this.
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `PUSH_ENABLED` | `false` | turns Bitwarden's relay on |
-| `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY` | required when enabled | the installation from bitwarden.com/host |
-| `PUSH_RELAY_URI` | `https://push.bitwarden.com` | `https://push.bitwarden.eu` for the EU cloud |
-| `PUSH_IDENTITY_URI` | `https://identity.bitwarden.com` | `https://identity.bitwarden.eu` for the EU cloud |
-
-A missing id or key, or an address that is not `https`, stops the start.
-
-### Several replicas
 
 Live sync between replicas needs no setting: the server picks what the database offers. On SQLite
 (one process) a change goes straight to the open sockets. On PostgreSQL every replica listens on a
