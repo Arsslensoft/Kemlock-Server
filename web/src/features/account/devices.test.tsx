@@ -15,6 +15,7 @@ import {
   deviceKindLabelId,
   deviceMenu,
   isKemlockApp,
+  leaveThisBrowser,
   loadApprovals,
   otherDevices,
 } from './devicesModel';
@@ -131,6 +132,44 @@ describe('device helpers', () => {
     const list = otherDevices([d('old', '2026-01-01'), d('me', '2026-11-01', true), d('new', '2026-11-20')], null);
     expect(list.map((x) => x.id)).toEqual(['new', 'old']);
     expect(otherDevices([d('a', '2026-11-02'), d('b', '2026-11-03')], 'a').map((x) => x.id)).toEqual(['b']);
+  });
+});
+
+describe('signing this browser out', () => {
+  it('asks the server to forget this device, then ends the session, then goes to the sign-in', async () => {
+    const calls: string[] = [];
+    await leaveThisBrowser(
+      {
+        signOutDevice: async (id) => void calls.push(`server:${id}`),
+        endSession: async () => void calls.push('session'),
+        goToSignIn: async () => void calls.push('sign-in'),
+      },
+      'd-me',
+    );
+    expect(calls).toEqual(['server:d-me', 'session', 'sign-in']);
+  });
+
+  it('still lets go of the session when the server can not be reached', async () => {
+    const calls: string[] = [];
+    await leaveThisBrowser(
+      {
+        signOutDevice: async () => {
+          throw new Error('offline');
+        },
+        endSession: async () => void calls.push('session'),
+        goToSignIn: async () => void calls.push('sign-in'),
+      },
+      'd-me',
+    );
+    expect(calls).toEqual(['session', 'sign-in']);
+  });
+
+  it('has no device to forget when the session does not know it, and still ends', async () => {
+    const signOutDevice = vi.fn(async () => undefined);
+    const endSession = vi.fn(async () => undefined);
+    await leaveThisBrowser({ signOutDevice, endSession, goToSignIn: async () => undefined }, null);
+    expect(signOutDevice).not.toHaveBeenCalled();
+    expect(endSession).toHaveBeenCalledTimes(1);
   });
 });
 
