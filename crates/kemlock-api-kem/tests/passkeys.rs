@@ -932,6 +932,122 @@ async fn an_account_without_a_key_gets_no_proof_options_and_another_accounts_key
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
 }
 
+/// A key enrolled, then the authenticator app turned on beside it with the key's answer as the
+/// proof (which also gives the account its recovery code). Returns the key.
+async fn key_and_recovery_code(pk: &Pk, client: &Client, session: &Session) -> SoftwareAuthenticator {
+    let mut key = enrol_key(pk, client, session, "Yubi").await;
+    let token = Some(session.access_token.as_str());
+    let enrol = pk
+        .call(client, "POST", "/kem/v1/account/two-factor/totp", token, None)
+        .await;
+    let secret = enrol.json()["secret"].as_str().expect("a secret").to_owned();
+    let options = pk.proof_options(client, session).await.json()["options"].clone();
+    let confirmed = pk
+        .call(
+            client,
+            "POST",
+            "/kem/v1/account/two-factor/totp/confirm",
+            token,
+            Some(json!({
+                "code": totp_now(&pk.app, &secret),
+                "proof": { "webauthn": key.get(&options) },
+            })),
+        )
+        .await;
+    assert_eq!(confirmed.status, StatusCode::NO_CONTENT, "{:?}", confirmed.json());
+    key
+}
+
+impl Pk {
+    async fn recovery_code_with(&self, client: &Client, session: &Session, proof: Value) -> Reply {
+        self.call(
+            client,
+            "POST",
+            "/kem/v1/account/two-factor/recovery-code",
+            Some(&session.access_token),
+            Some(json!({ "proof": proof })),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn a_key_answer_reveals_the_recovery_code_once() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let mut key = key_and_recovery_code(&pk, &d1, &s1).await;
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let answer = json!({ "webauthn": key.get(&options) });
+    let shown = pk.recovery_code_with(&d1, &s1, answer.clone()).await;
+    assert_eq!(shown.status, StatusCode::OK, "{:?}", shown.json());
+    assert!(shown.json()["code"].is_string());
+    let replay = pk.recovery_code_with(&d1, &s1, answer).await;
+    assert_eq!(replay.status, StatusCode::BAD_REQUEST, "{:?}", replay.json());
+}
+
+#[tokio::test]
+async fn a_proof_stores_the_counter_so_an_older_answer_is_refused() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let mut key = key_and_recovery_code(&pk, &d1, &s1).await;
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let first = pk
+        .recovery_code_with(&d1, &s1, json!({ "webauthn": key.get(&options) }))
+        .await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
+
+    // A cloned authenticator that is behind the stored counter is refused.
+    key.set_counter(0);
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let stale = pk
+        .recovery_code_with(&d1, &s1, json!({ "webauthn": key.get(&options) }))
+        .await;
+    assert_eq!(stale.status, StatusCode::BAD_REQUEST, "{:?}", stale.json());
+
+    // One that is ahead is accepted.
+    key.set_counter(50);
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let ahead = pk
+        .recovery_code_with(&d1, &s1, json!({ "webauthn": key.get(&options) }))
+        .await;
+    assert_eq!(ahead.status, StatusCode::OK, "{:?}", ahead.json());
+}
+
+#[tokio::test]
+async fn an_answer_with_another_users_handle_is_refused() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let token = Some(s1.access_token.as_str());
+    let started = pk
+        .call(&d1, "POST", "/kem/v1/account/two-factor/webauthn", token, None)
+        .await;
+    let mut options = started.json()["options"].clone();
+    // The key is made for another user handle than the account's.
+    let target = if options.get("publicKey").is_some() {
+        &mut options["publicKey"]
+    } else {
+        &mut options
+    };
+    target["user"]["id"] = json!(b64(&[7; 16]));
+    let mut key = authenticator();
+    let confirmed = pk
+        .call(
+            &d1,
+            "POST",
+            "/kem/v1/account/two-factor/webauthn/confirm",
+            token,
+            Some(json!({"name": "Odd", "credential": key.create(&options)})),
+        )
+        .await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{:?}", confirmed.json());
+
+    let options = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    let refused = pk
+        .remove_key_with(&d1, &s1, json!({ "webauthn": key.get(&options) }))
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+}
+
 #[test]
 fn the_openapi_document_names_the_routes() {
     let doc = serde_json::to_value(PasskeysApiDoc::openapi()).expect("serialises");
