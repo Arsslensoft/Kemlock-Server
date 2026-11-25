@@ -96,7 +96,8 @@ const indexRoute = createRoute({
   path: '/',
   beforeLoad: ({ context }) => {
     if (context.config.setup === 'needs-admin') throw redirect({ to: '/setup' });
-    throw redirect({ to: context.session.getState().status === 'unlocked' ? '/vault' : '/sign-in' });
+    const status = context.session.getState().status;
+    throw redirect({ to: status === 'unlocked' ? '/vault' : status === 'locked' ? '/unlock' : '/sign-in' });
   },
 });
 
@@ -113,9 +114,9 @@ const about = createRoute({
 
 /** Steps after the admin account exists need that admin signed in with the vault open. */
 function needsAdminSession({ context, location }: { context: RouterContext; location: { href: string } }) {
-  if (context.session.getState().status !== 'unlocked') {
-    throw redirect({ to: '/sign-in', search: { next: location.href } });
-  }
+  const status = context.session.getState().status;
+  if (status === 'locked') throw redirect({ to: '/unlock', search: { next: location.href } });
+  if (status === 'signed-out') throw redirect({ to: '/sign-in', search: { next: location.href } });
 }
 
 const setupCode = createRoute({
@@ -162,7 +163,13 @@ const signIn = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sign-in',
   validateSearch: (search): NextSearch => nextSearch.parse(search),
-  beforeLoad: leaveWhenUnlocked,
+  beforeLoad: (args) => {
+    leaveWhenUnlocked(args);
+    // Signed in with the vault shut: the master password opens it, there is no one to sign in.
+    if (args.context.session.getState().status === 'locked') {
+      throw redirect({ to: '/unlock', search: { next: args.search.next } });
+    }
+  },
   component: lazyRouteComponent(() => import('@/features/auth/SignInScreen')),
 });
 const password = createRoute({
