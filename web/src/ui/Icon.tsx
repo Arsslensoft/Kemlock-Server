@@ -168,23 +168,16 @@ const ICONS = {
       <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </>
   ),
-  more: (
-    <>
-      <circle cx="5" cy="12" r="1.2" />
-      <circle cx="12" cy="12" r="1.2" />
-      <circle cx="19" cy="12" r="1.2" />
-    </>
-  ),
-  close: <path d="M6 6l12 12M18 6 6 18" />,
-  download: <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />,
-  paperclip: <path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7" />,
-  clock: (
+  // One icon per kind of item, as the New menu and the sidebar draw them (login, note and SSH
+  // key use `login`, `note` and `key` above).
+  file: <path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7" />,
+  mfa: (
     <>
       <circle cx="12" cy="13" r="8" />
       <path d="M12 9v4l2.5 2.5M9 2h6" />
     </>
   ),
-  backup: (
+  backupCodes: (
     <>
       <circle cx="12" cy="12" r="9" />
       <circle cx="12" cy="12" r="4" />
@@ -227,13 +220,14 @@ const ICONS = {
       <path d="m14.5 18.5-1 3.5 2.5-1.2 2.5 1.2-1-3.5" />
     </>
   ),
-  pgp: (
+  pgpKey: (
     <>
       <rect x="4" y="11" width="11" height="10" rx="2" />
       <path d="M7 11V8a2.5 2.5 0 0 1 5 0v3" />
       <path d="M9.5 15v2M17 4h4M19 2v4" />
     </>
   ),
+  close: <path d="M6 6l12 12M18 6 6 18" />,
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof ICONS;
