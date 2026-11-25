@@ -222,7 +222,7 @@ export default function SignIn() {
     setError(undefined);
     try {
       const address = await beginSso(
-        { sso: ssoApi, api, session, device: thisDevice, origin: location.origin },
+        { sso: ssoApi, origin: location.origin },
         email,
         next,
       );

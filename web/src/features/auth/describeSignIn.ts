@@ -1,6 +1,5 @@
 // The words for a sign-in that did not go through, for the screens that ask an authenticator.
 import { isApiError } from '@/api/errors';
-import { isApiError } from '@/api/errors';
 import { type Described, describeError } from '@/lib/errors';
 import { PasskeyError } from '@/lib/passkey';
 
