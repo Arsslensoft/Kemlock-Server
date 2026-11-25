@@ -172,6 +172,13 @@ describe('SettingsView', () => {
     expect(within(email).queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
   });
 
+  it('shows the unit beside a size limit and says 0 means no limit in its description', () => {
+    const kib = setting({ key: 'user_attachment_limit_kib', group: 'files', kind: 'int', min: 0, max: 1048576, value: '0' });
+    view({ settings: [kib] });
+    expect(screen.getByText('KiB')).toBeInTheDocument();
+    expect(screen.getByLabelText('Attachments per person')).toHaveAccessibleDescription(/0 means no limit/);
+  });
+
   it('puts the range in the placeholder, and Saved. under the title of the saved section', () => {
     view({ savedGroup: 'smtp' });
     expect(screen.getByLabelText('SMTP port')).toHaveAttribute('placeholder', '1–65535');

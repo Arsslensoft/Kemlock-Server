@@ -70,6 +70,7 @@ export function TextBox({
   step,
   pattern,
   maxLength,
+  suffix,
 }: {
   label: string;
   value: string;
@@ -91,6 +92,8 @@ export function TextBox({
   step?: number;
   pattern?: string;
   maxLength?: number;
+  /** A unit shown beside the input, such as KiB. */
+  suffix?: string;
 }) {
   const t = useT();
   const id = useId();
@@ -103,27 +106,30 @@ export function TextBox({
           {hint}
         </span>
       ) : null}
-      <input
-        id={id}
-        className={mono ? 'mono' : undefined}
-        type={type}
-        value={value}
-        placeholder={placeholder}
-        autoComplete={autoComplete ?? 'off'}
-        spellCheck={false}
-        disabled={disabled}
-        readOnly={readOnly ?? onChange === undefined}
-        inputMode={inputMode}
-        required={required}
-        min={min}
-        max={max}
-        step={step}
-        pattern={pattern}
-        maxLength={maxLength}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={described || undefined}
-        onChange={(event) => onChange?.(event.target.value)}
-      />
+      <div className={suffix ? 'with-suffix' : 'contents'}>
+        <input
+          id={id}
+          className={mono ? 'mono' : undefined}
+          type={type}
+          value={value}
+          placeholder={placeholder}
+          autoComplete={autoComplete ?? 'off'}
+          spellCheck={false}
+          disabled={disabled}
+          readOnly={readOnly ?? onChange === undefined}
+          inputMode={inputMode}
+          required={required}
+          min={min}
+          max={max}
+          step={step}
+          pattern={pattern}
+          maxLength={maxLength}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={described || undefined}
+          onChange={(event) => onChange?.(event.target.value)}
+        />
+        {suffix ? <span className="unit">{suffix}</span> : null}
+      </div>
       {error ? (
         <span className="field-error" id={`${id}-e`}>
           {t(error, errorValues)}

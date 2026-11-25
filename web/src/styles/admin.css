@@ -280,3 +280,19 @@
 .switch.lead .track {
   order: -1;
 }
+
+/* An input with its unit beside it. */
+.with-suffix {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.with-suffix .unit {
+  flex: none;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+.contents {
+  display: contents;
+}

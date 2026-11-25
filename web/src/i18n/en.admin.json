@@ -88,7 +88,7 @@
   "admin.settings.env": "Set by {name}, so it can't be changed here.",
   "admin.settings.placeholder.range": "{min}–{max}",
   "admin.settings.placeholder.days": "{min}–{max} days",
-  "admin.settings.placeholder.kib": "in KiB (0 = no limit)",
+  "admin.settings.noLimitHint": "0 means no limit.",
   "admin.settings.error.host": "Type a host name or address, without https:// or a slash.",
   "admin.settings.domainsHint": "Separate domains with commas, such as example.co, example.dev.",
   "admin.settings.error.number": "Type a whole number from {min} to {max}.",

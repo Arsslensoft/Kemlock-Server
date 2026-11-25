@@ -82,14 +82,14 @@ function Field({
   const bounded = setting.kind === 'int' && setting.min != null && setting.max != null;
   const placeholder = !bounded
     ? undefined
-    : setting.key.endsWith('_kib')
-      ? t('admin.settings.placeholder.kib')
-      : setting.key.endsWith('_days')
-        ? t('admin.settings.placeholder.days', range)
-        : t('admin.settings.placeholder.range', range);
+    : setting.key.endsWith('_days')
+      ? t('admin.settings.placeholder.days', range)
+      : t('admin.settings.placeholder.range', range);
+  const suffix = setting.key.endsWith('_kib') ? 'KiB' : setting.key.endsWith('_mib') ? 'MiB' : undefined;
   const hints = [
     setting.readOnly ? t('admin.settings.env', { name: setting.env }) : '',
     setting.kind === 'secret' ? t('admin.secretHint') : '',
+    setting.kind === 'int' && setting.min === 0 && setting.key.endsWith('_kib') ? t('admin.settings.noLimitHint') : '',
   ].filter((hint) => hint !== '');
   const hint = hints.length > 0 ? hints.join(' ') : undefined;
   switch (setting.kind) {
@@ -136,6 +136,7 @@ function Field({
           onChange={onChange}
           hint={hint}
           placeholder={placeholder}
+          suffix={suffix}
           error={error}
           errorValues={range}
           min={setting.min ?? undefined}
