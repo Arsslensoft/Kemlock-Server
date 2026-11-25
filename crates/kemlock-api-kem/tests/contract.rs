@@ -353,6 +353,7 @@ async fn the_device_list_names_each_device_and_each_apis_last_use() {
     assert_eq!(first["kind"], "bitwarden");
     assert_eq!(first["current"], false);
     assert_eq!(first["trusted"], false);
+    assert!(first["trustedSince"].is_null());
     assert!(first.get("lastKemlockUseAt").is_some_and(Value::is_null));
     let used = OffsetDateTime::parse(
         first["lastBitwardenUseAt"].as_str().expect("a time"),
