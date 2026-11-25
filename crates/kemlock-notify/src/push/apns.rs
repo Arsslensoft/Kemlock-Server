@@ -197,6 +197,9 @@ enum Delivery {
     Forget,
     /// This one failed; the others may go on.
     Failed,
+    /// Apple says the token is bad for this host. It is kept: with `KEMLOCK_APNS_SANDBOX` wrong,
+    /// every iPhone's token answers this, and forgetting them would sign every phone out of push.
+    WrongHost,
     /// Apple pushed back (rate limit, a refused key): send no more this time.
     Stop,
 }
@@ -316,6 +319,7 @@ impl ApnsSender {
     /// ends the sends of this call.
     pub async fn send_sync(&self, tokens: &[String]) -> SendOutcome {
         let mut outcome = SendOutcome::default();
+        let mut bad_device_tokens = 0usize;
         for chunk in tokens.chunks(PARALLEL) {
             let bearer = match self.bearer_at(now()) {
                 Ok(bearer) => bearer,
@@ -341,12 +345,21 @@ impl ApnsSender {
                     Delivery::Accepted => outcome.accepted += 1,
                     Delivery::Forget => outcome.rejected.push(token),
                     Delivery::Failed => {}
+                    Delivery::WrongHost => bad_device_tokens += 1,
                     Delivery::Stop => stop = true,
                 }
             }
             if stop {
                 break;
             }
+        }
+        if bad_device_tokens > 0 {
+            // Once per call, not per token.
+            tracing::warn!(
+                tokens = bad_device_tokens,
+                "Apple says these device tokens are bad (BadDeviceToken) and they were kept; if \
+                 every iPhone gets this, KEMLOCK_APNS_SANDBOX is probably wrong for the app's build"
+            );
         }
         outcome
     }
@@ -386,7 +399,8 @@ impl ApnsSender {
             .map(|r| r.reason)
             .unwrap_or_default();
         match (status, reason.as_str()) {
-            (410, _) | (400, "BadDeviceToken" | "Unregistered") => Delivery::Forget,
+            (410, _) | (400, "Unregistered") => Delivery::Forget,
+            (400, "BadDeviceToken") => Delivery::WrongHost,
             (403, "ExpiredProviderToken") => {
                 // Sign a new one next time.
                 self.forget_bearer();
@@ -548,12 +562,17 @@ mod tests {
             "dead0410" => {
                 (StatusCode::GONE, Json(json!({"reason": "Unregistered"}))).into_response()
             }
-            "bad0400" => (
+            "bad0400" | "bad0401" => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"reason": "BadDeviceToken"})),
             )
                 .into_response(),
-            "other400" => (
+            "cd400" => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"reason": "Unregistered"})),
+            )
+                .into_response(),
+            "ab400" => (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"reason": "PayloadEmpty"})),
             )
@@ -615,12 +634,27 @@ mod tests {
     async fn tokens_apple_does_not_know_are_forgotten() {
         let (_, sender) = fake().await;
         let outcome = sender
-            .send_sync(&tokens(&["dead0410", "aa01", "bad0400", "other400"]))
+            .send_sync(&tokens(&["dead0410", "aa01", "cd400", "ab400"]))
             .await;
         assert_eq!(outcome.accepted, 1);
         let mut rejected = outcome.rejected;
         rejected.sort();
-        assert_eq!(rejected, ["bad0400", "dead0410"]);
+        assert_eq!(rejected, ["cd400", "dead0410"]);
+    }
+
+    #[tokio::test]
+    async fn a_bad_device_token_is_kept_in_case_the_sandbox_setting_is_wrong() {
+        let (seen, sender) = fake().await;
+        let outcome = sender
+            .send_sync(&tokens(&["bad0400", "aa01", "bad0401"]))
+            .await;
+        assert_eq!(outcome.accepted, 1);
+        assert!(
+            outcome.rejected.is_empty(),
+            "BadDeviceToken must not wipe tokens: {:?}",
+            outcome.rejected
+        );
+        assert_eq!(seen.requests.lock().expect("lock").len(), 3, "all tried");
     }
 
     #[tokio::test]
