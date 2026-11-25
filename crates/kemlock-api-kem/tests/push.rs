@@ -155,6 +155,7 @@ async fn a_bad_body_is_a_400_problem() {
         json!({"kind": "unifiedpush", "token": "http://ntfy.example.org/up"}),
         json!({"kind": "unifiedpush", "token": "not a url"}),
         json!({"kind": "unifiedpush", "token": "https://u:p@ntfy.example.org/up"}),
+        json!({"kind": "unifiedpush", "token": "https://ntfy.example.org:8080/up"}),
     ];
     for body in bodies {
         let reply = call(&client, &session, "POST", Some(body.clone())).await;

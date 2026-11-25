@@ -63,8 +63,8 @@ pub(crate) struct PushTokenRequest {
     /// `"apns"` (iOS) or `"unifiedpush"` (Android). `"fcm"` is no longer accepted.
     pub(crate) kind: String,
     /// The token the push service gave the app, 1 to 512 characters with no whitespace. For
-    /// `"unifiedpush"` it is the endpoint URL the distributor gave: `https`, no user name or
-    /// password. The server sends "sync now" to it itself.
+    /// `"unifiedpush"` it is the endpoint URL the distributor gave: `https` on port 443 or 8443,
+    /// no user name or password. The server sends "sync now" to it itself.
     pub(crate) token: String,
 }
 
@@ -170,7 +170,7 @@ where
     request_body = PushTokenRequest,
     responses(
         (status = 204, description = "The token is kept for the signed-in device"),
-        (status = 400, description = "Not apns or unifiedpush (fcm is no longer accepted), a token that isn't 1 to 512 characters with no whitespace, or a UnifiedPush endpoint that isn't an https URL", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "Not apns or unifiedpush (fcm is no longer accepted), a token that isn't 1 to 512 characters with no whitespace, or a UnifiedPush endpoint that isn't an https URL on port 443 or 8443", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Not signed in", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]

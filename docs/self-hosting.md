@@ -123,7 +123,8 @@ sends no push to iPhones unless you turn on the relay below.
 
 **Android (UnifiedPush).** Kemlock uses no Firebase. A phone with a UnifiedPush distributor (ntfy,
 Gotify, NextPush and others) registers the endpoint URL the distributor gave it, and the server
-posts an empty body to it (Web Push without a payload, RFC 8030). The endpoint must be `https`. The
+posts an empty body to it (Web Push without a payload, RFC 8030). The endpoint must be `https` on
+port 443 (the default) or 8443, so a client can't aim the server at other services. The
 server resolves the name itself and refuses any address that is not public (loopback, private,
 link-local and the like), follows no redirect and times out quickly, so an
 endpoint can't be used to reach your own network. Without a distributor, the app

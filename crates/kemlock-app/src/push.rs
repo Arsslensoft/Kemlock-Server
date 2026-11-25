@@ -56,8 +56,9 @@ impl PushKind {
     }
 }
 
-/// Checks the endpoint URL a UnifiedPush distributor gave: `https`, a host, no credentials, at
-/// most [`MAX_PUSH_TOKEN_LEN`] characters. Whether the host is a public address is checked when
+/// Checks the endpoint URL a UnifiedPush distributor gave: `https`, a host, no credentials, port
+/// 443 (the default) or 8443 so the server can't be pointed at other services on a public host,
+/// at most [`MAX_PUSH_TOKEN_LEN`] characters. Whether the host is a public address is checked when
 /// sending, because a name can resolve differently later.
 pub fn check_unifiedpush_endpoint(endpoint: &str) -> Result<url::Url, &'static str> {
     if endpoint.len() > MAX_PUSH_TOKEN_LEN {
@@ -72,6 +73,10 @@ pub fn check_unifiedpush_endpoint(endpoint: &str) -> Result<url::Url, &'static s
     }
     if !url.username().is_empty() || url.password().is_some() {
         return Err("the UnifiedPush endpoint must not carry a user name or password");
+    }
+    // `https` with no port means 443, which the parser leaves out.
+    if url.port().is_some_and(|port| port != 8443) {
+        return Err("the UnifiedPush endpoint must use port 443 or 8443");
     }
     Ok(url)
 }
@@ -392,6 +397,24 @@ mod tests {
         assert_eq!(all[0].token, "https://ntfy.example.org/upABC123?up=1");
     }
 
+    #[test]
+    fn only_ports_443_and_8443_are_accepted_for_an_endpoint() {
+        for good in [
+            "https://ntfy.example.org/up",
+            "https://ntfy.example.org:443/up",
+            "https://ntfy.example.org:8443/up",
+        ] {
+            assert!(check_unifiedpush_endpoint(good).is_ok(), "{good}");
+        }
+        for bad in ["https://ntfy.example.org:80/up", "https://ntfy.example.org:1/up"] {
+            assert_eq!(
+                check_unifiedpush_endpoint(bad).map(|_| ()),
+                Err("the UnifiedPush endpoint must use port 443 or 8443"),
+                "{bad}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn bad_unifiedpush_endpoints_are_refused() {
         let (case, actor, push) = setup();
@@ -403,6 +426,10 @@ mod tests {
             "no-scheme.example.org/up",
             "https://",
             "https://user:pw@ntfy.example.org/up",
+            "https://ntfy.example.org:22/up",
+            "https://ntfy.example.org:8080/up",
+            "https://ntfy.example.org:6379/up",
+            "https://ntfy.example.org:444/up",
             long.as_str(),
         ] {
             assert!(
