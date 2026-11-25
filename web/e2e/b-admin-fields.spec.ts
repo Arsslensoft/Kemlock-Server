@@ -136,6 +136,11 @@ test('the admin console: the Overview, the switch hints and the custom fields', 
   await expect(stats.nth(4)).toContainText('Features');
   await expect(page.locator('.adm-stats')).not.toContainText('Version');
   await expect(page.locator('.adm-stats')).not.toContainText('Setup');
+  // Checks and Users to look at share the left column, with the push relay beside them.
+  const split = page.locator('.adm-split');
+  await expect(split.locator('.adm-col').getByRole('heading', { name: 'Checks' })).toBeVisible();
+  await expect(split.locator('.adm-col').getByRole('heading', { name: 'Users to look at' })).toBeVisible();
+  await expect(split.locator(':scope > .card').getByRole('heading', { name: 'Push', exact: true })).toBeVisible();
   await expectAccessible(page);
 
   // Server settings: each switch has its gray hint under the label.

@@ -126,12 +126,17 @@ test('Devices & apps: Connect, and trust in the table', async ({ page, context }
   await expect(phone.getByRole('tooltip')).toBeHidden();
   await expectAccessible(page);
 
-  // Rows' menus: Trust is for Kemlock apps only, and a Bitwarden-API app has Sign out alone.
+  // Rows' menus: Trust is for Kemlock apps only, and a Bitwarden-API app has Sign out alone, with no
+  // note. Another Kemlock app that is not trusted lists Trust this device off, with the reason.
   await page.getByRole('button', { name: "Actions for Sam's iPhone 16" }).click();
   await expect(page.getByRole('menuitem')).toHaveText(['Stop trusting', 'Sign out']);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Actions for Pixel 9' }).click();
-  await expect(page.getByRole('menuitem')).toHaveText(['Sign out']);
+  await expect(page.getByRole('menuitem')).toHaveText(['Trust this device', 'Sign out']);
+  await expect(page.getByRole('menuitem', { name: 'Trust this device' })).toHaveAttribute('aria-disabled', 'true');
+  const reason = 'Only that device can turn this on: open Kemlock on it.';
+  await expect(page.locator('.menu-note')).toHaveText(reason);
+  await expect(page.getByRole('menu', { name: 'Actions for Pixel 9' })).toHaveAccessibleDescription(reason);
   await page.keyboard.press('Escape');
   for (const name of ['Workstation', 'Build server']) {
     await page.getByRole('button', { name: `Actions for ${name}` }).click();
@@ -147,23 +152,21 @@ test('Devices & apps: Connect, and trust in the table', async ({ page, context }
   await expect(shield).toHaveCount(0);
   expect(untrusted).toEqual([PHONE]);
 
-  // This browser: Trust this device, then Sign out of this browser. When the worker can make a
-  // copy, trusting it for real puts the shield on its row, and Stop trusting takes it off.
+  // This browser: Trust this device is on for it (the crypto worker can make the copy), and trusting
+  // it for real puts the shield on its row; Stop trusting takes it off again.
   await page.getByRole('button', { name: 'Actions for this browser' }).click();
   const trust = page.getByRole('menuitem', { name: 'Trust this device' });
   await expect(trust).toBeVisible();
+  await expect(trust).not.toHaveAttribute('aria-disabled', 'true');
   await expect(page.getByRole('menuitem', { name: 'Sign out of this browser' })).toBeVisible();
-  if ((await trust.getAttribute('aria-disabled')) !== 'true') {
-    await trust.click();
-    const mine = page.locator('.row', { hasText: 'This browser' });
-    await expect(mine.getByRole('button', { name: 'Trusted device' })).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: 'Actions for this browser' }).click();
-    await expect(page.getByRole('menuitem')).toHaveText(['Stop trusting', 'Sign out of this browser']);
-    await page.getByRole('menuitem', { name: 'Stop trusting' }).click();
-    await expect(mine.getByRole('button', { name: 'Trusted device' })).toHaveCount(0);
-  } else {
-    await page.keyboard.press('Escape');
-  }
+  await trust.click();
+  const mine = page.locator('.row', { hasText: 'This browser' });
+  await expect(mine.getByRole('button', { name: 'Trusted device' })).toBeVisible({ timeout: 30_000 });
+  await expect(mine.getByRole('tooltip')).toContainText('Trusted since');
+  await page.getByRole('button', { name: 'Actions for this browser' }).click();
+  await expect(page.getByRole('menuitem')).toHaveText(['Stop trusting', 'Sign out of this browser']);
+  await page.getByRole('menuitem', { name: 'Stop trusting' }).click();
+  await expect(mine.getByRole('button', { name: 'Trusted device' })).toHaveCount(0);
 
   expect(problems).toEqual([]);
 });
