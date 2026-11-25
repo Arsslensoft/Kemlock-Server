@@ -1,6 +1,6 @@
 // The page frames: the vault's header and sidebar, and the admin console's. They are layout
 // routes, so they stay mounted while the screens inside them change.
-import { Link, Outlet, useNavigate, useRouter, useSearch } from '@tanstack/react-router';
+import { Link, Outlet, useNavigate, useRouter, useRouterState, useSearch } from '@tanstack/react-router';
 import { useVault } from '@/features/vault/hooks';
 import { FailoverBanner } from '@/features/failover/Banner';
 import { useT } from '@/i18n';
@@ -8,6 +8,7 @@ import { Icon, type IconName, Wordmark } from '@/ui/Icon';
 import { buttonClass } from '@/ui/Button';
 import { lockVault, signOut } from './actions';
 import { session } from './services';
+import { withQuery } from './shellNav';
 import { useSessionState } from './session';
 
 function initials(name: string | null, email: string | null): string {
@@ -34,6 +35,7 @@ export function VaultShell() {
   const router = useRouter();
   const state = useSessionState(session);
   const search = useSearch({ strict: false }) as { q?: string };
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { active, trashed } = useVault();
   const count = (kind: string) => active.filter((item) => item.kind === kind).length;
   return (
@@ -58,7 +60,13 @@ export function VaultShell() {
             value={search.q ?? ''}
             onChange={(event) => {
               const q = event.target.value;
-              void navigate({ to: '/vault', search: { q: q === '' ? undefined : q }, replace: true });
+              // On the list, typing refines it in place: the filters stay and one history entry is
+              // reused. From any other page the first letter leaves it, as a step Back can undo.
+              if (pathname === '/vault') {
+                void navigate({ to: '/vault', search: (previous) => withQuery(previous, q), replace: true });
+              } else {
+                void navigate({ to: '/vault', search: q === '' ? {} : { q } });
+              }
             }}
           />
         </div>
