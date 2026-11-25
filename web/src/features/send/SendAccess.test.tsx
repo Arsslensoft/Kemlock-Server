@@ -62,6 +62,44 @@ describe('SendAccess', () => {
     expect(screen.getByText(/From sam@example\.co/)).toBeInTheDocument();
   });
 
+  it('shows an item Send read-only, masks the secrets until shown, and copies a field', async () => {
+    const envelope = JSON.stringify({
+      kemlockSend: 1,
+      kind: 'card',
+      name: 'Visa',
+      fields: { cardholder: 'Sam Doe', number: '4111111111111111', expiry: '05/2029' },
+    });
+    const { key, payload } = await sealed('text', { name: 'My card', text: envelope });
+    const deps: RecipientDeps = {
+      access: { open: async () => access('text', payload), file: vi.fn() },
+      crypto,
+    };
+    renderWithIntl(<SendAccess link={{ accessId: ACCESS_ID, key }} deps={deps} />);
+    expect(await screen.findByRole('heading', { name: 'My card', level: 1 })).toBeInTheDocument();
+    expect(screen.getByText('Card')).toBeInTheDocument();
+    expect(screen.getByText('Sam Doe')).toBeInTheDocument();
+    expect(screen.getByText('05/2029')).toBeInTheDocument();
+    expect(screen.queryByText('4111111111111111')).not.toBeInTheDocument();
+    expect(screen.queryByText(/kemlockSend/)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Show Number' }));
+    expect(screen.getByText('4111111111111111')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Hide Number' }));
+    expect(screen.queryByText('4111111111111111')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy Cardholder' })).toBeInTheDocument();
+  });
+
+  it('keeps showing other JSON text as plain text', async () => {
+    const { key, payload } = await sealed('text', { name: 'Data', text: '{"hello":"world"}' });
+    const deps: RecipientDeps = {
+      access: { open: async () => access('text', payload), file: vi.fn() },
+      crypto,
+    };
+    renderWithIntl(<SendAccess link={{ accessId: ACCESS_ID, key }} deps={deps} />);
+    expect(await screen.findByText('{"hello":"world"}')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy the text' })).toBeInTheDocument();
+  });
+
   it('asks for the password, says when it is wrong, and opens with the right one', async () => {
     const { key, payload } = await sealed('text', { name: 'Vault door', text: 'open sesame' });
     const proof = encodeB64(await crypto.sendProof(ACCESS_ID, key, 'swordfish'));
