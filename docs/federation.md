@@ -783,6 +783,42 @@ the wire format: nothing is sent to the peer for it beyond an ordinary request.
   `latencyMs`, `probeError`, `failingSince` and a `lastSeen` that is the later of its last session
   and its last answered probe. The admin federation screen shows it beside each peer.
 
+## Waiting changes
+
+Replication is pull: a peer asks for the versions its cursor doesn't cover, and this server only
+nudges it when it has more. The **changes waiting** for a peer in a vault are therefore the versions
+this server holds that the peer hasn't been given, counted from what the peer has echoed back (the
+cursor of this server's last pull from it), to 100 per vault and over at most 20 pages. It is an
+estimate that falls to nothing once the peer has caught up.
+
+- **Reading.** `GET /kem/v1/placement` gives each vault `pending`: the changes waiting for one of its
+  other servers, the one that is offline first, as `{id, summary, askedAt}`. `id` is the id of the
+  server they wait for, `summary` says how many ("3 changes waiting for vps.example.net", with a plus
+  when the count stopped at its limit) and `askedAt` is when the oldest was written. It is `null` when
+  nothing waits. Every other waiting server is shown after the first is cancelled. The admin API's
+  `waitingChanges` on a vault is the most that waits for any one server.
+- **Cancelling.** `DELETE /kem/v1/placement/{vault}/pending/{change}` drops the queue to the server
+  `change` names (the `id` above). `vault` is `me` (the caller's own vault), or a space id where the
+  caller is a confirmed owner or admin (another member gets 403, a non-member 404). It answers 200
+  `{dropped}`; 404 when nothing waits for that server or the vault isn't federated with it; 409
+  while that server answers its probes, since changes queued for a server that is up are on their
+  way, and only a server whose status is `offline` can have its queue dropped.
+- **What it does.** The server keeps, for that peer and vault, a marker covering every version it
+  holds at that moment (table `federation_withheld`: the peer, the vault and a version cursor). From
+  then on its `Pull` and `Fetch` answers to that peer leave those versions out (the peer's cursor
+  still moves past them, so it doesn't ask again), and they no longer count as waiting. A second
+  cancel adds to the first. Changes written after the cancel are not covered and flow as usual.
+- **What it never does.** It never deletes anything held here: the versions stay in this server's
+  copy, in what the account's devices sync and in backups, and every other server of the vault is
+  still given them. It does not ask the peer to forget anything it already has, and it does not touch
+  the peer's own changes, which this server keeps pulling. It records an event, `federation.waiting_cancelled`
+  (who, the vault, the server and how many), in the event log.
+- **After it.** The two copies of the vault now differ by those versions, and the hourly hash-tree
+  comparison reports the vault as out of step with that peer until it is copied afresh (unpairing
+  the peer and pairing again); nothing lifts the marker by itself. Unpairing the peer
+  forgets the markers kept for it.
+
+
 ## Not built yet
 
 Nothing is open.
