@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { NOW, migration } from './fixtures';
-import { MigrateView, stepOf } from './Migrate';
+import { MigrateView, checkSource, stepOf } from './Migrate';
 
 function view(props: Partial<Parameters<typeof MigrateView>[0]> = {}) {
   const onStart = vi.fn();
@@ -22,7 +22,37 @@ describe('stepOf', () => {
   });
 });
 
+describe('checkSource', () => {
+  it('follows the server: any plausible text, not only absolute paths', () => {
+    expect(checkSource('')).toBeUndefined();
+    expect(checkSource('   ')).toBeUndefined();
+    expect(checkSource('/srv/vaultwarden/data')).toBeUndefined();
+    expect(checkSource('C:\\vw\\data')).toBeUndefined();
+    expect(checkSource('data')).toBeUndefined();
+    expect(checkSource('data/db.sqlite3')).toBeUndefined();
+    expect(checkSource('MYSQL://vw@db/vw')).toBeUndefined();
+    expect(checkSource('mariadb://vw@db/vw')).toBeUndefined();
+  });
+
+  it('refuses text the server would: too long, or with control characters', () => {
+    expect(checkSource('x'.repeat(1025))).toBe('admin.migrate.error.source');
+    expect(checkSource('x'.repeat(1024))).toBeUndefined();
+    expect(checkSource('/srv/a\nb')).toBe('admin.migrate.error.source');
+    expect(checkSource('/srv/a\u0000b')).toBe('admin.migrate.error.source');
+  });
+});
+
 describe('MigrateView', () => {
+  it('shows an error for a source that is too long, and does not read it', async () => {
+    const { onStart } = view();
+    const user = userEvent.setup({ delay: null });
+    await user.click(screen.getByLabelText(/Vaultwarden data folder on this server/));
+    await user.paste('x'.repeat(1025));
+    expect(await screen.findByText(/at most 1024 characters/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check it' })).toBeDisabled();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
   it('needs a source before it reads anything', async () => {
     const { onStart } = view();
     const check = screen.getByRole('button', { name: 'Check it' });

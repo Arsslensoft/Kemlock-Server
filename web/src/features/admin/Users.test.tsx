@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { ADMIN_OVERVIEW, NOW, SPACES, USERS, invite } from './fixtures';
 import { AttentionCard, attentionFrom } from './Overview';
-import { type UsersViewProps, UsersView } from './Users';
+import { type UsersViewProps, UsersView, isEmail } from './Users';
 
 function view(props: Partial<UsersViewProps> = {}) {
   const handlers = {
@@ -85,12 +85,31 @@ describe('UsersView', () => {
     expect(onAction).toHaveBeenCalledWith('erase', USERS[1]);
   });
 
+  it('takes an address with a non-ASCII domain, as the server does', async () => {
+    const { onInvite } = view();
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Email to invite'), 'ada@bücher.de');
+    expect(screen.queryByText(/Type an email address/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Invite' }));
+    expect(onInvite).toHaveBeenCalledWith('ada@bücher.de');
+  });
+
+  it('shows the email error as it is typed and keeps Invite off', async () => {
+    const { onInvite } = view();
+    const user = userEvent.setup();
+    const invite = screen.getByRole('button', { name: 'Invite' });
+    expect(invite).toBeDisabled();
+    await user.type(screen.getByLabelText('Email to invite'), 'not-an-email');
+    expect(screen.getByText(/Type an email address/)).toBeInTheDocument();
+    expect(invite).toBeDisabled();
+    expect(onInvite).not.toHaveBeenCalled();
+  });
+
   it('checks the email before inviting', async () => {
     const { onInvite } = view();
     const user = userEvent.setup();
     const box = screen.getByLabelText('Email to invite');
     await user.type(box, 'not-an-email');
-    await user.click(screen.getByRole('button', { name: 'Invite' }));
     expect(await screen.findByText(/Type an email address/)).toBeInTheDocument();
     expect(onInvite).not.toHaveBeenCalled();
     await user.clear(box);
@@ -173,5 +192,16 @@ describe('the overview', () => {
     unmount();
     renderWithIntl(<AttentionCard items={[]} unavailable />);
     expect(screen.getByText(/admin API didn't answer/)).toBeInTheDocument();
+  });
+});
+
+describe('isEmail', () => {
+  it('needs one @, text before it, a dot in the domain and no spaces', () => {
+    expect(isEmail('new@example.co')).toBe(true);
+    expect(isEmail('ada@bücher.de')).toBe(true);
+    expect(isEmail('a@b@example.co')).toBe(false);
+    expect(isEmail('@example.co')).toBe(false);
+    expect(isEmail('ada@localhost')).toBe(false);
+    expect(isEmail('a da@example.co')).toBe(false);
   });
 });

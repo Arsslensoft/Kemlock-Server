@@ -10,6 +10,20 @@ import { relative } from './format';
 import { useReauth } from './reauth';
 import { ErrorNotice, Loading, PageHead, TextBox } from './ui';
 
+const MAX_SOURCE_LENGTH = 1024;
+/** A control character: C0, DEL and C1, as Rust's `char::is_control` counts them. */
+const isControl = (c: string): boolean => c.charCodeAt(0) < 32 || (c.charCodeAt(0) >= 127 && c.charCodeAt(0) < 160);
+
+/**
+ * The error a typed source earns, or undefined. This is the server's own rule (plausible text:
+ * not blank, at most 1024 characters, no control characters); whether the folder or database
+ * exists is the server's to say. An empty one has no error, it only keeps Check off.
+ */
+export function checkSource(value: string): MessageId | undefined {
+  if (value.trim() === '') return undefined;
+  return new TextEncoder().encode(value).length > MAX_SOURCE_LENGTH || [...value].some(isControl) ? 'admin.migrate.error.source' : undefined;
+}
+
 export type MigrateStep = 1 | 2 | 3 | 4;
 
 /**
@@ -53,7 +67,7 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
   const [from, setFrom] = useState(status?.source ?? '');
   const [files, setFiles] = useState('');
   const step = stepOf(status);
-  const ready = from.trim() !== '';
+  const ready = from.trim() !== '' && checkSource(from) === undefined;
   return (
     <>
       <PageHead title={t('admin.migrate')} lede={t('admin.migrate.lede')} />
@@ -101,12 +115,15 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
                 onChange={setFrom}
                 placeholder="/srv/vaultwarden/data"
                 hint={t('admin.migrate.pathHint')}
+                error={checkSource(from)}
+                required
               />
               <TextBox
                 label={t('admin.migrate.files')}
                 mono
                 value={files}
                 onChange={setFiles}
+                placeholder="/srv/vaultwarden/files"
                 hint={t('admin.migrate.filesHint')}
               />
               <div className="actions">

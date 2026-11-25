@@ -190,11 +190,24 @@ export function Toggle({
   onChange: (value: boolean) => void;
   disabled?: boolean;
 }) {
+  const hintId = useId();
   return (
-    <Switch className="switch" isSelected={checked} onChange={onChange} isDisabled={disabled}>
+    <Switch
+      className="switch"
+      isSelected={checked}
+      onChange={onChange}
+      isDisabled={disabled}
+      // The name is the label alone; the hint is the description.
+      aria-label={label}
+      aria-describedby={hint ? hintId : undefined}
+    >
       <span className="text">
         <span className="t">{label}</span>
-        {hint ? <span className="hint">{hint}</span> : null}
+        {hint ? (
+          <span className="hint" id={hintId}>
+            {hint}
+          </span>
+        ) : null}
       </span>
       <span className="track" />
     </Switch>
