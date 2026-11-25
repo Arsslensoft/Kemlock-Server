@@ -239,3 +239,67 @@ async fn another_accounts_device_can_not_be_signed_out() {
     assert_eq!(result, Err(AppError::NotFound));
     assert_eq!(s.world.store.devices_of(s.user).len(), 1);
 }
+
+#[tokio::test]
+async fn signing_the_other_devices_out_keeps_the_one_asking() {
+    let s = scene().await;
+    let mut others = Vec::new();
+    for (name, jkt) in [("iPad", "jkt-2"), ("Laptop", "jkt-3")] {
+        let SignedIn::Tokens(tokens) = sign_in_with(&s.world, EMAIL, &PASSWORD, device(name), jkt)
+            .await
+            .expect("signs in")
+        else {
+            panic!("tokens expected");
+        };
+        key_copies(&s.world)
+            .put(
+                &Actor {
+                    device: tokens.device,
+                    ..s.me
+                },
+                wrapped(),
+                KeyProtection::Keystore,
+            )
+            .await
+            .expect("stores");
+        others.push(tokens.device);
+    }
+    key_copies(&s.world)
+        .put(&s.me, wrapped(), KeyProtection::Keystore)
+        .await
+        .expect("stores");
+    // Another account's device is no business of this one.
+    let stranger = make_user(&s.world, "kim@example.org").await;
+    sign_in_with(&s.world, "kim@example.org", &PASSWORD, device("Pixel"), "jkt-9")
+        .await
+        .expect("signs in");
+
+    let signed_out = sign_out_device(&s.world)
+        .execute_others(&s.me)
+        .await
+        .expect("signs the others out");
+
+    assert_eq!(signed_out, 2);
+    for gone in others {
+        assert_eq!(s.world.store.key_copy_of(gone), None);
+        assert!(
+            DeviceRepo::get(&s.world.store, gone)
+                .await
+                .expect("reads")
+                .is_none()
+        );
+    }
+    // This device keeps its copy and its refresh token.
+    assert!(s.world.store.key_copy_of(s.me.device).is_some());
+    s.world
+        .refresh()
+        .execute(&s.my_refresh_token, "jkt-1")
+        .await
+        .expect("its refresh token still works");
+    assert_eq!(s.world.store.devices_of(stranger).len(), 1);
+    // And with no other device there is nothing to do.
+    assert_eq!(
+        sign_out_device(&s.world).execute_others(&s.me).await,
+        Ok(0)
+    );
+}
