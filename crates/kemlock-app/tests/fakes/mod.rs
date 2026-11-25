@@ -43,6 +43,7 @@ use uuid::Uuid;
 
 pub(crate) mod contract;
 pub(crate) mod dedup;
+pub(crate) mod profile;
 pub(crate) mod unlock;
 
 // ---------------------------------------------------------------------------------------------

@@ -4,18 +4,18 @@
 
 mod fakes;
 
+use fakes::profile::FakeProfile;
 use fakes::*;
 use kemlock_app::notices::{BoxFuture, Notice, Notices, Outbox};
 use kemlock_app::platform::Hasher;
-use kemlock_app::ports::{Clock, StoreError};
+use kemlock_app::ports::Clock;
 use kemlock_app::profile::{
     ConfirmEmailChange, Credentials, EmailChanges, NewCredentials, Profile, ProfileError,
-    ProfileRepo, ProfileView,
+    ProfileView,
 };
 use kemlock_app::register::WRAPPED_ROOT_KEY_LEN;
 use kemlock_app::{AppError, OpaqueFinishInput, OpaqueStartInput, SignedIn};
-use kemlock_domain::{AccountMode, EmailChange, KdfParams, UserId};
-use std::collections::{HashMap, HashSet};
+use kemlock_domain::{AccountMode, KdfParams, UserId};
 use std::sync::{Arc, Mutex};
 use time::Duration;
 
@@ -26,63 +26,6 @@ const JKT: &str = "device-key-thumbprint";
 const NEW_PASSWORD: [u8; 32] = [6u8; 32];
 
 // ---- fakes ----
-
-#[derive(Default)]
-struct RepoInner {
-    sso: HashSet<UserId>,
-    changes: HashMap<UserId, EmailChange>,
-}
-
-/// The profile port over two maps.
-#[derive(Clone, Default)]
-struct FakeProfile(Arc<Mutex<RepoInner>>);
-
-impl FakeProfile {
-    fn link_sso(&self, user: UserId) {
-        self.0.lock().expect("the lock").sso.insert(user);
-    }
-
-    fn pending(&self, user: UserId) -> Option<EmailChange> {
-        self.0.lock().expect("the lock").changes.get(&user).cloned()
-    }
-}
-
-impl ProfileRepo for FakeProfile {
-    async fn has_sso_identity(&self, user: UserId) -> Result<bool, StoreError> {
-        Ok(self.0.lock().expect("the lock").sso.contains(&user))
-    }
-
-    async fn put_email_change(&self, change: &EmailChange) -> Result<(), StoreError> {
-        self.0
-            .lock()
-            .expect("the lock")
-            .changes
-            .insert(change.user, change.clone());
-        Ok(())
-    }
-
-    async fn email_change_of(&self, user: UserId) -> Result<Option<EmailChange>, StoreError> {
-        Ok(self.pending(user))
-    }
-
-    async fn take_email_change(
-        &self,
-        token_hash: [u8; 32],
-    ) -> Result<Option<EmailChange>, StoreError> {
-        let mut inner = self.0.lock().expect("the lock");
-        let owner = inner
-            .changes
-            .values()
-            .find(|change| change.token_hash == token_hash)
-            .map(|change| change.user);
-        Ok(owner.and_then(|user| inner.changes.remove(&user)))
-    }
-
-    async fn remove_email_change(&self, user: UserId) -> Result<(), StoreError> {
-        self.0.lock().expect("the lock").changes.remove(&user);
-        Ok(())
-    }
-}
 
 /// What the mail sender was asked to send; with `fail`, it says every send failed.
 #[derive(Clone, Default)]
