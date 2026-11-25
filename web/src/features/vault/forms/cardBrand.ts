@@ -88,6 +88,12 @@ export function formatCardNumber(text: string): string {
   return groupDigits(digits, detectBrand(digits));
 }
 
+/** A stored number shown grouped, every digit of it: opening a card never cuts its number short. */
+export function formatStoredNumber(text: string): string {
+  const digits = cardDigits(text);
+  return groupDigits(digits, detectBrand(digits));
+}
+
 export interface Status {
   state: 'pending' | 'ok' | 'err';
   message: MessageId;
@@ -145,6 +151,8 @@ export function cvcStatus(code: string, brand: CardBrand | undefined, blurred: b
     message: want === 4 ? 'itemForm.card.cvc.four' : want === 3 ? 'itemForm.card.cvc.three' : 'itemForm.card.cvc.either',
   };
   if (code === '') return hint;
+  // A stored code can be longer than the box takes, whatever the brand: it is wrong, and says so.
+  if (code.length > 4) return { state: 'err', message: 'itemForm.card.cvc.short' };
   if (want !== undefined && code.length > want) {
     return { state: 'err', message: 'itemForm.card.cvc.uses', values: { brand: brand?.name ?? '', digits: want } };
   }

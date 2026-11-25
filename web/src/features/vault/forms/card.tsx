@@ -18,6 +18,7 @@ import {
   cvcStatus,
   detectBrand,
   formatCardNumber,
+  formatStoredNumber,
   numberStatus,
 } from './cardBrand';
 import { extrasDefaults, extrasFields, extrasShape } from './extras';
@@ -72,7 +73,10 @@ export const cardSchema = z
       const parsed = parseCardExpiry(v);
       return parsed.month !== undefined && parsed.year !== undefined;
     }, 'error.cardExpiry'),
-    code: z.string().max(4, 'error.tooLong'),
+    code: z.string().max(20, 'error.tooLong'),
+    /** The digits and the code the item had: what is unchanged from them is not checked again. */
+    storedNumber: z.string(),
+    storedCode: z.string(),
     pin: z.string().max(20, 'error.tooLong'),
     note: z.string().max(10000, 'error.tooLong'),
     pinned: z.boolean(),
@@ -84,9 +88,10 @@ export const cardSchema = z
       ctx.addIssue({ code: 'custom', path: ['number'], message: 'error.cardIncomplete' });
       return;
     }
-    const number = cardNumberProblem(digits);
+    // A card is checked where the person changed it: what it held before is theirs to keep as it is.
+    const number = digits === v.storedNumber ? undefined : cardNumberProblem(digits);
     if (number) ctx.addIssue({ code: 'custom', path: ['number'], message: number });
-    const code = cardCodeProblem(v.code.trim(), digits);
+    const code = v.code.trim() === v.storedCode ? undefined : cardCodeProblem(v.code.trim(), digits);
     if (code) ctx.addIssue({ code: 'custom', path: ['code'], message: code });
   });
 export type CardValues = z.infer<typeof cardSchema>;
@@ -102,10 +107,12 @@ export function cardDefaults(item?: VaultItem): CardValues {
   return {
     name: str(data, 'name'),
     cardholder: str(data, 'cardholder'),
-    number: formatCardNumber(str(data, 'number')),
+    number: formatStoredNumber(str(data, 'number')),
     brand: str(data, 'brand'),
     expiry,
     code: str(data, 'code'),
+    storedNumber: cardDigits(str(data, 'number')),
+    storedCode: str(data, 'code').trim(),
     pin: str(data, 'pin'),
     note: str(data, 'note'),
     pinned: isPinned(item),
@@ -114,18 +121,22 @@ export function cardDefaults(item?: VaultItem): CardValues {
 }
 
 /**
- * `PaymentCard.toJson`: the number as digits, the brand its digits name, the expiry as `expMonth`
- * and a four-digit `expYear`. A number whose brand is not known keeps the brand the item had.
+ * `PaymentCard.toJson`: the number as digits, the expiry as `expMonth` and a four-digit `expYear`.
+ * The brand is the one the number names, written when the number changed or the item had no brand;
+ * a card whose number is as it was keeps the brand it had, and so does a number that names none.
  */
 export function cardFields(values: CardValues, existing?: VaultItem): ItemData {
   const expiry = values.expiry.trim() === '' ? {} : parseCardExpiry(values.expiry);
   const digits = cardDigits(values.number);
+  const had = str(existing?.data, 'brand');
+  const changed = digits !== cardDigits(str(existing?.data, 'number'));
+  const brand = changed || had === '' ? (detectBrand(digits)?.name ?? orUndefined(values.brand)) : orUndefined(values.brand);
   return {
     ...entryBase(existing),
     name: values.name,
     cardholder: orUndefined(values.cardholder),
     number: orUndefined(digits),
-    brand: detectBrand(digits)?.name ?? orUndefined(values.brand),
+    brand,
     expMonth: expiry.month,
     expYear: expiry.year,
     code: orUndefined(values.code),
@@ -141,12 +152,15 @@ function CardNumberField({ control }: { control: Control<CardValues> }) {
   const id = useId();
   const { field, fieldState } = useController({ control, name: 'number' });
   const [blurred, setBlurred] = useState(false);
+  const stored = useWatch({ control, name: 'storedNumber' });
   const digits = cardDigits(field.value);
   const brand = detectBrand(digits);
-  const status = numberStatus(digits, blurred);
+  // A number as the card had it is not checked: only one the person typed is.
+  const unchanged = digits !== '' && digits === stored;
+  const status = unchanged ? undefined : numberStatus(digits, blurred);
   // A refused Save says why even when the number is only incomplete so far.
-  const refused = status.state === 'pending' ? fieldState.error?.message : undefined;
-  const tone = refused ? 'err' : status.state;
+  const refused = status?.state === 'pending' ? fieldState.error?.message : undefined;
+  const tone = refused ? 'err' : (status?.state ?? 'pending');
   return (
     <div className="field" data-invalid={tone === 'err' ? true : undefined}>
       <label htmlFor={`${id}-n`}>{t('newItem.card.number')}</label>
@@ -161,7 +175,7 @@ function CardNumberField({ control }: { control: Control<CardValues> }) {
           autoComplete="off"
           spellCheck={false}
           value={field.value}
-          aria-describedby={`${id}-msg`}
+          aria-describedby={status ? `${id}-msg` : undefined}
           aria-invalid={tone === 'err' ? true : undefined}
           onChange={(event) => field.onChange(formatCardNumber(event.target.value))}
           onBlur={() => {
@@ -171,13 +185,15 @@ function CardNumberField({ control }: { control: Control<CardValues> }) {
         />
         {brand ? <span className="brand-badge">{brand.name}</span> : null}
       </div>
-      <span
-        id={`${id}-msg`}
-        className={tone === 'err' ? 'hint bad' : tone === 'ok' ? 'hint good' : 'hint'}
-        role={tone === 'err' ? 'alert' : undefined}
-      >
-        {refused ? t(refused as MessageId) : t(status.message, status.values)}
-      </span>
+      {status ? (
+        <span
+          id={`${id}-msg`}
+          className={tone === 'err' ? 'hint bad' : tone === 'ok' ? 'hint good' : 'hint'}
+          role={tone === 'err' ? 'alert' : undefined}
+        >
+          {refused ? t(refused as MessageId) : t(status.message, status.values)}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -187,7 +203,10 @@ function SecurityCodeField({ control, brand }: { control: Control<CardValues>; b
   const id = useId();
   const { field, fieldState } = useController({ control, name: 'code' });
   const [blurred, setBlurred] = useState(false);
-  const status = cvcStatus(field.value, brand, blurred || Boolean(fieldState.error));
+  const stored = useWatch({ control, name: 'storedCode' });
+  // A code as the card had it is not checked: only one the person typed is.
+  const unchanged = field.value !== '' && field.value.trim() === stored;
+  const status = cvcStatus(unchanged ? '' : field.value, brand, blurred || Boolean(fieldState.error));
   return (
     <div className="field" data-invalid={status.state === 'err' ? true : undefined}>
       <label htmlFor={`${id}-c`}>{t('newItem.card.code')}</label>
