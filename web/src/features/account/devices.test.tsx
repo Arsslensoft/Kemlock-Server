@@ -105,10 +105,11 @@ describe('device helpers', () => {
     // This browser can trust itself, or stop.
     expect(deviceMenu({ kind: 'kemlock-web', trusted: false, current: true })).toEqual(['trust', 'sign-out']);
     expect(deviceMenu({ kind: 'kemlock-web', trusted: true, current: true })).toEqual(['untrust', 'sign-out']);
-    // Another Kemlock app can be taken off, but turns trust on in its own app.
+    // Another Kemlock app can be taken off; one that is not trusted still lists Trust this device,
+    // which the screen shows off, because only that app can turn it on.
     expect(deviceMenu({ kind: 'kemlock-ios', trusted: true, current: false })).toEqual(['untrust', 'sign-out']);
-    expect(deviceMenu({ kind: 'kemlock-android', trusted: false, current: false })).toEqual(['sign-out']);
-    expect(deviceMenu({ kind: 'kemlock-browser', trusted: false, current: false })).toEqual(['sign-out']);
+    expect(deviceMenu({ kind: 'kemlock-android', trusted: false, current: false })).toEqual(['trust', 'sign-out']);
+    expect(deviceMenu({ kind: 'kemlock-browser', trusted: false, current: false })).toEqual(['trust', 'sign-out']);
     // Amethystora and Bitwarden: Sign out alone, trusted or not.
     for (const kind of ['amethystora', 'bitwarden', 'other'] as const) {
       expect(deviceMenu({ kind, trusted: false, current: false })).toEqual(['sign-out']);
@@ -511,9 +512,27 @@ describe('trust in the table', () => {
     expect(props.onSignOut).not.toHaveBeenCalled();
   });
 
-  it('offers another Kemlock app that is not trusted Sign out alone: only that app can start trusting itself', async () => {
-    view({ others: [device({ name: 'Pixel 9', kind: 'kemlock-android', trusted: false })] });
-    expect(await openMenu(userEvent.setup(), 'Pixel 9')).toEqual(['Sign out']);
+  it('lists Trust this device, off, in another Kemlock app menu, with the reason tied to the menu', async () => {
+    const props = view({ others: [device({ name: 'Pixel 9', kind: 'kemlock-android', trusted: false })] });
+    const user = userEvent.setup();
+    expect(await openMenu(user, 'Pixel 9')).toEqual(['Trust this device', 'Sign out']);
+    const trust = screen.getByRole('menuitem', { name: 'Trust this device' });
+    expect(trust).toHaveAttribute('aria-disabled', 'true');
+    const note = screen.getByText('Only that device can turn this on: open Kemlock on it.');
+    expect(screen.getByRole('menu', { name: 'Actions for Pixel 9' })).toHaveAttribute('aria-describedby', note.id);
+    expect(screen.getByRole('menu', { name: 'Actions for Pixel 9' })).toHaveAccessibleDescription(
+      'Only that device can turn this on: open Kemlock on it.',
+    );
+    await user.click(trust);
+    expect(props.onTrust).not.toHaveBeenCalled();
+    expect(props.onUntrustDevice).not.toHaveBeenCalled();
+    expect(props.onSignOut).not.toHaveBeenCalled();
+  });
+
+  it('gives a trusted Kemlock app no note: it is already trusted', async () => {
+    view({ others: [device({ name: 'Pixel 9', kind: 'kemlock-android', trusted: true })] });
+    await openMenu(userEvent.setup(), 'Pixel 9');
+    expect(document.querySelector('.menu-note')).toBeNull();
   });
 
   it('offers Amethystora and Bitwarden rows Sign out alone, with no note', async () => {
