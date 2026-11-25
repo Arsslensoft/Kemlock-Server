@@ -227,7 +227,7 @@ export default function Main() {
   const vaults = useVaults(active);
   const [chosen, setVault] = useVaultFilter('items');
   const vault = knownVault(chosen, vaults.options);
-  const facts = useKeyFacts(active);
+  const { facts } = useKeyFacts(active);
 
   const filtered = useMemo(() => filterItems(active, { kind, vault, fav, q }), [active, kind, vault, fav, q]);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));

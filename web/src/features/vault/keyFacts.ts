@@ -75,21 +75,40 @@ export function forgetKeyFacts(): void {
   cache.clear();
 }
 
-/** The facts of every key item in `items`, by item id; keys that aren't read yet are missing. */
-export function useKeyFacts(items: readonly VaultItem[]): ReadonlyMap<string, KeyFacts> {
-  const keys = useMemo(() => items.filter((item) => KEY_KINDS.includes(item.kind) && item.data !== null), [items]);
-  const [facts, setFacts] = useState<ReadonlyMap<string, KeyFacts>>(() => new Map());
+export interface KeyFactsState {
+  /** The facts of every key item that has been read, by item id. */
+  facts: ReadonlyMap<string, KeyFacts>;
+  /** True until the key items have been read once: `facts` may still lack some. */
+  pending: boolean;
+}
+
+const isKeyItem = (item: VaultItem): boolean => KEY_KINDS.includes(item.kind) && item.data !== null;
+
+/** The facts of every key item in `items`. Read in the browser; the page may show before they are. */
+export function useKeyFacts(items: readonly VaultItem[]): KeyFactsState {
+  // The key items as they are now: the same list while no key item is added, changed or removed,
+  // so a change elsewhere in the vault reads nothing again and flashes nothing.
+  const signature = items
+    .filter(isKeyItem)
+    .map((item) => `${item.id}:${item.revision}`)
+    .join('|');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const keys = useMemo(() => items.filter(isKeyItem), [signature]);
+  const [state, setState] = useState<{ read: boolean; facts: ReadonlyMap<string, KeyFacts> }>({
+    read: false,
+    facts: new Map(),
+  });
   useEffect(() => {
     let live = true;
     void Promise.all(keys.map(async (item) => [item.id, await factsFor(item)] as const)).then((pairs) => {
       if (!live) return;
       const found = new Map<string, KeyFacts>();
       for (const [id, fact] of pairs) if (fact) found.set(id, fact);
-      setFacts(found);
+      setState({ read: true, facts: found });
     });
     return () => {
       live = false;
     };
   }, [keys]);
-  return facts;
+  return { facts: state.facts, pending: keys.length > 0 && !state.read };
 }
