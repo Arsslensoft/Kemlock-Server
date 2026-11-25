@@ -36,9 +36,13 @@ impl CustomFieldRepo for MemFields {
             .cloned())
     }
 
-    async fn insert_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {
+    async fn insert_custom_field(
+        &self,
+        field: &CustomField,
+        _limit: usize,
+    ) -> Result<bool, StoreError> {
         self.fields.lock().expect("lock").push(field.clone());
-        Ok(())
+        Ok(true)
     }
 
     async fn update_custom_field(&self, _field: &CustomField) -> Result<(), StoreError> {
@@ -107,8 +111,11 @@ async fn a_signed_in_device_reads_the_fields_and_the_switch() {
         FieldKinds::from_ids(&["login", "card"]).expect("kinds"),
         2,
     );
-    fields.insert_custom_field(&everywhere).await.expect("insert");
-    fields.insert_custom_field(&some).await.expect("insert");
+    fields
+        .insert_custom_field(&everywhere, 100)
+        .await
+        .expect("insert");
+    fields.insert_custom_field(&some, 100).await.expect("insert");
 
     let reply = client
         .get_authed("/kem/v1/custom-fields", &session.access_token)

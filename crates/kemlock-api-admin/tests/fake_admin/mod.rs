@@ -479,7 +479,11 @@ impl CustomFieldRepo for FakeAdmin {
             .cloned())
     }
 
-    async fn insert_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {
+    async fn insert_custom_field(
+        &self,
+        field: &CustomField,
+        limit: usize,
+    ) -> Result<bool, StoreError> {
         let mut g = self.lock();
         if g.custom_fields
             .iter()
@@ -487,8 +491,11 @@ impl CustomFieldRepo for FakeAdmin {
         {
             return Err(StoreError::Duplicate);
         }
+        if g.custom_fields.len() >= limit {
+            return Ok(false);
+        }
         g.custom_fields.push(field.clone());
-        Ok(())
+        Ok(true)
     }
 
     async fn update_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {

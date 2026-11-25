@@ -99,9 +99,6 @@ where
         ip: Option<IpAddr>,
         input: FieldInput,
     ) -> Result<CustomField, AdminError> {
-        if self.repos.custom_fields().await?.len() >= MAX_FIELDS {
-            return Err(AdminError::State("a server holds at most 100 custom fields"));
-        }
         let field = CustomField::create(
             CustomFieldId::random(),
             &input.name,
@@ -110,10 +107,15 @@ where
             self.clock.now(),
         )
         .map_err(|e| AdminError::Invalid(e.to_string()))?;
-        self.repos
-            .insert_custom_field(&field)
+        // The store counts and stores in one step, so the cap holds against two admins at once.
+        let stored = self
+            .repos
+            .insert_custom_field(&field, MAX_FIELDS)
             .await
             .map_err(name_taken)?;
+        if !stored {
+            return Err(AdminError::State("a server holds at most 100 custom fields"));
+        }
         self.audit()
             .record(
                 actor,
@@ -243,13 +245,20 @@ mod tests {
                 .cloned())
         }
 
-        async fn insert_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {
+        async fn insert_custom_field(
+            &self,
+            field: &CustomField,
+            limit: usize,
+        ) -> Result<bool, StoreError> {
             let mut fields = self.fields.lock().expect("lock");
             if fields.iter().any(|f| f.name_key() == field.name_key()) {
                 return Err(StoreError::Duplicate);
             }
+            if fields.len() >= limit {
+                return Ok(false);
+            }
             fields.push(field.clone());
-            Ok(())
+            Ok(true)
         }
 
         async fn update_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {
@@ -349,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn the_view_lists_the_definitions_with_the_switch() {
         let repo = Mem::default();
-        repo.insert_custom_field(&field("Employee ID"))
+        repo.insert_custom_field(&field("Employee ID"), 100)
             .await
             .expect("insert");
         let view = CustomFieldsView { repo };

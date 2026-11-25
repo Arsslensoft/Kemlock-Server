@@ -322,11 +322,14 @@ pub trait CustomFieldRepo: Send + Sync {
         id: CustomFieldId,
     ) -> impl Future<Output = Result<Option<CustomField>, StoreError>> + Send;
 
-    /// Stores the definition; `Duplicate` when another has the same name, whatever the case.
+    /// Stores the definition, unless the server already holds `limit` of them: then nothing is
+    /// stored and the answer is `false`. Counting and storing are one step, so two admins can't
+    /// both take the last place. `Duplicate` when another has the same name, whatever the case.
     fn insert_custom_field(
         &self,
         field: &CustomField,
-    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+        limit: usize,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Replaces the name, type, kinds and update time of the definition with the same id.
     /// `NotFound` when it is gone; `Duplicate` when another has the new name.
