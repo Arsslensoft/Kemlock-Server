@@ -64,3 +64,13 @@ describe('a locked vault', () => {
     expect((await visit('/setup/server', 'signed-out', false, 'pending')).pathname).toBe('/sign-in');
   });
 });
+
+describe('a sign-in screen with no email', () => {
+  it('goes back to the sign-in and keeps the page asked for', async () => {
+    for (const path of ['/sign-in/password', '/sign-in/device']) {
+      const at = await visit(`${path}?next=%2Ftrash`, 'signed-out');
+      expect(at.pathname, path).toBe('/sign-in');
+      expect(at.search['next'], path).toBe('/trash');
+    }
+  });
+});

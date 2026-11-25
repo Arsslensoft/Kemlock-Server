@@ -178,7 +178,7 @@ const password = createRoute({
   validateSearch: (search): PasswordSearch => passwordSearch.parse(search),
   beforeLoad: (args) => {
     leaveWhenUnlocked(args);
-    if (!args.search.email) throw redirect({ to: '/sign-in' });
+    if (!args.search.email) throw redirect({ to: '/sign-in', search: { next: args.search.next } });
   },
   component: lazyRouteComponent(() => import('@/features/auth/Password')),
 });
@@ -188,7 +188,7 @@ const deviceApproval = createRoute({
   validateSearch: (search): PasswordSearch => passwordSearch.parse(search),
   beforeLoad: (args) => {
     leaveWhenUnlocked(args);
-    if (!args.search.email) throw redirect({ to: '/sign-in' });
+    if (!args.search.email) throw redirect({ to: '/sign-in', search: { next: args.search.next } });
   },
   component: lazyRouteComponent(() => import('@/features/auth/DeviceApproval')),
 });
