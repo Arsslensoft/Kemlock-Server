@@ -18,6 +18,7 @@ export async function lockVault(): Promise<void> {
   session.locked();
   await vaultCrypto.lock();
   clearVault();
+  forgetCachedData();
 }
 
 /**
