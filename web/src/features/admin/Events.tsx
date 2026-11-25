@@ -50,6 +50,7 @@ const ACTIONS: Record<string, MessageId> = {
   [`device.approval_approved`]: 'admin.events.action.deviceApproved',
   [`device.approval_denied`]: 'admin.events.action.deviceDenied',
   [`device.sign_out`]: 'admin.events.action.deviceSignOut',
+  [`device.untrust`]: 'admin.events.action.deviceUntrust',
   [`account.export`]: 'admin.events.action.accountExport',
   [`account.erased`]: 'admin.events.action.accountErased',
   [`admin.user.disable`]: 'admin.events.action.userDisabled',
@@ -58,6 +59,10 @@ const ACTIONS: Record<string, MessageId> = {
   [`admin.settings.update`]: 'admin.events.action.settingsUpdate',
   [`admin.sso.update`]: 'admin.events.action.ssoUpdate',
   [`admin.events.export`]: 'admin.events.action.eventsExport',
+  [`admin.custom_field.create`]: 'admin.events.action.fieldCreate',
+  [`admin.custom_field.update`]: 'admin.events.action.fieldUpdate',
+  [`admin.custom_field.delete`]: 'admin.events.action.fieldDelete',
+  [`admin.custom_field.allow_own`]: 'admin.events.action.fieldAllowOwn',
 };
 
 const KINDS: Array<[Kind, MessageId]> = [
