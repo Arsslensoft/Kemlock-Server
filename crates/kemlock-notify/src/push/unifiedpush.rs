@@ -47,6 +47,8 @@ fn public_v4(ip: Ipv4Addr) -> bool {
         || (a == 100 && (64..=127).contains(&b))
         // 192.0.0.0/24, IETF protocol assignments.
         || (a == 192 && b == 0 && c == 0)
+        // 192.88.99.0/24, the retired 6to4 relay anycast.
+        || (a == 192 && b == 88 && c == 99)
         // 198.18.0.0/15, benchmarking.
         || (a == 198 && (b == 18 || b == 19))
         // 240.0.0.0/4, reserved.
@@ -68,6 +70,10 @@ fn public_v6(ip: Ipv6Addr) -> bool {
     if s[..6] == [0; 6] || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
         return public_v4(embedded);
     }
+    // 64:ff9b:1::/48 (local-use NAT64) carries one in the last 32 bits too.
+    if s[..3] == [0x64, 0xff9b, 1] {
+        return public_v4(embedded);
+    }
     // 2002::/16 (6to4) carries one in bits 16 to 48.
     if s[0] == 0x2002 {
         return public_v4(Ipv4Addr::new(
@@ -86,7 +92,15 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         || (s[0] & 0xffc0) == 0xfe80
         || (s[0] & 0xffc0) == 0xfec0
         // 2001:db8::/32, documentation.
-        || (s[0] == 0x2001 && s[1] == 0x0db8))
+        || (s[0] == 0x2001 && s[1] == 0x0db8)
+        // ::ffff:0:0:0/96, IPv4-translated (deprecated).
+        || s[..6] == [0, 0, 0, 0, 0xffff, 0]
+        // 100::/64, discard-only.
+        || s[..4] == [0x100, 0, 0, 0]
+        // 2001:2::/48, benchmarking.
+        || (s[0] == 0x2001 && s[1] == 2 && s[2] == 0)
+        // 2001:10::/28, ORCHID (never routed).
+        || (s[0] == 0x2001 && (s[1] & 0xfff0) == 0x10))
 }
 
 /// How one push to one endpoint went.
@@ -299,6 +313,17 @@ mod tests {
             "2002:7f00:1::1",
             "2002:c0a8:101::1",
             "::7f00:1",
+            "192.88.99.1",
+            "64:ff9b:1::7f00:1",
+            "64:ff9b:1:2:3:4:a00:1",
+            "::ffff:0:8.8.8.8",
+            "0:0:0:0:ffff:0:808:808",
+            "100::1",
+            "100::ffff",
+            "2001:2::1",
+            "2001:2:0:ffff::1",
+            "2001:10::1",
+            "2001:1f:ffff::1",
         ] {
             assert!(!is_public_ip(ip(text)), "{text}");
         }
@@ -320,6 +345,13 @@ mod tests {
             "2001:4860:4860::8888",
             "::ffff:8.8.8.8",
             "2002:808:808::1",
+            "192.88.98.1",
+            "192.88.100.1",
+            "64:ff9b:1::808:808",
+            "100:0:0:1::1",
+            "2001:3::1",
+            "2001:2:1::1",
+            "2001:20::1",
         ] {
             assert!(is_public_ip(ip(text)), "{text}");
         }
