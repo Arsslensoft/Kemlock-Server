@@ -1,14 +1,31 @@
-import { Link, getRouteApi } from '@tanstack/react-router';
-import { useState } from 'react';
+// One item, read-only. Edit is the only main button; everything else (websites and rules, move to a
+// space, make a copy, what the server holds, move to Trash) is in the `⋯` menu. A round lock beside
+// the title carries the end-to-end encryption note, and the record the server keeps opens in a
+// dialog. The first card ends with the item's custom fields; linked items are their own card.
+import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
+import { useCallback, useState } from 'react';
+import { api } from '@/app/services';
 import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button, IconButton, buttonClass } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
+import { LockBadge } from '@/ui/LockBadge';
 import { Notice } from '@/ui/Notice';
+import '@/styles/item.css';
 import { useBackToList } from './backNav';
+import { readCustomFields } from './customFields';
+import { CustomFieldRows } from './details/CustomFieldRows';
+import { AttachmentsCard } from './details/FileDetails';
 import { KindDetails } from './details/KindDetails';
-import { useVaultActions, useVaultItem } from './hooks';
+import type { AttachedFile } from './details/files';
+import { downloadFile } from './details/fileDownload';
+import { useCanWrite, useVault, useVaultActions, useVaultItem } from './hooks';
+import { ItemMenu, type ItemAction } from './ItemMenu';
+import { LinkedItems } from './LinkedItems';
+import { MoveDialog } from './MoveDialog';
+import { ServerHolds } from './ServerHolds';
+import { canCopy } from './copy';
 import { hostOfUrl, isEditable, isWebUrl, kindLabel, tileLetter, timeAgo } from './kinds';
 import { isTrashed, itemName, loginOf, noteOf } from './vault';
 
@@ -37,10 +54,15 @@ function PasswordRow({ password }: { password: string }) {
 export default function Item() {
   const t = useT();
   const backToList = useBackToList();
+  const navigate = useNavigate();
   const { itemId } = route.useParams();
   const { item, isLoading } = useVaultItem(itemId);
-  const { trash, restore } = useVaultActions();
+  const { all } = useVault();
+  const canWrite = useCanWrite();
+  const { trash, restore, link } = useVaultActions();
+  const [dialog, setDialog] = useState<'server' | 'move' | null>(null);
   const failure = trash.error ?? restore.error;
+  const download = useCallback((file: AttachedFile) => downloadFile(api, itemId, file), [itemId]);
 
   if (isLoading) {
     return (
@@ -73,6 +95,29 @@ export default function Item() {
           ? (item.data['note'] as string)
           : '';
   const ageText = timeAgo(item.data?.updatedAt);
+  const custom = readCustomFields(item.data);
+  const customRows = custom.length > 0 ? <CustomFieldRows fields={custom} /> : null;
+
+  function onAction(action: ItemAction) {
+    if (!item) return;
+    switch (action) {
+      case 'websites':
+        void navigate({ to: '/vault/$itemId/websites', params: { itemId: item.id } });
+        break;
+      case 'copy':
+        if (isEditable(item.kind)) void navigate({ to: '/vault/new', search: { kind: item.kind, copyOf: item.id } });
+        break;
+      case 'move':
+        setDialog('move');
+        break;
+      case 'server':
+        setDialog('server');
+        break;
+      case 'trash':
+        trash.mutate(item, { onSuccess: backToList });
+        break;
+    }
+  }
 
   return (
     <>
@@ -99,57 +144,35 @@ export default function Item() {
         <span className="tile big" aria-hidden="true">
           {tileLetter(name)}
         </span>
-        <div>
-          <h1 className="page-title">{name}</h1>
+        <div className="head-title">
+          <div className="title-row">
+            <h1 className="page-title">{name}</h1>
+            <LockBadge />
+          </div>
           <p className="lede">
             {t('item.meta', { kind: t(kindLabel(item.kind)), revision: item.revision })}
             {ageText ? ` · ${ageText}` : ''}
           </p>
         </div>
-        <div className="actions">
+        <div className="head-actions">
           {trashed ? (
-            <Button
-              variant="primary"
-              isDisabled={restore.isPending}
-              onPress={() => restore.mutate(item)}
-            >
+            <Button variant="primary" isDisabled={restore.isPending} onPress={() => restore.mutate(item)}>
               <Icon name="restore" />
               {t('action.restore')}
             </Button>
-          ) : (
-            <>
-              {item.kind === 'login' ? (
-                <Link
-                  to="/vault/$itemId/websites"
-                  params={{ itemId: item.id }}
-                  className={buttonClass()}
-                >
-                  <Icon name="globe" />
-                  {t('sites.open')}
-                </Link>
-              ) : null}
-              {isEditable(item.kind) ? (
-                <Link
-                  to="/vault/$itemId/edit"
-                  params={{ itemId: item.id }}
-                  className={buttonClass({ variant: 'primary' })}
-                >
-                  <Icon name="edit" />
-                  {t('action.edit')}
-                </Link>
-              ) : null}
-              <Button
-                variant="danger"
-                isDisabled={trash.isPending}
-                onPress={() =>
-                  trash.mutate(item, { onSuccess: backToList })
-                }
-              >
-                <Icon name="trash" />
-                {t('item.moveToTrash')}
-              </Button>
-            </>
-          )}
+          ) : isEditable(item.kind) ? (
+            <Link to="/vault/$itemId/edit" params={{ itemId: item.id }} className={buttonClass({ variant: 'primary' })}>
+              <Icon name="edit" />
+              {t('action.edit')}
+            </Link>
+          ) : null}
+          <ItemMenu
+            name={name}
+            trashed={trashed}
+            websites={item.kind === 'login'}
+            copy={canCopy(item) && isEditable(item.kind)}
+            onAction={onAction}
+          />
         </div>
       </div>
 
@@ -200,46 +223,53 @@ export default function Item() {
               </div>
             </div>
           ) : null}
+          {customRows}
         </section>
       ) : null}
 
-      {isEditable(item.kind) && item.kind !== 'login' && item.kind !== 'note' ? <KindDetails item={item} /> : null}
+      {item.kind !== 'login' && item.kind !== 'note' ? (
+        <KindDetails item={item} extra={customRows} download={download} />
+      ) : null}
 
-      {notes ? (
-        <section className="card" aria-labelledby="h-notes">
+      {item.kind === 'note' && (notes || custom.length > 0) ? (
+        <section className="card" aria-labelledby="h-text">
           <div className="card-head">
-            <h2 id="h-notes">{t(item.kind === 'note' ? 'item.text' : 'item.notes')}</h2>
+            <h2 id="h-text">{t('item.text')}</h2>
           </div>
           <div className="row">
-            <p className="grow pre-wrap">
-              {notes}
-            </p>
+            <p className="grow pre-wrap">{notes}</p>
+          </div>
+          {customRows}
+        </section>
+      ) : null}
+      {item.kind === 'note' ? <AttachmentsCard data={item.data} download={download} /> : null}
+
+      {item.kind !== 'note' && notes ? (
+        <section className="card" aria-labelledby="h-notes">
+          <div className="card-head">
+            <h2 id="h-notes">{t('item.notes')}</h2>
+          </div>
+          <div className="row">
+            <p className="grow pre-wrap">{notes}</p>
           </div>
         </section>
       ) : null}
 
-      <section className="card pad" aria-labelledby="h-enc">
-        <h2 id="h-enc">
-          <Icon name="lock" /> {t('item.enc.title')}
-        </h2>
-        <p className="muted">{t('item.enc.body')}</p>
-      </section>
+      <LinkedItems
+        item={item}
+        all={all}
+        canWrite={canWrite}
+        readOnly={trashed || item.data === null}
+        onLink={async (other) => {
+          await link.mutateAsync({ a: item, b: other, linked: true });
+        }}
+        onUnlink={async (other) => {
+          await link.mutateAsync({ a: item, b: other, linked: false });
+        }}
+      />
 
-      <section className="card pad" aria-labelledby="h-server">
-        <h2 id="h-server">
-          <Icon name="server" /> {t('item.server.title')}
-        </h2>
-        <pre className="pre">
-          {[
-            `item     ${item.id}   ${item.kind}`,
-            `owner    ${item.owner}`,
-            `revision ${item.revision} · key version ${item.keyVersion}`,
-            `key      ${item.sizes.itemKey} B wrapped`,
-            `body     AES-256-GCM, ${item.sizes.ciphertext} B`,
-          ].join('\n')}
-        </pre>
-        <p className="muted">{t('item.server.note')}</p>
-      </section>
+      {dialog === 'server' ? <ServerHolds item={item} name={name} onClose={() => setDialog(null)} /> : null}
+      {dialog === 'move' ? <MoveDialog item={item} name={name} onClose={() => setDialog(null)} /> : null}
     </>
   );
 }

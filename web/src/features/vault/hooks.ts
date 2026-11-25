@@ -6,6 +6,9 @@ import { vaultCrypto } from '@/crypto-port';
 import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
+import { saveBatch } from './batch';
+import { linkInputs, unlinkInputs } from './links';
+import { type MoveTarget, moveItem } from './move';
 import {
   type ItemData,
   type SaveInput,
@@ -16,6 +19,7 @@ import {
   isTrashed,
   restoreItem,
   saveItem,
+  spaceOf,
   syncVault,
   trashItem,
   vaultStore,
@@ -58,6 +62,8 @@ export function useVault() {
   return useMemo(() => {
     const items = all ?? [];
     return {
+      /** Every item that was opened, in the Trash or not: what a link is resolved against. */
+      all: items,
       active: items.filter((item) => !isTrashed(item)),
       trashed: items.filter(isTrashed),
       isLoading: query.isPending,
@@ -74,6 +80,20 @@ export function useWritableCollections() {
     queryFn: () => loadWritableCollections(spaceDeps),
     staleTime: 60_000,
   });
+}
+
+/**
+ * Whether this person may change an item: always one of the account's own vault, and one of a
+ * space when they may edit its collection. While the collections load the answer is yes, and the
+ * server has the last word.
+ */
+export function useCanWrite(): (item: VaultItem) => boolean {
+  const collections = useWritableCollections();
+  return useMemo(() => {
+    const held = collections.data ? new Set(collections.data.map((c) => c.collectionId)) : undefined;
+    return (item) =>
+      spaceOf(item.owner) === null || held === undefined || (item.collectionId !== undefined && held.has(item.collectionId));
+  }, [collections.data]);
 }
 
 export function useVaultItem(id: string | undefined): {
@@ -116,7 +136,22 @@ export function useVaultActions() {
     onSuccess: publish,
     onError: afterFailure,
   });
-  return { save, trash, restore, remove, empty };
+  // Links are two-way: both items are written in one batch, so a link is on both or on neither.
+  const link = useMutation({
+    mutationFn: async ({ a, b, linked }: { a: VaultItem; b: VaultItem; linked: boolean }) => {
+      const inputs = linked ? linkInputs(a, b) : unlinkInputs(a, b);
+      if (inputs.length > 0) await saveBatch(deps, vaultStore, inputs);
+    },
+    onSuccess: publish,
+    onError: afterFailure,
+  });
+  const move = useMutation({
+    mutationFn: ({ item, target, linked }: { item: VaultItem; target: MoveTarget; linked: VaultItem[] }) =>
+      moveItem(deps, vaultStore, item, target, linked),
+    onSuccess: publish,
+    onError: afterFailure,
+  });
+  return { save, trash, restore, remove, empty, link, move };
 }
 
 /** Stable text fields for a form: only strings the form owns. */
