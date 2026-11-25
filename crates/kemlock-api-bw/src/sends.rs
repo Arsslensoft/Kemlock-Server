@@ -904,8 +904,7 @@ async fn refuse_if_limited_elsewhere(
     view: Option<kemlock_app::federation_view::SharedView>,
     send: &SendRecord,
 ) -> BwResult<()> {
-    let (Some(view), true, Some(owner)) = (view, send.max_access_count.is_some(), send.user)
-    else {
+    let (Some(view), true, Some(owner)) = (view, send.max_access_count.is_some(), send.user) else {
         return Ok(());
     };
     match view.limited_send_home(owner).await {

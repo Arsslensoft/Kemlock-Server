@@ -624,7 +624,10 @@ mod tests {
 
     #[test]
     fn peers_are_probed_every_minute_unless_the_operator_says_otherwise() {
-        assert_eq!(config(&[], None).expect("valid").federation_probe_seconds, 60);
+        assert_eq!(
+            config(&[], None).expect("valid").federation_probe_seconds,
+            60
+        );
         let c = config(&[("KEMLOCK_FEDERATION_PROBE_SECONDS", " 15 ")], None).expect("valid");
         assert_eq!(c.federation_probe_seconds, 15);
         let c = config(&[], Some("federation_probe_seconds = 120\n")).expect("valid");

@@ -27,10 +27,7 @@ fn upto(origin: ServerId, seq: u64) -> VersionVector {
 
 async fn a_cancelled_queue_is_kept_added_to_and_forgotten(store: &SqlStore) {
     let (peer, other_peer) = (ServerId::random(), ServerId::random());
-    let (mine, theirs) = (
-        Owner::User(UserId::random()),
-        Owner::User(UserId::random()),
-    );
+    let (mine, theirs) = (Owner::User(UserId::random()), Owner::User(UserId::random()));
     let origin = ServerId::random();
     assert_eq!(store.withheld(peer, mine).await, Ok(None));
 
@@ -65,7 +62,10 @@ async fn a_cancelled_queue_is_kept_added_to_and_forgotten(store: &SqlStore) {
         .expect("read")
         .expect("kept");
     assert_eq!(held.at, 2_000);
-    assert!(held.covers(&change(origin, 5)), "the first cancel still holds");
+    assert!(
+        held.covers(&change(origin, 5)),
+        "the first cancel still holds"
+    );
     assert!(held.covers(&change(second, 2)));
 
     // A release lifts one peer's rows in one vault and says whether there was anything to lift.
@@ -84,7 +84,13 @@ async fn a_cancelled_queue_is_kept_added_to_and_forgotten(store: &SqlStore) {
         .expect("another peer");
     store.forget_withheld(peer).await.expect("forget");
     assert_eq!(store.withheld(peer, mine).await, Ok(None));
-    assert!(store.withheld(other_peer, mine).await.expect("read").is_some());
+    assert!(
+        store
+            .withheld(other_peer, mine)
+            .await
+            .expect("read")
+            .is_some()
+    );
 }
 
 async fn run_all(store: &SqlStore) {

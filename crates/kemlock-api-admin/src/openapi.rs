@@ -772,13 +772,11 @@ doc!(
     path = "/admin/v1/server-address",
     tag = "settings",
     security(("dpop" = [])),
-    responses(
-        (
-            status = 200,
-            description = "The address in use next to the one recorded at setup, and the data folder",
-            body = ServerAddressDto
-        ),
-    )
+    responses((
+        status = 200,
+        description = "The address in use next to the one recorded at setup, and the data folder",
+        body = ServerAddressDto
+    ),)
 );
 
 doc!(

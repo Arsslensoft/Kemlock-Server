@@ -95,8 +95,8 @@ impl<R: BwAccountRepo, E: Clock + Random> ApiKeys<R, E> {
         account.api_key = Some(random_key(&self.env, API_KEY_LEN));
         self.accounts.update(&account).await?;
         // Bitwarden clients sync on the new revision date, as after any change.
-        let now_ms = i64::try_from(self.env.now().unix_timestamp_nanos() / 1_000_000)
-            .unwrap_or(i64::MAX);
+        let now_ms =
+            i64::try_from(self.env.now().unix_timestamp_nanos() / 1_000_000).unwrap_or(i64::MAX);
         self.accounts.touch(user, now_ms).await?;
         let account = self.account(user).await?;
         self.view(account, created)

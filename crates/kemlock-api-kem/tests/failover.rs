@@ -753,7 +753,10 @@ async fn placement_says_which_server_is_down_and_what_waits_for_it() {
     assert_eq!(vault["servers"][1]["status"], "online");
     assert_eq!(vault["servers"][1]["id"], replica.0.to_string());
     assert_eq!(vault["pending"]["id"], home.0.to_string());
-    assert_eq!(vault["pending"]["summary"], "3 changes waiting for nas.example.org");
+    assert_eq!(
+        vault["pending"]["summary"],
+        "3 changes waiting for nas.example.org"
+    );
     assert_eq!(vault["pending"]["askedAt"], "2027-01-15T08:01:40Z");
 
     // A cancel in force shows on the server it holds changes back from, and only there.
@@ -821,13 +824,17 @@ async fn cancelling_waiting_changes_asks_the_view_and_maps_its_answer() {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        cancel_request(&client, &session, "family", &id).await.status,
+        cancel_request(&client, &session, "family", &id)
+            .await
+            .status,
         StatusCode::BAD_REQUEST
     );
     // A space the account is not in is not found, not forbidden.
     let stranger = kemlock_domain::SpaceId::random().to_string();
     assert_eq!(
-        cancel_request(&client, &session, &stranger, &id).await.status,
+        cancel_request(&client, &session, &stranger, &id)
+            .await
+            .status,
         StatusCode::NOT_FOUND
     );
     assert_eq!(view.cancelled.lock().expect("lock").len(), before);

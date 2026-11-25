@@ -249,7 +249,11 @@ pub fn folder_inside(data_folder: &Path, folder: &str) -> Result<PathBuf, String
         .canonicalize()
         .map_err(|e| format!("the data folder can't be resolved: {e}"))?;
     let mut target = root.clone();
-    for part in folder.replace('\\', "/").split('/').filter(|p| !p.is_empty()) {
+    for part in folder
+        .replace('\\', "/")
+        .split('/')
+        .filter(|p| !p.is_empty())
+    {
         if part == "." || part == ".." {
             return Err(bad("must not use . or .."));
         }
@@ -261,7 +265,9 @@ pub fn folder_inside(data_folder: &Path, folder: &str) -> Result<PathBuf, String
     // What exists is resolved, so a symlink can't lead out; what doesn't is made under it later.
     let mut existing = target.as_path();
     while !existing.exists() {
-        existing = existing.parent().ok_or_else(|| bad("has no existing parent"))?;
+        existing = existing
+            .parent()
+            .ok_or_else(|| bad("has no existing parent"))?;
     }
     let real = existing
         .canonicalize()
@@ -276,7 +282,10 @@ pub fn folder_inside(data_folder: &Path, folder: &str) -> Result<PathBuf, String
         .next()
         .map(|c| c.as_os_str().to_string_lossy().to_ascii_lowercase())
         .ok_or_else(|| bad("is the data folder itself"))?;
-    if RESERVED_DATA_NAMES.iter().any(|name| first.starts_with(name)) {
+    if RESERVED_DATA_NAMES
+        .iter()
+        .any(|name| first.starts_with(name))
+    {
         return Err(bad("is where the server keeps its own files"));
     }
     Ok(resolved)
@@ -291,14 +300,14 @@ pub fn settings_from_snapshot(
     env: &dyn Fn(&str) -> Option<String>,
     data_folder: &Path,
 ) -> Result<BackupSettings, String> {
-    let destination = if snapshot.backup_destination_saved && !snapshot.backup_destination.is_empty()
-    {
-        folder_inside(data_folder, &snapshot.backup_destination)?
-            .display()
-            .to_string()
-    } else {
-        snapshot.backup_destination.clone()
-    };
+    let destination =
+        if snapshot.backup_destination_saved && !snapshot.backup_destination.is_empty() {
+            folder_inside(data_folder, &snapshot.backup_destination)?
+                .display()
+                .to_string()
+        } else {
+            snapshot.backup_destination.clone()
+        };
     settings_from_env(
         &|name| match name {
             "KEMLOCK_BACKUP_SCHEDULE" => Some(snapshot.backup_schedule.clone()),
@@ -527,7 +536,16 @@ mod tests {
             folder_inside(&root, "nas/backups").expect("fine"),
             root.join("nas").join("backups")
         );
-        for bad in [".", "", "..", "a/../..", "attachments", "Attachments/x", "db", "server.key"] {
+        for bad in [
+            ".",
+            "",
+            "..",
+            "a/../..",
+            "attachments",
+            "Attachments/x",
+            "db",
+            "server.key",
+        ] {
             assert!(folder_inside(&root, bad).is_err(), "{bad:?}");
         }
     }
@@ -543,7 +561,8 @@ mod tests {
         assert!(folder_inside(&root, "out/deeper").is_err());
         // A link to a folder that is the store's own is refused too.
         std::fs::create_dir(root.join("attachments")).expect("made");
-        std::os::unix::fs::symlink(root.join("attachments"), root.join("innocent")).expect("linked");
+        std::os::unix::fs::symlink(root.join("attachments"), root.join("innocent"))
+            .expect("linked");
         assert!(folder_inside(&root, "innocent").is_err());
     }
 

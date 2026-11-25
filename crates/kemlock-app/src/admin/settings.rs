@@ -521,7 +521,9 @@ fn is_folder_inside(value: &str) -> bool {
     !value.starts_with('/')
         && !value.contains(':')
         && parts.iter().all(|part| *part != ".." && *part != ".")
-        && !RESERVED_DATA_NAMES.iter().any(|name| first.starts_with(name))
+        && !RESERVED_DATA_NAMES
+            .iter()
+            .any(|name| first.starts_with(name))
 }
 
 /// What a few text settings need beyond their length. `value` is trimmed.
@@ -861,7 +863,11 @@ mod tests {
 
     #[test]
     fn push_addresses_must_be_https() {
-        for key in ["push_relay_uri", "push_identity_uri", "kemlock_push_relay_url"] {
+        for key in [
+            "push_relay_uri",
+            "push_identity_uri",
+            "kemlock_push_relay_url",
+        ] {
             let d = def(key);
             assert!(validate(d, "https://push.example.org").is_ok(), "{key}");
             assert!(validate(d, "http://127.0.0.1:9000").is_ok(), "{key}");
@@ -880,7 +886,21 @@ mod tests {
         let dest = def("backup_destination");
         assert!(validate(dest, "").is_ok());
         assert!(validate(dest, "nas/backups").is_ok());
-        for bad in ["/mnt/nas", "../outside", "a/../../b", "s3://bucket/x", r"C:\backups", r"..\x", ".", "./", "db", "Attachments/x", "sends", "server.key", "backups/../db"] {
+        for bad in [
+            "/mnt/nas",
+            "../outside",
+            "a/../../b",
+            "s3://bucket/x",
+            r"C:\backups",
+            r"..\x",
+            ".",
+            "./",
+            "db",
+            "Attachments/x",
+            "sends",
+            "server.key",
+            "backups/../db",
+        ] {
             assert!(validate(dest, bad).is_err(), "{bad}");
         }
         assert!(validate(def("backup_recipient"), "age1abc").is_ok());

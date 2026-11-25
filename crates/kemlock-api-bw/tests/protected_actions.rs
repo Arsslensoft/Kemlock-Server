@@ -266,7 +266,12 @@ async fn a_mailed_code_deletes_the_account_and_is_used_up() {
 
     // A wrong code deletes nothing.
     let (status, body) = h
-        .json("DELETE", "/api/accounts", Some(&token), Some(json!({"otp": "000000"})))
+        .json(
+            "DELETE",
+            "/api/accounts",
+            Some(&token),
+            Some(json!({"otp": "000000"})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(
@@ -278,7 +283,12 @@ async fn a_mailed_code_deletes_the_account_and_is_used_up() {
     );
 
     let (status, body) = h
-        .json("DELETE", "/api/accounts", Some(&token), Some(json!({"otp": code})))
+        .json(
+            "DELETE",
+            "/api/accounts",
+            Some(&token),
+            Some(json!({"otp": code})),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(

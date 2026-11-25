@@ -673,9 +673,17 @@ async fn a_replica_answers_a_send_with_a_view_limit_as_unavailable_and_serves_on
         .json("POST", "/api/sends/access", Some(&limited_token), None)
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
-    assert_eq!(body["message"], "Send does not exist or is no longer available");
+    assert_eq!(
+        body["message"],
+        "Send does not exist or is no longer available"
+    );
     let (status, _) = h
-        .json("POST", "/api/sends/access/file/abc", Some(&limited_token), None)
+        .json(
+            "POST",
+            "/api/sends/access/file/abc",
+            Some(&limited_token),
+            None,
+        )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -684,7 +692,15 @@ async fn a_replica_answers_a_send_with_a_view_limit_as_unavailable_and_serves_on
         .await;
     assert_eq!(status, StatusCode::OK, "{served}");
     let (_, listed) = h
-        .json("GET", &format!("/api/sends/{}", limited["id"].as_str().expect("id")), Some(&owner), None)
+        .json(
+            "GET",
+            &format!("/api/sends/{}", limited["id"].as_str().expect("id")),
+            Some(&owner),
+            None,
+        )
         .await;
-    assert_eq!(listed["accessCount"], 0, "the refused access counted no view");
+    assert_eq!(
+        listed["accessCount"], 0,
+        "the refused access counted no view"
+    );
 }

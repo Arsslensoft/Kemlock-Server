@@ -9,8 +9,8 @@ use crate::tables::items::owner_parts;
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{Owner, ServerId, VersionVector};
 use kemlock_federation::outbox::{Withheld, Withholding};
-use sea_orm::sea_query::OnConflict;
 use sea_orm::ActiveValue::Set;
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 impl Withholding for SqlStore {

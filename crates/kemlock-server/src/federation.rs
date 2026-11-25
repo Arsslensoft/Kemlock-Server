@@ -31,12 +31,12 @@ use kemlock_domain::{ItemId, Owner, ServerId, UserId};
 use kemlock_federation::blobs::{BlobFetcher, BlobFiles, StoreFiles};
 use kemlock_federation::home::Policy;
 use kemlock_federation::job::PeerBlobFetcher;
-use kemlock_federation::outbox::Withholding;
 use kemlock_federation::net::Http;
+use kemlock_federation::outbox::Withholding;
 use kemlock_federation::ports::{PeerRepo, ReplicaStore, VaultRepo};
 use kemlock_federation::{
-    Connector, FedAdminRepo, Federation, HealthConfig, HttpLink, MemberStore, PairingLink, Pairings,
-    PeerRunner, Replica, ServerProfile, WsConnector, unix_now,
+    Connector, FedAdminRepo, Federation, HealthConfig, HttpLink, MemberStore, PairingLink,
+    Pairings, PeerRunner, Replica, ServerProfile, WsConnector, unix_now,
 };
 use kemlock_store_sql::SqlStore;
 use std::net::SocketAddr;

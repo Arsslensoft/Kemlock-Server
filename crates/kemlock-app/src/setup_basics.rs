@@ -315,7 +315,10 @@ mod tests {
             recipient: "age1qqqqqqqq".into(),
         });
         let changes = b.changes().expect("valid");
-        assert_eq!(value(&changes, "kemlock_push_relay").as_deref(), Some("true"));
+        assert_eq!(
+            value(&changes, "kemlock_push_relay").as_deref(),
+            Some("true")
+        );
         assert_eq!(value(&changes, "backup_schedule").as_deref(), Some("6h"));
         assert_eq!(value(&changes, "backup_keep").as_deref(), Some("14"));
         b.backups = None;

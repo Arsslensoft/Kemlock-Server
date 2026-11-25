@@ -58,7 +58,12 @@ async fn the_post_form_works_and_a_wrong_or_missing_proof_deletes_nothing() {
     assert_eq!(body["message"], "Invalid password");
 
     let (status, body) = h
-        .json("POST", "/api/accounts/delete", Some(&token), Some(json!({})))
+        .json(
+            "POST",
+            "/api/accounts/delete",
+            Some(&token),
+            Some(json!({})),
+        )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["message"], "No validation provided");
@@ -144,7 +149,9 @@ async fn shared_organization(h: &Harness) -> ((String, UserId), (String, UserId)
             "POST",
             &format!("/api/organizations/{org}/users/invite"),
             Some(&ada),
-            Some(json!({"emails": ["bob@example.com"], "type": 2, "collections": [], "groups": []})),
+            Some(
+                json!({"emails": ["bob@example.com"], "type": 2, "collections": [], "groups": []}),
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -202,7 +209,9 @@ async fn the_last_owner_of_an_organization_with_members_is_refused() {
 async fn the_deletion_is_at_once_whatever_grace_period_the_settings_give() {
     use kemlock_app::privacy::PrivacySettings;
     let h = Harness::new().await;
-    let mut retention = PrivacySettings::retention(&h.store).await.expect("the settings");
+    let mut retention = PrivacySettings::retention(&h.store)
+        .await
+        .expect("the settings");
     retention.deleted_account_grace_days = 7;
     PrivacySettings::save_retention(&h.store, &retention)
         .await

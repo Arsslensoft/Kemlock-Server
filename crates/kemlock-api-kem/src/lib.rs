@@ -27,6 +27,7 @@ pub use jws::JwsTokenSigner;
 pub use live::LiveHub;
 pub use problem::Problem;
 pub use routes::account::{AccountServices, router as account_router};
+pub use routes::api_key::{ApiKeyApiDoc, api_key_router};
 pub use routes::duplicates::{
     DedupRepo, openapi as duplicates_openapi, router as duplicates_router,
 };
@@ -38,7 +39,6 @@ pub use routes::policies::{
     MasterPasswordDto, PoliciesDoc, PoliciesDto, SpacePoliciesDto, policies_router, with_join_guard,
 };
 pub use routes::push::router as push_router;
-pub use routes::api_key::{ApiKeyApiDoc, api_key_router};
 pub use routes::recovery_kit::{RecoveryKitApiDoc, recovery_kit_router};
 pub use routes::sends::{
     AccessDto, AccessRequest, CreateSendRequest, SendDto, SendsApi, SendsDoc, UpdateSendRequest,

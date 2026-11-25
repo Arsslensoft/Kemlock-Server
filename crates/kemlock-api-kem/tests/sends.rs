@@ -930,9 +930,18 @@ async fn a_replica_refuses_a_send_with_a_view_limit_and_serves_one_without() {
     let recipient = Client::new(router, rig.app.clock.clone(), DpopSigner::es256());
 
     let refused = open(&recipient, limited["accessId"].as_str().expect("id"), None).await;
-    assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "{:?}",
+        refused.json()
+    );
     assert_eq!(refused.json()["home"], "https://nas.example.org");
-    assert!(refused.json()["detail"].as_str().is_some_and(|d| d.contains("Try again")));
+    assert!(
+        refused.json()["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("Try again"))
+    );
     let file = download(
         &recipient,
         limited_file["accessId"].as_str().expect("id"),

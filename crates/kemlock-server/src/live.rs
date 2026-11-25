@@ -346,7 +346,10 @@ impl Snapshot {
             push,
             push_error,
             kemlock_relay: flag(view("kemlock_push_relay")?),
-            kemlock_relay_url: view("kemlock_push_relay_url")?.value.clone().unwrap_or_default(),
+            kemlock_relay_url: view("kemlock_push_relay_url")?
+                .value
+                .clone()
+                .unwrap_or_default(),
             backup_schedule: text("backup_schedule")?,
             backup_keep: text("backup_keep")?,
             backup_destination: text("backup_destination")?,
@@ -456,8 +459,9 @@ where
     };
     let secret = |key: &'static str| async move {
         match settings.secret(key).await {
-            Ok(Some(bytes)) => String::from_utf8(bytes.to_vec())
-                .map_err(|_| format!("{key} isn't text")),
+            Ok(Some(bytes)) => {
+                String::from_utf8(bytes.to_vec()).map_err(|_| format!("{key} isn't text"))
+            }
             Ok(None) => Ok(String::new()),
             Err(e) => Err(format!("the saved {key}: {e}")),
         }
@@ -716,7 +720,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn backup_settings_follow_the_snapshot_with_the_environment_first_and_a_saved_folder_joined() {
+    async fn backup_settings_follow_the_snapshot_with_the_environment_first_and_a_saved_folder_joined()
+     {
         use kemlock_backup::{DestinationConfig, Schedule};
         let dir = tempfile::tempdir().expect("a folder");
         let root = dir.path().canonicalize().expect("resolves");

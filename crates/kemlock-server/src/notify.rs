@@ -286,15 +286,12 @@ impl PushFollower {
         if let Some(why) = &snapshot.push_error {
             tracing::warn!(%why, "the push settings are unusable; pushes go out as before");
         } else if followed.bitwarden.as_ref() != Some(&snapshot.push) {
-            match snapshot
-                .push
-                .config()
-                .and_then(|config| {
-                    config
-                        .map(|config| BitwardenPush::new(config).map(Arc::new))
-                        .transpose()
-                        .map_err(|e| e.to_string())
-                }) {
+            match snapshot.push.config().and_then(|config| {
+                config
+                    .map(|config| BitwardenPush::new(config).map(Arc::new))
+                    .transpose()
+                    .map_err(|e| e.to_string())
+            }) {
                 Ok(relay) => {
                     if relay.is_some() {
                         tracing::info!("Bitwarden's push relay is on");
@@ -322,7 +319,8 @@ impl PushFollower {
         if move_to.is_none() && !register {
             return;
         }
-        let (store, crypto, client) = (self.store.clone(), self.crypto.clone(), self.client.clone());
+        let (store, crypto, client) =
+            (self.store.clone(), self.crypto.clone(), self.client.clone());
         tokio::spawn(async move {
             if let Some(url) = move_to {
                 // The installation key goes to whatever relay the client talks to, and turning
@@ -354,7 +352,6 @@ impl PushFollower {
         });
     }
 }
-
 
 /// Registers with the relay in the background when the server hasn't, so start isn't held up by
 /// a network call. A failure is logged; the next start tries again.
@@ -466,9 +463,7 @@ mod tests {
     }
 
     async fn rig() -> Rig {
-        let store = SqlStore::connect("sqlite::memory:")
-            .await
-            .expect("a store");
+        let store = SqlStore::connect("sqlite::memory:").await.expect("a store");
         let watch = SettingsWatch::start(
             store.clone(),
             crypto(),

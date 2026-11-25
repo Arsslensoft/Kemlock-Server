@@ -2501,10 +2501,7 @@ async fn the_push_installation_id_and_key_are_never_returned() {
         )
         .await;
     assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
-    for body in [
-        saved.json(),
-        root.get("/admin/v1/settings").await.json(),
-    ] {
+    for body in [saved.json(), root.get("/admin/v1/settings").await.json()] {
         for key in ["push_installation_id", "push_installation_key"] {
             let s = setting(&body, key);
             assert_eq!(s["kind"], "secret");

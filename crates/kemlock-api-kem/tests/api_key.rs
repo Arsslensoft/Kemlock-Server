@@ -230,16 +230,26 @@ async fn the_secret_is_shown_and_replaced_only_with_a_proof() {
     assert!(info.json().get("clientSecret").is_none());
 
     // No proof, a wrong proof: nothing is made.
-    let bare = rig
-        .call(&device, "POST", KEY, token, Some(json!({})))
-        .await;
+    let bare = rig.call(&device, "POST", KEY, token, Some(json!({}))).await;
     assert!(bare.status.is_client_error(), "{:?}", bare.status);
     let guess = rig
-        .call(&device, "POST", KEY, token, Some(json!({"proof": "123456"})))
+        .call(
+            &device,
+            "POST",
+            KEY,
+            token,
+            Some(json!({"proof": "123456"})),
+        )
         .await;
     assert_eq!(guess.status, StatusCode::BAD_REQUEST);
     assert!(
-        rig.accounts.get(user).await.expect("the store").expect("the record").api_key.is_none(),
+        rig.accounts
+            .get(user)
+            .await
+            .expect("the store")
+            .expect("the record")
+            .api_key
+            .is_none(),
         "nothing was made"
     );
 
@@ -256,7 +266,12 @@ async fn the_secret_is_shown_and_replaced_only_with_a_proof() {
     assert_eq!(made["clientId"], format!("user.{}", user.0));
     assert!(made["revisionDate"].is_string());
     assert_eq!(
-        rig.accounts.get(user).await.expect("the store").expect("the record").api_key,
+        rig.accounts
+            .get(user)
+            .await
+            .expect("the store")
+            .expect("the record")
+            .api_key,
         Some(secret.clone()),
         "the key the Bitwarden grant compares is this one"
     );
@@ -278,7 +293,13 @@ async fn the_secret_is_shown_and_replaced_only_with_a_proof() {
 
     let proof = rig.proof(&device, token).await;
     let rotated = rig
-        .call(&device, "POST", ROTATE, token, Some(json!({"proof": proof})))
+        .call(
+            &device,
+            "POST",
+            ROTATE,
+            token,
+            Some(json!({"proof": proof})),
+        )
         .await;
     assert_eq!(rotated.status, StatusCode::OK, "{:?}", rotated.json());
     let fresh = rotated.json()["clientSecret"]
@@ -287,7 +308,12 @@ async fn the_secret_is_shown_and_replaced_only_with_a_proof() {
         .to_owned();
     assert_ne!(fresh, secret, "the old secret is out");
     assert_eq!(
-        rig.accounts.get(user).await.expect("the store").expect("the record").api_key,
+        rig.accounts
+            .get(user)
+            .await
+            .expect("the store")
+            .expect("the record")
+            .api_key,
         Some(fresh)
     );
     assert!(rig.actions().contains(&"account.api_key_rotated"));
@@ -310,7 +336,13 @@ async fn an_account_with_no_bitwarden_record_has_no_key() {
         .await;
     assert_eq!(reveal.status, StatusCode::NOT_FOUND);
     let rotate = rig
-        .call(&device, "POST", ROTATE, token, Some(json!({"proof": proof})))
+        .call(
+            &device,
+            "POST",
+            ROTATE,
+            token,
+            Some(json!({"proof": proof})),
+        )
         .await;
     assert_eq!(rotate.status, StatusCode::NOT_FOUND);
 }
@@ -367,7 +399,13 @@ async fn a_proof_alone_never_erases_an_account() {
     let proof = rig.proof(&device, token).await;
 
     let reply = rig
-        .call(&device, "DELETE", ACCOUNT, token, Some(json!({"proof": proof})))
+        .call(
+            &device,
+            "DELETE",
+            ACCOUNT,
+            token,
+            Some(json!({"proof": proof})),
+        )
         .await;
 
     assert!(reply.status.is_client_error(), "{:?}", reply.status);
@@ -381,7 +419,9 @@ async fn the_password_erases_an_account_with_no_second_step() {
     let token = session.access_token.as_str();
     let body = rig.reauth(&device).await;
 
-    let erased = rig.call(&device, "DELETE", ACCOUNT, token, Some(body)).await;
+    let erased = rig
+        .call(&device, "DELETE", ACCOUNT, token, Some(body))
+        .await;
 
     assert_eq!(erased.status, StatusCode::NO_CONTENT, "{:?}", erased.json());
     assert_eq!(rig.privacy.lock().erased, vec![user]);
@@ -410,12 +450,20 @@ async fn with_a_second_step_on_the_password_needs_a_fresh_proof_beside_it() {
 
     // The password alone is not enough.
     let body = rig.reauth(&device).await;
-    let bare = rig.call(&device, "DELETE", ACCOUNT, token, Some(body)).await;
+    let bare = rig
+        .call(&device, "DELETE", ACCOUNT, token, Some(body))
+        .await;
     assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.json());
     // Nor is a wrong proof beside it.
     let body = rig.reauth(&device).await;
     let guess = rig
-        .call(&device, "DELETE", ACCOUNT, token, Some(with_proof(body, "123456")))
+        .call(
+            &device,
+            "DELETE",
+            ACCOUNT,
+            token,
+            Some(with_proof(body, "123456")),
+        )
         .await;
     assert_eq!(guess.status, StatusCode::BAD_REQUEST, "{:?}", guess.json());
     assert!(rig.privacy.lock().erased.is_empty(), "nothing was erased");
@@ -424,7 +472,13 @@ async fn with_a_second_step_on_the_password_needs_a_fresh_proof_beside_it() {
     let proof = rig.proof(&device, token).await;
     let body = rig.reauth(&device).await;
     let erased = rig
-        .call(&device, "DELETE", ACCOUNT, token, Some(with_proof(body, &proof)))
+        .call(
+            &device,
+            "DELETE",
+            ACCOUNT,
+            token,
+            Some(with_proof(body, &proof)),
+        )
         .await;
     assert_eq!(erased.status, StatusCode::NO_CONTENT, "{:?}", erased.json());
     assert_eq!(rig.privacy.lock().erased, vec![user]);

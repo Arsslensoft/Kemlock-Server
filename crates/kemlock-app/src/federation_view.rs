@@ -184,7 +184,10 @@ pub trait FederationView: Send + Sync {
 
     /// The changes of `vault` waiting for each other server that holds it, those with something
     /// waiting only.
-    fn waiting_changes(&self, _vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
+    fn waiting_changes(
+        &self,
+        _vault: Owner,
+    ) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 

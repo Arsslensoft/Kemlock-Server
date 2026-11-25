@@ -69,13 +69,21 @@ async fn only_what_is_open_to_a_peer_is_listed_in_id_order(store: &SqlStore) {
         SendRepo::add_send(store, send).await.expect("add");
     }
     let listed = store
-        .sends_after(Owner::User(user), SendId(uuid::Uuid::nil()), 10, ServerId::random())
+        .sends_after(
+            Owner::User(user),
+            SendId(uuid::Uuid::nil()),
+            10,
+            ServerId::random(),
+        )
         .await
         .expect("list");
     let mut want = vec![first.id, ready.id];
     want.sort();
     let got: Vec<SendId> = listed.iter().map(|s| s.id).collect();
-    assert_eq!(got, want, "the file whose bytes haven't arrived is not listed");
+    assert_eq!(
+        got, want,
+        "the file whose bytes haven't arrived is not listed"
+    );
 
     // A page after the first id has the other one only.
     let page = store
@@ -84,7 +92,12 @@ async fn only_what_is_open_to_a_peer_is_listed_in_id_order(store: &SqlStore) {
         .expect("page");
     assert_eq!(page.iter().map(|s| s.id).collect::<Vec<_>>(), vec![want[1]]);
     let one = store
-        .sends_after(Owner::User(user), SendId(uuid::Uuid::nil()), 1, ServerId::random())
+        .sends_after(
+            Owner::User(user),
+            SendId(uuid::Uuid::nil()),
+            1,
+            ServerId::random(),
+        )
         .await
         .expect("limited");
     assert_eq!(one.len(), 1);
@@ -188,7 +201,10 @@ async fn a_copy_is_added_updated_and_dropped_but_a_local_send_is_not(store: &Sql
         store.replicated_send_ids(vault, home).await,
         Ok(vec![copied.id])
     );
-    assert_eq!(store.replicated_send_ids(vault, ServerId::random()).await, Ok(vec![]));
+    assert_eq!(
+        store.replicated_send_ids(vault, ServerId::random()).await,
+        Ok(vec![])
+    );
     assert_eq!(store.drop_replicated_send(local.id).await, Ok(None));
     assert!(store.send_row(local.id).await.expect("row").is_some());
 
