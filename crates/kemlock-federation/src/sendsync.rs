@@ -301,7 +301,6 @@ impl<S: FedStore> Replica<S> {
         };
         let mut report = SendReport::default();
         let mut seen: HashSet<SendId> = HashSet::new();
-        let mut complete = true;
         let mut after = [0u8; 16];
         loop {
             let response = channel
@@ -330,9 +329,9 @@ impl<S: FedStore> Replica<S> {
                 if entry.owner != owner {
                     return Err(FedError::Malformed("a Send names another owner"));
                 }
-                if !self.take_send(channel, peer, entry, &mut report).await? {
-                    complete = false;
-                }
+                // Whether its file could be had has no bearing on deleting what the peer dropped:
+                // `seen` is the peer's whole list.
+                self.take_send(channel, peer, entry, &mut report).await?;
             }
             if !more {
                 break;
@@ -340,7 +339,7 @@ impl<S: FedStore> Replica<S> {
         }
         // A copy is deleted when the server it came from no longer lists it, whichever server
         // that is: a Send deleted at the home, and a copy made from a replica's relay of it.
-        if complete {
+        {
             for id in self.store.replicated_send_ids(vault, peer).await? {
                 if seen.contains(&id) {
                     continue;
@@ -898,5 +897,21 @@ mod tests {
             .await
             .expect("answer");
         assert!(matches!(&listed, Response::Sends { entries, .. } if entries.len() == 1 && entries[0].id == local.id));
+    }
+
+    #[tokio::test]
+    async fn a_send_that_cannot_be_copied_does_not_hold_back_the_deletion_of_others() {
+        let t = pair().await;
+        let gone = t.send(None);
+        t.a.store.put_send(gone.clone());
+        t.sync().await.expect("sync");
+
+        // A file the replica won't take stays in the home's list for good.
+        let huge = t.send(Some((MAX_FETCH + 1, SendFileFormat::Kma1)));
+        t.a.store.put_send(huge);
+        t.a.store.remove_send(gone.id);
+        let report = t.sync().await.expect("sync");
+        assert_eq!((report.skipped, report.removed), (1, 1));
+        assert!(t.b.store.send(gone.id).is_none());
     }
 }
