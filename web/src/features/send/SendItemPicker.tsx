@@ -1,10 +1,10 @@
 // The picker of the Send form's item kinds: lists the vault's items of one kind, to choose one.
 import { useT } from '@/i18n';
-import { type EditableKind } from '@/features/vault/kinds';
+import { type SendableKind } from '@/features/vault/kinds';
 import { type VaultItem, itemName } from '@/features/vault/vault';
 
 /** The active items of a kind that can be sent, by name. */
-export function itemsOfKind(items: VaultItem[], kind: EditableKind): VaultItem[] {
+export function itemsOfKind(items: VaultItem[], kind: SendableKind): VaultItem[] {
   return items
     .filter((item) => item.kind === kind && item.data !== null)
     .sort((a, b) => itemName(a).localeCompare(itemName(b)));
@@ -17,7 +17,7 @@ export function SendItemPicker({
   onSelect,
 }: {
   items: VaultItem[];
-  kind: EditableKind;
+  kind: SendableKind;
   selectedId: string | undefined;
   onSelect: (item: VaultItem | undefined) => void;
 }) {
