@@ -15,10 +15,12 @@
 // item it no longer links to is written to drop it. An end that is right already is left alone, so
 // a retry only does what is left. A failed end doesn't undo the save: it is reported by name.
 import type { FilesApi } from '@/api/files';
+import type { ItemFiles } from '@/api/itemFiles';
 import { readBytes } from '@/lib/files';
 import { sha256Hex } from '@/lib/hash';
 import { fileKeyBytes, kma1Length, sealKma1 } from '@/lib/kma1';
 import { type AttachmentEntry, namedEntries } from './attachments';
+import { removeFiles, resendFile, withServerFile } from './fileCopy';
 import { linkWriteFields, planLinkWrites } from './links';
 import { type ItemData, type SaveInput, type VaultItem, itemName } from './vault';
 
@@ -60,7 +62,8 @@ export interface SaveDeps {
   save: (input: SaveInput) => Promise<VaultItem>;
   /** The item with this id as the vault holds it now. */
   lookup: (id: string) => VaultItem | undefined;
-  files: FilesApi;
+  /** The files route. A copy of a note also reads the sealed bytes of the original's files (`download`). */
+  files: FilesApi & Partial<Pick<ItemFiles, 'download'>>;
   /** Seals bytes as a KMA1 file under a key. */
   seal?: (key: Uint8Array, plain: Uint8Array) => Promise<Uint8Array>;
   read?: (file: Blob) => Promise<Uint8Array>;
@@ -92,7 +95,29 @@ export class UploadError extends Error {
   }
 }
 
+/**
+ * A file of another item (a copy of a note) sent again under this one: its sealed bytes go as they
+ * are, so the key, the name and the hash the entry holds stay true. Nothing is decrypted.
+ */
+async function resend(deps: SaveDeps, itemId: string, entry: AttachmentEntry): Promise<AttachmentEntry> {
+  const from = entry.copyOf as NonNullable<AttachmentEntry['copyOf']>;
+  const { download } = deps.files;
+  if (!download) throw new Error('sending a file again needs the sealed bytes of the original');
+  const started: string[] = [];
+  let sent: string;
+  try {
+    sent = await resendFile({ ...deps.files, download }, from.itemId, itemId, from.fileId, started);
+  } catch (error) {
+    // The upload was started and never finished: don't leave it counting against the quota.
+    await removeFiles(deps.files, itemId, started);
+    throw error;
+  }
+  const { copyOf: _from, file: _file, raw, ...rest } = entry;
+  return { ...rest, kemlockFile: sent, ...(raw !== undefined ? { raw: withServerFile(raw, sent) } : {}) };
+}
+
 async function sendOne(deps: SaveDeps, itemId: string, entry: AttachmentEntry): Promise<AttachmentEntry> {
+  if (entry.copyOf !== undefined) return resend(deps, itemId, entry);
   const file = entry.file as Blob;
   const started = await deps.files.start(itemId, kma1Length(file.size));
   let sha256: string;

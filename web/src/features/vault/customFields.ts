@@ -6,10 +6,11 @@
 //
 // Reading is lenient: a field this app can't read is skipped, never an error, and nothing here
 // writes. No React in here.
-import type { AdminFieldDef } from '@/api/customFields';
+import type { AdminFieldDef, CustomFieldType } from '@/api/customFields';
+import { typeOf } from './forms/extras';
 import type { ItemData } from './vault';
 
-export type CustomFieldKind = 'text' | 'hidden' | 'checkbox';
+export type CustomFieldKind = CustomFieldType;
 
 export interface CustomField {
   name: string;
@@ -22,20 +23,8 @@ export interface CustomField {
   admin: boolean;
 }
 
-function kindOf(raw: unknown): CustomFieldKind {
-  switch (typeof raw === 'string' ? raw.toLowerCase() : raw) {
-    case 'hidden':
-    case 'password':
-    case 1:
-      return 'hidden';
-    case 'boolean':
-    case 'checkbox':
-    case 2:
-      return 'checkbox';
-    default:
-      return 'text';
-  }
-}
+/** The type a stored `kind` means (forms/extras.ts reads it too); one this app doesn't know shows as text. */
+const kindOf = (raw: unknown): CustomFieldKind => typeOf(raw) ?? 'text';
 
 function valueOf(raw: unknown, kind: CustomFieldKind): string {
   if (kind === 'checkbox') return raw === true || raw === 'true' ? 'true' : 'false';

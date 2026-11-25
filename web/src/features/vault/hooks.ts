@@ -10,10 +10,10 @@ import { duplicatesViewStore } from '@/features/duplicates/viewState';
 import { forgetKeyFacts } from './keyFacts';
 import { type KindCounts, countByKind } from './listFilters';
 import { vaultFilterStore } from './vaultFilter';
-import { type AdminFieldDef, createCustomFieldsApi } from '@/api/customFields';
+import { canWriteItem } from './writeAccess';
+import { type AdminFieldDef, type CustomFieldDefinitions, NO_DEFINITIONS, createCustomFieldsApi } from '@/api/customFields';
 import { createItemFilesApi } from '@/api/itemFiles';
 import { saveBatch } from './batch';
-import { saveCopy } from './copy';
 import { linkInputs, unlinkInputs } from './links';
 import { type MoveTarget, moveItem } from './move';
 import {
@@ -26,7 +26,6 @@ import {
   isTrashed,
   restoreItem,
   saveItem,
-  spaceOf,
   syncVault,
   trashItem,
   vaultStore,
@@ -36,25 +35,34 @@ import {
 const spaceKeys = createSpaceKeyLoader(spaceDeps);
 const deps: VaultDeps = { api, crypto: vaultCrypto, ensureSpaceKeys: spaceKeys.ensure };
 
-/** The files of items on this server: what a move or a copy sends again under another item. */
+/** The files of items on this server: what a move or a copy sends again under another item, and what a download reads. */
 export const itemFiles = createItemFilesApi(api);
 
 const customFieldsApi = createCustomFieldsApi(api);
-const NO_ADMIN_FIELDS: AdminFieldDef[] = [];
+
+export const customFieldsKey = ['custom-fields'] as const;
 
 /**
- * The fields the admin offers, as they are now (`GET /kem/v1/custom-fields`): an item holds the name
- * and type a field had when it was saved, and the page shows the admin's current ones. Until the list
- * arrives, or when it can't be read, there are none and the item's own are shown.
+ * What the admin set up for custom fields, as it is now (`GET /kem/v1/custom-fields`): the fields
+ * and whether people may add their own. Until it arrives, or when it can't be read (a server with
+ * no such route), there are no admin fields and people may add their own.
  */
-export function useAdminFields(): AdminFieldDef[] {
+export function useCustomFieldDefinitions(): CustomFieldDefinitions {
   const query = useQuery({
-    queryKey: ['custom-fields', 'definitions'],
+    queryKey: customFieldsKey,
     queryFn: () => customFieldsApi.list(),
     staleTime: 60_000,
     retry: false,
   });
-  return query.data?.fields ?? NO_ADMIN_FIELDS;
+  return query.data ?? NO_DEFINITIONS;
+}
+
+/**
+ * The fields the admin offers, as they are now: an item holds the name and type a field had when it
+ * was saved, and the page shows the admin's current ones.
+ */
+export function useAdminFields(): AdminFieldDef[] {
+  return useCustomFieldDefinitions().fields;
 }
 
 export const vaultKey = ['vault'] as const;
@@ -136,15 +144,11 @@ export function useWritableCollections() {
 /**
  * Whether this person may change an item: always one of the account's own vault, and one of a
  * space when they may edit its collection. While the collections load the answer is yes, and the
- * server has the last word.
+ * server has the last word (writeAccess.ts).
  */
 export function useCanWrite(): (item: VaultItem) => boolean {
   const collections = useWritableCollections();
-  return useMemo(() => {
-    const held = collections.data ? new Set(collections.data.map((c) => c.collectionId)) : undefined;
-    return (item) =>
-      spaceOf(item.owner) === null || held === undefined || (item.collectionId !== undefined && held.has(item.collectionId));
-  }, [collections.data]);
+  return useMemo(() => (item) => canWriteItem(item, collections.data), [collections.data]);
 }
 
 export function useVaultItem(id: string | undefined): {
@@ -211,14 +215,7 @@ export function useVaultActions() {
     onSuccess: publish,
     onError: afterFailure,
   });
-  // A copy of an item: saved like a new one, and its files sent again under the new item.
-  const copy = useMutation({
-    mutationFn: ({ input, sourceId }: { input: SaveInput; sourceId: string }) =>
-      saveCopy(deps, vaultStore, itemFiles, input, sourceId),
-    onSuccess: publish,
-    onError: afterFailure,
-  });
-  return { save, trash, restore, remove, empty, link, move, copy };
+  return { save, trash, restore, remove, empty, link, move };
 }
 
 /** Stable text fields for a form: only strings the form owns. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   type AttachmentEntry,
+  copiedEntries,
   entryBody,
   formatSize,
   namedEntries,
@@ -147,5 +148,27 @@ describe('how a file is described', () => {
     expect(typeLabel({ name: 'backup.zip' })).toBe('ZIP');
     expect(typeLabel({ name: 'archive.tar.verylongext', type: 'application/zip' })).toBe('ZIP');
     expect(typeLabel({ name: 'README' })).toBe('');
+  });
+});
+
+describe('the entries of a copy', () => {
+  const held = [
+    { id: 'a1', name: 'map.png', size: 3, key: 'k1', addedAt: 1, kemlockFile: 'old-1' },
+    { id: 'a2', name: 'never.txt', size: 9, key: 'k2', addedAt: 2 },
+  ];
+
+  it('wait to have each uploaded file sent again, and name no file until then', () => {
+    const [sent, never] = copiedEntries(readAttachments({ attachments: held }), 'source-item');
+    expect(sent).toMatchObject({ id: 'a1', name: 'map.png', copyOf: { itemId: 'source-item', fileId: 'old-1' } });
+    expect(sent?.kemlockFile).toBeUndefined();
+    // An entry never uploaded has no file to send: it is kept as it is.
+    expect(never?.copyOf).toBeUndefined();
+  });
+
+  it('are pending, not stored, so a save of the copy writes no name for them', () => {
+    const entries = copiedEntries(readAttachments({ attachments: held }), 'source-item');
+    expect(pendingEntries(entries).map((entry) => entry.id)).toEqual(['a1']);
+    expect(storedEntries(entries).map((entry) => entry.id)).toEqual(['a2']);
+    expect(noteAttachmentFields(entries, null)['attachments']).toEqual([entryBody(entries[1] as AttachmentEntry)]);
   });
 });

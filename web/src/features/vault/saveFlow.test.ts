@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fileKeyText, kma1Length } from '@/lib/kma1';
-import { type AttachmentEntry, entryBody } from './attachments';
+import { type AttachmentEntry, copiedEntries, entryBody, readAttachments, storedEntries } from './attachments';
 import { type FormResult, UploadError, saveWithExtras } from './saveFlow';
 import type { ItemData, SaveInput, VaultItem } from './vault';
 
@@ -477,5 +477,97 @@ describe('files are sent after the item is saved', () => {
       expect(w.removeItem).toHaveBeenCalledOnce();
       expect(w.files.remove).toHaveBeenCalledOnce();
     });
+  });
+});
+
+describe("a copy of a note sends the original's files again", () => {
+  const key = fileKeyText(new Uint8Array(32).fill(3));
+  const SOURCE = 'source-item';
+  const sha256 = 'ab'.repeat(32);
+  const stored = {
+    id: 'a1',
+    name: 'map.png',
+    size: 3,
+    key,
+    addedAt: 5,
+    sha256,
+    kemlockFile: 'old-1',
+    vendor: 'kept',
+  };
+  // What the copy's form holds: the original's entry, waiting to have its file sent again.
+  const waiting = (): AttachmentEntry[] => copiedEntries(readAttachments({ attachments: [stored] }), SOURCE);
+
+  function note(entries: AttachmentEntry[]): FormResult {
+    return result({
+      fields: { name: 'Plan', attachments: undefined },
+      files: entries,
+      uploads: entries.filter((entry) => entry.file !== undefined || entry.copyOf !== undefined),
+      withUploaded: (uploaded) => {
+        const sent = new Map(uploaded.map((entry) => [entry.id, entry]));
+        const list = storedEntries(entries.map((entry) => sent.get(entry.id) ?? entry)).map(entryBody);
+        return { attachments: list.length > 0 ? list : undefined };
+      },
+    });
+  }
+
+  it('waits to name any file: the entry names none until its bytes are under the copy', () => {
+    const [entry] = waiting();
+    expect(entry).toMatchObject({ id: 'a1', name: 'map.png', sha256, copyOf: { itemId: SOURCE, fileId: 'old-1' } });
+    expect(entry?.kemlockFile).toBeUndefined();
+    expect(storedEntries(waiting())).toEqual([]);
+  });
+
+  it('saves the copy, sends the sealed bytes as they are and saves it again naming the new file', async () => {
+    const w = world();
+    const download = vi.fn(async () => new Uint8Array([9, 9, 9]));
+    const outcome = await saveWithExtras({ ...w.deps, files: { ...w.files, download } }, request({ result: note(waiting()) }));
+    expect(w.save).toHaveBeenCalledTimes(2);
+    // The first save names no file.
+    expect(w.inputs[0]?.fields['attachments']).toBeUndefined();
+    expect(download).toHaveBeenCalledWith(SOURCE, 'old-1');
+    // The bytes are sent as the server holds them: nothing is read from a file or sealed again.
+    expect(w.files.start).toHaveBeenCalledWith(outcome.item.id, 3);
+    expect(w.files.upload).toHaveBeenCalledWith(outcome.item.id, 'file-1', new Uint8Array([9, 9, 9]));
+    expect(w.read).not.toHaveBeenCalled();
+    const [entry] = outcome.item.data?.['attachments'] as Array<Record<string, unknown>>;
+    expect(entry).toMatchObject({ id: 'a1', name: 'map.png', key, sha256, vendor: 'kept', kemlockFile: 'file-1' });
+    expect(entry).not.toHaveProperty('copyOf');
+    // The original keeps its file.
+    expect(w.files.remove).not.toHaveBeenCalled();
+  });
+
+  it('keeps the copy and carries nothing when the original cannot be read, so Save tries again', async () => {
+    const w = world();
+    const failure = (await saveWithExtras(w.deps, request({ result: note(waiting()) })).catch((e: unknown) => e)) as UploadError;
+    expect(failure).toBeInstanceOf(UploadError);
+    expect(failure.saved).toBeDefined();
+    expect(failure.uploaded).toEqual([]);
+    expect(w.files.start).not.toHaveBeenCalled();
+  });
+
+  it('takes back the upload it started when the bytes could not be sent', async () => {
+    const w = world();
+    w.files.upload.mockRejectedValueOnce(new Error('cut off'));
+    const download = vi.fn(async () => new Uint8Array([1]));
+    const failure = (await saveWithExtras({ ...w.deps, files: { ...w.files, download } }, request({ result: note(waiting()) })).catch(
+      (e: unknown) => e,
+    )) as UploadError;
+    expect(failure).toBeInstanceOf(UploadError);
+    expect(w.files.remove).toHaveBeenCalledWith(failure.saved?.id, 'file-1');
+    expect(w.save).toHaveBeenCalledOnce();
+  });
+
+  it('does not send a file again on a retry that finds it on the copy already', async () => {
+    const w = world();
+    const download = vi.fn(async () => new Uint8Array([1]));
+    const first = await saveWithExtras({ ...w.deps, files: { ...w.files, download } }, request({ result: note(waiting()) }));
+    w.files.start.mockClear();
+    download.mockClear();
+    await saveWithExtras(
+      { ...w.deps, files: { ...w.files, download } },
+      request({ result: note(waiting()), existing: first.item, filesBefore: [] }),
+    );
+    expect(download).not.toHaveBeenCalled();
+    expect(w.files.start).not.toHaveBeenCalled();
   });
 });

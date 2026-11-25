@@ -42,7 +42,7 @@ export function newFieldKey(): string {
 const BODY_KIND: Record<CustomFieldType, string> = { text: 'text', hidden: 'hidden', checkbox: 'boolean' };
 
 /** The type a stored `kind` means: the importer writes `boolean`, a number or `password` for the others. */
-function typeOf(kind: unknown): CustomFieldType | undefined {
+export function typeOf(kind: unknown): CustomFieldType | undefined {
   switch (typeof kind === 'string' ? kind.toLowerCase() : kind) {
     case undefined:
     case 'text':

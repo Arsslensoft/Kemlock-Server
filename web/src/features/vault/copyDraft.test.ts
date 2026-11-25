@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { copyBase, copyFields, copySeed } from './copyDraft';
+import { canCopy, copyBase, copyFields, copySeed } from './copyDraft';
 import type { VaultItem } from './vault';
 
 const SOURCE: VaultItem = {
@@ -82,5 +82,46 @@ describe('a copy', () => {
     // `notes` is undefined, which saving removes: the form cleared it.
     expect('notes' in fields && fields['notes'] === undefined).toBe(true);
     expect(copyFields(undefined, { name: 'Plain' })).toEqual({ name: 'Plain' });
+  });
+});
+
+describe('a copy of a secure note', () => {
+  const note: VaultItem = {
+    ...SOURCE,
+    kind: 'note',
+    data: {
+      name: 'Wi-Fi',
+      text: 'hunter2',
+      tags: ['home'],
+      attachments: [{ id: 'a1', name: 'map.png', size: 3, key: 'k', addedAt: 1, kemlockFile: 'old-1' }],
+    },
+  };
+
+  it("opens the form with its files listed, and never saves the original's file names itself", () => {
+    expect(copySeed(note).data?.['attachments']).toEqual(note.data?.['attachments']);
+    expect('attachments' in copyBase(note.data)).toBe(false);
+    // What the form hands back for a copy names no stored file, and the copy's body then names none.
+    const saved = copyFields(copySeed(note), { name: 'Wi-Fi', attachments: undefined });
+    expect('attachments' in saved && saved['attachments'] === undefined).toBe(true);
+    expect(saved['tags']).toEqual(['home']);
+  });
+
+  it('keeps the name as it is, with no suffix', () => {
+    expect(copySeed(note).data?.['name']).toBe('Wi-Fi');
+  });
+
+  it('is the only kind whose files the form lists', () => {
+    const login = { ...SOURCE, data: { name: 'x', attachments: [{ id: 'a', name: 'y', kemlockFile: 'f' }] } };
+    expect(copySeed(login).data).not.toHaveProperty('attachments');
+  });
+});
+
+describe('what can be copied', () => {
+  it('is not a passkey, a file or an item that cannot be read', () => {
+    expect(canCopy(SOURCE)).toBe(true);
+    expect(canCopy({ ...SOURCE, kind: 'contact' })).toBe(true);
+    expect(canCopy({ ...SOURCE, kind: 'passkey' })).toBe(false);
+    expect(canCopy({ ...SOURCE, kind: 'file' })).toBe(false);
+    expect(canCopy({ ...SOURCE, data: null })).toBe(false);
   });
 });

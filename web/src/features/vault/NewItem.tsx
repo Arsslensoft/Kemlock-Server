@@ -4,26 +4,23 @@
 // what it makes is saved by saveFlow.ts.
 import { Link, useCanGoBack, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router';
 import { useRef, useState } from 'react';
-import { createFilesApi } from '@/api/files';
-import { api, session } from '@/app/services';
+import { session } from '@/app/services';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { buttonClass } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
 import '@/styles/itemForms.css';
 import { type AttachmentEntry, serverFileIds } from './attachments';
-import { copyFields, copySeed } from './copyDraft';
+import { canCopy, copyFields, copySeed } from './copyDraft';
 import { KindForm } from './forms';
 import { FormEnvContext } from './forms/env';
 import type { Described } from './forms/parts';
-import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
+import { itemFiles, useVaultActions, useVaultItem, useWritableCollections } from './hooks';
 import { KIND_ORDER, type KnownKind, isEditable, isKnownKind, kindLabel } from './kinds';
 import { formLinks, incomingLinks } from './links';
 import { type FormResult, UploadError, saveWithExtras } from './saveFlow';
 import { useItemFormEnv } from './useItemFormEnv';
 import { type VaultItem, vaultStore } from './vault';
-
-const files = createFilesApi(api);
 
 const TITLES: Record<KnownKind, MessageId> = {
   login: 'itemForm.title.login',
@@ -50,8 +47,9 @@ export default function NewItem() {
   const { item, isLoading } = useVaultItem(itemId);
   const copying = useVaultItem(search.copyOf);
   const { save, remove } = useVaultActions();
-  // Where a new item goes: '' is the account's own vault, otherwise `<space id>/<collection id>`.
-  const [where, setWhere] = useState('');
+  // Where a new item goes: '' is the account's own vault, otherwise `<space id>/<collection id>`. Until
+  // the person picks, a copy goes where its original is, when they may write there.
+  const [picked, setWhere] = useState<string | undefined>(undefined);
   const collections = useWritableCollections();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Described>();
@@ -62,10 +60,17 @@ export default function NewItem() {
   const [linkFailures, setLinkFailures] = useState<string[]>([]);
   const editing = itemId !== undefined;
   const copyOf = search.copyOf;
-  const source = copyOf !== undefined ? copying.item : undefined;
+  const found = copyOf !== undefined ? copying.item : undefined;
+  // An item that can't be read, or that is not copied (a passkey, a file), has nothing to fill a form from.
+  const source = found && canCopy(found) ? found : undefined;
   const chosen = search.kind ?? (source && isKnownKind(source.kind) ? source.kind : undefined);
   const kind: KnownKind = editing && item && isKnownKind(item.kind) ? item.kind : (chosen ?? 'login');
   const existing = item ?? savedItem;
+  const sourceHome =
+    source?.collectionId && source.kind !== 'contact'
+      ? collections.data?.find((c) => c.collectionId === source.collectionId)
+      : undefined;
+  const where = picked ?? (sourceHome ? `${sourceHome.spaceId}/${sourceHome.collectionId}` : '');
   const env = useItemFormEnv(existing?.id);
   // What the item had when the form opened: what it links to now is compared with the links, and the
   // files it keeps with the files, so an end or a file that failed once is dealt with by the next Save.
@@ -85,11 +90,13 @@ export default function NewItem() {
       </p>
     );
   }
-  if ((editing && (!item || !isEditable(item.kind))) || (copyOf !== undefined && !source)) {
+  // Saving an item that couldn't be opened would replace its body with what the form holds.
+  const unreadable = (editing && item?.data === null) || found?.data === null;
+  if ((editing && (!item || !isEditable(item.kind) || item.data === null)) || (copyOf !== undefined && !source)) {
     return (
       <div className="empty">
         <h1 className="page-title">{t('item.missing.title')}</h1>
-        <p>{t('newItem.cantEdit')}</p>
+        <p>{unreadable ? t('item.unreadable') : t('newItem.cantEdit')}</p>
         <Link to="/vault" className={buttonClass({ variant: 'primary' })}>
           {t('nav.all')}
         </Link>
@@ -131,7 +138,7 @@ export default function NewItem() {
         {
           save: (input) => save.mutateAsync(input),
           lookup: (id) => vaultStore.items.get(id),
-          files,
+          files: itemFiles,
           removeItem: (made) => remove.mutateAsync(made),
         },
         {

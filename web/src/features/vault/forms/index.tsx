@@ -82,7 +82,7 @@ export function KindForm({
         <NoteForm
           key={key}
           {...common}
-          initial={linked(noteDefaults(source))}
+          initial={linked(noteDefaults(source, seed !== undefined))}
           onSubmit={(v) => {
             const entries = v.attachments as AttachmentEntry[];
             onSubmit({

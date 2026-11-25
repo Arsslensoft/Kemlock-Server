@@ -2,32 +2,16 @@
 // first copies the files the kept note lacks onto it (attachmentCopy.ts); the batch then names them,
 // so a merge that fails leaves no file behind and no item naming one the server lacks.
 import { useMutation } from '@tanstack/react-query';
-import { createFilesApi } from '@/api/files';
 import { api, queryClient } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
-import { vaultKey } from '@/features/vault/hooks';
 import { saveBatch } from '@/features/vault/batch';
+import { removeFiles } from '@/features/vault/fileCopy';
+import { itemFiles, vaultKey } from '@/features/vault/hooks';
 import { type VaultDeps, type VaultItem, vaultStore } from '@/features/vault/vault';
-import { type FileTransport, copyAttachments, removeFiles } from './attachmentCopy';
+import { copyAttachments } from './attachmentCopy';
 import { type MergePlan, applyCopies, mergeWrites, undoWrites } from './merge';
 
 const deps: VaultDeps = { api, crypto: vaultCrypto };
-
-const files = createFilesApi(api);
-
-/** The files route as a merge uses it: the sealed bytes of a file in, and out under another item. */
-export const fileTransport: FileTransport = {
-  download: async (itemId, fileId) => {
-    const response = await api.raw({
-      method: 'GET',
-      path: `/kem/v1/items/${encodeURIComponent(itemId)}/files/${encodeURIComponent(fileId)}`,
-    });
-    return new Uint8Array(await response.arrayBuffer());
-  },
-  start: (itemId, size) => files.start(itemId, size),
-  upload: (itemId, fileId, bytes) => files.upload(itemId, fileId, bytes),
-  remove: (itemId, fileId) => files.remove(itemId, fileId),
-};
 
 function publish(): void {
   queryClient.setQueryData(vaultKey, vaultStore.snapshot());
@@ -45,13 +29,13 @@ export interface Merged {
 export function useMergeActions() {
   const merge = useMutation({
     mutationFn: async (plan: MergePlan): Promise<Merged> => {
-      const copied = await copyAttachments(fileTransport, plan.kept.id, plan.copies);
+      const copied = await copyAttachments(itemFiles, plan.kept.id, plan.copies);
       const written = applyCopies(plan, copied.entries);
       try {
         const saved = await saveBatch(deps, vaultStore, mergeWrites(written, new Date()));
         return { plan: written, saved, copiedFiles: copied.files };
       } catch (error) {
-        await removeFiles(fileTransport, plan.kept.id, copied.files);
+        await removeFiles(itemFiles, plan.kept.id, copied.files);
         throw error;
       }
     },
@@ -66,7 +50,7 @@ export function useMergeActions() {
         vaultStore,
         undoWrites(merged.plan, merged.saved, (id) => vaultStore.items.get(id)),
       );
-      await removeFiles(fileTransport, merged.plan.kept.id, merged.copiedFiles);
+      await removeFiles(itemFiles, merged.plan.kept.id, merged.copiedFiles);
       return restored;
     },
     onSuccess: publish,

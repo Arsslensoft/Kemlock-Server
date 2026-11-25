@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fakeFiles } from '@/test/fake-files';
-import { copyFiles, removeFiles, serverFileIds, withServerFiles, withoutServerFiles } from './fileCopy';
+import { copyFiles, removeFiles, resendFile, serverFileIds, withServerFile, withServerFiles, withoutServerFiles } from './fileCopy';
 
 const fileEntry = (over: Record<string, unknown> = {}) => ({
   id: 'a1',
@@ -103,5 +103,33 @@ describe('sending files again', () => {
     const files = setup();
     await removeFiles({ remove: (item, id) => (id === 'old-1' ? Promise.reject(new Error('gone')) : files.remove(item, id)) }, 'old-item', ['old-1', 'old-2']);
     expect(files.held.get('old-item')?.has('old-2')).toBe(false);
+  });
+});
+
+describe('sending one file again', () => {
+  it('sends the sealed bytes under the other item and answers the new id, noting it before the bytes go', async () => {
+    const files = fakeFiles({ knowsItem: (id) => id === 'new-item' });
+    files.held.set('old-item', new Map([['old-1', new Uint8Array([7, 8])]]));
+    const started: string[] = [];
+    const id = await resendFile(files, 'old-item', 'new-item', 'old-1', started);
+    expect(id).toBe('new-file-1');
+    expect(started).toEqual(['new-file-1']);
+    expect(files.held.get('new-item')?.get('new-file-1')).toEqual(new Uint8Array([7, 8]));
+    // The original keeps its file.
+    expect(files.held.get('old-item')?.has('old-1')).toBe(true);
+  });
+
+  it('has noted the upload it started when the bytes fail, so the caller can take it back', async () => {
+    const files = fakeFiles({ knowsItem: (id) => id === 'new-item' });
+    files.held.set('old-item', new Map([['old-1', new Uint8Array([7, 8])]]));
+    const started: string[] = [];
+    const failing = { ...files, upload: () => Promise.reject(new Error('cut off')) };
+    await expect(resendFile(failing, 'old-item', 'new-item', 'old-1', started)).rejects.toThrow('cut off');
+    expect(started).toEqual(['new-file-1']);
+  });
+
+  it('names the new file in an entry, and in fileId too when the entry had that key', () => {
+    expect(withServerFile({ id: 'a1', kemlockFile: 'old-1', vendor: 1 }, 'new-1')).toEqual({ id: 'a1', kemlockFile: 'new-1', vendor: 1 });
+    expect(withServerFile({ id: 'a1', fileId: 'old-1' }, 'new-1')).toEqual({ id: 'a1', kemlockFile: 'new-1', fileId: 'new-1' });
   });
 });

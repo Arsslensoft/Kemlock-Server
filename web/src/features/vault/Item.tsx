@@ -28,7 +28,7 @@ import { ItemMenu, type ItemAction } from './ItemMenu';
 import { LinkedItems } from './LinkedItems';
 import { MoveDialog } from './MoveDialog';
 import { ServerHolds } from './ServerHolds';
-import { canCopy } from './copy';
+import { canCopy } from './copyDraft';
 import { hostOfUrl, isEditable, isWebUrl, kindLabel, tileLetter, timeAgo } from './kinds';
 import { isTrashed, itemName, loginOf, noteOf } from './vault';
 import { readWebsites } from './websites';

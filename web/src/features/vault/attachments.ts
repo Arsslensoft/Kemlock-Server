@@ -40,6 +40,12 @@ export interface AttachmentEntry {
   raw?: Record<string, unknown> | undefined;
   /** Where the entry was in the body's list, so it is matched to its place when written back. */
   origin?: number | undefined;
+  /**
+   * A file of another item whose sealed bytes are still to be sent again under this one: what a copy
+   * of a note holds in place of the original's `kemlockFile`. The entry keeps its name, key and
+   * hash; it gets its own `kemlockFile` when the bytes are on the server (saveFlow.ts).
+   */
+  copyOf?: { itemId: string; fileId: string } | undefined;
 }
 
 export const attachmentSchema = z.object({
@@ -54,6 +60,7 @@ export const attachmentSchema = z.object({
   file: z.custom<Blob>((value) => typeof Blob !== 'undefined' && value instanceof Blob).optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
   origin: z.number().optional(),
+  copyOf: z.object({ itemId: z.string(), fileId: z.string() }).optional(),
 });
 
 /** How many files a note holds, as the Kemlock app limits it. */
@@ -132,12 +139,25 @@ export function entryBody(entry: AttachmentEntry): Record<string, unknown> {
 
 /** The entries the server holds, or the app wrote: those with no bytes still to send. */
 export function storedEntries(entries: readonly AttachmentEntry[]): AttachmentEntry[] {
-  return entries.filter((entry) => entry.file === undefined);
+  return entries.filter((entry) => entry.file === undefined && entry.copyOf === undefined);
 }
 
-/** The entries whose bytes still have to be encrypted and uploaded. */
+/** The entries whose bytes still have to go up: encrypted from a chosen file, or sent again from another item. */
 export function pendingEntries(entries: readonly AttachmentEntry[]): AttachmentEntry[] {
-  return entries.filter((entry) => entry.file !== undefined);
+  return entries.filter((entry) => entry.file !== undefined || entry.copyOf !== undefined);
+}
+
+/**
+ * The entries of item `sourceId` as a copy of it holds them: each one the server holds a file for
+ * waits to have that file sent again under the copy, and names none until then. An entry that was
+ * never uploaded is kept as it is.
+ */
+export function copiedEntries(entries: readonly AttachmentEntry[], sourceId: string): AttachmentEntry[] {
+  return entries.map((entry) => {
+    if (entry.kemlockFile === undefined) return entry;
+    const { kemlockFile, ...rest } = entry;
+    return { ...rest, copyOf: { itemId: sourceId, fileId: kemlockFile } };
+  });
 }
 
 /** The entries of a body that the server holds a file for: those that name a `kemlockFile`. */

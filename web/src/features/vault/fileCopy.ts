@@ -17,7 +17,7 @@ function isEntry(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function serverIdOf(entry: Record<string, unknown>): string {
+export function serverIdOf(entry: Record<string, unknown>): string {
   for (const key of KEYS) {
     const value = entry[key];
     if (typeof value === 'string' && value !== '') return value;
@@ -74,8 +74,46 @@ export function withServerFiles(data: ItemData, ids: ReadonlyMap<string, string>
 }
 
 /** Removes files from an item, and does not mind when one is already gone. */
-export async function removeFiles(files: Pick<ItemFiles, 'remove'>, itemId: string, ids: readonly string[]): Promise<void> {
+export async function removeFiles(files: Pick<FileResender, 'remove'>, itemId: string, ids: readonly string[]): Promise<void> {
   await Promise.allSettled(ids.map((id) => files.remove(itemId, id)));
+}
+
+/** What sending a file again needs of the files route (`ItemFiles` has all of it). */
+export interface FileResender {
+  /** The `KMA1` bytes of a file of an item, still sealed. */
+  download(itemId: string, fileId: string): Promise<Uint8Array>;
+  /** Starts the upload of a file `size` bytes long; answers its id on the server. */
+  start(itemId: string, size: number): Promise<{ fileId: string }>;
+  /** Sends the bytes of a started upload. */
+  upload(itemId: string, fileId: string, bytes: Uint8Array): Promise<unknown>;
+  /** Removes a file of an item. */
+  remove(itemId: string, fileId: string): Promise<void>;
+}
+
+/**
+ * Sends the sealed bytes of file `fileId` of item `fromId` again under item `toId`, which must
+ * exist on the server already, and answers the new file's id. The new file's id is added to
+ * `started` before its bytes go, so a caller whose send fails can take back every file it started
+ * (`removeFiles`), this one included. Every place that gives a file to another item (a move, a
+ * copy, a merge) sends it through here.
+ */
+export async function resendFile(
+  files: FileResender,
+  fromId: string,
+  toId: string,
+  fileId: string,
+  started: string[],
+): Promise<string> {
+  const sealed = await files.download(fromId, fileId);
+  const next = await files.start(toId, sealed.length);
+  started.push(next.fileId);
+  await files.upload(toId, next.fileId, sealed);
+  return next.fileId;
+}
+
+/** `entry` as it was, naming the file the server holds for it now (and `fileId` too when it had that key). */
+export function withServerFile(entry: Record<string, unknown>, id: string): Record<string, unknown> {
+  return { ...entry, kemlockFile: id, ...('fileId' in entry ? { fileId: id } : {}) };
 }
 
 export interface CopiedFiles {
@@ -90,21 +128,12 @@ export interface CopiedFiles {
  * comes back names the new files. If any of them fails, the ones already sent are removed and the
  * error is thrown.
  */
-export async function copyFiles(
-  files: Pick<ItemFiles, 'download' | 'start' | 'upload' | 'remove'>,
-  fromId: string,
-  toId: string,
-  data: ItemData,
-): Promise<CopiedFiles> {
+export async function copyFiles(files: FileResender, fromId: string, toId: string, data: ItemData): Promise<CopiedFiles> {
   const ids = new Map<string, string>();
   const uploaded: string[] = [];
   try {
     for (const old of serverFileIds(data)) {
-      const sealed = await files.download(fromId, old);
-      const started = await files.start(toId, sealed.length);
-      uploaded.push(started.fileId);
-      await files.upload(toId, started.fileId, sealed);
-      ids.set(old, started.fileId);
+      ids.set(old, await resendFile(files, fromId, toId, old, uploaded));
     }
   } catch (error) {
     await removeFiles(files, toId, uploaded);

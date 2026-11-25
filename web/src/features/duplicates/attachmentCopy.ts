@@ -6,6 +6,7 @@
 //
 // The copy happens before the merge's batch, and the batch names the new files, so a failure leaves
 // nothing named that the server lacks: what was started is deleted and the merge is not made.
+import { type FileResender, removeFiles, resendFile, serverIdOf, withServerFile } from '@/features/vault/fileCopy';
 import type { VaultItem } from '@/features/vault/vault';
 
 /** One attachment of an item that goes, to be copied onto the kept one. */
@@ -17,16 +18,7 @@ export interface AttachmentCopy {
 }
 
 /** What the files route offers, as far as a copy needs it. */
-export interface FileTransport {
-  /** The `KMA1` bytes of a file of an item. */
-  download(itemId: string, fileId: string): Promise<Uint8Array>;
-  /** Starts the upload of a file `size` bytes long; answers its id on the server. */
-  start(itemId: string, size: number): Promise<{ fileId: string }>;
-  /** Sends the bytes of a started upload. */
-  upload(itemId: string, fileId: string, bytes: Uint8Array): Promise<unknown>;
-  /** Deletes a file of an item. */
-  remove(itemId: string, fileId: string): Promise<void>;
-}
+export type FileTransport = FileResender;
 
 function entries(item: VaultItem): Array<Record<string, unknown>> {
   const list = item.data?.['attachments'];
@@ -39,9 +31,7 @@ const text = (entry: Record<string, unknown>, key: string): string =>
   typeof entry[key] === 'string' ? (entry[key] as string) : '';
 
 /** The file's id on the server, which an entry names as `kemlockFile`. */
-export function serverFileOf(entry: Record<string, unknown>): string {
-  return text(entry, 'kemlockFile') || text(entry, 'fileId');
-}
+export const serverFileOf = serverIdOf;
 
 /** How an attachment is told from another: the id its entry carries, else its file on the server. */
 const identity = (entry: Record<string, unknown>): string => text(entry, 'id') || `file:${serverFileOf(entry)}`;
@@ -83,13 +73,8 @@ export async function copyAttachments(
   const files: string[] = [];
   try {
     for (const { from, entry } of copies) {
-      const bytes = await transport.download(from.id, serverFileOf(entry));
-      const started = await transport.start(keptId, bytes.length);
-      files.push(started.fileId);
-      await transport.upload(keptId, started.fileId, bytes);
-      const next: Record<string, unknown> = { ...entry, kemlockFile: started.fileId };
-      if ('fileId' in next) next['fileId'] = started.fileId;
-      entriesOut.push(next);
+      const next = await resendFile(transport, from.id, keptId, serverFileOf(entry), files);
+      entriesOut.push(withServerFile(entry, next));
     }
   } catch (error) {
     await removeFiles(transport, keptId, files);
@@ -98,13 +83,3 @@ export async function copyAttachments(
   return { entries: entriesOut, files };
 }
 
-/** Deletes files of an item, each on its own: one that can't be deleted doesn't stop the others. */
-export async function removeFiles(transport: FileTransport, itemId: string, files: readonly string[]): Promise<void> {
-  for (const fileId of files) {
-    try {
-      await transport.remove(itemId, fileId);
-    } catch {
-      // The file stays on the server, unnamed; one that won't delete doesn't hold up the merge or its undo.
-    }
-  }
-}

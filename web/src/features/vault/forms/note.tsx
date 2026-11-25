@@ -5,7 +5,14 @@ import { type Control, useController, useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useT } from '@/i18n';
 import { CheckField, Field } from '@/ui/fields';
-import { type AttachmentEntry, MAX_ATTACHMENTS, attachmentSchema, noteAttachmentFields, readAttachments } from '../attachments';
+import {
+  type AttachmentEntry,
+  MAX_ATTACHMENTS,
+  attachmentSchema,
+  copiedEntries,
+  noteAttachmentFields,
+  readAttachments,
+} from '../attachments';
 import { type ItemData, type VaultItem, itemName, noteOf } from '../vault';
 import { AttachmentsEditor } from './AttachmentsEditor';
 import { ExtrasSections } from './ExtrasSections';
@@ -19,12 +26,17 @@ export const noteFormSchema = noteSchema.extend({
 });
 export type NoteFormValues = z.infer<typeof noteFormSchema>;
 
-export function noteDefaults(item?: VaultItem): NoteFormValues {
+/**
+ * What the form opens with. For a copy (`copying`) the original's files are listed as files still to
+ * be sent again under the copy, and the copy names none until they have been.
+ */
+export function noteDefaults(item?: VaultItem, copying = false): NoteFormValues {
+  const attachments = readAttachments(item?.data);
   return {
     name: item ? itemName(item) : '',
     text: item ? noteOf(item) : '',
     favorite: item?.data?.favorite === true,
-    attachments: readAttachments(item?.data),
+    attachments: copying && item ? copiedEntries(attachments, item.id) : attachments,
     ...extrasDefaults(item),
   };
 }
