@@ -127,7 +127,8 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .merge_from(super::duplicates::openapi())
             .merge_from(super::placement::document())
             .merge_from(super::two_step::TwoStepApiDoc::openapi())
-            .merge_from(super::recovery_kit::RecoveryKitApiDoc::openapi());
+            .merge_from(super::recovery_kit::RecoveryKitApiDoc::openapi())
+            .merge_from(super::api_key::ApiKeyApiDoc::openapi());
         // The answers every route can give, over the whole merged document.
         CommonAnswers.modify(&mut document);
         Json(document)

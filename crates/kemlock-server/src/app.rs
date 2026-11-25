@@ -330,6 +330,7 @@ where
             api.clone(),
             store.clone(),
         ))
+        .merge(kemlock_api_kem::api_key_router(api.clone(), store.clone()))
         .merge(account_routes)
         // /.well-known/security.txt, from the admin settings.
         .merge(crate::security_txt::router(
