@@ -643,7 +643,7 @@
   "admin.peer.order.fips": "The FIPS suite is first, so any peer that has it on uses P-384 in place of X25519.",
   "admin.peer.order.other": "The first suite is the one a connecting peer tries first.",
   "admin.peer.reset": "Reset",
-  "admin.peer.saveSuites": "Save and re-sign the descriptor",
+  "admin.peer.saveHint": "Saving signs this server's descriptor again with the new order.",
 
   "admin.mismatch.crumb": "Key mismatch",
   "admin.mismatch.title": "Possible man in the middle",
