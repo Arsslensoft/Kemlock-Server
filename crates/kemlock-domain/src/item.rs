@@ -328,6 +328,31 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_of_item_is_accepted() {
+        // The server keeps no list of kinds: the `file` kind needs nothing added here.
+        for kind in [
+            "login",
+            "note",
+            "file",
+            "otp",
+            "backup-codes",
+            "passkey",
+            "card",
+            "identity",
+            "contact",
+            "certificate",
+            "ssh-key",
+            "pgp-key",
+        ] {
+            assert_eq!(
+                ItemKind::try_from(kind.to_owned()).map(String::from),
+                Ok(kind.to_owned()),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
     fn kinds_are_checked() {
         assert!(ItemKind::try_from("backup-codes".to_owned()).is_ok());
         for bad in ["", "Login", "a b", &"x".repeat(65)] {
