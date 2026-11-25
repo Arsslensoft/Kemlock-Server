@@ -7,16 +7,65 @@ mod passkey_fakes;
 
 use fakes::*;
 use kemlock_app::Actor;
+use kemlock_app::AppError;
 use kemlock_app::admin::passkey_step_up::CHALLENGE_TTL;
-use kemlock_app::admin::{AdminError, PasskeyStepUp, PasskeyStepper, StepUp};
+use kemlock_app::admin::passkey_step_up::KeyCredentialList;
+use kemlock_app::admin::{AdminError, PasskeyStepUp, PasskeyStepper, StepUp, StepUpKeys};
 use kemlock_domain::{DeviceId, UserId};
 use passkey_fakes::*;
+use std::sync::{Arc, Mutex};
 use time::Duration;
 
-type Stepper = PasskeyStepUp<FakePasskeys, ScriptedWebAuthn, FakeSeal, FakeEnv>;
+type Stepper = PasskeyStepUp<FakePasskeys, ScriptedWebAuthn, FakeSeal, FakeEnv, FakeKeys>;
+
+/// The account's security keys: (credential id, credential), shared with the stepper.
+#[derive(Clone, Default)]
+struct FakeKeys(Arc<Mutex<KeyCredentialList>>);
+
+impl FakeKeys {
+    fn add(&self, id: &[u8]) {
+        self.0
+            .lock()
+            .expect("the keys")
+            .push((id.to_vec(), credential_blob(id, 0)));
+    }
+    fn credential(&self, id: &[u8]) -> Vec<u8> {
+        self.0
+            .lock()
+            .expect("the keys")
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, c)| c.clone())
+            .expect("the keys")
+    }
+}
+
+impl StepUpKeys for FakeKeys {
+    async fn credentials_of(&self, _user: UserId) -> Result<KeyCredentialList, AppError> {
+        Ok(self.0.lock().expect("the keys").clone())
+    }
+    async fn record_use(
+        &self,
+        _user: UserId,
+        id: &[u8],
+        credential: &[u8],
+    ) -> Result<(), AppError> {
+        for key in self
+            .0
+            .lock()
+            .expect("the keys")
+            .iter_mut()
+            .filter(|(i, _)| i == id)
+        {
+            key.1 = credential.to_vec();
+        }
+        Ok(())
+    }
+}
 
 struct Fx {
     passkeys: FakePasskeys,
+    keys: FakeKeys,
     seal: FakeSeal,
     env: FakeEnv,
     stepper: Stepper,
@@ -35,14 +84,17 @@ fn fx() -> Fx {
         admin: true,
     };
     passkeys.insert_for_test(me.user, "Work key", CREDENTIAL);
+    let keys = FakeKeys::default();
     Fx {
         stepper: PasskeyStepUp {
             passkeys: passkeys.clone(),
             webauthn: ScriptedWebAuthn::default(),
             seal: seal.clone(),
             env: env.clone(),
+            keys: keys.clone(),
         },
         passkeys,
+        keys,
         seal,
         env,
         me,
@@ -223,4 +275,69 @@ async fn a_challenge_answers_with_its_own_options_only() {
         fx.stepper.finish(&fx.me, &first.challenge, &answer).await,
         Err(AdminError::StepUpFailed)
     );
+}
+
+const KEY: &[u8] = b"security-key-one";
+
+#[tokio::test]
+async fn a_security_key_confirms_a_change_without_user_verification() {
+    let fx = fx();
+    fx.keys.add(KEY);
+    let challenge = fx.stepper.options(&fx.me).await.expect("options");
+    // A security-key ceremony over the key and the passkey; a passkey listed asks the browser to verify.
+    assert_eq!(challenge.options["kind"], "SecurityKey");
+    assert_eq!(challenge.options["allowCredentials"], 2);
+    assert_eq!(challenge.options["userVerification"], "required");
+
+    // A touch-only key, as at sign-in: no user verification needed.
+    let answer = fx.answer(&challenge.options, KEY, 1, false);
+    let issued = fx
+        .stepper
+        .finish(&fx.me, &challenge.challenge, &answer)
+        .await
+        .expect("a token");
+    assert!(fx.accepts(&fx.me, &issued.token));
+    // The key's counter moved on and is kept.
+    assert_eq!(fx.keys.credential(KEY), credential_blob(KEY, 1));
+}
+
+#[tokio::test]
+async fn a_passkey_still_needs_user_verification_beside_a_security_key() {
+    let fx = fx();
+    fx.keys.add(KEY);
+    let challenge = fx.stepper.options(&fx.me).await.expect("options");
+    let answer = fx.answer(&challenge.options, CREDENTIAL, 1, false);
+    assert_eq!(
+        fx.stepper
+            .finish(&fx.me, &challenge.challenge, &answer)
+            .await,
+        Err(AdminError::StepUpFailed)
+    );
+    let answer = fx.answer(&challenge.options, CREDENTIAL, 1, true);
+    fx.stepper
+        .finish(&fx.me, &challenge.challenge, &answer)
+        .await
+        .expect("a verified passkey still works");
+}
+
+#[tokio::test]
+async fn an_admin_with_only_a_security_key_can_step_up() {
+    let fx = fx();
+    let keys_only = Actor {
+        user: UserId::random(),
+        device: DeviceId::random(),
+        admin: true,
+    };
+    fx.keys.add(KEY);
+    let challenge = fx.stepper.options(&keys_only).await.expect("options");
+    assert_eq!(challenge.options["kind"], "SecurityKey");
+    // No passkey listed: the key is not asked to verify.
+    assert!(challenge.options.get("userVerification").is_none());
+    let answer = assertion_answer(&challenge.options, KEY, None, 1, false);
+    let issued = fx
+        .stepper
+        .finish(&keys_only, &challenge.challenge, &answer)
+        .await
+        .expect("a token");
+    assert!(fx.accepts(&keys_only, &issued.token));
 }

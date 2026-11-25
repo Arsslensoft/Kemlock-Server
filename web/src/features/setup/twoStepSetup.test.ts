@@ -82,3 +82,27 @@ describe('confirmSecurityKey', () => {
     expect(setupMemory.get().twoStep).toBe('key');
   });
 });
+
+describe('confirmSecurityKey with a passkey ticked', () => {
+  it('makes the key, then the passkey, once each', async () => {
+    setupMemory.set({ wantPasskey: true });
+    const d = deps();
+    expect(await confirmSecurityKey({ ...d.value, keyName: 'Security key' })).toEqual({ passkeyFailed: false });
+    expect(d.keys.confirm).toHaveBeenCalledWith('Security key', { id: 'k' });
+    expect(d.passkeys.register).toHaveBeenCalledOnce();
+    expect(setupMemory.get()).toMatchObject({ passkeyMade: true, twoStep: 'key' });
+    await confirmSecurityKey(d.value);
+    expect(d.keys.confirm).toHaveBeenCalledOnce();
+    expect(d.passkeys.register).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the key when the passkey fails, says so, and asks only for the passkey again', async () => {
+    setupMemory.set({ wantPasskey: true });
+    const d = deps();
+    d.create.mockRejectedValueOnce(new Error('cancelled'));
+    expect(await confirmSecurityKey(d.value)).toEqual({ passkeyFailed: true });
+    expect(setupMemory.get().twoStep).toBe('key');
+    expect(await confirmSecurityKey(d.value)).toEqual({ passkeyFailed: false });
+    expect(d.keys.confirm).toHaveBeenCalledOnce();
+  });
+});

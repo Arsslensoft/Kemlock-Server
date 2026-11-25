@@ -83,6 +83,7 @@ impl Rig {
             webauthn: ScriptedWebAuthn::default(),
             seal: app.crypto.clone(),
             env: app.crypto.clone(),
+            keys: (),
         };
         let mut runtime = AdminRuntime::new(
             admin.clone(),

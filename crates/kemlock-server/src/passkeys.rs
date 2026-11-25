@@ -12,6 +12,7 @@
 use crate::adapters::ServerCrypto;
 use kemlock_api_kem::PasskeyRuntime;
 use kemlock_app::admin::{PasskeyStepUp, PasskeyStepper};
+use kemlock_app::passkeys::KeyCredentials;
 use kemlock_identity::WebAuthnRp;
 use kemlock_store_sql::SqlStore;
 use std::sync::Arc;
@@ -32,17 +33,24 @@ pub fn runtime(store: SqlStore, relying_party: Arc<WebAuthnRp>) -> Runtime {
 }
 
 /// The passkey step-up of the admin console: an admin proves it is them with a fresh assertion
-/// from one of their own passkeys (user verification required), through the same relying party.
+/// from one of their own passkeys (user verification required) or security keys, through the same
+/// relying party.
 pub fn step_up(
     store: SqlStore,
     relying_party: Arc<WebAuthnRp>,
     crypto: ServerCrypto,
 ) -> Arc<dyn PasskeyStepper> {
     Arc::new(PasskeyStepUp {
-        passkeys: store,
+        passkeys: store.clone(),
         webauthn: relying_party,
         seal: crypto.clone(),
-        env: crypto,
+        env: crypto.clone(),
+        // The account's security keys answer too, as they do as the second step at sign-in.
+        keys: KeyCredentials {
+            two_factor: store,
+            seal: crypto.clone(),
+            env: crypto,
+        },
     })
 }
 

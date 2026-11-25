@@ -406,3 +406,25 @@ describe('keeping the vault open across a reload', () => {
     expect(next.api.accountKeys).not.toHaveBeenCalled();
   });
 });
+
+describe('adminConfirmed', () => {
+  it('lets the console open after setup turns a second step on, and keeps that across a reload', async () => {
+    const storage = tabStore();
+    const first = setup(storage);
+    first.session.tokenStore.set(tokens);
+    // The first admin signs in before any second step is on, so the server says admin: false.
+    first.session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
+    first.session.adminConfirmed();
+    expect(first.session.getState().admin).toBe(true);
+    leave(storage);
+    const next = setup(storage);
+    await restoreSession(next.deps);
+    expect(next.session.getState().admin).toBe(true);
+  });
+
+  it('does nothing when signed out', () => {
+    const { session } = setup(tabStore());
+    session.adminConfirmed();
+    expect(session.getState()).toMatchObject({ status: 'signed-out', admin: false });
+  });
+});

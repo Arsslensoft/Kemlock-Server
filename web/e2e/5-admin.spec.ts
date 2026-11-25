@@ -405,8 +405,9 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   const relayCheck = page.getByRole('dialog');
   await expect(page.getByText('inst-4f2a').or(relayCheck)).toBeVisible();
   if (await relayCheck.isVisible()) {
-    await expect(relayCheck.getByRole('button', { name: 'Use a passkey' })).toBeVisible();
     await relayCheck.getByLabel('Code from your authenticator app').fill('123456');
+    // This admin has an authenticator app and no passkey yet, so no passkey is offered.
+    await expect(relayCheck.getByRole('button', { name: 'Use a passkey' })).toHaveCount(0);
     await relayCheck.getByRole('button', { name: 'Confirm' }).click();
   }
   await expect(page.getByText('inst-4f2a')).toBeVisible();

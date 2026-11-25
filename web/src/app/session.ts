@@ -242,6 +242,23 @@ export function createSession(options: SessionOptions = {}) {
       });
       set(next);
     },
+    /**
+     * The account became an admin in fact: the first admin signs in during setup before any second
+     * step is on, so the server's `admin` was false then (an admin without one is not an admin).
+     * The server checks again on every request; this only lets the console's routes open.
+     */
+    adminConfirmed(): void {
+      if (state.status === 'signed-out' || state.admin) return;
+      const next: SessionState = { ...state, admin: true };
+      write(INFO_KEY, {
+        email: next.email,
+        name: next.name,
+        userId: next.userId,
+        deviceId: next.deviceId,
+        admin: true,
+      });
+      set(next);
+    },
     unlocked(): void {
       if (state.status !== 'signed-out') set({ ...state, status: 'unlocked' });
     },

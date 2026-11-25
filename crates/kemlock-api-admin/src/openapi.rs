@@ -151,13 +151,14 @@ doc!(
     responses(
         (
             status = 200,
-            description = "The options for an assertion over the admin's own passkeys, and the \
-                           sealed challenge",
+            description = "The options for an assertion over the admin's own passkeys and \
+                           security keys, and the sealed challenge",
             body = StepUpPasskeyOptionsResponse
         ),
         (
             status = 409,
-            description = "The account has no passkey, or the server has no relying party",
+            description = "The account has no passkey or security key, or the server has no relying \
+                           party",
             body = ProblemDoc,
             content_type = "application/problem+json"
         ),

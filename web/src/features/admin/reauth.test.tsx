@@ -72,7 +72,7 @@ describe('useReauth', () => {
     action: (grant: string | undefined) => Promise<string>;
     reauth: (code: string) => Promise<{ token: string; expiresAt: number }>;
   }) {
-    const { guard, dialog } = useReauth({ stepUpTotp: reauth });
+    const { guard, dialog } = useReauth({ stepUpTotp: reauth }, undefined, async () => ({ totp: true, passkey: false }));
     const [result, setResult] = useState('');
     return (
       <>
@@ -141,11 +141,13 @@ describe('the passkey step-up', () => {
   function Harness({
     api,
     passkey,
+    ways = { totp: true, passkey: true },
   }: {
     api: Parameters<typeof useReauth>[0];
     passkey: NonNullable<Parameters<typeof useReauth>[1]>;
+    ways?: { totp: boolean; passkey: boolean };
   }) {
-    const { guard, dialog } = useReauth(api, passkey);
+    const { guard, dialog } = useReauth(api, passkey, async () => ways);
     const [result, setResult] = useState('');
     const action = async (grant: string | undefined) => {
       if (!grant) throw problem;
@@ -228,5 +230,141 @@ describe('the passkey step-up', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
     await screen.findByLabelText('Code from your authenticator app');
     expect(screen.queryByRole('button', { name: 'Use a passkey' })).not.toBeInTheDocument();
+  });
+});
+
+describe('the step-up asks only for what the account has', () => {
+  const problem = new ApiError(403, {
+    type: 'urn:kemlock:problem:step-up-required',
+    title: 'Confirm it is you',
+    status: 403,
+  });
+  const granted = { token: 'P1', expiresAt: Math.floor(Date.now() / 1000) + 300 };
+
+  function Harness({
+    ways,
+    assert = vi.fn(async () => ({ id: 'cred' })),
+    finish = vi.fn(async () => granted),
+  }: {
+    ways: { totp: boolean; passkey: boolean };
+    assert?: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    finish?: () => Promise<{ token: string; expiresAt: number }>;
+  }) {
+    const { guard, dialog } = useReauth(
+      {
+        stepUpTotp: vi.fn(),
+        stepUpPasskeyOptions: vi.fn(async () => ({ options: { challenge: 'Y2g' }, challenge: 'c' })),
+        stepUpPasskeyFinish: finish,
+      },
+      { available: () => true, assert },
+      async () => ways,
+    );
+    const [result, setResult] = useState('');
+    const action = async (grant: string | undefined) => {
+      if (!grant) throw problem;
+      return `done with ${grant}`;
+    };
+    return (
+      <>
+        <button type="button" onClick={() => void guard(action).then(setResult)}>
+          run
+        </button>
+        <p data-testid="result">{result}</p>
+        {dialog}
+      </>
+    );
+  }
+
+  it('opens the passkey prompt at once when a passkey is the only way, with no code field', async () => {
+    const assert = vi.fn(async () => ({ id: 'cred' }));
+    renderWithIntl(<Harness ways={{ totp: false, passkey: true }} assert={assert} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    await waitFor(() => expect(screen.getByTestId('result')).toHaveTextContent('done with P1'));
+    expect(assert).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('Code from your authenticator app')).not.toBeInTheDocument();
+  });
+
+  it('keeps a passkey-only dialog open to try again, without pointing at a code', async () => {
+    const assert = vi.fn(async () => {
+      throw new PasskeyError('cancelled');
+    });
+    renderWithIntl(<Harness ways={{ totp: false, passkey: true }} assert={assert} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Press the button below to try again/);
+    expect(screen.getByRole('button', { name: 'Use a passkey' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+  });
+
+  it('shows only the code when there is no passkey', async () => {
+    const assert = vi.fn();
+    renderWithIntl(<Harness ways={{ totp: true, passkey: false }} assert={assert} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    await screen.findByLabelText('Code from your authenticator app');
+    expect(screen.queryByRole('button', { name: 'Use a passkey' })).not.toBeInTheDocument();
+    expect(assert).not.toHaveBeenCalled();
+  });
+
+  it('says what to set up when the account has neither', async () => {
+    renderWithIntl(<Harness ways={{ totp: false, passkey: false }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    expect(await screen.findByText(/no authenticator app, passkey or security key/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Code from your authenticator app')).not.toBeInTheDocument();
+  });
+});
+
+describe('a security key in the step-up', () => {
+  const problem = new ApiError(403, {
+    type: 'urn:kemlock:problem:step-up-required',
+    title: 'Confirm it is you',
+    status: 403,
+  });
+
+  function Harness({ ways }: { ways: { totp: boolean; passkey: boolean; securityKey: boolean } }) {
+    const assert = vi.fn(async () => ({ id: 'key' }));
+    const { guard, dialog } = useReauth(
+      {
+        stepUpTotp: vi.fn(),
+        stepUpPasskeyOptions: vi.fn(async () => ({ options: {}, challenge: 'c' })),
+        stepUpPasskeyFinish: vi.fn(async () => ({ token: 'K1', expiresAt: Math.floor(Date.now() / 1000) + 300 })),
+      },
+      { available: () => true, assert },
+      async () => ways,
+    );
+    const [result, setResult] = useState('');
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() =>
+            void guard(async (grant) => {
+              if (!grant) throw problem;
+              return `done with ${grant}`;
+            }).then(setResult)
+          }
+        >
+          run
+        </button>
+        <p data-testid="result">{result}</p>
+        {dialog}
+      </>
+    );
+  }
+
+  it('opens the prompt at once when a security key is the only way', async () => {
+    renderWithIntl(<Harness ways={{ totp: false, passkey: false, securityKey: true }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    await waitFor(() => expect(screen.getByTestId('result')).toHaveTextContent('done with K1'));
+  });
+
+  it('names the security key beside the code', async () => {
+    renderWithIntl(<Harness ways={{ totp: true, passkey: false, securityKey: true }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    expect(await screen.findByRole('button', { name: 'Use a security key' })).toBeInTheDocument();
+  });
+
+  it('names both when the account has a passkey and a security key', async () => {
+    renderWithIntl(<Harness ways={{ totp: true, passkey: true, securityKey: true }} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'run' }));
+    expect(await screen.findByRole('button', { name: 'Use a passkey or security key' })).toBeInTheDocument();
   });
 });
