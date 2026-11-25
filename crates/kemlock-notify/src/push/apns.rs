@@ -521,10 +521,13 @@ mod tests {
         );
     }
 
+    /// One request the fake Apple saw: the device token, the headers and the body.
+    type Request = (String, HashMap<String, String>, Value);
+
     /// What the fake Apple saw.
     #[derive(Default)]
     struct Seen {
-        requests: Mutex<Vec<(String, HashMap<String, String>, Value)>>,
+        requests: Mutex<Vec<Request>>,
     }
 
     async fn apple(
