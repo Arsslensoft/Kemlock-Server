@@ -339,12 +339,12 @@ impl<S: FedStore> Replica<S> {
                 if seen.contains(&id) {
                     continue;
                 }
-                if let Some(blob) = self.store.drop_replicated_send(id).await? {
-                    if let Some(files) = &self.files
-                        && let Err(e) = files.delete(blob).await
-                    {
-                        tracing::info!(error = %e, "a deleted Send's file stayed in storage");
-                    }
+                let dropped = self.store.drop_replicated_send(id).await?;
+                if let Some(blob) = dropped
+                    && let Some(files) = &self.files
+                    && let Err(e) = files.delete(blob).await
+                {
+                    tracing::info!(error = %e, "a deleted Send's file stayed in storage");
                 }
                 report.removed += 1;
             }
