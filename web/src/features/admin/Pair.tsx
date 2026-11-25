@@ -33,7 +33,7 @@ export function isPeerUrl(address: string): boolean {
  * Crockford's base32 remain.
  */
 export function isPairingCode(input: string): boolean {
-  const text = input.replace(/[s-]/g, '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1');
+  const text = input.replace(/[\s-]/g, '').toUpperCase().replace(/O/g, '0').replace(/[IL]/g, '1');
   return /^[0-9A-HJKMNP-TV-Z]{12}$/.test(text);
 }
 
