@@ -24,11 +24,14 @@ function statusOf(server: PlacementServer): { label: MessageId; tone: 'on' | 'of
 export function StorageView({
   placement,
   onCancelPending,
+  onResume,
   cancelling,
   error,
 }: {
   placement: Placement | null | undefined;
   onCancelPending: (vault: string, change: string) => void;
+  /** Takes back a cancel for a server whose changes are being withheld. */
+  onResume?: (vault: string, server: string) => void;
   cancelling?: boolean;
   error?: { id: MessageId; values?: Record<string, string | number> } | undefined;
 }) {
@@ -110,6 +113,22 @@ export function StorageView({
                     </Button>
                   </div>
                 ) : null}
+                {vault.servers
+                  .filter((server) => server.withheld)
+                  .map((server) => (
+                    <div
+                      key={server.id}
+                      className="waiting"
+                      role="group"
+                      aria-label={t('failover.withheldFor', { name: server.name })}
+                    >
+                      <strong>{t('failover.withheldFor', { name: server.name })}</strong>
+                      <span>{t('failover.withheldBody')}</span>
+                      <Button size="small" isDisabled={cancelling} onPress={() => onResume?.(vault.id, server.id)}>
+                        {t('failover.resume')}
+                      </Button>
+                    </div>
+                  ))}
               </div>
             ))}
             <Link to="/security">{t('failover.seeSecurity')}</Link>
@@ -149,6 +168,11 @@ export default function Storage() {
       placementApi.cancelPending(vault, change),
     onSuccess: () => client.invalidateQueries({ queryKey: placementQuery.queryKey }),
   });
+  const resume = useMutation({
+    mutationFn: ({ vault, server }: { vault: string; server: string }) =>
+      placementApi.resumePending(vault, server),
+    onSuccess: () => client.invalidateQueries({ queryKey: placementQuery.queryKey }),
+  });
   if (isLoading) {
     return (
       <p className="empty" role="status">
@@ -156,13 +180,14 @@ export default function Storage() {
       </p>
     );
   }
-  const failure = cancel.error ?? error;
+  const failure = cancel.error ?? resume.error ?? error;
   return (
     <StorageView
       placement={data}
-      cancelling={cancel.isPending}
+      cancelling={cancel.isPending || resume.isPending}
       error={failure ? describeError(failure) : undefined}
       onCancelPending={(vault, change) => cancel.mutate({ vault, change })}
+      onResume={(vault, server) => resume.mutate({ vault, server })}
     />
   );
 }

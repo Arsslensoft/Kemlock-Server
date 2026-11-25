@@ -188,6 +188,11 @@ pub trait FederationView: Send + Sync {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    /// The servers `vault`'s changes are being withheld from (a cancel not yet taken back).
+    fn withheld_from(&self, _vault: Owner) -> BoxFut<'_, Result<Vec<ServerId>, StoreError>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
     /// Takes back a cancel: the changes withheld from `peer` in `vault` are offered to it again.
     /// Allowed at any time, whether or not the peer is back.
     fn resume_waiting(

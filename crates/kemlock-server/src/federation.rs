@@ -31,6 +31,7 @@ use kemlock_domain::{ItemId, Owner, ServerId, UserId};
 use kemlock_federation::blobs::{BlobFetcher, BlobFiles, StoreFiles};
 use kemlock_federation::home::Policy;
 use kemlock_federation::job::PeerBlobFetcher;
+use kemlock_federation::outbox::Withholding;
 use kemlock_federation::net::Http;
 use kemlock_federation::ports::{PeerRepo, ReplicaStore, VaultRepo};
 use kemlock_federation::{
@@ -390,6 +391,23 @@ impl FederationView for View {
 
     fn peer_health(&self, server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
         Box::pin(async move { Ok(self.runner.health(server)) })
+    }
+
+    fn withheld_from(&self, vault: Owner) -> BoxFut<'_, Result<Vec<ServerId>, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let store = self.replica.store();
+            let Some(settings) = VaultRepo::get_vault(store, vault).await? else {
+                return Ok(Vec::new());
+            };
+            let mut out = Vec::new();
+            for server in settings.order() {
+                if server != me && Withholding::withheld(store, server, vault).await?.is_some() {
+                    out.push(server);
+                }
+            }
+            Ok(out)
+        })
     }
 
     fn resume_waiting(

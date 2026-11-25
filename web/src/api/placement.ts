@@ -29,6 +29,8 @@ export interface PlacementServer {
   lastSeen?: string | null;
   /** How long its last answer took, in milliseconds. */
   latencyMs?: number | null;
+  /** A cancel is in force: this vault's waiting changes are withheld from this server. */
+  withheld?: boolean;
   /** The apps of this vault are on it right now. */
   inUse: boolean;
 }
@@ -70,6 +72,8 @@ export interface Placement {
 export interface PlacementApi {
   placement(): Promise<Placement | null>;
   cancelPending(vault: string, change: string): Promise<void>;
+  /** Takes back a cancel: the changes withheld from that server are offered to it again. */
+  resumePending(vault: string, server: string): Promise<void>;
 }
 
 export function createPlacementApi(api: Pick<Api, 'request' | 'send'>): PlacementApi {
@@ -83,6 +87,11 @@ export function createPlacementApi(api: Pick<Api, 'request' | 'send'>): Placemen
         throw error;
       }
     },
+    resumePending: (vault, server) =>
+      api.send({
+        method: 'POST',
+        path: `/kem/v1/placement/${encodeURIComponent(vault)}/pending/${encodeURIComponent(server)}/resume`,
+      }),
     cancelPending: (vault, change) =>
       api.send({
         method: 'DELETE',

@@ -29,6 +29,8 @@ pub struct PlacementServer {
     pub in_use: bool,
     /// Whether it answers, as the probes found; this server is `online`.
     pub health: PeerHealthView,
+    /// A cancel is in force: this vault's waiting changes are being withheld from this server.
+    pub withheld: bool,
 }
 
 /// One vault and the servers that hold it.
@@ -131,6 +133,7 @@ impl<D: DeviceRepo, Q: SpaceRepo> ReadPlacement<D, Q> {
             let Some(held) = view.vault_servers(owner).await? else {
                 continue;
             };
+            let withheld = view.withheld_from(owner).await?;
             let mut servers = Vec::new();
             for s in &held.servers {
                 let in_use = same_address(&s.address, own_address);
@@ -149,6 +152,7 @@ impl<D: DeviceRepo, Q: SpaceRepo> ReadPlacement<D, Q> {
                     role: s.role,
                     in_use,
                     health,
+                    withheld: withheld.contains(&s.server),
                 });
             }
             // Changes waiting for a server that is down come first: they are the ones a person

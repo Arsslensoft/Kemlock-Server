@@ -40,6 +40,8 @@ struct FakeView {
     /// What cancelling answers (`Unknown` when unset), and what was asked.
     cancel_outcome: Mutex<Option<CancelOutcome>>,
     cancelled: Mutex<Vec<(Owner, ServerId, UserId)>>,
+    /// The servers a cancel is in force for.
+    withheld: Mutex<Vec<ServerId>>,
     /// What resuming answers (`Unknown` when unset).
     resume_outcome: Mutex<Option<ResumeOutcome>>,
 }
@@ -108,6 +110,10 @@ impl FederationView for FakeView {
                 .cloned()
                 .unwrap_or_default())
         })
+    }
+
+    fn withheld_from(&self, _vault: Owner) -> BoxFut<'_, Result<Vec<ServerId>, StoreError>> {
+        Box::pin(async move { Ok(self.withheld.lock().expect("lock").clone()) })
     }
 
     fn resume_waiting(
@@ -749,6 +755,17 @@ async fn placement_says_which_server_is_down_and_what_waits_for_it() {
     assert_eq!(vault["pending"]["id"], home.0.to_string());
     assert_eq!(vault["pending"]["summary"], "3 changes waiting for nas.example.org");
     assert_eq!(vault["pending"]["askedAt"], "2027-01-15T08:01:40Z");
+
+    // A cancel in force shows on the server it holds changes back from, and only there.
+    assert_eq!(vault["servers"][0]["withheld"], false);
+    view.withheld.lock().expect("lock").push(home);
+    let json = client
+        .get_authed("/kem/v1/placement", &session.access_token)
+        .await
+        .json();
+    assert_eq!(json["vaults"][0]["servers"][0]["withheld"], true);
+    assert_eq!(json["vaults"][0]["servers"][1]["withheld"], false);
+    view.withheld.lock().expect("lock").clear();
 
     // A slow server is degraded, and says nothing of when it went down.
     view.health.lock().expect("lock").insert(

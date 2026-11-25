@@ -48,6 +48,9 @@ pub(crate) struct PlacementServerDto {
     offline_since: Option<String>,
     /// When the peer last answered.
     last_seen: Option<String>,
+    /// A cancel is in force: this vault's waiting changes are being withheld from this server, and
+    /// `POST .../pending/{id}/resume` offers them again.
+    withheld: bool,
     /// How long its last answer took, in milliseconds.
     latency_ms: Option<u64>,
     /// The apps of this vault are on it right now.
@@ -138,6 +141,7 @@ impl PlacementDto {
                             offline_since: server.health.offline_since.and_then(iso),
                             last_seen: server.health.last_seen.and_then(iso),
                             latency_ms: server.health.latency_ms,
+                            withheld: server.withheld,
                             in_use: server.in_use,
                         })
                         .collect(),

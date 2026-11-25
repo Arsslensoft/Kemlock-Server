@@ -107,6 +107,33 @@ describe('a server that answers slowly', () => {
   });
 });
 
+describe('changes held back from a server', () => {
+  const held: Placement = {
+    ...PLACEMENT,
+    vaults: PLACEMENT.vaults.map((vault) => ({
+      ...vault,
+      pending: null,
+      servers: vault.servers.map((server) =>
+        server.id === 's1' && vault.id === 'me' ? { ...server, withheld: true } : server,
+      ),
+    })),
+  };
+
+  it('offers Resume for that vault and server, and calls it with both', async () => {
+    const onResume = vi.fn();
+    await renderInRouter(<StorageView placement={held} onCancelPending={vi.fn()} onResume={onResume} />);
+    const group = screen.getByRole('group', { name: 'Changes held back from Home server' });
+    expect(group).toHaveTextContent(/still on this server/);
+    await userEvent.setup().click(within(group).getByRole('button', { name: 'Resume' }));
+    expect(onResume).toHaveBeenCalledWith('me', 's1');
+  });
+
+  it('offers nothing to resume where nothing is held back', async () => {
+    await renderInRouter(<StorageView placement={PLACEMENT} onCancelPending={vi.fn()} onResume={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
+  });
+});
+
 describe('a server that met another key', () => {
   const mismatch: Placement = {
     ...PLACEMENT,
