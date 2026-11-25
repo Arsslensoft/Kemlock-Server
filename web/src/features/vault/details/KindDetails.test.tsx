@@ -5,7 +5,7 @@ import { copyText } from '@/lib/clipboard';
 import { renderWithIntl } from '@/test/render';
 import type { VaultItem } from '../vault';
 import { toB64 } from '../forms/keyMaterial';
-import { KindDetails, groupDigits, maskedNumber, sameFingerprint } from './KindDetails';
+import { KindDetails, maskedNumber, sameFingerprint } from './KindDetails';
 
 vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(() => Promise.resolve(true)) }));
 
@@ -151,8 +151,8 @@ describe('KindDetails', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('groups and masks digits', () => {
-    expect(groupDigits('4111111111111111')).toBe('4111 1111 1111 1111');
-    expect(maskedNumber('378282246310005')).toBe('•••• •••• •••0 005');
+  it('masks all but the last four digits, grouped as the brand groups them', () => {
+    expect(maskedNumber('4111111111111111')).toBe('•••• •••• •••• 1111');
+    expect(maskedNumber('378282246310005')).toBe('•••• •••••• •0005');
   });
 });

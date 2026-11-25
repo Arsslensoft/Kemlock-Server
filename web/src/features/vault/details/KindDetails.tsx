@@ -7,6 +7,7 @@ import { IconButton } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
 import type { SiteInfo } from '../itemLinks';
+import { cardDigits, detectBrand, formatStoredNumber, groupDigits } from '../forms/cardBrand';
 import type { ItemData, VaultItem } from '../vault';
 import type { DownloadFile } from './files';
 import { FileDetail } from './FileDetails';
@@ -153,13 +154,10 @@ function BackupDetail({ data, sites }: { data: ItemData | null; sites: SiteInfo 
 
 // ---- card ----
 
-/** `4111 1111 1111 1111`, in groups of four. */
-export function groupDigits(digits: string): string {
-  return digits.replace(/(.{4})(?=.)/g, '$1 ');
-}
-
-export function maskedNumber(digits: string): string {
-  return groupDigits('•'.repeat(Math.max(0, digits.length - 4)) + digits.slice(-4));
+/** The number with all but its last four digits hidden, grouped as its brand groups it. */
+export function maskedNumber(number: string): string {
+  const digits = cardDigits(number);
+  return groupDigits('•'.repeat(Math.max(0, digits.length - 4)) + digits.slice(-4), detectBrand(digits));
 }
 
 function CardDetail({ data }: { data: ItemData | null }) {
@@ -187,7 +185,7 @@ function CardDetail({ data }: { data: ItemData | null }) {
       {number ? (
         <SecretRow
           label={t('detail.card.number')}
-          value={groupDigits(number)}
+          value={formatStoredNumber(number)}
           masked={maskedNumber(number)}
           copyValue={number}
         />
