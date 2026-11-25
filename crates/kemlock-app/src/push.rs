@@ -1,9 +1,11 @@
-//! Push: the device tokens a mobile app registers, the installation the server holds with
-//! Kemlock's push relay, and the small log replicas read to nudge each other's sockets.
+//! Push: the device tokens a mobile app registers, the installation the server may hold with
+//! Kemlock's optional push relay, and the small log replicas read to nudge each other's sockets.
 //!
-//! A push carries nothing but "sync now". The relay (a separate hosted service) receives only a
-//! device's push token, the server's installation id and that nudge; it never sees an email, an
-//! account id or an item.
+//! A push carries nothing but "sync now". The server sends it itself: to Apple's push service
+//! with the operator's own key, and to a UnifiedPush endpoint on the phone's distributor. Only an
+//! operator who opts in to the hosted relay (a fallback for iPhones when the server has no Apple
+//! key) sends a device's token through it, with the server's installation id and that nudge; the
+//! relay never sees an email, an account id or an item.
 
 use crate::authenticate::Actor;
 use crate::error::AppError;
@@ -12,17 +14,20 @@ use kemlock_domain::{DeviceId, Owner, UserId};
 use std::future::Future;
 use time::OffsetDateTime;
 
-/// The longest push token stored. FCM tokens run to about 200 characters and APNs tokens are 64
-/// hex digits; the cap leaves room without letting a client fill the table.
+/// The longest push token stored. APNs tokens are 64 hex digits and UnifiedPush endpoints are
+/// URLs; the cap leaves room without letting a client fill the table.
 pub const MAX_PUSH_TOKEN_LEN: usize = 512;
 
 /// Which service a push token is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PushKind {
-    /// Firebase Cloud Messaging (Android).
+    /// Firebase Cloud Messaging. Kemlock does not use it: no new token of this kind is accepted
+    /// and none is sent to. The variant stays so rows an older server stored still read.
     Fcm,
     /// Apple Push Notification service (iOS).
     Apns,
+    /// UnifiedPush (Android): the token is the endpoint URL the phone's distributor gave.
+    UnifiedPush,
 }
 
 impl PushKind {
@@ -30,16 +35,45 @@ impl PushKind {
         match self {
             PushKind::Fcm => "fcm",
             PushKind::Apns => "apns",
+            PushKind::UnifiedPush => "unifiedpush",
         }
     }
 
+    /// Reads a stored or sent kind. `fcm` parses (old rows still read) but is not
+    /// [`registrable`](PushKind::registrable).
     pub fn parse(text: &str) -> Option<PushKind> {
         match text {
             "fcm" => Some(PushKind::Fcm),
             "apns" => Some(PushKind::Apns),
+            "unifiedpush" => Some(PushKind::UnifiedPush),
             _ => None,
         }
     }
+
+    /// Whether a device may register a token of this kind now.
+    pub fn registrable(self) -> bool {
+        !matches!(self, PushKind::Fcm)
+    }
+}
+
+/// Checks the endpoint URL a UnifiedPush distributor gave: `https`, a host, no credentials, at
+/// most [`MAX_PUSH_TOKEN_LEN`] characters. Whether the host is a public address is checked when
+/// sending, because a name can resolve differently later.
+pub fn check_unifiedpush_endpoint(endpoint: &str) -> Result<url::Url, &'static str> {
+    if endpoint.len() > MAX_PUSH_TOKEN_LEN {
+        return Err("the UnifiedPush endpoint is too long");
+    }
+    let url = url::Url::parse(endpoint).map_err(|_| "the UnifiedPush endpoint is not a URL")?;
+    if url.scheme() != "https" {
+        return Err("the UnifiedPush endpoint must be an https URL");
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("the UnifiedPush endpoint has no host");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("the UnifiedPush endpoint must not carry a user name or password");
+    }
+    Ok(url)
 }
 
 /// A device's push token.
@@ -64,7 +98,7 @@ impl std::fmt::Debug for PushRegistration {
     }
 }
 
-/// What the server holds from registering with the relay: its installation id, and the
+/// What the server holds from registering with the optional relay: its installation id, and the
 /// installation key sealed under `server.key` (purpose `push-installation-key`).
 #[derive(Clone, PartialEq, Eq)]
 pub struct PushInstallation {
@@ -162,6 +196,9 @@ impl<D: DeviceRepo, R: PushRepo, C: Clock> RegisterPushToken<D, R, C> {
         kind: PushKind,
         token: &str,
     ) -> Result<(), AppError> {
+        if !kind.registrable() {
+            return Err(AppError::Invalid("the push kind is not accepted"));
+        }
         let token = token.trim();
         if token.is_empty() || token.len() > MAX_PUSH_TOKEN_LEN {
             return Err(AppError::Invalid(
@@ -172,6 +209,9 @@ impl<D: DeviceRepo, R: PushRepo, C: Clock> RegisterPushToken<D, R, C> {
             return Err(AppError::Invalid(
                 "the push token has a space or control character",
             ));
+        }
+        if kind == PushKind::UnifiedPush {
+            check_unifiedpush_endpoint(token).map_err(AppError::Invalid)?;
         }
         // The token names a device; the device may have been signed out since.
         let device = self
@@ -310,10 +350,10 @@ mod tests {
     #[tokio::test]
     async fn a_device_registers_and_replaces_its_token() {
         let (case, actor, push) = setup();
-        case.register(&actor, PushKind::Fcm, "token-one")
+        case.register(&actor, PushKind::Apns, "token-one")
             .await
             .expect("registers");
-        case.register(&actor, PushKind::Fcm, " token-two ")
+        case.register(&actor, PushKind::Apns, " token-two ")
             .await
             .expect("replaces");
         let all = push.registrations_for(&[actor.user]).await.expect("lists");
@@ -338,11 +378,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_unifiedpush_endpoint_registers_when_it_is_an_https_url() {
+        let (case, actor, push) = setup();
+        case.register(
+            &actor,
+            PushKind::UnifiedPush,
+            "https://ntfy.example.org/upABC123?up=1",
+        )
+        .await
+        .expect("registers");
+        let all = push.registrations_for(&[actor.user]).await.expect("lists");
+        assert_eq!(all[0].kind, PushKind::UnifiedPush);
+        assert_eq!(all[0].token, "https://ntfy.example.org/upABC123?up=1");
+    }
+
+    #[tokio::test]
+    async fn bad_unifiedpush_endpoints_are_refused() {
+        let (case, actor, push) = setup();
+        let long = format!("https://example.org/{}", "x".repeat(500));
+        for bad in [
+            "http://ntfy.example.org/up",
+            "ftp://ntfy.example.org/up",
+            "not a url",
+            "no-scheme.example.org/up",
+            "https://",
+            "https://user:pw@ntfy.example.org/up",
+            long.as_str(),
+        ] {
+            assert!(
+                matches!(
+                    case.register(&actor, PushKind::UnifiedPush, bad).await,
+                    Err(AppError::Invalid(_))
+                ),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            push.registrations_for(&[actor.user])
+                .await
+                .expect("lists")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn fcm_is_no_longer_accepted() {
+        let (case, actor, push) = setup();
+        assert_eq!(
+            case.register(&actor, PushKind::Fcm, "token").await,
+            Err(AppError::Invalid("the push kind is not accepted"))
+        );
+        assert!(
+            push.registrations_for(&[actor.user])
+                .await
+                .expect("lists")
+                .is_empty()
+        );
+        // Old rows still read: the kind parses, it just can't be registered.
+        assert_eq!(PushKind::parse("fcm"), Some(PushKind::Fcm));
+        assert!(!PushKind::Fcm.registrable());
+        assert!(PushKind::Apns.registrable() && PushKind::UnifiedPush.registrable());
+    }
+
+    #[test]
+    fn kinds_keep_their_wire_names() {
+        for kind in [PushKind::Fcm, PushKind::Apns, PushKind::UnifiedPush] {
+            assert_eq!(PushKind::parse(kind.as_str()), Some(kind));
+        }
+        assert_eq!(PushKind::UnifiedPush.as_str(), "unifiedpush");
+    }
+
+    #[tokio::test]
     async fn a_signed_out_device_cannot_register() {
         let (case, actor, _) = setup();
         case.devices.remove(actor.device).await.expect("removes");
         assert_eq!(
-            case.register(&actor, PushKind::Fcm, "t").await,
+            case.register(&actor, PushKind::Apns, "t").await,
             Err(AppError::NotFound)
         );
     }
@@ -352,7 +463,7 @@ mod tests {
         let (case, mut actor, _) = setup();
         actor.user = UserId::random();
         assert_eq!(
-            case.register(&actor, PushKind::Fcm, "t").await,
+            case.register(&actor, PushKind::Apns, "t").await,
             Err(AppError::NotFound)
         );
     }
@@ -360,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn unregistering_forgets_the_token() {
         let (case, actor, push) = setup();
-        case.register(&actor, PushKind::Fcm, "t")
+        case.register(&actor, PushKind::Apns, "t")
             .await
             .expect("registers");
         case.unregister(&actor).await.expect("unregisters");

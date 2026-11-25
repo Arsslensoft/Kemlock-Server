@@ -60,9 +60,11 @@ where
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PushTokenRequest {
-    /// `"fcm"` (Android) or `"apns"` (iOS).
+    /// `"apns"` (iOS) or `"unifiedpush"` (Android). `"fcm"` is no longer accepted.
     pub(crate) kind: String,
-    /// The token the push service gave the app, 1 to 512 characters with no whitespace.
+    /// The token the push service gave the app, 1 to 512 characters with no whitespace. For
+    /// `"unifiedpush"` it is the endpoint URL the distributor gave: `https`, no user name or
+    /// password. The server sends "sync now" to it itself.
     pub(crate) token: String,
 }
 
@@ -93,7 +95,8 @@ where
 {
     let request: PushTokenRequest = body.json()?;
     let kind = PushKind::parse(&request.kind)
-        .ok_or_else(|| Problem::bad_request("the kind must be fcm or apns"))?;
+        .filter(|kind| kind.registrable())
+        .ok_or_else(|| Problem::bad_request("the kind must be apns or unifiedpush"))?;
     registration(&env)
         .register(&caller.0.actor, kind, &request.token)
         .await?;
@@ -136,7 +139,7 @@ where
 /// The push-token routes. Merge it beside [`crate::router`]; it has no fallback.
 ///
 /// ```text
-/// POST    /kem/v1/devices/push-token   { "kind": "fcm" | "apns", "token": "..." }   204
+/// POST    /kem/v1/devices/push-token   { "kind": "apns" | "unifiedpush", "token": "..." }   204
 /// DELETE  /kem/v1/devices/push-token                                                 204
 /// ```
 pub fn router<S, P, K, R>(api: Api<S, P, K>, push: R) -> Router
@@ -167,7 +170,7 @@ where
     request_body = PushTokenRequest,
     responses(
         (status = 204, description = "The token is kept for the signed-in device"),
-        (status = 400, description = "Not fcm or apns, or a token that isn't 1 to 512 characters with no whitespace", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "Not apns or unifiedpush (fcm is no longer accepted), a token that isn't 1 to 512 characters with no whitespace, or a UnifiedPush endpoint that isn't an https URL", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Not signed in", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -205,10 +208,10 @@ mod tests {
     #[test]
     fn the_body_refuses_unknown_fields() {
         let ok: Result<PushTokenRequest, _> =
-            serde_json::from_str(r#"{"kind":"fcm","token":"abc"}"#);
+            serde_json::from_str(r#"{"kind":"apns","token":"abc"}"#);
         assert!(ok.is_ok());
         let extra: Result<PushTokenRequest, _> =
-            serde_json::from_str(r#"{"kind":"fcm","token":"abc","user":"x"}"#);
+            serde_json::from_str(r#"{"kind":"apns","token":"abc","user":"x"}"#);
         assert!(extra.is_err());
     }
 }
