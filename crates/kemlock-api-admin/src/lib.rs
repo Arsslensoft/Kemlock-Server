@@ -6,7 +6,7 @@
 //! (the same tokens `/kem/v1` issues). Anyone else gets 403. Every write also needs a step-up
 //! token, which the admin gets by running their password login again
 //! (`/admin/v1/step-up/password/start` and `/finish`), with a code from their authenticator app
-//! (`/admin/v1/step-up/totp`) or with a fresh passkey assertion
+//! (`/admin/v1/step-up/totp`) or with a fresh passkey or security-key assertion
 //! (`/admin/v1/step-up/passkey/options` and `/finish`), and sends in the `Step-Up-Token` header.
 //! It lasts five minutes and is bound to the account and the device. A write without a fresh one
 //! is refused with 403 and the problem type `step-up-required`.

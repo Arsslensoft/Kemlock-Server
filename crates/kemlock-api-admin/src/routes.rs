@@ -235,8 +235,8 @@ where
         })
     }
 
-    /// `POST /admin/v1/step-up/passkey/options`: the options for a passkey assertion over the
-    /// admin's own passkeys, with user verification required, and the sealed challenge.
+    /// `POST /admin/v1/step-up/passkey/options`: the options for an assertion over the admin's own
+    /// passkeys (user verification required) and security keys, and the sealed challenge.
     async fn step_up_passkey_options(
         State(env): State<Self>,
         caller: Caller,

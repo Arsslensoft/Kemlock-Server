@@ -51,7 +51,7 @@ pub use migration::{
     MigrationRecord, MigrationRequest, MigrationRunner, MigrationState, MigrationStatus,
 };
 pub use overview::{Overview, OverviewCounts};
-pub use passkey_step_up::{PasskeyStepUp, PasskeyStepUpChallenge, PasskeyStepper};
+pub use passkey_step_up::{PasskeyStepUp, PasskeyStepUpChallenge, PasskeyStepper, StepUpKeys};
 pub use ports::{
     AdminContact, AdminEvent, AdminEventRepo, AdminSpaceRepo, AdminSpaceRow, AdminUserRepo,
     AdminUserRow, ComplianceCounts, ComplianceRepo, ComplianceRequest, EventCursor, EventFilter,
