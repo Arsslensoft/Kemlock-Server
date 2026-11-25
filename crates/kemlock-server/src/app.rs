@@ -279,6 +279,10 @@ where
         .merge(source::router(source::third_party_paths()))
         .merge(kemlock_api_kem::router(api.clone(), store.clone()))
         .merge(kemlock_api_kem::push_router(api.clone(), store.clone()))
+        .merge(kemlock_api_kem::custom_fields_router(
+            api.clone(),
+            store.clone(),
+        ))
         .merge(notifications.bitwarden)
         .merge(
             kemlock_api_bw::mount_live(
