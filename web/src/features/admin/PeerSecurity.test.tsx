@@ -2,6 +2,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SuiteSetting } from '@/api/admin';
+import { I18nProvider } from '@/i18n';
 import { renderWithIntl } from '@/test/render';
 import { NOW, PEER_SECURITY, SELF_SECURITY, fakeLabels } from './fixtures';
 import { PeerSecurityView, SUITES, moveSuite, orderHint } from './PeerSecurity';
@@ -135,6 +136,31 @@ describe('PeerSecurityView', () => {
     view();
     const aes = screen.getByRole('switch', { name: SUITES.aes });
     expect(aes).toHaveAccessibleDescription(/.+/);
+  });
+
+  it('clears Saved. at the first edit, and starts again when the saved suites change', async () => {
+    const user = userEvent.setup();
+    const props = { peer: PEER_SECURITY, self: SELF_SECURITY, labelsOf: fakeLabels, now: NOW, suitesSaved: true } as const;
+    const handlers = {
+      onNavigate: vi.fn(),
+      onDownload: vi.fn(),
+      onDownloadPeer: vi.fn(),
+      onRevoke: vi.fn(),
+      onRotateKem: vi.fn(),
+      onRotateIdentity: vi.fn(),
+      onSaveSuites: vi.fn(),
+    };
+    const { rerender } = renderWithIntl(<PeerSecurityView {...props} {...handlers} />);
+    expect(screen.getByText('Saved.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: `Move ${SUITES.chacha} up` }));
+    expect(screen.queryByText('Saved.')).not.toBeInTheDocument();
+    const next = { ...SELF_SECURITY, suites: [...SELF_SECURITY.suites].reverse() };
+    rerender(
+      <I18nProvider>
+        <PeerSecurityView {...props} self={next} {...handlers} />
+      </I18nProvider>,
+    );
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('says Saved. under the section title once the suites are saved', () => {
