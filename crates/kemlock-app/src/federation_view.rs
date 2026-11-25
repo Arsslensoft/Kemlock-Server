@@ -174,6 +174,14 @@ pub trait FederationView: Send + Sync {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    /// Where an account's Sends that have a view limit are served from, when it isn't here: the
+    /// address of the home of the account's vault, if this server holds the vault as a replica.
+    /// `None` when the vault isn't federated here or this server is its home. A view limit is kept
+    /// by one server, since two counting apart would each allow the whole limit.
+    fn limited_send_home(&self, _owner: UserId) -> BoxFut<'_, Result<Option<String>, StoreError>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// Drops the changes of `vault` that wait for `peer`, which must be offline, on behalf of
     /// `by`. Nothing held here is deleted: the changes stay in this server's copy and are only
     /// not sent to that peer. See `docs/federation.md`, "Waiting changes".

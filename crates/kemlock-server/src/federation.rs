@@ -387,6 +387,22 @@ impl FederationView for View {
         Box::pin(async move { Ok(self.runner.health(server)) })
     }
 
+    fn limited_send_home(&self, owner: UserId) -> BoxFut<'_, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let store = self.replica.store();
+            let me = self.replica.server_id();
+            let Some(settings) = VaultRepo::get_vault(store, Owner::User(owner)).await? else {
+                return Ok(None);
+            };
+            if settings.policy != Policy::Federated || !settings.holds(me) || settings.home == me {
+                return Ok(None);
+            }
+            Ok(PeerRepo::get_peer(store, settings.home)
+                .await?
+                .and_then(|home| home.addresses.first().cloned()))
+        })
+    }
+
     fn waiting_changes(&self, vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
         Box::pin(async move {
             let me = self.replica.server_id();

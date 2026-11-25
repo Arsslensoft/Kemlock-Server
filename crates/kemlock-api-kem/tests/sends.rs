@@ -861,3 +861,94 @@ async fn deleting_a_file_send_closes_its_link() {
         StatusCode::NOT_FOUND
     );
 }
+
+// ---------------------------------------------------------------------------------------------
+// A replica serves no Send that has a view limit.
+
+/// A federation view of a replica: the account's vault has its home elsewhere.
+struct ReplicaView;
+
+impl kemlock_app::federation_view::FederationView for ReplicaView {
+    fn vault_servers(
+        &self,
+        _vault: kemlock_domain::Owner,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Option<kemlock_app::federation_view::VaultServers>, kemlock_app::ports::StoreError>,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn siblings(
+        &self,
+        _owner: kemlock_domain::Owner,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Vec<kemlock_app::federation_view::SiblingSet>, kemlock_app::ports::StoreError>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn resolve_siblings(
+        &self,
+        _owner: kemlock_domain::Owner,
+        _item: kemlock_domain::ItemId,
+    ) -> kemlock_app::federation_view::BoxFut<'_, Result<u64, kemlock_app::ports::StoreError>> {
+        Box::pin(async { Ok(0) })
+    }
+
+    fn is_replica_account(
+        &self,
+        _user: kemlock_domain::UserId,
+    ) -> kemlock_app::federation_view::BoxFut<'_, Result<bool, kemlock_app::ports::StoreError>>
+    {
+        Box::pin(async { Ok(true) })
+    }
+
+    fn limited_send_home(
+        &self,
+        _owner: kemlock_domain::UserId,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Option<String>, kemlock_app::ports::StoreError>,
+    > {
+        Box::pin(async { Ok(Some("https://nas.example.org".to_owned())) })
+    }
+}
+
+#[tokio::test]
+async fn a_replica_refuses_a_send_with_a_view_limit_and_serves_one_without() {
+    let rig = Rig::signed_in().await;
+    let limited = rig.make(rig.note_body(json!({"maxAccess": 2}))).await;
+    let open_one = rig.make(rig.note_body(json!({}))).await;
+    let limited_file = rig
+        .make_file(&kma1_file(100), json!({"maxAccess": 2}))
+        .await;
+
+    let view: kemlock_app::federation_view::SharedView = std::sync::Arc::new(ReplicaView);
+    let router = rig.merged.clone().layer(axum::Extension(view));
+    let recipient = Client::new(router, rig.app.clock.clone(), DpopSigner::es256());
+
+    let refused = open(&recipient, limited["accessId"].as_str().expect("id"), None).await;
+    assert_eq!(refused.status, StatusCode::SERVICE_UNAVAILABLE, "{:?}", refused.json());
+    assert_eq!(refused.json()["home"], "https://nas.example.org");
+    assert!(refused.json()["detail"].as_str().is_some_and(|d| d.contains("Try again")));
+    let file = download(
+        &recipient,
+        limited_file["accessId"].as_str().expect("id"),
+        None,
+    )
+    .await;
+    assert_eq!(file.status, StatusCode::SERVICE_UNAVAILABLE);
+
+    // A Send without a limit opens at the replica, and nothing was counted for the refused one.
+    let served = open(&recipient, open_one["accessId"].as_str().expect("id"), None).await;
+    assert_eq!(served.status, StatusCode::OK, "{:?}", served.json());
+    let at_home = open(
+        &rig.recipient(),
+        limited["accessId"].as_str().expect("id"),
+        None,
+    )
+    .await;
+    assert_eq!(at_home.status, StatusCode::OK);
+}
