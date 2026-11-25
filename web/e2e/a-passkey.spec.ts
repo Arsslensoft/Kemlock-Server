@@ -1,6 +1,6 @@
 import { type CDPSession, type Page, expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { chooseFromAccountMenu, signInAsAdmin } from './signin';
 import { ADMIN } from './state';
 
 // A passkey with a virtual authenticator (the DevTools protocol's WebAuthn domain), so no key or
@@ -51,7 +51,7 @@ test('a passkey is made, confirms an admin change and signs in with no master pa
   await signInAsAdmin(page);
 
   // Make one. A reload would sign the page out, so the journey moves by links.
-  await page.getByRole('link', { name: 'Account security' }).first().click();
+  await chooseFromAccountMenu(page, 'Security');
   await expect(page.getByRole('heading', { name: 'Account security', level: 1 })).toBeVisible();
   await expectAccessible(page);
   await expect(page.getByRole('button', { name: 'Add a passkey' })).toBeEnabled();
@@ -68,7 +68,7 @@ test('a passkey is made, confirms an admin change and signs in with no master pa
   await expect(page.getByTestId('passkey').getByText('Opens the vault')).toBeVisible();
 
   // An admin write asks again; the passkey answers.
-  await page.getByRole('link', { name: 'Admin console' }).click();
+  await chooseFromAccountMenu(page, 'Admin console');
   await page.getByRole('link', { name: 'Server settings' }).click();
   await expect(page.getByRole('heading', { name: 'Server settings', level: 1 })).toBeVisible();
   await page.getByLabel(/Who to tell about a problem with this server/).fill('security@example.co');
@@ -88,10 +88,10 @@ test('a passkey is made, confirms an admin change and signs in with no master pa
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Sign in with a passkey' }).click();
   await expect(page).toHaveURL(/\/vault$/, { timeout: 60_000 });
-  await expect(page.getByRole('link', { name: 'New item' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New item' })).toBeVisible();
 
   // Remove it again.
-  await page.getByRole('link', { name: 'Account security' }).first().click();
+  await chooseFromAccountMenu(page, 'Security');
   await expect(page.getByTestId('passkey')).toHaveCount(1);
   await page.getByRole('button', { name: /^Remove / }).click();
   await expect(page.getByTestId('passkey')).toHaveCount(0);

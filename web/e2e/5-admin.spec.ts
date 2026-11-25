@@ -11,7 +11,7 @@ import {
   migration,
 } from '../src/features/admin/fixtures';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { chooseFromAccountMenu, signInAsAdmin } from './signin';
 
 // The sign-in is real, but the console's calls are answered here with the shapes of
 // crates/kemlock-api-admin (src/api/admin.ts): a real write needs a step-up token made from a
@@ -284,7 +284,7 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   await signInAsAdmin(page);
 
   // Overview: what needs a look comes from the counts of the admin API.
-  await page.getByRole('link', { name: 'Admin console' }).click();
+  await chooseFromAccountMenu(page, 'Admin console');
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   await expect(page.getByText('2 invitations are still waiting')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Push', exact: true })).toBeVisible();

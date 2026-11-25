@@ -2,7 +2,7 @@
 // its authenticator. Journeys that need a signed-in session share this, so none of them repeats
 // the dance. A page reload signs you out (tokens live in memory only), so after this a journey
 // moves only by clicking links.
-import { type Page, expect } from '@playwright/test';
+import { type Locator, type Page, expect } from '@playwright/test';
 import { freshCode } from './helpers';
 import { ADMIN, readState, saveState } from './state';
 
@@ -33,6 +33,26 @@ export async function enterCode(page: Page): Promise<void> {
   await page.getByLabel('Code from your authenticator app').fill(code);
   await page.getByRole('button', { name: 'Open the vault' }).click();
   saveState({ totpStep: step });
+}
+
+/** Opens the avatar menu at the top right of a shell, and returns the menu. */
+export async function openAccountMenu(page: Page): Promise<Locator> {
+  const avatar = page.getByRole('button', { name: /^Account menu for / });
+  if ((await avatar.getAttribute('aria-expanded')) !== 'true') await avatar.click();
+  return page.getByRole('navigation', { name: 'Account' });
+}
+
+/** Picks one entry of the avatar menu: Profile, Security, Devices & apps, Admin console, About,
+ * Lock the vault or Sign out. The last two are buttons, the rest links. */
+export async function chooseFromAccountMenu(page: Page, entry: string | RegExp): Promise<void> {
+  const menu = await openAccountMenu(page);
+  await menu.getByRole(/^(Lock the vault|Sign out)$/.test(String(entry)) ? 'button' : 'link', { name: entry }).click();
+}
+
+/** Opens the + menu and picks a type: lands on that type's creation form. */
+export async function newItem(page: Page, type = 'Login'): Promise<void> {
+  await page.getByRole('button', { name: 'New item' }).click();
+  await page.getByRole('navigation', { name: 'New item' }).getByRole('link', { name: type, exact: true }).click();
 }
 
 /** Signs in as the setup admin and waits for the open vault. */
