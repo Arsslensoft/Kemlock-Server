@@ -327,7 +327,8 @@
 
   "kind.login": "Login",
   "kind.note": "Note",
-  "kind.code": "Code",
+  "kind.file": "File",
+  "kind.code": "MFA code",
   "kind.backupCodes": "Backup codes",
   "kind.passkey": "Passkey",
   "kind.card": "Card",

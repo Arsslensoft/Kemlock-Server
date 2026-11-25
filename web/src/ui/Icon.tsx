@@ -168,6 +168,72 @@ const ICONS = {
       <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </>
   ),
+  more: (
+    <>
+      <circle cx="5" cy="12" r="1.2" />
+      <circle cx="12" cy="12" r="1.2" />
+      <circle cx="19" cy="12" r="1.2" />
+    </>
+  ),
+  close: <path d="M6 6l12 12M18 6 6 18" />,
+  download: <path d="M12 4v11M7 11l5 5 5-5M5 20h14" />,
+  paperclip: <path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7" />,
+  clock: (
+    <>
+      <circle cx="12" cy="13" r="8" />
+      <path d="M12 9v4l2.5 2.5M9 2h6" />
+    </>
+  ),
+  backup: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="4" />
+      <path d="m5.6 5.6 3.6 3.6M14.8 14.8l3.6 3.6M18.4 5.6l-3.6 3.6M9.2 14.8l-3.6 3.6" />
+    </>
+  ),
+  passkey: (
+    <>
+      <circle cx="9" cy="8" r="4" />
+      <path d="M3 21v-1a6 6 0 0 1 8-5.6" />
+      <circle cx="18" cy="14" r="2.5" />
+      <path d="M18 16.5V22M18 19.5h2" />
+    </>
+  ),
+  card: (
+    <>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <path d="M3 10h18M7 15h3" />
+    </>
+  ),
+  identity: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <circle cx="9" cy="11" r="2.5" />
+      <path d="M5.5 17a3.5 3.5 0 0 1 7 0M15 10h3M15 14h3" />
+    </>
+  ),
+  contact: (
+    <>
+      <path d="M6 3h12a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H6V3Z" />
+      <circle cx="12.5" cy="10" r="2.5" />
+      <path d="M9 16a3.5 3.5 0 0 1 7 0M4 7h2M4 12h2M4 17h2" />
+    </>
+  ),
+  certificate: (
+    <>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M7 8h10M7 12h4" />
+      <circle cx="16" cy="16" r="3" />
+      <path d="m14.5 18.5-1 3.5 2.5-1.2 2.5 1.2-1-3.5" />
+    </>
+  ),
+  pgp: (
+    <>
+      <rect x="4" y="11" width="11" height="10" rx="2" />
+      <path d="M7 11V8a2.5 2.5 0 0 1 5 0v3" />
+      <path d="M9.5 15v2M17 4h4M19 2v4" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof ICONS;
