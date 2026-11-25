@@ -19,7 +19,7 @@ export function inVault(item: Pick<VaultItem, 'owner'>, vault: string): boolean 
   return vault === ALL_VAULTS || vaultIdOf(item.owner) === vault;
 }
 
-const SEARCHED_TEXT = ['username', 'email', 'issuer', 'label', 'serviceName', 'company', 'phone'] as const;
+const SEARCHED_TEXT = ['username', 'email', 'issuer', 'label', 'serviceName', 'company', 'phone', 'cardholder'] as const;
 
 /** Whether the search words are in the item's name, username, websites or the like. Never a secret. */
 export function matches(item: VaultItem, query: string): boolean {
