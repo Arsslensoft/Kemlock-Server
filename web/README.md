@@ -119,9 +119,11 @@ Not built, or not working yet:
   there is none (Firefox), decodes the camera frames with `jsqr`, loaded only when the scanner opens.
   The kit is made and opened in the key worker, so the page never holds the root key
   (docs/crypto.md, "The Recovery Kit").
-- Detail pages for the newer kinds are the generic view. An SSH key is made in the browser
-  (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is pasted as armor; a certificate needs
-  its key.
+- An SSH key is made in the browser (Ed25519) or pasted as a PKCS#8 key; a PGP key or contact is
+  pasted as armor; a certificate needs its key. Their detail pages read the stored halves (a
+  certificate's subject and validity come from its PEM).
+- The Send list does not tell an item Send from a text Send: it opens only each Send's name and key,
+  and the envelope is in the text, which is read when the link is opened.
 - First-run "Server basics": who can join and the email server are saved by the server when setup
   finishes (as the admin Settings), and checked first. The address, push, file folder and backups
   are not settings the server stores; the last setup screen lists them to copy into its
