@@ -756,6 +756,33 @@ document at `/admin/v1/federation/openapi.json`.
   meanwhile. `POST .../mismatches/{peer}/keep-blocking` puts the admin's decision on record; the
   pin stays and the refusal with it (table `peer_mismatches`).
 
+## Peer health
+
+A server keeps a short, in-memory record of whether each paired peer answers. It is not part of
+the wire format: nothing is sent to the peer for it beyond an ordinary request.
+
+- **Probe.** Every `KEMLOCK_FEDERATION_PROBE_SECONDS` (default 60; 0 turns the probes off), per
+  peer, the server fetches the peer's signed descriptor (`GET /fed/v1/descriptor`, the public route)
+  from the peer's addresses in order and checks it against the key pinned at pairing. An answer
+  from another server, an expired descriptor or no answer is a failed probe. A probe has a timeout of
+  10 seconds. After a failed probe the delay doubles for each further failure, to a ceiling of ten
+  minutes, and every delay is spread by up to 20 percent either way, so servers that started
+  together don't probe in step. A session that opens during a visit counts as an answer, and one that
+  can't open as a failed probe, so the status stays right where the probes are off.
+- **Status.** `unknown` until the first probe or visit; then `online` (the last probe answered in
+  under 3 seconds), `degraded` (it answered slower, or fewer than three probes in a row failed) or
+  `offline` (three or more in a row failed). A status nobody has refreshed for twice the backoff
+  ceiling is `unknown` again. The record also holds when the peer last answered, how long that took,
+  why the last probe failed and since when the probes have been failing. Nothing is kept across a
+  restart: every peer is `unknown` until its first probe.
+- **Placement.** `GET /kem/v1/placement` gives each server of a vault `status` (this server is
+  always `online`), `lastSeen`, `latencyMs` and, while it is offline, `offlineSince`. The web
+  vault's failover banner appears on its own when a vault's home is `offline`, and the storage page
+  shows each status. A `degraded` home is not an outage: no banner.
+- **Admin API.** Each peer of `/admin/v1/federation/peers` carries `health` (the status),
+  `latencyMs`, `probeError`, `failingSince` and a `lastSeen` that is the later of its last session
+  and its last answered probe. The admin federation screen shows it beside each peer.
+
 ## Not built yet
 
 Nothing is open.
