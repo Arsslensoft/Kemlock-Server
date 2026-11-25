@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
+import { useState } from 'react';
 import { createDevicesApi } from '@/api/devices';
 import { signOut } from '@/app/actions';
 import { api, configQuery, session } from '@/app/services';
@@ -27,6 +28,8 @@ export default function Devices() {
   const devices = useQuery({ queryKey: ['devices', 'list'], queryFn: () => devicesApi.devices() });
   const keyCopy = useQuery({ queryKey: ['devices', 'key-copy'], queryFn: () => devicesApi.keyCopy() });
   const { run, pending, error } = useRun();
+  // Set while this browser signs itself out, so nothing else is pressed meanwhile.
+  const [leaving, setLeaving] = useState(false);
 
   async function change<T>(action: () => Promise<T>): Promise<void> {
     await run(action);
@@ -55,7 +58,7 @@ export default function Devices() {
       keyCopy={keyCopy.data}
       cryptoAvailable={sharingCrypto.available}
       trustAvailable={sharingCrypto.available && sharingCrypto.canWrapForThisDevice !== false}
-      busy={pending}
+      busy={pending || leaving}
       error={error}
       onApprove={(row) => {
         const account = state.userId;
@@ -65,13 +68,19 @@ export default function Devices() {
       onDeny={(id) => void change(() => devicesApi.deny(id))}
       onSignOut={(device) => void change(() => devicesApi.signOut(device.id))}
       onSignOutThisBrowser={() => {
+        if (leaving) return;
         const device = state.deviceId;
+        setLeaving(true);
         void (async () => {
-          // The server forgets this device and its key copy; if it can't be reached, the browser
-          // still lets go of its own session.
-          if (device) await devicesApi.signOut(device).catch(() => undefined);
-          await signOut();
-          await navigate({ to: '/sign-in' });
+          try {
+            // The server forgets this device and its key copy; if it can't be reached, the browser
+            // still lets go of its own session.
+            if (device) await devicesApi.signOut(device).catch(() => undefined);
+            await signOut();
+            await navigate({ to: '/sign-in' });
+          } finally {
+            setLeaving(false);
+          }
         })();
       }}
       onSignOutOthers={() => {
