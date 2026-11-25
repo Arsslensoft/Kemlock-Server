@@ -142,6 +142,7 @@ test('a Send is encrypted here and its key stays out of what the server receives
   await expect(page.getByText('Door code').first()).toBeVisible();
   await expect(page.getByText(/Text · 0 of 3 views/)).toBeVisible();
   await page.getByRole('button', { name: 'Delete Door code' }).click();
+  await page.getByRole('dialog', { name: 'Delete Door code?' }).getByRole('button', { name: 'Delete' }).click();
   await expect(page.getByText(/No Sends yet/)).toBeVisible();
 });
 
@@ -190,9 +191,9 @@ test('the failover banner names the replica, and "Where your vault is stored" li
   await expect(page.getByText('nas.example.org, local copy')).toBeVisible();
   await expectAccessible(page);
 
-  await page.getByRole('button', { name: 'Cancel this change' }).click();
+  await page.getByRole('button', { name: 'Do not send these changes' }).click();
   await expect.poll(() => cancelled).toBe(true);
-  await expect(page.getByRole('button', { name: 'Cancel this change' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Do not send these changes' })).toHaveCount(0);
 });
 
 test('Import & export: the page loads, and the installed importer refuses an empty export', async ({ page }) => {

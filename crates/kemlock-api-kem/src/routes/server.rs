@@ -15,7 +15,7 @@ use axum::extract::{RawQuery, State};
 use axum::http::StatusCode;
 use kemlock_app::admin::{FnEnv, Settings, SettingsRepo};
 use kemlock_app::ports::TokenSigner;
-use kemlock_app::{AppError, SetupPhase, save_basics, without_env_set};
+use kemlock_app::{AppError, SetupPhase, record_domain, save_basics, without_env_set};
 use kemlock_domain::Owner;
 use utoipa::{Modify, OpenApi};
 
@@ -127,7 +127,8 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .merge_from(super::duplicates::openapi())
             .merge_from(super::placement::document())
             .merge_from(super::two_step::TwoStepApiDoc::openapi())
-            .merge_from(super::recovery_kit::RecoveryKitApiDoc::openapi());
+            .merge_from(super::recovery_kit::RecoveryKitApiDoc::openapi())
+            .merge_from(super::api_key::ApiKeyApiDoc::openapi());
         // The answers every route can give, over the whole merged document.
         CommonAnswers.modify(&mut document);
         Json(document)
@@ -171,11 +172,14 @@ impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
             let request: SetupFinishRequest = body.json()?;
             request
                 .basics
-                .map(|basics| basics.into_basics()?.changes())
+                .map(|basics| {
+                    let basics = basics.into_basics()?;
+                    Ok::<_, AppError>((basics.changes()?, basics.recorded_domain()?))
+                })
                 .transpose()?
         };
         let user = authed.actor.user;
-        if let Some(changes) = changes {
+        if let Some((changes, domain)) = changes {
             // Only the account setup waits for may write them; they are saved before setup
             // closes, so a store failure leaves setup open to retry (saving is idempotent).
             match api.setup.pending() {
@@ -191,6 +195,9 @@ impl<S: Store + SettingsRepo, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
                 env,
             };
             save_basics(&settings, &changes).await?;
+            if let Some(domain) = domain {
+                record_domain(&api.store, &domain).await?;
+            }
         }
         api.finish_setup().execute(user).await?;
         Ok(StatusCode::NO_CONTENT)

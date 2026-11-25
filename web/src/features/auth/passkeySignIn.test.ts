@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '@/api/errors';
 import { createSession } from '@/app/session';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import { crypto as fake, fakeCalls } from '@/test/fake-crypto';
+import { describePasskeySignInError } from './describeSignIn';
 import { signInWithPasskey } from './passkeySignIn';
 
 const USER = '11111111-1111-4111-8111-111111111111';
@@ -94,6 +96,19 @@ describe('signInWithPasskey', () => {
     deps.assert.mockRejectedValueOnce(new Error('cancelled'));
     await expect(signInWithPasskey(deps, 'sam@example.co')).rejects.toThrow('cancelled');
     expect(passkeys.verify).not.toHaveBeenCalled();
+    expect(session.getState().status).toBe('signed-out');
+  });
+
+  it('says a security key is not a sign-in passkey, not that the password is wrong', async () => {
+    // First-run setup adds a security key as a second step. The browser offers it for a passkey
+    // sign-in and the server answers 401 to its verify call.
+    const { deps, session, passkeys } = setup(true, true);
+    passkeys.verify.mockRejectedValueOnce(
+      new ApiError(401, { type: 'urn:kemlock:problem:unauthorized', title: 'no', status: 401 }),
+    );
+    const error = await signInWithPasskey(deps, 'sam@example.co').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(describePasskeySignInError(error).id).toBe('signIn.passkeyRejected');
     expect(session.getState().status).toBe('signed-out');
   });
 });

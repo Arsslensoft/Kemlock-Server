@@ -15,7 +15,8 @@ export interface EmergencyConfirmState {
 }
 
 export interface EmergencyActions {
-  invite: (input: { email: string; kind: EmergencyKind; waitDays: number }) => void;
+  /** Resolves false when the invitation failed, so the form keeps what was typed. */
+  invite: (input: { email: string; kind: EmergencyKind; waitDays: number }) => Promise<boolean> | void;
   revoke: (id: string) => void;
   startConfirm: (view: GrantViewDto) => void;
   cancelConfirm: () => void;
@@ -55,11 +56,12 @@ export function EmergencyCard({
   const [kind, setKind] = useState<EmergencyKind>('view');
   const [wait, setWait] = useState('7');
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     const waitDays = Number.parseInt(wait, 10);
     if (email.trim() === '' || !Number.isInteger(waitDays) || waitDays < 1 || waitDays > 90) return;
-    actions.invite({ email: email.trim(), kind, waitDays });
+    const done = await actions.invite({ email: email.trim(), kind, waitDays });
+    if (done === false) return;
     setEmail('');
     setAdding(false);
   }

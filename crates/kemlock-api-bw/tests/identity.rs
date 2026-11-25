@@ -1483,3 +1483,52 @@ async fn password_and_api_key_sign_ins_are_rate_limited_per_address_as_vaultward
         .await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }
+
+#[tokio::test]
+async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
+    let h = Harness::new().await;
+    let (token, user) = h.signed_in("ada@example.com").await;
+    let ask = |route: &'static str| {
+        let h = &h;
+        let token = token.clone();
+        async move {
+            let (status, body) = h
+                .json(
+                    "POST",
+                    route,
+                    Some(&token),
+                    Some(json!({"masterPasswordHash": HASH})),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["apiKey"].as_str().expect("a key").to_owned()
+        }
+    };
+    let old = ask("/api/accounts/api-key").await;
+    let new = ask("/api/accounts/rotate-api-key").await;
+    assert_ne!(old, new);
+
+    let client_id = format!("user.{user}");
+    let sign_in = |secret: String| {
+        let h = &h;
+        let client_id = client_id.clone();
+        async move {
+            h.token(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", client_id.as_str()),
+                ("client_secret", secret.as_str()),
+                ("scope", "api"),
+                ("deviceType", "8"),
+                ("deviceIdentifier", "cli-rotated"),
+                ("deviceName", "CLI"),
+            ])
+            .await
+        }
+    };
+    let (status, body) = sign_in(old).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "Incorrect client_secret");
+    let (status, body) = sign_in(new).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["scope"], "api");
+}

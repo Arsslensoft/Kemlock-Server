@@ -64,14 +64,24 @@ pub(crate) struct MemoryPush {
 }
 
 impl MemoryPush {
+    /// An iPhone's token.
     pub(crate) fn add(&self, user: UserId, token: &str) -> DeviceId {
+        self.add_kind(user, kemlock_app::push::PushKind::Apns, token)
+    }
+
+    pub(crate) fn add_kind(
+        &self,
+        user: UserId,
+        kind: kemlock_app::push::PushKind,
+        token: &str,
+    ) -> DeviceId {
         let device = DeviceId::random();
         self.registrations.lock().expect("lock").insert(
             device,
             PushRegistration {
                 device,
                 user,
-                kind: kemlock_app::push::PushKind::Fcm,
+                kind,
                 token: token.to_owned(),
                 updated_at: time::macros::datetime!(2026-11-23 12:00 UTC),
             },

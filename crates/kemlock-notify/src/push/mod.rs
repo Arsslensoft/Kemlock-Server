@@ -1,16 +1,30 @@
-//! Kemlock's push relay, from the server's side.
+//! Push, from the server's side: how a commit that nudges an owner wakes the owner's phones.
 //!
-//! The relay is a separate hosted service (see `docs/push-relay.md` for its small HTTP contract).
-//! An operator who opts in registers the server once and gets an installation id and key; from
-//! then on, when a commit nudges an owner, the server sends the relay "sync now" for the push
-//! tokens of that owner's devices. The relay sees only those tokens, the installation id and the
-//! nudge: no email, account id or item.
+//! The server sends the push itself, and the push is only "sync now":
+//!
+//! - iPhones: straight to Apple, signed with the operator's own key ([`ApnsSender`]);
+//! - Android with UnifiedPush: straight to the endpoint the phone's distributor gave
+//!   ([`UnifiedPushSender`]).
+//!
+//! Kemlock's hosted relay ([`RelayClient`]; see `docs/push-relay.md` for its small HTTP contract)
+//! is an optional fallback for iPhones on a server that has no Apple key. An operator who opts in
+//! registers the server once and gets an installation id and key; from then on the server sends
+//! the relay "sync now" for the tokens of those iPhones. The relay sees only those tokens, the
+//! installation id and the nudge: no email, account id or item. It is off unless the operator
+//! turns it on.
 
 mod admin;
+mod apns;
+mod b64;
 mod dispatch;
+mod unifiedpush;
 
-pub use admin::PushRelayAdmin;
-pub use dispatch::{DEFAULT_WINDOW, PushDispatcher};
+pub use admin::{BuiltInPush, PushRelayAdmin};
+pub use apns::{
+    ApnsConfig, ApnsConfigError, ApnsKey, ApnsSender, DEFAULT_TOPIC, PRODUCTION_HOST, SANDBOX_HOST,
+};
+pub use dispatch::{DEFAULT_WINDOW, DirectSenders, PushDispatcher};
+pub use unifiedpush::{UnifiedPushSender, is_public_ip};
 
 use kemlock_app::ports::{SecretSeal, StoreError, Zeroizing};
 use kemlock_app::push::{PURPOSE_PUSH_INSTALLATION_KEY, PushInstallation, PushKind, PushRepo};
@@ -75,7 +89,7 @@ impl std::fmt::Debug for PushTarget {
 /// What a send did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SendOutcome {
-    /// How many tokens the relay took.
+    /// How many tokens the push service (or the relay) took.
     pub accepted: usize,
     /// Tokens the push services no longer know: forget them.
     pub rejected: Vec<String>,
@@ -112,14 +126,12 @@ struct SendResponse {
 #[derive(Clone, Debug)]
 pub struct RelayClient {
     http: reqwest::Client,
-    base: String,
+    /// Shared by every clone, so a new address reaches the dispatcher and the console at once.
+    base: std::sync::Arc<std::sync::RwLock<String>>,
 }
 
 fn allowed_url(url: &str) -> bool {
-    url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-        || url.starts_with("http://[::1]")
+    kemlock_app::push::is_relay_url(url)
 }
 
 impl RelayClient {
@@ -138,11 +150,36 @@ impl RelayClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| RelayError::Transport(e.to_string()))?;
-        Ok(RelayClient { http, base })
+        Ok(RelayClient {
+            http,
+            base: std::sync::Arc::new(std::sync::RwLock::new(base)),
+        })
+    }
+
+    /// The relay's address now.
+    pub fn base(&self) -> String {
+        self.base
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Talks to the relay at `base_url` from now on, in every clone. The same checks as
+    /// [`RelayClient::new`]; a bad address leaves the client as it was.
+    pub fn set_base(&self, base_url: &str) -> Result<(), RelayError> {
+        let base = base_url.trim().trim_end_matches('/').to_owned();
+        if !allowed_url(&base) {
+            return Err(RelayError::BadUrl);
+        }
+        *self
+            .base
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = base;
+        Ok(())
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{path}", self.base)
+        format!("{}{path}", self.base())
     }
 
     fn failure(response: &reqwest::Response) -> RelayError {

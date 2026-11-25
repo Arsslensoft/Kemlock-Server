@@ -782,6 +782,34 @@ where
         Ok((StatusCode::ACCEPTED, Json(MigrationDto::from(&status))))
     }
 
+    // ---- address ----
+
+    /// `GET /admin/v1/server-address`: the address in use next to the one recorded at setup.
+    async fn server_address(
+        State(env): State<Self>,
+        _caller: Caller,
+    ) -> Result<Json<ServerAddressDto>, ApiError> {
+        let recorded = kemlock_app::admin::SettingsRepo::settings_with_prefix(
+            &env.rt.repos,
+            kemlock_app::RECORDED_DOMAIN_KEY,
+        )
+        .await?
+        .into_iter()
+        .find(|(key, _)| key == kemlock_app::RECORDED_DOMAIN_KEY)
+        .map(|(_, value)| value);
+        let domain = env.api.config.domain.clone();
+        let differs = recorded.as_deref().is_some_and(|r| {
+            !r.trim_end_matches('/')
+                .eq_ignore_ascii_case(domain.trim_end_matches('/'))
+        });
+        json_ok(ServerAddressDto {
+            domain,
+            recorded_domain: recorded,
+            differs,
+            data_folder: env.rt.data_folder.clone(),
+        })
+    }
+
     // ---- push relay ----
 
     /// The relay the console controls, or 409 when this server has none.
@@ -802,6 +830,9 @@ where
                 enabled: false,
                 installation_id: None,
                 relay_url: DEFAULT_PUSH_RELAY_URL.to_owned(),
+                apns_configured: false,
+                apns_sandbox: false,
+                unified_push: true,
             });
         };
         let status = relay.status().await?;
@@ -832,6 +863,15 @@ where
         writer: Writer,
     ) -> Result<Json<PushRelayDto>, ApiError> {
         let status = env.push_relay()?.disable().await?;
+        // Switched off here, it stays off after a restart: the saved switch is cleared, unless the
+        // environment sets it (then it is the operator's to change).
+        let mut forget = BTreeMap::new();
+        forget.insert("kemlock_push_relay".to_owned(), Change::Reset);
+        if env.settings().apply(&forget).await.is_ok()
+            && let Some(saved) = &env.rt.settings_saved
+        {
+            saved();
+        }
         env.audit()
             .record(
                 &writer.actor,
@@ -1061,6 +1101,7 @@ where
         )
         .route("/admin/v1/migration", get(h!(migration_status)))
         .route("/admin/v1/migration/start", post(h!(migration_start)))
+        .route("/admin/v1/server-address", get(h!(server_address)))
         .route("/admin/v1/push-relay", get(h!(push_relay_get)))
         .route("/admin/v1/push-relay/enable", post(h!(push_relay_enable)))
         .route("/admin/v1/push-relay/disable", post(h!(push_relay_disable)))

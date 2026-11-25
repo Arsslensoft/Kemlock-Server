@@ -82,6 +82,8 @@ pub struct Built {
     pub settings: Arc<SettingsWatch>,
     /// The mail sender the settings switch to another SMTP server.
     pub mailer: SwitchMailer,
+    /// Makes the push relays follow the saved settings.
+    pub push: crate::notify::PushFollower,
     /// What starts the move from Vaultwarden in the background; `run` recovers an orphaned one.
     pub migration: VaultwardenMove,
 }
@@ -208,6 +210,7 @@ where
         &api.limits,
         &notifications.mailer,
     );
+    notifications.push_follower.follow(&settings.current());
     settings.overlay_retention(&store);
     // An invited address registers with its token while sign-ups are closed.
     api.live.set_invites(Arc::new(AcceptInvite {
@@ -232,6 +235,15 @@ where
         .map_err(|e| RunError::Config(format!("DOMAIN (WebAuthn): {e}")))?;
     let erasure_files =
         crate::privacy::server_files(&config.data_folder).map_err(RunError::Config)?;
+    let own_erasure = kemlock_app::privacy::EraseAccount {
+        users: store.clone(),
+        eraser: store.clone(),
+        sends: erasure_files.send_eraser(&store),
+        files: erasure_files.clone(),
+        settings: store.clone(),
+        log: store.clone(),
+        env: api.crypto.clone(),
+    };
     let admin_erasure = kemlock_app::privacy::EraseAccount {
         users: store.clone(),
         eraser: store.clone(),
@@ -278,7 +290,11 @@ where
                 api.live.clone(),
                 Some(relying_party.clone() as Arc<dyn WebAuthn>),
                 two_step.bitwarden(),
-                notifications.bw_live.clone(),
+                // The Bitwarden API's account deletion is the web vault's: the same erasure.
+                kemlock_api_bw::BwLive {
+                    erasure: Some(Arc::new(own_erasure)),
+                    ..notifications.bw_live.clone()
+                },
                 // Bitwarden Sends live in the database, not in memory.
                 Some(Arc::new(crate::bw_sends::SqlSends::new(store.clone())) as Arc<dyn SendStore>),
                 // Read through the server's own lookup, as the settings are (see Config).
@@ -317,6 +333,7 @@ where
             api.clone(),
             store.clone(),
         ))
+        .merge(kemlock_api_kem::api_key_router(api.clone(), store.clone()))
         .merge(account_routes)
         // /.well-known/security.txt, from the admin settings.
         .merge(crate::security_txt::router(
@@ -349,7 +366,8 @@ where
                 let settings = settings.clone();
                 move || settings.nudge()
             })
-            .with_push_relay(notifications.push_relay.clone()),
+            .with_push_relay(notifications.push_relay.clone())
+            .with_data_folder(config.data_folder.display().to_string()),
         ))
         .merge(federated.router)
         // Members, roles, policies and keys of a federated space are written at its home only.
@@ -383,6 +401,7 @@ where
         replication: federated.replication,
         settings,
         mailer: notifications.mailer,
+        push: notifications.push_follower,
         migration,
     })
 }
@@ -450,6 +469,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
         replication,
         settings,
         mailer,
+        push,
         migration,
         ..
     } = build(&config).await?;
@@ -466,7 +486,10 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     // Settings saved in the console, here or on another replica, reach the running server.
     let settings_apply = settings.spawn_apply({
         let api = api.clone();
-        move |snapshot| live::apply(snapshot, &api.live, &api.limits, &mailer)
+        move |snapshot| {
+            live::apply(snapshot, &api.live, &api.limits, &mailer);
+            push.follow(snapshot);
+        }
     });
     let settings_poll = settings.spawn_poll();
     let listener = bind(&config).await?;
@@ -497,15 +520,11 @@ pub async fn run(config: Config) -> Result<(), RunError> {
         api.crypto.clone(),
         crate::privacy::server_files(&config.data_folder).map_err(RunError::Config)?,
     );
-    let backups = match (
-        crate::backups::settings(&config),
-        crate::backups::layout(&config),
-    ) {
-        (Ok(settings), Ok(layout)) => {
-            crate::backups::spawn_backups(store.clone(), settings, layout)
-        }
-        (Err(e), _) | (_, Err(e)) => return Err(RunError::Config(e)),
-    };
+    // A bad backup setting in the environment stops the start; the schedule itself follows the
+    // saved settings from here on.
+    crate::backups::settings(&config).map_err(RunError::Config)?;
+    let layout = crate::backups::layout(&config).map_err(RunError::Config)?;
+    let backups = crate::backups::spawn_backups(store.clone(), settings.clone(), layout);
     let served = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
@@ -516,9 +535,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     retention.abort();
     settings_poll.abort();
     settings_apply.abort();
-    if let Some(backups) = backups {
-        backups.abort();
-    }
+    backups.abort();
     for task in replication_tasks {
         task.abort();
     }

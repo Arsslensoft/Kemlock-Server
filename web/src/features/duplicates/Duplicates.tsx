@@ -1,6 +1,6 @@
 // Duplicates (canvas: Duplicates). Found in this browser from the opened vault; nothing is sent.
 import { Link } from '@tanstack/react-router';
-import { type ReactNode, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button, buttonClass } from '@/ui/Button';
@@ -21,8 +21,9 @@ import {
   websiteKey,
 } from './merge';
 import { type Merged, useMergeActions } from './useMerge';
+import { type DuplicateFilter, duplicatesViewStore } from './viewState';
 
-export type DuplicateFilter = 'all' | 'login' | 'otp' | 'note' | 'places';
+export type { DuplicateFilter } from './viewState';
 
 const FILTERS: Array<{ id: DuplicateFilter; label: MessageId }> = [
   { id: 'all', label: 'dup.filter.all' },
@@ -380,8 +381,13 @@ export default function Duplicates() {
   const t = useT();
   const { active, isLoading, error, refetch } = useVault();
   const { merge, undo } = useMergeActions();
-  const [filter, setFilter] = useState<DuplicateFilter>('all');
-  const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
+  // Kept for the tab, so a trip into a group's merge screen and back finds the list as it was.
+  const [{ filter, selectedId }, setView] = useState(() => duplicatesViewStore.load());
+  const setFilter = (next: DuplicateFilter) => setView((view) => ({ ...view, filter: next }));
+  const setSelectedId = (next: string | undefined) => setView((view) => ({ ...view, selectedId: next }));
+  useEffect(() => {
+    duplicatesViewStore.save({ filter, selectedId });
+  }, [filter, selectedId]);
   const [toast, setToast] = useState<ToastState | undefined>(undefined);
   // The dismissed set lives outside React; this counter re-reads it.
   const [version, setVersion] = useState(0);
@@ -403,7 +409,7 @@ export default function Duplicates() {
       total={active.length}
       filter={filter}
       onFilter={setFilter}
-      selectedId={selectedId ?? groups[0]?.id}
+      selectedId={groups.some((group) => group.id === selectedId) ? selectedId : groups[0]?.id}
       onSelect={setSelectedId}
       pending={merge.isPending || undo.isPending}
       error={failure ? describeError(failure) : undefined}

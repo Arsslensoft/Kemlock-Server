@@ -402,7 +402,18 @@ struct PeerDto {
     /// The pinned `sig1` identity key, hex.
     identity_key: String,
     paired_at: u64,
+    /// When the peer last answered this server: a session or a probe, whichever was later. Unix
+    /// seconds.
     last_seen: Option<u64>,
+    /// Whether the peer answers, as this server's probes found: `unknown` (not probed yet),
+    /// `online`, `degraded` (slow, or a probe or two failed) or `offline`.
+    health: &'static str,
+    /// How long the peer's last answer took, in milliseconds.
+    latency_ms: Option<u64>,
+    /// Why the last probe failed, until one answers.
+    probe_error: Option<String>,
+    /// Since when the probes have been failing, Unix seconds.
+    failing_since: Option<u64>,
     fingerprint: Vec<String>,
     switches: SwitchesDto,
     acknowledgement: Option<AckDto>,
@@ -620,7 +631,14 @@ fn peer_dto(view: &PeerView) -> PeerDto {
         addresses: view.peer.addresses.clone(),
         state: view.peer.state.as_str(),
         paired_at: view.peer.paired_at,
-        last_seen: view.peer.last_seen,
+        last_seen: view
+            .peer
+            .last_seen
+            .max(view.probe.as_ref().and_then(|p| p.last_seen)),
+        health: view.health.as_str(),
+        latency_ms: view.probe.as_ref().and_then(|p| p.latency_ms),
+        probe_error: view.probe.as_ref().and_then(|p| p.last_error.clone()),
+        failing_since: view.probe.as_ref().and_then(|p| p.down_since),
         identity_key: hex::encode(&view.peer.identity_key),
         fingerprint: view.fingerprint.split('-').map(str::to_owned).collect(),
         switches: SwitchesDto {

@@ -234,6 +234,7 @@ error response that does not say whether the vault exists.
 | 14 | Origin keys | 1 vault |
 | 15 | Tags | 1 vault, 2 item ids (array of at most 256 16-byte ids) |
 | 16 | Erase | 1 vault: the home tells a replica its vault was erased, so the replica deletes its copy (answered with an Ack) |
+| 17 | Sends | 1 vault (a personal vault), 2 after (a Send id, 16 bytes, all zeros for the first page), 3 limit (1 to 500; the responder serves at most 50) |
 
 | Type | Response | Fields |
 | --- | --- | --- |
@@ -249,6 +250,7 @@ error response that does not say whether the vault exists.
 | 110 | Forgotten | 1 vaults, 2 items, 3 accounts: what the responder says it deleted |
 | 111 | Origin keys | 1 vault, 2 attestations (array of at most 32 signed envelopes) |
 | 112 | Tags | 1 vault, 2 entries (array of at most 256 maps `{0: item id, 1: revision, 2: dedup key version, 3: the tags, 32 bytes each, packed, sorted, at most 64}`) |
+| 113 | Sends | 1 vault, 2 entries (array of at most 50 maps, see "Sends" below), 3 more |
 | 199 | Error | 1 code (1 refused, 2 bad request, 3 internal, 4 unknown vault), 2 detail (at most 256 bytes) |
 
 A peer's cursor is the opaque version-vector form of `kemlock-domain`, one per vault (a device's
@@ -493,6 +495,47 @@ upload). A larger file gets its row only, and its bytes are fetched from a peer 
 is downloaded. A peer serves a blob only of a vault it may read, and the file's owner must be that
 vault.
 
+**Sends.** A Send of a personal vault (a space has none) travels with the vault, as ciphertext,
+so a Send link keeps working when the vault fails over to a replica. `Sends` pages through the
+Sends of the vault's owner in Send id order, 50 a page and about 1.5 MB at most; only a note, or a
+file Send whose bytes have arrived, is listed. An entry is a deterministic CBOR map: 0 Send id (16
+bytes, the access id of the link), 1 kind (0 note, 1 file), 2 meta, 3 sealed key, 4 payload (the
+sealed parts of `docs/crypto.md`, opaque here, at most 1 MiB each and 256 bytes for the key), 5 file
+(absent for a note: `{0: blob id, 1: size in bytes, 2: "kma1" or "opaque"}`), 6 password (absent
+when none: `{0: salt, 1: hash}`, 32 bytes each), 7 view limit (absent for none), 8 view count,
+9 hide email, 10 disabled, 11 expires at (absent for none), 12 deletion at, 13 created at, 14
+revised at; times are Unix milliseconds. A receiver checks every length, that a file Send has a
+file and a note has none, and refuses unknown fields.
+
+A replica adds a row for each Send it lacks, with the same id and so the same link, and copies a
+file as it copies an attachment: `Blob` requests of at most 2 MiB (the responder serves the blob of
+a Send of the vault's owner whose bytes have arrived), only up to 50 MiB, and a larger file gets its
+row only and is fetched from a peer the first time someone opens the Send. A file of more than 512
+MiB is not taken. A `kma1` file is stored through the blob store's `KMA1` check, as an upload is; an
+`opaque` file (a Bitwarden app's own format, which the server can't read) is held to the announced
+size alone. A file that can't be fetched or fails its check leaves its Send out until the next
+visit, and the other Sends go on. A row already held takes the peer's newer revision (the options
+and the password, never the owner, key or file) and the larger of the two view counts, so a view
+limit used up at one server stays used up at the other. At a visit to the Send's home, a replica
+deletes the copies it made that the home no longer holds (the owner deleted the Send there) and
+their files; a Send made at the replica itself is never deleted this way (table
+`federation_replicated_sends` records which rows are copies).
+A server lists only the Sends made on it, plus the copies it holds of other servers' Sends: never a
+copy to the server it came from, so a Send deleted at its origin can't come back. A copy is deleted
+when the server it came from no longer lists it, whether or not another Send's file could be copied.
+A copy never takes a file another Send or an attachment already holds, and deleting one never
+deletes a file another row holds. Notes copy where file storage isn't configured; a file Send is
+left out there. `Sends` is asked only of a peer whose descriptor lists `x-kemlock-sends1` among its
+suites (an unknown suite name is skipped by negotiation, so older servers ignore it and are never
+sent a request type they would drop the session on).
+
+A Send with a view limit (`maxAccess`) is opened at its vault's home only. Each server counts views
+on its own, and the copies take the larger count, but two servers counting apart would each allow
+the whole limit, so a replica answers 503 (`send-home-unavailable`, with the home's address and
+"try again when the home server is back") for it, for the note and for the file's download. A Send
+with no limit is opened at any server that holds it. Its deletion and expiry dates apply everywhere.
+
+
 **Member accounts.** The home publishes one home record of kind `member-account` per member of the
 vault (for a personal vault, its account; for a space, its confirmed members) whenever the account
 changes. The payload is deterministic CBOR (`kemlock-federation`, `members.rs`): the user id, email,
@@ -728,6 +771,77 @@ document at `/admin/v1/federation/openapi.json`.
   meanwhile. `POST .../mismatches/{peer}/keep-blocking` puts the admin's decision on record; the
   pin stays and the refusal with it (table `peer_mismatches`).
 
+## Peer health
+
+A server keeps a short, in-memory record of whether each paired peer answers. It is not part of
+the wire format: nothing is sent to the peer for it beyond an ordinary request.
+
+- **Probe.** Every `KEMLOCK_FEDERATION_PROBE_SECONDS` (default 60; 0 turns the probes off), per
+  peer, the server fetches the peer's signed descriptor (`GET /fed/v1/descriptor`, the public route)
+  from the peer's addresses in order and checks it against the key pinned at pairing. An answer
+  from another server, an expired descriptor or no answer is a failed probe. A probe has a timeout of
+  10 seconds. After a failed probe the delay doubles for each further failure, to a ceiling of ten
+  minutes, and every delay is spread by up to 20 percent either way, so servers that started
+  together don't probe in step. A session that opens during a visit counts as an answer, and one that
+  can't open as a failed probe, so the status stays right where the probes are off.
+- **Status.** `unknown` until the first probe or visit; then `online` (the last probe answered in
+  under 3 seconds), `degraded` (it answered slower, or fewer than three probes in a row failed) or
+  `offline` (three or more in a row failed). A status nobody has refreshed for twice the backoff
+  ceiling is `unknown` again. The record also holds when the peer last answered, how long that took,
+  why the last probe failed and since when the probes have been failing. Nothing is kept across a
+  restart: every peer is `unknown` until its first probe.
+- **Placement.** `GET /kem/v1/placement` gives each server of a vault `status` (this server is
+  always `online`), `lastSeen`, `latencyMs` and, while it is offline, `offlineSince`. The web
+  vault's failover banner appears on its own when a vault's home is `offline`, and the storage page
+  shows each status. A `degraded` home is not an outage: no banner. A peer that answers with an identity key other than the pinned one is `key-mismatch`: not an outage, no banner, and the changes waiting for it cannot be dropped.
+- **Admin API.** Each peer of `/admin/v1/federation/peers` carries `health` (the status),
+  `latencyMs`, `probeError`, `failingSince` and a `lastSeen` that is the later of its last session
+  and its last answered probe. The admin federation screen shows it beside each peer.
+
+## Waiting changes
+
+Replication is pull: a peer asks for the versions its cursor doesn't cover, and this server only
+nudges it when it has more. The **changes waiting** for a peer in a vault are therefore the versions
+this server holds that the peer hasn't been given, counted from what the peer has echoed back (the
+cursor of this server's last pull from it), to 100 per vault and over at most 20 pages. It is an
+estimate that falls to nothing once the peer has caught up.
+
+- **Reading.** `GET /kem/v1/placement` gives each vault `pending`: the changes waiting for one of its
+  other servers, the one that is offline first, as `{id, summary, askedAt}`. `id` is the id of the
+  server they wait for, `summary` says how many ("3 changes waiting for vps.example.net", with a plus
+  when the count stopped at its limit) and `askedAt` is when the oldest was written. It is `null` when
+  nothing waits. Every other waiting server is shown after the first is cancelled. The admin API's
+  `waitingChanges` on a vault is the most that waits for any one server.
+- **Cancelling.** `DELETE /kem/v1/placement/{vault}/pending/{change}` drops the queue to the server
+  `change` names (the `id` above). `vault` is `me` (the caller's own vault), or a space id where the
+  caller is a confirmed owner or admin (another member gets 403, a non-member 404). It answers 200
+  `{dropped}`; 404 when nothing waits for that server or the vault isn't federated with it; 409
+  while that server answers its probes, since changes queued for a server that is up are on their
+  way, and only a server whose status is `offline` can have its queue dropped.
+- **What it does.** The server keeps, for that peer and vault, a marker covering every version it
+  holds at that moment (table `federation_withheld`: the peer, the vault and a version cursor). From
+  then on its `Pull` and `Fetch` answers to that peer leave those versions out (the peer's cursor
+  still moves past them, so it doesn't ask again), and they no longer count as waiting. A second
+  cancel adds to the first. Changes written after the cancel are not covered and flow as usual.
+- **What it never does.** It never deletes anything held here: the versions stay in this server's
+  copy, in what the account's devices sync and in backups, and every other server of the vault is
+  still given them. It does not ask the peer to forget anything it already has, and it does not touch
+  the peer's own changes, which this server keeps pulling. It records an event, `federation.waiting_cancelled`
+  (who, the vault, the server and how many), in the event log.
+- **Taking it back.** `POST /kem/v1/placement/{vault}/pending/{change}/resume` (the same vault and
+  server as the cancel, the same rights; 200 `{resumed: true}`, 404 when nothing was withheld) lifts
+  the marker, at any time and whether or not the server is back, and records
+  `federation.waiting_resumed`. The peer's cursor moved past the withheld versions while they were
+  held back, so a pull alone doesn't bring them. The comparison of the two copies does: this server
+  asks for one and a visit at the next opportunity, and the peer, at its next comparison (hourly, and
+  at its first visit after it was away), sees the items it lacks and fetches them by id, which a
+  resume no longer holds back. Until then the vault is reported out of step with that peer.
+- **After a cancel.** The two copies of the vault differ by those versions, and the hourly hash-tree
+  comparison reports the vault as out of step with that peer until a resume. Unpairing the peer
+  forgets the markers kept for it.
+
+
+
 ## Not built yet
 
-- Send files.
+Nothing is open.

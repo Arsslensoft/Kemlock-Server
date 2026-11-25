@@ -16,6 +16,7 @@ import '@/styles/account.css';
 import { CheckList, SelectInput, TextInput } from '../account/controls';
 import type { Described } from '../account/errors';
 import { type SpaceDetail, type InviteInput, canManageUsers, memberLabel } from './model';
+import { type Done, succeeded, useAsk } from './outcome';
 import { SpaceStructure, type StructureActions } from './SpaceStructure';
 
 export interface ConfirmState {
@@ -25,15 +26,15 @@ export interface ConfirmState {
 }
 
 export interface SpaceActions extends StructureActions {
-  invite: (input: InviteInput) => void;
+  invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
   cancelConfirm: () => void;
   confirm: () => void;
-  changeRole: (user: string, role: SpaceRole, custom: CustomPermission[]) => void;
-  revoke: (user: string) => void;
+  changeRole: (user: string, role: SpaceRole, custom: CustomPermission[]) => Done;
+  revoke: (user: string) => Done;
   restore: (user: string) => void;
-  remove: (user: string) => void;
+  remove: (user: string) => Done;
 }
 
 export interface SpaceDetailViewProps {
@@ -57,7 +58,8 @@ function InviteForm({
 }: {
   detail: SpaceDetail;
   busy: boolean;
-  onInvite: (input: InviteInput) => void;
+  /** Resolves true when the invitation went out; the form keeps its input otherwise. */
+  onInvite: (input: InviteInput) => Promise<boolean>;
 }) {
   const t = useT();
   const [email, setEmail] = useState('');
@@ -66,16 +68,16 @@ function InviteForm({
   const [collections, setCollections] = useState<string[]>([]);
   const [permission, setPermission] = useState<CollectionPermission>('view');
 
-  function submit(event: FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     if (email.trim() === '') return;
-    onInvite({
+    const sent = await onInvite({
       email,
       role,
       custom: custom as CustomPermission[],
       grants: collections.map((collection) => ({ collection, permission })),
     });
-    setEmail('');
+    if (sent) setEmail('');
   }
 
   return (
@@ -135,7 +137,7 @@ function RoleEditor({
 }: {
   member: MemberViewDto;
   busy: boolean;
-  onSave: (role: SpaceRole, custom: CustomPermission[]) => void;
+  onSave: (role: SpaceRole, custom: CustomPermission[]) => Promise<boolean>;
   onCancel: () => void;
 }) {
   const t = useT();
@@ -163,7 +165,7 @@ function RoleEditor({
         <Button
           variant="primary"
           isDisabled={busy}
-          onPress={() => onSave(role, role === 'custom' ? (custom as CustomPermission[]) : [])}
+          onPress={() => void onSave(role, role === 'custom' ? (custom as CustomPermission[]) : [])}
         >
           {t('action.save')}
         </Button>
@@ -248,7 +250,10 @@ export function SpaceDetailView({
   const t = useT();
   const [inviting, setInviting] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
-  const [offboard, setOffboard] = useState<Offboard>(null);
+  const offboarding = useAsk<NonNullable<Offboard>>((target) =>
+    target.kind === 'remove' ? actions.remove(target.member.user) : actions.revoke(target.member.user),
+  );
+  const offboard = offboarding.target;
 
   if (loading || !detail) {
     return (
@@ -415,7 +420,7 @@ export function SpaceDetailView({
                             <Button
                               size="small"
                               aria-label={t('space.members.revokeFor', { name })}
-                              onPress={() => setOffboard({ kind: 'revoke', member })}
+                              onPress={() => offboarding.ask({ kind: 'revoke', member })}
                             >
                               {t('space.members.revoke')}
                             </Button>
@@ -436,7 +441,7 @@ export function SpaceDetailView({
                             size="small"
                             variant="danger"
                             aria-label={t('space.members.removeFor', { name })}
-                            onPress={() => setOffboard({ kind: 'remove', member })}
+                            onPress={() => offboarding.ask({ kind: 'remove', member })}
                           >
                             {t('space.members.remove')}
                           </Button>
@@ -458,9 +463,10 @@ export function SpaceDetailView({
                   member={member}
                   busy={busy}
                   onCancel={() => setEditing(null)}
-                  onSave={(role, custom) => {
-                    actions.changeRole(member.user, role, custom);
-                    setEditing(null);
+                  onSave={async (role, custom) => {
+                    const saved = await succeeded(actions.changeRole(member.user, role, custom));
+                    if (saved) setEditing(null);
+                    return saved;
                   }}
                 />
               ) : null;
@@ -470,20 +476,21 @@ export function SpaceDetailView({
           <InviteForm
             detail={detail}
             busy={busy}
-            onInvite={(input) => {
-              actions.invite(input);
-              setInviting(false);
+            onInvite={async (input) => {
+              const sent = await succeeded(actions.invite(input));
+              if (sent) setInviting(false);
+              return sent;
             }}
           />
         ) : null}
       </section>
 
-      <SpaceStructure detail={detail} busy={busy} actions={actions} />
+      <SpaceStructure detail={detail} busy={busy} error={error} actions={actions} />
 
       <ConfirmDialog
         isOpen={offboard !== null}
         onOpenChange={(open) => {
-          if (!open) setOffboard(null);
+          if (!open) offboarding.close();
         }}
         title={
           offboard?.kind === 'remove'
@@ -492,12 +499,8 @@ export function SpaceDetailView({
         }
         confirmLabel={offboard?.kind === 'remove' ? t('space.members.remove') : t('space.members.revoke')}
         pending={busy}
-        onConfirm={() => {
-          if (!offboard) return;
-          if (offboard.kind === 'remove') actions.remove(offboard.member.user);
-          else actions.revoke(offboard.member.user);
-          setOffboard(null);
-        }}
+        error={offboarding.tried && error ? t(error.id, error.values) : undefined}
+        onConfirm={() => void offboarding.confirm()}
       >
         <p>{offboard?.kind === 'remove' ? t('space.remove.body') : t('space.revoke.body')}</p>
       </ConfirmDialog>

@@ -196,6 +196,12 @@ pub trait BwDeviceRepo: Send + Sync {
 /// Bitwarden's push relay, as the device routes use it. The error text is for logs and for the
 /// message Vaultwarden's `err!` gives.
 pub trait BwRelay: Send + Sync + 'static {
+    /// Whether pushes are on. A relay that can be switched off says so; the device routes then
+    /// keep no push token, as when there is no relay.
+    fn enabled(&self) -> bool {
+        true
+    }
+
     /// Registers the phone (`device.push` is set) with the relay.
     fn register<'a>(&'a self, device: &'a BwDevice) -> BoxFuture<'a, Result<(), String>>;
 

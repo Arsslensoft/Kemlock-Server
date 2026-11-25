@@ -190,7 +190,8 @@ export function PairView({
     <>
       <PageHead
         title={t('admin.pair.title')}
-        lede={t('admin.pair.lede', { name: session?.self.name ?? '' })}
+        // The server's own name comes with the pairing session; until then the lede leaves it out.
+        lede={session ? t('admin.pair.lede', { name: session.self.name }) : t('admin.pair.ledeBare')}
       />
       {error ? <ErrorNotice error={error} /> : null}
 

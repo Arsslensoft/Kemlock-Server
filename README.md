@@ -31,7 +31,7 @@
   <a href="docs/self-hosting.md">Self-hosting</a> ·
   <a href="docs/crypto.md">Cryptography</a> ·
   <a href="docs/federation.md">Federation</a> ·
-  <a href="docs/push-relay.md">Push relay</a> ·
+  <a href="docs/push-relay.md">Push relay (optional)</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="SECURITY.md">Security policy</a> ·
   <a href="https://github.com/Arsslensoft/Kemlock">Kemlock app</a>
@@ -66,7 +66,7 @@ built into the binary.
 | [Self-hosting](docs/self-hosting.md) | Installing on each platform, reverse proxies, checking downloads |
 | [Cryptography](docs/crypto.md) | The byte formats every client and the server agree on |
 | [Federation](docs/federation.md) | The formats two servers agree on to copy vaults to each other |
-| [Push relay](docs/push-relay.md) | The contract with the hosted relay that pushes to closed apps |
+| [Push relay](docs/push-relay.md) | The contract with the optional hosted relay, a fallback for iPhones on a server with no Apple key |
 | [Security policy](SECURITY.md) | Reporting a vulnerability |
 
 ## Status

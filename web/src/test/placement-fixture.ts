@@ -11,7 +11,7 @@ export const PLACEMENT: Placement = {
         { id: 's1', name: 'Home server', place: 'Home · France', role: 'home', status: 'offline', offlineSince: '2026-11-22T09:12:00Z', inUse: false },
         { id: 's2', name: 'VPS', place: 'Germany', role: 'replica', status: 'online', inUse: true },
       ],
-      pending: { id: 'c1', summary: 'Adding jordan@example.org to Family', askedAt: '2026-11-22T09:40:00Z' },
+      pending: { id: 's1', summary: '3 changes waiting for Home server', askedAt: '2026-11-22T09:40:00Z' },
     },
     {
       id: 'sp1',

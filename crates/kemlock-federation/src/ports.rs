@@ -57,6 +57,12 @@ pub struct Peer {
 }
 
 impl Peer {
+    /// Whether the peer's descriptor lists `name` among its suites: how a server says it answers a
+    /// request an older one doesn't know.
+    pub fn advertises(&self, name: &str) -> bool {
+        self.suites.iter().any(|s| s == name)
+    }
+
     /// The pinned identity key.
     pub fn key(&self) -> Result<sig1::PublicKey> {
         sig1::PublicKey::from_bytes(&self.identity_key)

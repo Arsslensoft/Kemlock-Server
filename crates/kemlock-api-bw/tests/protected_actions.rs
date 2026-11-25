@@ -255,3 +255,47 @@ async fn a_code_has_attempts_and_a_lifetime_and_is_not_resent_within_thirty_seco
     .await;
     assert_eq!(body["message"], NOT_FOUND, "an expired code is deleted");
 }
+
+#[tokio::test]
+async fn a_mailed_code_deletes_the_account_and_is_used_up() {
+    let (h, mailbox) = harness(true).await;
+    let (token, user) = h.signed_in(EMAIL).await;
+    let (status, _) = post(&h, &token, "/api/accounts/request-otp", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, code) = mailbox.last();
+
+    // A wrong code deletes nothing.
+    let (status, body) = h
+        .json(
+            "DELETE",
+            "/api/accounts",
+            Some(&token),
+            Some(json!({"otp": "000000"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        kemlock_app::ports::UserRepo::by_id(&h.store, user)
+            .await
+            .expect("the store")
+            .is_some(),
+        "the account is still there"
+    );
+
+    let (status, body) = h
+        .json(
+            "DELETE",
+            "/api/accounts",
+            Some(&token),
+            Some(json!({"otp": code})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        kemlock_app::ports::UserRepo::by_id(&h.store, user)
+            .await
+            .expect("the store")
+            .is_none(),
+        "the account is erased"
+    );
+}

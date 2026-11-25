@@ -5,6 +5,7 @@ import { api } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import type { RecoveryKitProps } from './RecoveryKitCard';
 import { type PendingKit, confirmsPiece, keepKit, makeKit } from './recoveryKitModel';
+import { useKeyProof } from './useKeyProof';
 import { useRun } from './useRun';
 
 const kitApi = createRecoveryKitApi(api);
@@ -14,6 +15,7 @@ export function useRecoveryKit() {
   const queryClient = useQueryClient();
   const kit = useQuery({ queryKey: ['security', 'recovery-kit'], queryFn: () => kitApi.show() });
   const { run, pending, error, clearError } = useRun();
+  const keyProof = useKeyProof(run);
   const [making, setMaking] = useState<PendingKit | null>(null);
   const [mismatch, setMismatch] = useState(false);
 
@@ -23,6 +25,7 @@ export function useRecoveryKit() {
     kit: kit.isPending ? undefined : (kit.data ?? null),
     making: making ? { pieces: making.pieces, mismatch } : null,
     busy: pending,
+    keyProof,
     actions: {
       start: async () => {
         setMismatch(false);

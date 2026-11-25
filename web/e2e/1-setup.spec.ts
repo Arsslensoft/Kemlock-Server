@@ -12,7 +12,8 @@ test('first-run setup, from the setup code to a ready server', async ({ page }) 
   await page.goto('/vault');
   await expect(page).toHaveURL(/\/setup$/);
   await expect(page.getByRole('heading', { name: 'Welcome to Kemlock Server' })).toBeVisible();
-  await expect(page.getByText(/Open setup at your reverse proxy's HTTPS address/)).toBeVisible();
+  // localhost is a secure context: the not-HTTPS warning stays hidden.
+  await expect(page.getByText(/This address isn't HTTPS or localhost/)).toHaveCount(0);
   await expectAccessible(page);
 
   // A wrong code is refused with a reason; the right one moves on.

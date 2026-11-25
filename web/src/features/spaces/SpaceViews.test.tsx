@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
@@ -235,6 +235,58 @@ describe('SpaceDetailView', () => {
     await user.type(screen.getByLabelText('New group', { selector: 'input' }), 'Eng');
     await user.click(screen.getByRole('button', { name: 'Add the group' }));
     expect(props.actions.createGroup).toHaveBeenCalledWith('Eng', []);
+  });
+
+  it('keeps the invitation form and the email when sending fails, and closes it when it works', async () => {
+    const invite = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    view({ actions: { ...actions(), invite } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Invite people' }));
+    await user.type(screen.getByLabelText('Email'), 'ana@example.co');
+    await user.click(screen.getByRole('button', { name: 'Send the invitation' }));
+    await act(async () => {});
+    expect(invite).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText('Email')).toHaveValue('ana@example.co');
+    await user.click(screen.getByRole('button', { name: 'Send the invitation' }));
+    await waitFor(() => expect(screen.queryByRole('form', { name: 'Invite someone' })).not.toBeInTheDocument());
+  });
+
+  it('keeps the new collection name when adding it fails, and clears it when it works', async () => {
+    const createCollection = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    view({ actions: { ...actions(), createCollection } });
+    const user = userEvent.setup();
+    const name = screen.getByLabelText('New collection', { selector: 'input' });
+    await user.type(name, 'Support');
+    await user.click(screen.getByRole('button', { name: 'Add the collection' }));
+    await act(async () => {});
+    expect(name).toHaveValue('Support');
+    await user.click(screen.getByRole('button', { name: 'Add the collection' }));
+    await waitFor(() => expect(name).toHaveValue(''));
+  });
+
+  it('asks before deleting a collection and only then deletes it', async () => {
+    const props = view();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Delete Infrastructure' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(props.actions.deleteCollection).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    expect(props.actions.deleteCollection).toHaveBeenCalledOnce();
+  });
+
+  it('asks before deleting a group, and keeps the dialog open with the error when it fails', async () => {
+    const deleteGroup = vi.fn().mockResolvedValue(false);
+    view({ actions: { ...actions(), deleteGroup }, error: { id: 'error.generic' } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Delete Ops' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(deleteGroup).not.toHaveBeenCalled();
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    await act(async () => {});
+    expect(deleteGroup).toHaveBeenCalledOnce();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent('Something went wrong');
   });
 
   it('shows a plain notice when the space can not be opened here', () => {

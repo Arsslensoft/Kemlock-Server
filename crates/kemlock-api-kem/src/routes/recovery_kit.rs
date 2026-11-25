@@ -11,14 +11,14 @@
 //! The key worker makes the kit, so the pieces never leave the browser and the server keeps only
 //! the non-secret record. The wrap is also the verifier: only the right pieces open it. Replacing
 //! or removing the kit takes the same fresh proof turning a second step off does (the code mailed
-//! by `POST /kem/v1/account/two-factor/proof`, or, with mail off, a current code of the authenticator
+//! by `POST /kem/v1/account/two-factor/proof`, an answer of a security key or passkey, or, with mail off, a current code of the authenticator
 //! app or the recovery code), so a stolen session can't swap the kit for one it
 //! holds the pieces of, and each change writes an event. The routes need a store that keeps kits,
 //! so they have a router of their own: see [`recovery_kit_router`].
 
 use super::guard;
 use super::two_step::{ProofRequest, nonce_header, proof_steps, require_proof};
-use crate::dto::decode;
+use crate::dto::{FreshProof, decode};
 use crate::extract::{Authed, Body};
 use crate::openapi::ProblemDoc;
 use crate::problem::Problem;
@@ -69,8 +69,10 @@ pub(crate) struct ReplaceKitRequest {
     pub(crate) kit_id: String,
     pub(crate) key_version: u32,
     pub(crate) wrapped_key: String,
-    /// The code mailed by `POST /kem/v1/account/two-factor/proof`; it works once.
-    pub(crate) proof: String,
+    /// A fresh proof: the code mailed by `POST /kem/v1/account/two-factor/proof` (it works once), a
+    /// current code of the authenticator app, or `{"webauthn": ...}`, the answer of a security key
+    /// or passkey.
+    pub(crate) proof: FreshProof,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

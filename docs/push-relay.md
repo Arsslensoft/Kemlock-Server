@@ -1,23 +1,26 @@
 # The Kemlock push relay: HTTP contract
 
-Kemlock's mobile apps need a push to sync while they are closed. Their push keys (Apple's and
-Firebase's) belong to Kemlock, so a self-hosted server can't send a push itself. Kemlock runs a
-small hosted relay that holds those keys. The relay is a separate service; this page is the
-contract between it and `kemlock-server` (`crates/kemlock-notify/src/push`).
+The relay is **optional**, and off unless the operator turns it on. `kemlock-server` sends pushes
+itself: to iPhones through Apple with the operator's own key (`KEMLOCK_APNS_*`), and to Android
+phones through UnifiedPush, with no relay (see `docs/self-hosting.md`). Kemlock runs a small hosted
+relay only as a fallback for iPhones on a server that has no Apple key: the Apple key in Kemlock's
+app belongs to Kemlock, so a server without its own can't push to the app without it. A server that
+holds an Apple key never uses the relay. The relay is a separate service; this page is the contract
+between it and `kemlock-server` (`crates/kemlock-notify/src/push`).
 
 ## What the relay learns
 
 A push carries nothing but "sync now". The relay receives:
 
-- a device's push token and which service it is for (`fcm` or `apns`);
+- an iPhone's push token and which service it is for (`apns`);
 - the server's installation id, and the installation key as a credential;
 - the request's own metadata: the server's IP address and the time.
 
 It never receives an email, an account id, a device name, a space or an item. It can't tell which
 tokens belong to one person, and the server can't read what the push services do with a token.
 Kemlock is the operator's processor of the device tokens only, under the DPA and privacy notice
-Kemlock publishes for the relay. An operator who wants no relay leaves it off: the apps then sync
-when opened and over `/kem/v1/live`.
+Kemlock publishes for the relay. An operator who wants no relay leaves it off, and sets an Apple key
+instead for iPhones: the apps otherwise sync when opened and over `/kem/v1/live`.
 
 The relay keeps, per installation: its id, a hash of its key, the time it was made and the time of
 its last send. It keeps no token after the send that carried it, and it logs no token.
@@ -68,14 +71,14 @@ Wakes devices. Basic authentication.
 {
   "type": "sync",
   "tokens": [
-    { "kind": "fcm", "token": "..." },
     { "kind": "apns", "token": "..." }
   ]
 }
 ```
 
 - `type` is `sync`, the only value.
-- `kind` is `fcm` or `apns`. A token is 1 to 512 characters with no whitespace.
+- `kind` is `apns`. (`fcm` is gone: Kemlock uses no Firebase, and the server sends no token of that
+  kind.) A token is 1 to 512 characters with no whitespace.
 - At most 500 tokens per call; the server sends larger sets in several calls.
 
 `202 Accepted`:
@@ -90,7 +93,7 @@ forever. An `accepted` token isn't a delivery guarantee: the push is best effort
 misses one syncs the next time it opens.
 
 The relay sends each device a data-only push, `{"type":"sync"}`, with the lowest priority that still
-wakes the app (APNs `content-available`, FCM normal priority), and the app then syncs through the
+wakes the app (APNs `content-available`), and the app then syncs through the
 server's API as usual. The push has no alert and no content.
 
 Errors: `400` for a malformed body, `401` for a bad credential, `413` for more than 500 tokens,
@@ -106,14 +109,18 @@ Erases the installation. Basic authentication, and the id in the path must match
 ## What the server does
 
 - `POST /kem/v1/devices/push-token` (a signed-in device, DPoP-bound like every `/kem/v1` call)
-  stores `{ "kind": "fcm" | "apns", "token": "..." }` for that device; `DELETE` on the same path
-  forgets it. Signing a device out deletes its token with it.
+  stores `{ "kind": "apns" | "unifiedpush", "token": "..." }` for that device (`fcm` is refused with
+  a 400); `DELETE` on the same path forgets it. Signing a device out deletes its token with it. A
+  `unifiedpush` token is the distributor's endpoint URL; the server sends to it directly, never
+  through the relay.
 - When a write commits, the replica that took it gathers owners nudged within one second, finds the
   accounts whose devices should hear of it (a person for their own vault, a space's confirmed
-  members for the space), and sends one `POST /v1/push` with those accounts' tokens. Other replicas
+  members for the space). Each iPhone is pushed to through Apple when the server has an Apple key;
+  otherwise, only if the relay is on, the server sends one `POST /v1/push` with those iPhones'
+  tokens. UnifiedPush phones are always pushed to directly. Other replicas
   don't push: they learn of the write through the fan-out and nudge their own sockets only.
 - Tokens the relay rejects are deleted.
-- A server that hasn't registered sends nothing.
+- A server with no Apple key that hasn't registered with the relay sends nothing to iPhones.
 
 ## Bitwarden's apps
 

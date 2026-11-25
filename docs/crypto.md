@@ -160,8 +160,10 @@ version does not open (`GET /kem/v1/account/recovery-kit` says whether the kit i
 Regenerating makes a new kit id and key and replaces the stored wrap, so every old piece stops
 working. Pieces are not recoverable: lose 2 of 3 and the kit is gone; make a new one while signed in.
 
-The routes (all need a session; the changes need the fresh proof of `POST /kem/v1/account/two-factor/proof`,
-as turning a second step off does):
+The routes (all need a session; the changes need a fresh proof, as turning a second step off does: the
+code of `POST /kem/v1/account/two-factor/proof`, a current authenticator code, or the answer of a
+security key or passkey as `{"webauthn": ...}`, to the options of
+`POST /kem/v1/account/two-factor/proof/webauthn/options`; the challenge is single use and lasts two minutes):
 
 | Route | |
 |---|---|

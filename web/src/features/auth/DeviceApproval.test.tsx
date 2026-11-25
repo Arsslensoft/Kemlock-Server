@@ -13,7 +13,11 @@ vi.mock('@/ui/AuthPage', () => ({
 }));
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
-  Link: ({ children }: { children: ReactNode }) => <a href="/sign-in">{children}</a>,
+  Link: ({ children, search }: { children: ReactNode; search?: unknown }) => (
+    <a href="/sign-in" data-search={JSON.stringify(search ?? null)}>
+      {children}
+    </a>
+  ),
   getRouteApi: () => ({ useSearch: () => ({ email: 'sam@example.co' }) }),
 }));
 
@@ -66,5 +70,19 @@ describe('DeviceApprovalView', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(reason);
     await userEvent.setup().click(screen.getByRole('button', { name: 'Start again' }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it('goes back to the sign-in with the page the person was headed for', () => {
+    renderWithIntl(
+      <DeviceApprovalView
+        email="a@b.c"
+        progress={{ step: 'requesting' }}
+        ended={{ status: 'expired' }}
+        onCancel={noop}
+        onRetry={noop}
+        next="/trash"
+      />,
+    );
+    expect(screen.getByRole('link')).toHaveAttribute('data-search', '{"next":"/trash"}');
   });
 });

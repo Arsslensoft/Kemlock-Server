@@ -3,20 +3,34 @@
 // Secrets (the master key and OPAQUE's export key) live in the closure only until the vault is
 // open, then are overwritten. They are handles for the crypto worker, not the keys themselves.
 import { type Api, tokensFromResponse } from '@/api/client';
-import { isApiError } from '@/api/errors';
+import { NetworkError, isApiError } from '@/api/errors';
+import type { SecurityKeyStepApi } from '@/api/passkeys';
 import type { DeviceDto, TokenResponse } from '@/api/types';
 import type { Session } from '@/app/session';
 import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64, wipe } from '@/lib/b64url';
 import { rememberDeviceId } from '@/lib/device';
 import { CredentialsError } from '@/lib/errors';
+import { PasskeyError, SecurityKeyRejectedError, assertWithPasskey } from '@/lib/passkey';
 
 export interface SignInDeps {
   api: Pick<Api, 'prelogin' | 'opaqueStart' | 'opaqueFinish' | 'twoFactor' | 'accountKeys'>;
   crypto: Pick<CryptoPort, 'masterKey' | 'opaqueLoginStart' | 'opaqueLoginFinish' | 'unlock'>;
+  /** The security key as a second step. */
+  securityKey: SecurityKeyStepApi;
+  /** Asks the person's authenticator: the browser's own by default, a fake in tests. */
+  assert?: (options: Record<string, unknown>) => Promise<Record<string, unknown>>;
   session: Session;
   device: () => DeviceDto;
   now?: () => number;
+}
+
+/** The second step was asked for with no first step behind it: it expired, was used or was dropped. */
+export class NoSignInWaiting extends Error {
+  constructor(what: 'code' | 'key') {
+    super(`there is no sign-in waiting for a ${what}`);
+    this.name = 'NoSignInWaiting';
+  }
 }
 
 export type SignInStatus =
@@ -136,12 +150,33 @@ export function createSignIn(deps: SignInDeps) {
     start,
     /** The second step, with the challenge the first one returned. */
     async secondStep(code: string): Promise<SignInStatus> {
-      if (!challenge) throw new Error('there is no sign-in waiting for a code');
+      if (!challenge) throw new NoSignInWaiting('code');
       try {
         const tokens = await deps.api.twoFactor({ challenge, method: 'totp', code });
         return await unlock(tokens);
       } catch (error) {
         if (!isApiError(error)) forget();
+        throw error;
+      }
+    },
+    /**
+     * The second step with a security key, when the first step listed `webauthn` among its
+     * methods: the browser asks for the key and its answer is traded for tokens. A key that was
+     * not touched (`PasskeyError`) or a refusal leaves the challenge, so it can be tried again.
+     */
+    async securityKey(): Promise<SignInStatus> {
+      if (!challenge) throw new NoSignInWaiting('key');
+      const assert = deps.assert ?? assertWithPasskey;
+      try {
+        const options = await deps.securityKey.options(challenge);
+        const credential = await assert(options);
+        const tokens = await deps.securityKey.verify({ challenge, credential });
+        return await unlock(tokens);
+      } catch (error) {
+        // The challenge survives a refusal, a closed prompt or a dropped connection: the key can be
+        // tried again. Anything else ends the sign-in.
+        if (!isApiError(error) && !(error instanceof PasskeyError) && !(error instanceof NetworkError)) forget();
+        if (isApiError(error) && error.status === 401) throw new SecurityKeyRejectedError();
         throw error;
       }
     },

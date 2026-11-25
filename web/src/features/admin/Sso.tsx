@@ -427,9 +427,15 @@ export default function Sso() {
   const sso = useQuery({ queryKey: ['admin', 'sso'], queryFn: () => admin.sso() });
   const domains = useQuery({ queryKey: ['admin', 'sso', 'domains'], queryFn: () => admin.ssoDomains() });
   const spaces = useQuery({ queryKey: ['admin', 'spaces'], queryFn: () => admin.spaces({ limit: 200 }) });
+  // Counts saves, so that the form starts over after each one even when the server sends back the
+  // same config (a new client secret alone changes nothing it returns).
+  const [saves, setSaves] = useState(0);
   const save = useMutation({
     mutationFn: (update: SsoUpdate) => guard((token) => admin.saveSso(update, token)),
-    onSuccess: (saved) => queryClient.setQueryData(['admin', 'sso'], saved),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['admin', 'sso'], saved);
+      setSaves((n) => n + 1);
+    },
   });
   const refreshDomains = () => queryClient.invalidateQueries({ queryKey: ['admin', 'sso', 'domains'] });
   const addDomain = useMutation({
@@ -450,7 +456,7 @@ export default function Sso() {
     <>
       <SsoView
         // The form starts from the saved config, so a save remounts it with what the server kept.
-        key={JSON.stringify(sso.data)}
+        key={`${saves}:${JSON.stringify(sso.data)}`}
         config={sso.data}
         spaces={spaces.data?.spaces ?? []}
         domains={domains.data ?? []}

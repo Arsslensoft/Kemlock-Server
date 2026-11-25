@@ -2,6 +2,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useNavigate } from '@tanstack/react-router';
 import { useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
+import type { SetupBasicsBody } from '@/api/client';
 import { api, queryClient } from '@/app/services';
 import { type MessageId, useRich, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
@@ -32,6 +33,25 @@ export function defaultBasics(address: string): ServerBasicsValues {
     backupKeep: '7',
     backupRecipient: '',
     serverKeyStored: false,
+  };
+}
+
+/** What setup saves: the address is only recorded, and the files folder isn't sent. */
+export function basicsBody(values: ServerBasicsValues): SetupBasicsBody {
+  return {
+    join: values.join,
+    joinDomains: values.joinDomains,
+    mailHost: values.mailHost,
+    mailPort: values.mailPort,
+    mailSecurity: values.mailSecurity,
+    mailFrom: values.mailFrom,
+    mailUser: values.mailUser,
+    address: values.address,
+    push: values.push,
+    backups: values.backups,
+    backupEvery: values.backupEvery,
+    backupKeep: values.backupKeep,
+    backupRecipient: values.backupRecipient,
   };
 }
 
@@ -293,15 +313,7 @@ export default function SetupServer() {
     setPending(true);
     setError(undefined);
     try {
-      await api.setupFinish({
-        join: values.join,
-        joinDomains: values.joinDomains,
-        mailHost: values.mailHost,
-        mailPort: values.mailPort,
-        mailSecurity: values.mailSecurity,
-        mailFrom: values.mailFrom,
-        mailUser: values.mailUser,
-      });
+      await api.setupFinish(basicsBody(values));
       setupMemory.set({ basics: values });
       await queryClient.invalidateQueries({ queryKey: ['config'] });
       await navigate({ to: '/setup/done' });

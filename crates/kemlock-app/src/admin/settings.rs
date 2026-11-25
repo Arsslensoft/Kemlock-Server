@@ -58,6 +58,9 @@ pub struct Definition {
 /// The SMTP security choices, as Vaultwarden spells them.
 const SMTP_SECURITY: &[&str] = &["starttls", "force_tls", "off"];
 
+/// How often backups run: `nightly` is 03:00 UTC, `6h` is 03:00, 09:00, 15:00 and 21:00 UTC.
+const BACKUP_SCHEDULES: &[&str] = &["off", "nightly", "6h"];
+
 /// Every setting the console can change.
 pub const DEFINITIONS: &[Definition] = &[
     Definition {
@@ -244,6 +247,94 @@ pub const DEFINITIONS: &[Definition] = &[
         default: "10",
         env: "KEMLOCK_RATE_REGISTER_PER_HOUR",
     },
+    // Bitwarden's push relay, under Vaultwarden's names (`PUSH_*`), and Kemlock's own relay
+    // (`KEMLOCK_PUSH_RELAY*`). The installation id and key are secrets, sealed like the SMTP
+    // password. The running server follows them (`live`): no restart.
+    Definition {
+        key: "push_enabled",
+        group: "push",
+        kind: Kind::Bool,
+        default: "false",
+        env: "PUSH_ENABLED",
+    },
+    Definition {
+        key: "push_installation_id",
+        group: "push",
+        kind: Kind::Secret,
+        default: "",
+        env: "PUSH_INSTALLATION_ID",
+    },
+    Definition {
+        key: "push_installation_key",
+        group: "push",
+        kind: Kind::Secret,
+        default: "",
+        env: "PUSH_INSTALLATION_KEY",
+    },
+    Definition {
+        key: "push_relay_uri",
+        group: "push",
+        kind: Kind::Text { max_len: 512 },
+        default: "https://push.bitwarden.com",
+        env: "PUSH_RELAY_URI",
+    },
+    Definition {
+        key: "push_identity_uri",
+        group: "push",
+        kind: Kind::Text { max_len: 512 },
+        default: "https://identity.bitwarden.com",
+        env: "PUSH_IDENTITY_URI",
+    },
+    // Registers this server with Kemlock's relay when it isn't yet. Turning the relay off, which
+    // erases the installation at the relay, stays the console's own action.
+    Definition {
+        key: "kemlock_push_relay",
+        group: "push",
+        kind: Kind::Bool,
+        default: "false",
+        env: "KEMLOCK_PUSH_RELAY",
+    },
+    // Empty means Kemlock's own relay.
+    Definition {
+        key: "kemlock_push_relay_url",
+        group: "push",
+        kind: Kind::Text { max_len: 512 },
+        default: "",
+        env: "KEMLOCK_PUSH_RELAY_URL",
+    },
+    // Backups: the schedule (`off` turns them off), how many to keep, where they go inside the
+    // data folder and the age recipient they are encrypted to. The scheduler reads them again
+    // as it wakes, so a change counts without a restart.
+    Definition {
+        key: "backup_schedule",
+        group: "backups",
+        kind: Kind::Choice(BACKUP_SCHEDULES),
+        default: "off",
+        env: "KEMLOCK_BACKUP_SCHEDULE",
+    },
+    Definition {
+        key: "backup_keep",
+        group: "backups",
+        kind: Kind::Choice(&["7", "14", "30"]),
+        default: "30",
+        env: "KEMLOCK_BACKUP_KEEP",
+    },
+    // A folder inside the data folder; empty means `backups`. The environment variable may name
+    // any folder, or a bucket (`s3://`); what the console saves can't leave the data folder.
+    Definition {
+        key: "backup_destination",
+        group: "backups",
+        kind: Kind::Text { max_len: 200 },
+        default: "",
+        env: "KEMLOCK_BACKUP_DEST",
+    },
+    Definition {
+        key: "backup_recipient",
+        group: "backups",
+        kind: Kind::Text { max_len: 200 },
+        default: "",
+        env: "KEMLOCK_BACKUP_RECIPIENT",
+    },
     // The operator's half of `/.well-known/security.txt` (RFC 9116): who to tell about a problem
     // with this server, and where their PGP key is. Kemlock's own contact is always listed too.
     Definition {
@@ -395,6 +486,64 @@ fn clean_domains(raw: &str) -> Result<String, AdminError> {
     Ok(seen.join(","))
 }
 
+/// Whether `value` is an address the push relays may be reached at: https, or plain http on the
+/// loopback address (the installation key travels with every request).
+fn is_relay_url(value: &str) -> bool {
+    crate::push::is_relay_url(value)
+}
+
+/// What the store keeps in the data folder, by the start of the name: a backup folder saved in the
+/// console may not be, or lie in, any of them.
+pub const RESERVED_DATA_NAMES: &[&str] = &[
+    "attachments",
+    "sends",
+    "files",
+    "db",
+    "tmp",
+    "icon_cache",
+    "unpacked",
+    "data",
+    "server",
+    "kemlock",
+    "config",
+    "rsa_key",
+];
+
+/// A folder inside the data folder: relative, with no `..` and no drive or `s3://` prefix.
+fn is_folder_inside(value: &str) -> bool {
+    let value = value.replace('\\', "/");
+    let parts: Vec<&str> = value.split('/').filter(|p| !p.is_empty()).collect();
+    let Some(first) = parts.first() else {
+        // Empty means the default, backups.
+        return value.is_empty();
+    };
+    let first = first.to_ascii_lowercase();
+    !value.starts_with('/')
+        && !value.contains(':')
+        && parts.iter().all(|part| *part != ".." && *part != ".")
+        && !RESERVED_DATA_NAMES
+            .iter()
+            .any(|name| first.starts_with(name))
+}
+
+/// What a few text settings need beyond their length. `value` is trimmed.
+fn check_text(key: &str, value: &str) -> Result<(), &'static str> {
+    match key {
+        "push_relay_uri" | "push_identity_uri" | "kemlock_push_relay_url"
+            if !value.is_empty() && !is_relay_url(value) =>
+        {
+            Err("must be an https address")
+        }
+        "backup_destination" if !is_folder_inside(value) => {
+            Err("must be a folder inside the data folder, such as backups")
+        }
+        "backup_recipient" if !value.is_empty() && !value.starts_with("age1") => {
+            Err("must be an age recipient, starting with age1")
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Checks `value` against the setting's type and returns it in its stored form.
 pub fn validate(definition: &Definition, value: &str) -> Result<String, AdminError> {
     let key = definition.key;
@@ -428,6 +577,7 @@ pub fn validate(definition: &Definition, value: &str) -> Result<String, AdminErr
             if value.chars().count() > max_len {
                 return Err(bad(&format!("must be at most {max_len} characters")));
             }
+            check_text(key, value).map_err(bad)?;
             Ok(value.to_owned())
         }
         Kind::Choice(choices) => {
@@ -698,6 +848,63 @@ mod tests {
             assert!(validate(d, &"x".repeat(255)).is_err());
             assert!(validate(d, "a\nb").is_err());
         }
+    }
+
+    #[test]
+    fn push_settings_are_in_their_group_and_the_id_and_key_are_secrets() {
+        for key in ["push_installation_id", "push_installation_key"] {
+            assert_eq!(def(key).kind, Kind::Secret);
+            assert_eq!(def(key).group, "push");
+        }
+        assert_eq!(def("push_enabled").env, "PUSH_ENABLED");
+        assert_eq!(def("kemlock_push_relay").env, "KEMLOCK_PUSH_RELAY");
+        assert_eq!(validate(def("push_enabled"), "on"), Ok("true".into()));
+    }
+
+    #[test]
+    fn push_addresses_must_be_https() {
+        for key in [
+            "push_relay_uri",
+            "push_identity_uri",
+            "kemlock_push_relay_url",
+        ] {
+            let d = def(key);
+            assert!(validate(d, "https://push.example.org").is_ok(), "{key}");
+            assert!(validate(d, "http://127.0.0.1:9000").is_ok(), "{key}");
+            assert!(validate(d, "http://push.example.org").is_err(), "{key}");
+        }
+        assert!(validate(def("kemlock_push_relay_url"), "").is_ok());
+    }
+
+    #[test]
+    fn backups_follow_the_environment_names_and_stay_inside_the_data_folder() {
+        assert_eq!(def("backup_schedule").env, "KEMLOCK_BACKUP_SCHEDULE");
+        assert_eq!(validate(def("backup_schedule"), "6h"), Ok("6h".into()));
+        assert!(validate(def("backup_schedule"), "weekly").is_err());
+        assert!(validate(def("backup_keep"), "14").is_ok());
+        assert!(validate(def("backup_keep"), "10").is_err());
+        let dest = def("backup_destination");
+        assert!(validate(dest, "").is_ok());
+        assert!(validate(dest, "nas/backups").is_ok());
+        for bad in [
+            "/mnt/nas",
+            "../outside",
+            "a/../../b",
+            "s3://bucket/x",
+            r"C:\backups",
+            r"..\x",
+            ".",
+            "./",
+            "db",
+            "Attachments/x",
+            "sends",
+            "server.key",
+            "backups/../db",
+        ] {
+            assert!(validate(dest, bad).is_err(), "{bad}");
+        }
+        assert!(validate(def("backup_recipient"), "age1abc").is_ok());
+        assert!(validate(def("backup_recipient"), "ssh-ed25519 AAAA").is_err());
     }
 
     #[test]

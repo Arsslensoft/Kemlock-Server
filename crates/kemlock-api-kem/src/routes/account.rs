@@ -3,20 +3,23 @@
 //!
 //! The export is the server's record of the account as JSON plus its encrypted vault as stored.
 //! The deletion needs the password again: the body carries the last two messages of a fresh OPAQUE
-//! login (`POST /kem/v1/auth/opaque/start` first, with the same device key), so a stolen access
-//! token alone can't erase an account. Both call the use cases the admin console calls for a
-//! request.
+//! login (`POST /kem/v1/auth/opaque/start` first, with the same device key). With a second step on,
+//! it needs `proof` too, a fresh code of the kind turning a second step off takes (the code mailed
+//! by `POST /kem/v1/account/two-factor/proof`, an authenticator code or the recovery code), so a
+//! stolen access token or a stolen password alone can't erase an account. Both call the use cases
+//! the admin console calls for a request.
 //!
 //! These routes need a store that also keeps the privacy tables, which `SqlStore` does and the
 //! shared [`Store`] bound doesn't say, so they have a router of their own, merged beside the main
 //! one like the spaces router.
 
 use super::guard;
+use super::two_step::require_proof_via_api;
 use crate::dto::decode;
 use crate::extract::{Authed, Body, DPOP_NONCE};
 use crate::openapi::ProblemDoc;
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::Limiter;
+use crate::ratelimit::{Limiter, ip_key};
 use crate::replay::Full;
 use crate::state::{Api, Crypto, Store};
 use axum::extract::{FromRequestParts, Request, State};
@@ -27,7 +30,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use kemlock_app::AppError;
-use kemlock_app::ports::{TokenSigner, UserRepo};
+use kemlock_app::ports::{TokenSigner, TwoFactorRepo, UserRepo};
 use kemlock_app::privacy::{
     AccountData, AccountEraser, EraseAccount, Erasure, ErasureFiles, ExportAccount, PrivacyLog,
     PrivacySettings, Reauthenticate, Requester, SendEraser,
@@ -105,6 +108,10 @@ struct EraseRequest {
     login_state: String,
     /// The client's OPAQUE `CredentialFinalization`.
     finalization: String,
+    /// A fresh proof, needed beside the password when the account has a second step on: the code
+    /// mailed by `POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app,
+    /// the recovery code, or a security key's or passkey's answer. A code works once.
+    proof: Option<crate::dto::FreshProof>,
 }
 
 /// `GET /kem/v1/account/export`.
@@ -164,6 +171,35 @@ where
         .map_err(AppError::from)?
         .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
 
+    // What can be known to be wrong is said before the password or the proof is spent.
+    if !env
+        .privacy
+        .blocking_spaces(user.id)
+        .await
+        .map_err(AppError::from)?
+        .is_empty()
+    {
+        return Err(AppError::Invalid(
+            "the account is the only owner of a space with other members: hand it over or delete the space first",
+        )
+        .into());
+    }
+    // The password is always asked. With a second step on, a fresh proof is asked beside it, so
+    // neither a stolen session nor a stolen password alone erases the account.
+    let second_step = TwoFactorRepo::list(&api.store, user.id)
+        .await
+        .map_err(AppError::from)?
+        .iter()
+        .any(|row| row.enabled);
+    let proof = request.proof.as_ref().filter(|p| !p.is_blank());
+    if second_step && proof.is_none() {
+        return Err(AppError::Invalid(
+            "a fresh proof is needed beside the password to erase an account with a second step",
+        )
+        .into());
+    }
+    guard(&api.limits.sign_in, &ip_key(caller.0.ip), api.now())?;
+
     // A wrong password counts against the account like a wrong sign-in does.
     let account = format!("acct:{}", credential_id(user.email.as_str()));
     api.limits
@@ -194,6 +230,9 @@ where
         Err(_) => {}
     }
     checked?;
+    if let (true, Some(proof)) = (second_step, proof) {
+        require_proof_via_api(api, user.id, proof, true).await?;
+    }
 
     let outcome = EraseAccount {
         users: api.store.clone(),
@@ -300,7 +339,7 @@ fn doc_export() {}
     responses(
         (status = 204, description = "The account is erased"),
         (status = 202, description = "Scheduled: the admin gave deleted accounts a grace period; carries `status` and `dueAt`"),
-        (status = 400, description = "The login state was used before, or isn't well formed", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "The login state was used before, or isn't well formed; a second step is on and the proof is missing, wrong or spent; or the account is the only owner of a space with other members", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 429, description = "Too many wrong passwords", body = ProblemDoc, content_type = "application/problem+json"),
     )

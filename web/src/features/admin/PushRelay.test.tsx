@@ -5,7 +5,14 @@ import type { PushRelay } from '@/api/admin';
 import { renderWithIntl } from '@/test/render';
 import { PushRelayCard } from './PushRelay';
 
-const OFF: PushRelay = { enabled: false, installationId: null, relayUrl: 'https://push.kemlock.example' };
+const OFF: PushRelay = {
+  enabled: false,
+  installationId: null,
+  relayUrl: 'https://push.kemlock.example',
+  apnsConfigured: false,
+  apnsSandbox: false,
+  unifiedPush: true,
+};
 const ON: PushRelay = { ...OFF, enabled: true, installationId: 'inst-4f2a' };
 
 function view(props: Partial<Parameters<typeof PushRelayCard>[0]> = {}) {
@@ -15,6 +22,36 @@ function view(props: Partial<Parameters<typeof PushRelayCard>[0]> = {}) {
 }
 
 describe('PushRelayCard', () => {
+  it('says Android is built in, and iPhones are not set up without an Apple key', () => {
+    view();
+    expect(screen.getByRole('heading', { name: 'Push' })).toBeInTheDocument();
+    expect(screen.getByText('Apple (iPhone): built in')).toBeInTheDocument();
+    expect(screen.getByText('Not set up: add your APNs key (see the self-hosting docs)')).toBeInTheDocument();
+    expect(screen.queryByText('Configured')).not.toBeInTheDocument();
+    expect(screen.getByText('Android: UnifiedPush, built in')).toBeInTheDocument();
+    expect(screen.getByText('Always on')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Hosted relay (optional)' })).toBeInTheDocument();
+    expect(screen.getByText(/Only a fallback for iPhones on a server without an Apple key/)).toBeInTheDocument();
+  });
+
+  it('says the Apple key is configured, and when it is the sandbox', () => {
+    const { unmount } = renderWithIntl(
+      <PushRelayCard relay={{ ...OFF, apnsConfigured: true }} onEnable={vi.fn()} onDisable={vi.fn()} />,
+    );
+    expect(screen.getByText('Configured')).toBeInTheDocument();
+    expect(screen.queryByText('Sandbox')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Not set up/)).not.toBeInTheDocument();
+    unmount();
+    renderWithIntl(
+      <PushRelayCard
+        relay={{ ...OFF, apnsConfigured: true, apnsSandbox: true }}
+        onEnable={vi.fn()}
+        onDisable={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Sandbox')).toBeInTheDocument();
+  });
+
   it('says the relay is off, shows its address and offers to turn it on', async () => {
     const { onEnable } = view();
     expect(screen.getByText('Off')).toBeInTheDocument();

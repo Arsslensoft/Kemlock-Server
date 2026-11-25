@@ -22,19 +22,21 @@ use kemlock_api_kem::extract::Authed;
 use kemlock_api_kem::{Api, JwsTokenSigner};
 use kemlock_app::admin::StepUp;
 use kemlock_app::federation_view::{
-    BoxFut, FederationView, ServerEntry, ServerRole, SharedView, SiblingSet, VaultServers,
+    BoxFut, CancelOutcome, FederationView, PeerHealthView, PeerStatus, ResumeOutcome, ServerEntry,
+    ServerRole, SharedView, SiblingSet, VaultServers, WaitingChanges,
 };
-use kemlock_app::ports::{ServerInfo, StoreError, Zeroizing};
+use kemlock_app::ports::{Event, EventLog, ServerInfo, StoreError, Zeroizing};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::{ItemId, Owner, ServerId, UserId};
 use kemlock_federation::blobs::{BlobFetcher, BlobFiles, StoreFiles};
 use kemlock_federation::home::Policy;
 use kemlock_federation::job::PeerBlobFetcher;
 use kemlock_federation::net::Http;
+use kemlock_federation::outbox::Withholding;
 use kemlock_federation::ports::{PeerRepo, ReplicaStore, VaultRepo};
 use kemlock_federation::{
-    Connector, FedAdminRepo, Federation, HttpLink, MemberStore, PairingLink, Pairings, PeerRunner,
-    Replica, ServerProfile, WsConnector, unix_now,
+    Connector, FedAdminRepo, Federation, HealthConfig, HttpLink, MemberStore, PairingLink,
+    Pairings, PeerRunner, Replica, ServerProfile, WsConnector, unix_now,
 };
 use kemlock_store_sql::SqlStore;
 use std::net::SocketAddr;
@@ -82,7 +84,10 @@ impl<C: Connector + 'static> Replication for Running<C> {
     }
 
     fn spawn(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        let mut handles = vec![tokio::spawn(self.runner.clone().run())];
+        let mut handles = vec![
+            tokio::spawn(self.runner.clone().run()),
+            tokio::spawn(self.runner.clone().run_probes()),
+        ];
         let events = self
             .events
             .lock()
@@ -200,7 +205,10 @@ where
     .map_err(|e| RunError::Config(format!("the federation identity: {e}")))?;
     let replica = Arc::new(Replica::new(store.clone(), Arc::new(identity)).with_blob_files(files));
     let (connector, link) = make(&replica)?;
-    let runner = Arc::new(PeerRunner::new(replica.clone(), connector, holder_name()));
+    let runner = Arc::new(
+        PeerRunner::new(replica.clone(), connector, holder_name())
+            .with_health(HealthConfig::every(config.federation_probe_seconds)),
+    );
     let pairings = Arc::new(Pairings::new(replica.clone(), link));
     let facade = Federation::new(replica.clone(), runner.clone(), pairings.clone())
         .with_rotator(Arc::new(FileRotator::new(
@@ -223,6 +231,7 @@ where
         }));
     let view: SharedView = Arc::new(View {
         replica: replica.clone(),
+        runner: runner.clone(),
     });
     let for_gate = runner.clone();
     let home_gate = HomeGate::new(
@@ -262,14 +271,44 @@ fn database_kind(url: &str) -> Option<String> {
 }
 
 /// This server's file storage as the engine reads and writes it.
-pub fn files_of<B: kemlock_app::files::BlobStore + 'static>(blobs: B) -> Arc<dyn BlobFiles> {
+pub fn files_of<B: kemlock_app::sends::SendBlobs + 'static>(blobs: B) -> Arc<dyn BlobFiles> {
     Arc::new(StoreFiles(blobs))
 }
 
 // ---- what the Kemlock API reads ----
 
+/// What the view reads of the replication job, without naming the connector it was built with.
+trait RunnerOps: Send + Sync {
+    fn health(&self, peer: ServerId) -> PeerHealthView;
+    fn reconcile_soon(&self, peer: ServerId, vault: Owner);
+}
+
+impl<C: Connector + 'static> RunnerOps for PeerRunner<SqlStore, C> {
+    fn reconcile_soon(&self, peer: ServerId, vault: Owner) {
+        PeerRunner::reconcile_soon(self, peer, vault);
+    }
+
+    fn health(&self, peer: ServerId) -> PeerHealthView {
+        let now = unix_now();
+        let Some(found) = self.health_of(peer) else {
+            return PeerHealthView::unknown();
+        };
+        let status = found.status(now, self.health_config());
+        PeerHealthView {
+            status: status.into(),
+            last_seen: found.last_seen,
+            latency_ms: found.latency_ms,
+            last_error: found.last_error.clone(),
+            offline_since: found
+                .down_since
+                .filter(|_| status == kemlock_federation::HealthStatus::Offline),
+        }
+    }
+}
+
 struct View {
     replica: Arc<Replica<SqlStore>>,
+    runner: Arc<dyn RunnerOps>,
 }
 
 impl FederationView for View {
@@ -348,6 +387,160 @@ impl FederationView for View {
 
     fn is_replica_account(&self, user: UserId) -> BoxFut<'_, Result<bool, StoreError>> {
         Box::pin(async move { MemberStore::is_replica_account(self.replica.store(), user).await })
+    }
+
+    fn peer_health(&self, server: ServerId) -> BoxFut<'_, Result<PeerHealthView, StoreError>> {
+        Box::pin(async move { Ok(self.runner.health(server)) })
+    }
+
+    fn withheld_from(&self, vault: Owner) -> BoxFut<'_, Result<Vec<ServerId>, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let store = self.replica.store();
+            let Some(settings) = VaultRepo::get_vault(store, vault).await? else {
+                return Ok(Vec::new());
+            };
+            let mut out = Vec::new();
+            for server in settings.order() {
+                if server != me && Withholding::withheld(store, server, vault).await?.is_some() {
+                    out.push(server);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn resume_waiting(
+        &self,
+        vault: Owner,
+        peer: ServerId,
+        by: UserId,
+    ) -> BoxFut<'_, Result<ResumeOutcome, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let store = self.replica.store();
+            let federated = VaultRepo::get_vault(store, vault)
+                .await?
+                .is_some_and(|v| v.policy == Policy::Federated && v.holds(me) && v.holds(peer));
+            if !federated || peer == me {
+                return Ok(ResumeOutcome::Unknown);
+            }
+            let lifted = self
+                .replica
+                .resume_waiting(peer, vault)
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            if !lifted {
+                return Ok(ResumeOutcome::NothingHeld);
+            }
+            self.runner.reconcile_soon(peer, vault);
+            store
+                .record(Event {
+                    actor: Some(by),
+                    device: None,
+                    action: "federation.waiting_resumed",
+                    target: Some(format!("vault:{vault} peer:{peer}")),
+                    at: time::OffsetDateTime::now_utc(),
+                })
+                .await?;
+            Ok(ResumeOutcome::Resumed)
+        })
+    }
+
+    fn limited_send_home(&self, owner: UserId) -> BoxFut<'_, Result<Option<String>, StoreError>> {
+        Box::pin(async move {
+            let store = self.replica.store();
+            let me = self.replica.server_id();
+            let Some(settings) = VaultRepo::get_vault(store, Owner::User(owner)).await? else {
+                return Ok(None);
+            };
+            if settings.policy != Policy::Federated || !settings.holds(me) || settings.home == me {
+                return Ok(None);
+            }
+            Ok(PeerRepo::get_peer(store, settings.home)
+                .await?
+                .and_then(|home| home.addresses.first().cloned()))
+        })
+    }
+
+    fn waiting_changes(&self, vault: Owner) -> BoxFut<'_, Result<Vec<WaitingChanges>, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let Some(settings) = VaultRepo::get_vault(self.replica.store(), vault).await? else {
+                return Ok(Vec::new());
+            };
+            if settings.policy != Policy::Federated || !settings.holds(me) {
+                return Ok(Vec::new());
+            }
+            let mut out = Vec::new();
+            for server in settings.order() {
+                if server == me {
+                    continue;
+                }
+                let waiting = self
+                    .replica
+                    .waiting_for(server, vault)
+                    .await
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                if waiting.changes > 0 {
+                    out.push(WaitingChanges {
+                        peer: server,
+                        changes: waiting.changes,
+                        at_least: waiting.at_least,
+                        oldest_at: waiting.oldest_at,
+                    });
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn cancel_waiting(
+        &self,
+        vault: Owner,
+        peer: ServerId,
+        by: UserId,
+    ) -> BoxFut<'_, Result<CancelOutcome, StoreError>> {
+        Box::pin(async move {
+            let me = self.replica.server_id();
+            let store = self.replica.store();
+            let federated = VaultRepo::get_vault(store, vault)
+                .await?
+                .is_some_and(|v| v.policy == Policy::Federated && v.holds(me) && v.holds(peer));
+            if !federated || peer == me {
+                return Ok(CancelOutcome::Unknown);
+            }
+            // Only changes queued for a server that is down may be dropped: for one that answers
+            // they are on their way.
+            if self.runner.health(peer).status != PeerStatus::Offline {
+                return Ok(CancelOutcome::NotOffline);
+            }
+            let cancelled = self
+                .replica
+                .cancel_waiting(peer, vault, unix_now())
+                .await
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let Some(cancelled) = cancelled else {
+                return Ok(CancelOutcome::NothingWaiting);
+            };
+            // For the account's record, and the operator's: which vault, which server, how many.
+            store
+                .record(Event {
+                    actor: Some(by),
+                    device: None,
+                    action: "federation.waiting_cancelled",
+                    target: Some(format!(
+                        "vault:{vault} peer:{peer} dropped:{}{}",
+                        cancelled.dropped,
+                        if cancelled.at_least { "+" } else { "" }
+                    )),
+                    at: time::OffsetDateTime::now_utc(),
+                })
+                .await?;
+            Ok(CancelOutcome::Cancelled {
+                dropped: cancelled.dropped,
+            })
+        })
     }
 }
 

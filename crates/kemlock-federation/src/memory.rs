@@ -10,15 +10,19 @@ use crate::hashtree::{Leaf, leaf_digest};
 use crate::home::VaultFederation;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::keyrecs::{KeyStore, StoredKeyRecord};
+use crate::outbox::{Withheld, Withholding};
 use crate::ports::{
     ApplyOutcome, ExportPage, Exported, HomeStatus, LogSwitches, Peer, PeerRepo, PeerState,
     ReplicaStore, StoredHomeRecord, VaultRepo,
 };
 use crate::relay::{LearnedKey, OriginKeys};
+use crate::sendsync::{SendApply, SendSync};
 use crate::spaces::{SpaceMirror, SpaceRecord, SpaceSnapshot};
 use crate::tagsync::{ItemTags, TagSync};
 use crate::wire::ChangeKey;
 use kemlock_app::ports::StoreError;
+use kemlock_domain::BlobId;
+use kemlock_domain::sends::{SendId, SendRecord};
 use kemlock_domain::{
     ChangeId, Hlc, Item, ItemDraft, ItemId, Owner, Revision, ServerId, SpaceId, VersionVector,
 };
@@ -156,6 +160,9 @@ struct Extras {
     tags: HashMap<(Owner, ItemId), ItemTags>,
     peer_security: HashMap<ServerId, PeerSecurityRecord>,
     mismatches: HashMap<ServerId, MismatchRecord>,
+    sends: BTreeMap<SendId, SendRecord>,
+    send_marks: HashMap<SendId, ServerId>,
+    withheld: HashMap<(ServerId, Owner), Withheld>,
 }
 
 impl MemoryStore {
@@ -1023,6 +1030,160 @@ impl EventSync for MemoryStore {
         let before = extras.peer_events.len();
         extras.peer_events.retain(|e| e.from != peer);
         Ok((before - extras.peer_events.len()) as u64)
+    }
+}
+
+impl MemoryStore {
+    /// Adds a Send as the owner made it here.
+    pub fn put_send(&self, send: SendRecord) {
+        self.extras().sends.insert(send.id, send);
+    }
+
+    /// A Send held here, copied or made here.
+    pub fn send(&self, id: SendId) -> Option<SendRecord> {
+        self.extras().sends.get(&id).cloned()
+    }
+
+    /// The ids of the Sends held here.
+    pub fn send_ids(&self) -> Vec<SendId> {
+        self.extras().sends.keys().copied().collect()
+    }
+}
+
+impl SendSync for MemoryStore {
+    async fn sends_after(
+        &self,
+        owner: Owner,
+        after: SendId,
+        limit: u32,
+        not_from: ServerId,
+    ) -> Result<Vec<SendRecord>, StoreError> {
+        let Owner::User(user) = owner else {
+            return Ok(Vec::new());
+        };
+        let extras = self.extras();
+        Ok(extras
+            .sends
+            .values()
+            .filter(|s| s.owner == user && s.id > after && s.file.is_none_or(|f| f.ready))
+            .filter(|s| extras.send_marks.get(&s.id) != Some(&not_from))
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .cloned()
+            .collect())
+    }
+
+    async fn send_of_blob(&self, blob: BlobId) -> Result<Option<SendRecord>, StoreError> {
+        Ok(self
+            .extras()
+            .sends
+            .values()
+            .find(|s| s.file.is_some_and(|f| f.blob == blob))
+            .cloned())
+    }
+
+    async fn send_row(&self, id: SendId) -> Result<Option<SendRecord>, StoreError> {
+        Ok(self.send(id))
+    }
+
+    async fn apply_replicated_send(
+        &self,
+        from: ServerId,
+        send: &SendRecord,
+    ) -> Result<SendApply, StoreError> {
+        let mut extras = self.extras();
+        let Some(held) = extras.sends.get_mut(&send.id) else {
+            extras.sends.insert(send.id, send.clone());
+            extras.send_marks.insert(send.id, from);
+            return Ok(SendApply::Added);
+        };
+        if held.owner != send.owner {
+            return Ok(SendApply::Unchanged);
+        }
+        let newer = send.revised_at > held.revised_at;
+        let more_views = send.access_count > held.access_count;
+        if newer {
+            let (file, count) = (held.file, held.access_count);
+            *held = SendRecord {
+                file,
+                access_count: count,
+                ..send.clone()
+            };
+        }
+        if more_views {
+            held.access_count = send.access_count;
+        }
+        Ok(if newer || more_views {
+            SendApply::Updated
+        } else {
+            SendApply::Unchanged
+        })
+    }
+
+    async fn replicated_send_ids(
+        &self,
+        owner: Owner,
+        from: ServerId,
+    ) -> Result<Vec<SendId>, StoreError> {
+        let Owner::User(user) = owner else {
+            return Ok(Vec::new());
+        };
+        let extras = self.extras();
+        Ok(extras
+            .send_marks
+            .iter()
+            .filter(|(id, origin)| {
+                **origin == from && extras.sends.get(id).is_some_and(|s| s.owner == user)
+            })
+            .map(|(id, _)| *id)
+            .collect())
+    }
+
+    async fn drop_replicated_send(&self, id: SendId) -> Result<Option<BlobId>, StoreError> {
+        let mut extras = self.extras();
+        if extras.send_marks.remove(&id).is_none() {
+            return Ok(None);
+        }
+        Ok(extras
+            .sends
+            .remove(&id)
+            .and_then(|s| s.file)
+            .map(|f| f.blob))
+    }
+}
+
+impl MemoryStore {
+    /// Deletes a Send, as its owner did here.
+    pub fn remove_send(&self, id: SendId) {
+        self.extras().sends.remove(&id);
+    }
+}
+
+impl Withholding for MemoryStore {
+    async fn withheld(&self, peer: ServerId, vault: Owner) -> Result<Option<Withheld>, StoreError> {
+        Ok(self.extras().withheld.get(&(peer, vault)).cloned())
+    }
+
+    async fn withhold(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        upto: &VersionVector,
+        at: u64,
+    ) -> Result<(), StoreError> {
+        let mut extras = self.extras();
+        let held = extras.withheld.entry((peer, vault)).or_default();
+        held.upto.merge(upto);
+        held.at = at;
+        Ok(())
+    }
+
+    async fn release_withheld(&self, peer: ServerId, vault: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().withheld.remove(&(peer, vault)).is_some())
+    }
+
+    async fn forget_withheld(&self, peer: ServerId) -> Result<(), StoreError> {
+        self.extras().withheld.retain(|(p, _), _| *p != peer);
+        Ok(())
     }
 }
 

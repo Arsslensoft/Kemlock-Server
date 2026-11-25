@@ -10,7 +10,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type MessageId, useT } from '@/i18n';
 import { thisDevice } from '@/lib/device';
 import { describeError } from '@/lib/errors';
-import { PasskeyError, assertWithPasskeyAndPrf, passkeysAvailable } from '@/lib/passkey';
+import { assertWithPasskeyAndPrf, passkeysAvailable } from '@/lib/passkey';
 import { type EmailValues, emailSchema } from '@/lib/schemas';
 import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
@@ -18,6 +18,7 @@ import { Field } from '@/ui/fields';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import { afterSignIn } from './afterSignIn';
+import { describePasskeySignInError, describeSignInError } from './describeSignIn';
 import { signInWithPasskey } from './passkeySignIn';
 import { unlockWithTrustedDevice } from './trustedDevice';
 import { beginSso } from './ssoFlow';
@@ -65,18 +66,7 @@ export function EmailForm({
   );
 }
 
-/** The words for a passkey that did not answer; anything else is described as everywhere else. */
-function describeSignInError(error: unknown): ReturnType<typeof describeError> {
-  if (error instanceof PasskeyError) {
-    return { id: error.reason === 'cancelled' ? 'signIn.passkeyCancelled' : 'signIn.passkeyUnavailable' };
-  }
-  return describeError(error);
-}
-
-/**
- * The other ways in. Up to two stack as full-width buttons; with more, the organisation's SSO
- * stays one full-width button and the rest sit side by side as compact icon-over-label tiles.
- */
+/** The other ways in, stacked as full-width buttons, the organisation's SSO first. */
 export function Alternatives({
   methods,
   provider,
@@ -101,59 +91,31 @@ export function Alternatives({
   const sso = methods.includes('sso');
   const withPasskey = methods.includes('passkey') && passkey;
   const withPassword = methods.includes('password');
-  const total = Number(sso) + Number(withPasskey) + 1 + Number(withPassword);
-  const tiled = total > 2;
   const ssoButton = sso ? (
     <Button block isDisabled={pending} onPress={onSso}>
       <Icon name="key" />
       {t('signIn.ssoNamed', { provider: provider ?? '' })}
     </Button>
   ) : null;
-  if (!tiled) {
-    return (
-      <>
-        {ssoButton}
-        {withPasskey ? (
-          <Button block isDisabled={pending} onPress={onPasskey}>
-            <Icon name="login" />
-            {t('signIn.passkey')}
-          </Button>
-        ) : null}
-        <Button block onPress={onDevice}>
-          <Icon name="device" />
-          {t('signIn.approve')}
-        </Button>
-        {withPassword ? (
-          <Button block onPress={onPassword}>
-            <Icon name="lock" />
-            {t('signIn.password')}
-          </Button>
-        ) : null}
-      </>
-    );
-  }
-  const tiles = total - Number(sso);
   return (
     <>
       {ssoButton}
-      <div className="tiles" data-count={tiles}>
-        {withPasskey ? (
-          <Button className="tile" isDisabled={pending} aria-label={t('signIn.passkey')} onPress={onPasskey}>
-            <Icon name="login" />
-            <span>{t('signIn.passkeyShort')}</span>
-          </Button>
-        ) : null}
-        <Button className="tile" aria-label={t('signIn.approve')} onPress={onDevice}>
-          <Icon name="device" />
-          <span>{t('signIn.approveShort')}</span>
+      {withPasskey ? (
+        <Button block isDisabled={pending} onPress={onPasskey}>
+          <Icon name="login" />
+          {t('signIn.passkey')}
         </Button>
-        {withPassword ? (
-          <Button className="tile" aria-label={t('signIn.password')} onPress={onPassword}>
-            <Icon name="lock" />
-            <span>{t('signIn.passwordShort')}</span>
-          </Button>
-        ) : null}
-      </div>
+      ) : null}
+      <Button block onPress={onDevice}>
+        <Icon name="device" />
+        {t('signIn.approve')}
+      </Button>
+      {withPassword ? (
+        <Button block onPress={onPassword}>
+          <Icon name="lock" />
+          {t('signIn.password')}
+        </Button>
+      ) : null}
     </>
   );
 }
@@ -218,7 +180,7 @@ export default function SignIn() {
         await navigate({ to: '/unlock', search: { next } });
       }
     } catch (caught) {
-      setError(describeSignInError(caught));
+      setError(describePasskeySignInError(caught));
     } finally {
       setPending(false);
     }
@@ -229,7 +191,7 @@ export default function SignIn() {
     setError(undefined);
     try {
       const address = await beginSso(
-        { sso: ssoApi, api, session, device: thisDevice, origin: location.origin },
+        { sso: ssoApi, origin: location.origin },
         email,
         next,
       );

@@ -120,9 +120,9 @@ pub struct SetupFinishRequest {
     pub basics: Option<ServerBasicsDto>,
 }
 
-/// The server basics a setup screen sends. Fields the server has no setting for (the public
-/// address, push, file folder, backups) are accepted and ignored, so a client may send its whole
-/// form.
+/// The server basics a setup screen sends. The public address is only recorded (the server's
+/// `DOMAIN` is configuration). The file folder has no setting and is accepted and ignored, so a
+/// client may send its whole form.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerBasicsDto {
@@ -143,6 +143,32 @@ pub struct ServerBasicsDto {
     pub mail_from: String,
     #[serde(default)]
     pub mail_user: String,
+    /// The public address chosen at setup; recorded for the console, not applied.
+    #[serde(default)]
+    pub address: String,
+    /// Register with Kemlock's push relay.
+    #[serde(default)]
+    pub push: bool,
+    /// Turn scheduled backups on.
+    #[serde(default)]
+    pub backups: bool,
+    /// `night` or `six-hours`.
+    #[serde(default = "default_backup_every")]
+    pub backup_every: String,
+    /// `7`, `14` or `30`.
+    #[serde(default = "default_backup_keep")]
+    pub backup_keep: String,
+    /// The age recipient the backups are encrypted to.
+    #[serde(default)]
+    pub backup_recipient: String,
+}
+
+fn default_backup_every() -> String {
+    "night".to_owned()
+}
+
+fn default_backup_keep() -> String {
+    "30".to_owned()
 }
 
 fn default_mail_port() -> String {
@@ -166,6 +192,13 @@ impl ServerBasicsDto {
             mail_security: self.mail_security,
             mail_from: self.mail_from,
             mail_user: self.mail_user,
+            address: self.address,
+            push: self.push,
+            backups: self.backups.then_some(kemlock_app::BackupBasics {
+                every: self.backup_every,
+                keep: self.backup_keep,
+                recipient: self.backup_recipient,
+            }),
         })
     }
 }
@@ -420,7 +453,7 @@ pub struct TotpConfirmRequest {
     pub code: String,
     /// The recovery code, when another second step is on already: a session alone may add the
     /// first step, and a fresh proof is needed beside one that is on.
-    pub proof: Option<String>,
+    pub proof: Option<FreshProof>,
 }
 
 /// Asks for the account's recovery code.
@@ -430,7 +463,7 @@ pub struct RecoveryCodeRequest {
     /// A fresh proof that is not the recovery code itself: a code mailed by
     /// `POST /kem/v1/account/two-factor/proof`, or a current code of the authenticator app. Not
     /// needed while the account holds no recovery code.
-    pub proof: Option<String>,
+    pub proof: Option<FreshProof>,
 }
 
 /// The account's two-step recovery code.
@@ -709,6 +742,36 @@ impl SiblingSetDto {
 pub struct ResolveResponse {
     /// How many siblings were replaced by the item's head.
     pub resolved: u64,
+}
+
+/// A fresh proof that it is the account's owner at a keyboard, not only a session. Either a code
+/// (the mailed one, a current code of the authenticator app, or, where the route takes it, the
+/// recovery code) as a string, or the answer of a security key or passkey as
+/// `{ "webauthn": <PublicKeyCredential.toJSON()> }`, to the options at
+/// `POST /kem/v1/account/two-factor/proof/webauthn/options`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum FreshProof {
+    /// A code, as typed.
+    Code(String),
+    /// A security key's or passkey's assertion.
+    Assertion(KeyAssertion),
+}
+
+/// The answer of a security key or passkey, as the browser makes it.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct KeyAssertion {
+    /// The browser's `PublicKeyCredential.toJSON()` from `navigator.credentials.get`.
+    #[schema(value_type = Object)]
+    pub webauthn: serde_json::Value,
+}
+
+impl FreshProof {
+    /// Whether it is a code with nothing in it.
+    pub fn is_blank(&self) -> bool {
+        matches!(self, FreshProof::Code(code) if code.trim().is_empty())
+    }
 }
 
 #[cfg(test)]

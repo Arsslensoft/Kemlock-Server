@@ -12,6 +12,7 @@ use kemlock_app::bw_events::{
     UserSync,
 };
 use kemlock_app::notices::Notices;
+use kemlock_app::privacy::OwnErasure;
 use kemlock_domain::UserId;
 use kemlock_domain::spaces::CollectionId;
 use std::sync::Arc;
@@ -29,6 +30,9 @@ pub struct BwLive {
     /// Vaultwarden's `REQUIRE_DEVICE_EMAIL`: a sign-in from a new device is refused when the mail
     /// about it can't be sent.
     pub require_device_email: bool,
+    /// What deletes the account that asks (`DELETE /api/accounts`): the whole erasure of the
+    /// privacy area. Without it the route refuses, so a half erasure is never done.
+    pub erasure: Option<Arc<dyn OwnErasure>>,
 }
 
 impl Default for BwLive {
@@ -38,6 +42,7 @@ impl Default for BwLive {
             relay: None,
             notices: Notices::logging(),
             require_device_email: false,
+            erasure: None,
         }
     }
 }
@@ -45,9 +50,14 @@ impl Default for BwLive {
 impl std::fmt::Debug for BwLive {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BwLive")
-            .field("relay", &self.relay.is_some())
+            // Whether pushes go out now: the switch is always there, the relay behind it may not be.
+            .field(
+                "relay",
+                &self.relay.as_ref().is_some_and(|relay| relay.enabled()),
+            )
             .field("notices", &self.notices)
             .field("require_device_email", &self.require_device_email)
+            .field("erasure", &self.erasure.is_some())
             .finish_non_exhaustive()
     }
 }

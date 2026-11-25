@@ -39,6 +39,7 @@ mod emergency;
 pub mod env;
 pub mod error;
 mod events;
+mod fed_view;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
 mod identity;

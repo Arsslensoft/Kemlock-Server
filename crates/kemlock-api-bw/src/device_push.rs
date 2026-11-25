@@ -80,7 +80,7 @@ pub(crate) async fn put_token<S: BwStore>(
     identifier: &str,
     token: &str,
 ) -> BwResult<()> {
-    let Some(relay) = &app.relay else {
+    let Some(relay) = app.relay.as_ref().filter(|relay| relay.enabled()) else {
         return Ok(());
     };
     let device = device_of(app, authed, identifier).await?;
@@ -116,7 +116,7 @@ pub(crate) async fn put_token<S: BwStore>(
 /// `PUT` and `POST /api/devices/identifier/{id}/clear-token`: forgets the phones that sign in
 /// with this identifier, at the relay and here. Vaultwarden has no sign-in for it either.
 pub(crate) async fn clear_token<S: BwStore>(app: &App<S>, identifier: &str) -> BwResult<()> {
-    let Some(relay) = &app.relay else {
+    let Some(relay) = app.relay.as_ref().filter(|relay| relay.enabled()) else {
         return Ok(());
     };
     let Ok(identifier) = Uuid::parse_str(identifier.trim()) else {

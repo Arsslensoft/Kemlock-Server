@@ -160,7 +160,7 @@ impl From<SecurityKeyError> for AppError {
     }
 }
 
-fn key_error(e: WebAuthnError) -> SecurityKeyError {
+pub(super) fn key_error(e: WebAuthnError) -> SecurityKeyError {
     match e {
         WebAuthnError::Refused(why) => {
             tracing::debug!(%why, "a security key's answer was refused");
@@ -258,6 +258,41 @@ where
                 })
             })
             .collect()
+    }
+
+    /// Each key's credential id and credential, for a ceremony that lists them.
+    pub(super) async fn credentials_of(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+        let invalid = || AppError::Store("a stored security key isn't valid".to_owned());
+        self.load(user)
+            .await?
+            .keys
+            .iter()
+            .map(|k| {
+                Ok((
+                    b64url::decode(&k.credential_id).ok_or_else(invalid)?,
+                    b64url::decode(&k.credential).ok_or_else(invalid)?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Stores the credential after an answer (its counter moved) for the key with this id.
+    pub(super) async fn record_use(
+        &self,
+        user: UserId,
+        credential_id: &[u8],
+        credential: &[u8],
+    ) -> Result<(), AppError> {
+        let mut loaded = self.load(user).await?;
+        let id = b64url::encode(credential_id);
+        if let Some(key) = loaded.keys.iter_mut().find(|k| k.credential_id == id) {
+            key.credential = b64url::encode(credential);
+            self.save(user, loaded.created_at, loaded.keys).await?;
+        }
+        Ok(())
     }
 
     /// The account's keys.

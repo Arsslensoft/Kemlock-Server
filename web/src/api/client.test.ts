@@ -98,6 +98,12 @@ describe('the public routes', () => {
       mailSecurity: 'tls',
       mailFrom: 'ops@example.org',
       mailUser: 'ops',
+      address: 'https://vault.example.org',
+      push: true,
+      backups: true,
+      backupEvery: 'six-hours',
+      backupKeep: '14',
+      backupRecipient: 'age1abc',
     } as const;
     await t.api.setupFinish(basics);
     await t.api.setupFinish();

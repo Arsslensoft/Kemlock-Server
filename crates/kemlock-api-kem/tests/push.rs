@@ -110,15 +110,15 @@ async fn a_device_registers_its_token() {
         &client,
         &session,
         "POST",
-        Some(json!({"kind": "fcm", "token": "fcm-token-1"})),
+        Some(json!({"kind": "unifiedpush", "token": "https://ntfy.example.org/upAbc"})),
     )
     .await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT, "{:?}", reply.body);
     let stored = push.of(&session.user_id);
     assert_eq!(stored.len(), 1);
-    assert_eq!(stored[0].token, "fcm-token-1");
+    assert_eq!(stored[0].token, "https://ntfy.example.org/upAbc");
     assert_eq!(stored[0].device.to_string(), session.device_id);
-    assert_eq!(stored[0].kind.as_str(), "fcm");
+    assert_eq!(stored[0].kind.as_str(), "unifiedpush");
 }
 
 #[tokio::test]
@@ -145,11 +145,17 @@ async fn a_bad_body_is_a_400_problem() {
     let (client, session, push) = scene().await;
     let bodies = [
         json!({"kind": "sms", "token": "t"}),
-        json!({"kind": "fcm", "token": ""}),
-        json!({"kind": "fcm", "token": "has space"}),
-        json!({"kind": "fcm", "token": "x".repeat(513)}),
-        json!({"kind": "fcm"}),
-        json!({"kind": "fcm", "token": "t", "userId": "someone-else"}),
+        // Firebase is no longer accepted.
+        json!({"kind": "fcm", "token": "fcm-token"}),
+        json!({"kind": "apns", "token": ""}),
+        json!({"kind": "apns", "token": "has space"}),
+        json!({"kind": "apns", "token": "x".repeat(513)}),
+        json!({"kind": "apns"}),
+        json!({"kind": "apns", "token": "t", "userId": "someone-else"}),
+        json!({"kind": "unifiedpush", "token": "http://ntfy.example.org/up"}),
+        json!({"kind": "unifiedpush", "token": "not a url"}),
+        json!({"kind": "unifiedpush", "token": "https://u:p@ntfy.example.org/up"}),
+        json!({"kind": "unifiedpush", "token": "https://ntfy.example.org:8080/up"}),
     ];
     for body in bodies {
         let reply = call(&client, &session, "POST", Some(body.clone())).await;
@@ -167,7 +173,7 @@ async fn the_routes_need_a_signed_in_device() {
             "POST",
             "/kem/v1/devices/push-token",
             Req {
-                body: Some(json!({"kind": "fcm", "token": "t"})),
+                body: Some(json!({"kind": "apns", "token": "t"})),
                 ..Req::default()
             },
         )
@@ -183,7 +189,7 @@ async fn deleting_forgets_the_token_and_twice_is_fine() {
         &client,
         &session,
         "POST",
-        Some(json!({"kind": "fcm", "token": "t"})),
+        Some(json!({"kind": "apns", "token": "t"})),
     )
     .await;
     assert_eq!(

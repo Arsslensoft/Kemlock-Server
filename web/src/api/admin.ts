@@ -128,14 +128,35 @@ export interface AdminUser {
   erasurePending: boolean;
 }
 
-/** Where Kemlock's push relay stands (`GET /admin/v1/push-relay`). */
+/**
+ * Where push stands (`GET /admin/v1/push-relay`): the Apple push and UnifiedPush the server sends
+ * itself, and Kemlock's optional relay.
+ */
 export interface PushRelay {
-  /** Whether this server has registered with the relay, so pushes to the mobile apps go out. */
+  /** Whether this server has registered with the optional relay (iPhones it has no Apple key for). */
   enabled: boolean;
   /** The relay's id for this server. The key it holds is never shown. */
   installationId: string | null;
   /** The relay the server talks to. */
   relayUrl: string;
+  /** Whether the server holds an Apple push key and pushes to iPhones itself. */
+  apnsConfigured: boolean;
+  /** Whether that Apple key pushes through Apple's sandbox (development builds of the app). */
+  apnsSandbox: boolean;
+  /** Always true: the server pushes to Android phones through UnifiedPush itself. */
+  unifiedPush: boolean;
+}
+
+/** The address and data folder (`GET /admin/v1/server-address`): configuration, shown not edited. */
+export interface ServerAddress {
+  /** `DOMAIN` as the server runs with it. */
+  domain: string;
+  /** The address chosen at setup, when one was recorded. */
+  recordedDomain: string | null;
+  /** A recorded address that is not the one in use. */
+  differs: boolean;
+  /** `DATA_FOLDER`, which only the environment sets. */
+  dataFolder: string | null;
 }
 
 export interface UsersQuery {
@@ -408,7 +429,7 @@ export interface UpdateRequestRequest {
 
 // ---- Federation ---------------------------------------------------------------------------
 
-export type PeerState = 'online' | 'offline' | 'catching-up' | 'revoked';
+export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked';
 export type PeerOperator = 'own' | 'other';
 
 /** A server's identity as the console shows it. `identityKey` is the `sig1` public key, base64url. */
@@ -426,6 +447,10 @@ export interface ServerView {
 export interface Peer extends ServerView {
   state: PeerState;
   offlineSince: number | null;
+  /** When the peer last answered this server (a session or a probe), Unix seconds. */
+  lastSeen: number | null;
+  /** How long its last answer took, in milliseconds. */
+  latencyMs: number | null;
   lagSeconds: number | null;
   lagChanges: number | null;
   lastChangeAt: number | null;
@@ -698,6 +723,8 @@ export function createAdminApi(api: AdminTransport) {
         finalization,
       } satisfies StepUpFinishRequest),
 
+    /** `GET /admin/v1/server-address` */
+    serverAddress: () => get<ServerAddress>('/server-address'),
     /** `GET /admin/v1/push-relay`: 409 when this server has no relay to control. */
     pushRelay: () => get<PushRelay>('/push-relay'),
     /** `POST /admin/v1/push-relay/enable`: registers this server with the relay. */
