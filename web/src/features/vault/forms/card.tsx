@@ -1,15 +1,29 @@
+// The card form. Its items are the Kemlock app's own entries (kemlock-core `PaymentCard`). The
+// brand is read from the number as it is typed and shown as a badge in the field, the number is
+// grouped for its brand and checked by length and the Luhn check, and the security code takes 3 or 4
+// digits (4 for American Express). There is no Brand box.
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
+import { useId, useState } from 'react';
+import { type Control, useController, useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
-import { useT } from '@/i18n';
+import { type MessageId, useT } from '@/i18n';
 import { CheckField, Field } from '@/ui/fields';
 import type { ItemData, VaultItem } from '../vault';
+import { ExtrasSections } from './ExtrasSections';
+import {
+  type CardBrand,
+  cardCodeProblem,
+  cardDigits,
+  cardNumberProblem,
+  cvcStatus,
+  detectBrand,
+  formatCardNumber,
+  numberStatus,
+} from './cardBrand';
+import { extrasDefaults, extrasFields, extrasShape } from './extras';
 import { Actions, type FormProps, entryBase, isPinned, orUndefined, str } from './parts';
 
-/** The digits of a card number typed or pasted (kemlock-core `cardDigits`). */
-export function cardDigits(text: string): string {
-  return text.replace(/[^0-9]/g, '');
-}
+export { cardDigits } from './cardBrand';
 
 /** A year from one or two digits: 29 is 2029, 2029 stays (kemlock-core `cardYear`). */
 function cardYear(year: number | undefined): number | undefined {
@@ -50,21 +64,30 @@ export const cardSchema = z
   .object({
     name: z.string().trim().min(1, 'error.required').max(200, 'error.tooLong'),
     cardholder: z.string().trim().max(200, 'error.tooLong'),
-    number: z.string().refine((v) => /^[0-9 -]*$/.test(v) && cardDigits(v).length <= 19, 'error.cardNumber'),
+    number: z.string().max(40, 'error.tooLong'),
+    /** The brand the item had; written only when the number names none. Not a box in the form. */
     brand: z.string().trim().max(100, 'error.tooLong'),
     expiry: z.string().refine((v) => {
       if (v.trim() === '') return true;
       const parsed = parseCardExpiry(v);
       return parsed.month !== undefined && parsed.year !== undefined;
     }, 'error.cardExpiry'),
-    code: z.string().max(20, 'error.tooLong'),
+    code: z.string().max(4, 'error.tooLong'),
     pin: z.string().max(20, 'error.tooLong'),
     note: z.string().max(10000, 'error.tooLong'),
     pinned: z.boolean(),
+    ...extrasShape,
   })
-  .refine((v) => cardDigits(v.number) !== '' || v.cardholder !== '', {
-    path: ['number'],
-    message: 'error.cardIncomplete',
+  .superRefine((v, ctx) => {
+    const digits = cardDigits(v.number);
+    if (digits === '' && v.cardholder === '') {
+      ctx.addIssue({ code: 'custom', path: ['number'], message: 'error.cardIncomplete' });
+      return;
+    }
+    const number = cardNumberProblem(digits);
+    if (number) ctx.addIssue({ code: 'custom', path: ['number'], message: number });
+    const code = cardCodeProblem(v.code.trim(), digits);
+    if (code) ctx.addIssue({ code: 'custom', path: ['code'], message: code });
   });
 export type CardValues = z.infer<typeof cardSchema>;
 
@@ -79,32 +102,123 @@ export function cardDefaults(item?: VaultItem): CardValues {
   return {
     name: str(data, 'name'),
     cardholder: str(data, 'cardholder'),
-    number: str(data, 'number'),
+    number: formatCardNumber(str(data, 'number')),
     brand: str(data, 'brand'),
     expiry,
     code: str(data, 'code'),
     pin: str(data, 'pin'),
     note: str(data, 'note'),
     pinned: isPinned(item),
+    ...extrasDefaults(item),
   };
 }
 
-/** `PaymentCard.toJson`: the number as digits, the expiry as `expMonth` and a four-digit `expYear`. */
+/**
+ * `PaymentCard.toJson`: the number as digits, the brand its digits name, the expiry as `expMonth`
+ * and a four-digit `expYear`. A number whose brand is not known keeps the brand the item had.
+ */
 export function cardFields(values: CardValues, existing?: VaultItem): ItemData {
   const expiry = values.expiry.trim() === '' ? {} : parseCardExpiry(values.expiry);
+  const digits = cardDigits(values.number);
   return {
     ...entryBase(existing),
     name: values.name,
     cardholder: orUndefined(values.cardholder),
-    number: orUndefined(cardDigits(values.number)),
-    brand: orUndefined(values.brand),
+    number: orUndefined(digits),
+    brand: detectBrand(digits)?.name ?? orUndefined(values.brand),
     expMonth: expiry.month,
     expYear: expiry.year,
     code: orUndefined(values.code),
     pin: orUndefined(values.pin),
     note: orUndefined(values.note),
     pinned: values.pinned ? true : undefined,
+    ...extrasFields(values, existing),
   };
+}
+
+function CardNumberField({ control }: { control: Control<CardValues> }) {
+  const t = useT();
+  const id = useId();
+  const { field, fieldState } = useController({ control, name: 'number' });
+  const [blurred, setBlurred] = useState(false);
+  const digits = cardDigits(field.value);
+  const brand = detectBrand(digits);
+  const status = numberStatus(digits, blurred);
+  // A refused Save says why even when the number is only incomplete so far.
+  const refused = status.state === 'pending' ? fieldState.error?.message : undefined;
+  const tone = refused ? 'err' : status.state;
+  return (
+    <div className="field" data-invalid={tone === 'err' ? true : undefined}>
+      <label htmlFor={`${id}-n`}>{t('newItem.card.number')}</label>
+      <div className="brand-box">
+        <input
+          id={`${id}-n`}
+          ref={field.ref}
+          name={field.name}
+          className="mono"
+          type="text"
+          inputMode="numeric"
+          autoComplete="off"
+          spellCheck={false}
+          value={field.value}
+          aria-describedby={`${id}-msg`}
+          aria-invalid={tone === 'err' ? true : undefined}
+          onChange={(event) => field.onChange(formatCardNumber(event.target.value))}
+          onBlur={() => {
+            setBlurred(true);
+            field.onBlur();
+          }}
+        />
+        {brand ? <span className="brand-badge">{brand.name}</span> : null}
+      </div>
+      <span
+        id={`${id}-msg`}
+        className={tone === 'err' ? 'hint bad' : tone === 'ok' ? 'hint good' : 'hint'}
+        role={tone === 'err' ? 'alert' : undefined}
+      >
+        {refused ? t(refused as MessageId) : t(status.message, status.values)}
+      </span>
+    </div>
+  );
+}
+
+function SecurityCodeField({ control, brand }: { control: Control<CardValues>; brand: CardBrand | undefined }) {
+  const t = useT();
+  const id = useId();
+  const { field, fieldState } = useController({ control, name: 'code' });
+  const [blurred, setBlurred] = useState(false);
+  const status = cvcStatus(field.value, brand, blurred || Boolean(fieldState.error));
+  return (
+    <div className="field" data-invalid={status.state === 'err' ? true : undefined}>
+      <label htmlFor={`${id}-c`}>{t('newItem.card.code')}</label>
+      <input
+        id={`${id}-c`}
+        ref={field.ref}
+        name={field.name}
+        className="mono"
+        type="text"
+        inputMode="numeric"
+        autoComplete="off"
+        spellCheck={false}
+        maxLength={4}
+        value={field.value}
+        aria-describedby={`${id}-msg`}
+        aria-invalid={status.state === 'err' ? true : undefined}
+        onChange={(event) => field.onChange(cardDigits(event.target.value).slice(0, 4))}
+        onBlur={() => {
+          setBlurred(true);
+          field.onBlur();
+        }}
+      />
+      <span
+        id={`${id}-msg`}
+        className={status.state === 'err' ? 'hint bad' : 'hint'}
+        role={status.state === 'err' ? 'alert' : undefined}
+      >
+        {t(status.message, status.values)}
+      </span>
+    </div>
+  );
 }
 
 export function CardForm({ initial, onSubmit, onCancel, pending, error, submitLabel }: FormProps<CardValues>) {
@@ -113,33 +227,39 @@ export function CardForm({ initial, onSubmit, onCancel, pending, error, submitLa
     resolver: zodResolver(cardSchema),
     defaultValues: initial,
   });
+  const number = useWatch({ control, name: 'number' });
+  const brand = detectBrand(cardDigits(number));
   return (
     <form className="stack form-wide" noValidate onSubmit={handleSubmit(onSubmit)}>
       <section className="card pad" aria-labelledby="h-card">
-        <h2 id="h-card" className="sr">
-          {t('newItem.card.details')}
-        </h2>
+        <h2 id="h-card">{t('newItem.card.details')}</h2>
         <Field control={control} name="name" label={t('newItem.name')} autoFocus />
         <Field control={control} name="cardholder" label={t('newItem.card.cardholder')} autoComplete="off" />
+        <CardNumberField control={control} />
+        <div className="pair">
+          <Field
+            control={control}
+            name="expiry"
+            label={t('newItem.card.expiry')}
+            placeholder="MM/YY"
+            mono
+            inputMode="numeric"
+            autoComplete="off"
+          />
+          <SecurityCodeField control={control} brand={brand} />
+        </div>
         <Field
           control={control}
-          name="number"
-          label={t('newItem.card.number')}
+          name="pin"
+          label={t('newItem.card.pin')}
+          type="password"
           mono
           inputMode="numeric"
           autoComplete="off"
+          hint={t('itemForm.card.optional')}
         />
-        <Field control={control} name="brand" label={t('newItem.card.brand')} autoComplete="off" />
-        <Field
-          control={control}
-          name="expiry"
-          label={t('newItem.card.expiry')}
-          placeholder="MM/YY"
-          autoComplete="off"
-        />
-        <Field control={control} name="code" label={t('newItem.card.code')} type="password" mono autoComplete="off" />
-        <Field control={control} name="pin" label={t('newItem.card.pin')} type="password" mono autoComplete="off" />
       </section>
+      <ExtrasSections control={control} kind="card" />
       <section className="card pad" aria-labelledby="h-card-more">
         <h2 id="h-card-more" className="sr">
           {t('newItem.more')}

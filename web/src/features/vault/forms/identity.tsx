@@ -1,12 +1,17 @@
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useForm } from 'react-hook-form';
+import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { useT } from '@/i18n';
-import { CheckField, Field } from '@/ui/fields';
+import { CheckField, Field, SelectField } from '@/ui/fields';
 import type { ItemData, VaultItem } from '../vault';
+import { ExtrasSections } from './ExtrasSections';
+import { extrasDefaults, extrasFields, extrasShape } from './extras';
 import { Actions, type FormProps, entryBase, isPinned, orUndefined, str } from './parts';
 
 const short = z.string().trim().max(200, 'error.tooLong');
+
+/** The titles the form offers; a title an item already has is offered too. */
+export const TITLES = ['Mr', 'Mrs', 'Ms', 'Mx', 'Dr'];
 
 export const identitySchema = z.object({
   name: z.string().trim().min(1, 'error.required').max(200, 'error.tooLong'),
@@ -20,7 +25,6 @@ export const identitySchema = z.object({
     .trim()
     .refine((v) => v === '' || z.email().safeParse(v).success, 'error.email'),
   phone: short,
-  username: short,
   birthDate: z
     .string()
     .trim()
@@ -34,6 +38,7 @@ export const identitySchema = z.object({
   country: short,
   note: z.string().max(10000, 'error.tooLong'),
   pinned: z.boolean(),
+  ...extrasShape,
 });
 export type IdentityValues = z.infer<typeof identitySchema>;
 
@@ -60,7 +65,6 @@ export function identityDefaults(item?: VaultItem): IdentityValues {
     company: str(data, 'company'),
     email: str(data, 'email'),
     phone: str(data, 'phone'),
-    username: str(data, 'username'),
     birthDate: str(data, 'birthDate'),
     line1: lines[0] ?? '',
     line2: lines[1] ?? '',
@@ -71,6 +75,7 @@ export function identityDefaults(item?: VaultItem): IdentityValues {
     country: text('country'),
     note: str(data, 'note'),
     pinned: isPinned(item),
+    ...extrasDefaults(item),
   };
 }
 
@@ -100,11 +105,11 @@ export function identityFields(values: IdentityValues, existing?: VaultItem): It
     company: orUndefined(values.company),
     email: orUndefined(values.email),
     phone: orUndefined(values.phone),
-    username: orUndefined(values.username),
     birthDate: orUndefined(values.birthDate),
     address: Object.keys(address).length > 0 ? address : undefined,
     note: orUndefined(values.note),
     pinned: values.pinned ? true : undefined,
+    ...extrasFields(values, existing),
   };
 }
 
@@ -121,39 +126,58 @@ export function IdentityForm({
     resolver: zodResolver(identitySchema),
     defaultValues: initial,
   });
+  const title = useWatch({ control, name: 'title' });
+  const titles = title === '' || TITLES.includes(title) ? TITLES : [...TITLES, title];
   return (
     <form className="stack form-wide" noValidate onSubmit={handleSubmit(onSubmit)}>
       <section className="card pad" aria-labelledby="h-identity">
-        <h2 id="h-identity" className="sr">
-          {t('newItem.identity.details')}
-        </h2>
+        <h2 id="h-identity">{t('newItem.identity.details')}</h2>
         <Field control={control} name="name" label={t('newItem.name')} autoFocus />
-        <Field control={control} name="title" label={t('newItem.identity.title')} autoComplete="off" />
-        <Field control={control} name="givenName" label={t('newItem.identity.givenName')} autoComplete="off" />
-        <Field control={control} name="middleName" label={t('newItem.identity.middleName')} autoComplete="off" />
-        <Field control={control} name="familyName" label={t('newItem.identity.familyName')} autoComplete="off" />
-        <Field control={control} name="company" label={t('newItem.identity.company')} autoComplete="off" />
-        <Field control={control} name="email" label={t('newItem.identity.email')} type="email" autoComplete="off" />
-        <Field control={control} name="phone" label={t('newItem.identity.phone')} autoComplete="off" />
-        <Field control={control} name="username" label={t('item.username')} autoComplete="off" />
-        <Field
-          control={control}
-          name="birthDate"
-          label={t('newItem.identity.birthDate')}
-          placeholder="YYYY-MM-DD"
-          autoComplete="off"
-        />
+        <div className="pair">
+          <SelectField
+            control={control}
+            name="title"
+            label={t('newItem.identity.title')}
+            options={['', ...titles].map((value) => ({ value, label: value }))}
+          />
+          <Field control={control} name="givenName" label={t('newItem.identity.givenName')} autoComplete="off" />
+        </div>
+        <div className="pair">
+          <Field control={control} name="middleName" label={t('newItem.identity.middleName')} autoComplete="off" />
+          <Field control={control} name="familyName" label={t('newItem.identity.familyName')} autoComplete="off" />
+        </div>
+        <div className="pair">
+          <Field control={control} name="company" label={t('newItem.identity.company')} autoComplete="off" />
+          <Field
+            control={control}
+            name="birthDate"
+            label={t('newItem.identity.birthDate')}
+            type="date"
+            autoComplete="off"
+          />
+        </div>
+        <div className="pair">
+          <Field control={control} name="email" label={t('newItem.identity.email')} type="email" autoComplete="off" />
+          <Field control={control} name="phone" label={t('newItem.identity.phone')} type="tel" autoComplete="off" />
+        </div>
       </section>
       <section className="card pad" aria-labelledby="h-identity-address">
         <h2 id="h-identity-address">{t('newItem.identity.address')}</h2>
         <Field control={control} name="line1" label={t('newItem.identity.line1')} autoComplete="off" />
-        <Field control={control} name="line2" label={t('newItem.identity.line2')} autoComplete="off" />
-        <Field control={control} name="line3" label={t('newItem.identity.line3')} autoComplete="off" />
-        <Field control={control} name="city" label={t('newItem.identity.city')} autoComplete="off" />
-        <Field control={control} name="region" label={t('newItem.identity.region')} autoComplete="off" />
-        <Field control={control} name="postalCode" label={t('newItem.identity.postalCode')} autoComplete="off" />
-        <Field control={control} name="country" label={t('newItem.identity.country')} autoComplete="off" />
+        <div className="pair">
+          <Field control={control} name="line2" label={t('newItem.identity.line2')} autoComplete="off" />
+          <Field control={control} name="line3" label={t('newItem.identity.line3')} autoComplete="off" />
+        </div>
+        <div className="pair">
+          <Field control={control} name="city" label={t('newItem.identity.city')} autoComplete="off" />
+          <Field control={control} name="region" label={t('newItem.identity.region')} autoComplete="off" />
+        </div>
+        <div className="pair">
+          <Field control={control} name="postalCode" label={t('newItem.identity.postalCode')} autoComplete="off" />
+          <Field control={control} name="country" label={t('newItem.identity.country')} autoComplete="off" />
+        </div>
       </section>
+      <ExtrasSections control={control} kind="identity" />
       <section className="card pad" aria-labelledby="h-identity-more">
         <h2 id="h-identity-more" className="sr">
           {t('newItem.more')}

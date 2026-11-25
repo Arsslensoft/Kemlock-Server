@@ -29,7 +29,7 @@ interface FieldProps<T extends FieldValues> {
   name: FieldPath<T>;
   label: string;
   hint?: ReactNode;
-  type?: 'text' | 'email' | 'password' | 'url' | 'number' | 'search';
+  type?: 'text' | 'email' | 'password' | 'url' | 'number' | 'search' | 'tel' | 'date';
   multiline?: boolean;
   autoComplete?: string;
   inputMode?: 'text' | 'numeric' | 'email' | 'url';

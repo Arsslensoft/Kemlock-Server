@@ -1,0 +1,387 @@
+/*
+ * The item forms (src/features/vault/forms). Tokens only, so both themes come from tokens.css.
+ * Loaded with the New item page, not with the sign-in screen.
+ */
+
+/* Cancel and Save: normal size, at the right, never stretched. */
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.form-actions > .btn.p {
+  min-width: 120px;
+}
+
+.hint.bad {
+  color: var(--danger-text);
+}
+.hint.good {
+  color: var(--accent-text);
+}
+.hint.optional {
+  font-weight: 400;
+  font-size: 13px;
+}
+.form-wide .error {
+  font-size: 13px;
+  color: var(--danger-text);
+}
+
+/* ---------- Rows of websites and custom fields ---------- */
+.cf-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cf-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.cf-row > .site-uri,
+.cf-row > .cf-name {
+  flex: 1 1 240px;
+}
+.cf-row > .site-rule,
+.cf-row > .cf-kind {
+  flex: 0 1 180px;
+}
+.cf-row > .cf-value,
+.cf-row > .pw {
+  flex: 2 1 200px;
+}
+.cf-row > .check-row {
+  flex: 2 1 200px;
+}
+.cf-label {
+  flex: 1 1 200px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.cf-type {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.cf-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border-radius: var(--radius-chip);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--warn-text);
+  background: var(--warn-wash);
+  border: 1px solid var(--warn-line);
+}
+/* The remove button of a row: a square. */
+.btn.rm {
+  flex: none;
+  width: 44px;
+  padding: 0;
+}
+
+/* ---------- The Add a field menu ---------- */
+.af {
+  position: relative;
+  display: inline-block;
+}
+.af-menu {
+  position: absolute;
+  z-index: 20;
+  top: 44px;
+  left: 0;
+  width: min(300px, calc(100vw - 48px));
+  padding: 8px;
+  border-radius: 16px;
+  border: 1px solid var(--border-input);
+  background: var(--raised);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.af-menu h3 {
+  margin: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.af-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.af-item:hover {
+  background: var(--hover-wash);
+}
+.af-item .ty {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+}
+.af-rule {
+  height: 1px;
+  margin: 6px 0;
+  background: var(--border);
+}
+
+/* ---------- Linked items ---------- */
+.chips-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 4px 6px 4px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-input);
+  background: var(--hover-wash);
+  font-size: 13px;
+}
+.link-icon {
+  display: inline-flex;
+  color: var(--muted);
+}
+.link-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-weight: 600;
+  color: var(--text);
+}
+.link-kind {
+  color: var(--muted);
+}
+.link-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.link-x:hover {
+  background: var(--hover-wash);
+  color: var(--text);
+}
+.link-picker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.link-picker > .btn {
+  align-self: flex-start;
+}
+.pick {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border-input);
+  background: var(--bg);
+}
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-icon);
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.pick-row:hover {
+  background: var(--hover-wash);
+}
+.pick-row .link-kind {
+  margin-left: auto;
+}
+
+/* ---------- The password generator panel ---------- */
+.gen {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-field);
+  border: 1px solid var(--border-input);
+}
+.gen-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.gen-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.gen-length {
+  font-size: 13px;
+}
+.gen input[type='range'] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.gen-sets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.gen-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---------- Files ---------- */
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-field);
+  border: 1px solid var(--border-input);
+}
+.file-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: var(--tile);
+}
+.file-text {
+  flex: 1;
+  min-width: 0;
+}
+.file-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 28px 20px;
+  border-radius: 14px;
+  border: 1.5px dashed var(--border-input);
+  background: var(--accent-wash);
+  text-align: center;
+}
+.drop.over {
+  border-color: var(--accent-line-strong);
+  background: var(--accent-wash-strong);
+}
+.drop-icon {
+  display: inline-flex;
+  color: var(--accent-text);
+}
+.drop-icon .i {
+  width: 28px;
+  height: 28px;
+}
+.drop-title {
+  font-weight: 600;
+}
+
+/* ---------- The card number, with the brand it names ---------- */
+.brand-box {
+  position: relative;
+}
+.brand-box > input {
+  padding-right: 150px;
+}
+.field .brand-box > input:not([type='checkbox']):not([type='range']) {
+  padding-right: 150px;
+}
+.brand-badge {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-input);
+  background: var(--hover-wash);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* ---------- A read-only field that comes from a linked item ---------- */
+.ro-box {
+  position: relative;
+}
+.field .ro-box > input[readonly] {
+  padding-right: 40px;
+  cursor: default;
+}
+.ro-lock {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.passkey-ways {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
