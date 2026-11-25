@@ -2,7 +2,7 @@
 // the slider on its own line, then the characters the password may use. It sets how the Generate
 // button makes the password; nothing here touches the password itself.
 import { useId } from 'react';
-import { useT } from '@/i18n';
+import { type MessageId, useT } from '@/i18n';
 import type { GeneratorOptions } from '@/lib/password';
 
 interface Props {
@@ -10,16 +10,18 @@ interface Props {
   onChange: (next: GeneratorOptions) => void;
 }
 
-const SETS: Array<{ key: 'upper' | 'lower' | 'digits' | 'symbols'; label: string }> = [
-  { key: 'upper', label: 'A to Z' },
-  { key: 'lower', label: 'a to z' },
-  { key: 'digits', label: '0 to 9' },
-  { key: 'symbols', label: '!@#$%^&*' },
+const SETS: Array<{ key: 'upper' | 'lower' | 'digits' | 'symbols'; label: MessageId }> = [
+  { key: 'upper', label: 'itemForm.generator.upper' },
+  { key: 'lower', label: 'itemForm.generator.lower' },
+  { key: 'digits', label: 'itemForm.generator.digits' },
+  { key: 'symbols', label: 'itemForm.generator.symbols' },
 ];
 
 export function GeneratorPanel({ options, onChange }: Props) {
   const t = useT();
   const id = useId();
+  // At least one kind of character stays chosen: the last one can't be turned off.
+  const chosen = SETS.filter(({ key }) => options[key]).length;
   return (
     <div role="group" aria-labelledby={`${id}-h`} className="gen">
       <div className="gen-top">
@@ -45,9 +47,10 @@ export function GeneratorPanel({ options, onChange }: Props) {
               id={`${id}-${key}`}
               type="checkbox"
               checked={options[key]}
+              disabled={options[key] && chosen === 1}
               onChange={(event) => onChange({ ...options, [key]: event.target.checked })}
             />
-            <label htmlFor={`${id}-${key}`}>{label}</label>
+            <label htmlFor={`${id}-${key}`}>{t(label)}</label>
           </div>
         ))}
       </div>

@@ -1,7 +1,7 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
-import { useT } from '@/i18n';
+import { type MessageId, useT } from '@/i18n';
 import { CheckField, Field, SelectField } from '@/ui/fields';
 import type { ItemData, VaultItem } from '../vault';
 import { ExtrasSections } from './ExtrasSections';
@@ -11,7 +11,13 @@ import { Actions, type FormProps, entryBase, isPinned, orUndefined, str } from '
 const short = z.string().trim().max(200, 'error.tooLong');
 
 /** The titles the form offers; a title an item already has is offered too. */
-export const TITLES = ['Mr', 'Mrs', 'Ms', 'Mx', 'Dr'];
+export const TITLES: Array<{ value: string; label: MessageId }> = [
+  { value: 'Mr', label: 'itemForm.identity.title.mr' },
+  { value: 'Mrs', label: 'itemForm.identity.title.mrs' },
+  { value: 'Ms', label: 'itemForm.identity.title.ms' },
+  { value: 'Mx', label: 'itemForm.identity.title.mx' },
+  { value: 'Dr', label: 'itemForm.identity.title.dr' },
+];
 
 export const identitySchema = z.object({
   name: z.string().trim().min(1, 'error.required').max(200, 'error.tooLong'),
@@ -127,7 +133,13 @@ export function IdentityForm({
     defaultValues: initial,
   });
   const title = useWatch({ control, name: 'title' });
-  const titles = title === '' || TITLES.includes(title) ? TITLES : [...TITLES, title];
+  // A title the item already has that isn't in the list is offered as it is written.
+  const known = TITLES.some((option) => option.value === title);
+  const options = [
+    { value: '', label: t('itemForm.identity.title.none') },
+    ...TITLES.map((option) => ({ value: option.value, label: t(option.label) })),
+    ...(title === '' || known ? [] : [{ value: title, label: title }]),
+  ];
   return (
     <form className="stack form-wide" noValidate onSubmit={handleSubmit(onSubmit)}>
       <section className="card pad" aria-labelledby="h-identity">
@@ -138,7 +150,7 @@ export function IdentityForm({
             control={control}
             name="title"
             label={t('newItem.identity.title')}
-            options={['', ...titles].map((value) => ({ value, label: value }))}
+            options={options}
           />
           <Field control={control} name="givenName" label={t('newItem.identity.givenName')} autoComplete="off" />
         </div>

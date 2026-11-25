@@ -24,6 +24,10 @@
 
   "itemForm.generator.title": "Strength",
   "itemForm.generator.length": "Length {length}",
+  "itemForm.generator.upper": "A to Z",
+  "itemForm.generator.lower": "a to z",
+  "itemForm.generator.digits": "0 to 9",
+  "itemForm.generator.symbols": "!@#$%^&*",
 
   "itemForm.links.title": "Linked items",
   "itemForm.links.none": "Nothing linked yet.",
@@ -70,12 +74,9 @@
   "itemForm.file.required": "Choose a file.",
 
   "itemForm.error.fileTooLarge": "That file is larger than this server takes.",
-  "itemForm.error.storageDisabled": "This server doesn't keep files.",
-  "itemForm.error.storageFull": "Your attachment space is full.",
-  "itemForm.error.storageExceeded": "That file would take you over your attachment space.",
 
   "itemForm.passkey.title": "Passkeys come from websites",
-  "itemForm.passkey.body": "A passkey is made when a website asks for one, so there is nothing to type here. Sign up or add a passkey on the website, and Kemlock saves it to the vault you pick.",
+  "itemForm.passkey.body": "A passkey is made when a website asks for one, so there is nothing to type here. Sign up or add a passkey on the website, and Kemlock saves it to your vault.",
   "itemForm.passkey.browser": "In a browser, use Kemlock for browsers.",
   "itemForm.passkey.phone": "On a phone, choose Kemlock as the passkey provider in the system settings.",
   "itemForm.passkey.hint": "The passkey's private key is sealed in the vault like everything else; the website only ever sees the public key.",
@@ -101,6 +102,13 @@
   "itemForm.card.cvc.uses": "{brand} uses {digits} digits.",
   "itemForm.card.cvc.short": "A security code has 3 or 4 digits.",
   "itemForm.card.cvc.mismatch": "This security code doesn't have the digits this card uses.",
+
+  "itemForm.identity.title.none": "No title",
+  "itemForm.identity.title.mr": "Mr",
+  "itemForm.identity.title.mrs": "Mrs",
+  "itemForm.identity.title.ms": "Ms",
+  "itemForm.identity.title.mx": "Mx",
+  "itemForm.identity.title.dr": "Dr",
 
   "itemForm.contact.address": "Address",
   "itemForm.contact.keyTitle": "PGP public key",
