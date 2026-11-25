@@ -326,6 +326,18 @@ describe('the admin console', () => {
     expect(within(nav).getByRole('link', { name: 'Overview' })).toBeInTheDocument();
   });
 
+  it('lists Custom fields under Settings, right after Server settings', async () => {
+    open('/admin', { admin: true });
+    const nav = await screen.findByRole('navigation', { name: 'Admin' });
+    const names = within(nav)
+      .getAllByRole('link')
+      .map((link) => link.textContent ?? '');
+    const settings = names.findIndex((name) => name.includes('Server settings'));
+    expect(settings).toBeGreaterThan(-1);
+    expect(names[settings + 1]).toContain('Custom fields');
+    expect(within(nav).getByRole('link', { name: /Custom fields/ })).toHaveAttribute('href', '/admin/fields');
+  });
+
   it('signs out from its menu', async () => {
     const router = open('/admin', { admin: true });
     const user = userEvent.setup();
