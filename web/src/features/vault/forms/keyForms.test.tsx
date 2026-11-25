@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { CertificateForm, certificateDefaults, certificateFields, certificatePem } from './CertificateForm';
-import { ContactForm, contactDefaults, contactFields } from './ContactForm';
+import { ContactForm, armorProblem, contactDefaults, contactFields, pastedPublicKey } from './ContactForm';
 import { PgpKeyForm, pgpKeyDefaults, pgpKeyFields } from './PgpKeyForm';
 import { SshKeyForm, sshKeyDefaults, sshKeyFields } from './SshKeyForm';
 import { generateEd25519, pgpSecretProtected, readPastedSshKey } from './keyMaterial';
@@ -41,40 +41,90 @@ describe('key material', () => {
 describe('field builders', () => {
   it('builds a contact from a public key and refuses a private one', () => {
     const values = { ...contactDefaults(), name: 'Sam', armor: PUBLIC };
-    expect(contactFields(values, false)).toEqual({ name: 'Sam', note: undefined, public: BODY, source: 'paste' });
-    expect(contactFields({ ...values, armor: PRIVATE }, false)).toBeUndefined();
-    expect(contactFields({ ...values, armor: '' }, true)).toEqual({ name: 'Sam', note: undefined });
+    expect(pastedPublicKey(PUBLIC)).toBe(BODY);
+    expect(pastedPublicKey(PRIVATE)).toBeUndefined();
+    expect(armorProblem(PRIVATE)).toBe(true);
+    expect(armorProblem('')).toBe(false);
+    expect(armorProblem(PUBLIC)).toBe(false);
+    expect(contactFields(values)).toMatchObject({ name: 'Sam', public: BODY, source: 'paste' });
+    // A private paste writes no key at all: the form refuses it before it gets here.
+    expect(contactFields({ ...values, armor: PRIVATE })['public']).toBeUndefined();
+  });
+
+  it('builds a contact that is only a person, with no key', () => {
+    const fields = contactFields({
+      ...contactDefaults(),
+      name: 'Alex Chen',
+      company: 'Example Co',
+      email: 'alex@example.org',
+      phone: '+1 555 0142',
+      address: '48 Pine Street\nPortland',
+    });
+    expect(fields).toMatchObject({
+      name: 'Alex Chen',
+      company: 'Example Co',
+      email: 'alex@example.org',
+      phone: '+1 555 0142',
+      address: '48 Pine Street\nPortland',
+      source: 'manual',
+    });
+    expect(fields['public']).toBeUndefined();
+  });
+
+  it('keeps the key of a contact that exists, replaces it from a paste and removes it on request', () => {
+    const existing: VaultItem = {
+      id: 'c1',
+      owner: 'user:u',
+      kind: 'contact',
+      revision: 2,
+      keyVersion: 1,
+      data: { name: 'Sam', public: 'OLDKEY', source: 'qr', checkedFingerprint: 'AB' },
+      sizes: { ciphertext: 0, itemKey: 0 },
+    };
+    const values = { ...contactDefaults(existing), company: 'Example Co' };
+    expect(values.hadKey).toBe(true);
+    const kept = contactFields(values, existing);
+    expect(kept).toMatchObject({ company: 'Example Co' });
+    expect('public' in kept).toBe(false);
+    expect('source' in kept).toBe(false);
+    const replaced = contactFields({ ...values, armor: PUBLIC }, existing);
+    expect(replaced).toMatchObject({ public: BODY, source: 'paste' });
+    expect(replaced['checkedFingerprint']).toBeUndefined();
+    const removed = contactFields({ ...values, removeKey: true }, existing);
+    expect(removed['public']).toBeUndefined();
+    expect(removed).toMatchObject({ source: 'manual' });
   });
 
   it('builds a pgp key whose halves are the binary keys', () => {
-    const fields = pgpKeyFields({ ...pgpKeyDefaults(), name: 'Mine', armor: `${PRIVATE}\n${PUBLIC}` }, false);
+    const fields = pgpKeyFields({ ...pgpKeyDefaults(), name: 'Mine', armor: `${PRIVATE}\n${PUBLIC}` });
     expect(fields).toMatchObject({ kind: 'pgp', algorithm: 'pgp', private: BODY, public: BODY, origin: 'imported' });
-    expect(pgpKeyFields({ ...pgpKeyDefaults(), name: 'x', armor: PUBLIC }, false)).toBeUndefined();
+    expect(pgpKeyFields({ ...pgpKeyDefaults(), name: 'x', armor: PUBLIC })).toBeUndefined();
   });
 
   it('builds a certificate, with or without its key', () => {
     expect(certificatePem(CERT)).toBe(`-----BEGIN CERTIFICATE-----\n${BODY}\n-----END CERTIFICATE-----\n`);
     const key = { algorithm: 'ed25519' as const, private: 'p', public: 'q' };
     const values = { ...certificateDefaults(), name: 'Site', certificate: CERT };
-    expect(certificateFields(values, false, key)).toMatchObject({
+    expect(certificateFields(values, undefined, key)).toMatchObject({
       kind: 'signing',
       algorithm: 'ed25519',
       private: 'p',
       public: 'q',
       certificate: expect.stringContaining('BEGIN CERTIFICATE'),
     });
-    expect(certificateFields(values, false)).toBeUndefined();
-    expect(certificateFields({ ...values, certificate: 'nope' }, false, key)).toBeUndefined();
+    expect(certificateFields(values, undefined)).toBeUndefined();
+    expect(certificateFields({ ...values, certificate: 'nope' }, undefined, key)).toBeUndefined();
   });
 
   it('changes only the name and note of an ssh key that exists', () => {
-    expect(sshKeyFields({ ...sshKeyDefaults(), name: 'Laptop', note: '' })).toEqual({
+    expect(sshKeyFields({ ...sshKeyDefaults(), name: 'Laptop', note: '' }, undefined)).toMatchObject({
       name: 'Laptop',
       note: undefined,
     });
     expect(
       sshKeyFields(
         { ...sshKeyDefaults(), name: 'K', generatedPrivate: 'p' },
+        undefined,
         { algorithm: 'ed25519', private: 'p', public: 'q' },
       ),
     ).toMatchObject({ kind: 'ssh', algorithm: 'ed25519', private: 'p', public: 'q', origin: 'generated' });
@@ -170,7 +220,7 @@ describe('key reading', () => {
     expect(pgpSecretProtected(packet(0))).toBe(false);
     expect(pgpSecretProtected(packet(254))).toBe(true);
     expect(pgpSecretProtected(BODY)).toBeUndefined();
-    const fields = pgpKeyFields({ ...pgpKeyDefaults(), name: 'k', armor: PRIVATE.replace(BODY, packet(254)) }, false);
+    const fields = pgpKeyFields({ ...pgpKeyDefaults(), name: 'k', armor: PRIVATE.replace(BODY, packet(254)) });
     expect(fields?.['protected']).toBe(true);
   });
 

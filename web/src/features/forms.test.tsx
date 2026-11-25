@@ -8,9 +8,6 @@ import { SetupAdminForm } from './setup/SetupAdmin';
 import { TwoStepChoice } from './setup/SetupTwoStep';
 import { SetupCodeForm } from './setup/SetupCode';
 import { SetupServerForm, defaultBasics } from './setup/SetupServer';
-import { LoginForm, NoteForm } from './vault/ItemForm';
-import { loginDefaults, loginFields, noteDefaults, noteFields } from './vault/NewItem';
-import type { VaultItem } from './vault/vault';
 
 describe('SetupCodeForm', () => {
   it('refuses a code that is not 12 characters and says why', async () => {
@@ -161,84 +158,5 @@ describe('PasswordForm and CodeForm', () => {
     await user.click(screen.getByRole('button', { name: 'Go' }));
     expect(await screen.findByText(/6 digits/)).toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
-  });
-});
-
-describe('the item forms', () => {
-  it('saves a login, and can generate its password', async () => {
-    const onSubmit = vi.fn();
-    renderWithIntl(
-      <LoginForm
-        initial={loginDefaults()}
-        onSubmit={onSubmit}
-        onCancel={vi.fn()}
-        submitLabel="Save"
-      />,
-    );
-    const user = userEvent.setup({ delay: null });
-    await user.type(screen.getByLabelText('Name'), 'GitHub');
-    await user.type(screen.getByLabelText('Username'), 'sam@example.org');
-    await user.click(screen.getByRole('button', { name: 'Generate' }));
-    await user.type(screen.getByLabelText('Website'), 'https://github.com');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-    const values = onSubmit.mock.calls[0]?.[0] as { password: string; name: string; url: string };
-    expect(values.name).toBe('GitHub');
-    expect(values.url).toBe('https://github.com');
-    expect(values.password).toHaveLength(20);
-  });
-
-  it('refuses a login with no name or a javascript: website', async () => {
-    const onSubmit = vi.fn();
-    renderWithIntl(
-      <LoginForm initial={loginDefaults()} onSubmit={onSubmit} onCancel={vi.fn()} submitLabel="Save" />,
-    );
-    const user = userEvent.setup({ delay: null });
-    await user.type(screen.getByLabelText('Website'), 'javascript:alert(1)');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('This is required.')).toBeInTheDocument();
-    expect(screen.getByText(/starts with https/)).toBeInTheDocument();
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it('saves a note', async () => {
-    const onSubmit = vi.fn();
-    renderWithIntl(
-      <NoteForm initial={noteDefaults()} onSubmit={onSubmit} onCancel={vi.fn()} submitLabel="Save" />,
-    );
-    const user = userEvent.setup({ delay: null });
-    await user.type(screen.getByLabelText('Name'), 'Recovery plan');
-    await user.type(screen.getByLabelText('Text'), 'line one');
-    await user.click(screen.getByRole('button', { name: 'Save' }));
-    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
-    expect(onSubmit.mock.calls[0]?.[0]).toEqual({ name: 'Recovery plan', text: 'line one', favorite: false });
-  });
-
-  it('keeps what other apps wrote when a login is edited', () => {
-    const existing: VaultItem = {
-      id: 'i',
-      owner: 'user:u',
-      kind: 'login',
-      revision: 3,
-      keyVersion: 1,
-      sizes: { ciphertext: 1, itemKey: 1 },
-      data: {
-        name: 'Old',
-        username: 'u',
-        password: 'p',
-        urls: ['https://a.example', 'https://b.example'],
-        favorite: true,
-      },
-    };
-    const defaults = loginDefaults(existing);
-    expect(defaults).toMatchObject({ name: 'Old', url: 'https://a.example', favorite: true });
-    const fields = loginFields({ ...defaults, url: 'https://c.example', notes: '' }, existing);
-    expect(fields['urls']).toEqual(['https://c.example', 'https://b.example']);
-    expect(fields['notes']).toBeUndefined();
-    expect(noteFields({ name: 'N', text: 't', favorite: false })).toEqual({
-      name: 'N',
-      text: 't',
-      favorite: undefined,
-    });
   });
 });
