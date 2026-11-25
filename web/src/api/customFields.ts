@@ -1,7 +1,9 @@
 // The custom fields an admin offers (`GET /kem/v1/custom-fields`). Names and types are not secret,
 // so every signed-in client reads them in the clear; a person's values live in the sealed item
-// bodies. The answer is `{ fields: [{ id, name, type, kinds }], allowOwn }`: `type` is `text`,
-// `hidden` or `checkbox`, and `kinds` is the word `all` or a list of item kinds such as `login`.
+// bodies. The answer is one object, `{ fields: [{ id, name, type, kinds }], allowOwn }`: `type` is
+// `text`, `hidden` or `checkbox`, and `kinds` is the word `all` or a list of item kinds from login,
+// note, otp, backup-codes, card, identity, contact, certificate, ssh-key and pgp-key. A file and a
+// passkey take no custom fields.
 import type { Api } from './client';
 import { ApiError } from './errors';
 
@@ -43,24 +45,25 @@ function readField(raw: unknown): AdminFieldDef | undefined {
 }
 
 /**
- * Reads the answer, leniently: a field it can't read is left out, never an error. A bare list is
- * taken as the fields with people allowed to add their own.
+ * Reads the answer: an object with `fields` and `allowOwn`. A field it can't read is left out,
+ * never an error, and an answer that isn't that object means no admin fields.
  */
 export function readDefinitions(raw: unknown): CustomFieldDefinitions {
-  const list = Array.isArray(raw)
-    ? raw
-    : typeof raw === 'object' && raw !== null && Array.isArray((raw as { fields?: unknown }).fields)
-      ? (raw as { fields: unknown[] }).fields
-      : [];
-  const own = typeof raw === 'object' && raw !== null ? (raw as { allowOwn?: unknown }).allowOwn : undefined;
+  const body = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+  const list = Array.isArray(body['fields']) ? (body['fields'] as unknown[]) : [];
+  const own = body['allowOwn'];
   return {
     fields: list.map(readField).filter((field): field is AdminFieldDef => field !== undefined),
     allowOwn: typeof own === 'boolean' ? own : true,
   };
 }
 
-/** Whether the admin offers this field on items of `kind`. */
+/** The kinds that take no custom fields, whatever an admin's field says. */
+const NO_FIELDS = ['file', 'passkey'];
+
+/** Whether the admin offers this field on items of `kind`: it names the kind, or says all. */
 export function appliesTo(field: AdminFieldDef, kind: string): boolean {
+  if (NO_FIELDS.includes(kind)) return false;
   return field.kinds === 'all' || field.kinds.includes(kind);
 }
 

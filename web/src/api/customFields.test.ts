@@ -20,8 +20,9 @@ describe('readDefinitions', () => {
     });
   });
 
-  it('takes a bare list, with people allowed to add their own', () => {
-    expect(readDefinitions([FIELD])).toEqual({ fields: [{ ...FIELD }], allowOwn: true });
+  it('takes anything but the object as no admin fields, with people allowed to add their own', () => {
+    expect(readDefinitions([FIELD])).toEqual(NO_DEFINITIONS);
+    expect(readDefinitions('x')).toEqual(NO_DEFINITIONS);
   });
 
   it('leaves out a field it cannot read, and a field type it does not know', () => {
@@ -42,6 +43,11 @@ describe('appliesTo', () => {
     expect(appliesTo({ id: 'a', name: 'A', type: 'text', kinds: 'all' }, 'contact')).toBe(true);
     expect(appliesTo({ id: 'a', name: 'A', type: 'text', kinds: ['login'] }, 'login')).toBe(true);
     expect(appliesTo({ id: 'a', name: 'A', type: 'text', kinds: ['login'] }, 'card')).toBe(false);
+  });
+
+  it('never offers a field on a file or a passkey, even one for all kinds', () => {
+    expect(appliesTo({ id: 'a', name: 'A', type: 'text', kinds: 'all' }, 'file')).toBe(false);
+    expect(appliesTo({ id: 'a', name: 'A', type: 'text', kinds: 'all' }, 'passkey')).toBe(false);
   });
 });
 
