@@ -123,7 +123,11 @@ fn rig() -> Rig {
         notices: Notices::with_outbox(Arc::new(mailbox.clone())),
         yubico: Arc::new(NoYubico),
         duo: Arc::new(NoDuo),
-        settings: TwoStepSettings::default(),
+        // Mail is on, so a proof can be mailed.
+        settings: TwoStepSettings {
+            email_enabled: true,
+            ..TwoStepSettings::default()
+        },
     };
     let accounts = Accounts::default();
     let privacy = FakePrivacy::new(&app.store);
