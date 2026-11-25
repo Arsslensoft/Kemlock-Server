@@ -1,4 +1,4 @@
-// Send (canvas: Send): share a text or a small file through a link. It is encrypted in this
+// Send (canvas: Send): share a text, a small file or an item of the vault through a link. It is encrypted in this
 // browser and the key travels after the `#` in the link, which never reaches the server.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -15,7 +15,11 @@ import { Button } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
-import { timeAgo } from '@/features/vault/kinds';
+import { useVault } from '@/features/vault/hooks';
+import { EDITABLE_KINDS, type EditableKind, kindLabel, timeAgo } from '@/features/vault/kinds';
+import { type VaultItem, itemName } from '@/features/vault/vault';
+import { MAX_ENVELOPE_CHARS, buildEnvelope, serializeEnvelope } from './itemEnvelope';
+import { SendItemPicker } from './SendItemPicker';
 import { MAX_FILE_BYTES, type SendInput, makeSend, openOwnerView, sendLink } from './sendCrypto';
 
 export interface SendRow {
@@ -66,6 +70,7 @@ export function SendView({
   onDelete,
   error,
   loading,
+  items = [],
 }: {
   rows: SendRow[];
   now: Date;
@@ -77,9 +82,15 @@ export function SendView({
   onDelete: (row: SendRow) => void;
   error?: Described;
   loading?: boolean;
+  /** The vault's active items, to send one of them. */
+  items?: VaultItem[];
 }) {
   const t = useT();
-  const [kind, setKind] = useState<SendKind>('text');
+  // Text and file are Send kinds; a kind of the vault sends an item, as a text Send.
+  const [mode, setMode] = useState<'text' | 'file' | EditableKind>('text');
+  const [itemId, setItemId] = useState<string | undefined>(undefined);
+  const chosen = mode === 'text' || mode === 'file' ? undefined : items.find((item) => item.id === itemId && item.kind === mode);
+  const kind: SendKind = mode === 'file' ? 'file' : 'text';
   const [name, setName] = useState('');
   const [text, setText] = useState('');
   const [file, setFile] = useState<SendFormValues['file']>(undefined);
@@ -88,9 +99,10 @@ export function SendView({
   const [password, setPassword] = useState('');
   const [hideEmail, setHideEmail] = useState(true);
   const [fileError, setFileError] = useState(false);
+  const [itemError, setItemError] = useState(false);
   const parsedViews = views.trim() === '' ? null : Number.parseInt(views, 10);
   const viewsValid = parsedViews === null || (Number.isInteger(parsedViews) && parsedViews >= 1);
-  const ready = name.trim() !== '' && viewsValid && (kind === 'text' ? text !== '' : file !== undefined);
+  const ready = name.trim() !== '' && viewsValid && (mode === 'file' ? file !== undefined : mode === 'text' ? text !== '' : chosen !== undefined);
 
   return (
     <>
@@ -169,10 +181,15 @@ export function SendView({
             onSubmit={(event) => {
               event.preventDefault();
               if (!ready) return;
+              const envelope = chosen ? buildEnvelope(chosen, itemName(chosen)) : null;
+              const sealedText = envelope ? serializeEnvelope(envelope) : '';
+              // An item that did not open, or is too large to send, can't be made into a Send.
+              setItemError(chosen !== undefined && (!envelope || sealedText.length > MAX_ENVELOPE_CHARS));
+              if (chosen && (!envelope || sealedText.length > MAX_ENVELOPE_CHARS)) return;
               onCreate({
                 kind,
                 name: name.trim(),
-                text,
+                text: envelope ? sealedText : text,
                 file,
                 deleteAfterDays: days,
                 maxViews: parsedViews,
@@ -182,15 +199,19 @@ export function SendView({
             }}
           >
             <div className="chips" role="group" aria-label={t('send.type')}>
-              {(['text', 'file'] as const).map((value) => (
+              {(['text', 'file', ...EDITABLE_KINDS] as const).map((value) => (
                 <button
                   key={value}
                   type="button"
                   className="chip"
-                  aria-pressed={kind === value}
-                  onClick={() => setKind(value)}
+                  aria-pressed={mode === value}
+                  onClick={() => {
+                    setMode(value);
+                    setItemId(undefined);
+                    setItemError(false);
+                  }}
                 >
-                  {t(value === 'text' ? 'send.kind.text' : 'send.kind.file')}
+                  {t(value === 'text' ? 'send.kind.text' : value === 'file' ? 'send.kind.file' : kindLabel(value))}
                 </button>
               ))}
             </div>
@@ -198,7 +219,17 @@ export function SendView({
               <label htmlFor="s-name">{t('send.name')}</label>
               <input id="s-name" type="text" value={name} onChange={(e) => setName(e.target.value)} />
             </div>
-            {kind === 'text' ? (
+            {mode !== 'text' && mode !== 'file' ? (
+              <SendItemPicker
+                items={items}
+                kind={mode}
+                selectedId={chosen?.id}
+                onSelect={(item) => {
+                  setItemId(item?.id);
+                  if (item && name.trim() === '') setName(itemName(item));
+                }}
+              />
+            ) : mode === 'text' ? (
               <div className="field">
                 <label htmlFor="s-text">{t('send.text')}</label>
                 <textarea id="s-text" value={text} onChange={(e) => setText(e.target.value)} />
@@ -238,7 +269,7 @@ export function SendView({
                 ) : null}
               </div>
             )}
-            <div className="grid-2">
+            <div className="send-options">
               <div className="field">
                 <label htmlFor="s-exp">{t('send.deleteAfter')}</label>
                 <select id="s-exp" value={days} onChange={(e) => setDays(Number.parseInt(e.target.value, 10))}>
@@ -264,16 +295,16 @@ export function SendView({
                   </span>
                 ) : null}
               </div>
-            </div>
-            <div className="field">
-              <label htmlFor="s-pw">{t('send.passwordOptional')}</label>
-              <input
-                id="s-pw"
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
+              <div className="field">
+                <label htmlFor="s-pw">{t('send.passwordOptional')}</label>
+                <input
+                  id="s-pw"
+                  type="password"
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
             </div>
             <div className="check-row">
               <input
@@ -284,6 +315,11 @@ export function SendView({
               />
               <label htmlFor="s-hide">{t('send.hideEmail')}</label>
             </div>
+            {itemError ? (
+              <Notice tone="error" live>
+                <p>{t('sendItem.unreadable')}</p>
+              </Notice>
+            ) : null}
             <Button type="submit" variant="primary" isDisabled={creating || !ready}>
               {t('send.create')}
             </Button>
@@ -336,6 +372,7 @@ function describeSendError(error: unknown): Described {
 
 export default function Send() {
   const client = useQueryClient();
+  const vault = useVault();
   const [created, setCreated] = useState<string | undefined>(undefined);
   const [copied, setCopied] = useState<string | undefined>(undefined);
   const list = useQuery({
@@ -372,6 +409,7 @@ export default function Send() {
   return (
     <SendView
       rows={list.data ?? []}
+      items={vault.active}
       now={new Date()}
       loading={list.isPending}
       creating={create.isPending}

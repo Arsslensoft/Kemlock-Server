@@ -324,3 +324,10 @@
   gap: 12px;
   flex-wrap: wrap;
 }
+
+/* The Send form options share a row when they fit, like the other option grids. */
+.send-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+  gap: 12px;
+}

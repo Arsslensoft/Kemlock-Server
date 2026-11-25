@@ -11,7 +11,9 @@ import { Button } from '@/ui/Button';
 import { Icon, Wordmark } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/about.css';
+import { kindLabel } from '@/features/vault/kinds';
 import { formatSize } from './Send';
+import { type ItemEnvelope, parseEnvelope, shownFields } from './itemEnvelope';
 import {
   type FileResult,
   type OpenedSend,
@@ -179,13 +181,16 @@ function Opened({
 }) {
   const t = useT();
   const { payload } = send;
+  const envelope = payload.kind === 'text' ? parseEnvelope(payload.text) : null;
   return (
     <div className="stack">
       <div>
-        <h1>{payload.name}</h1>
+        <h1>{envelope ? envelope.name : payload.name}</h1>
         <p className="lede">{t('sendAccess.lede')}</p>
       </div>
-      {payload.kind === 'text' ? (
+      {envelope ? (
+        <ItemView envelope={envelope} onCopy={onCopy} />
+      ) : payload.kind === 'text' ? (
         <div className="field">
           <span className="lbl" id="send-access-text-label">
             {t('sendAccess.text.label')}
@@ -221,6 +226,66 @@ function Opened({
           .filter((part) => part !== '')
           .join(' ')}
       </p>
+    </div>
+  );
+}
+
+/** An item Send, read-only: each field labelled, secrets masked until shown, each one copyable. */
+export function ItemView({ envelope, onCopy }: { envelope: ItemEnvelope; onCopy: (text: string) => void }) {
+  const t = useT();
+  const [shown, setShown] = useState<Set<string>>(new Set());
+  const [copiedKey, setCopiedKey] = useState<string | undefined>(undefined);
+  return (
+    <div className="stack">
+      <p className="hint">{t(kindLabel(envelope.kind))}</p>
+      {shownFields(envelope).map((field) => {
+        const label = t(field.label);
+        const revealed = !field.secret || shown.has(field.key);
+        const id = `send-item-${field.key}`;
+        return (
+          <div className="field" key={field.key}>
+            <span className="lbl" id={`${id}-label`}>
+              {label}
+            </span>
+            {revealed ? (
+              <pre className="mono link-box" aria-labelledby={`${id}-label`}>
+                {field.value}
+              </pre>
+            ) : (
+              <p className="mono link-box" aria-label={t('sendAccess.item.hiddenValue')}>
+                {'•'.repeat(12)}
+              </p>
+            )}
+            <div className="actions">
+              {field.secret ? (
+                <Button
+                  size="small"
+                  aria-label={t(revealed ? 'sendAccess.item.hideField' : 'sendAccess.item.showField', { field: label })}
+                  onPress={() =>
+                    setShown((current) => {
+                      const next = new Set(current);
+                      if (!next.delete(field.key)) next.add(field.key);
+                      return next;
+                    })
+                  }
+                >
+                  {t(revealed ? 'sendAccess.item.hide' : 'sendAccess.item.show')}
+                </Button>
+              ) : null}
+              <Button
+                size="small"
+                aria-label={t('sendAccess.item.copyField', { field: label })}
+                onPress={() => {
+                  onCopy(field.value);
+                  setCopiedKey(field.key);
+                }}
+              >
+                {copiedKey === field.key ? t('copy.done') : t('sendAccess.item.copy')}
+              </Button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
