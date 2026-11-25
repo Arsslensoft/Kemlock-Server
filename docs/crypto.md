@@ -403,14 +403,15 @@ rules, so the Kemlock app and every older client keep working:
 
 Items linked to this one, as a list of `{ "id": "<item uuid>" }` sorted by `id` (lower-case
 hyphenated UUIDs, compared as text, each once, never the item's own id). An entry may carry other
-keys, which a client keeps.
+keys, which a client keeps, and an entry a client can't read stays where it is, after the others.
 
 A link is **two-way**: A links B when both bodies name each other. Linking writes both items and
 unlinking removes both ends, so a client that finds one end only (a write that failed halfway)
 shows the link and may mend it. A link may join an item of the person's own vault to an item of a
 space; the person needs write access to both. A code that the importer made from a login's TOTP
-carries `linkedLoginId` (the login's item id); a client reads it as a link too, and removes it when
-the person unlinks that login.
+carries `linkedLoginId` (the login's item id); a client reads it as a link on both items (the login
+shows the code), removes it when the person unlinks them from either side, and never copies it
+into `links`.
 
 ### `fields`: custom fields
 
@@ -428,6 +429,9 @@ Any kind but `passkey` and `file` may hold custom fields, as a list of
 from. Its `name` and `kind` are the admin's and are fixed; the person fills in the value. A field
 with no `adminField` is the person's own. A field is never required, a field with no name is left
 out, and a definition that is later changed or deleted does not change the fields already on items.
+A client writes a field nobody edited back exactly as it found it (every key, in the same order), an
+edited one with only its edited members changed, and every entry it can't edit (a `linked` field, one
+with no name) where it was.
 
 ### Login websites: `uris`, `urls`, `websites`
 
@@ -481,15 +485,18 @@ app names an attachment (`kemlock-core` `NoteAttachment`):
 | `kemlockFile` | the id of the file on the server, from `POST /kem/v1/items/{id}/files` |
 
 A secure note (`note`) holds any number of them, in `attachments`, up to 100; no other kind has
-attachments. A File item holds one, in `file`. A client keeps the members of an entry it doesn't
-know.
+attachments. A File item holds one, in `file`. A client writes an entry it didn't change back
+exactly as it found it (a missing member stays missing, no value is filled in, no key moves), and an
+entry in `attachments` that it can't read stays where it is.
 
 The server takes a file only for an item that **exists**, and a body never names a file the server
 lacks. So a client saves the item first, without the files just chosen; asks for each upload with
 the exact length of the `KMA1` file; sends the bytes (`PUT /kem/v1/items/{id}/files/{fileId}`,
 always to the server's own route, even where the server also offers a pre-signed address); and
-saves the item again with `kemlockFile` and `sha256` on each entry. It deletes from the server the
-files a person removed last, once no body names them. Files count against the person's attachment
+saves the item again with `kemlockFile` and `sha256` on each entry. A try that fails after the item
+was saved goes on from that item, and does not send a file that the body already names (matched by
+the attachment `id`) again. It deletes from the server the files a person removed last, once no
+body names them. Files count against the person's attachment
 quota, and the server refuses a file over its size limit.
 
 ### Contact
@@ -508,9 +515,10 @@ a contact.
 ### Card, identity, SSH key, PGP key and certificate
 
 These keep the members `kemlock-core` writes (`PaymentCard`, `Identity`, `VaultKey`) and gain
-only `links` and `fields`, above. The web vault no longer asks for a card's brand: `brand` is
-the brand the number names (Visa, Mastercard, American Express, Discover, Diners Club, JCB,
-UnionPay, Maestro), and stays as it was when the number names none.
+only `links` and `fields`, above. The web vault no longer asks for a card's brand. It writes `brand` from the
+number (Visa, Mastercard, American Express, Discover, Diners Club, JCB, UnionPay, Maestro) only when
+the number changed or the card had no brand; otherwise `brand` stays as stored, as it does when the
+number names no brand.
 
 ## Space, collection and group names
 
