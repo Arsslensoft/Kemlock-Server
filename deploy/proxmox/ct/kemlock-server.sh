@@ -158,7 +158,7 @@ fi
 setup_code=""
 for _ in $(seq 1 30); do
   setup_code=$(pct exec "$CTID" -- sh -c "$log_cmd" 2>/dev/null |
-    grep -oE 'setup code [0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}' | tail -n 1 | awk '{print $3}')
+    grep -oE 'setup code [0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}' | tail -n 1 | awk '{print $3}' || true)
   [[ -n "$setup_code" ]] && break
   sleep 1
 done
