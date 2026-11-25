@@ -1,0 +1,197 @@
+// What every form but the passkey and the file shares: custom fields and linked items. Both are
+// optional additions to the item body (docs/crypto.md, "Item bodies"), so an item that has neither
+// is written exactly as it was before, and an app that doesn't know them keeps them.
+//
+//   fields  [{ name, value, kind: "text" | "hidden" | "boolean", adminField? }]
+//   links   [{ id }] sorted by id
+//
+// `adminField` is the id of the admin's definition. Its name and type are the admin's; the person
+// fills in the value. Nothing is required.
+import { z } from 'zod';
+import { type AdminFieldDef, type CustomFieldType, appliesTo } from '@/api/customFields';
+import type { MessageId } from '@/i18n';
+import { formLinks, linksFields } from '../links';
+import type { ItemData, VaultItem } from '../vault';
+
+export interface FieldValue {
+  /** Names the row in the form; never stored. */
+  key: string;
+  name: string;
+  type: CustomFieldType;
+  /** A checkbox holds `true` or `false`. */
+  value: string;
+  /** The admin's field this one was made from, when it was. */
+  adminField?: string | undefined;
+}
+
+export interface ExtrasValues {
+  fields: FieldValue[];
+  links: string[];
+}
+
+let counter = 0;
+
+/** A key for a new row. */
+export function newFieldKey(): string {
+  counter += 1;
+  return `field-${counter}`;
+}
+
+const BODY_KIND: Record<CustomFieldType, string> = { text: 'text', hidden: 'hidden', checkbox: 'boolean' };
+
+/** The type a stored `kind` means: the importer writes `boolean`, a number or `password` for the others. */
+function typeOf(kind: unknown): CustomFieldType | undefined {
+  switch (typeof kind === 'string' ? kind.toLowerCase() : kind) {
+    case undefined:
+    case 'text':
+    case 0:
+      return 'text';
+    case 'hidden':
+    case 'password':
+    case 1:
+      return 'hidden';
+    case 'boolean':
+    case 'checkbox':
+    case 2:
+      return 'checkbox';
+    default:
+      // Linked fields (3) and kinds from a newer app are not edited here; they stay as they were.
+      return undefined;
+  }
+}
+
+function asEntries(data: ItemData | null | undefined): unknown[] {
+  const raw = data?.['fields'];
+  return Array.isArray(raw) ? raw : [];
+}
+
+function editable(
+  entry: unknown,
+): { name: string; type: CustomFieldType; value: string; adminField?: string } | undefined {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+  const field = entry as Record<string, unknown>;
+  const type = typeOf(field['kind'] ?? field['type']);
+  const name = field['name'];
+  if (type === undefined || typeof name !== 'string' || name.trim() === '') return undefined;
+  const raw = field['value'];
+  const value =
+    type === 'checkbox'
+      ? raw === true || raw === 'true'
+        ? 'true'
+        : 'false'
+      : typeof raw === 'string'
+        ? raw
+        : typeof raw === 'number'
+          ? String(raw)
+          : '';
+  const admin = field['adminField'];
+  return { name, type, value, ...(typeof admin === 'string' && admin !== '' ? { adminField: admin } : {}) };
+}
+
+/** The custom fields a form edits: those of the body it can read, in the order it holds them. */
+export function readFieldValues(data: ItemData | null | undefined): FieldValue[] {
+  const out: FieldValue[] = [];
+  for (const entry of asEntries(data)) {
+    const field = editable(entry);
+    if (field) out.push({ key: newFieldKey(), ...field });
+  }
+  return out;
+}
+
+/** What the person needs to fix in a row, if anything: a value with no name to go with it. */
+export function fieldProblem(field: FieldValue): MessageId | undefined {
+  if (field.adminField) return undefined;
+  const filled = field.type === 'checkbox' ? field.value === 'true' : field.value !== '';
+  return field.name.trim() === '' && filled ? 'itemForm.fields.nameNeeded' : undefined;
+}
+
+/**
+ * The `fields` member for the form's rows. A row with no name is left out; the entries this form
+ * cannot edit (a linked field, a kind from a newer app) stay after the others, as they were.
+ */
+export function writeFieldValues(values: readonly FieldValue[], existing: ItemData | null | undefined): ItemData {
+  const written = values
+    .filter((field) => field.name.trim() !== '')
+    .map((field) => ({
+      name: field.name.trim(),
+      value: field.type === 'checkbox' ? (field.value === 'true' ? 'true' : 'false') : field.value,
+      kind: BODY_KIND[field.type],
+      ...(field.adminField ? { adminField: field.adminField } : {}),
+    }));
+  const kept = asEntries(existing).filter((entry) => editable(entry) === undefined);
+  const all = [...written, ...kept];
+  return { fields: all.length > 0 ? all : undefined };
+}
+
+/** The admin's fields offered for a kind that the item does not hold yet. */
+export function adminChoices(
+  definitions: readonly AdminFieldDef[],
+  kind: string,
+  values: readonly FieldValue[],
+): AdminFieldDef[] {
+  const held = new Set(values.map((field) => field.adminField).filter((id): id is string => id !== undefined));
+  return definitions.filter((field) => appliesTo(field, kind) && !held.has(field.id));
+}
+
+export function addAdminField(values: readonly FieldValue[], def: AdminFieldDef): FieldValue[] {
+  return [
+    ...values,
+    {
+      key: newFieldKey(),
+      name: def.name,
+      type: def.type,
+      value: def.type === 'checkbox' ? 'false' : '',
+      adminField: def.id,
+    },
+  ];
+}
+
+export function addOwnField(values: readonly FieldValue[]): FieldValue[] {
+  return [...values, { key: newFieldKey(), name: '', type: 'text', value: '' }];
+}
+
+export function removeField(values: readonly FieldValue[], key: string): FieldValue[] {
+  return values.filter((field) => field.key !== key);
+}
+
+/** Changes one row. A new type resets what the value could not mean any more. */
+export function changeField(
+  values: readonly FieldValue[],
+  key: string,
+  patch: Partial<Pick<FieldValue, 'name' | 'type' | 'value'>>,
+): FieldValue[] {
+  return values.map((field) => {
+    if (field.key !== key) return field;
+    const next = { ...field, ...patch };
+    if (patch.type !== undefined && patch.type !== field.type) {
+      next.value = patch.type === 'checkbox' ? 'false' : field.type === 'checkbox' ? '' : field.value;
+    }
+    return next;
+  });
+}
+
+export const fieldValueSchema = z.object({
+  key: z.string(),
+  name: z.string().max(200, 'error.tooLong'),
+  type: z.enum(['text', 'hidden', 'checkbox']),
+  value: z.string().max(10000, 'error.tooLong'),
+  adminField: z.string().optional(),
+});
+
+/** The members every form's schema carries for fields and links. */
+export const extrasShape = {
+  fields: z
+    .array(fieldValueSchema)
+    .max(100, 'error.tooLong')
+    .refine((fields) => fields.every((field) => fieldProblem(field) === undefined), 'itemForm.fields.nameNeeded'),
+  links: z.array(z.string()),
+};
+
+export function extrasDefaults(item?: VaultItem): ExtrasValues {
+  return { fields: readFieldValues(item?.data), links: formLinks(item?.data) };
+}
+
+/** The `fields` and `links` members a form writes. */
+export function extrasFields(values: ExtrasValues, existing?: VaultItem): ItemData {
+  return { ...writeFieldValues(values.fields, existing?.data), ...linksFields(existing?.data, values.links) };
+}

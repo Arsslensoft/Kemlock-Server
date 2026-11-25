@@ -41,6 +41,15 @@ export function describeError(error: unknown): Described {
         return { id: 'error.stale' };
       case 'forbidden':
         return { id: 'error.forbidden' };
+      // The files of an item: the server's limits, as the files route words them.
+      case 'file-too-large':
+        return { id: 'itemForm.error.fileTooLarge' };
+      case 'storage-disabled':
+        return { id: 'itemForm.error.storageDisabled' };
+      case 'storage-limit-reached':
+        return { id: 'itemForm.error.storageFull' };
+      case 'storage-limit-exceeded':
+        return { id: 'itemForm.error.storageExceeded' };
       default:
         return { id: error.status >= 500 ? 'error.server' : 'error.generic' };
     }
