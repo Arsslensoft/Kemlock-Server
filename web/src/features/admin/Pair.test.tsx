@@ -61,6 +61,20 @@ describe('PairView, step 1', () => {
   });
 });
 
+describe('PairView, the connect form', () => {
+  it('blocks Connect and marks the fields while the address or code is the wrong shape', async () => {
+    const { onConnect } = view({ code: null, session: null });
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Its address'), 'https://vps.example.org');
+    await user.type(screen.getByLabelText('Its one-time code'), 'abc');
+    await user.click(screen.getByRole('button', { name: 'Connect' }));
+    expect(onConnect).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Its address')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Its one-time code')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText('Its address')).toHaveAccessibleDescription(/Type a host name/);
+  });
+});
+
 describe('PairView, with a connected server', () => {
   async function ready() {
     const handlers = view({ code: null, session: SESSION });

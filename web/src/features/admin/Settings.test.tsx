@@ -129,4 +129,55 @@ describe('SettingsView', () => {
     view({ savedGroup: 'trash' });
     expect(screen.getAllByText('Saved.')).toHaveLength(1);
   });
+
+  it('blocks Save and marks the field while a value is wrong, then lets go when it is right', async () => {
+    const { onSave } = view();
+    const user = userEvent.setup();
+    const port = screen.getByLabelText('SMTP port');
+    await user.clear(port);
+    await user.type(port, '0');
+    expect(port).toHaveAttribute('aria-invalid', 'true');
+    expect(port).toHaveAccessibleDescription(/Type a whole number from 1 to 65535/);
+    await user.click(saveOf('Email'));
+    expect(onSave).not.toHaveBeenCalled();
+    await user.clear(port);
+    await user.type(port, '465');
+    expect(port).not.toHaveAttribute('aria-invalid');
+    await user.click(saveOf('Email'));
+    expect(onSave).toHaveBeenCalledWith({ smtp_port: '465' }, 'smtp');
+  });
+
+  it('refuses a host with a slash', async () => {
+    const { onSave } = view();
+    const user = userEvent.setup();
+    const host = screen.getByLabelText('SMTP server');
+    await user.clear(host);
+    await user.type(host, 'https://mail.example.org');
+    expect(await screen.findByText(/without https:[/][/] or a slash/)).toBeInTheDocument();
+    await user.click(saveOf('Email'));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it('keeps Save disabled and Discard away while the section is clean', async () => {
+    view();
+    const user = userEvent.setup();
+    const email = screen.getByRole('region', { name: 'Email' });
+    expect(saveOf('Email')).toBeDisabled();
+    expect(within(email).queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('SMTP server'), 'x');
+    expect(saveOf('Email')).toBeEnabled();
+    await user.click(within(email).getByRole('button', { name: 'Discard' }));
+    expect(screen.getByLabelText('SMTP server')).toHaveValue('smtp.example.org');
+    expect(saveOf('Email')).toBeDisabled();
+    expect(within(email).queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+  });
+
+  it('puts the range in the placeholder, and Saved. under the title of the saved section', () => {
+    view({ savedGroup: 'smtp' });
+    expect(screen.getByLabelText('SMTP port')).toHaveAttribute('placeholder', '1–65535');
+    expect(screen.getByLabelText('SMTP port')).toHaveAttribute('min', '1');
+    expect(screen.getByLabelText('SMTP port')).toBeRequired();
+    const email = screen.getByRole('region', { name: 'Email' });
+    expect(within(email).getByText('Saved.')).toBeInTheDocument();
+  });
 });

@@ -128,4 +128,26 @@ describe('SsoView', () => {
     await user.click(screen.getByRole('button', { name: 'Add' }));
     expect(onAddDomain).toHaveBeenCalledWith('example.org');
   });
+
+  it('keeps Save disabled and Discard away until the form changes', async () => {
+    view();
+    const user = userEvent.setup();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Discard' })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('Name people see'), 'x');
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Discard' })).toBeInTheDocument();
+  });
+
+  it('marks a bad issuer invalid and describes it by its error', async () => {
+    view();
+    const user = userEvent.setup();
+    const issuer = screen.getByLabelText('Issuer URL');
+    await user.clear(issuer);
+    await user.type(issuer, 'nope');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(issuer).toHaveAttribute('aria-invalid', 'true');
+    expect(issuer).toHaveAccessibleDescription(/Type a web address/);
+    expect(issuer).toBeRequired();
+  });
 });
