@@ -110,38 +110,40 @@ export function LoginForm({ initial, onSubmit, onCancel, pending, error, submitL
           {t('newItem.login.details')}
         </h2>
         <Field control={control} name="name" label={t('newItem.name')} autoFocus />
-        <Field control={control} name="username" label={t('item.username')} autoComplete="off" />
-        <Field
-          control={control}
-          name="password"
-          label={t('item.password')}
-          type={visible ? 'text' : 'password'}
-          mono
-          autoComplete="new-password"
-          hint={password ? t(`newItem.strength.${strength}` as MessageId, { length: password.length }) : undefined}
-          action={
-            <>
-              <IconButton
-                className="big"
-                aria-label={visible ? t('item.hidePassword') : t('item.showPassword')}
-                onPress={() => setVisible((value) => !value)}
-              >
-                <Icon name={visible ? 'eyeOff' : 'eye'} />
-              </IconButton>
-              <Button
-                onPress={() => {
-                  setValue('password', generatePassword(generator), {
-                    shouldDirty: true,
-                    shouldValidate: true,
-                  });
-                  setVisible(true);
-                }}
-              >
-                {t('newItem.generate')}
-              </Button>
-            </>
-          }
-        />
+        <div className="pair">
+          <Field control={control} name="username" label={t('item.username')} autoComplete="off" />
+          <Field
+            control={control}
+            name="password"
+            label={t('item.password')}
+            type={visible ? 'text' : 'password'}
+            mono
+            autoComplete="new-password"
+            hint={password ? t(`newItem.strength.${strength}` as MessageId, { length: password.length }) : undefined}
+            action={
+              <>
+                <IconButton
+                  className="big"
+                  aria-label={visible ? t('item.hidePassword') : t('item.showPassword')}
+                  onPress={() => setVisible((value) => !value)}
+                >
+                  <Icon name={visible ? 'eyeOff' : 'eye'} />
+                </IconButton>
+                <Button
+                  onPress={() => {
+                    setValue('password', generatePassword(generator), {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                    setVisible(true);
+                  }}
+                >
+                  {t('newItem.generate')}
+                </Button>
+              </>
+            }
+          />
+        </div>
         <Field control={control} name="url" label={t('item.website')} type="url" autoComplete="off" placeholder="https://" />
       </section>
       <section className="card pad" aria-labelledby="h-more">
