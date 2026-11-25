@@ -226,7 +226,7 @@ pub fn load_or_create(
         .map(|(private, _)| KemPair::from_private(kx1::PrivateKey::from_bytes(private)))
         .collect::<Result<Vec<_>, _>>()
         .map_err(crypto)?;
-    LocalIdentity::new(
+    advertising_identity(
         server,
         sig1::SigningKey::from_bytes(&stored.signing),
         kems,
@@ -262,7 +262,7 @@ pub fn rotate_identity(
         .map_err(crypto)?;
     write_private(&folder.join(FILE_NAME), &sealed)?;
     let d = &current.descriptor.descriptor;
-    LocalIdentity::new(
+    advertising_identity(
         current.server,
         signing,
         vec![kem],
@@ -319,7 +319,7 @@ fn same_identity(
     now: u64,
 ) -> Result<LocalIdentity, IdentityError> {
     let d = &current.descriptor.descriptor;
-    LocalIdentity::new(
+    advertising_identity(
         current.server,
         signing,
         kems,
@@ -653,4 +653,21 @@ mod tests {
             load_or_create(dir.path(), &seal, ServerId::random(), &params(), NOW).expect("made");
         assert_eq!(identity.suites(), Suite::IMPLEMENTED.to_vec());
     }
+}
+
+/// `LocalIdentity::new`, listing what this server answers beyond version 1 (`Sends`) after its
+/// suites, so a peer that answers it too knows to ask.
+fn advertising_identity(
+    server: ServerId,
+    signing: sig1::SigningKey,
+    kems: Vec<KemPair>,
+    params: DescriptorParams,
+) -> Result<LocalIdentity, kemlock_federation::FedError> {
+    LocalIdentity::new_advertising(
+        server,
+        signing,
+        kems,
+        params,
+        &[kemlock_federation::sendsync::SENDS_CAPABILITY],
+    )
 }

@@ -30,6 +30,11 @@ use time::OffsetDateTime;
 
 type R<T> = std::result::Result<T, StoreError>;
 
+/// What a server lists among its descriptor's suites to say it answers `Sends` (request 17).
+/// `negotiate` skips names it doesn't know, so an older peer keeps the name and ignores it; an
+/// older peer would drop the session on a request type it doesn't know, so none is sent to a peer
+/// that doesn't list it.
+pub const SENDS_CAPABILITY: &str = "x-kemlock-sends1";
 /// The most Sends one `Sends` response carries.
 pub const MAX_SEND_ENTRIES: u32 = 50;
 /// A response stops growing past this many bytes of Sends, so a frame stays far below its cap.

@@ -719,13 +719,17 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                 }
                 Err(e) => tracing::info!(error = %e, "attachments didn't sync"),
             }
-            match replica.sync_sends(channel, peer.id, owner).await {
-                Ok(sends) => {
-                    status.sends_copied = sends.rows + sends.updated;
-                    status.files_fetched += sends.fetched;
-                    status.files_deferred += sends.deferred;
+            // Only to a peer that says it answers: an older one drops the session on a request
+            // it doesn't know, and the vaults after this one would not sync.
+            if peer.advertises(crate::sendsync::SENDS_CAPABILITY) {
+                match replica.sync_sends(channel, peer.id, owner).await {
+                    Ok(sends) => {
+                        status.sends_copied = sends.rows + sends.updated;
+                        status.files_fetched += sends.fetched;
+                        status.files_deferred += sends.deferred;
+                    }
+                    Err(e) => tracing::info!(error = %e, "Sends didn't sync"),
                 }
-                Err(e) => tracing::info!(error = %e, "Sends didn't sync"),
             }
         }
 
