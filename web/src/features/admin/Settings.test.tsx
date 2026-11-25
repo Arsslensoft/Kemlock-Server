@@ -278,6 +278,25 @@ describe('the hint under each switch', () => {
     expect(screen.getAllByRole('switch')).toHaveLength(SWITCHES.length);
   });
 
+  it("says the server pushes itself and the relay is only a fallback, for Kemlock's relay", () => {
+    view({ settings: SWITCHES });
+    const relay = screen.getByRole('switch', { name: "Register with Kemlock's push relay" });
+    expect(relay).toHaveAccessibleDescription(
+      /pushes to Kemlock's iPhones \(Apple push\) and Android phones \(UnifiedPush\) itself/,
+    );
+    expect(relay).toHaveAccessibleDescription(/only an optional fallback for iPhones on a server with no Apple key/);
+    expect(relay).toHaveAccessibleDescription(/never an item or an email/);
+  });
+
+  it("says what Bitwarden's relay is sent: ids and the kind of change, never contents", () => {
+    view({ settings: SWITCHES });
+    const relay = screen.getByRole('switch', { name: "Use Bitwarden's push relay" });
+    expect(relay).toHaveAccessibleDescription(
+      /user, device and item ids and the kind of change, never an item's contents/,
+    );
+    expect(relay).toHaveAccessibleDescription(/Kemlock's apps are woken by this server itself/);
+  });
+
   it('keeps the environment note after it when the environment sets the switch', () => {
     view({
       settings: [
