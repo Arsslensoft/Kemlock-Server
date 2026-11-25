@@ -93,7 +93,7 @@ export function forgetKeyFacts(): void {
 export interface KeyFactsState {
   /** The facts of every key item that has been read, by item id. */
   facts: ReadonlyMap<string, KeyFacts>;
-  /** True until the key items have been read once: `facts` may still lack some. */
+  /** True while a key item that was added or changed is still being read: `facts` may lack it. */
   pending: boolean;
 }
 
@@ -110,8 +110,9 @@ export function useKeyFacts(items: readonly VaultItem[]): KeyFactsState {
     .join('|');
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const keys = useMemo(() => items.filter(isKeyItem), [signature]);
-  const [state, setState] = useState<{ read: boolean; facts: ReadonlyMap<string, KeyFacts> }>({
-    read: false,
+  // The set of key items the facts were read for, so a new or changed key is pending again.
+  const [state, setState] = useState<{ read: string; facts: ReadonlyMap<string, KeyFacts> }>({
+    read: '',
     facts: new Map(),
   });
   useEffect(() => {
@@ -120,11 +121,11 @@ export function useKeyFacts(items: readonly VaultItem[]): KeyFactsState {
       if (!live) return;
       const found = new Map<string, KeyFacts>();
       for (const [id, fact] of pairs) if (fact) found.set(id, fact);
-      setState({ read: true, facts: found });
+      setState({ read: signature, facts: found });
     });
     return () => {
       live = false;
     };
-  }, [keys]);
-  return { facts: state.facts, pending: keys.length > 0 && !state.read };
+  }, [keys, signature]);
+  return { facts: state.facts, pending: keys.length > 0 && state.read !== signature };
 }
