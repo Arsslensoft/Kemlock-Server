@@ -4,17 +4,20 @@ import { describe, expect, it } from 'vitest';
 import { createAppRouter } from './router';
 import { createSession } from './session';
 
-const config = { setup: 'complete' };
-
 /** A router over a memory history, with the session in the given state, at `entry`. */
-async function visit(entry: string, status: 'signed-out' | 'locked' | 'unlocked', admin = false) {
+async function visit(
+  entry: string,
+  status: 'signed-out' | 'locked' | 'unlocked',
+  admin = false,
+  setup = 'complete',
+) {
   const session = createSession();
   if (status !== 'signed-out') {
     session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'd', admin });
     if (status === 'unlocked') session.unlocked();
   }
   const queryClient = new QueryClient();
-  queryClient.setQueryData(['config'], config);
+  queryClient.setQueryData(['config'], { setup });
   const router = createAppRouter({ queryClient, session }, createMemoryHistory({ initialEntries: [entry] }));
   await router.load();
   const { pathname, search } = router.state.location;
@@ -55,9 +58,9 @@ describe('a locked vault', () => {
   });
 
   it('sends a locked admin to unlock, not sign-in, for a setup step', async () => {
-    const at = await visit('/setup/two-step', 'locked', true);
+    const at = await visit('/setup/two-step', 'locked', true, 'pending');
     expect(at.pathname).toBe('/unlock');
     expect(at.search['next']).toBe('/setup/two-step');
-    expect((await visit('/setup/server', 'signed-out')).pathname).toBe('/sign-in');
+    expect((await visit('/setup/server', 'signed-out', false, 'pending')).pathname).toBe('/sign-in');
   });
 });
