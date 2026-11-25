@@ -14,8 +14,13 @@ import { type ApprovalRow, deviceKindLabelId, deviceMenu, isKemlockApp } from '.
 import type { Described } from './errors';
 
 export interface DevicesViewProps {
-  /** The address other apps connect to: the server's configured public address. */
-  address: string;
+  /**
+   * The address other apps connect to: the server's configured public address, from its
+   * `/config`. Undefined until that answer is here; the page's own address is no stand-in.
+   */
+  address: string | undefined;
+  /** Whether asking the server for its address failed. */
+  addressFailed?: boolean;
   approvals: ApprovalRow[] | undefined;
   approvalsError?: Described | undefined;
   /** null: the server has no device list; undefined: still loading. */
@@ -83,8 +88,8 @@ export function TrustedMark({ since, now }: { since?: string | null | undefined;
   );
 }
 
-/** The address, and a button that copies it: "Copied" for a moment after. */
-function CopyAddress({ address }: { address: string }) {
+/** A button that copies the address, "Copied" for a moment after; off while there is none. */
+function CopyAddress({ address }: { address: string | undefined }) {
   const t = useT();
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -93,7 +98,9 @@ function CopyAddress({ address }: { address: string }) {
     <>
       <Button
         size="small"
+        isDisabled={address === undefined}
         onPress={() => {
+          if (address === undefined) return;
           void copyText(address).then((ok) => {
             setState(ok ? 'copied' : 'failed');
             clearTimeout(timer.current);
@@ -114,10 +121,12 @@ function CopyAddress({ address }: { address: string }) {
 /** "Connect": the server's address to copy, then how each kind of app takes it, one under another. */
 export function ConnectDialog({
   address,
+  failed,
   isOpen,
   onOpenChange,
 }: {
-  address: string;
+  address: string | undefined;
+  failed?: boolean | undefined;
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -137,9 +146,19 @@ export function ConnectDialog({
               </div>
               <p className="hint">{t('devices.connect.lede')}</p>
               <div className="addr-row">
-                <code>{address}</code>
+                {address === undefined ? null : <code>{address}</code>}
                 <CopyAddress address={address} />
               </div>
+              {address === undefined && !failed ? (
+                <p className="hint" role="status">
+                  {t('devices.connect.loading')}
+                </p>
+              ) : null}
+              {address === undefined && failed ? (
+                <Notice tone="error" live>
+                  <p>{t('devices.connect.failed')}</p>
+                </Notice>
+              ) : null}
               <div className="stack-steps">
                 <p className="hint">{t('devices.connect.kemlock')}</p>
                 <p className="hint">{t('devices.connect.amethystora')}</p>
@@ -158,6 +177,7 @@ export function ConnectDialog({
 
 export function DevicesView({
   address,
+  addressFailed,
   approvals,
   approvalsError,
   others,
@@ -374,7 +394,12 @@ export function DevicesView({
         )}
       </section>
 
-      <ConnectDialog address={address} isOpen={connectOpen} onOpenChange={setConnectOpen} />
+      <ConnectDialog
+        address={address}
+        failed={addressFailed}
+        isOpen={connectOpen}
+        onOpenChange={setConnectOpen}
+      />
     </>
   );
 }

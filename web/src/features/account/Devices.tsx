@@ -33,13 +33,14 @@ export default function Devices() {
     await queryClient.invalidateQueries({ queryKey: ['devices'] });
   }
 
-  // The address the server is set up with, which is what an app needs; the page's own origin only
-  // stands in until the server's answer is there.
-  const address = config.data?.domain ?? window.location.origin;
+  // The address the server is set up with, which is what an app needs. The page's own address is
+  // not a stand-in: behind a proxy it may be another one, so Connect waits for the answer.
+  const address = config.data?.domain;
 
   return (
     <DevicesView
       address={address}
+      addressFailed={config.isError}
       approvals={approvals.data}
       approvalsError={approvals.error ? describeAccountError(approvals.error) : undefined}
       others={

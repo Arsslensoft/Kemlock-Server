@@ -174,6 +174,8 @@
   "devices.connect.lede": "Use this server's address in the app, then sign in. A new device may ask you to approve it from one you already use.",
   "devices.connect.close": "Close",
   "devices.connect.done": "Done",
+  "devices.connect.loading": "Loading this server's address…",
+  "devices.connect.failed": "Couldn't read this server's address, so there is nothing to copy yet. Close this and try again.",
   "devices.connect.copy": "Copy the address",
   "devices.connect.kemlock": "Kemlock: Settings, Sync, Kemlock Server, then sign in.",
   "devices.connect.amethystora": "Amethystora Vault: the Sync page, with this address as the server.",
