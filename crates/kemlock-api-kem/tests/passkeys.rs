@@ -1048,16 +1048,6 @@ async fn an_answer_with_another_users_handle_is_refused() {
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
 }
 
-test(web): cover the Recovery Kit's pieces, API, card and unlock
-
-Piece text, the API calls with and without a proof, the card's steps
-(show once, confirm one, proof to replace or remove, stale warning),
-the worker protocol's kit operations, and unlocking with 2 pieces:
-a typo, another kit's piece or a repeat is refused, no kit or a stale
-kit says so, and pieces that do not open the wrap leave the vault shut.
-The Account security test no longer expects the not-built kit row.
-
-Assisted-by: Claude Sonnet 5.5 via Claude Code
 #[tokio::test]
 async fn proof_options_require_verification_only_when_a_passkey_may_answer() {
     let pk = pk();
