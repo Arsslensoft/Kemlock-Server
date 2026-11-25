@@ -820,6 +820,20 @@ impl Vault {
         })
     }
 
+    /// Wraps the open account's root key under a new master key and OPAQUE export key (the
+    /// handles `masterKey` and `opaqueRegisterFinish` made), for a change of master password or
+    /// of sign-in address: base64url of the 92-byte wrap, for the server to keep. The root key
+    /// stays, and so do the key version and the associated data (docs/crypto.md, "Changing the
+    /// master password and the sign-in address"). Consumes both handles on success.
+    #[wasm_bindgen(js_name = rewrapRoot)]
+    pub fn rewrap_root(&mut self, master: u32, export_key: u32) -> Result<String, JsError> {
+        let wrapped = self
+            .session
+            .rewrap_root(master, export_key)
+            .map_err(fail)?;
+        Ok(b64::encode(&wrapped))
+    }
+
     /// Opens a passkey's PRF wrap of the root key and keeps the root key behind a handle for
     /// `unlockWithRoot`. Fails for another PRF output, credential, account or key version.
     #[wasm_bindgen(js_name = prfOpenRoot)]
