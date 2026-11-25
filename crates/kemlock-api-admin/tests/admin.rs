@@ -100,6 +100,26 @@ fn writes(target: &str) -> Vec<(&'static str, String, Option<Value>)> {
             "/admin/v1/migration/start".into(),
             Some(json!({"from": "/nowhere"})),
         ),
+        (
+            "POST",
+            "/admin/v1/custom-fields".into(),
+            Some(json!({"name": "Employee ID", "type": "text", "kinds": "all"})),
+        ),
+        (
+            "PUT",
+            format!("/admin/v1/custom-fields/{}", Uuid::new_v4()),
+            Some(json!({"name": "Employee ID", "type": "text", "kinds": "all"})),
+        ),
+        (
+            "DELETE",
+            format!("/admin/v1/custom-fields/{}", Uuid::new_v4()),
+            None,
+        ),
+        (
+            "PUT",
+            "/admin/v1/custom-fields/allow-own".into(),
+            Some(json!({"allow": false})),
+        ),
         ("POST", "/admin/v1/push-relay/enable".into(), None),
         ("POST", "/admin/v1/push-relay/disable".into(), None),
         (
@@ -122,6 +142,7 @@ const READS: &[&str] = &[
     "/admin/v1/users",
     "/admin/v1/invitations",
     "/admin/v1/spaces",
+    "/admin/v1/custom-fields",
     "/admin/v1/events",
     "/admin/v1/settings",
     "/admin/v1/sso",
@@ -2149,7 +2170,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             }
         }
     }
-    assert_eq!(operations, 41, "every operation is documented once");
+    assert_eq!(operations, 46, "every operation is documented once");
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"

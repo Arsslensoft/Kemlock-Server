@@ -6,6 +6,7 @@
 
 use crate::dto::*;
 use kemlock_api_kem::openapi::ProblemDoc;
+use kemlock_api_kem::{CustomFieldDto, CustomFieldsDto, KindsDto};
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
@@ -490,6 +491,127 @@ doc!(
     )
 );
 
+doc!(
+    doc_custom_fields_list,
+    get,
+    path = "/admin/v1/custom-fields",
+    tag = "custom-fields",
+    security(("dpop" = [])),
+    responses((
+        status = 200,
+        description = "The fields offered for items, oldest first, and whether people may add their own. The same answer clients read at `/kem/v1/custom-fields`",
+        body = CustomFieldsDto
+    ))
+);
+
+doc!(
+    doc_custom_field_create,
+    post,
+    path = "/admin/v1/custom-fields",
+    tag = "custom-fields",
+    security(("dpop" = [])),
+    params((
+        "Step-Up-Token" = String,
+        Header,
+        description = "A fresh step-up token"
+    )),
+    request_body = CustomFieldRequest,
+    responses(
+        (status = 201, description = "The field", body = CustomFieldDto),
+        (
+            status = 400,
+            description = "An empty or too long name, a type that isn't text, hidden or checkbox, or kinds that are empty or name a type that takes no custom fields",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+        (
+            status = 409,
+            description = "Another field has that name, or the server already holds 100",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
+    doc_custom_field_update,
+    put,
+    path = "/admin/v1/custom-fields/{id}",
+    tag = "custom-fields",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The field's UUID"),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A fresh step-up token"
+        ),
+    ),
+    request_body = CustomFieldRequest,
+    responses(
+        (status = 200, description = "The field after the change", body = CustomFieldDto),
+        (
+            status = 404,
+            description = "No such field",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+        (
+            status = 409,
+            description = "Another field has that name",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
+    doc_custom_field_delete,
+    delete,
+    path = "/admin/v1/custom-fields/{id}",
+    tag = "custom-fields",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The field's UUID"),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A fresh step-up token"
+        ),
+    ),
+    responses(
+        (
+            status = 204,
+            description = "The field is gone. Items that carry a value for it keep the value"
+        ),
+        (
+            status = 404,
+            description = "No such field",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
+    doc_custom_fields_allow_own,
+    put,
+    path = "/admin/v1/custom-fields/allow-own",
+    tag = "custom-fields",
+    security(("dpop" = [])),
+    params((
+        "Step-Up-Token" = String,
+        Header,
+        description = "A fresh step-up token"
+    )),
+    request_body = AllowOwnRequest,
+    responses((
+        status = 200,
+        description = "Whether people may now add fields of their own. Fields already on items stay",
+        body = AllowOwnDto
+    ))
+);
+
 doc!(doc_events_list, get, path = "/admin/v1/events", tag = "events", security(("dpop" = [])),
     params(
         ("actor" = Option<String>, Query, description = "An account's UUID"),
@@ -867,7 +989,9 @@ doc!(
         doc_users_list, doc_user_delete, doc_user_sign_out, doc_user_disable, doc_user_enable,
         doc_user_cancel_erasure, doc_user_reset_two_step, doc_invites_list,
         doc_invite_create, doc_invite_resend, doc_invite_revoke, doc_spaces_list, doc_space_get,
-        doc_space_change_owner, doc_events_list, doc_events_csv, doc_settings_get,
+        doc_space_change_owner, doc_custom_fields_list, doc_custom_field_create,
+        doc_custom_field_update, doc_custom_field_delete, doc_custom_fields_allow_own,
+        doc_events_list, doc_events_csv, doc_settings_get,
         doc_settings_put, doc_sso_get, doc_sso_put, doc_sso_domains, doc_sso_domain_add,
         doc_sso_domain_verify, doc_sso_domain_remove, doc_migration_status, doc_migration_start,
         doc_server_address, doc_push_relay_get, doc_push_relay_enable, doc_push_relay_disable, doc_compliance_list,
@@ -881,7 +1005,8 @@ doc!(
         ChangeOwnerRequest, EventDto, EventsPageDto, SettingDto, SettingsResponse,
         SettingsRequest, GroupRuleDto, SsoDto, SsoRequest, DomainDto, DomainRequest, MigrationDto,
         MigrationStartRequest, ServerAddressDto, PushRelayDto, ComplianceRequestDto, ComplianceListDto,
-        LogRequestRequest, UpdateRequestRequest
+        LogRequestRequest, UpdateRequestRequest, CustomFieldRequest, AllowOwnRequest, AllowOwnDto,
+        CustomFieldsDto, CustomFieldDto, KindsDto
     )),
     modifiers(&SecurityAddon)
 )]

@@ -4,8 +4,8 @@
 use kemlock_api_kem::{Api, Crypto, Store};
 use kemlock_app::admin::{
     AccountErasure, AdminError, AdminRepos, AdminSpaces, AdminUsers, Audit, Compliance,
-    EnvSettings, EventLogView, Mailer, MigrationRecord, MigrationRunner, Overview, PasskeyStepper,
-    PushRelayControl, Settings, SsoAdmin, StepUp,
+    CustomFields, EnvSettings, EventLogView, Mailer, MigrationRecord, MigrationRunner, Overview,
+    PasskeyStepper, PushRelayControl, Settings, SsoAdmin, StepUp,
 };
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::SpaceRepo;
@@ -221,6 +221,14 @@ where
             repos: self.rt.repos.clone(),
             mail: self.rt.mail.clone(),
             env: self.api.crypto.clone(),
+        }
+    }
+
+    pub(crate) fn custom_fields(&self) -> CustomFields<R, M, P> {
+        CustomFields {
+            repos: self.rt.repos.clone(),
+            mail: self.rt.mail.clone(),
+            clock: self.api.crypto.clone(),
         }
     }
 

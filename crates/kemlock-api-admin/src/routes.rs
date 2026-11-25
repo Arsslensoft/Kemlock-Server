@@ -19,17 +19,18 @@ use kemlock_api_kem::extract::{Body, DPOP_NONCE};
 use kemlock_api_kem::problem::rate_limited;
 use kemlock_api_kem::ratelimit::ip_key;
 use kemlock_api_kem::replay::Full;
-use kemlock_api_kem::{Api, Crypto, Problem, Store};
+use kemlock_api_kem::{Api, Crypto, CustomFieldDto, CustomFieldsDto, Problem, Store};
 use kemlock_app::admin::events::{cursor_text, filter as event_filter, parse_cursor};
 use kemlock_app::admin::{
-    AdminError, AdminRepos, Change, Mailer, MigrationRequest, NewRequest, PushRelayControl,
-    RequestKind, RequestStatus, RequestUpdate, SecretChange, SsoInput, UserQuery,
+    AdminError, AdminRepos, Change, FieldInput, Mailer, MigrationRequest, NewRequest,
+    PushRelayControl, RequestKind, RequestStatus, RequestUpdate, SecretChange, SsoInput,
+    UserQuery,
 };
 use kemlock_app::b64url;
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::sso::{SsoRepos, TxtLookup};
-use kemlock_domain::{SpaceId, UserId};
+use kemlock_domain::{CustomFieldId, FieldType, SpaceId, UserId};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -92,6 +93,19 @@ struct EventsQuery {
 #[derive(Debug, Deserialize)]
 struct RequestsQuery {
     open: Option<bool>,
+}
+
+impl CustomFieldRequest {
+    /// What the admin typed, or why it is refused.
+    fn into_input(self) -> Result<FieldInput, ApiError> {
+        let field_type = FieldType::parse(&self.field_type)
+            .ok_or_else(|| bad("type is text, hidden or checkbox"))?;
+        Ok(FieldInput {
+            name: self.name,
+            field_type,
+            kinds: self.kinds.into_kinds()?,
+        })
+    }
 }
 
 impl EventsQuery {
@@ -513,6 +527,77 @@ where
             )
             .await?;
         json_ok(AdminSpaceDto::from(&row))
+    }
+
+    // ---- custom fields ----
+
+    /// `GET /admin/v1/custom-fields`: the fields and the switch, as clients read them.
+    async fn custom_fields_list(
+        State(env): State<Self>,
+        _caller: Caller,
+    ) -> Result<Json<CustomFieldsDto>, ApiError> {
+        let definitions = env.custom_fields().list().await?;
+        json_ok(CustomFieldsDto::from_definitions(&definitions))
+    }
+
+    /// `POST /admin/v1/custom-fields`: adds a field. A name another field has is a 409.
+    async fn custom_field_create(
+        State(env): State<Self>,
+        writer: Writer,
+        body: Body,
+    ) -> Result<(StatusCode, Json<CustomFieldDto>), ApiError> {
+        let request: CustomFieldRequest = body.json()?;
+        let field = env
+            .custom_fields()
+            .create(&writer.actor, Some(writer.ip), request.into_input()?)
+            .await?;
+        Ok((StatusCode::CREATED, Json(CustomFieldDto::from_field(&field))))
+    }
+
+    /// `PUT /admin/v1/custom-fields/{id}`: changes a field's name, type and kinds.
+    async fn custom_field_update(
+        State(env): State<Self>,
+        writer: Writer,
+        Path(id): Path<String>,
+        body: Body,
+    ) -> Result<Json<CustomFieldDto>, ApiError> {
+        let request: CustomFieldRequest = body.json()?;
+        let field = env
+            .custom_fields()
+            .update(
+                &writer.actor,
+                Some(writer.ip),
+                CustomFieldId(uuid(&id)?),
+                request.into_input()?,
+            )
+            .await?;
+        json_ok(CustomFieldDto::from_field(&field))
+    }
+
+    /// `DELETE /admin/v1/custom-fields/{id}`.
+    async fn custom_field_delete(
+        State(env): State<Self>,
+        writer: Writer,
+        Path(id): Path<String>,
+    ) -> Result<StatusCode, ApiError> {
+        env.custom_fields()
+            .delete(&writer.actor, Some(writer.ip), CustomFieldId(uuid(&id)?))
+            .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    /// `PUT /admin/v1/custom-fields/allow-own`: whether people may add fields of their own.
+    async fn custom_fields_allow_own(
+        State(env): State<Self>,
+        writer: Writer,
+        body: Body,
+    ) -> Result<Json<AllowOwnDto>, ApiError> {
+        let request: AllowOwnRequest = body.json()?;
+        let allow_own = env
+            .custom_fields()
+            .set_allow_own(&writer.actor, Some(writer.ip), request.allow)
+            .await?;
+        json_ok(AllowOwnDto { allow_own })
     }
 
     // ---- events ----
@@ -1080,6 +1165,18 @@ where
         .route("/admin/v1/spaces", get(h!(spaces_list)))
         .route("/admin/v1/spaces/{id}", get(h!(space_get)))
         .route("/admin/v1/spaces/{id}/owner", put(h!(space_change_owner)))
+        .route(
+            "/admin/v1/custom-fields",
+            get(h!(custom_fields_list)).post(h!(custom_field_create)),
+        )
+        .route(
+            "/admin/v1/custom-fields/allow-own",
+            put(h!(custom_fields_allow_own)),
+        )
+        .route(
+            "/admin/v1/custom-fields/{id}",
+            put(h!(custom_field_update)).delete(h!(custom_field_delete)),
+        )
         .route("/admin/v1/events", get(h!(events_list)))
         .route("/admin/v1/events.csv", get(h!(events_csv)))
         .route(

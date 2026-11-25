@@ -8,14 +8,14 @@ use crate::space_fakes::FakeSpaces;
 use kemlock_app::admin::{
     AccountErasure, AdminContact, AdminError, AdminEvent, AdminEventRepo, AdminSpaceRepo,
     AdminSpaceRow, AdminUserRepo, AdminUserRow, ComplianceCounts, ComplianceRepo,
-    ComplianceRequest, EventCursor, EventFilter, EventPage, EventRecord, Invite, InviteRepo,
-    MailError, Mailer, Notice, SettingsRepo, SpaceOwner, SpacePage, UserCounts, UserPage,
-    UserQuery,
+    ComplianceRequest, CustomFieldRepo, EventCursor, EventFilter, EventPage, EventRecord, Invite,
+    InviteRepo, MailError, Mailer, Notice, SettingsRepo, SpaceOwner, SpacePage, UserCounts,
+    UserPage, UserQuery,
 };
 use kemlock_app::notices::BoxFuture;
 use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::SpaceRepo;
-use kemlock_domain::{SpaceId, User, UserId};
+use kemlock_domain::{CustomField, CustomFieldId, SpaceId, User, UserId};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 use time::OffsetDateTime;
@@ -30,6 +30,7 @@ struct Inner {
     events: Vec<EventRecord>,
     settings: BTreeMap<String, String>,
     requests: Vec<ComplianceRequest>,
+    custom_fields: Vec<CustomField>,
     erased: Vec<UserId>,
     /// Each account the delete route erased and the admin who asked, through `AccountErasure`.
     erasures: Vec<(UserId, UserId)>,
@@ -94,6 +95,11 @@ impl FakeAdmin {
 
     pub(crate) fn pending_erasures(&self) -> Vec<UserId> {
         self.lock().pending_erasures.clone()
+    }
+
+    /// The custom fields as stored, oldest first.
+    pub(crate) fn custom_fields_now(&self) -> Vec<CustomField> {
+        self.lock().custom_fields.clone()
     }
 
     pub(crate) fn saved_setting(&self, key: &str) -> Option<String> {
@@ -456,6 +462,57 @@ impl SettingsRepo for FakeAdmin {
     async fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
         self.lock().settings.remove(key);
         Ok(())
+    }
+}
+
+impl CustomFieldRepo for FakeAdmin {
+    async fn custom_fields(&self) -> Result<Vec<CustomField>, StoreError> {
+        Ok(self.lock().custom_fields.clone())
+    }
+
+    async fn custom_field(&self, id: CustomFieldId) -> Result<Option<CustomField>, StoreError> {
+        Ok(self
+            .lock()
+            .custom_fields
+            .iter()
+            .find(|f| f.id == id)
+            .cloned())
+    }
+
+    async fn insert_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {
+        let mut g = self.lock();
+        if g.custom_fields
+            .iter()
+            .any(|f| f.name_key() == field.name_key())
+        {
+            return Err(StoreError::Duplicate);
+        }
+        g.custom_fields.push(field.clone());
+        Ok(())
+    }
+
+    async fn update_custom_field(&self, field: &CustomField) -> Result<(), StoreError> {
+        let mut g = self.lock();
+        if g.custom_fields
+            .iter()
+            .any(|f| f.id != field.id && f.name_key() == field.name_key())
+        {
+            return Err(StoreError::Duplicate);
+        }
+        let slot = g
+            .custom_fields
+            .iter_mut()
+            .find(|f| f.id == field.id)
+            .ok_or(StoreError::NotFound)?;
+        *slot = field.clone();
+        Ok(())
+    }
+
+    async fn remove_custom_field(&self, id: CustomFieldId) -> Result<bool, StoreError> {
+        let mut g = self.lock();
+        let before = g.custom_fields.len();
+        g.custom_fields.retain(|f| f.id != id);
+        Ok(g.custom_fields.len() != before)
     }
 }
 

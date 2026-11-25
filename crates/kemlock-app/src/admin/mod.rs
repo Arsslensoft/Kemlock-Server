@@ -80,6 +80,7 @@ pub trait AdminRepos:
     + AdminEventRepo
     + SettingsRepo
     + ComplianceRepo
+    + CustomFieldRepo
     + Clone
     + 'static
 {
@@ -92,6 +93,7 @@ impl<T> AdminRepos for T where
         + AdminEventRepo
         + SettingsRepo
         + ComplianceRepo
+        + CustomFieldRepo
         + Clone
         + 'static
 {
