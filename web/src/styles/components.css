@@ -1149,3 +1149,44 @@ ol.stack {
 .field input[type='range'] {
   accent-color: var(--accent);
 }
+
+/* The mobile app's AppAlert glow: a soft halo in the alert's own hue (--glow) that swells and
+ * fades. Decoration only; it stops for people who ask for less motion. */
+@keyframes alert-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 24px 0 color-mix(in srgb, var(--glow) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 24px 0 color-mix(in srgb, var(--glow) var(--glow-alpha), transparent);
+  }
+}
+.notice,
+.notice.warn,
+.notice.error,
+.adm-banner,
+.adm-banner.bad,
+.failover-banner,
+.confirm-panel,
+.approval,
+.waiting {
+  --glow: var(--warn);
+  animation: alert-glow 3.4s ease-in-out infinite;
+}
+.notice {
+  --glow: var(--accent);
+}
+.notice.error,
+.adm-banner.bad {
+  --glow: var(--danger);
+}
+@media (prefers-reduced-motion: reduce) {
+  .notice,
+  .adm-banner,
+  .failover-banner,
+  .confirm-panel,
+  .approval,
+  .waiting {
+    animation: none;
+  }
+}
