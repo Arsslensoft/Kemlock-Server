@@ -122,13 +122,19 @@ describe('PeerSecurityView', () => {
     view();
     const user = userEvent.setup();
     const list = within(screen.getByRole('list', { name: 'Suites this server accepts, most preferred first' }));
-    await user.click(list.getByRole('switch', { name: new RegExp(`^${SUITES.aes}`) }));
-    await user.click(list.getByRole('switch', { name: new RegExp(`^${SUITES.chacha}`) }));
+    await user.click(list.getByRole('switch', { name: SUITES.aes }));
+    await user.click(list.getByRole('switch', { name: SUITES.chacha }));
     expect(screen.getByText(/No suite is on/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Discard' }));
     expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
     expect(screen.getByText(/AES-256-GCM is first/)).toBeInTheDocument();
+  });
+
+  it('names a suite switch by the suite alone and describes it with its hint', () => {
+    view();
+    const aes = screen.getByRole('switch', { name: SUITES.aes });
+    expect(aes).toHaveAccessibleDescription(/.+/);
   });
 
   it('says Saved. under the section title once the suites are saved', () => {
