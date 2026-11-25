@@ -146,6 +146,44 @@ impl FakeStore {
         self.lock().users.insert(user.id, user);
     }
 
+    /// The conditional write of the profile port: the sign-in records of `after` (and its address,
+    /// when `address`) go over the account's row only while the row still is as `before` read it,
+    /// the same `updated_at` and security stamp. `false` when it is not, `Duplicate` when
+    /// another account has the address.
+    pub(crate) fn update_credentials_if(
+        &self,
+        before: &User,
+        after: &User,
+        address: bool,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.lock();
+        if address && g.users.values().any(|u| u.id != before.id && u.email == after.email) {
+            return Err(StoreError::Duplicate);
+        }
+        let Some(row) = g.users.get_mut(&before.id) else {
+            return Ok(false);
+        };
+        if row.updated_at != before.updated_at || row.security_stamp != before.security_stamp {
+            return Ok(false);
+        }
+        row.opaque_record = after.opaque_record.clone();
+        row.kdf = after.kdf.clone();
+        row.wrapped_root_key = after.wrapped_root_key.clone();
+        row.security_stamp = after.security_stamp;
+        row.updated_at = after.updated_at;
+        if address {
+            row.email = after.email.clone();
+        }
+        Ok(true)
+    }
+
+    /// Another request writes the account: its `updated_at` moves on, as any write of the row does.
+    pub(crate) fn touch_user(&self, id: UserId) {
+        if let Some(row) = self.lock().users.get_mut(&id) {
+            row.updated_at += Duration::seconds(1);
+        }
+    }
+
     pub(crate) fn devices_of(&self, user: UserId) -> Vec<Device> {
         self.lock()
             .devices
