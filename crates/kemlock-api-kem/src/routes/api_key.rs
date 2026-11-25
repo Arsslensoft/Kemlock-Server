@@ -116,7 +116,7 @@ where
     let use_case = keys(&api, &repos);
     // An account with no key to show is refused before the proof is spent.
     use_case.show(authed.actor.user).await?;
-    require_proof_via_api(&api, authed.actor.user, request.proof.trim(), true).await?;
+    require_proof_via_api(&api, authed.actor.user, &request.proof, true).await?;
     let key = use_case.reveal(authed.actor.user).await?;
     api.sessions()
         .record(
@@ -148,7 +148,7 @@ where
     let request: ProofRequest = body.json()?;
     let use_case = keys(&api, &repos);
     use_case.show(authed.actor.user).await?;
-    require_proof_via_api(&api, authed.actor.user, request.proof.trim(), true).await?;
+    require_proof_via_api(&api, authed.actor.user, &request.proof, true).await?;
     let key = use_case.rotate(authed.actor.user).await?;
     api.sessions()
         .record(

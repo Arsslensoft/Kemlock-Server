@@ -110,8 +110,8 @@ struct EraseRequest {
     finalization: String,
     /// A fresh proof, needed beside the password when the account has a second step on: the code
     /// mailed by `POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app,
-    /// or the recovery code. A code works once.
-    proof: Option<String>,
+    /// the recovery code, or a security key's or passkey's answer. A code works once.
+    proof: Option<crate::dto::FreshProof>,
 }
 
 /// `GET /kem/v1/account/export`.
@@ -191,7 +191,7 @@ where
         .map_err(AppError::from)?
         .iter()
         .any(|row| row.enabled);
-    let proof = request.proof.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    let proof = request.proof.as_ref().filter(|p| !p.is_blank());
     if second_step && proof.is_none() {
         return Err(AppError::Invalid(
             "a fresh proof is needed beside the password to erase an account with a second step",
