@@ -29,7 +29,7 @@ describe('FederationView', () => {
   it('says when each peer was last seen and how fast it answered', () => {
     view();
     const peers = within(screen.getByRole('region', { name: 'Servers in this federation' }));
-    expect(peers.getAllByText(/Last seen 12 seconds ago/).length).toBeGreaterThan(0);
+    expect(peers.getAllByText(/Last seen now/).length).toBeGreaterThan(0);
     expect(peers.getByText(/· 48 ms/)).toBeInTheDocument();
   });
 
