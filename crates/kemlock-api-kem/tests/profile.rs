@@ -260,6 +260,17 @@ fn kdf() -> Value {
     json!({"memoryKib": 65536, "iterations": 3, "parallelism": 4, "salt": b64(&[8u8; 16])})
 }
 
+/// A refresh with `token`, from `client`'s device key. A plain function: a closure can't return the
+/// future of a call that borrows its arguments.
+async fn refresh(client: &Client, token: &str) -> Reply {
+    client
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": token}),
+        )
+        .await
+}
+
 fn actions(rig: &Rig) -> Vec<&'static str> {
     rig.app.store.events().iter().map(|e| e.action).collect()
 }
@@ -463,12 +474,6 @@ async fn signing_the_other_devices_out_keeps_the_device_that_asked() {
     let kept = sam.password_body(false).await;
     let changed = sam.call("PUT", "/kem/v1/account/password", Some(kept)).await;
     assert_eq!(changed.status, StatusCode::NO_CONTENT, "{:?}", changed.body);
-    let refresh = |client: &Client, token: &str| {
-        client.post(
-            "/kem/v1/auth/token",
-            json!({"grantType": "refresh_token", "refreshToken": token}),
-        )
-    };
     let still = refresh(&other, &other_session.refresh_token).await;
     assert_eq!(still.status, StatusCode::OK, "{:?}", still.json());
     let other_session = Session::from_tokens(&still.json());
