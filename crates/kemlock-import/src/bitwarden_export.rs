@@ -700,7 +700,9 @@ fn identity_of(data: &Value) -> IdentityOut {
 }
 
 /// A kind Bitwarden has no item for, written as a secure note that keeps what it held: the notes
-/// or text, and every other plain value as a custom field.
+/// or text, and every other plain value as a custom field. Not the files (`file`, `attachments`):
+/// each holds the key of a file, and an export carries no file bytes; and not `links`, which name
+/// items by an id that means nothing to Bitwarden.
 fn note_of_other(data: &Value, fields: &mut Vec<FieldOut>) -> Option<String> {
     let notes = text(data, "notes").or_else(|| text(data, "text"));
     if let Value::Object(map) = data {
@@ -715,6 +717,9 @@ fn note_of_other(data: &Value, fields: &mut Vec<FieldOut>) -> Option<String> {
                     | "createdAt"
                     | "updatedAt"
                     | "fields"
+                    | "file"
+                    | "attachments"
+                    | "links"
             ) {
                 continue;
             }
@@ -734,6 +739,23 @@ fn note_of_other(data: &Value, fields: &mut Vec<FieldOut>) -> Option<String> {
         }
     }
     notes
+}
+
+/// The note a File item becomes: its own notes, then a line naming the file and saying that the
+/// export holds no file bytes. The file's key and its place on the server are not written.
+fn file_note(data: &Value, notes: Option<String>) -> String {
+    let entry = data.get("file");
+    let name = entry
+        .and_then(|file| text(file, "name"))
+        .or_else(|| text(data, "name"))
+        .unwrap_or_else(|| "a file".to_string());
+    let said = format!("The file {name} is not included: an export holds no file bytes.");
+    match notes {
+        Some(notes) => format!("{notes}
+
+{said}"),
+        None => said,
+    }
 }
 
 fn item_out(item: &ExportItem, folders: &mut Folders, linked_totp: Option<&String>) -> ItemOut {
@@ -830,6 +852,12 @@ fn item_out(item: &ExportItem, folders: &mut Folders, linked_totp: Option<&Strin
                 public_key: text(data, "publicKey"),
                 key_fingerprint: text(data, "fingerprint"),
             });
+        }
+        "file" => {
+            // A file's bytes are not in an export, so the item becomes a note that says so.
+            base.kind = 2;
+            base.secure_note = Some(SecureNoteOut { kind: 0 });
+            notes = Some(file_note(data, note_of_other(data, &mut fields)));
         }
         _ => {
             base.kind = 2;
@@ -1133,6 +1161,68 @@ mod tests {
         let text =
             write_with(ExportKind::Kemlock, &items, PASSWORD, FAST, &entropy()).expect("write");
         assert_eq!(read_back(&text).logins.len(), 2);
+    }
+
+    #[test]
+    fn a_file_is_a_note_that_says_its_bytes_are_not_included_and_no_key_leaves() {
+        let items = vec![
+            item(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "file",
+                json!({
+                    "name": "Lease",
+                    "notes": "Signed",
+                    "file": {
+                        "id": "abc",
+                        "name": "Lease agreement.pdf",
+                        "size": 12,
+                        "key": "SECRETKEY",
+                        "addedAt": 5,
+                        "sha256": "ab".repeat(32),
+                        "kemlockFile": "server-1",
+                    },
+                    "links": [{"id": "11111111-1111-4111-8111-111111111111"}],
+                    "attachments": [{"name": "x", "key": "OTHERKEY"}],
+                }),
+            ),
+            item(
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                "future-kind",
+                json!({
+                    "name": "From a newer app",
+                    "text": "kept",
+                    "colour": "blue",
+                    "file": {"key": "SECRETKEY"},
+                    "attachments": [{"key": "OTHERKEY"}],
+                    "links": [{"id": "11111111-1111-4111-8111-111111111111"}],
+                }),
+            ),
+        ];
+        let clear = plain_json(ExportKind::Bitwarden, &items).expect("plain");
+        let root: Value = serde_json::from_str(&clear).expect("json");
+
+        let file = &root["items"][0];
+        assert_eq!(file["type"], 2, "a note");
+        let notes = file["notes"].as_str().expect("notes");
+        assert!(notes.starts_with("Signed
+
+"), "{notes}");
+        assert!(notes.contains("Lease agreement.pdf is not included"), "{notes}");
+        assert!(notes.contains("no file bytes"), "{notes}");
+        // No key, no server id and no link leaves in a field or anywhere else.
+        for secret in ["SECRETKEY", "OTHERKEY", "server-1", "11111111-1111-4111-8111-111111111111"] {
+            assert!(!clear.contains(secret), "{secret} was exported");
+        }
+
+        // A kind Bitwarden doesn't know keeps its plain values as fields, but not these three.
+        let names: Vec<&str> = root["items"][1]["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert_eq!(names, ["colour"]);
+        assert_eq!(root["items"][1]["notes"], "kept");
     }
 
     #[test]

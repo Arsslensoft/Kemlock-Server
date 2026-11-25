@@ -1,97 +1,91 @@
+// New item (`/vault/new?kind=<kind>`), a copy (`/vault/new?copyOf=<item id>`) and edit
+// (`/vault/$itemId/edit`): one form for each kind of item, filled in or not. The kind is in the
+// address, so a New menu entry, a chip and a link all open the same page. The form is in forms/;
+// what it makes is saved by saveFlow.ts.
 import { Link, useCanGoBack, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router';
-import { useState } from 'react';
-import { session } from '@/app/services';
-import { useT } from '@/i18n';
+import { useRef, useState } from 'react';
+import { createFilesApi } from '@/api/files';
+import { api, session } from '@/app/services';
+import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
-import type { LoginValues, NoteValues } from '@/lib/schemas';
 import { buttonClass } from '@/ui/Button';
-import { LoginForm, NoteForm } from './ItemForm';
-import { ENTRY_KINDS, ENTRY_TITLES, EntryForm, isEntryKind } from './forms';
-import { KEY_KINDS, KeyItemForm, isKeyKind } from './forms/KeyItemForm';
+import { Notice } from '@/ui/Notice';
+import '@/styles/itemForms.css';
+import { type AttachmentEntry, serverFileIds } from './attachments';
+import { copyFields, copySeed } from './copyDraft';
+import { KindForm } from './forms';
+import { FormEnvContext } from './forms/env';
+import type { Described } from './forms/parts';
 import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
-import { type EditableKind, isEditable, kindLabel } from './kinds';
-import { type ItemData, type VaultItem, itemName, loginOf, noteOf } from './vault';
-import { readWebsites, writeWebsites } from './websites';
+import { KIND_ORDER, type KnownKind, isEditable, isKnownKind, kindLabel } from './kinds';
+import { formLinks, incomingLinks } from './links';
+import { type FormResult, UploadError, saveWithExtras } from './saveFlow';
+import { useItemFormEnv } from './useItemFormEnv';
+import { type VaultItem, vaultStore } from './vault';
 
-export function loginDefaults(item?: VaultItem): LoginValues {
-  const login = item ? loginOf(item) : undefined;
-  return {
-    name: item ? itemName(item) : '',
-    username: login?.username ?? '',
-    password: login?.password ?? '',
-    url: login?.urls[0] ?? '',
-    notes: typeof item?.data?.notes === 'string' ? item.data.notes : '',
-    favorite: item?.data?.favorite === true,
-  };
-}
+const files = createFilesApi(api);
 
-export function noteDefaults(item?: VaultItem): NoteValues {
-  return {
-    name: item ? itemName(item) : '',
-    text: item ? noteOf(item) : '',
-    favorite: item?.data?.favorite === true,
-  };
-}
+const TITLES: Record<KnownKind, MessageId> = {
+  login: 'itemForm.title.login',
+  note: 'itemForm.title.note',
+  file: 'itemForm.title.file',
+  otp: 'itemForm.title.otp',
+  'backup-codes': 'itemForm.title.backup-codes',
+  passkey: 'itemForm.title.passkey',
+  card: 'itemForm.title.card',
+  identity: 'itemForm.title.identity',
+  contact: 'itemForm.title.contact',
+  certificate: 'itemForm.title.certificate',
+  'ssh-key': 'itemForm.title.ssh-key',
+  'pgp-key': 'itemForm.title.pgp-key',
+};
 
-/** The fields a login form owns. Websites after the first, and fields other apps wrote, stay. */
-export function loginFields(values: LoginValues, existing?: VaultItem): ItemData {
-  // A login with match rules (the Websites screen) keeps its other websites and every rule; the
-  // form changes only the first address, and `uris`, `urls` and `websites` stay in step.
-  if (existing && Array.isArray(existing.data?.['uris'])) {
-    const rules = readWebsites(existing.data);
-    const first = rules[0];
-    const next = [{ uri: values.url, match: first?.match ?? ('default' as const) }, ...rules.slice(1)];
-    return {
-      name: values.name,
-      username: values.username,
-      password: values.password,
-      ...writeWebsites(next),
-      notes: values.notes === '' ? undefined : values.notes,
-      favorite: values.favorite ? true : undefined,
-    };
-  }
-  const rest = existing ? loginOf(existing).urls.slice(1) : [];
-  const urls = [values.url, ...rest].filter((url) => url !== '');
-  return {
-    name: values.name,
-    username: values.username,
-    password: values.password,
-    urls,
-    notes: values.notes === '' ? undefined : values.notes,
-    favorite: values.favorite ? true : undefined,
-  };
-}
-
-export function noteFields(values: NoteValues): ItemData {
-  return { name: values.name, text: values.text, favorite: values.favorite ? true : undefined };
-}
-
-/** New item (`/vault/new`) and edit (`/vault/$itemId/edit`): one form, filled in or not. */
 export default function NewItem() {
   const t = useT();
   const navigate = useNavigate();
   const router = useRouter();
   const canGoBack = useCanGoBack();
   const { itemId } = useParams({ strict: false }) as { itemId?: string };
-  const search = useSearch({ strict: false }) as { kind?: EditableKind };
+  const search = useSearch({ strict: false }) as { kind?: KnownKind; copyOf?: string };
   const { item, isLoading } = useVaultItem(itemId);
-  const { save } = useVaultActions();
-  const [chosen, setChosen] = useState<EditableKind>(search.kind ?? 'login');
+  const copying = useVaultItem(search.copyOf);
+  const { save, remove } = useVaultActions();
   // Where a new item goes: '' is the account's own vault, otherwise `<space id>/<collection id>`.
   const [where, setWhere] = useState('');
   const collections = useWritableCollections();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<Described>();
+  // The item an earlier try saved before something after it failed, and the files it sent: Save goes
+  // on from them, so the item is never made twice and no file is sent twice.
+  const [savedItem, setSavedItem] = useState<VaultItem>();
+  const [uploaded, setUploaded] = useState<AttachmentEntry[]>([]);
+  const [linkFailures, setLinkFailures] = useState<string[]>([]);
   const editing = itemId !== undefined;
-  const kind: EditableKind = editing && item && isEditable(item.kind) ? item.kind : chosen;
-  const error = save.error ? describeError(save.error) : undefined;
+  const copyOf = search.copyOf;
+  const source = copyOf !== undefined ? copying.item : undefined;
+  const chosen = search.kind ?? (source && isKnownKind(source.kind) ? source.kind : undefined);
+  const kind: KnownKind = editing && item && isKnownKind(item.kind) ? item.kind : (chosen ?? 'login');
+  const existing = item ?? savedItem;
+  const env = useItemFormEnv(existing?.id);
+  // What the item had when the form opened: what it links to now is compared with the links, and the
+  // files it keeps with the files, so an end or a file that failed once is dealt with by the next Save.
+  const opened = useRef<{ links: string[]; files: string[] } | undefined>(undefined);
+  if (opened.current === undefined && (!editing || item)) {
+    const incoming = item ? incomingLinks(item.id, env.items) : [];
+    opened.current = {
+      links: [...new Set([...formLinks(item?.data), ...incoming])].sort(),
+      files: serverFileIds(item?.data),
+    };
+  }
 
-  if (editing && isLoading) {
+  if ((editing && isLoading) || (copyOf !== undefined && copying.isLoading)) {
     return (
       <p className="empty" role="status">
         {t('main.loading')}
       </p>
     );
   }
-  if (editing && (!item || !isEditable(item.kind))) {
+  if ((editing && (!item || !isEditable(item.kind))) || (copyOf !== undefined && !source)) {
     return (
       <div className="empty">
         <h1 className="page-title">{t('item.missing.title')}</h1>
@@ -113,20 +107,65 @@ export default function NewItem() {
         : navigate({ to: '/vault', replace: true }));
   };
 
-  // The form is replaced by the item, so Back after Save doesn't reopen the form.
-  function saved(result: VaultItem) {
-    void navigate({ to: '/vault/$itemId', params: { itemId: result.id }, replace: true });
-  }
-
-  // A contact is one person's own statement: it stays in the account's own vault.
-  const target = kind === 'contact'
-    ? undefined
-    : collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where);
+  // A contact is one person's own statement: it stays in the account's own vault. A passkey is
+  // made by a website, so nothing is saved from its page and there is nowhere to pick.
+  const picksWhere = kind !== 'contact' && kind !== 'passkey';
+  const target = picksWhere
+    ? collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where)
+    : undefined;
   const owner = target ? `space:${target.spaceId}` : `user:${session.getState().userId ?? ''}`;
   const collectionId = target?.collectionId;
   const heldIn = item?.collectionId
     ? collections.data?.find((c) => c.collectionId === item.collectionId)
     : undefined;
+  // A copy keeps what the original held that this page doesn't show, such as keys another app wrote.
+  const seed = source ? copySeed(source) : undefined;
+  const incoming = item ? incomingLinks(item.id, env.items) : [];
+
+  async function submit(result: FormResult) {
+    setPending(true);
+    setError(undefined);
+    setLinkFailures([]);
+    try {
+      const outcome = await saveWithExtras(
+        {
+          save: (input) => save.mutateAsync(input),
+          lookup: (id) => vaultStore.items.get(id),
+          files,
+          removeItem: (made) => remove.mutateAsync(made),
+        },
+        {
+          existing,
+          kind,
+          owner,
+          collectionId,
+          result: existing ? result : { ...result, fields: copyFields(seed, result.fields) },
+          linksBefore: opened.current?.links ?? [],
+          filesBefore: opened.current?.files ?? [],
+          uploaded,
+        },
+      );
+      if (outcome.linkFailures.length > 0) {
+        // Saved; the link could not be written on these. Save again tries them again.
+        setSavedItem(outcome.item);
+        setUploaded([]);
+        setLinkFailures(outcome.linkFailures);
+        return;
+      }
+      // The form is replaced by the item, so Back after Save doesn't reopen the form.
+      void navigate({ to: '/vault/$itemId', params: { itemId: outcome.item.id }, replace: true });
+    } catch (caught) {
+      if (caught instanceof UploadError) {
+        setSavedItem(caught.saved);
+        setUploaded(caught.uploaded);
+        setError(describeError(caught.reason));
+      } else {
+        setError(describeError(caught));
+      }
+    } finally {
+      setPending(false);
+    }
+  }
 
   return (
     <>
@@ -136,27 +175,26 @@ export default function NewItem() {
         <span aria-current="page">{editing ? t('newItem.edit') : t('newItem.crumb')}</span>
       </nav>
       <div>
-        <h1 className="page-title">
-          {editing
-            ? t('newItem.editTitle')
-            : isEntryKind(kind)
-              ? t(ENTRY_TITLES[kind])
-              : isKeyKind(kind)
-                ? t('newItem.titleOf', { kind: t(kindLabel(kind)) })
-                : t(kind === 'login' ? 'newItem.loginTitle' : 'newItem.noteTitle')}
-        </h1>
+        <h1 className="page-title">{editing ? t('newItem.editTitle') : t(TITLES[kind])}</h1>
         <p className="lede">{t('newItem.lede')}</p>
       </div>
 
-      {editing ? null : (
+      {editing || copyOf !== undefined ? null : (
         <div className="chips" role="group" aria-label={t('newItem.kind')}>
-          {(['login', 'note', ...ENTRY_KINDS, ...KEY_KINDS] as const).map((option) => (
+          {KIND_ORDER.map((option) => (
             <button
               key={option}
               type="button"
               className="chip"
               aria-pressed={kind === option}
-              onClick={() => setChosen(option)}
+              onClick={() => {
+                // Another kind is another form: what an earlier try saved stays saved.
+                setSavedItem(undefined);
+                setUploaded([]);
+                setError(undefined);
+                setLinkFailures([]);
+                void navigate({ to: '/vault/new', search: { kind: option }, replace: true });
+              }}
             >
               {t(kindLabel(option))}
             </button>
@@ -171,8 +209,8 @@ export default function NewItem() {
             : t('newItem.where.inSpace')}
         </p>
       ) : null}
-      {!editing && kind !== 'contact' && collections.data && collections.data.length > 0 ? (
-        <div className="field">
+      {!editing && picksWhere && collections.data && collections.data.length > 0 ? (
+        <div className="field form-wide">
           <label htmlFor="item-where">{t('newItem.where')}</label>
           <select id="item-where" value={where} onChange={(event) => setWhere(event.target.value)}>
             <option value="">{t('newItem.where.vault')}</option>
@@ -185,62 +223,26 @@ export default function NewItem() {
         </div>
       ) : null}
 
-      {isEntryKind(kind) ? (
-        <EntryForm
+      {linkFailures.length > 0 ? (
+        <Notice tone="warn" live>
+          <p>{t('itemForm.links.failed', { names: linkFailures.join(', ') })}</p>
+        </Notice>
+      ) : null}
+
+      <FormEnvContext.Provider value={env}>
+        <KindForm
           kind={kind}
           item={item}
+          existing={existing}
+          seed={seed}
+          incoming={incoming}
           submitLabel={t('action.save')}
-          pending={save.isPending}
+          pending={pending}
           error={error}
           onCancel={cancel}
-          onSubmit={(fields) =>
-            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
-          }
+          onSubmit={(result) => void submit(result)}
         />
-      ) : isKeyKind(kind) ? (
-        <KeyItemForm
-          key={`${kind}-${item?.id ?? 'new'}`}
-          kind={kind}
-          item={item}
-          submitLabel={t('action.save')}
-          pending={save.isPending}
-          error={error}
-          onCancel={cancel}
-          onSave={(fields) =>
-            save.mutate({ existing: item, kind, owner, collectionId, fields, entry: true }, { onSuccess: saved })
-          }
-        />
-      ) : kind === 'login' ? (
-        <LoginForm
-          key={`login-${item?.id ?? 'new'}`}
-          initial={loginDefaults(item)}
-          submitLabel={t('action.save')}
-          pending={save.isPending}
-          error={error}
-          onCancel={cancel}
-          onSubmit={(values) =>
-            save.mutate(
-              { existing: item, kind: 'login', owner, collectionId, fields: loginFields(values, item) },
-              { onSuccess: saved },
-            )
-          }
-        />
-      ) : (
-        <NoteForm
-          key={`note-${item?.id ?? 'new'}`}
-          initial={noteDefaults(item)}
-          submitLabel={t('action.save')}
-          pending={save.isPending}
-          error={error}
-          onCancel={cancel}
-          onSubmit={(values) =>
-            save.mutate(
-              { existing: item, kind: 'note', owner, collectionId, fields: noteFields(values) },
-              { onSuccess: saved },
-            )
-          }
-        />
-      )}
+      </FormEnvContext.Provider>
     </>
   );
 }

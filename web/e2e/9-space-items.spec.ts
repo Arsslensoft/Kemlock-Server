@@ -35,7 +35,7 @@ test('a login saved to a space collection is sealed there and can be edited', as
   await page.getByLabel('Name', { exact: true }).fill('Team VPN');
   await page.getByLabel('Username').fill('ops@example.org');
   await page.getByLabel('Password', { exact: true }).fill('Space-journey-pass-1!');
-  await page.getByLabel('Website').fill('https://vpn.example.org');
+  await page.getByLabel('Website 1', { exact: true }).fill('https://vpn.example.org');
   const put = page.waitForRequest(
     (request) => request.method() === 'PUT' && new URL(request.url()).pathname.startsWith('/kem/v1/items/'),
   );

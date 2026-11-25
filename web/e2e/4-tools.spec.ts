@@ -19,7 +19,7 @@ async function newLogin(page: Page, name: string, website: string): Promise<void
   await page.getByLabel('Name', { exact: true }).fill(name);
   await page.getByLabel('Username').fill('tools@example.org');
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
-  await page.getByLabel('Website').fill(website);
+  await page.getByLabel('Website 1', { exact: true }).fill(website);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible();
 }

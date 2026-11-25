@@ -11,6 +11,8 @@ export type Described = { id: MessageId; values?: Record<string, string | number
 
 export interface FormProps<T> {
   initial: T;
+  /** An existing item is being edited. */
+  editing?: boolean | undefined;
   onSubmit: (values: T) => void;
   onCancel: () => void;
   pending?: boolean | undefined;
@@ -18,6 +20,7 @@ export interface FormProps<T> {
   submitLabel: string;
 }
 
+/** Cancel and Save, normal size, at the right. */
 export function Actions({
   pending,
   onCancel,
@@ -32,7 +35,7 @@ export function Actions({
           <p>{t(error.id, error.values)}</p>
         </Notice>
       ) : null}
-      <div className="actions">
+      <div className="form-actions">
         <Button onPress={onCancel}>{t('action.cancel')}</Button>
         <Button type="submit" variant="primary" isDisabled={pending}>
           {submitLabel}

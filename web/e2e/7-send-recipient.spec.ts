@@ -57,10 +57,10 @@ test('a note with a password opens for someone with the link, and the key never 
     timeout: 60_000,
   });
   await expectAccessible(recipient);
-  await recipient.getByLabel('Password').fill('not the password');
+  await recipient.getByLabel('Password', { exact: true }).fill('not the password');
   await recipient.getByRole('button', { name: 'Open the Send' }).click();
   await expect(recipient.getByText('That password is wrong.')).toBeVisible({ timeout: 60_000 });
-  await recipient.getByLabel('Password').fill('swordfish');
+  await recipient.getByLabel('Password', { exact: true }).fill('swordfish');
   await recipient.getByRole('button', { name: 'Open the Send' }).click();
   await expect(recipient.getByRole('heading', { name: 'Door code', level: 1 })).toBeVisible({
     timeout: 60_000,
