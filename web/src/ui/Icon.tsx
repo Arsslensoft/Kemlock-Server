@@ -168,6 +168,13 @@ const ICONS = {
       <rect x="13" y="13" width="7" height="7" rx="1.5" />
     </>
   ),
+  fields: (
+    <>
+      <rect x="3" y="5" width="18" height="5" rx="1.5" />
+      <rect x="3" y="14" width="18" height="5" rx="1.5" />
+      <path d="M7 7.5h4M7 16.5h7" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type IconName = keyof typeof ICONS;

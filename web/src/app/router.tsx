@@ -352,6 +352,12 @@ const adminSettings = createRoute({
   component: lazyRouteComponent(() => import('@/features/admin/Settings')),
 });
 
+const adminFields = createRoute({
+  getParentRoute: () => adminLayout,
+  path: '/admin/fields',
+  component: lazyRouteComponent(() => import('@/features/admin/Fields')),
+});
+
 const adminSso = createRoute({
   getParentRoute: () => adminLayout,
   path: '/admin/sso',
@@ -419,6 +425,7 @@ const routeTree = rootRoute.addChildren([
     adminUsers,
     adminEvents,
     adminSettings,
+    adminFields,
     adminSso,
     adminMigrate,
     adminFederation,
