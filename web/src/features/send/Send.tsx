@@ -18,7 +18,7 @@ import '@/styles/tools.css';
 import { useVault } from '@/features/vault/hooks';
 import { EDITABLE_KINDS, type EditableKind, kindLabel, timeAgo } from '@/features/vault/kinds';
 import { type VaultItem, itemName } from '@/features/vault/vault';
-import { buildEnvelope, serializeEnvelope } from './itemEnvelope';
+import { MAX_ENVELOPE_CHARS, buildEnvelope, serializeEnvelope } from './itemEnvelope';
 import { SendItemPicker } from './SendItemPicker';
 import { MAX_FILE_BYTES, type SendInput, makeSend, openOwnerView, sendLink } from './sendCrypto';
 
@@ -99,6 +99,7 @@ export function SendView({
   const [password, setPassword] = useState('');
   const [hideEmail, setHideEmail] = useState(true);
   const [fileError, setFileError] = useState(false);
+  const [itemError, setItemError] = useState(false);
   const parsedViews = views.trim() === '' ? null : Number.parseInt(views, 10);
   const viewsValid = parsedViews === null || (Number.isInteger(parsedViews) && parsedViews >= 1);
   const ready = name.trim() !== '' && viewsValid && (mode === 'file' ? file !== undefined : mode === 'text' ? text !== '' : chosen !== undefined);
@@ -181,11 +182,14 @@ export function SendView({
               event.preventDefault();
               if (!ready) return;
               const envelope = chosen ? buildEnvelope(chosen, itemName(chosen)) : null;
-              if (chosen && !envelope) return;
+              const sealedText = envelope ? serializeEnvelope(envelope) : '';
+              // An item that did not open, or is too large to send, can't be made into a Send.
+              setItemError(chosen !== undefined && (!envelope || sealedText.length > MAX_ENVELOPE_CHARS));
+              if (chosen && (!envelope || sealedText.length > MAX_ENVELOPE_CHARS)) return;
               onCreate({
                 kind,
                 name: name.trim(),
-                text: envelope ? serializeEnvelope(envelope) : text,
+                text: envelope ? sealedText : text,
                 file,
                 deleteAfterDays: days,
                 maxViews: parsedViews,
@@ -204,6 +208,7 @@ export function SendView({
                   onClick={() => {
                     setMode(value);
                     setItemId(undefined);
+                    setItemError(false);
                   }}
                 >
                   {t(value === 'text' ? 'send.kind.text' : value === 'file' ? 'send.kind.file' : kindLabel(value))}
@@ -310,6 +315,11 @@ export function SendView({
               />
               <label htmlFor="s-hide">{t('send.hideEmail')}</label>
             </div>
+            {itemError ? (
+              <Notice tone="error" live>
+                <p>{t('sendItem.unreadable')}</p>
+              </Notice>
+            ) : null}
             <Button type="submit" variant="primary" isDisabled={creating || !ready}>
               {t('send.create')}
             </Button>

@@ -361,5 +361,6 @@
   "sendAccess.item.hideField": "Hide {field}",
   "sendAccess.item.copy": "Copy",
   "sendAccess.item.copyField": "Copy {field}",
-  "sendAccess.item.hiddenValue": "Hidden"
+  "sendAccess.item.hiddenValue": "Hidden",
+  "sendItem.unreadable": "This item could not be turned into a Send: it is too large or has nothing readable to send."
 }

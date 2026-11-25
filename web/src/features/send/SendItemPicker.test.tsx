@@ -40,6 +40,20 @@ describe('SendItemPicker', () => {
 });
 
 describe('SendView with an item', () => {
+  it('shows an error and sends nothing when the item is too large', async () => {
+    const onCreate = vi.fn();
+    const big = [item('9', 'note', { name: 'Huge', text: 'x'.repeat(70_000) })];
+    renderWithIntl(
+      <SendView rows={[]} now={new Date()} items={big} onCreate={onCreate} onCopy={vi.fn()} onDelete={vi.fn()} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Note' }));
+    await user.selectOptions(screen.getByLabelText('Item to send'), 'Huge');
+    await user.click(screen.getByRole('button', { name: 'Create link' }));
+    expect(onCreate).not.toHaveBeenCalled();
+    expect(screen.getByText(/could not be turned into a Send/)).toBeInTheDocument();
+  });
+
   it('creates a text Send whose text is the item envelope', async () => {
     const onCreate = vi.fn();
     renderWithIntl(
