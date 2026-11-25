@@ -8,7 +8,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type MessageId, useT } from '@/i18n';
 import { copyText } from '@/lib/clipboard';
 import { Button } from '@/ui/Button';
-import { Icon, Logo } from '@/ui/Icon';
+import { Icon, Wordmark } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/about.css';
 import { formatSize } from './Send';
@@ -60,8 +60,7 @@ function Frame({ children }: { children: ReactNode }) {
   return (
     <div className="auth-page">
       <div className="brand">
-        <Logo />
-        <span className="name">Kemlock</span>
+        <Wordmark />
         <span className="tag-chip">{t('brand.server')}</span>
       </div>
       <main className="auth-card w600">{children}</main>
