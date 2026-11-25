@@ -5,6 +5,7 @@
 // record, the new KDF settings and the root key wrapped for them.
 import type { Api } from './client';
 import type { PasswordProof } from './eraseAccount';
+import type { Proof } from './twoStep';
 import type { KdfDto, TokenResponse } from './types';
 
 export interface ProfileDto {
@@ -19,6 +20,8 @@ export interface ProfileDto {
   compatible: boolean;
   /** An address change waits for its link to be opened. */
   pendingEmail: string | null;
+  /** A second step is on: changing the password or the address asks a fresh proof of it. */
+  twoStep: boolean;
 }
 
 /** What replaces the account's password record: made in the browser, in the worker. */
@@ -38,10 +41,13 @@ export interface NewCredential {
 
 export interface PasswordChange extends PasswordProof, NewCredential {
   signOutOthers: boolean;
+  /** The second step's fresh proof, which a change takes when one is on (`twoStep`). */
+  proof?: Proof;
 }
 
 export interface EmailChange extends PasswordProof, NewCredential {
   email: string;
+  proof?: Proof;
 }
 
 /**

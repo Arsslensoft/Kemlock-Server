@@ -27,6 +27,10 @@
   "profile.pending.cancel": "Cancel the change",
   "profile.pending.cancelled": "The change of address is cancelled.",
 
+  "profile.proof.hint": "You have a second step on, so this change asks for a code too. A code from your authenticator app or your recovery code works, or have one mailed to you. It works once.",
+  "profile.proof.code": "Second-step code",
+  "profile.proof.send": "Email me a code",
+
   "profile.pw.title": "Master password",
   "profile.pw.hint": "Your vault is encrypted again on this device with the new password before anything is sent. The server never sees either one.",
   "profile.pw.current": "Current master password",

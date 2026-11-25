@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { tokensFromResponse } from '@/api/client';
 import { createProfileApi } from '@/api/profile';
+import { createSecondStepsApi } from '@/api/twoStep';
 import { api, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import { describeError } from '@/lib/errors';
@@ -11,9 +12,11 @@ import { Notice } from '@/ui/Notice';
 import { type IdentityNotice, type PasswordNotice, ProfileView } from './ProfileView';
 import { describeProfileError } from './profileErrors';
 import { type ProfileDeps, changePassword, requestEmailChange } from './profileModel';
+import { useKeyProof } from './useKeyProof';
 import { useRun } from './useRun';
 
 const profileApi = createProfileApi(api);
+const stepsApi = createSecondStepsApi(api);
 const profileKey = ['profile'] as const;
 
 const deps: ProfileDeps = {
@@ -34,6 +37,9 @@ export default function Profile() {
   const query = useQuery({ queryKey: profileKey, queryFn: () => profileApi.get() });
   const identity = useRun(describeProfileError);
   const password = useRun(describeProfileError);
+  // With a second step on, each card can answer its proof with a security key or passkey.
+  const identityKeyProof = useKeyProof(identity.run);
+  const passwordKeyProof = useKeyProof(password.run);
   const [identityNotice, setIdentityNotice] = useState<IdentityNotice | undefined>();
   const [passwordNotice, setPasswordNotice] = useState<PasswordNotice | undefined>();
   const profile = query.data;
@@ -67,7 +73,16 @@ export default function Profile() {
       identityError={identity.error}
       passwordNotice={passwordNotice}
       passwordError={password.error}
+      identityKeyProof={identityKeyProof}
+      passwordKeyProof={passwordKeyProof}
       actions={{
+        // Mail may be off or out of reach: then an authenticator code or the recovery code is the
+        // proof, so a failed request is not an error on the screen.
+        askProof: () =>
+          stepsApi
+            .proofRequest()
+            .then(() => true)
+            .catch(() => false),
         async saveIdentity(input) {
           setIdentityNotice(undefined);
           const notice = await identity.run(async (): Promise<IdentityNotice> => {
@@ -83,6 +98,7 @@ export default function Profile() {
                 email: current.email,
                 newEmail: input.email,
                 current: input.password,
+                ...(input.proof !== undefined ? { proof: input.proof } : {}),
               });
               await queryClient.invalidateQueries({ queryKey: profileKey });
               result = { kind: 'sent', email: asked.pendingEmail };

@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { ApiError } from '@/api/errors';
 import type { Api } from '@/api/client';
+import type { Proof } from '@/api/twoStep';
 import type { EmailChangeRequested, NewCredential, PasswordChanged, ProfileApi } from '@/api/profile';
 import type { CryptoPort } from '@/crypto-port';
 import { NEW_ACCOUNT_KDF } from '@/features/setup/registerAccount';
@@ -119,6 +120,8 @@ export interface PasswordChangeInput {
   current: string;
   next: string;
   signOutOthers: boolean;
+  /** The second step's fresh proof, when the account has one on. */
+  proof?: Proof;
 }
 
 /**
@@ -130,7 +133,12 @@ export async function changePassword(deps: ProfileDeps, input: PasswordChangeInp
   const proof = await proveCurrent(deps, input.email, input.current);
   const credential = await makeCredential(deps, input.next);
   try {
-    return await deps.api.changePassword({ ...proof, ...credential, signOutOthers: input.signOutOthers });
+    return await deps.api.changePassword({
+      ...proof,
+      ...credential,
+      signOutOthers: input.signOutOthers,
+      ...(input.proof !== undefined ? { proof: input.proof } : {}),
+    });
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) throw new WrongPasswordError();
     throw error;
@@ -143,6 +151,8 @@ export interface EmailChangeInput {
   newEmail: string;
   /** The current master password: the new record is made from it, under the new address. */
   current: string;
+  /** The second step's fresh proof, when the account has one on. */
+  proof?: Proof;
 }
 
 /**
@@ -155,7 +165,12 @@ export async function requestEmailChange(deps: ProfileDeps, input: EmailChangeIn
   const proof = await proveCurrent(deps, input.email, input.current);
   const credential = await makeCredential(deps, input.current, newEmail);
   try {
-    return await deps.api.requestEmailChange({ ...proof, ...credential, email: newEmail });
+    return await deps.api.requestEmailChange({
+      ...proof,
+      ...credential,
+      email: newEmail,
+      ...(input.proof !== undefined ? { proof: input.proof } : {}),
+    });
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) throw new WrongPasswordError();
     throw error;
