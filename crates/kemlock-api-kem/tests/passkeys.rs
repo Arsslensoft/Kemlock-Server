@@ -1048,6 +1048,29 @@ async fn an_answer_with_another_users_handle_is_refused() {
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
 }
 
+test(web): cover the Recovery Kit's pieces, API, card and unlock
+
+Piece text, the API calls with and without a proof, the card's steps
+(show once, confirm one, proof to replace or remove, stale warning),
+the worker protocol's kit operations, and unlocking with 2 pieces:
+a typo, another kit's piece or a repeat is refused, no kit or a stale
+kit says so, and pieces that do not open the wrap leave the vault shut.
+The Account security test no longer expects the not-built kit row.
+
+Assisted-by: Claude Sonnet 5.5 via Claude Code
+#[tokio::test]
+async fn proof_options_require_verification_only_when_a_passkey_may_answer() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let _key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+    let keys_only = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    assert_eq!(keys_only["userVerification"], "discouraged");
+
+    let _passkey = pk.new_passkey(&d1, &s1, "Laptop", None).await;
+    let both = pk.proof_options(&d1, &s1).await.json()["options"].clone();
+    assert_eq!(both["userVerification"], "required");
+}
+
 #[test]
 fn the_openapi_document_names_the_routes() {
     let doc = serde_json::to_value(PasskeysApiDoc::openapi()).expect("serialises");

@@ -98,7 +98,7 @@ where
             )
             .await?;
         let mut options = started.options;
-        // A passkey's answer must carry user verification, so the browser is asked to verify when
+        // A passkey's answer must carry user verification, so the browser is required to verify when
         // one is listed; a security key alone stays touch-only.
         if held.iter().any(|h| h.passkey.is_some()) {
             let inner = if options.get("publicKey").is_some() {
@@ -106,7 +106,7 @@ where
             } else {
                 &mut options
             };
-            inner["userVerification"] = Value::from("preferred");
+            inner["userVerification"] = Value::from("required");
         }
         Ok(options)
     }
