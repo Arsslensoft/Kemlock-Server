@@ -99,8 +99,8 @@ export default function Unlock() {
           onBack={() => setUseKit(false)}
           onUnlocked={() => {
             const target = safeNext(next);
-            if (target) router.history.push(target);
-            else void navigate({ to: '/vault' });
+            if (target) router.history.replace(target);
+            else void navigate({ to: '/vault', replace: true });
           }}
         />
       ) : step === 'password' ? (
