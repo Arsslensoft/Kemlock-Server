@@ -234,3 +234,68 @@ describe('saving one group', () => {
     expect(within(screen.getByRole('region', { name: 'Email' })).getByText('Saved.')).toBeInTheDocument();
   });
 });
+
+describe('the hint under each switch', () => {
+  const SWITCHES = [
+    setting({ key: 'signups_allowed', group: 'signups', kind: 'bool', value: 'false' }),
+    setting({ key: 'signups_verify', group: 'signups', kind: 'bool', value: 'true' }),
+    setting({ key: 'invitations_allowed', group: 'signups', kind: 'bool', value: 'true' }),
+    setting({ key: 'push_enabled', group: 'push', kind: 'bool', value: 'false' }),
+    setting({ key: 'kemlock_push_relay', group: 'push', kind: 'bool', value: 'false' }),
+  ];
+
+  it('says what the switch does, in the words of the design', () => {
+    view({ settings: SWITCHES });
+    const signups = within(screen.getByRole('region', { name: 'Who can make an account' }));
+    expect(signups.getByText('When off, people join only by an invitation or through SSO.')).toBeInTheDocument();
+    expect(
+      signups.getByText("Sends a link to the new address. The account can't sign in until the link is opened."),
+    ).toBeInTheDocument();
+    expect(
+      signups.getByText('Admins can invite people from Users & spaces, even while sign-up is off.'),
+    ).toBeInTheDocument();
+  });
+
+  it('is the description of its switch, not part of its name', () => {
+    view({ settings: SWITCHES });
+    const named = (name: string) => screen.getByRole('switch', { name });
+    expect(named('Anyone may make an account')).toHaveAccessibleDescription(
+      'When off, people join only by an invitation or through SSO.',
+    );
+    expect(named('Verify the email of a new account')).toHaveAccessibleDescription(
+      "Sends a link to the new address. The account can't sign in until the link is opened.",
+    );
+    expect(named('Admins may invite people')).toHaveAccessibleDescription(
+      'Admins can invite people from Users & spaces, even while sign-up is off.',
+    );
+  });
+
+  it('has one for every switch the server has, push included', () => {
+    view({ settings: SWITCHES });
+    for (const switchElement of screen.getAllByRole('switch')) {
+      expect(switchElement, switchElement.getAttribute('aria-label') ?? '').toHaveAccessibleDescription(/\S/);
+    }
+    expect(screen.getAllByRole('switch')).toHaveLength(SWITCHES.length);
+  });
+
+  it('keeps the environment note after it when the environment sets the switch', () => {
+    view({
+      settings: [
+        setting({
+          key: 'signups_allowed',
+          group: 'signups',
+          kind: 'bool',
+          value: 'true',
+          source: 'env',
+          readOnly: true,
+          env: 'SIGNUPS_ALLOWED',
+        }),
+      ],
+    });
+    const description = screen.getByRole('switch', { name: 'Anyone may make an account' });
+    expect(description).toBeDisabled();
+    expect(description).toHaveAccessibleDescription(
+      /^When off, people join only by an invitation or through SSO\. Set by SIGNUPS_ALLOWED/,
+    );
+  });
+});
