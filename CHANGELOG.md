@@ -10,8 +10,23 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-25
+
 ### Added
 
+- An API key for the Bitwarden CLI and scripts, shown and rotated in Account security behind a fresh
+  check. Rotating it stops the old one at once.
+- Delete account, from the web vault and on the Bitwarden routes as Vaultwarden has them. The last
+  owner of an organisation is refused, and the account's copies on paired servers are deleted too.
+- A security key or passkey answers the "Confirm it's you" check wherever one is asked.
+- File Sends are copied to paired servers, encrypted. A Send with a view limit is opened only on its
+  home server.
+- Paired servers are checked every `KEMLOCK_FEDERATION_PROBE_SECONDS` (60 by default): online,
+  slow, offline, or a key that does not match. "Where your vault is stored" shows what was found.
+- Changes waiting for an offline server can be held back from it, per vault, and offered again.
+- A detail page for each newer item kind, with secrets masked until shown.
+- The Send list marks Sends made from a vault item.
+- Scanning the Recovery Kit's QR code works in Firefox.
 - The server sends mobile pushes itself. iPhones are pushed to through Apple with your own APNs key
   (`KEMLOCK_APNS_KEY_FILE`, `KEMLOCK_APNS_KEY_ID`, `KEMLOCK_APNS_TEAM_ID`, and optionally
   `KEMLOCK_APNS_TOPIC` and `KEMLOCK_APNS_SANDBOX`); Android phones through UnifiedPush, which needs
@@ -20,6 +35,12 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ### Changed
 
+- Push relays and backups are settings in the admin console, applied without a restart. Their
+  secrets are kept sealed and never shown again. `DOMAIN` and `DATA_FOLDER` stay configuration,
+  and Server settings shows the address chosen at setup beside the one in use.
+- The other ways to sign in are full-width buttons again, one under the other.
+- Move from Vaultwarden, Users and peer security follow the settings form layout.
+- Each settings group's Save button is named after its group for screen readers.
 - Kemlock's hosted push relay is now an optional fallback for iPhones on a server with no Apple key.
   It stays off unless you turn it on.
 - A device registers a push token of kind `apns` or `unifiedpush`. `fcm` is no longer accepted (a
@@ -30,6 +51,16 @@ merged changes by their commit titles. This file keeps the summary that people r
   (a ntfy on your LAN).
 - Upgrade all replicas together. A replica still on the previous binary errors on the `unifiedpush`
   push-token rows the new one stores.
+
+### Fixed
+
+- A reload keeps you signed in, and the About dialog returns to the page you were on.
+- Admin lists keep focus while you search, and an item's back button returns to the list.
+- Locking or signing out also forgets the admin console's recent check.
+- Saving one settings group keeps the unsaved edits in the others, and saving a new secret clears
+  its field and shows "Saved.".
+- Sends are not created twice, deleting one asks first, and forms clear only once saved.
+- The Proxmox install no longer stops before the server has printed its setup code.
 
 ## [0.1.2] - 2026-11-25
 
@@ -140,7 +171,8 @@ The first release.
   - Contributing guide, DCO, code of conduct, governance, maintainers, support page, issue forms,
     a pull request template and code owners.
 
-[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Arsslensoft/Kemlock-Server/releases/tag/v0.1.0
