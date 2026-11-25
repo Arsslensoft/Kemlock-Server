@@ -429,3 +429,129 @@ fn bitwarden_hub(config: &Config, store: &SqlStore, bw_hub: &BwHub) -> Result<Ro
         Arc::new(auth),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::live::{Layered, SettingsWatch};
+    use kemlock_app::admin::{Change, NoEnv, Settings};
+    use kemlock_crypto::opaque::OpaqueServer;
+    use kemlock_crypto::seal::ServerSeal;
+    use std::collections::BTreeMap;
+
+    fn crypto() -> ServerCrypto {
+        ServerCrypto::new(ServerSeal::new(&[7u8; 32]), OpaqueServer::generate())
+    }
+
+    async fn save(store: &SqlStore, pairs: &[(&str, &str)]) {
+        let settings = Settings {
+            repo: store.clone(),
+            seal: crypto(),
+            env: NoEnv,
+        };
+        let changes = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), Change::Set((*v).to_owned())))
+            .collect();
+        settings.apply(&changes).await.expect("saved");
+    }
+
+    struct Rig {
+        store: SqlStore,
+        watch: Arc<SettingsWatch>,
+        follower: PushFollower,
+        switch: BwPushSwitch,
+    }
+
+    async fn rig() -> Rig {
+        let store = SqlStore::connect("sqlite::memory:")
+            .await
+            .expect("a store");
+        let watch = SettingsWatch::start(
+            store.clone(),
+            crypto(),
+            Layered::new(|_| None, BTreeMap::new()),
+        )
+        .await
+        .expect("read");
+        let switch = BwPushSwitch::new(None);
+        let client = RelayClient::new("https://relay.example.org").expect("a client");
+        let follower = PushFollower::new(switch.clone(), client, store.clone(), crypto());
+        Rig {
+            store,
+            watch,
+            follower,
+            switch,
+        }
+    }
+
+    impl Rig {
+        async fn follow(&self) {
+            self.watch.refresh().await.expect("read again");
+            self.follower.follow(&self.watch.current());
+        }
+    }
+
+    #[tokio::test]
+    async fn bitwardens_relay_is_switched_on_swapped_and_left_alone_when_nothing_changed() {
+        let rig = rig().await;
+        rig.follow().await;
+        assert!(rig.switch.get().is_none());
+
+        save(
+            &rig.store,
+            &[
+                ("push_enabled", "true"),
+                ("push_installation_id", "inst-1"),
+                ("push_installation_key", "key-1"),
+            ],
+        )
+        .await;
+        rig.follow().await;
+        let first = rig.switch.get().expect("on");
+
+        // A snapshot with the same push settings leaves the relay (and its token) in place.
+        save(&rig.store, &[("trash_days", "45")]).await;
+        rig.follow().await;
+        assert!(Arc::ptr_eq(&first, &rig.switch.get().expect("on")));
+
+        // New settings swap it.
+        save(&rig.store, &[("push_installation_id", "inst-2")]).await;
+        rig.follow().await;
+        assert!(!Arc::ptr_eq(&first, &rig.switch.get().expect("on")));
+
+        // Turning it off switches it off.
+        save(&rig.store, &[("push_enabled", "false")]).await;
+        rig.follow().await;
+        assert!(rig.switch.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unusable_push_setting_keeps_the_relay_in_use() {
+        let rig = rig().await;
+        save(
+            &rig.store,
+            &[
+                ("push_enabled", "true"),
+                ("push_installation_id", "inst-1"),
+                ("push_installation_key", "key-1"),
+            ],
+        )
+        .await;
+        rig.follow().await;
+        let before = rig.switch.get().expect("on");
+
+        // A sealed value that doesn't open: the snapshot says so and the relay stays.
+        kemlock_app::admin::SettingsRepo::put_setting(
+            &rig.store,
+            "setting.push_installation_key",
+            "AAAA",
+        )
+        .await
+        .expect("saved");
+        rig.watch.refresh().await.expect("read again");
+        assert!(rig.watch.current().push_error.is_some());
+        rig.follower.follow(&rig.watch.current());
+        assert!(Arc::ptr_eq(&before, &rig.switch.get().expect("still on")));
+    }
+}
