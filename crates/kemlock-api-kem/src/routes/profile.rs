@@ -4,9 +4,12 @@
 //! ```text
 //! GET    /kem/v1/account/profile            name, address and what may change
 //! PATCH  /kem/v1/account/profile            {name}
-//! POST   /kem/v1/account/credentials/start  {request, email?}: OPAQUE registration, first message
-//! PUT    /kem/v1/account/password           the new password's records, after the password again
-//! POST   /kem/v1/account/email              a new address and its records; mails the link to it
+//! POST   /kem/v1/account/credentials/start  {request, email?}: OPAQUE registration, first message,
+//!                                            answered with {response, ticket}
+//! PUT    /kem/v1/account/password           the new password's records and the ticket, after the
+//!                                            password again; answers {tokens}
+//! POST   /kem/v1/account/email              a new address, its records and the ticket; mails the
+//!                                            link to it
 //! DELETE /kem/v1/account/email              takes that ask back
 //! POST   /kem/v1/account/email/confirm      {token}: opens the link; no session needed
 //! ```
@@ -15,14 +18,20 @@
 //! master key, with a new OPAQUE record for the password (or for the new address, which OPAQUE
 //! binds the record to). The server checks the password again before it writes, the way erasing
 //! the account does (`reauth.rs`), validates what it can without opening anything, and writes the
-//! records in one step. A new address takes effect only when the link mailed to it is opened, and
-//! then every session ends. The routes need the store of pending changes, so they have a router of
-//! their own: see [`profile_router`].
+//! records in one conditional step. The registration's ticket (sealed, from `credentials/start`)
+//! binds it to the account, the DPoP key, the address and the next few minutes, and must come
+//! back with the change. A new address takes effect only when the link mailed to it is opened, and
+//! then every session ends; asking for one never says whether another account has it. A new
+//! password with "Sign out my other devices" replaces the security stamp in the same write, so
+//! every other session ends at once, and the device that asked gets new tokens in the answer. The
+//! routes need the store of pending changes, so they have a router of their own: see
+//! [`profile_router`].
 
 use super::guard;
 use super::reauth::reauthenticate;
 use super::two_step::nonce_header;
-use crate::dto::{KdfDto, decode};
+use super::devices::token_response;
+use crate::dto::{KdfDto, TokenResponse, decode};
 use crate::extract::{Authed, Body, ClientIp};
 use crate::openapi::ProblemDoc;
 use crate::problem::Problem;
@@ -36,8 +45,8 @@ use kemlock_app::AppError;
 use kemlock_app::devices::{KeyCopyRepo, SignOutDevice};
 use kemlock_app::ports::{Clock, Event, EventLog, TokenSigner, UserRepo};
 use kemlock_app::profile::{
-    ConfirmEmailChange, Credentials, EmailChanges, NewCredentials, Profile, ProfileError,
-    ProfileRepo, ProfileView,
+    ConfirmEmailChange, Credentials, EmailChanges, NewCredentials, OtherDevices, Profile,
+    ProfileError, ProfileRepo, ProfileView,
 };
 use kemlock_domain::{DeviceId, UserId};
 use serde::{Deserialize, Serialize};
@@ -66,10 +75,16 @@ impl From<ProfileError> for Problem {
             ProfileError::NoPassword => {
                 forbidden("no-password", "This account has no master password")
             }
+            // Only opening a link says this: asking for an address never does.
             ProfileError::EmailTaken => Problem::new(
                 StatusCode::CONFLICT,
                 "email-taken",
                 "That address belongs to another account",
+            ),
+            ProfileError::AccountChanged => Problem::new(
+                StatusCode::CONFLICT,
+                "account-changed",
+                "The account changed while this was being saved: nothing was written, try again",
             ),
             ProfileError::EmailChangeInvalid => Problem::new(
                 StatusCode::BAD_REQUEST,
@@ -147,6 +162,11 @@ pub(crate) struct CredentialsStartRequest {
 pub(crate) struct CredentialsStartResponse {
     /// OPAQUE's `RegistrationResponse`, base64url.
     response: String,
+    /// Binds the registration to the account, the DPoP key that asked, the address asked for (if
+    /// any) and the next few minutes: base64url, opaque. `PUT /account/password` and
+    /// `POST /account/email` need it back, with the last registration message made from
+    /// `response`.
+    ticket: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -158,13 +178,26 @@ pub(crate) struct ChangePasswordRequest {
     finalization: String,
     /// OPAQUE's `RegistrationUpload` for the new password, base64url.
     upload: String,
-    // The settings and salt of the new master key: the defaults and a new 16-byte salt.
+    /// The settings and salt of the new master key: the defaults and a new 16-byte salt.
     kdf: KdfDto,
     /// The root key wrapped under the new master key and export key, base64url, 92 bytes.
     wrapped_root_key: String,
-    /// End the sessions of every other device. Defaults to false.
+    /// What `POST /account/credentials/start` answered as `ticket`, for a registration made with no
+    /// `email`, unread.
+    ticket: String,
+    /// End the sessions of every other device at once, and get new tokens for this one in the
+    /// answer. Defaults to false.
     #[serde(default)]
     sign_out_others: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChangedPasswordDto {
+    /// New tokens for the device that asked, bound to its DPoP key, present exactly when
+    /// `signOutOthers` was true: the change replaced the security stamp, so the tokens it held
+    /// stopped working with it. Null otherwise, and the tokens it holds go on.
+    tokens: Option<TokenResponse>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -178,10 +211,12 @@ pub(crate) struct ChangeEmailRequest {
     finalization: String,
     /// OPAQUE's `RegistrationUpload`, registered under the new address, base64url.
     upload: String,
-    // The settings and salt of the master key the record and the wrap were made with.
+    /// The settings and salt of the master key the record and the wrap were made with.
     kdf: KdfDto,
     /// The root key wrapped under that master key and the new record's export key, base64url.
     wrapped_root_key: String,
+    /// What `POST /account/credentials/start` answered as `ticket` for this `email`, unread.
+    ticket: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -223,7 +258,7 @@ where
     }
 }
 
-fn credentials<S, P, K, R>(api: &Api<S, P, K>, repos: &Repos<R>) -> Credentials<S, R, P, P>
+fn credentials<S, P, K, R>(api: &Api<S, P, K>, repos: &Repos<R>) -> Credentials<S, R, P, P, P>
 where
     S: Store,
     P: Crypto,
@@ -234,11 +269,17 @@ where
         users: api.store.clone(),
         repo: repos.0.clone(),
         auth: api.crypto.clone(),
-        clock: api.crypto.clone(),
+        seal: api.crypto.clone(),
+        env: api.crypto.clone(),
+        notices: api.hub.notices(),
+        config: api.auth_config(),
     }
 }
 
-fn email_changes<S, P, K, R>(api: &Api<S, P, K>, repos: &Repos<R>) -> EmailChanges<S, R, P, P>
+fn email_changes<S, P, K, R>(
+    api: &Api<S, P, K>,
+    repos: &Repos<R>,
+) -> EmailChanges<S, R, P, P, P>
 where
     S: Store,
     P: Crypto,
@@ -249,8 +290,28 @@ where
         users: api.store.clone(),
         repo: repos.0.clone(),
         auth: api.crypto.clone(),
+        seal: api.crypto.clone(),
         env: api.crypto.clone(),
         notices: api.hub.notices(),
+        config: api.auth_config(),
+    }
+}
+
+fn other_devices<S, P, K>(api: &Api<S, P, K>) -> OtherDevices<S, S, S, K, P, S, S>
+where
+    S: Store + KeyCopyRepo,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    OtherDevices {
+        sign_out: SignOutDevice {
+            devices: api.store.clone(),
+            copies: api.store.clone(),
+            tokens: api.store.clone(),
+            clock: api.crypto.clone(),
+            events: api.store.clone(),
+        },
+        sessions: api.sessions(),
     }
 }
 
@@ -270,6 +331,7 @@ where
         devices: api.store.clone(),
         tokens: api.store.clone(),
         env: api.crypto.clone(),
+        notices: api.hub.notices(),
     }
 }
 
@@ -387,15 +449,17 @@ where
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
     let request: CredentialsStartRequest = body.json()?;
-    let response = credentials(&api, &repos)
+    let started = credentials(&api, &repos)
         .start(
             authed.actor.user,
             request.email.as_deref(),
             &decode("request", &request.request)?,
+            &authed.jkt,
         )
         .await?;
     Ok(Json(CredentialsStartResponse {
-        response: kemlock_app::b64url::encode(&response),
+        response: kemlock_app::b64url::encode(&started.response),
+        ticket: kemlock_app::b64url::encode(&started.ticket),
     }))
 }
 
@@ -404,7 +468,7 @@ async fn handle_change_password<S, P, K, R>(
     Extension(repos): Extension<Arc<Repos<R>>>,
     authed: Authed,
     body: Body,
-) -> Result<StatusCode, Problem>
+) -> Result<Json<ChangedPasswordDto>, Problem>
 where
     S: Store + KeyCopyRepo,
     P: Crypto,
@@ -413,10 +477,11 @@ where
 {
     let request: ChangePasswordRequest = body.json()?;
     let new = new_credentials(&request.upload, &request.kdf, &request.wrapped_root_key)?;
+    let ticket = decode("ticket", &request.ticket)?;
     let user = authed.actor.user;
     let credentials = credentials(&api, &repos);
     // What can be known to be wrong is said before the password is spent.
-    credentials.check(user).await?;
+    credentials.check(user, &ticket, &authed.jkt).await?;
     let account = account_of(&api, &authed).await?;
     reauthenticate(
         &api,
@@ -426,18 +491,19 @@ where
         &request.finalization,
     )
     .await?;
-    credentials.change_password(user, new).await?;
-    if request.sign_out_others {
-        SignOutDevice {
-            devices: api.store.clone(),
-            copies: api.store.clone(),
-            tokens: api.store.clone(),
-            clock: api.crypto.clone(),
-            events: api.store.clone(),
-        }
-        .execute_others(&authed.actor)
+    let changed = credentials
+        .change_password(user, new, &ticket, &authed.jkt, request.sign_out_others)
         .await?;
-    }
+    // The password is changed: nothing from here on can say it was not. With the other devices
+    // signed out the stamp is new, so this device's own tokens ended with the write too, and the
+    // answer carries new ones; if they can't be made it signs in again with the new password.
+    let tokens = if changed.others_signed_out {
+        other_devices(&api)
+            .renew(&authed.actor, &changed.account, &authed.jkt)
+            .await
+    } else {
+        None
+    };
     record(
         &api,
         user,
@@ -448,7 +514,9 @@ where
             .then(|| "other devices signed out".to_owned()),
     )
     .await;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(ChangedPasswordDto {
+        tokens: tokens.map(|tokens| token_response(&tokens, api.now())),
+    }))
 }
 
 async fn handle_request_email<S, P, K, R>(
@@ -465,10 +533,16 @@ where
 {
     let request: ChangeEmailRequest = body.json()?;
     let new = new_credentials(&request.upload, &request.kdf, &request.wrapped_root_key)?;
+    let ticket = decode("ticket", &request.ticket)?;
     let user = authed.actor.user;
     // What can be known to be wrong is said before the password is spent.
     let changes = email_changes(&api, &repos);
-    changes.check(user).await?;
+    changes
+        .check(user, &request.email, &ticket, &authed.jkt)
+        .await?;
+    // Three asks an hour per account, whether the address is free or not: asking is how a person
+    // would try addresses, and each ask mails someone.
+    guard(&api.limits.email_change, &user.to_string(), api.now())?;
     let account = account_of(&api, &authed).await?;
     reauthenticate(
         &api,
@@ -478,7 +552,9 @@ where
         &request.finalization,
     )
     .await?;
-    let asked = changes.request(user, &request.email, new).await?;
+    let asked = changes
+        .request(user, &request.email, new, &ticket, &authed.jkt)
+        .await?;
     record(
         &api,
         user,
@@ -524,7 +600,7 @@ where
     K: TokenSigner + Clone + 'static,
     R: ProfileRepo + Clone + 'static,
 {
-    // Nobody is signed in: the token is all there is, so guesses are limited per address.
+    // Nobody is signed in: the token is all there is, so guesses are limited per IP.
     guard(
         &api.limits.sign_in,
         &format!("confirm-email:{}", ip_key(ip)),
@@ -609,10 +685,9 @@ fn doc_profile_rename() {}
     security(("dpop" = [])),
     request_body = CredentialsStartRequest,
     responses(
-        (status = 200, description = "OPAQUE's registration response, bound to the new address when one was given, else to the account's own", body = CredentialsStartResponse),
+        (status = 200, description = "OPAQUE's registration response, bound to the new address when one was given, else to the account's own, and the ticket that goes with it. An address another account has is answered exactly as a free one is", body = CredentialsStartResponse),
         (status = 400, description = "The request or the address is malformed, or the address is the account's own", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`sso-managed` (a new address for an identity provider's account), `compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "`email-taken`: another account has the address", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -623,10 +698,11 @@ fn doc_credentials_start() {}
     security(("dpop" = [])),
     request_body = ChangePasswordRequest,
     responses(
-        (status = 204, description = "The password's records are replaced; the root key, its version and the sessions' stamp stay"),
-        (status = 400, description = "The login state was used before, or isn't well formed; the settings, the wrap or the upload are malformed", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 200, description = "The password's records are replaced; the root key and its version stay. With `signOutOthers` the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null", body = ChangedPasswordDto),
+        (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; the settings, the wrap or the upload are malformed", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "`account-changed`: the account was written meanwhile and nothing was; ask again", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -637,11 +713,12 @@ fn doc_change_password() {}
     security(("dpop" = [])),
     request_body = ChangeEmailRequest,
     responses(
-        (status = 202, description = "The link is mailed to the new address; nothing changes until it is opened", body = EmailChangeAskedDto),
-        (status = 400, description = "The login state was used before, or isn't well formed; the address, the settings, the wrap or the upload are malformed, or the address is the account's own", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 202, description = "The link is mailed to the new address; nothing changes until it is opened. The same answer whether or not another account has the address: that address is mailed a notice that says so instead of the link", body = EmailChangeAskedDto),
+        (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; the address, the settings, the wrap or the upload are malformed, or the address is the account's own", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`sso-managed`, `compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "`email-taken`, or `mail-off`: the server sends no mail", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "`mail-off`: the server sends no mail", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 429, description = "Three asks an hour per account, and the limits of every password check", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 502, description = "`mail-failed`: the mail with the link could not be sent", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -663,8 +740,9 @@ fn doc_cancel_email() {}
     request_body = ConfirmEmailRequest,
     responses(
         (status = 200, description = "The address is the account's now, and every session has ended: sign in again with it", body = ConfirmedEmailDto),
-        (status = 400, description = "`email-change-invalid`: the token is unknown, used or out of time", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "`email-taken`: someone took the address meanwhile; the ask is dropped", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "`email-change-invalid`: the token is unknown, used or out of time, or the account is disabled or being deleted", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 403, description = "`sso-managed`, `compatible-account` or `no-password`: the account became one that can't change its address; the ask is dropped", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "`email-taken`: someone took the address meanwhile, the ask is dropped; or `account-changed`: the account was written meanwhile, nothing was, and the link still works", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -688,6 +766,7 @@ fn doc_confirm_email() {}
         CredentialsStartRequest,
         CredentialsStartResponse,
         ChangePasswordRequest,
+        ChangedPasswordDto,
         ChangeEmailRequest,
         EmailChangeAskedDto,
         ConfirmEmailRequest,
