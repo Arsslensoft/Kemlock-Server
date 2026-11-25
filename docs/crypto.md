@@ -1884,7 +1884,12 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 
 A login has one `cred` and one `account` tag per site, each site once; a login with no site has
 none. An identity has one `identity` tag and one `document` tag per document number, each number
-once. A card, note, key, certificate, code, contact, file or identity with nothing to hash (no
+once. A client that groups identities does so by `document`: two identities that share one are
+copies. An identity with no document is a copy of every identity with no document that shares its
+`identity` tag, and of the one identity with documents that shares it; with several identities with
+documents it is a copy of none of them (it could be of any), and two identities that both have
+documents are never copies by `identity` alone, since one person's passport and licence share a name
+and an email. A card, note, key, certificate, code, contact, file or identity with nothing to hash (no
 digits, no text, an unreadable fingerprint or secret, no codes, an empty name and email, an empty
 email and phone, no hash) has no tag.
 

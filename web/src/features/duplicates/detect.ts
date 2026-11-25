@@ -202,6 +202,7 @@ export type Why =
   | 'contact'
   | 'contactEmail'
   | 'contactPhone'
+  | 'contactOrKey'
   | 'file';
 
 export const WHY_LABEL: Record<Why, MessageId> = {
@@ -219,6 +220,7 @@ export const WHY_LABEL: Record<Why, MessageId> = {
   contact: 'dup.why.contact',
   contactEmail: 'dup.why.contactEmail',
   contactPhone: 'dup.why.contactPhone',
+  contactOrKey: 'dup.why.contactOrKey',
   file: 'dup.why.file',
 };
 
@@ -238,6 +240,7 @@ export const SAME_LABEL: Record<Why, MessageId> = {
   contact: 'dup.same.contact',
   contactEmail: 'dup.same.contactEmail',
   contactPhone: 'dup.same.contactPhone',
+  contactOrKey: 'dup.same.contactOrKey',
   file: 'dup.same.file',
 };
 
@@ -268,14 +271,12 @@ const PRIMARY: Record<string, TagName> = {
 };
 
 /**
- * The tags an item is grouped by. An identity with a document number is told apart by it: two
- * papers of one person (a passport and a licence) share a name and an email and are not copies.
- * One without a document has only its name and email to go by.
+ * The tags an item is grouped by. An identity is grouped by its document numbers alone: two papers
+ * of one person (a passport and a licence) share a name and an email and are not copies. Its name
+ * and email join it to an identity that has no document (see `joinByName`).
  */
 function groupingTags(item: VaultItem, tags: Tag[]): Tag[] {
-  if (item.kind === 'identity' && tags.some((tag) => tag.name === 'document')) {
-    return tags.filter((tag) => tag.name === 'document');
-  }
+  if (item.kind === 'identity') return tags.filter((tag) => tag.name === 'document');
   // A contact is the same by its email and phone, or by the key it holds.
   if (item.kind === 'contact') return tags.filter((tag) => tag.name === 'contact' || tag.name === 'key');
   const primary = PRIMARY[item.kind];
@@ -292,6 +293,15 @@ export function groupId(items: VaultItem[]): string {
 
 function sharedInputs(a: Tag[], b: Tag[], name: TagName): boolean {
   return a.some((x) => x.name === name && b.some((y) => y.name === name && y.input === x.input));
+}
+
+/** Whether every member of `component` shares a `name` tag with another member. */
+function everyoneShares(component: VaultItem[], tags: Map<string, Tag[]>, name: TagName): boolean {
+  return component.every((item) =>
+    component.some(
+      (other) => other.id !== item.id && sharedInputs(tags.get(item.id) ?? [], tags.get(other.id) ?? [], name),
+    ),
+  );
 }
 
 /** Why a component of one kind matched: which of the values the members share. */
@@ -322,23 +332,20 @@ function whyOf(kind: string, component: VaultItem[], tags: Map<string, Tag[]>): 
     case 'backup-codes':
       return 'codes';
     case 'identity':
-      return component.every((item) => (tags.get(item.id) ?? []).some((tag) => tag.name === 'document'))
-        ? 'document'
-        : 'identity';
+      // The reason every member shares: the document number, else only their name and email.
+      return everyoneShares(component, tags, 'document') ? 'document' : 'identity';
     case 'contact': {
-      // Every member shares the key of another: the key is what they have in common.
-      const sameKey = component.every((item) =>
-        component.some(
-          (other) => other.id !== item.id && sharedInputs(tags.get(item.id) ?? [], tags.get(other.id) ?? [], 'key'),
-        ),
-      );
-      if (sameKey) return 'key';
-      // Members of one group share the whole tag, so the first says which of the two it holds.
-      const first = component[0];
-      const email = normaliseUsername(text(first?.data ?? null, 'email'));
-      const phone = normalisePhone(text(first?.data ?? null, 'phone'));
-      if (email !== '' && phone !== '') return 'contact';
-      return email !== '' ? 'contactEmail' : 'contactPhone';
+      // Only a reason every member shares is given; when no one reason holds for all of them (one
+      // pair is joined by their key and another by their email), both are named.
+      if (everyoneShares(component, tags, 'contact')) {
+        // Members that share the whole tag share its values, so the first says which it holds.
+        const first = component[0];
+        const email = normaliseUsername(text(first?.data ?? null, 'email'));
+        const phone = normalisePhone(text(first?.data ?? null, 'phone'));
+        if (email !== '' && phone !== '') return 'contact';
+        return email !== '' ? 'contactEmail' : 'contactPhone';
+      }
+      return everyoneShares(component, tags, 'key') ? 'key' : 'contactOrKey';
     }
     default:
       return 'file';
@@ -351,6 +358,40 @@ function updatedMs(item: VaultItem): number {
   if (typeof value === 'number') return value;
   const parsed = typeof value === 'string' ? Date.parse(value) : Number.NaN;
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Joins the identities with no document to the identity that has them, by their name and email:
+ * those with no document are copies of each other, and of the one identity with documents that
+ * shares their name and email, since that is the one they left the papers off. When two identities
+ * with documents (a passport and a licence) share the name and email, a copy without papers could be
+ * of either, so it is joined to neither. Identities that both have documents are never joined by
+ * name and email.
+ */
+function joinByName(
+  members: VaultItem[],
+  tags: Map<string, Tag[]>,
+  find: (id: string) => string,
+  join: (a: string, b: string) => void,
+): void {
+  const byName = new Map<string, { papers: VaultItem[]; bare: VaultItem[] }>();
+  for (const item of members) {
+    const own = tags.get(item.id) ?? [];
+    const name = own.find((tag) => tag.name === 'identity');
+    if (!name) continue;
+    const bucket = byName.get(name.input) ?? { papers: [], bare: [] };
+    (own.some((tag) => tag.name === 'document') ? bucket.papers : bucket.bare).push(item);
+    byName.set(name.input, bucket);
+  }
+  for (const { papers, bare } of byName.values()) {
+    const [first, ...rest] = bare;
+    if (!first) continue;
+    for (const other of rest) join(other.id, first.id);
+    // The identities with papers that are one group already count as one.
+    const roots = new Set(papers.map((item) => find(item.id)));
+    const [one] = papers;
+    if (one && roots.size === 1) join(first.id, one.id);
+  }
 }
 
 /** Groups the opened, untrashed items that hold the same values. */
@@ -379,6 +420,7 @@ export function findDuplicates(items: VaultItem[], facts?: DerivedFacts): Duplic
         else parent.set(find(item.id), find(first));
       }
     }
+    if (kind === 'identity') joinByName(members, tags, find, (a, b) => parent.set(find(a), find(b)));
     const components = new Map<string, VaultItem[]>();
     for (const item of members) {
       const root = find(item.id);

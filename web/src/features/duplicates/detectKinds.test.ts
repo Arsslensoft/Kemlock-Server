@@ -117,6 +117,46 @@ describe('identities', () => {
     expect(group?.why).toBe('identity');
   });
 
+  describe('a copy with no papers', () => {
+    const person = { givenName: 'Sam', familyName: 'Rivera', email: 'sam@example.org' };
+
+    it('matches the identity with papers that has its name and email, and says so', () => {
+      const withPapers = vaultItem('identity', { ...person, name: 'Passport', documents: [{ number: 'P1234567' }] });
+      const bare = vaultItem('identity', { ...person, name: 'Sam' });
+      const groups = findDuplicates([withPapers, bare]);
+      expect(groups).toHaveLength(1);
+      expect(groups[0]?.why).toBe('identity');
+      expect(groups[0]?.items.map((item) => item.id).sort()).toEqual([withPapers.id, bare.id].sort());
+    });
+
+    it('joins the copies of one passport and the copy without papers in one group', () => {
+      const a = vaultItem('identity', { ...person, name: 'Passport', documents: [{ number: 'P1234567' }] });
+      const b = vaultItem('identity', { ...person, name: 'Passport 2', documents: [{ number: 'p 1234-567' }] });
+      const bare = vaultItem('identity', { ...person, name: 'Sam' });
+      const groups = findDuplicates([a, b, bare]);
+      expect(groups).toHaveLength(1);
+      expect(groups[0]?.items).toHaveLength(3);
+      // Not every member shares the number, so the group does not claim they do.
+      expect(groups[0]?.why).toBe('identity');
+    });
+
+    it('is no copy of either when the name and email have a passport and a licence', () => {
+      const passport = vaultItem('identity', { ...person, name: 'Passport', documents: [{ number: 'P1234567' }] });
+      const licence = vaultItem('identity', { ...person, name: 'Licence', documents: [{ number: 'D7654321' }] });
+      const bare = vaultItem('identity', { ...person, name: 'Sam' });
+      expect(findDuplicates([passport, licence, bare])).toEqual([]);
+    });
+
+    it('matches another copy with no papers, and never an identity under another name', () => {
+      const bare = vaultItem('identity', { ...person, name: 'Sam' });
+      const bareToo = vaultItem('identity', { ...person, name: 'Sam R' });
+      const other = vaultItem('identity', { givenName: 'Blake', email: 'blake@example.org', name: 'Blake' });
+      const groups = findDuplicates([bare, bareToo, other]);
+      expect(groups).toHaveLength(1);
+      expect(groups[0]?.items.map((item) => item.id).sort()).toEqual([bare.id, bareToo.id].sort());
+    });
+  });
+
   it('are never grouped by the title they were given', () => {
     expect(groupOf('identity', { name: 'Passport' }, { name: 'Passport' })).toBeUndefined();
   });
@@ -159,6 +199,26 @@ describe('contacts', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]?.why).toBe('key');
     expect(groups[0]?.items.map((item) => item.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('name only a reason every member shares, or both when no one reason holds for all', () => {
+    const KEY = '9F3A 77C1 0B2E 45D6 8A19 C0DE 12F4 5B6A 7788 9900';
+    // a and b share a key; b and c share an email and phone; a and c share nothing.
+    const a = vaultItem('contact', { name: 'a', email: 'a@x.example', public: 'AAAA' });
+    const b = vaultItem('contact', { name: 'b', email: 'shared@x.example', phone: '555 0142', public: 'AAAA' });
+    const c = vaultItem('contact', { name: 'c', email: 'shared@x.example', phone: '555 0142' });
+    const facts: DerivedFacts = new Map([
+      [a.id, { fingerprint: KEY }],
+      [b.id, { fingerprint: KEY }],
+    ]);
+    const mixed = findDuplicates([a, b, c], facts);
+    expect(mixed).toHaveLength(1);
+    expect(mixed[0]?.items).toHaveLength(3);
+    expect(mixed[0]?.why).toBe('contactOrKey');
+
+    // The pair that shares only its email and phone, or only its key, says so.
+    expect(findDuplicates([b, c], facts)[0]?.why).toBe('contact');
+    expect(findDuplicates([a, b], facts)[0]?.why).toBe('key');
   });
 
   it('give a contact with no key only its email and phone to go by', () => {
@@ -279,6 +339,7 @@ describe('across kinds and vaults', () => {
         'codes',
         'contact',
         'contactEmail',
+        'contactOrKey',
         'contactPhone',
         'cred',
         'document',
