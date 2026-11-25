@@ -193,8 +193,10 @@ export function FieldsView({ definitions, onSave, onDelete, onAllowOwn, onReset,
                       <th scope="row" className="adm-field-name">
                         {field.name}
                       </th>
-                      <td>{t(TYPE_LABELS[field.type])}</td>
-                      <td>{on === 'all' ? t('admin.fields.on.all') : on.map((id) => t(id)).join(', ')}</td>
+                      <td className="adm-dim">{t(TYPE_LABELS[field.type])}</td>
+                      <td className="adm-dim">
+                        {on === 'all' ? t('admin.fields.on.all') : on.map((id) => t(id)).join(', ')}
+                      </td>
                       <td>
                         <div className="adm-row-actions">
                           <RowMenu

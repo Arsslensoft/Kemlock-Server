@@ -151,6 +151,12 @@
   border-bottom: 1px solid var(--border);
   font-size: inherit;
   color: var(--text);
+  /* A long name wraps; the header cells' no-wrap is for short column titles. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.tbl td.adm-dim {
+  color: var(--text-2);
 }
 .tbl tbody tr:last-child th.adm-field-name {
   border-bottom: 0;
