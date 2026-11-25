@@ -2,8 +2,8 @@
 // browser with the file's own key from the body, then handed to the browser as a download. The
 // server only ever sends ciphertext; nothing is kept once the download is handed over.
 import type { ItemFiles } from '@/api/itemFiles';
+import { openKma1 } from '@/lib/kma1';
 import type { AttachedFile } from './files';
-import { openKma1 } from './kma1';
 
 export class NoServerFileError extends Error {
   constructor() {
