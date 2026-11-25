@@ -4,9 +4,9 @@
 // action with the token it holds; on that answer it asks once, then runs the action again.
 //
 // It asks only for what the account has (stepUpMethods.ts): the code field when the authenticator
-// app is on, the passkey when there is one and the browser has WebAuthn. With a passkey and no
-// app, the browser's passkey prompt opens at once. The password route (`step-up/password/*`, two
-// OPAQUE messages) is in the client but not offered here.
+// app is on, a passkey or security key when there is one and the browser has WebAuthn (the server
+// takes both on the passkey route). With no app, the browser's prompt opens at once. The password
+// route (`step-up/password/*`, two OPAQUE messages) is in the client but not offered here.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { Dialog, Heading, Modal, ModalOverlay } from 'react-aria-components';
 import type { AdminApi } from '@/api/admin';
@@ -47,6 +47,7 @@ export function ReauthDialogView({
   loading,
   error,
   code: codeOffered = true,
+  keyLabel = 'admin.reauth.passkey',
   onSubmit,
   onPasskey,
   onCancel,
@@ -57,6 +58,8 @@ export function ReauthDialogView({
   error?: Described | undefined;
   /** Whether the authenticator app is on, so a code can be typed. */
   code?: boolean;
+  /** The words on the WebAuthn button: a passkey, a security key, or either. */
+  keyLabel?: 'admin.reauth.passkey' | 'admin.reauth.securityKey' | 'admin.reauth.passkeyOrKey';
   onSubmit: (code: string) => void;
   /** Present when a passkey can be asked for. */
   onPasskey?: (() => void) | undefined;
@@ -124,7 +127,7 @@ export function ReauthDialogView({
               <Button onPress={onCancel}>{t('action.cancel')}</Button>
               {onPasskey && !loading ? (
                 <Button isDisabled={pending} variant={codeOffered ? 'default' : 'primary'} onPress={onPasskey}>
-                  {t('admin.reauth.passkey')}
+                  {t(keyLabel)}
                 </Button>
               ) : null}
               {codeOffered && !loading ? (
@@ -219,12 +222,12 @@ export function useReauth(
         setOpen(true);
         methods()
           // If the lookup fails, offer both rather than nothing; the server still decides.
-          .catch((): StepUpMethods => ({ totp: true, passkey: true }))
+          .catch((): StepUpMethods => ({ totp: true, passkey: true, securityKey: false }))
           .then((found) => {
             if (!waiter.current) return;
             setWays(found);
             // A passkey is the only way: open the browser's prompt instead of making them press for it.
-            if (found.passkey && !found.totp && canPasskey) askPasskey(false);
+            if ((found.passkey || found.securityKey) && !found.totp && canPasskey) askPasskey(false);
           });
       }),
     [methods, canPasskey, askPasskey],
@@ -264,7 +267,14 @@ export function useReauth(
           .catch((caught: unknown) => setError(describeError(caught)))
           .finally(() => setPending(false));
       }}
-      onPasskey={ways?.passkey && canPasskey ? () => askPasskey(codeOffered) : undefined}
+      keyLabel={
+        ways?.securityKey
+          ? ways.passkey
+            ? 'admin.reauth.passkeyOrKey'
+            : 'admin.reauth.securityKey'
+          : 'admin.reauth.passkey'
+      }
+      onPasskey={(ways?.passkey || ways?.securityKey) && canPasskey ? () => askPasskey(codeOffered) : undefined}
     />
   );
 
