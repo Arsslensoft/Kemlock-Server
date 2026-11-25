@@ -1,6 +1,7 @@
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '@/i18n';
 import { renderWithIntl } from '@/test/render';
 import { SETTINGS, setting } from './fixtures';
 import { SettingsView } from './Settings';
@@ -198,5 +199,24 @@ describe('SettingsView', () => {
     expect(screen.getByLabelText('SMTP port')).toBeRequired();
     const email = screen.getByRole('region', { name: 'Email' });
     expect(within(email).getByText('Saved.')).toBeInTheDocument();
+  });
+});
+
+describe('saving one group', () => {
+  it('leaves the unsaved edits of the other groups alone', async () => {
+    const { rerender } = renderWithIntl(<SettingsView settings={SETTINGS} onSave={vi.fn()} />);
+    const user = userEvent.setup();
+    const host = screen.getByDisplayValue('smtp.example.org');
+    await user.clear(host);
+    await user.type(host, 'mail.example.org');
+    // The server answers with the trash group saved: its data changes, the smtp group's does not.
+    const after = SETTINGS.map((s) => (s.key === 'trash_days' ? { ...s, value: '45' } : s));
+    rerender(
+      <I18nProvider>
+        <SettingsView settings={after} onSave={vi.fn()} />
+      </I18nProvider>,
+    );
+    expect(screen.getByDisplayValue('mail.example.org')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('45')).toBeInTheDocument();
   });
 });

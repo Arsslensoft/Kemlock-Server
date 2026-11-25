@@ -308,7 +308,8 @@ export function SettingsView({ settings, onSave, savedGroup, error, address }: S
       {error ? <ErrorNotice error={error} /> : null}
       {groupsOf(settings).map((view) => (
         <Group
-          key={view.group}
+          // A saved group remounts with what the server kept; the others keep their unsaved edits.
+          key={`${view.group}:${JSON.stringify(view.settings)}`}
           group={view.group}
           settings={view.settings}
           saved={savedGroup === view.group}
@@ -343,8 +344,6 @@ export default function Settings() {
   return (
     <>
       <SettingsView
-        // A saved group remounts with what the server kept.
-        key={JSON.stringify(settings.data)}
         settings={settings.data}
         onSave={(changes, group) => {
           setSaved(undefined);
