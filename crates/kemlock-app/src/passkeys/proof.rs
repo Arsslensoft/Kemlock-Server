@@ -97,7 +97,18 @@ where
                 self.keys.env.now() + PROOF_TTL,
             )
             .await?;
-        Ok(started.options)
+        let mut options = started.options;
+        // A passkey's answer must carry user verification, so the browser is asked to verify when
+        // one is listed; a security key alone stays touch-only.
+        if held.iter().any(|h| h.passkey.is_some()) {
+            let inner = if options.get("publicKey").is_some() {
+                &mut options["publicKey"]
+            } else {
+                &mut options
+            };
+            inner["userVerification"] = Value::from("preferred");
+        }
+        Ok(options)
     }
 
     /// Checks an answer: the signature, the counter (which must grow, and is stored), the relying
