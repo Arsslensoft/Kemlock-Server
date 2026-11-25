@@ -122,7 +122,6 @@ export function OtpForm({ initial, onSubmit, onCancel, pending, error, submitLab
           control={control}
           name="secret"
           label={t('newItem.otp.secret')}
-          type="password"
           mono
           autoComplete="off"
           hint={t('newItem.otp.secretHint')}
