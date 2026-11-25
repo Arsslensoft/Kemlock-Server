@@ -82,9 +82,9 @@ export default function Main() {
             key={filter.label}
             type="button"
             className="chip"
-            aria-pressed={kind === filter.kind}
+            aria-pressed={(kind || undefined) === filter.kind}
             onClick={() =>
-              void navigate({ to: '/vault', search: { kind: filter.kind, q: q || undefined } })
+              void navigate({ to: '/vault', search: { kind: filter.kind, q: q || undefined, fav } })
             }
           >
             {t(filter.label)}
@@ -188,7 +188,7 @@ export default function Main() {
                   size="small"
                   isDisabled={current <= 1}
                   onPress={() =>
-                    void navigate({ to: '/vault', search: { kind, q: q || undefined, page: current - 1 } })
+                    void navigate({ to: '/vault', search: { kind, q: q || undefined, fav, page: current - 1 } })
                   }
                 >
                   {t('action.previous')}
@@ -197,7 +197,7 @@ export default function Main() {
                   size="small"
                   isDisabled={current >= pages}
                   onPress={() =>
-                    void navigate({ to: '/vault', search: { kind, q: q || undefined, page: current + 1 } })
+                    void navigate({ to: '/vault', search: { kind, q: q || undefined, fav, page: current + 1 } })
                   }
                 >
                   {t('action.next')}
