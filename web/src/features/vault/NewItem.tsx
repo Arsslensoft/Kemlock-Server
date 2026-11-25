@@ -1,6 +1,7 @@
-// New item (`/vault/new?kind=<kind>`) and edit (`/vault/$itemId/edit`): one form for each kind of
-// item, filled in or not. The kind is in the address, so a New menu entry, a chip and a link all
-// open the same page. The form is in forms/; what it makes is saved by saveFlow.ts.
+// New item (`/vault/new?kind=<kind>`), a copy (`/vault/new?copyOf=<item id>`) and edit
+// (`/vault/$itemId/edit`): one form for each kind of item, filled in or not. The kind is in the
+// address, so a New menu entry, a chip and a link all open the same page. The form is in forms/;
+// what it makes is saved by saveFlow.ts.
 import { Link, useCanGoBack, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router';
 import { useRef, useState } from 'react';
 import { createFilesApi } from '@/api/files';
@@ -10,12 +11,14 @@ import { describeError } from '@/lib/errors';
 import { buttonClass } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
 import '@/styles/itemForms.css';
-import { FormEnvContext } from './forms/env';
+import { type AttachmentEntry, serverFileIds } from './attachments';
+import { copyFields, copySeed } from './copyDraft';
 import { KindForm } from './forms';
+import { FormEnvContext } from './forms/env';
 import type { Described } from './forms/parts';
 import { useVaultActions, useVaultItem, useWritableCollections } from './hooks';
-import { KIND_ORDER, type KnownKind, isEditable, kindLabel } from './kinds';
-import { formLinks } from './links';
+import { KIND_ORDER, type KnownKind, isEditable, isKnownKind, kindLabel } from './kinds';
+import { formLinks, incomingLinks } from './links';
 import { type FormResult, UploadError, saveWithExtras } from './saveFlow';
 import { useItemFormEnv } from './useItemFormEnv';
 import { type VaultItem, vaultStore } from './vault';
@@ -43,35 +46,46 @@ export default function NewItem() {
   const router = useRouter();
   const canGoBack = useCanGoBack();
   const { itemId } = useParams({ strict: false }) as { itemId?: string };
-  const search = useSearch({ strict: false }) as { kind?: KnownKind };
+  const search = useSearch({ strict: false }) as { kind?: KnownKind; copyOf?: string };
   const { item, isLoading } = useVaultItem(itemId);
+  const copying = useVaultItem(search.copyOf);
   const { save, remove } = useVaultActions();
   // Where a new item goes: '' is the account's own vault, otherwise `<space id>/<collection id>`.
   const [where, setWhere] = useState('');
   const collections = useWritableCollections();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Described>();
-  // The item an earlier try saved before something after it failed: Save goes on from it, so it is
-  // never made twice.
+  // The item an earlier try saved before something after it failed, and the files it sent: Save goes
+  // on from them, so the item is never made twice and no file is sent twice.
   const [savedItem, setSavedItem] = useState<VaultItem>();
+  const [uploaded, setUploaded] = useState<AttachmentEntry[]>([]);
   const [linkFailures, setLinkFailures] = useState<string[]>([]);
   const editing = itemId !== undefined;
-  const kind: KnownKind = editing && item ? (item.kind as KnownKind) : (search.kind ?? 'login');
+  const copyOf = search.copyOf;
+  const source = copyOf !== undefined ? copying.item : undefined;
+  const chosen = search.kind ?? (source && isKnownKind(source.kind) ? source.kind : undefined);
+  const kind: KnownKind = editing && item && isKnownKind(item.kind) ? item.kind : (chosen ?? 'login');
   const existing = item ?? savedItem;
   const env = useItemFormEnv(existing?.id);
-  // The links the item had when the form opened: what it links to now is compared with these, so
-  // an end that failed once is tried again by the next Save.
-  const linksOnOpen = useRef<string[] | undefined>(undefined);
-  if (linksOnOpen.current === undefined && (!editing || item)) linksOnOpen.current = formLinks(item?.data);
+  // What the item had when the form opened: what it links to now is compared with the links, and the
+  // files it keeps with the files, so an end or a file that failed once is dealt with by the next Save.
+  const opened = useRef<{ links: string[]; files: string[] } | undefined>(undefined);
+  if (opened.current === undefined && (!editing || item)) {
+    const incoming = item ? incomingLinks(item.id, env.items) : [];
+    opened.current = {
+      links: [...new Set([...formLinks(item?.data), ...incoming])].sort(),
+      files: serverFileIds(item?.data),
+    };
+  }
 
-  if (editing && isLoading) {
+  if ((editing && isLoading) || (copyOf !== undefined && copying.isLoading)) {
     return (
       <p className="empty" role="status">
         {t('main.loading')}
       </p>
     );
   }
-  if (editing && (!item || !isEditable(item.kind))) {
+  if ((editing && (!item || !isEditable(item.kind))) || (copyOf !== undefined && !source)) {
     return (
       <div className="empty">
         <h1 className="page-title">{t('item.missing.title')}</h1>
@@ -93,14 +107,20 @@ export default function NewItem() {
         : navigate({ to: '/vault', replace: true }));
   };
 
-  // A contact is one person's own statement: it stays in the account's own vault.
-  const target =
-    kind === 'contact' ? undefined : collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where);
+  // A contact is one person's own statement: it stays in the account's own vault. A passkey is
+  // made by a website, so nothing is saved from its page and there is nowhere to pick.
+  const picksWhere = kind !== 'contact' && kind !== 'passkey';
+  const target = picksWhere
+    ? collections.data?.find((c) => `${c.spaceId}/${c.collectionId}` === where)
+    : undefined;
   const owner = target ? `space:${target.spaceId}` : `user:${session.getState().userId ?? ''}`;
   const collectionId = target?.collectionId;
   const heldIn = item?.collectionId
     ? collections.data?.find((c) => c.collectionId === item.collectionId)
     : undefined;
+  // A copy keeps what the original held that this page doesn't show, such as keys another app wrote.
+  const seed = source ? copySeed(source) : undefined;
+  const incoming = item ? incomingLinks(item.id, env.items) : [];
 
   async function submit(result: FormResult) {
     setPending(true);
@@ -119,13 +139,16 @@ export default function NewItem() {
           kind,
           owner,
           collectionId,
-          result,
-          linksBefore: linksOnOpen.current ?? [],
+          result: existing ? result : { ...result, fields: copyFields(seed, result.fields) },
+          linksBefore: opened.current?.links ?? [],
+          filesBefore: opened.current?.files ?? [],
+          uploaded,
         },
       );
       if (outcome.linkFailures.length > 0) {
         // Saved; the link could not be written on these. Save again tries them again.
         setSavedItem(outcome.item);
+        setUploaded([]);
         setLinkFailures(outcome.linkFailures);
         return;
       }
@@ -134,6 +157,7 @@ export default function NewItem() {
     } catch (caught) {
       if (caught instanceof UploadError) {
         setSavedItem(caught.saved);
+        setUploaded(caught.uploaded);
         setError(describeError(caught.reason));
       } else {
         setError(describeError(caught));
@@ -155,7 +179,7 @@ export default function NewItem() {
         <p className="lede">{t('newItem.lede')}</p>
       </div>
 
-      {editing ? null : (
+      {editing || copyOf !== undefined ? null : (
         <div className="chips" role="group" aria-label={t('newItem.kind')}>
           {KIND_ORDER.map((option) => (
             <button
@@ -166,6 +190,7 @@ export default function NewItem() {
               onClick={() => {
                 // Another kind is another form: what an earlier try saved stays saved.
                 setSavedItem(undefined);
+                setUploaded([]);
                 setError(undefined);
                 setLinkFailures([]);
                 void navigate({ to: '/vault/new', search: { kind: option }, replace: true });
@@ -184,7 +209,7 @@ export default function NewItem() {
             : t('newItem.where.inSpace')}
         </p>
       ) : null}
-      {!editing && kind !== 'contact' && collections.data && collections.data.length > 0 ? (
+      {!editing && picksWhere && collections.data && collections.data.length > 0 ? (
         <div className="field form-wide">
           <label htmlFor="item-where">{t('newItem.where')}</label>
           <select id="item-where" value={where} onChange={(event) => setWhere(event.target.value)}>
@@ -208,6 +233,9 @@ export default function NewItem() {
         <KindForm
           kind={kind}
           item={item}
+          existing={existing}
+          seed={seed}
+          incoming={incoming}
           submitLabel={t('action.save')}
           pending={pending}
           error={error}

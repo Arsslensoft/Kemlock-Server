@@ -52,6 +52,8 @@ interface SsoSearch {
 interface NewItemSearch {
   /** Which creation form opens; a login when absent or unknown. */
   kind?: KnownKind;
+  /** The id of an item a new one is filled from (Make a copy); its kind is the kind of the form. */
+  copyOf?: string;
 }
 
 const nextSearch = z.object({ next: optionalString });
@@ -63,7 +65,7 @@ const vaultSearch = z.object({
   page: z.number().int().min(1).optional().catch(undefined),
   fav: z.boolean().optional().catch(undefined),
 });
-const newItemSearch = z.object({ kind: z.enum(KIND_ORDER).optional().catch(undefined) });
+const newItemSearch = z.object({ kind: z.enum(KIND_ORDER).optional().catch(undefined), copyOf: optionalString });
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   beforeLoad: async ({ context, location }) => {
