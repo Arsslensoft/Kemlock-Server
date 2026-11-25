@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { openFromShell } from './nav';
-import { signInAsAdmin } from './signin';
+import { chooseFromAccountMenu, signInAsAdmin } from './signin';
 
 // Devices & apps after a real sign-in: the Connect dialog (the server's own address, copied for
 // real), and trust in the table: the shield and its tooltip, and each row's menu. The device list
@@ -87,7 +86,7 @@ test('Devices & apps: Connect, and trust in the table', async ({ page, context }
   });
 
   await signInAsAdmin(page);
-  await openFromShell(page, 'Devices & apps');
+  await chooseFromAccountMenu(page, 'Devices & apps');
   await expect(page.getByRole('heading', { name: 'Devices & apps', level: 1 })).toBeVisible();
 
   // The old panels are gone; the header has Connect and Sign out everyone else.

@@ -1,8 +1,7 @@
 import { type Page, type Route, expect, test } from '@playwright/test';
 import { ADMIN_OVERVIEW, SETTINGS } from '../src/features/admin/fixtures';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { openAdminConsole } from './nav';
-import { signInAsAdmin } from './signin';
+import { chooseFromAccountMenu, signInAsAdmin } from './signin';
 
 // The admin console's Overview, the hints under the Server settings switches and the Custom fields
 // page, after a real sign-in. The console's calls are answered here in the shapes of
@@ -126,7 +125,8 @@ test('the admin console: the Overview, the switch hints and the custom fields', 
   const problems = watchForCspProblems(page);
   const api = await mockAdminApi(page);
   await signInAsAdmin(page);
-  await openAdminConsole(page);
+  await chooseFromAccountMenu(page, 'Admin console');
+  await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
 
   // Overview: one row of five numbers, each with an icon; no Version and no Setup card.
   const stats = page.locator('.adm-stats .stat');

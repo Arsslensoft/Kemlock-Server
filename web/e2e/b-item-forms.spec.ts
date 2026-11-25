@@ -1,29 +1,16 @@
 import { type Page, expect, test } from '@playwright/test';
 import { watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem, signInAsAdmin } from './signin';
 
 // One form for each kind of item: make one of each from its own form, with the pieces the forms
 // share (websites, the generator, custom fields, linked items, files) and the password eye inside
-// its box. A page reload signs the journey out, so it only clicks: the New item button of the
-// shell, then the kind chips of the form itself.
+// its box. A page reload signs the journey out, so it only clicks: the New menu of the shell opens
+// each kind's form.
 
-/** Opens the form of a kind: the New item control of the shell, then the kind in the form's chips. */
+/** Opens the form of a kind from the shell's New menu. */
 async function openNew(page: Page, kind: string): Promise<void> {
-  const opener = page
-    .getByRole('link', { name: 'New item' })
-    .or(page.getByRole('button', { name: 'New item' }))
-    .first();
-  await opener.click();
-  // A + button opens a menu of the kinds; a plain button goes straight to the login form.
+  await newItem(page, kind);
   const chips = page.getByRole('group', { name: 'Kind of item' });
-  const entry = page
-    .getByRole('menuitem', { name: kind, exact: true })
-    .or(page.getByRole('link', { name: kind, exact: true }))
-    .first();
-  await chips.or(entry).first().waitFor();
-  if (!(await chips.isVisible())) await entry.click();
-  await expect(chips).toBeVisible();
-  await chips.getByRole('button', { name: kind, exact: true }).click();
   await expect(chips.getByRole('button', { name: kind, exact: true })).toHaveAttribute('aria-pressed', 'true');
 }
 

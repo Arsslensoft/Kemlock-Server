@@ -1,6 +1,6 @@
 import { type Locator, type Page, expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem as openNewItem, signInAsAdmin } from './signin';
 
 // The list pages: All items and a page per type (`/vault?kind=<kind id>`) with the Vault column and
 // filter, Trash with its "Deleted from" column and filter, and Duplicates with its chips and filter.
@@ -16,12 +16,7 @@ function sidebar(page: Page, name: string): Locator {
 
 /** Opens the New menu and picks a type, which opens that type's form. */
 async function newItem(page: Page, type: 'Login' | 'Note'): Promise<void> {
-  await page.getByRole('button', { name: 'New item' }).or(page.getByRole('link', { name: 'New item' })).first().click();
-  await page
-    .getByRole('menuitem', { name: type, exact: true })
-    .or(page.getByRole('link', { name: type, exact: true }))
-    .first()
-    .click();
+  await openNewItem(page, type);
   await expect(page.getByRole('heading', { name: `New ${type.toLowerCase()}` })).toBeVisible();
 }
 
@@ -173,15 +168,8 @@ test('the lists filter by type and by vault, and Trash and Duplicates say which 
   await sidebar(page, 'Logins').click();
   await row(page, 'Lists beta').getByRole('link', { name: /Lists beta/ }).click();
   await expect(page.getByRole('heading', { name: 'Lists beta', level: 1 })).toBeVisible();
-  const moveToTrash = page
-    .getByRole('menuitem', { name: /Move to Trash/ })
-    .or(page.getByRole('button', { name: /Move to Trash/ }))
-    .first();
-  if (!(await moveToTrash.isVisible())) {
-    // On the page the item has a "more" menu holding it.
-    await page.getByRole('button', { name: /more|actions/i }).first().click();
-  }
-  await moveToTrash.click();
+  await page.getByRole('button', { name: 'More actions for Lists beta' }).click();
+  await page.getByRole('menuitem', { name: /Move to Trash/ }).click();
   await page.getByRole('link', { name: /^Trash/ }).click();
   await expect(page.getByRole('heading', { name: 'Trash', level: 1 })).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Deleted from' })).toBeVisible();

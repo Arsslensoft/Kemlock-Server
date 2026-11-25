@@ -1,6 +1,6 @@
 import { type Page, expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem, signInAsAdmin } from './signin';
 
 // The item page: Edit as the only main button, the ⋯ menu and its keyboard, the round lock with its
 // tooltip, What the server holds in a dialog, links that show on both items and unlink from both,
@@ -11,21 +11,12 @@ import { signInAsAdmin } from './signin';
 const PASSWORD = 'Item-page-pass-1!';
 
 async function newLogin(page: Page, name: string, website: string): Promise<void> {
-  await page.getByRole('link', { name: 'New item' }).or(page.getByRole('button', { name: 'New item' })).first().click();
-  // A menu of types, when the page has one, opens the login form from its first entry.
-  const heading = page.getByRole('heading', { name: 'New login' });
-  if (!(await heading.isVisible().catch(() => false))) {
-    await page
-      .getByRole('menuitem', { name: 'Login', exact: true })
-      .or(page.getByRole('link', { name: 'Login', exact: true }))
-      .first()
-      .click();
-  }
-  await expect(heading).toBeVisible();
+  await newItem(page, 'Login');
+  await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   await page.getByLabel('Name', { exact: true }).fill(name);
   await page.getByLabel('Username').fill('item-page@example.org');
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
-  await page.getByLabel('Website').fill(website);
+  await page.getByLabel('Website 1', { exact: true }).fill(website);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible();
 }
@@ -155,7 +146,7 @@ test('the item page: menu, lock, server dialog, two-way links, copy and move', a
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Page Mail');
   await expect(page.getByLabel('Username')).toHaveValue('item-page@example.org');
-  await expect(page.getByLabel('Website')).toHaveValue('https://page-mail.example');
+  await expect(page.getByLabel('Website 1', { exact: true })).toHaveValue('https://page-mail.example');
   await page.getByLabel('Name', { exact: true }).fill('Page Mail copy');
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('heading', { name: 'Page Mail copy', level: 1 })).toBeVisible();
