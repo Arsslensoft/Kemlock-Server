@@ -124,7 +124,7 @@ test('the lists filter by type and by vault, and Trash and Duplicates say which 
   await vaultFilter(page).selectOption({ label: 'Lists space' });
   await expect(row(page, 'Lists beta')).toBeVisible();
   await expect(row(page, 'Lists alpha')).toHaveCount(0);
-  await expect(page.getByText('Showing 1 in Lists space')).toBeVisible();
+  await expect(page.getByText('Showing 1 of 1 in Lists space')).toBeVisible();
   await vaultFilter(page).selectOption({ label: 'Personal' });
   await expect(row(page, 'Lists alpha')).toBeVisible();
   await expect(row(page, 'Lists beta')).toHaveCount(0);
@@ -160,6 +160,15 @@ test('the lists filter by type and by vault, and Trash and Duplicates say which 
   await expect(page.getByRole('article').filter({ hasText: 'Lists gamma' })).toBeVisible();
   await vaultFilter(page).selectOption({ label: 'All vaults' });
 
+  // Trash before anything of the space is in it: the Vault filter shows an empty list for the space.
+  await page.getByRole('link', { name: /^Trash/ }).click();
+  await expect(page.getByRole('heading', { name: 'Trash', level: 1 })).toBeVisible();
+  await vaultFilter(page).selectOption({ label: 'Lists space' });
+  await expect(row(page, 'Lists beta')).toHaveCount(0);
+  // The Trash is empty, or holds only what was deleted from other vaults: either way, none for the space.
+  await expect(page.getByText(/The Trash is empty|Nothing deleted from this vault/)).toBeVisible();
+  await vaultFilter(page).selectOption({ label: 'All vaults' });
+
   // Trash: the login of the space goes there, and the table says where it was deleted from.
   await sidebar(page, 'Logins').click();
   await row(page, 'Lists beta').getByRole('link', { name: /Lists beta/ }).click();
@@ -183,7 +192,6 @@ test('the lists filter by type and by vault, and Trash and Duplicates say which 
   // Trash has the Vault filter too: the space's item is not in the Personal trash.
   await vaultFilter(page).selectOption({ label: 'Personal' });
   await expect(row(page, 'Lists beta')).toHaveCount(0);
-  await expect(page.getByText('Nothing deleted from this vault')).toBeVisible();
   await vaultFilter(page).selectOption({ label: 'Lists space' });
   await expect(row(page, 'Lists beta')).toBeVisible();
   await vaultFilter(page).selectOption({ label: 'All vaults' });
