@@ -82,6 +82,8 @@ pub struct Built {
     pub settings: Arc<SettingsWatch>,
     /// The mail sender the settings switch to another SMTP server.
     pub mailer: SwitchMailer,
+    /// Makes the push relays follow the saved settings.
+    pub push: crate::notify::PushFollower,
     /// What starts the move from Vaultwarden in the background; `run` recovers an orphaned one.
     pub migration: VaultwardenMove,
 }
@@ -208,6 +210,7 @@ where
         &api.limits,
         &notifications.mailer,
     );
+    notifications.push_follower.follow(&settings.current());
     settings.overlay_retention(&store);
     // An invited address registers with its token while sign-ups are closed.
     api.live.set_invites(Arc::new(AcceptInvite {
@@ -383,6 +386,7 @@ where
         replication: federated.replication,
         settings,
         mailer: notifications.mailer,
+        push: notifications.push_follower,
         migration,
     })
 }
@@ -450,6 +454,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
         replication,
         settings,
         mailer,
+        push,
         migration,
         ..
     } = build(&config).await?;
@@ -466,7 +471,10 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     // Settings saved in the console, here or on another replica, reach the running server.
     let settings_apply = settings.spawn_apply({
         let api = api.clone();
-        move |snapshot| live::apply(snapshot, &api.live, &api.limits, &mailer)
+        move |snapshot| {
+            live::apply(snapshot, &api.live, &api.limits, &mailer);
+            push.follow(snapshot);
+        }
     });
     let settings_poll = settings.spawn_poll();
     let listener = bind(&config).await?;

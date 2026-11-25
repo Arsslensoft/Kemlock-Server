@@ -80,7 +80,7 @@ impl<R: BwDeviceRepo + Clone + 'static> BwNotifier<R> {
     /// Pushes to the account's phones, from a task of its own. `with_identifier` says whether the
     /// acting device's identifier goes along (Vaultwarden's account-wide updates leave it out).
     fn push(&self, user: UserId, acting: Option<Acting>, push: BwPush, with_identifier: bool) {
-        let Some(pushing) = self.push.clone() else {
+        let Some(pushing) = self.push.clone().filter(|p| p.relay.get().is_some()) else {
             return;
         };
         tokio::spawn(async move {
