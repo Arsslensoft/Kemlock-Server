@@ -1,7 +1,7 @@
 import { type Page, expect, test } from '@playwright/test';
 import { DpopClient, pkce } from '../e2e/dpop';
 import { freshCode } from '../e2e/helpers';
-import { enterCode } from '../e2e/signin';
+import { chooseFromAccountMenu, enterCode } from '../e2e/signin';
 import { ADMIN, readState, saveState } from '../e2e/state';
 
 // Single sign-on against Keycloak (deploy/e2e/compose.yml; its realm has the two users below). The
@@ -133,8 +133,18 @@ test('a new SSO user gets keys, opens the vault with no password, and opens it a
   await page.waitForURL(`${KEYCLOAK}/**`, { timeout: 60_000 });
   await keycloakLogin(page, NEW_USER);
   await expect(page).toHaveURL(/\/vault$/, { timeout: 90_000 });
-  await expect(page.getByRole('link', { name: 'New item' }).first()).toBeVisible();
-  await page.getByRole('link', { name: 'Devices & apps' }).click();
+  await expect(page.getByRole('button', { name: 'New item' })).toBeVisible();
+  // Profile: the identity provider owns the name and the address, which show locked; this account
+  // has no master password, and says so.
+  await chooseFromAccountMenu(page, 'Profile');
+  await expect(page.getByRole('heading', { name: 'Profile', level: 1 })).toBeVisible();
+  await expect(page.getByLabel('Name', { exact: true })).toHaveAttribute('readonly', '');
+  await expect(page.getByLabel('Email', { exact: true })).toHaveAttribute('readonly', '');
+  await expect(page.getByLabel('Email', { exact: true })).toHaveValue(NEW_USER.email);
+  await expect(page.getByText('Comes from your identity provider. Change it there.').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Master password' }).getByText(/no master password/)).toBeVisible();
+  await chooseFromAccountMenu(page, 'Devices & apps');
   await expect(page.getByText('Trusted', { exact: true }).first()).toBeVisible();
 
   // A new page load has no session and no keys in memory. Signing in with SSO again in this
@@ -150,7 +160,7 @@ test('a new SSO user gets keys, opens the vault with no password, and opens it a
     // Already signed in at Keycloak.
   }
   await expect(page).toHaveURL(/\/vault$/, { timeout: 90_000 });
-  await expect(page.getByRole('link', { name: 'New item' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New item' })).toBeVisible();
 });
 
 test('an SSO user signs in from the web vault and another device opens the vault', async ({
@@ -194,12 +204,12 @@ test('an SSO user signs in from the web vault and another device opens the vault
   await expect(phrase).toHaveText(/^[a-z-]+( [a-z-]+){4}$/, { timeout: 60_000 });
   const words = ((await phrase.textContent()) ?? '').trim();
 
-  await page.getByRole('link', { name: 'Devices & apps' }).click();
+  await chooseFromAccountMenu(page, 'Devices & apps');
   const approver = page.getByLabel("The phrase worked out from the request's key");
   await expect(approver.first()).toHaveText(words, { timeout: 60_000 });
   await page.getByRole('button', { name: /^Approve / }).first().click();
 
   await expect(fresh).toHaveURL(/\/vault$/, { timeout: 90_000 });
-  await expect(fresh.getByRole('link', { name: 'New item' }).first()).toBeVisible();
+  await expect(fresh.getByRole('button', { name: 'New item' })).toBeVisible();
   await context.close();
 });
