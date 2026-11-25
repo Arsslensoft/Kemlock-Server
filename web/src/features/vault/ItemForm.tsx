@@ -110,7 +110,7 @@ export function LoginForm({ initial, onSubmit, onCancel, pending, error, submitL
           {t('newItem.login.details')}
         </h2>
         <Field control={control} name="name" label={t('newItem.name')} autoFocus />
-        <div className="pair">
+        <div className="pair wide">
           <Field control={control} name="username" label={t('item.username')} autoComplete="off" />
           <Field
             control={control}
