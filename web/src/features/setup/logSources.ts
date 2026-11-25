@@ -25,7 +25,7 @@ export const LOG_SOURCES: LogSource[] = [
     id: 'proxmox',
     target: 'setup.code.targetProxmox',
     command: 'journalctl -u kemlock-server -o cat | grep -i "setup code" | tail -n 1',
-    alpine: "grep -i 'setup code' /var/log/kemlock-server.log",
+    alpine: "grep -i 'setup code' /var/log/kemlock-server.log | tail -n 1",
   },
   { id: 'binary', target: 'setup.code.targetBinary', where: 'setup.code.whereBinary' },
   { id: 'unraid', target: 'setup.code.targetUnraid', where: 'setup.code.whereUnraid' },
