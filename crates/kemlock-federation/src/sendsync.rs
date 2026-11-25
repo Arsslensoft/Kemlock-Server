@@ -374,7 +374,8 @@ impl<S: FedStore> Replica<S> {
         report: &mut SendReport,
     ) -> Result<bool> {
         if let Some(file) = entry.file {
-            if file.size > MAX_FETCH {
+            // A file Send needs file storage, and a server without it takes the notes only.
+            if self.files.is_none() || file.size > MAX_FETCH {
                 report.skipped += 1;
                 return Ok(false);
             }
@@ -971,5 +972,40 @@ mod tests {
         let report = t.sync().await.expect("sync");
         assert_eq!(report.removed, 1);
         assert!(t.b_files.get(blob).is_some(), "the other row's file stays");
+    }
+
+    #[tokio::test]
+    async fn a_server_without_file_storage_still_copies_notes() {
+        let t = pair().await;
+        // A replica of the same vault with no file storage configured.
+        let ic = identity(3, NOW, &Suite::IMPLEMENTED);
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let c = Replica::new(MemoryStore::new(ic.server), Arc::new(ic.clone()));
+        let home = Replica::new(MemoryStore::new(ia.server), Arc::new(ia.clone()))
+            .with_blob_files(t.a_files.clone());
+        c.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        home.pin_peer(&ic.descriptor, NOW).await.expect("pin");
+        home.federate(t.vault, vec![ic.server]).await.expect("federate");
+        c.accept_vault(t.vault, ia.server, vec![ic.server])
+            .await
+            .expect("accept");
+
+        let note = t.send(None);
+        home.store.put_send(note.clone());
+        let file = t.send(Some((300, SendFileFormat::Kma1)));
+        t.a_files.put(file.file.expect("file").blob, vec![1; 300]);
+        home.store.put_send(file.clone());
+
+        let mut channel = Direct {
+            remote: &home,
+            caller: ic.server,
+        };
+        let report = c
+            .sync_sends(&mut channel, ia.server, t.vault)
+            .await
+            .expect("sync");
+        assert_eq!((report.rows, report.skipped), (1, 1));
+        assert!(c.store.send(note.id).is_some());
+        assert!(c.store.send(file.id).is_none(), "no row for a file it can't hold");
     }
 }
