@@ -59,6 +59,7 @@ pub mod ports;
 mod publish;
 pub mod relay;
 pub mod replicate;
+pub mod sendsync;
 pub mod session;
 pub mod signed;
 pub mod spaces;

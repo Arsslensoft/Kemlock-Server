@@ -27,6 +27,7 @@ use crate::ports::{
     VaultRepo,
 };
 use crate::relay::OriginKeys;
+use crate::sendsync::SendSync;
 use crate::signed::Signed;
 use crate::spaces::SpaceMirror;
 use crate::tagsync::TagSync;
@@ -53,6 +54,7 @@ pub trait FedStore:
     + KeyStore
     + OriginKeys
     + TagSync
+    + SendSync
 {
 }
 impl<
@@ -69,7 +71,8 @@ impl<
         + Forgetting
         + KeyStore
         + OriginKeys
-        + TagSync,
+        + TagSync
+        + SendSync,
 > FedStore for T
 {
 }
@@ -533,6 +536,14 @@ impl<S: FedStore> Replica<S> {
             Request::Tags { vault, items } => {
                 self.authorize(peer, *vault).await?;
                 Ok(answer(self.serve_tags(peer, *vault, items).await?))
+            }
+            Request::Sends {
+                vault,
+                after,
+                limit,
+            } => {
+                self.authorize(peer, *vault).await?;
+                Ok(answer(self.serve_sends(*vault, *after, *limit).await?))
             }
         }
     }

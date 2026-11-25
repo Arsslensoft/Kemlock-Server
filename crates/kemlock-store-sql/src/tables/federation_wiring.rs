@@ -1,4 +1,5 @@
-//! `peer_acknowledgements`, `vault_offers`, `replicated_accounts` and `federation_erasures`: the
+//! `peer_acknowledgements`, `vault_offers`, `replicated_accounts`, `federation_erasures` and
+//! `federation_replicated_sends`: the
 //! rows behind consent, copied accounts and the erasures a home owes its replicas. Times are Unix
 //! seconds in 64-bit columns, like the rest of federation's.
 
@@ -162,6 +163,25 @@ pub(crate) mod federation_erasures {
         pub owner_id: Uuid,
         /// Unix seconds the home erased the vault.
         pub queued_at: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// `federation_replicated_sends`: the Sends this server copied from a peer.
+pub(crate) mod federation_replicated_sends {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "federation_replicated_sends")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub send_id: Uuid,
+        /// The server the copy came from.
+        pub from_server: Uuid,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

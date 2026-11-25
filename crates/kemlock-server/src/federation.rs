@@ -262,7 +262,7 @@ fn database_kind(url: &str) -> Option<String> {
 }
 
 /// This server's file storage as the engine reads and writes it.
-pub fn files_of<B: kemlock_app::files::BlobStore + 'static>(blobs: B) -> Arc<dyn BlobFiles> {
+pub fn files_of<B: kemlock_app::sends::SendBlobs + 'static>(blobs: B) -> Arc<dyn BlobFiles> {
     Arc::new(StoreFiles(blobs))
 }
 

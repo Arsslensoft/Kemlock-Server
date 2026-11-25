@@ -90,6 +90,8 @@ pub struct VaultStatus {
     /// Files copied and files left for their first use.
     pub files_fetched: usize,
     pub files_deferred: usize,
+    /// Sends copied or brought up to date.
+    pub sends_copied: usize,
     /// Event log entries taken from the peer, when both switches are on.
     pub events_pulled: usize,
     /// Items that got duplicate tags from the peer, where server matching is on.
@@ -112,6 +114,7 @@ impl VaultStatus {
             behind: false,
             files_fetched: 0,
             files_deferred: 0,
+            sends_copied: 0,
             events_pulled: 0,
             tags_pulled: 0,
             in_step: None,
@@ -577,6 +580,14 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
                 }
                 Err(e) => tracing::info!(error = %e, "attachments didn't sync"),
             }
+            match replica.sync_sends(channel, peer.id, owner).await {
+                Ok(sends) => {
+                    status.sends_copied = sends.rows + sends.updated;
+                    status.files_fetched += sends.fetched;
+                    status.files_deferred += sends.deferred;
+                }
+                Err(e) => tracing::info!(error = %e, "Sends didn't sync"),
+            }
         }
 
         let due = {
@@ -662,15 +673,33 @@ where
             use kemlock_app::files::BlobError;
             let replica = &self.runner.replica;
             let backend = |e: &dyn std::fmt::Display| BlobError::Backend(e.to_string());
-            let attachment = replica
+            // An attachment's file, or the file of a Send (which a Bitwarden app may have made in
+            // a format storage can't check).
+            let (file_owner, file_size, raw) = match replica
                 .store()
                 .attachment_of_blob(blob)
                 .await
                 .map_err(|e| backend(&e))?
-                .ok_or(BlobError::NotFound)?;
+            {
+                Some(attachment) => (attachment.owner, attachment.size, false),
+                None => {
+                    let send = replica
+                        .store()
+                        .send_of_blob(blob)
+                        .await
+                        .map_err(|e| backend(&e))?
+                        .ok_or(BlobError::NotFound)?;
+                    let file = send.file.ok_or(BlobError::NotFound)?;
+                    (
+                        Owner::User(send.owner),
+                        file.size,
+                        file.format == kemlock_domain::sends::SendFileFormat::Opaque,
+                    )
+                }
+            };
             let vault = replica
                 .store()
-                .get_vault(attachment.owner)
+                .get_vault(file_owner)
                 .await
                 .map_err(|e| backend(&e))?
                 .filter(|v| v.policy == Policy::Federated)
@@ -697,7 +726,7 @@ where
                     }
                 };
                 let fetched = replica
-                    .fetch_blob(&mut channel, attachment.owner, blob, attachment.size)
+                    .fetch_file(&mut channel, file_owner, blob, file_size, raw)
                     .await;
                 if let Err(e) = self.runner.connector.close(channel).await {
                     tracing::debug!(error = %e, "a peer session did not close cleanly");

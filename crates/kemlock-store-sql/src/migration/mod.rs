@@ -46,6 +46,7 @@ mod m20261127_030001_space_recovery_boxes;
 mod m20261128_010001_bw_user_key_ids;
 mod m20261128_020001_held_demotions;
 mod m20261128_030001_recovery_kits;
+mod m20261129_010001_replicated_sends;
 
 use sea_orm_migration::prelude::*;
 
@@ -97,6 +98,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261128_010001_bw_user_key_ids::Migration),
             Box::new(m20261128_020001_held_demotions::Migration),
             Box::new(m20261128_030001_recovery_kits::Migration),
+            Box::new(m20261129_010001_replicated_sends::Migration),
         ]
     }
 }

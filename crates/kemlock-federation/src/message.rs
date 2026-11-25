@@ -10,6 +10,7 @@ use crate::eventsync::LogEntry;
 use crate::hashtree::{BUCKETS, Leaf};
 use crate::tagsync::ItemTags;
 use crate::wire::{item_id, owner, server_id};
+use kemlock_domain::sends::SendRecord;
 use kemlock_domain::{AttachmentId, BlobId, ItemId, Owner, ServerId, VersionVector};
 
 /// The most item ids one request names.
@@ -104,6 +105,13 @@ pub enum Request {
     /// The tags the responder holds for these items at their current revision (at most 256 items),
     /// when server matching is on for the vault there. See `tagsync`.
     Tags { vault: Owner, items: Vec<ItemId> },
+    /// The Sends of a personal vault with an id after `after` (all zeros for the first page), in
+    /// id order, at most `limit` (the responder serves at most 50 a page). See `sendsync`.
+    Sends {
+        vault: Owner,
+        after: [u8; 16],
+        limit: u32,
+    },
 }
 
 /// Where an offer of a vault stands at the peer.
@@ -237,6 +245,12 @@ pub enum Response {
     Tags {
         vault: Owner,
         entries: Vec<ItemTags>,
+    },
+    /// A page of the Sends of a personal vault, in id order. Only Sends whose bytes are held.
+    Sends {
+        vault: Owner,
+        entries: Vec<SendRecord>,
+        more: bool,
     },
 }
 
@@ -385,6 +399,16 @@ impl Request {
             Request::Erase { vault } => {
                 vec![(0, Value::Uint(16)), (1, Value::bytes(&vault.to_bytes()))]
             }
+            Request::Sends {
+                vault,
+                after,
+                limit,
+            } => vec![
+                (0, Value::Uint(17)),
+                (1, Value::bytes(&vault.to_bytes())),
+                (2, Value::bytes(after)),
+                (3, Value::Uint(u64::from(*limit))),
+            ],
         };
         Value::map(entries).encode()
     }
@@ -553,6 +577,14 @@ impl Request {
                 f.only(&[0, 1])?;
                 Ok(Request::Erase { vault: vault(&f)? })
             }
+            17 => {
+                f.only(&[0, 1, 2, 3])?;
+                Ok(Request::Sends {
+                    vault: vault(&f)?,
+                    after: f.fixed::<16>(2)?,
+                    limit: limit(&f, 3)?,
+                })
+            }
             _ => Err(FedError::Malformed("unknown request type")),
         }
     }
@@ -684,6 +716,19 @@ impl Response {
                     2,
                     Value::Array(entries.iter().map(ItemTags::to_value).collect()),
                 ),
+            ],
+            Response::Sends {
+                vault,
+                entries,
+                more,
+            } => vec![
+                (0, Value::Uint(113)),
+                (1, Value::bytes(&vault.to_bytes())),
+                (
+                    2,
+                    Value::Array(entries.iter().map(crate::sendsync::send_to_value).collect()),
+                ),
+                (3, Value::flag(*more)),
             ],
         };
         Value::map(entries).encode()
@@ -873,6 +918,24 @@ impl Response {
                         .iter()
                         .map(ItemTags::from_value)
                         .collect::<Result<Vec<ItemTags>>>()?,
+                })
+            }
+            113 => {
+                f.only(&[0, 1, 2, 3])?;
+                let Owner::User(owner) = vault(&f)? else {
+                    return Err(FedError::Malformed("a space has no Sends"));
+                };
+                let items = f.array(2)?;
+                if items.len() > crate::sendsync::MAX_SEND_ENTRIES as usize {
+                    return Err(FedError::Malformed("too many Sends"));
+                }
+                Ok(Response::Sends {
+                    vault: Owner::User(owner),
+                    entries: items
+                        .iter()
+                        .map(|v| crate::sendsync::send_from_value(v, owner))
+                        .collect::<Result<Vec<SendRecord>>>()?,
+                    more: f.flag(3)?,
                 })
             }
             _ => Err(FedError::Malformed("unknown response type")),
