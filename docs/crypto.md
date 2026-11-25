@@ -341,8 +341,10 @@ wrap aad   = "kemlock/v1/item-key" ‖ item id (16) ‖ owner (17) ‖ u32be(key
 item_key   = AES-256-GCM(owner's "kemlock/v1/item-wrap" child key, nonce, item key, wrap aad)
 ```
 
-- `kind` is the item's kind as ASCII, 1 to 64 bytes of `[a-z0-9_-]`, such as `login`, `otp`,
-  `note`, `backup-codes`, `passkey`, `pgp-key`, `ssh-key`, `certificate`, `card`, `identity`.
+- `kind` is the item's kind as ASCII, 1 to 64 bytes of `[a-z0-9_-]`, such as `login`, `note`,
+  `file`, `otp` (the MFA code), `backup-codes`, `passkey`, `card`, `identity`, `contact`,
+  `certificate`, `ssh-key`, `pgp-key`. The server checks only the alphabet and the length, so a
+  kind it has never heard of is stored as it is; "Item bodies" below says what each kind holds.
 - The item key wrap is not bound to the revision, so an edit may keep the item key.
 - What the server can check: lengths, that a sealed value is at least 28 bytes, the kind's
   alphabet, the revision rule and the owner. It can't check the AAD: only a device holding the key
@@ -382,6 +384,133 @@ item_key   = AES-256-GCM(wrap key, nonce, item key, wrap aad)
   for an item of a vault), and the key that opens it is that collection's, at `keyVersion`.
 - The rules that use `keyVersion` (I2, "What the server checks", and "Items" under "What a client
   checks") are about this collection key version.
+
+## Item bodies
+
+The item JSON sealed in `ciphertext` is a body whose members depend on the kind. The Kemlock app
+writes most of them (`kemlock-core`, one JSON object for each entry), and the web vault writes the
+same keys. The members below are the **additions** of Kemlock Server's web vault. They follow these
+rules, so the Kemlock app and every older client keep working:
+
+- Every member here is **optional**. A body that has none of them is exactly the body an earlier
+  version wrote: an item the web vault doesn't edit is never rewritten, and one it edits gains a
+  member only when the person used the feature.
+- A client **ignores a member it doesn't know** and writes it back as it found it. `kemlock-core`
+  keeps the keys it doesn't read (`extra`), and the server never sees a body at all.
+- A member that is empty is **left out**, not written as `[]`, `""` or `null`.
+
+### `links`
+
+Items linked to this one, as a list of `{ "id": "<item uuid>" }` sorted by `id` (lower-case
+hyphenated UUIDs, compared as text, each once, never the item's own id). An entry may carry other
+keys, which a client keeps.
+
+A link is **two-way**: A links B when both bodies name each other. Linking writes both items and
+unlinking removes both ends, so a client that finds one end only (a write that failed halfway)
+shows the link and may mend it. A link may join an item of the person's own vault to an item of a
+space; the person needs write access to both. A code that the importer made from a login's TOTP
+carries `linkedLoginId` (the login's item id); a client reads it as a link too, and removes it when
+the person unlinks that login.
+
+### `fields`: custom fields
+
+Any kind but `passkey` and `file` may hold custom fields, as a list of
+`{ "name", "value", "kind", "adminField"? }`:
+
+| `kind` | value |
+| --- | --- |
+| `text` | any text |
+| `hidden` | any text, shown masked |
+| `boolean` | `"true"` or `"false"` (a checkbox) |
+| `linked` | written by the Bitwarden importer; a client that can't edit it keeps it as it is |
+
+`adminField` is the id of the admin's definition (`GET /kem/v1/custom-fields`) the field was made
+from. Its `name` and `kind` are the admin's and are fixed; the person fills in the value. A field
+with no `adminField` is the person's own. A field is never required, a field with no name is left
+out, and a definition that is later changed or deleted does not change the fields already on items.
+
+### Login websites: `uris`, `urls`, `websites`
+
+A login's websites are written three ways in step, so an older client reads the one it knows:
+
+- `uris`: a list of `{ "uri", "match"? }` where `match` is Bitwarden's rule number (absent is the
+  default rule, which fills on the base domain): `0` base domain, `1` host, `2` starts with, `3`
+  exact, `4` regular expression, `5` never. A regular expression is a pattern, not an address.
+- `urls`: the addresses, in order, without the regular expressions (the web vault's own key, always
+  written, `[]` for none).
+- `websites`: the hosts the websites fill on, each once, without the regular expressions and the
+  Never rule (the key the Kemlock app reads on a login and on a code).
+
+A login written before `uris` has `urls` alone, and every address in it is on the default rule.
+
+### MFA code and backup codes
+
+- `name` (optional): what the item is called; without it the item is named by its issuer and
+  account (`otp`) or its `serviceName` (`backup-codes`).
+- `websites` (optional): the hosts a code is used on, as on a login. A code linked to an item that has
+  websites shows that item's websites and doesn't write its own; unlinked, it writes the hosts
+  typed. `backup-codes` have no `websites` in `kemlock-core`, so there it is a member that app keeps.
+
+### `file`: a File item
+
+A File item is an item of kind `file`:
+
+```
+{ "name", "notes"?, "favorite"?, "file": { "id", "name", "size", "type"?, "key", "addedAt",
+  "sha256"?, "kemlockFile"? }, "links"?, "updatedAt" }
+```
+
+`file` is one attachment entry (below). The item holds no `fields` and no `attachments`. An app that
+doesn't know the kind lists it as an item of an unknown kind and keeps its body.
+
+### Attachments
+
+A file is stored as a `KMA1` file (see "Files" under "Sends") under **its own random 256-bit key**,
+which the body holds, so the server holds only ciphertext. The body names it the way the Kemlock
+app names an attachment (`kemlock-core` `NoteAttachment`):
+
+| member | meaning |
+| --- | --- |
+| `id` | 16 random bytes, base64url |
+| `name` | the file's name |
+| `size` | its size in bytes before encryption |
+| `type` | its media type, when the picker knew it |
+| `key` | the file's own AES-256 key, standard base64 |
+| `addedAt` | epoch milliseconds |
+| `sha256` | the SHA-256 of the bytes before encryption, 64 lower-case hex digits (written by the web vault; the duplicate finder reads it, see "Duplicate tags") |
+| `kemlockFile` | the id of the file on the server, from `POST /kem/v1/items/{id}/files` |
+
+A secure note (`note`) holds any number of them, in `attachments`, up to 100; no other kind has
+attachments. A File item holds one, in `file`. A client keeps the members of an entry it doesn't
+know.
+
+The server takes a file only for an item that **exists**, and a body never names a file the server
+lacks. So a client saves the item first, without the files just chosen; asks for each upload with
+the exact length of the `KMA1` file; sends the bytes (`PUT /kem/v1/items/{id}/files/{fileId}`,
+always to the server's own route, even where the server also offers a pre-signed address); and
+saves the item again with `kemlockFile` and `sha256` on each entry. It deletes from the server the
+files a person removed last, once no body names them. Files count against the person's attachment
+quota, and the server refuses a file over its size limit.
+
+### Contact
+
+A contact is a person, with an optional OpenPGP public key:
+
+```
+{ "name", "company"?, "email"?, "phone"?, "address"?, "public"?, "source", "note"? }
+```
+
+`company`, `email`, `phone` and `address` (free text, with line breaks) are additions. `public` is
+the binary transferable public key in base64, as the Kemlock app writes it; a contact with no key
+has no `public` and `source` is `manual`. An app that expects a key reads `public` as empty for such
+a contact.
+
+### Card, identity, SSH key, PGP key and certificate
+
+These keep the members `kemlock-core` writes (`PaymentCard`, `Identity`, `VaultKey`) and gain
+only `links` and `fields`, above. The web vault no longer asks for a card's brand: `brand` is
+the brand the number names (Visa, Mastercard, American Express, Discover, Diners Club, JCB,
+UnionPay, Maestro), and stays as it was when the number names none.
 
 ## Space, collection and group names
 
