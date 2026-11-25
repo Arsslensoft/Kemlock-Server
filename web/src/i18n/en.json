@@ -345,12 +345,9 @@
   "table.updated": "Updated",
   "table.actions": "Actions",
 
-  "main.lede": "Every item syncs to this server, encrypted on your devices first. The server keeps ciphertext only and can't open any of it.",
-  "main.encrypted": "End-to-end encrypted · ML-KEM-1024 with X25519, then AES-256-GCM",
-  "main.kind": "Kind",
   "main.loading": "Opening your vault",
   "main.empty.title": "Nothing here yet",
-  "main.empty.body": "Add your first login or note. It is encrypted in this browser before it is saved.",
+  "main.empty.body": "Add your first item. It is encrypted in this browser before it is saved.",
   "main.noMatch.title": "No matches",
   "main.noMatch.body": "Nothing in this view fits. Try another word, or clear the search.",
   "main.showing": "Showing {shown} of {total}",

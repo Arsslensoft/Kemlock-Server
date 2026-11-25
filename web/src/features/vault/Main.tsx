@@ -1,105 +1,133 @@
-import { isFavorite } from './favorite';
+// Main (canvas: Main, VaultTypes, VaultTypesFiltered): All items, and one page per item type at
+// `/vault?kind=<kind id>` (`login`, `otp`, `backup-codes`…). The type chips are on All items only.
+// The Vault filter (All vaults, Personal, a space) combines with the type.
 import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
 import { useMemo } from 'react';
-import { type MessageId, useT } from '@/i18n';
+import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { Button, buttonClass } from '@/ui/Button';
-import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
+import { LockBadge } from '@/ui/LockBadge';
 import { Notice } from '@/ui/Notice';
+import '@/styles/lists.css';
 import { useVault } from './hooks';
-import { hostOfUrl, kindIcon, kindLabel, tileLetter, timeAgo } from './kinds';
-import { type VaultItem, itemName, loginOf } from './vault';
+import { RowCopy } from './ItemCopy';
+import { detailParts } from './itemDetails';
+import { type KeyFacts, useKeyFacts } from './keyFacts';
+import { KIND_ORDER, kindPlural, kindSubtitle, listKind } from './kindList';
+import { kindIcon, kindLabel, tileLetter, timeAgo } from './kinds';
+import { ALL_VAULTS, filterItems, knownVault } from './listFilters';
+import { VaultPill, VaultSelect } from './VaultSelect';
+import { useVaultFilter } from './vaultFilter';
+import { type VaultOption, type Vaults, useVaults } from './vaults';
+import { type VaultItem, itemName } from './vault';
 
 const route = getRouteApi('/_vault/vault');
 const PAGE_SIZE = 25;
 
-const FILTERS = [
-  { kind: undefined, label: 'nav.all' },
-  { kind: 'login', label: 'nav.logins' },
-  { kind: 'note', label: 'nav.notes' },
-] as const;
-
-/** What the Details column shows: never a secret, only what helps tell two items apart. */
-function details(item: VaultItem, openLabel: string, noteLabel: string, unreadable: string): string {
-  if (!item.data) return unreadable;
-  if (item.kind === 'login') {
-    const { urls } = loginOf(item);
-    return urls.map(hostOfUrl).join(', ');
+/** The gray line under a row's name: a username, an email address or a cardholder. Never a secret. */
+function subline(item: VaultItem): string {
+  const data = item.data;
+  for (const key of ['username', 'email', 'cardholder']) {
+    const value = data?.[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
   }
-  if (item.kind === 'note') return noteLabel;
-  return openLabel;
+  return '';
 }
 
-export function matches(item: VaultItem, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (needle === '') return true;
-  const { username, urls } = loginOf(item);
-  return [itemName(item), username, ...urls, item.kind].some((field) =>
-    field.toLowerCase().includes(needle),
-  );
+export interface ItemListProps {
+  /** The stored kind id of the page, or undefined for All items. */
+  kind: string | undefined;
+  vault: string;
+  onVault: (vault: string) => void;
+  vaults: Vaults;
+  /** This page's rows. */
+  rows: VaultItem[];
+  /** How many items match across every page. */
+  total: number;
+  /** Whether the vault holds any item at all, to tell an empty vault from an empty filter. */
+  hasItems: boolean;
+  page: number;
+  pages: number;
+  onKind: (kind: string | undefined) => void;
+  onPage: (page: number) => void;
+  facts: ReadonlyMap<string, KeyFacts>;
+  isLoading?: boolean;
+  error?: unknown;
+  onRetry?: () => void;
 }
 
-export default function Main() {
+function DetailsCell({ item, facts }: { item: VaultItem; facts: ReadonlyMap<string, KeyFacts> }) {
   const t = useT();
-  const navigate = useNavigate();
-  const { kind, q = '', page = 1, fav } = route.useSearch();
-  const { active, isLoading, error, refetch } = useVault();
+  if (!item.data) return <>{t('main.details.unreadable')}</>;
+  const line = detailParts(item, facts.get(item.id))
+    .map((part) => ('text' in part ? part.text : t(part.id, part.values)))
+    .join(' · ');
+  return <>{line}</>;
+}
 
-  const filtered = useMemo(
-    () =>
-      active
-        .filter((item) => (kind ? item.kind === kind : true))
-        .filter((item) => (fav ? isFavorite(item) : true))
-        .filter((item) => matches(item, q))
-        .sort((a, b) => itemName(a).localeCompare(itemName(b))),
-    [active, kind, fav, q],
-  );
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const current = Math.min(page, pages);
-  const shown = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
-  // Any kind gets its own heading and a pressed chip, not just logins and notes; an unknown kind
-  // reads as "Item", the same as in the Kind column.
-  const filters: readonly { kind: string | undefined; label: MessageId }[] =
-    !kind || FILTERS.some((filter) => filter.kind === kind) ? FILTERS : [...FILTERS, { kind, label: kindLabel(kind) }];
-  const title = t(filters.find((filter) => filter.kind === (kind || undefined))?.label ?? 'nav.all');
+export function ItemListView({
+  kind,
+  vault,
+  onVault,
+  vaults,
+  rows,
+  total,
+  hasItems,
+  page,
+  pages,
+  onKind,
+  onPage,
+  facts,
+  isLoading = false,
+  error,
+  onRetry,
+}: ItemListProps) {
+  const t = useT();
+  const title = kind ? t(kindPlural(kind)) : t('nav.all');
+  const vaultName = vaults.options.find((option: VaultOption) => option.id === vault)?.label ?? '';
+  const footer =
+    vault === ALL_VAULTS
+      ? t('main.showing', { shown: rows.length, total })
+      : t('lists.showingIn', { shown: total, vault: vaultName });
 
   return (
     <>
       <div className="page-head">
         <div>
-          <h1 className="page-title">{title}</h1>
-          <p className="lede">{t('main.lede')}</p>
-          <p className="hint">
-            <Icon name="lock" /> {t('main.encrypted')}
-          </p>
+          <div className="title-row">
+            <h1 className="page-title">{title}</h1>
+            <LockBadge body="lists.enc.body" />
+          </div>
+          <p className="subtitle">{t(kindSubtitle(kind))}</p>
         </div>
       </div>
 
-      <div className="chips" role="group" aria-label={t('main.kind')}>
-        {filters.map((filter) => (
-          <button
-            key={filter.label}
-            type="button"
-            className="chip"
-            aria-pressed={(kind || undefined) === filter.kind}
-            onClick={() =>
-              void navigate({ to: '/vault', search: { kind: filter.kind, q: q || undefined, fav } })
-            }
-          >
-            {t(filter.label)}
+      <VaultSelect value={vault} options={vaults.options} onChange={onVault} />
+
+      {kind === undefined ? (
+        <div className="chips" role="group" aria-label={t('lists.filter.type')}>
+          <button type="button" className="chip" aria-pressed="true" onClick={() => onKind(undefined)}>
+            {t('nav.all')}
           </button>
-        ))}
-      </div>
+          {KIND_ORDER.map((id) => (
+            <button key={id} type="button" className="chip" aria-pressed="false" onClick={() => onKind(id)}>
+              {t(kindPlural(id))}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       {error ? (
         <Notice tone="error" live>
           <p>{t(describeError(error).id)}</p>
-          <div>
-            <Button size="small" onPress={() => void refetch()}>
-              {t('action.retry')}
-            </Button>
-          </div>
+          {onRetry ? (
+            <div>
+              <Button size="small" onPress={onRetry}>
+                {t('action.retry')}
+              </Button>
+            </div>
+          ) : null}
         </Notice>
       ) : null}
 
@@ -108,16 +136,16 @@ export default function Main() {
           <p className="empty" role="status">
             {t('main.loading')}
           </p>
-        ) : filtered.length === 0 ? (
+        ) : total === 0 ? (
           <div className="empty">
-            <h2>{active.length === 0 ? t('main.empty.title') : t('main.noMatch.title')}</h2>
-            <p>{active.length === 0 ? t('main.empty.body') : t('main.noMatch.body')}</p>
-            {active.length === 0 ? (
+            <h2>{hasItems ? t('main.noMatch.title') : t('main.empty.title')}</h2>
+            <p>{hasItems ? t('main.noMatch.body') : t('main.empty.body')}</p>
+            {hasItems ? null : (
               <Link to="/vault/new" className={buttonClass({ variant: 'primary' })}>
                 <Icon name="plus" />
                 {t('action.newItem')}
               </Link>
-            ) : null}
+            )}
           </div>
         ) : (
           <>
@@ -126,7 +154,8 @@ export default function Main() {
                 <thead>
                   <tr>
                     <th scope="col">{t('table.name')}</th>
-                    <th scope="col">{t('table.kind')}</th>
+                    <th scope="col">{t('lists.table.type')}</th>
+                    <th scope="col">{t('lists.table.vault')}</th>
                     <th scope="col">{t('table.details')}</th>
                     <th scope="col">{t('table.updated')}</th>
                     <th scope="col">
@@ -135,9 +164,8 @@ export default function Main() {
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((item) => {
+                  {rows.map((item) => {
                     const name = itemName(item);
-                    const login = item.kind === 'login' ? loginOf(item) : undefined;
                     return (
                       <tr key={item.id}>
                         <td>
@@ -147,7 +175,7 @@ export default function Main() {
                             </span>
                             <span>
                               <span>{name}</span>
-                              <span className="sub">{login?.username ?? ''}</span>
+                              <span className="sub">{subline(item)}</span>
                             </span>
                           </Link>
                         </td>
@@ -158,22 +186,14 @@ export default function Main() {
                           </span>
                         </td>
                         <td>
-                          {details(
-                            item,
-                            t('main.details.item'),
-                            t('main.details.note'),
-                            t('main.details.unreadable'),
-                          )}
+                          <VaultPill label={vaults.labelOf(item.owner)} />
                         </td>
-                        <td>{timeAgo(item.data?.updatedAt)}</td>
+                        <td className="details">
+                          <DetailsCell item={item} facts={facts} />
+                        </td>
+                        <td className="when">{timeAgo(item.data?.updatedAt)}</td>
                         <td>
-                          {login && login.password ? (
-                            <CopyButton
-                              value={login.password}
-                              secret
-                              label={t('main.copyPassword', { name })}
-                            />
-                          ) : null}
+                          <RowCopy item={item} />
                         </td>
                       </tr>
                     );
@@ -182,24 +202,12 @@ export default function Main() {
               </table>
             </div>
             <div className="pager">
-              <span>{t('main.showing', { shown: shown.length, total: filtered.length })}</span>
+              <span>{footer}</span>
               <div className="btns">
-                <Button
-                  size="small"
-                  isDisabled={current <= 1}
-                  onPress={() =>
-                    void navigate({ to: '/vault', search: { kind, q: q || undefined, fav, page: current - 1 } })
-                  }
-                >
+                <Button size="small" isDisabled={page <= 1} onPress={() => onPage(page - 1)}>
                   {t('action.previous')}
                 </Button>
-                <Button
-                  size="small"
-                  isDisabled={current >= pages}
-                  onPress={() =>
-                    void navigate({ to: '/vault', search: { kind, q: q || undefined, fav, page: current + 1 } })
-                  }
-                >
+                <Button size="small" isDisabled={page >= pages} onPress={() => onPage(page + 1)}>
                   {t('action.next')}
                 </Button>
               </div>
@@ -208,5 +216,46 @@ export default function Main() {
         )}
       </div>
     </>
+  );
+}
+
+export default function Main() {
+  const navigate = useNavigate();
+  const { kind: rawKind, q = '', page = 1, fav } = route.useSearch();
+  const kind = listKind(rawKind);
+  const { active, isLoading, error, refetch } = useVault();
+  const vaults = useVaults(active);
+  const [chosen, setVault] = useVaultFilter('items');
+  const vault = knownVault(chosen, vaults.options);
+  const facts = useKeyFacts(active);
+
+  const filtered = useMemo(() => filterItems(active, { kind, vault, fav, q }), [active, kind, vault, fav, q]);
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const current = Math.min(page, pages);
+  const rows = filtered.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const search = { q: q || undefined, fav };
+
+  return (
+    <ItemListView
+      kind={kind}
+      vault={vault}
+      onVault={(next) => {
+        setVault(next);
+        // The new filter starts at the first page.
+        if (current > 1) void navigate({ to: '/vault', search: { kind, ...search } });
+      }}
+      vaults={vaults}
+      rows={rows}
+      total={filtered.length}
+      hasItems={active.length > 0}
+      page={current}
+      pages={pages}
+      onKind={(next) => void navigate({ to: '/vault', search: { kind: next, ...search } })}
+      onPage={(next) => void navigate({ to: '/vault', search: { kind, ...search, page: next } })}
+      facts={facts}
+      isLoading={isLoading}
+      error={error}
+      onRetry={() => void refetch()}
+    />
   );
 }
