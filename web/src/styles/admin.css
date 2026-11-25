@@ -273,14 +273,6 @@
   margin: 0;
 }
 
-/* A switch sits on the line of its label, before it. */
-.switch.lead {
-  align-items: center;
-}
-.switch.lead .track {
-  order: -1;
-}
-
 /* An input with its unit beside it. */
 .with-suffix {
   display: flex;

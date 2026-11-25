@@ -191,7 +191,7 @@ export function Toggle({
   disabled?: boolean;
 }) {
   return (
-    <Switch className="switch lead" isSelected={checked} onChange={onChange} isDisabled={disabled}>
+    <Switch className="switch" isSelected={checked} onChange={onChange} isDisabled={disabled}>
       <span className="text">
         <span className="t">{label}</span>
         {hint ? <span className="hint">{hint}</span> : null}
