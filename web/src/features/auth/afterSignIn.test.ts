@@ -24,7 +24,7 @@ describe('afterSignIn', () => {
   });
 
   it('replaces the sign-in with the vault when nothing was asked for, or the address is not ours', async () => {
-    for (const next of [undefined, '//evil.example', 'https://evil.example', '/\evil']) {
+    for (const next of [undefined, '//evil.example', 'https://evil.example', '/\\evil']) {
       const router = fakeRouter();
       await afterSignIn(router as never, signedIn, next);
       expect(router.navigate).toHaveBeenCalledWith({ to: '/vault', replace: true });

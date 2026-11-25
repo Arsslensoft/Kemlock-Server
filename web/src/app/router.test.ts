@@ -33,7 +33,7 @@ describe('sign-in screens once the vault is open', () => {
   });
 
   it('do not follow a next that leaves this origin', async () => {
-    for (const next of ['//evil.example', 'https://evil.example', '/\evil']) {
+    for (const next of ['//evil.example', 'https://evil.example', '/\\evil']) {
       const at = await visit(`/sign-in/password?email=sam%40example.co&next=${encodeURIComponent(next)}`, 'unlocked');
       expect(at.pathname, next).toBe('/vault');
     }
