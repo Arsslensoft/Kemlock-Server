@@ -157,7 +157,7 @@ EOT
 print_setup_code() {
   local log_cmd="$1" code="" _
   for _ in $(seq 1 30); do
-    code=$(sh -c "$log_cmd" 2>/dev/null | grep -oE 'setup code [0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}' | tail -n 1 | awk '{print $3}')
+    code=$(sh -c "$log_cmd" 2>/dev/null | grep -oE 'setup code [0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}' | tail -n 1 | awk '{print $3}' || true)
     [ -n "$code" ] && break
     sleep 1
   done
