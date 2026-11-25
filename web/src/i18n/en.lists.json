@@ -40,7 +40,7 @@
   "lists.trash.from": "Deleted from",
   "lists.trash.vaultNone.title": "Nothing deleted from this vault",
   "lists.trash.vaultNone.body": "Items deleted from other vaults are still in the Trash. Pick All vaults to see them.",
-  "lists.copyCode": "Copy the {name} code",
+  "lists.copyCode": "Copy the code for {name}",
 
   "lists.details.codes": "{total, plural, one {# code} other {# codes}}, {unused} unused",
   "lists.details.cardEnding": "{brand} ending {last4}",
