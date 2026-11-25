@@ -753,3 +753,19 @@ impl From<&RelayStatus> for PushRelayDto {
         }
     }
 }
+
+/// The server's address and data folder: configuration, shown rather than edited, because
+/// sign-in proofs are checked against the address and the store lives in the folder.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerAddressDto {
+    /// `DOMAIN` as the server runs with it.
+    pub domain: String,
+    /// The address chosen at setup, when one was recorded.
+    pub recorded_domain: Option<String>,
+    /// A recorded address that is not the one in use: change `DOMAIN` in the configuration and
+    /// restart to move, or ignore the record.
+    pub differs: bool,
+    /// `DATA_FOLDER`, when the server says; the environment alone sets it.
+    pub data_folder: Option<String>,
+}

@@ -767,6 +767,21 @@ doc!(
 );
 
 doc!(
+    doc_server_address,
+    get,
+    path = "/admin/v1/server-address",
+    tag = "settings",
+    security(("dpop" = [])),
+    responses(
+        (
+            status = 200,
+            description = "The address in use next to the one recorded at setup, and the data folder",
+            body = ServerAddressDto
+        ),
+    )
+);
+
+doc!(
     doc_push_relay_get,
     get,
     path = "/admin/v1/push-relay",
@@ -856,7 +871,7 @@ doc!(
         doc_space_change_owner, doc_events_list, doc_events_csv, doc_settings_get,
         doc_settings_put, doc_sso_get, doc_sso_put, doc_sso_domains, doc_sso_domain_add,
         doc_sso_domain_verify, doc_sso_domain_remove, doc_migration_status, doc_migration_start,
-        doc_push_relay_get, doc_push_relay_enable, doc_push_relay_disable, doc_compliance_list,
+        doc_server_address, doc_push_relay_get, doc_push_relay_enable, doc_push_relay_disable, doc_compliance_list,
         doc_compliance_log, doc_compliance_update
     ),
     components(schemas(
@@ -866,7 +881,7 @@ doc!(
         InviteDto, InviteIssuedDto, SpaceOwnerDto, AdminSpaceDto, SpacesPageDto,
         ChangeOwnerRequest, EventDto, EventsPageDto, SettingDto, SettingsResponse,
         SettingsRequest, GroupRuleDto, SsoDto, SsoRequest, DomainDto, DomainRequest, MigrationDto,
-        MigrationStartRequest, PushRelayDto, ComplianceRequestDto, ComplianceListDto,
+        MigrationStartRequest, ServerAddressDto, PushRelayDto, ComplianceRequestDto, ComplianceListDto,
         LogRequestRequest, UpdateRequestRequest
     )),
     modifiers(&SecurityAddon)

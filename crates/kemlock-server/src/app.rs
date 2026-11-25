@@ -352,7 +352,8 @@ where
                 let settings = settings.clone();
                 move || settings.nudge()
             })
-            .with_push_relay(notifications.push_relay.clone()),
+            .with_push_relay(notifications.push_relay.clone())
+            .with_data_folder(config.data_folder.display().to_string()),
         ))
         .merge(federated.router)
         // Members, roles, policies and keys of a federated space are written at its home only.
