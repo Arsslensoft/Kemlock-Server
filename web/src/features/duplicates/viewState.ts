@@ -5,7 +5,10 @@
 // way back can't know where the person came from. Nothing here is a secret (a filter name and a
 // group id), and a damaged or blocked store just means starting from the defaults.
 
-export const DUPLICATE_FILTERS = ['all', 'login', 'otp', 'note', 'places'] as const;
+import { KIND_ORDER } from '@/features/vault/kindList';
+
+/** Every item type has its chip, in the order the design fixes; `places` is the groups in two vaults. */
+export const DUPLICATE_FILTERS = ['all', ...KIND_ORDER, 'places'] as const;
 export type DuplicateFilter = (typeof DUPLICATE_FILTERS)[number];
 
 export interface DuplicatesView {
