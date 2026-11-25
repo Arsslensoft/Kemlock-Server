@@ -18,7 +18,7 @@ import { Field } from '@/ui/fields';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import { afterSignIn } from './afterSignIn';
-import { describeSignInError } from './describeSignIn';
+import { describePasskeySignInError, describeSignInError } from './describeSignIn';
 import { signInWithPasskey } from './passkeySignIn';
 import { unlockWithTrustedDevice } from './trustedDevice';
 import { beginSso } from './ssoFlow';
@@ -211,7 +211,7 @@ export default function SignIn() {
         await navigate({ to: '/unlock', search: { next } });
       }
     } catch (caught) {
-      setError(describeSignInError(caught));
+      setError(describePasskeySignInError(caught));
     } finally {
       setPending(false);
     }

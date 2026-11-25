@@ -235,6 +235,7 @@
   "signIn.passwordShort": "Master password",
   "signIn.passkeyCancelled": "The passkey was not used. Try again, or use another way in.",
   "signIn.passkeyUnavailable": "This browser can not use a passkey here. Use another way in.",
+  "signIn.passkeyRejected": "This passkey can't sign in to this account. If you added it as a two-step security key, sign in with your password and use the key as the second step.",
   "deviceApproval.title": "Sign in with another device",
   "deviceApproval.lede": "Open Kemlock on a device that is already signed in to {email}, go to Devices, and approve this request when its words match the ones below.",
   "deviceApproval.requesting": "Asking for approval",
