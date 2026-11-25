@@ -6,11 +6,14 @@ import { type MessageId, useT } from '@/i18n';
 import { IconButton } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
+import type { SiteInfo } from '../itemLinks';
 import type { ItemData, VaultItem } from '../vault';
+import type { DownloadFile } from './files';
+import { FileDetail } from './FileDetails';
 import { type CertInfo, type PgpInfo, type SshInfo, armor, certInfo, pgpInfo, sshInfo } from './keyInfo';
 import { type OtpParams, codeAt, otpParamsOf, secondsLeft } from './otp';
-
-const MASK = '••••••••••••••••••••';
+import { Card, ExtraRows, Row, SecretRow } from './rows';
+import { WebsiteRow } from './WebsiteRow';
 
 function text(data: ItemData | null, key: string): string {
   const value = data?.[key];
@@ -22,80 +25,9 @@ function strings(data: ItemData | null, key: string): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string' && v !== '') : [];
 }
 
-/** One labelled value, with an optional copy button. */
-function Row({
-  label,
-  children,
-  copy,
-  copyLabel,
-  secret,
-}: {
-  label: string;
-  children: ReactNode;
-  copy?: string;
-  copyLabel?: string;
-  secret?: boolean;
-}) {
-  return (
-    <div className="row">
-      <div className="grow">
-        <div className="lbl">{label}</div>
-        {children}
-      </div>
-      {copy ? <CopyButton value={copy} label={copyLabel ?? label} secret={secret ?? false} /> : null}
-    </div>
-  );
-}
-
-/** A secret shown as dots until the person asks, with Show and Copy. */
-function SecretRow({
-  label,
-  value,
-  masked = MASK,
-  mono = true,
-  copyValue,
-}: {
-  label: string;
-  value: string;
-  masked?: string;
-  mono?: boolean;
-  /** What Copy puts on the clipboard, when it is not what is shown. */
-  copyValue?: string;
-}) {
-  const t = useT();
-  const [shown, setShown] = useState(false);
-  const cls = mono ? 'mono' : undefined;
-  return (
-    <div className="row">
-      <div className="grow">
-        <div className="lbl">{label}</div>
-        <div className={`${cls ?? ''} wrap`.trim()}>{shown ? value : masked}</div>
-      </div>
-      <IconButton
-        aria-label={t(shown ? 'detail.hide' : 'detail.show', { field: label.toLowerCase() })}
-        onPress={() => setShown((v) => !v)}
-      >
-        <Icon name={shown ? 'eyeOff' : 'eye'} />
-      </IconButton>
-      <CopyButton value={copyValue ?? value} secret label={t('detail.copy', { field: label.toLowerCase() })} />
-    </div>
-  );
-}
-
-function Card({ id, title, children }: { id: string; title: string; children: ReactNode }) {
-  return (
-    <section className="card" aria-labelledby={id}>
-      <div className="card-head">
-        <h2 id={id}>{title}</h2>
-      </div>
-      {children}
-    </section>
-  );
-}
-
 // ---- one-time code ----
 
-function OtpDetail({ data }: { data: ItemData | null }) {
+function OtpDetail({ data, sites }: { data: ItemData | null; sites: SiteInfo | undefined }) {
   const t = useT();
   const params: OtpParams | undefined = otpParamsOf(data);
   const [now, setNow] = useState(() => Date.now());
@@ -148,6 +80,7 @@ function OtpDetail({ data }: { data: ItemData | null }) {
           <div className="muted">{t('detail.otp.unreadable')}</div>
         </Row>
       )}
+      <WebsiteRow sites={sites} />
     </Card>
   );
 }
@@ -167,7 +100,7 @@ export function backupCodesOf(data: ItemData | null): BackupCode[] {
     .map((e) => ({ code: e['code'] as string, used: e['used'] === true }));
 }
 
-function BackupDetail({ data }: { data: ItemData | null }) {
+function BackupDetail({ data, sites }: { data: ItemData | null; sites: SiteInfo | undefined }) {
   const t = useT();
   const codes = backupCodesOf(data);
   const unused = codes.filter((c) => !c.used);
@@ -213,6 +146,7 @@ function BackupDetail({ data }: { data: ItemData | null }) {
           <CopyButton value={unused.map((c) => c.code).join('\n')} secret label={t('detail.backup.copyUnused')} />
         </div>
       )}
+      <WebsiteRow sites={sites} />
     </Card>
   );
 }
@@ -273,6 +207,13 @@ function CardDetail({ data }: { data: ItemData | null }) {
 
 function addressLines(data: ItemData | null): string[] {
   const address = data?.['address'];
+  // A contact keeps its address as one block of text; an identity as lines, a city and so on.
+  if (typeof address === 'string') {
+    return address
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+  }
   if (typeof address !== 'object' || address === null || Array.isArray(address)) return [];
   const a = address as Record<string, unknown>;
   const lines = Array.isArray(a['lines']) ? a['lines'].filter((l): l is string => typeof l === 'string') : [];
@@ -521,6 +462,31 @@ function CertificateDetail({ data }: { data: ItemData | null }) {
   );
 }
 
+/** A passkey a website made. It has no form: the website creates and uses it, so this only shows whose it is. */
+function PasskeyDetail({ data }: { data: ItemData | null }) {
+  const t = useT();
+  const rows: [MessageId, string][] = [
+    ['detail.passkey.site', text(data, 'rpId')],
+    ['detail.passkey.siteName', text(data, 'rpName')],
+    ['detail.passkey.user', text(data, 'userName')],
+    ['detail.passkey.userDisplay', text(data, 'userDisplayName')],
+  ];
+  return (
+    <Card id="h-passkey" title={t('detail.passkey.title')}>
+      {rows
+        .filter(([, value]) => value !== '')
+        .map(([id, value]) => (
+          <Row key={id} label={t(id)} copy={value}>
+            <div className="wrap">{value}</div>
+          </Row>
+        ))}
+      <div className="row">
+        <p className="grow muted">{t('detail.passkey.note')}</p>
+      </div>
+    </Card>
+  );
+}
+
 /** Whether two fingerprints are the same key's, ignoring spaces, colons and case. */
 export function sameFingerprint(a: string, b: string): boolean {
   const clean = (value: string) => value.replace(/[\s:]/g, '').toLowerCase();
@@ -534,13 +500,28 @@ function ContactDetail({ data }: { data: ItemData | null }) {
   const sourceEmail = text(data, 'sourceEmail');
   const addresses = strings(data, 'checkedAddresses');
   const checked = text(data, 'checkedFingerprint');
-  const name = text(data, 'name');
   const armored = pub ? armor('PGP PUBLIC KEY BLOCK', pub) : '';
+  const address = addressLines(data);
+  const person: [MessageId, string][] = [
+    ['detail.identity.name', text(data, 'name')],
+    ['detail.identity.company', text(data, 'company')],
+    ['detail.identity.email', text(data, 'email')],
+    ['detail.identity.phone', text(data, 'phone')],
+  ];
   return (
     <Card id="h-contact" title={t('detail.contact.title')}>
-      {name ? (
-        <Row label={t('detail.identity.name')} copy={name}>
-          <div>{name}</div>
+      {person
+        .filter(([, value]) => value !== '')
+        .map(([id, value]) => (
+          <Row key={id} label={t(id)} copy={value}>
+            <div className="wrap">{value}</div>
+          </Row>
+        ))}
+      {address.length > 0 ? (
+        <Row label={t('detail.identity.address')} copy={address.join('\n')}>
+          {address.map((line, i) => (
+            <div key={i}>{line}</div>
+          ))}
         </Row>
       ) : null}
       {sourceEmail ? (
@@ -550,8 +531,8 @@ function ContactDetail({ data }: { data: ItemData | null }) {
       ) : null}
       {addresses.length > 0 ? (
         <Row label={t('detail.contact.checkedAddresses')} copy={addresses.join('\n')}>
-          {addresses.map((address) => (
-            <div key={address}>{address}</div>
+          {addresses.map((checkedAddress) => (
+            <div key={checkedAddress}>{checkedAddress}</div>
           ))}
         </Row>
       ) : null}
@@ -590,18 +571,45 @@ function ContactDetail({ data }: { data: ItemData | null }) {
   );
 }
 
-/** The detail card of a newer kind; null for the kinds with their own view (login, note). */
-export function KindDetails({ item }: { item: VaultItem }) {
+/**
+ * The detail card of an item of any kind but a login or a note (those have their own view).
+ * `extra` is added at the end of the card: the item's custom fields. `download` fetches a file.
+ * `sites` is the Website row of an MFA code or backup codes, which come before the custom fields.
+ */
+export function KindDetails({
+  item,
+  extra,
+  download,
+  sites,
+}: {
+  item: VaultItem;
+  extra?: ReactNode;
+  download?: DownloadFile | undefined;
+  sites?: SiteInfo | undefined;
+}) {
   const data = item.data;
-  switch (item.kind) {
+  return <ExtraRows.Provider value={extra ?? null}>{detailOf(item.kind, data, download, sites)}</ExtraRows.Provider>;
+}
+
+function detailOf(
+  kind: string,
+  data: ItemData | null,
+  download: DownloadFile | undefined,
+  sites: SiteInfo | undefined,
+): ReactNode {
+  switch (kind) {
+    case 'file':
+      return <FileDetail data={data} download={download} />;
     case 'otp':
-      return <OtpDetail data={data} />;
+      return <OtpDetail data={data} sites={sites} />;
     case 'backup-codes':
-      return <BackupDetail data={data} />;
+      return <BackupDetail data={data} sites={sites} />;
     case 'card':
       return <CardDetail data={data} />;
     case 'identity':
       return <IdentityDetail data={data} />;
+    case 'passkey':
+      return <PasskeyDetail data={data} />;
     case 'ssh-key':
       return <SshDetail data={data} />;
     case 'pgp-key':
@@ -614,4 +622,3 @@ export function KindDetails({ item }: { item: VaultItem }) {
       return null;
   }
 }
-

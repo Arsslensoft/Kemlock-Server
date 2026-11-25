@@ -73,7 +73,8 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
 
   // Trash: delete, find it there, restore.
   await row.getByRole('link', { name: /GitHub/ }).click();
-  await page.getByRole('button', { name: 'Move to Trash' }).click();
+  await page.getByRole('button', { name: 'More actions for GitHub' }).click();
+  await page.getByRole('menuitem', { name: 'Move to Trash' }).click();
   await expect(page).toHaveURL(/\/vault$/);
   await expect(page.getByText('Nothing here yet')).toBeVisible();
   await page.getByRole('link', { name: /^Trash/ }).click();

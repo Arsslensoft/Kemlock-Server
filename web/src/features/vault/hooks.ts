@@ -10,6 +10,12 @@ import { duplicatesViewStore } from '@/features/duplicates/viewState';
 import { forgetKeyFacts } from './keyFacts';
 import { type KindCounts, countByKind } from './listFilters';
 import { vaultFilterStore } from './vaultFilter';
+import { type AdminFieldDef, createCustomFieldsApi } from '@/api/customFields';
+import { createItemFilesApi } from '@/api/itemFiles';
+import { saveBatch } from './batch';
+import { saveCopy } from './copy';
+import { linkInputs, unlinkInputs } from './links';
+import { type MoveTarget, moveItem } from './move';
 import {
   type ItemData,
   type SaveInput,
@@ -20,6 +26,7 @@ import {
   isTrashed,
   restoreItem,
   saveItem,
+  spaceOf,
   syncVault,
   trashItem,
   vaultStore,
@@ -28,6 +35,27 @@ import {
 // Items of a space open once the worker holds the space's keys: the loader opens them on demand.
 const spaceKeys = createSpaceKeyLoader(spaceDeps);
 const deps: VaultDeps = { api, crypto: vaultCrypto, ensureSpaceKeys: spaceKeys.ensure };
+
+/** The files of items on this server: what a move or a copy sends again under another item. */
+export const itemFiles = createItemFilesApi(api);
+
+const customFieldsApi = createCustomFieldsApi(api);
+const NO_ADMIN_FIELDS: AdminFieldDef[] = [];
+
+/**
+ * The fields the admin offers, as they are now (`GET /kem/v1/custom-fields`): an item holds the name
+ * and type a field had when it was saved, and the page shows the admin's current ones. Until the list
+ * arrives, or when it can't be read, there are none and the item's own are shown.
+ */
+export function useAdminFields(): AdminFieldDef[] {
+  const query = useQuery({
+    queryKey: ['custom-fields', 'definitions'],
+    queryFn: () => customFieldsApi.list(),
+    staleTime: 60_000,
+    retry: false,
+  });
+  return query.data?.fields ?? NO_ADMIN_FIELDS;
+}
 
 export const vaultKey = ['vault'] as const;
 
@@ -66,6 +94,8 @@ export function useVault() {
   return useMemo(() => {
     const items = all ?? [];
     return {
+      /** Every item that was opened, in the Trash or not: what a link is resolved against. */
+      all: items,
       active: items.filter((item) => !isTrashed(item)),
       trashed: items.filter(isTrashed),
       isLoading: query.isPending,
@@ -101,6 +131,20 @@ export function useWritableCollections() {
     queryFn: () => loadWritableCollections(spaceDeps),
     staleTime: 60_000,
   });
+}
+
+/**
+ * Whether this person may change an item: always one of the account's own vault, and one of a
+ * space when they may edit its collection. While the collections load the answer is yes, and the
+ * server has the last word.
+ */
+export function useCanWrite(): (item: VaultItem) => boolean {
+  const collections = useWritableCollections();
+  return useMemo(() => {
+    const held = collections.data ? new Set(collections.data.map((c) => c.collectionId)) : undefined;
+    return (item) =>
+      spaceOf(item.owner) === null || held === undefined || (item.collectionId !== undefined && held.has(item.collectionId));
+  }, [collections.data]);
 }
 
 export function useVaultItem(id: string | undefined): {
@@ -143,7 +187,38 @@ export function useVaultActions() {
     onSuccess: publish,
     onError: afterFailure,
   });
-  return { save, trash, restore, remove, empty };
+  // Links are two-way: both items are written in one batch, so a link is on both or on neither.
+  const link = useMutation({
+    mutationFn: async ({ a, b, linked }: { a: VaultItem; b: VaultItem; linked: boolean }) => {
+      const inputs = linked ? linkInputs(a, b) : unlinkInputs(a, b);
+      if (inputs.length > 0) await saveBatch(deps, vaultStore, inputs);
+    },
+    onSuccess: publish,
+    onError: afterFailure,
+  });
+  const move = useMutation({
+    mutationFn: ({
+      item,
+      target,
+      linked,
+      writable,
+    }: {
+      item: VaultItem;
+      target: MoveTarget;
+      linked: VaultItem[];
+      writable: boolean;
+    }) => moveItem(deps, vaultStore, item, target, { linked, writable, files: itemFiles }),
+    onSuccess: publish,
+    onError: afterFailure,
+  });
+  // A copy of an item: saved like a new one, and its files sent again under the new item.
+  const copy = useMutation({
+    mutationFn: ({ input, sourceId }: { input: SaveInput; sourceId: string }) =>
+      saveCopy(deps, vaultStore, itemFiles, input, sourceId),
+    onSuccess: publish,
+    onError: afterFailure,
+  });
+  return { save, trash, restore, remove, empty, link, move, copy };
 }
 
 /** Stable text fields for a form: only strings the form owns. */
