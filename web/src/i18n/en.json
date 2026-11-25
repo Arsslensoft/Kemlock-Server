@@ -87,6 +87,7 @@
   "setup.code.whereHa": "Settings, Add-ons, Kemlock Server, then the Log tab.",
   "setup.code.whereSynology": "Container Manager, Container, kemlock, then Log.",
   "setup.code.whereQnap": "Container Station, Applications, kemlock, then Log.",
+  "setup.code.dockerName": "Put your container's name where the command says container. Run docker ps to find it.",
   "setup.code.alpine": "On Alpine, run this instead:",
   "setup.code.copyNamed": "Copy the {target} command",
   "setup.code.label": "Setup code",

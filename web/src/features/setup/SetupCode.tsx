@@ -93,6 +93,7 @@ export function WhereToFind() {
                     <CommandLine command={source.alpine} label={t('setup.code.copyNamed', { target: `${target} (Alpine)` })} />
                   </>
                 ) : null}
+                {source.note ? <span className="hint">{t(source.note)}</span> : null}
                 {source.where ? <span>{t(source.where)}</span> : null}
               </li>
             );

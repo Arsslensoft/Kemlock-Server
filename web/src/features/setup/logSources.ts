@@ -9,10 +9,17 @@ export interface LogSource {
   where?: MessageId;
   /** A second command for a variant of the same target (Proxmox on Alpine). */
   alpine?: string;
+  /** A line of explanation under the command. */
+  note?: MessageId;
 }
 
 export const LOG_SOURCES: LogSource[] = [
-  { id: 'docker', target: 'setup.code.targetDocker', command: 'docker logs kemlock 2>&1 | grep -i "setup code"' },
+  {
+    id: 'docker',
+    target: 'setup.code.targetDocker',
+    command: 'docker logs <container> 2>&1 | grep -i "setup code"',
+    note: 'setup.code.dockerName',
+  },
   { id: 'compose', target: 'setup.code.targetCompose', command: 'docker compose logs kemlock | grep -i "setup code"' },
   { id: 'podman', target: 'setup.code.targetPodman', command: 'journalctl --user -u kemlock | grep -i "setup code"' },
   {
