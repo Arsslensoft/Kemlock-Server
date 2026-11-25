@@ -136,7 +136,8 @@ keeps its live connection while it is open and syncs when opened.
 
 A name that resolves to an address the server won't reach is not forgotten: the push fails (and is
 logged), and the next one looks the name up again. An endpoint written as an address that is not
-allowed is forgotten.
+allowed is forgotten. An account may register at most 20 UnifiedPush endpoints; the 21st is refused
+with a 400.
 
 **Kemlock's hosted relay, optional, `KEMLOCK_PUSH_RELAY*`.** A fallback for iPhones on a server
 that has no Apple key (`docs/push-relay.md` is its contract). It is off unless you turn it on, and a

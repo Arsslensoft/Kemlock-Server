@@ -18,6 +18,9 @@ use time::OffsetDateTime;
 /// URLs; the cap leaves room without letting a client fill the table.
 pub const MAX_PUSH_TOKEN_LEN: usize = 512;
 
+/// The most UnifiedPush endpoints one account may register (one per device).
+pub const MAX_UNIFIEDPUSH_PER_USER: usize = 20;
+
 /// Which service a push token is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PushKind {
@@ -225,6 +228,22 @@ impl<D: DeviceRepo, R: PushRepo, C: Clock> RegisterPushToken<D, R, C> {
             .await?
             .filter(|d| d.user == actor.user)
             .ok_or(AppError::NotFound)?;
+        if kind == PushKind::UnifiedPush {
+            // Each endpoint is a connection the server makes on every nudge, so an account may
+            // hold only so many. A device replacing its own endpoint doesn't count twice.
+            let held = self
+                .push
+                .registrations_for(&[device.user])
+                .await?
+                .iter()
+                .filter(|r| r.kind == PushKind::UnifiedPush && r.device != device.id)
+                .count();
+            if held >= MAX_UNIFIEDPUSH_PER_USER {
+                return Err(AppError::Invalid(
+                    "the account already has 20 UnifiedPush endpoints; sign out of a device first",
+                ));
+            }
+        }
         self.push
             .put_registration(&PushRegistration {
                 device: device.id,
@@ -446,6 +465,64 @@ mod tests {
                 .expect("lists")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn an_account_holds_at_most_twenty_unifiedpush_endpoints() {
+        let (case, actor, push) = setup();
+        // Nineteen other devices of the account already have one, and an iPhone doesn't count.
+        for i in 0..MAX_UNIFIEDPUSH_PER_USER - 1 {
+            push.put_registration(&PushRegistration {
+                device: DeviceId::random(),
+                user: actor.user,
+                kind: PushKind::UnifiedPush,
+                token: format!("https://ntfy.example.org/up{i}"),
+                updated_at: datetime!(2026-11-23 12:00 UTC),
+            })
+            .await
+            .expect("stores");
+        }
+        push.put_registration(&PushRegistration {
+            device: DeviceId::random(),
+            user: actor.user,
+            kind: PushKind::Apns,
+            token: "aa01".to_owned(),
+            updated_at: datetime!(2026-11-23 12:00 UTC),
+        })
+        .await
+        .expect("stores");
+        let endpoint = |name: &str| format!("https://ntfy.example.org/{name}");
+        // The twentieth goes in, and this device may replace its own.
+        case.register(&actor, PushKind::UnifiedPush, &endpoint("mine"))
+            .await
+            .expect("the twentieth");
+        case.register(&actor, PushKind::UnifiedPush, &endpoint("mine2"))
+            .await
+            .expect("a replacement");
+        // The twenty-first is refused, for another device of the account.
+        let mut other = actor;
+        other.device = DeviceId::random();
+        case.devices
+            .upsert(&Device {
+                id: other.device,
+                user: actor.user,
+                name: "Tablet".to_owned(),
+                kind: DeviceKind::KemlockAndroid,
+                dpop_jkt: None,
+                created_at: datetime!(2026-11-01 00:00 UTC),
+                last_seen_at: datetime!(2026-11-01 00:00 UTC),
+            })
+            .await
+            .expect("stores");
+        assert!(matches!(
+            case.register(&other, PushKind::UnifiedPush, &endpoint("tablet"))
+                .await,
+            Err(AppError::Invalid(_))
+        ));
+        // An iPhone token is no UnifiedPush endpoint.
+        case.register(&other, PushKind::Apns, "aa02")
+            .await
+            .expect("an iPhone");
     }
 
     #[tokio::test]
