@@ -15,6 +15,7 @@ function statusOf(server: PlacementServer): { label: MessageId; tone: 'on' | 'of
   if (server.status === 'offline') return { label: 'failover.status.offline', tone: 'off' };
   if (server.status === 'unknown') return { label: 'failover.status.unknown', tone: 'idle' };
   if (server.status === 'degraded') return { label: 'failover.status.degraded', tone: 'off' };
+  if (server.status === 'key-mismatch') return { label: 'failover.status.keyMismatch', tone: 'off' };
   return server.inUse
     ? { label: 'failover.status.inUse', tone: 'on' }
     : { label: 'failover.status.online', tone: 'idle' };

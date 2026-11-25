@@ -90,7 +90,7 @@ export interface WirePeer {
   /** When the peer last answered: a session or a probe, whichever was later. */
   lastSeen: number | null;
   /** Whether the peer answers, as the server's probes found (absent from servers that predate them). */
-  health?: 'unknown' | 'online' | 'degraded' | 'offline';
+  health?: 'unknown' | 'online' | 'degraded' | 'offline' | 'key-mismatch';
   /** How long its last answer took, in milliseconds. */
   latencyMs?: number | null;
   /** Why the last probe failed, until one answers. */
@@ -355,7 +355,7 @@ export function peerOf(peer: WirePeer, ownOperator: string): Peer {
     sendLogs: peer.switches.send,
     pullLogs: peer.switches.pull,
     theySendLogs: peer.theySendLogs,
-    mismatch: status?.keyMismatch !== null && status?.keyMismatch !== undefined,
+    mismatch: (status?.keyMismatch !== null && status?.keyMismatch !== undefined) || peer.health === 'key-mismatch',
   };
 }
 

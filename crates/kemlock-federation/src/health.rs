@@ -16,6 +16,7 @@
 //! | `online` | the last probe answered within [`HealthConfig::slow_ms`] |
 //! | `degraded` | the last probe answered slowly, or fewer than [`HealthConfig::offline_after`] probes in a row failed |
 //! | `offline` | at least [`HealthConfig::offline_after`] probes in a row failed |
+//! | `key-mismatch` | the peer answers with an identity key that isn't the pinned one: not an outage, and not a reason to drop what waits for it |
 //!
 //! A session that opened (a visit) counts as an answer, and one that failed to open as a failed
 //! probe, so the status stays right where the probes are turned off. A status nobody has refreshed
@@ -94,6 +95,8 @@ pub enum HealthStatus {
     Online,
     Degraded,
     Offline,
+    /// It answered with a key other than the pinned one.
+    KeyMismatch,
 }
 
 impl HealthStatus {
@@ -103,6 +106,7 @@ impl HealthStatus {
             HealthStatus::Online => "online",
             HealthStatus::Degraded => "degraded",
             HealthStatus::Offline => "offline",
+            HealthStatus::KeyMismatch => "key-mismatch",
         }
     }
 }
@@ -115,6 +119,7 @@ impl From<HealthStatus> for kemlock_app::federation_view::PeerStatus {
             HealthStatus::Online => PeerStatus::Online,
             HealthStatus::Degraded => PeerStatus::Degraded,
             HealthStatus::Offline => PeerStatus::Offline,
+            HealthStatus::KeyMismatch => PeerStatus::KeyMismatch,
         }
     }
 }
@@ -132,6 +137,8 @@ pub struct PeerHealth {
     pub latency_ms: Option<u64>,
     /// Failed probes in a row.
     pub consecutive_failures: u32,
+    /// The last probe met an identity key that isn't the pinned one.
+    pub key_mismatch: bool,
     /// Unix seconds since when the probes have been failing.
     pub down_since: Option<u64>,
     /// Unix seconds the next probe is due.
@@ -147,7 +154,9 @@ impl PeerHealth {
         if now > checked.saturating_add(config.stale_after_secs) {
             return HealthStatus::Unknown;
         }
-        if self.consecutive_failures >= config.offline_after.max(1) {
+        if self.key_mismatch {
+            HealthStatus::KeyMismatch
+        } else if self.consecutive_failures >= config.offline_after.max(1) {
             HealthStatus::Offline
         } else if self.consecutive_failures > 0
             || self.latency_ms.is_some_and(|ms| ms > config.slow_ms)
@@ -163,6 +172,7 @@ impl PeerHealth {
         self.last_checked = Some(now);
         self.last_seen = Some(now);
         self.last_error = None;
+        self.key_mismatch = false;
         self.consecutive_failures = 0;
         self.down_since = None;
         if latency_ms.is_some() {
@@ -172,10 +182,19 @@ impl PeerHealth {
 
     /// The peer didn't answer.
     pub fn record_failure(&mut self, now: u64, error: String) {
+        self.key_mismatch = false;
         self.last_checked = Some(now);
         self.last_error = Some(error);
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
         self.down_since.get_or_insert(now);
+    }
+
+    /// The peer answered, with a key that isn't the one pinned at pairing. It isn't down, so it
+    /// doesn't count as a failure to answer, but it isn't trusted either.
+    pub fn record_key_mismatch(&mut self, now: u64, error: String) {
+        self.last_checked = Some(now);
+        self.last_error = Some(error);
+        self.key_mismatch = true;
     }
 
     /// Whether the next probe is due.
@@ -327,5 +346,26 @@ mod tests {
         assert!(HealthConfig::every(60).enabled());
         assert!(!HealthConfig::every(0).enabled());
         assert_eq!(HealthConfig::every(0).timeout(), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_key_that_is_not_the_pinned_one_is_its_own_status_not_offline() {
+        let cfg = config();
+        let mut health = PeerHealth::default();
+        health.record_answer(NOW, Some(50));
+        health.record_key_mismatch(NOW + 60, "the peer's identity key does not match".to_owned());
+        assert_eq!(health.status(NOW + 60, &cfg), HealthStatus::KeyMismatch);
+        assert_eq!(health.status(NOW + 60, &cfg).as_str(), "key-mismatch");
+        // Repeated, it stays a mismatch and never turns offline.
+        for n in 2..6 {
+            health.record_key_mismatch(NOW + 60 * n, "again".to_owned());
+        }
+        assert_eq!(health.status(NOW + 300, &cfg), HealthStatus::KeyMismatch);
+        // A peer that stops answering is then down, and a good answer clears it.
+        health.record_failure(NOW + 360, "refused".to_owned());
+        assert_eq!(health.status(NOW + 360, &cfg), HealthStatus::Degraded);
+        health.record_key_mismatch(NOW + 420, "x".to_owned());
+        health.record_answer(NOW + 480, Some(10));
+        assert_eq!(health.status(NOW + 480, &cfg), HealthStatus::Online);
     }
 }

@@ -266,6 +266,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         let health = state.health.entry(peer).or_default();
         match result {
             Ok(()) => health.record_answer(now, Some(latency)),
+            Err(e @ FedError::KeyMismatch { .. }) => health.record_key_mismatch(now, e.to_string()),
             Err(e) => health.record_failure(now, e.to_string()),
         }
         health.schedule(now, &self.health_config, random_bits());
@@ -528,11 +529,14 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         let mut channel = match self.connector.connect(peer).await {
             Ok(channel) => channel,
             Err(e) => {
-                self.state()
-                    .health
-                    .entry(peer.id)
-                    .or_default()
-                    .record_failure(now, e.to_string());
+                let mut state = self.state();
+                let health = state.health.entry(peer.id).or_default();
+                if matches!(e, FedError::KeyMismatch { .. }) {
+                    health.record_key_mismatch(now, e.to_string());
+                } else {
+                    health.record_failure(now, e.to_string());
+                }
+                drop(state);
                 return Err(e);
             }
         };

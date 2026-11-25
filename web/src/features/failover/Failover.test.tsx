@@ -107,6 +107,30 @@ describe('a server that answers slowly', () => {
   });
 });
 
+describe('a server that met another key', () => {
+  const mismatch: Placement = {
+    ...PLACEMENT,
+    vaults: PLACEMENT.vaults.map((vault) => ({
+      ...vault,
+      servers: vault.servers.map((server) =>
+        server.role === 'home' ? { ...server, status: 'key-mismatch' as const, offlineSince: null } : server,
+      ),
+    })),
+  };
+
+  it('is not an outage: no banner', async () => {
+    await renderInRouter(<FailoverBannerView placement={mismatch} />);
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  });
+
+  it('is listed as a key that does not match, and waiting changes are not offered for dropping', async () => {
+    await renderInRouter(<StorageView placement={mismatch} onCancelPending={vi.fn()} />);
+    const yours = screen.getByRole('list', { name: 'Servers of Your vault' });
+    expect(within(yours).getAllByRole('listitem')[0]).toHaveTextContent('Key does not match');
+    expect(screen.getByRole('button', { name: 'Do not send these changes' })).toBeDisabled();
+  });
+});
+
 describe('a server whose status is unknown', () => {
   const unknown: Placement = {
     ...PLACEMENT,

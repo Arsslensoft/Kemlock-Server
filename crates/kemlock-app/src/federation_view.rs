@@ -78,6 +78,8 @@ pub enum PeerStatus {
     Degraded,
     /// Several probes in a row failed.
     Offline,
+    /// It answered with an identity key other than the pinned one.
+    KeyMismatch,
 }
 
 impl PeerStatus {
@@ -87,6 +89,7 @@ impl PeerStatus {
             PeerStatus::Online => "online",
             PeerStatus::Degraded => "degraded",
             PeerStatus::Offline => "offline",
+            PeerStatus::KeyMismatch => "key-mismatch",
         }
     }
 }

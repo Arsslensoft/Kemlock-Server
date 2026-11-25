@@ -276,6 +276,7 @@
   "failover.replica": "Replica {n}",
   "failover.replicaWord": "Replica",
   "failover.status.degraded": "Slow or unsteady",
+  "failover.status.keyMismatch": "Key does not match",
   "failover.status.offline": "Offline",
   "failover.lastSeen": "seen {when}",
   "failover.oldest": "The oldest was written {when}.",

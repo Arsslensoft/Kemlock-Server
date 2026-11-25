@@ -31,6 +31,8 @@ struct Scripted {
     asked: Mutex<u32>,
     /// A probe that never ends, for the timeout.
     hang: bool,
+    /// Answers every probe with a key that isn't the pinned one.
+    wrong_key: bool,
 }
 
 impl Scripted {
@@ -55,6 +57,9 @@ impl Connector for Arc<Scripted> {
 
     async fn probe(&self, _peer: &Peer) -> Result<(), FedError> {
         *self.asked.lock().expect("lock") += 1;
+        if self.wrong_key {
+            return Err(FedError::KeyMismatch { offered: vec![1, 2, 3] });
+        }
         if self.hang {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
@@ -208,4 +213,22 @@ async fn a_visit_that_cannot_open_a_session_counts_as_a_failed_answer() {
         t.runner.health_of(t.peer).and_then(|h| h.last_error),
         Some("the peer answered with an error: this connector opens no sessions".to_owned())
     );
+}
+
+#[tokio::test]
+async fn a_peer_with_another_key_is_a_mismatch_never_offline() {
+    let t = setup(
+        Scripted {
+            wrong_key: true,
+            ..Scripted::default()
+        },
+        steady(),
+    )
+    .await;
+    let mut now = NOW;
+    for _ in 0..5 {
+        assert_eq!(t.runner.probe_tick(now).await, vec![(t.peer, false)]);
+        assert_eq!(t.runner.health_status(t.peer, now), HealthStatus::KeyMismatch);
+        now += 600;
+    }
 }

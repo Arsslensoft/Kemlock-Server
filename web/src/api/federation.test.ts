@@ -218,6 +218,8 @@ describe('overviewOf', () => {
       state: 'offline',
       offlineSince: 1_900,
     });
+    // A key that isn't the pinned one is a mismatch, not an outage.
+    expect(states(peer({ health: 'key-mismatch' }))).toMatchObject({ state: 'online', mismatch: true });
     // A server that predates the probes says nothing, and the peer reads as before.
     expect(states(peer())).toMatchObject({ state: 'online', latencyMs: null });
     // A revoked peer stays revoked whatever the probes say.

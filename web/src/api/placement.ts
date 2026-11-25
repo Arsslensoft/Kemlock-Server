@@ -4,7 +4,8 @@
 // vault and its spaces (home first), and the apps that use this server. A server that federates
 // none of them answers 404 and the web vault shows nothing, which is right for a single server.
 // The server probes each peer: `status` is `unknown` until the first probe, then `online`,
-// `degraded` or `offline`. `pending` is the changes of a vault waiting for another server, and
+// `degraded` or `offline`, or `key-mismatch` when the server met a key other than the pinned one
+// (not an outage: no banner, and nothing waiting for it can be dropped). `pending` is the changes of a vault waiting for another server, and
 // cancelling them drops the queued push to a server that is offline. A server has no place or name
 // beyond the host of its address.
 import type { Api } from './client';
@@ -21,7 +22,7 @@ export interface PlacementServer {
   /** Its position in the vault's set: the home first, then the replicas in order. */
   role: ServerRole;
   /** `unknown` until the server's first probe of it; this server itself is always `online`. */
-  status: 'online' | 'degraded' | 'offline' | 'unknown';
+  status: 'online' | 'degraded' | 'offline' | 'key-mismatch' | 'unknown';
   /** ISO time it went offline, while it is. */
   offlineSince?: string | null;
   /** ISO time it last answered. */
