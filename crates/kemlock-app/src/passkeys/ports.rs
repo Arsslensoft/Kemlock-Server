@@ -78,6 +78,9 @@ pub enum ChallengeKind {
     DuoPrompt,
     /// A one-time code mailed for a protected action, waiting to be entered (`two_step`).
     ProtectedAction,
+    /// An assertion by a security key or passkey, waiting to be answered as a fresh proof
+    /// (`passkeys::AssertionProof`).
+    Proof,
 }
 
 impl ChallengeKind {
@@ -89,6 +92,7 @@ impl ChallengeKind {
             ChallengeKind::EmailSetup => "email-setup",
             ChallengeKind::DuoPrompt => "duo-prompt",
             ChallengeKind::ProtectedAction => "protected-action",
+            ChallengeKind::Proof => "proof",
         }
     }
 }

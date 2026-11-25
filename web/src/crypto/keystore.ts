@@ -63,7 +63,11 @@ export function indexedDbKeyStore(factory: IDBFactory = indexedDB): KeyStore {
 /** Where this browser's trusted-device key lives: the same database, another record. */
 export interface DeviceKeyStore {
   load(): Promise<CryptoKey | undefined>;
-  save(key: CryptoKey): Promise<void>;
+  /**
+   * Stores the key unless one is there already, and says whether it did. Two tabs that both find
+   * the store empty must not overwrite each other: the loser reloads and uses the winner's key.
+   */
+  add(key: CryptoKey): Promise<boolean>;
   clear(): Promise<void>;
 }
 
@@ -76,8 +80,14 @@ export function indexedDbDeviceKeyStore(factory: IDBFactory = indexedDB): Device
       const value = await withStore(factory, 'readonly', (s) => s.get(DEVICE_RECORD));
       return value as CryptoKey | undefined;
     },
-    async save(key) {
-      await withStore(factory, 'readwrite', (s) => s.put(key, DEVICE_RECORD));
+    async add(key) {
+      try {
+        await withStore(factory, 'readwrite', (s) => s.add(key, DEVICE_RECORD));
+        return true;
+      } catch (error) {
+        if ((error as { name?: unknown } | null)?.name === 'ConstraintError') return false;
+        throw error;
+      }
     },
     async clear() {
       await withStore(factory, 'readwrite', (s) => s.delete(DEVICE_RECORD));

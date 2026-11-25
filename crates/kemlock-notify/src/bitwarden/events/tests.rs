@@ -2,7 +2,7 @@ use super::*;
 use crate::audience::UserOnly;
 use crate::bitwarden::hub::{HubConfig, Tap};
 use crate::bitwarden::message::Field;
-use crate::bitwarden::relay::BitwardenPushConfig;
+use crate::bitwarden::relay::{BitwardenPush, BitwardenPushConfig};
 use crate::fanout::Fanout;
 use crate::fanout::testing::Heard;
 use crate::testing::{eventually, serve};
@@ -15,7 +15,7 @@ use kemlock_app::ports::{StoreError, Zeroizing};
 use kemlock_domain::{DeviceId, SpaceId};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use time::macros::datetime;
 use uuid::Uuid;
 
@@ -159,7 +159,7 @@ async fn rig(push: bool) -> Rig {
         })
         .expect("a client");
         Some(BwPushing {
-            relay: Arc::new(client),
+            relay: crate::bitwarden::BwPushSwitch::new(Some(Arc::new(client))),
             devices: devices.clone(),
         })
     } else {

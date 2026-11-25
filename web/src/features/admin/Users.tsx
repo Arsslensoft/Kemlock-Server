@@ -1,8 +1,7 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import type { AccountMode, AdminInvite, AdminSpace, AdminUser, InviteIssued } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
-import { emailSchema } from '@/lib/schemas';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { CopyButton } from '@/ui/CopyButton';
@@ -29,7 +28,7 @@ function UserRow({
   user: AdminUser;
   now?: number | undefined;
   busy?: boolean | undefined;
-  onAction: (action: UserAction, user: AdminUser) => void;
+  onAction: (action: UserAction, user: AdminUser) => Promise<boolean> | void;
 }) {
   const t = useT();
   const who = user.name ?? user.email;
@@ -95,7 +94,7 @@ function OwnerPanel({
 }: {
   space: AdminSpace;
   candidates: AdminUser[];
-  onConfirm: (userId: string) => void;
+  onConfirm: (userId: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const t = useT();
@@ -152,10 +151,11 @@ export interface UsersViewProps {
   spaces: AdminSpace[];
   search: string;
   onSearch: (value: string) => void;
-  onInvite: (email: string) => void;
+  /** These three may answer false when the request failed: the form then keeps what was typed. */
+  onInvite: (email: string) => Promise<boolean> | void;
   onInviteAction: (action: InviteAction, invite: AdminInvite) => void;
-  onAction: (action: UserAction, user: AdminUser) => void;
-  onChangeOwner: (space: AdminSpace, userId: string) => void;
+  onAction: (action: UserAction, user: AdminUser) => Promise<boolean> | void;
+  onChangeOwner: (space: AdminSpace, userId: string) => Promise<boolean> | void;
   hasMore?: boolean;
   onMore?: () => void;
   busy?: boolean;
@@ -163,24 +163,35 @@ export interface UsersViewProps {
   now?: number;
 }
 
+/**
+ * The server's own rule for an address: one @, text before it, a dot in the domain, no spaces.
+ * It takes what a stricter parser would not, such as ada@bücher.de.
+ */
+export function isEmail(value: string): boolean {
+  const parts = value.split('@');
+  if (parts.length !== 2 || /\s/.test(value)) return false;
+  const [local = '', domain = ''] = parts;
+  return local !== '' && domain.includes('.') && !domain.startsWith('.') && !domain.endsWith('.');
+}
+
 /** Users, invitations and spaces. Takes data and callbacks, no router and no network. */
 export function UsersView(props: UsersViewProps) {
   const { users, spaces, now } = props;
   const t = useT();
   const [email, setEmail] = useState('');
-  const [emailError, setEmailError] = useState<MessageId | undefined>();
   const [erase, setErase] = useState<AdminUser | null>(null);
   const [ownerOf, setOwnerOf] = useState<AdminSpace | null>(null);
   const candidates = useMemo(() => users.filter((user) => user.disabledAt === null), [users]);
 
-  function invite(): void {
-    const parsed = emailSchema.safeParse({ email });
-    if (!parsed.success) {
-      setEmailError('error.email');
-      return;
-    }
-    setEmailError(undefined);
-    props.onInvite(parsed.data.email);
+  // Checked as it is typed: an address that is not one shows its error and blocks Invite.
+  const address = email.trim();
+  const valid = isEmail(address);
+  const emailError: MessageId | undefined = address !== '' && !valid ? 'error.email' : undefined;
+
+  async function invite(): Promise<void> {
+    if (!valid) return;
+    const done = await props.onInvite(address);
+    if (done === false) return;
     setEmail('');
   }
 
@@ -195,7 +206,7 @@ export function UsersView(props: UsersViewProps) {
             noValidate
             onSubmit={(event) => {
               event.preventDefault();
-              invite();
+              void invite();
             }}
           >
             <TextBox
@@ -204,10 +215,12 @@ export function UsersView(props: UsersViewProps) {
               value={email}
               onChange={setEmail}
               placeholder="name@example.co"
+              inputMode="email"
+              required
               error={emailError}
               autoComplete="off"
             />
-            <Button type="submit" variant="primary" isDisabled={props.busy}>
+            <Button type="submit" variant="primary" isDisabled={props.busy || !valid}>
               {t('admin.users.invite.submit')}
             </Button>
           </form>
@@ -383,8 +396,9 @@ export function UsersView(props: UsersViewProps) {
             space={ownerOf}
             candidates={candidates}
             onCancel={() => setOwnerOf(null)}
-            onConfirm={(userId) => {
-              props.onChangeOwner(ownerOf, userId);
+            onConfirm={async (userId) => {
+              const done = await props.onChangeOwner(ownerOf, userId);
+              if (done === false) return;
               setOwnerOf(null);
             }}
           />
@@ -398,18 +412,24 @@ export function UsersView(props: UsersViewProps) {
         }}
         title={t('admin.users.erase.title', { who: erase?.name ?? erase?.email ?? '' })}
         confirmLabel={t('admin.users.erase')}
-        onConfirm={() => {
-          if (erase) props.onAction('erase', erase);
+        pending={props.busy}
+        onConfirm={async () => {
+          if (erase && (await props.onAction('erase', erase)) === false) return;
           setErase(null);
         }}
       >
         <p>{t('admin.users.erase.body')}</p>
+        {props.error ? <ErrorNotice error={props.error} /> : null}
       </ConfirmDialog>
     </>
   );
 }
 
 const PAGE = 50;
+
+// What a request answers the form with: the error itself is shown from the mutation.
+const ok = () => true;
+const failed = () => false;
 
 export default function Users() {
   const queryClient = useQueryClient();
@@ -421,6 +441,8 @@ export default function Users() {
     queryFn: ({ pageParam }) =>
       admin.users({ search: search === '' ? undefined : search, limit: PAGE, offset: pageParam }),
     initialPageParam: 0,
+    // Keep the list on screen while a new search loads, so the search box stays mounted.
+    placeholderData: keepPreviousData,
     getNextPageParam: (last, pages) => {
       const shown = pages.reduce((sum, page) => sum + page.users.length, 0);
       return shown < last.total && last.users.length > 0 ? shown : undefined;
@@ -490,10 +512,10 @@ export default function Users() {
         spaces={spaces.data?.spaces ?? []}
         search={search}
         onSearch={setSearch}
-        onInvite={(email) => invite.mutate(email)}
+        onInvite={(email) => invite.mutateAsync(email).then(ok, failed)}
         onInviteAction={(action, target) => inviteAct.mutate({ action, target })}
-        onAction={(action, user) => act.mutate({ action, user })}
-        onChangeOwner={(space, userId) => owner.mutate({ space, userId })}
+        onAction={(action, user) => act.mutateAsync({ action, user }).then(ok, failed)}
+        onChangeOwner={(space, userId) => owner.mutateAsync({ space, userId }).then(ok, failed)}
         hasMore={users.hasNextPage}
         onMore={() => void users.fetchNextPage()}
         busy={act.isPending || invite.isPending || inviteAct.isPending || owner.isPending}

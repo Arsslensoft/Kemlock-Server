@@ -16,8 +16,10 @@ function memory(): { store: DeviceKeyStore; held: () => CryptoKey | undefined } 
   return {
     store: {
       load: async () => key,
-      save: async (k) => {
+      add: async (k) => {
+        if (key) return false;
         key = k;
+        return true;
       },
       clear: async () => {
         key = undefined;
@@ -39,6 +41,29 @@ describe('the trusted-device copy of the root key', () => {
     expect(held()?.extractable).toBe(false);
     await expect(crypto.subtle.exportKey('raw', held() as CryptoKey)).rejects.toThrow();
     expect([...(await wrap.open(sealed, ACCOUNT, DEVICE, 1))]).toEqual([...root()]);
+  });
+
+  it('uses the key another tab stored first, and does not overwrite it', async () => {
+    const { store, held } = memory();
+    const other = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, [
+      'encrypt',
+      'decrypt',
+    ]);
+    // Empty at the load, filled by the other tab before our add.
+    let calls = 0;
+    const racing: DeviceKeyStore = {
+      ...store,
+      load: async () => (calls++ === 0 ? undefined : held()),
+      add: async (k) => {
+        await store.add(other);
+        return store.add(k);
+      },
+    };
+    const wrap = createDeviceWrap({ store: racing });
+    const sealed = await wrap.seal(root(), ACCOUNT, DEVICE, 1);
+    expect(held()).toBe(other);
+    // The other tab's wrap, on the same stored key, opens it.
+    expect([...(await createDeviceWrap({ store }).open(sealed, ACCOUNT, DEVICE, 1))]).toEqual([...root()]);
   });
 
   it('opens only for its own account, device and key version', async () => {

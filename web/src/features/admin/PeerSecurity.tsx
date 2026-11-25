@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearch } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { KeyHolding, PeerSecurity as PeerSecurityData, SelfSecurity, SuiteSetting } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -11,7 +11,7 @@ import { day, dateTime, relative } from './format';
 import { type LabelsOf, KeyBadge } from './keys';
 import { type AdminNav, useAdminNav } from './nav';
 import { useReauth } from './reauth';
-import { ChoiceGroup, ErrorNotice, Fact, Loading, PageHead } from './ui';
+import { ChoiceGroup, ErrorNotice, Fact, Loading, PageHead, Toggle } from './ui';
 
 export const SUITES = {
   aes: 'kfed1-mlkem1024x25519-aes256gcm',
@@ -191,6 +191,8 @@ export interface SelfSectionProps {
   onRotateIdentity: () => void;
   onSaveSuites: (suites: SuiteSetting[], keyHolding: KeyHolding) => void;
   kemRotated?: boolean | undefined;
+  /** The suites were just saved. */
+  suitesSaved?: boolean | undefined;
   busy?: boolean | undefined;
   now?: number | undefined;
 }
@@ -203,6 +205,7 @@ export function SelfSection({
   onRotateIdentity,
   onSaveSuites,
   kemRotated,
+  suitesSaved,
   busy,
   now,
 }: SelfSectionProps) {
@@ -210,6 +213,16 @@ export function SelfSection({
   const [suites, setSuites] = useState<SuiteSetting[]>(self.suites);
   const [holding, setHolding] = useState<KeyHolding>(self.keyHolding);
   const [rotating, setRotating] = useState(false);
+  // "Saved." goes at the first edit after it.
+  const [edited, setEdited] = useState(false);
+  // What the server keeps may change under the form (a refetch): start again from it.
+  useEffect(() => {
+    setSuites(self.suites);
+    setHolding(self.keyHolding);
+    setEdited(false);
+  }, [self.suites, self.keyHolding]);
+  const dirty = holding !== self.keyHolding || JSON.stringify(suites) !== JSON.stringify(self.suites);
+  const noneOn = !suites.some((s) => s.on);
   return (
     <section className="card" aria-labelledby="h-own">
       <div className="adm-head">
@@ -218,6 +231,13 @@ export function SelfSection({
           {t('admin.peer.downloadOwn')}
         </Button>
       </div>
+      {suitesSaved && !edited && !dirty ? (
+        <div className="adm-saved">
+          <Notice tone="info" live>
+            <p>{t('admin.saved')}</p>
+          </Notice>
+        </div>
+      ) : null}
       <p className="hint adm-pad">{t('admin.peer.ownBody', { name: self.server.name })}</p>
       <div className="adm-split">
         <div className="adm-pad">
@@ -252,7 +272,10 @@ export function SelfSection({
           <ChoiceGroup
             legend={t('admin.peer.holding')}
             value={holding}
-            onChange={(value) => setHolding(value as KeyHolding)}
+            onChange={(value) => {
+              setHolding(value as KeyHolding);
+              setEdited(true);
+            }}
             options={[
               {
                 value: 'sealed',
@@ -305,23 +328,24 @@ export function SelfSection({
                 <li className={suite.on ? 'adm-suite' : 'adm-suite off'} key={suite.name}>
                   <span className="adm-ord">{index + 1}</span>
                   <div className="grow">
-                    <label className="mono">
-                      <input
-                        type="checkbox"
-                        checked={suite.on}
-                        onChange={() =>
-                          setSuites((list) => list.map((s) => (s.name === suite.name ? { ...s, on: !s.on } : s)))
-                        }
-                      />{' '}
-                      {suite.name}
-                    </label>
-                    {id ? <div className="hint">{t(id)}</div> : null}
+                    <Toggle
+                      label={suite.name}
+                      hint={id ? t(id) : undefined}
+                      checked={suite.on}
+                      onChange={(on) => {
+                        setSuites((list) => list.map((s) => (s.name === suite.name ? { ...s, on } : s)));
+                        setEdited(true);
+                      }}
+                    />
                   </div>
                   <Button
                     size="small"
                     aria-label={t('admin.peer.moveUp', { name: suite.name })}
                     isDisabled={index === 0}
-                    onPress={() => setSuites((list) => moveSuite(list, index, -1))}
+                    onPress={() => {
+                      setSuites((list) => moveSuite(list, index, -1));
+                      setEdited(true);
+                    }}
                   >
                     <span aria-hidden="true">↑</span>
                   </Button>
@@ -329,7 +353,10 @@ export function SelfSection({
                     size="small"
                     aria-label={t('admin.peer.moveDown', { name: suite.name })}
                     isDisabled={index === suites.length - 1}
-                    onPress={() => setSuites((list) => moveSuite(list, index, 1))}
+                    onPress={() => {
+                      setSuites((list) => moveSuite(list, index, 1));
+                      setEdited(true);
+                    }}
                   >
                     <span aria-hidden="true">↓</span>
                   </Button>
@@ -340,23 +367,21 @@ export function SelfSection({
           <p role="status" className="hint">
             {t(orderHint(suites, suites.some((s) => s.name === SUITES.aes && s.available !== false)))}
           </p>
+          <p className="hint">{t('admin.peer.saveHint')}</p>
           <div className="actions">
-            <Button
-              size="small"
-              onPress={() => {
-                setSuites(self.suites);
-                setHolding(self.keyHolding);
-              }}
-            >
-              {t('admin.peer.reset')}
-            </Button>
-            <Button
-              size="small"
-              variant="primary"
-              isDisabled={busy || !suites.some((s) => s.on)}
-              onPress={() => onSaveSuites(suites, holding)}
-            >
-              {t('admin.peer.saveSuites')}
+            {dirty ? (
+              <Button
+                onPress={() => {
+                  setSuites(self.suites);
+                  setHolding(self.keyHolding);
+                  setEdited(false);
+                }}
+              >
+                {t('admin.discard')}
+              </Button>
+            ) : null}
+            <Button variant="primary" isDisabled={busy || !dirty || noneOn} onPress={() => onSaveSuites(suites, holding)}>
+              {t('action.save')}
             </Button>
           </div>
         </div>
@@ -420,6 +445,7 @@ export function PeerSecurityView(props: PeerSecurityViewProps) {
         onRotateIdentity={props.onRotateIdentity}
         onSaveSuites={props.onSaveSuites}
         kemRotated={props.kemRotated}
+        suitesSaved={props.suitesSaved}
         busy={props.busy}
         now={props.now}
       />
@@ -501,6 +527,7 @@ export default function PeerSecurityPage() {
         onRotateIdentity={() => rotateIdentity.mutate()}
         onSaveSuites={(suites, holding) => saveSuites.mutate({ suites, holding })}
         kemRotated={rotateKem.isSuccess}
+        suitesSaved={saveSuites.isSuccess}
         busy={rotateKem.isPending || rotateIdentity.isPending || saveSuites.isPending}
         error={
           peer.error ?? self.error ?? rotateKem.error ?? rotateIdentity.error ?? saveSuites.error ?? revoke.error ?? download.error

@@ -1,4 +1,4 @@
-import { Link, useNavigate, useParams, useSearch } from '@tanstack/react-router';
+import { Link, useCanGoBack, useNavigate, useParams, useRouter, useSearch } from '@tanstack/react-router';
 import { useState } from 'react';
 import { session } from '@/app/services';
 import { useT } from '@/i18n';
@@ -70,6 +70,8 @@ export function noteFields(values: NoteValues): ItemData {
 export default function NewItem() {
   const t = useT();
   const navigate = useNavigate();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
   const { itemId } = useParams({ strict: false }) as { itemId?: string };
   const search = useSearch({ strict: false }) as { kind?: EditableKind };
   const { item, isLoading } = useVaultItem(itemId);
@@ -101,13 +103,19 @@ export default function NewItem() {
     );
   }
 
-  const cancel = () =>
-    void (editing && item
-      ? navigate({ to: '/vault/$itemId', params: { itemId: item.id } })
-      : navigate({ to: '/vault' }));
+  // Cancel goes back to where the person came from (a filtered list, Trash, a space); only a page
+  // opened directly, with nothing behind it, falls back to the list or the item.
+  const cancel = () => {
+    if (canGoBack) router.history.back();
+    else
+      void (editing && item
+        ? navigate({ to: '/vault/$itemId', params: { itemId: item.id }, replace: true })
+        : navigate({ to: '/vault', replace: true }));
+  };
 
+  // The form is replaced by the item, so Back after Save doesn't reopen the form.
   function saved(result: VaultItem) {
-    void navigate({ to: '/vault/$itemId', params: { itemId: result.id } });
+    void navigate({ to: '/vault/$itemId', params: { itemId: result.id }, replace: true });
   }
 
   // A contact is one person's own statement: it stays in the account's own vault.

@@ -48,6 +48,12 @@ describe('PairView, step 1', () => {
     expect(onNewCode).toHaveBeenCalled();
   });
 
+  it('leaves this server\'s name out of the lede until a pairing session brings it', () => {
+    view({ code: null, session: null });
+    expect(screen.getByText(/copy the vaults you choose to each other, as ciphertext\.$/)).toBeInTheDocument();
+    expect(screen.queryByText(/This server is/)).not.toBeInTheDocument();
+  });
+
   it('connects to another server with its address and code', async () => {
     const { onConnect } = view({ code: null, session: null });
     const user = userEvent.setup();

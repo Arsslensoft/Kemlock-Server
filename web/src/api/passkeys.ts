@@ -78,6 +78,32 @@ export function createPasskeySignInApi(http: Http) {
 
 export type PasskeySignInApi = ReturnType<typeof createPasskeySignInApi>;
 
+/**
+ * A security key as the second step of a sign-in that asked for one (`methods` has `webauthn`):
+ * the sealed challenge from the first step goes in both calls, which carry a DPoP proof and no
+ * token, like the other second step.
+ */
+export function createSecurityKeyStepApi(http: Http) {
+  const path = '/kem/v1/auth/two-factor/webauthn';
+  return {
+    /** `PublicKeyCredentialRequestOptions` as JSON, listing the account's security keys. */
+    options: (challenge: string) =>
+      http
+        .request<{ options: Record<string, unknown> }>({
+          method: 'POST',
+          path: `${path}/options`,
+          mode: 'proof',
+          body: { challenge },
+        })
+        .then((r) => r.options),
+    /** The key's answer (an encoded `navigator.credentials.get` result) for tokens. */
+    verify: (body: { challenge: string; credential: Record<string, unknown> }) =>
+      http.request<TokenResponse>({ method: 'POST', path, mode: 'proof', body }),
+  };
+}
+
+export type SecurityKeyStepApi = ReturnType<typeof createSecurityKeyStepApi>;
+
 export interface SecurityKeysDto {
   enabled: boolean;
   keys: { id: number; name: string }[];

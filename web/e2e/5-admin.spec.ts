@@ -287,7 +287,7 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   await page.getByRole('link', { name: 'Admin console' }).click();
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   await expect(page.getByText('2 invitations are still waiting')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Push relay' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Push', exact: true })).toBeVisible();
   await expectAccessible(page);
 
   // Users & spaces: a write asks for a step-up token, made from an authenticator code.
@@ -304,7 +304,8 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   await expect(check).toBeHidden();
   expect(seen.filter((call) => call === 'POST /admin/v1/users/u2/disable')).toHaveLength(2);
   await page.getByLabel('Email to invite').fill('not-an-email');
-  await page.getByRole('button', { name: 'Invite' }).click();
+  // Checked as it is typed: the reason shows and Invite stays off.
+  await expect(page.getByRole('button', { name: 'Invite' })).toBeDisabled();
   await expect(page.getByText(/Type an email address/)).toBeVisible();
 
   // Event log: filters, and a CSV the server makes (an export is a write, so it carries the token).
@@ -323,7 +324,9 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   await expect(page.getByRole('heading', { name: 'Sign-in & SSO', level: 1 })).toBeVisible();
   await expect(page.getByLabel('Client secret', { exact: true })).toHaveValue('');
   await expectAccessible(page);
-  await page.getByRole('button', { name: 'Save changes' }).click();
+  // Save waits for a change: the write-only secret is one.
+  await page.getByLabel('Client secret', { exact: true }).fill('a-new-client-secret');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Saved.')).toBeVisible();
 
   // Server settings: one group at a time, checked before it is sent.
@@ -334,7 +337,7 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   await expectAccessible(page);
   await page.getByLabel('SMTP port', { exact: true }).fill('70000');
   await page.getByRole('button', { name: 'Save Email' }).click();
-  await expect(page.getByText(/Type a whole number within the range/)).toBeVisible();
+  await expect(page.getByText(/Type a whole number from/)).toBeVisible();
   await page.getByLabel('SMTP port', { exact: true }).fill('465');
   await page.getByRole('button', { name: 'Save Email' }).click();
   await expect(page.getByText('Saved.')).toBeVisible();
@@ -359,7 +362,7 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   await expect(page.getByRole('heading', { name: 'Pair a server', level: 1 })).toBeVisible();
   await page.getByRole('button', { name: 'Make a code' }).click();
   await expect(page.getByText('HXQ7-42MD-R9KT')).toBeVisible();
-  await page.getByLabel('Its address').fill('vault.example.co');
+  await page.getByLabel('Its address').fill('https://vault.example.co');
   await page.getByLabel('Its one-time code').fill('7KP2-WQ4N-D8RJ');
   await page.getByRole('button', { name: 'Connect' }).click();
   const words = page.locator('.words').first();
@@ -397,7 +400,7 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   // The push relay (on the overview): registering is a write, so it asks for the step-up check
   // unless the token from the steps above is still good; then the relay's id shows.
   await page.getByRole('link', { name: 'Overview' }).click();
-  await expect(page.getByRole('heading', { name: 'Push relay' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Push', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Turn on' }).click();
   const relayCheck = page.getByRole('dialog');
   await expect(page.getByText('inst-4f2a').or(relayCheck)).toBeVisible();

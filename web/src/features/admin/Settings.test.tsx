@@ -1,6 +1,7 @@
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { I18nProvider } from '@/i18n';
 import { renderWithIntl } from '@/test/render';
 import { SETTINGS, setting } from './fixtures';
 import { SettingsView } from './Settings';
@@ -14,7 +15,7 @@ function view(props: Partial<Parameters<typeof SettingsView>[0]> = {}) {
 
 /** The Save button of the card with this title. */
 function saveOf(title: string) {
-  return within(screen.getByRole('region', { name: title })).getByRole('button', { name: 'Save' });
+  return within(screen.getByRole('region', { name: title })).getByRole('button', { name: `Save ${title}` });
 }
 
 describe('the settings form', () => {
@@ -95,7 +96,7 @@ describe('SettingsView', () => {
     expect(largest).toBeDisabled();
     expect(screen.getByText(/Set by KEMLOCK_MAX_FILE_SIZE_MIB/)).toBeInTheDocument();
     const files = screen.getByRole('region', { name: 'Files' });
-    expect(within(files).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(within(files).queryByRole('button', { name: /^Save/ })).not.toBeInTheDocument();
   });
 
   it('refuses a bad port without sending anything', async () => {
@@ -198,5 +199,38 @@ describe('SettingsView', () => {
     expect(screen.getByLabelText('SMTP port')).toBeRequired();
     const email = screen.getByRole('region', { name: 'Email' });
     expect(within(email).getByText('Saved.')).toBeInTheDocument();
+  });
+});
+
+describe('saving one group', () => {
+  it('leaves the unsaved edits of the other groups alone', async () => {
+    const { rerender } = renderWithIntl(<SettingsView settings={SETTINGS} onSave={vi.fn()} />);
+    const user = userEvent.setup();
+    const host = screen.getByDisplayValue('smtp.example.org');
+    await user.clear(host);
+    await user.type(host, 'mail.example.org');
+    // The server answers with the trash group saved: its data changes, the smtp group's does not.
+    const after = SETTINGS.map((s) => (s.key === 'trash_days' ? { ...s, value: '45' } : s));
+    rerender(
+      <I18nProvider>
+        <SettingsView settings={after} onSave={vi.fn()} />
+      </I18nProvider>,
+    );
+    expect(screen.getByDisplayValue('mail.example.org')).toBeInTheDocument();
+    expect(screen.getByDisplayValue('45')).toBeInTheDocument();
+  });
+
+  it('starts the group over when the server sends it back unchanged, as after a secret is replaced', async () => {
+    const { rerender } = renderWithIntl(<SettingsView settings={SETTINGS} onSave={vi.fn()} />);
+    const password = screen.getByLabelText('SMTP password', { exact: false });
+    await userEvent.setup().type(password, 'a-new-password');
+    // The password was already set, so the answer to the save is the same as before.
+    rerender(
+      <I18nProvider>
+        <SettingsView settings={SETTINGS} onSave={vi.fn()} savedGroup="smtp" saves={{ smtp: 1 }} />
+      </I18nProvider>,
+    );
+    expect(screen.getByLabelText('SMTP password', { exact: false })).toHaveValue('');
+    expect(within(screen.getByRole('region', { name: 'Email' })).getByText('Saved.')).toBeInTheDocument();
   });
 });

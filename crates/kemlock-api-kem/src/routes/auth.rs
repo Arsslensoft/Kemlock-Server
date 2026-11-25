@@ -365,7 +365,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             &api,
             authed.actor.user,
             Some(kemlock_app::ports::TwoFactorMethod::Totp),
-            request.proof.as_deref(),
+            request.proof.as_ref(),
         )
         .await?;
         api.confirm_totp()
@@ -403,7 +403,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             super::two_step::require_proof_for_recovery_code(
                 &api,
                 authed.actor.user,
-                request.proof.as_deref().unwrap_or_default(),
+                request.proof.as_ref(),
             )
             .await?;
         }

@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { AdminEvent, AdminUser, EventsQuery } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
@@ -226,6 +226,8 @@ export default function Events() {
     queryFn: ({ pageParam }) =>
       admin.events({ ...queryFor(filters, Date.now() / 1000), cursor: pageParam, limit: 100 }),
     initialPageParam: undefined as string | undefined,
+    // Keep the list on screen while a changed filter loads, so the filters stay mounted.
+    placeholderData: keepPreviousData,
     getNextPageParam: (last) => last.next ?? undefined,
   });
   // The server writes the CSV (up to 100,000 rows) and records the export, which is a write.

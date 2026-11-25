@@ -1,7 +1,8 @@
-// The push relay panel (`/admin/v1/push-relay`): whether this server has registered with Kemlock's
-// push relay, so pushes to the mobile apps go out, with the relay's address and this server's id
-// there. Turning it on registers the server; turning it off erases the installation at the relay
-// and here. Both are writes, so both ask for a step-up check.
+// The push panel (`/admin/v1/push-relay`): the pushes the server sends itself (Apple, when it holds
+// an APNs key, and UnifiedPush, always), and under them Kemlock's hosted relay, an optional fallback
+// for iPhones on a server with no Apple key. Turning the relay on registers the server; turning it
+// off erases the installation at the relay and here. Both are writes, so both ask for a step-up
+// check.
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import type { PushRelay } from '@/api/admin';
@@ -36,11 +37,6 @@ export function PushRelayCard({
     <section className="card" aria-labelledby="h-push">
       <div className="card-head">
         <h2 id="h-push">{t('admin.push.title')}</h2>
-        {relay ? (
-          <span className={relay.enabled ? 'tag ok' : 'tag mute'}>
-            {relay.enabled ? t('admin.push.on') : t('admin.push.off')}
-          </span>
-        ) : null}
       </div>
       <div className="adm-pad stack">
         <p className="hint">{t('admin.push.lede')}</p>
@@ -50,8 +46,39 @@ export function PushRelayCard({
           <>
             <dl className="kv">
               <div className="row">
+                <dt className="grow">{t('admin.push.apple')}</dt>
+                <dd>
+                  {relay.apnsConfigured ? (
+                    <>
+                      <span className="tag ok">{t('admin.push.apple.on')}</span>
+                      {relay.apnsSandbox ? <span className="tag mute">{t('admin.push.apple.sandbox')}</span> : null}
+                    </>
+                  ) : (
+                    <span className="hint">{t('admin.push.apple.off')}</span>
+                  )}
+                </dd>
+              </div>
+              <div className="row">
+                <dt className="grow">{t('admin.push.android')}</dt>
+                <dd>
+                  <span className="tag ok">{t('admin.push.android.on')}</span>
+                </dd>
+              </div>
+            </dl>
+            <h3 id="h-push-relay">{t('admin.push.relay.title')}</h3>
+            <p className="hint">{t('admin.push.relay.lede')}</p>
+            <dl className="kv" aria-labelledby="h-push-relay">
+              <div className="row">
                 <dt className="grow">{t('admin.push.relay')}</dt>
                 <dd className="mono">{relay.relayUrl}</dd>
+              </div>
+              <div className="row">
+                <dt className="grow">{t('admin.push.relay.status')}</dt>
+                <dd>
+                  <span className={relay.enabled ? 'tag ok' : 'tag mute'}>
+                    {relay.enabled ? t('admin.push.on') : t('admin.push.off')}
+                  </span>
+                </dd>
               </div>
               {relay.enabled ? (
                 <div className="row">

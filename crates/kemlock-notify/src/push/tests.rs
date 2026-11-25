@@ -1,4 +1,4 @@
-use super::dispatch::PushDispatcher;
+use super::dispatch::{DirectSenders, PushDispatcher};
 use super::*;
 use crate::audience::UserOnly;
 use crate::testing::{MemoryPush, TaggedSeal, eventually, serve};
@@ -9,6 +9,7 @@ use axum::routing::{delete, post};
 use axum::{Json, Router};
 use kemlock_domain::{Owner, SpaceId, UserId};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The `Authorization` header for `inst-1:key-1`.
@@ -95,7 +96,7 @@ fn good() -> Installation {
 
 fn target(token: &str) -> PushTarget {
     PushTarget {
-        kind: PushKind::Fcm,
+        kind: PushKind::Apns,
         token: token.to_owned(),
     }
 }
@@ -113,16 +114,7 @@ async fn the_server_registers_and_gets_an_id_and_a_key() {
 async fn a_send_carries_tokens_and_the_nudge_and_nothing_else() {
     let (state, client) = relay().await;
     let outcome = client
-        .send_sync(
-            &good(),
-            &[
-                target("tok-a"),
-                PushTarget {
-                    kind: PushKind::Apns,
-                    token: "tok-b".to_owned(),
-                },
-            ],
-        )
+        .send_sync(&good(), &[target("tok-a"), target("tok-b")])
         .await
         .expect("sends");
     assert_eq!(outcome.accepted, 2);
@@ -133,7 +125,7 @@ async fn a_send_carries_tokens_and_the_nudge_and_nothing_else() {
         &[json!({
             "type": "sync",
             "tokens": [
-                {"kind": "fcm", "token": "tok-a"},
+                {"kind": "apns", "token": "tok-a"},
                 {"kind": "apns", "token": "tok-b"}
             ]
         })]
@@ -310,7 +302,14 @@ async fn opted_in() -> (Arc<FakeRelay>, MemoryPush, PushDispatcher) {
     enable_relay(&repo, &TaggedSeal, &client)
         .await
         .expect("enables");
-    let dispatcher = PushDispatcher::start(repo.clone(), UserOnly, TaggedSeal, client, WINDOW);
+    let dispatcher = PushDispatcher::start(
+        repo.clone(),
+        UserOnly,
+        TaggedSeal,
+        client,
+        DirectSenders::default(),
+        WINDOW,
+    );
     (state, repo, dispatcher)
 }
 
@@ -353,7 +352,14 @@ async fn without_an_installation_nothing_is_sent() {
     let repo = MemoryPush::default();
     let ada = UserId::random();
     repo.add(ada, "phone");
-    let dispatcher = PushDispatcher::start(repo, UserOnly, TaggedSeal, client, WINDOW);
+    let dispatcher = PushDispatcher::start(
+        repo,
+        UserOnly,
+        TaggedSeal,
+        client,
+        DirectSenders::default(),
+        WINDOW,
+    );
     dispatcher.nudge(Owner::User(ada));
     tokio::time::sleep(WINDOW * 4).await;
     assert!(state.pushes.lock().expect("lock").is_empty());
@@ -394,4 +400,222 @@ async fn pushes_continue_after_the_relay_failed_once() {
     .expect("sets");
     dispatcher.nudge(Owner::User(ada));
     eventually(|| state.pushes.lock().expect("lock").len() == 1).await;
+}
+
+#[test]
+fn a_new_relay_address_reaches_every_clone_and_a_bad_one_changes_nothing() {
+    let client = RelayClient::new("https://relay.example.org/").expect("a client");
+    let clone = client.clone();
+    assert_eq!(client.base(), "https://relay.example.org");
+    clone
+        .set_base(" https://other.example.org/ ")
+        .expect("https is allowed");
+    assert_eq!(client.base(), "https://other.example.org");
+    assert!(client.set_base("http://relay.example.org").is_err());
+    assert_eq!(clone.base(), "https://other.example.org");
+}
+
+// ---- routing: Apple direct, the relay as a fallback, UnifiedPush direct, Firebase ignored ----
+
+/// What the fake Apple and the fake UnifiedPush distributor were asked.
+#[derive(Default)]
+struct Pushed {
+    apple: Mutex<Vec<String>>,
+    distributor: Mutex<Vec<String>>,
+    /// Set when the distributor has answered `/slow`.
+    slow_answered: AtomicBool,
+}
+
+async fn apple(State(pushed): State<Arc<Pushed>>, Path(token): Path<String>) -> Response {
+    pushed.apple.lock().expect("lock").push(token.clone());
+    if token == "dead0410" {
+        return (StatusCode::GONE, Json(json!({"reason": "Unregistered"}))).into_response();
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn distributor(State(pushed): State<Arc<Pushed>>, uri: axum::http::Uri) -> Response {
+    pushed
+        .distributor
+        .lock()
+        .expect("lock")
+        .push(uri.path().to_owned());
+    if uri.path() == "/gone" {
+        return StatusCode::GONE.into_response();
+    }
+    if uri.path() == "/slow" {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        pushed.slow_answered.store(true, Ordering::SeqCst);
+    }
+    StatusCode::CREATED.into_response()
+}
+
+/// A server with a fake Apple and distributor, a fake relay, and the dispatcher over all three.
+/// `with_apple` says whether the server holds an Apple key, `opted_in` whether the operator
+/// turned the relay on.
+async fn everything(
+    with_apple: bool,
+    opted_in: bool,
+) -> (
+    Arc<Pushed>,
+    Arc<FakeRelay>,
+    String,
+    MemoryPush,
+    PushDispatcher,
+) {
+    let pushed = Arc::new(Pushed::default());
+    let apple_address = serve(
+        Router::new()
+            .route("/3/device/{token}", post(apple))
+            .with_state(pushed.clone()),
+    )
+    .await;
+    let distributor_address = serve(
+        Router::new()
+            .fallback(distributor)
+            .with_state(pushed.clone()),
+    )
+    .await;
+    let (relay_state, client) = relay().await;
+    let repo = MemoryPush::default();
+    if opted_in {
+        enable_relay(&repo, &TaggedSeal, &client)
+            .await
+            .expect("enables");
+    }
+    let direct = DirectSenders {
+        apns: with_apple.then(|| {
+            ApnsSender::with_base(apns::test_config(), &format!("http://{apple_address}"))
+                .expect("apple")
+        }),
+        unified_push: UnifiedPushSender::allowing_local(),
+    };
+    let dispatcher =
+        PushDispatcher::start(repo.clone(), UserOnly, TaggedSeal, client, direct, WINDOW);
+    (
+        pushed,
+        relay_state,
+        format!("http://{distributor_address}"),
+        repo,
+        dispatcher,
+    )
+}
+
+#[tokio::test]
+async fn an_iphone_is_pushed_to_directly_when_the_server_has_an_apple_key() {
+    let (pushed, relay, _, repo, dispatcher) = everything(true, true).await;
+    let ada = UserId::random();
+    repo.add(ada, "c0ffee01");
+    dispatcher.nudge(Owner::User(ada));
+    eventually(|| !pushed.apple.lock().expect("lock").is_empty()).await;
+    tokio::time::sleep(WINDOW * 3).await;
+    assert_eq!(*pushed.apple.lock().expect("lock"), ["c0ffee01"]);
+    // The relay, though the operator turned it on, hears nothing: Apple is the better way.
+    assert!(relay.pushes.lock().expect("lock").is_empty());
+}
+
+#[tokio::test]
+async fn an_iphone_goes_through_the_relay_when_there_is_no_apple_key_and_the_relay_is_on() {
+    let (pushed, relay, _, repo, dispatcher) = everything(false, true).await;
+    let ada = UserId::random();
+    repo.add(ada, "c0ffee01");
+    dispatcher.nudge(Owner::User(ada));
+    eventually(|| !relay.pushes.lock().expect("lock").is_empty()).await;
+    assert!(pushed.apple.lock().expect("lock").is_empty());
+}
+
+#[tokio::test]
+async fn an_iphone_is_skipped_with_no_apple_key_and_no_relay() {
+    let (pushed, relay, _, repo, dispatcher) = everything(false, false).await;
+    let ada = UserId::random();
+    repo.add(ada, "c0ffee01");
+    dispatcher.nudge(Owner::User(ada));
+    tokio::time::sleep(WINDOW * 4).await;
+    assert!(pushed.apple.lock().expect("lock").is_empty());
+    assert!(relay.pushes.lock().expect("lock").is_empty());
+    assert_eq!(repo.tokens(), ["c0ffee01"], "the token is kept for later");
+}
+
+#[tokio::test]
+async fn a_unifiedpush_phone_is_pushed_to_directly_whatever_the_relay_says() {
+    for (with_apple, opted_in) in [(false, false), (true, false), (false, true)] {
+        let (pushed, relay, base, repo, dispatcher) = everything(with_apple, opted_in).await;
+        let ada = UserId::random();
+        repo.add_kind(ada, PushKind::UnifiedPush, &format!("{base}/up123"));
+        dispatcher.nudge(Owner::User(ada));
+        eventually(|| !pushed.distributor.lock().expect("lock").is_empty()).await;
+        assert_eq!(*pushed.distributor.lock().expect("lock"), ["/up123"]);
+        assert!(relay.pushes.lock().expect("lock").is_empty());
+        assert!(pushed.apple.lock().expect("lock").is_empty());
+    }
+}
+
+#[tokio::test]
+async fn one_nudge_reaches_each_phone_by_its_own_way() {
+    let (pushed, _, base, repo, dispatcher) = everything(true, false).await;
+    let ada = UserId::random();
+    repo.add(ada, "c0ffee01");
+    repo.add_kind(ada, PushKind::UnifiedPush, &format!("{base}/up1"));
+    repo.add_kind(ada, PushKind::UnifiedPush, &format!("{base}/up2"));
+    for _ in 0..10 {
+        dispatcher.nudge(Owner::User(ada));
+    }
+    eventually(|| pushed.distributor.lock().expect("lock").len() == 2).await;
+    tokio::time::sleep(WINDOW * 3).await;
+    let mut seen = pushed.distributor.lock().expect("lock").clone();
+    seen.sort();
+    assert_eq!(seen, ["/up1", "/up2"], "once each for the whole burst");
+    assert_eq!(*pushed.apple.lock().expect("lock"), ["c0ffee01"]);
+}
+
+#[tokio::test]
+async fn a_firebase_token_is_never_sent_to_and_never_crashes_anything() {
+    let (pushed, relay, _, repo, dispatcher) = everything(true, true).await;
+    let ada = UserId::random();
+    repo.add_kind(ada, PushKind::Fcm, "old-firebase-token");
+    dispatcher.nudge(Owner::User(ada));
+    tokio::time::sleep(WINDOW * 4).await;
+    assert!(pushed.apple.lock().expect("lock").is_empty());
+    assert!(pushed.distributor.lock().expect("lock").is_empty());
+    assert!(relay.pushes.lock().expect("lock").is_empty());
+    assert_eq!(repo.tokens(), ["old-firebase-token"]);
+}
+
+#[tokio::test]
+async fn tokens_that_apple_or_a_distributor_no_longer_know_are_forgotten() {
+    let (_, _, base, repo, dispatcher) = everything(true, false).await;
+    let ada = UserId::random();
+    repo.add(ada, "dead0410");
+    repo.add(ada, "c0ffee01");
+    repo.add_kind(ada, PushKind::UnifiedPush, &format!("{base}/gone"));
+    let fine = format!("{base}/fine");
+    repo.add_kind(ada, PushKind::UnifiedPush, &fine);
+    dispatcher.nudge(Owner::User(ada));
+    let mut kept = vec!["c0ffee01".to_owned(), fine];
+    kept.sort();
+    eventually(|| repo.tokens() == kept).await;
+}
+
+#[tokio::test]
+async fn a_slow_unifiedpush_endpoint_holds_up_no_other_push() {
+    let (pushed, _, base, repo, dispatcher) = everything(true, false).await;
+    let ada = UserId::random();
+    repo.add(ada, "c0ffee01");
+    repo.add_kind(ada, PushKind::UnifiedPush, &format!("{base}/slow"));
+    dispatcher.nudge(Owner::User(ada));
+    eventually(|| pushed.distributor.lock().expect("lock").len() == 1).await;
+    eventually(|| pushed.apple.lock().expect("lock").len() == 1).await;
+    // The slow endpoint is still thinking, and the next flush goes ahead: the second push to the
+    // iPhone arrives well before the endpoint answers.
+    dispatcher.nudge(Owner::User(ada));
+    tokio::time::sleep(WINDOW * 10).await;
+    assert!(
+        !pushed.slow_answered.load(Ordering::SeqCst),
+        "still waiting"
+    );
+    assert_eq!(
+        *pushed.apple.lock().expect("lock"),
+        ["c0ffee01", "c0ffee01"],
+        "the second flush wasn't held up by the slow endpoint"
+    );
 }

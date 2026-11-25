@@ -1,4 +1,4 @@
-import { Link, getRouteApi, useNavigate } from '@tanstack/react-router';
+import { Link, getRouteApi } from '@tanstack/react-router';
 import { useState } from 'react';
 import { useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
@@ -6,6 +6,8 @@ import { Button, IconButton, buttonClass } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
+import { useBackToList } from './backNav';
+import { KindDetails } from './details/KindDetails';
 import { useVaultActions, useVaultItem } from './hooks';
 import { hostOfUrl, isEditable, isWebUrl, kindLabel, tileLetter, timeAgo } from './kinds';
 import { isTrashed, itemName, loginOf, noteOf } from './vault';
@@ -34,7 +36,7 @@ function PasswordRow({ password }: { password: string }) {
 
 export default function Item() {
   const t = useT();
-  const navigate = useNavigate();
+  const backToList = useBackToList();
   const { itemId } = route.useParams();
   const { item, isLoading } = useVaultItem(itemId);
   const { trash, restore } = useVaultActions();
@@ -75,7 +77,16 @@ export default function Item() {
   return (
     <>
       <nav className="crumbs" aria-label={t('item.breadcrumb')}>
-        <Link to="/vault">{t('nav.all')}</Link>
+        <Link
+          to="/vault"
+          onClick={(event) => {
+            if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            backToList();
+          }}
+        >
+          {t('nav.all')}
+        </Link>
         <span aria-hidden="true">/</span>
         <Link to="/vault" search={{ kind: item.kind }}>
           {t(kindLabel(item.kind))}
@@ -131,7 +142,7 @@ export default function Item() {
                 variant="danger"
                 isDisabled={trash.isPending}
                 onPress={() =>
-                  trash.mutate(item, { onSuccess: () => void navigate({ to: '/vault' }) })
+                  trash.mutate(item, { onSuccess: backToList })
                 }
               >
                 <Icon name="trash" />
@@ -191,6 +202,8 @@ export default function Item() {
           ) : null}
         </section>
       ) : null}
+
+      {isEditable(item.kind) && item.kind !== 'login' && item.kind !== 'note' ? <KindDetails item={item} /> : null}
 
       {notes ? (
         <section className="card" aria-labelledby="h-notes">

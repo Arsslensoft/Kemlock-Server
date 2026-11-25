@@ -22,7 +22,7 @@ use kemlock_app::passkeys::{ChallengeRepo, WebAuthn};
 use kemlock_app::ports::{
     DeviceRepo, EventLog, ItemStore, StoreError, TokenRepo, TwoFactorRepo, UserRepo,
 };
-use kemlock_app::privacy::PrivacyLog;
+use kemlock_app::privacy::{OwnErasure, PrivacyLog};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::two_step::RecoveryCodeRepo;
 use kemlock_crypto::hash;
@@ -132,6 +132,7 @@ pub struct Inner<S> {
     pub(crate) relay: Option<Arc<dyn BwRelay>>,
     pub(crate) notices: Notices,
     pub(crate) require_device_email: bool,
+    pub(crate) erasure: Option<Arc<dyn OwnErasure>>,
     /// Keys the KDF settings of unknown emails, derived from the token key like Vaultwarden's.
     pub(crate) prelogin_key: [u8; 32],
     /// Held from the check of a storage quota to the save of what it covers, so announces that
@@ -198,6 +199,7 @@ impl<S: BwStore> App<S> {
             relay: parts.live.relay,
             notices: parts.live.notices,
             require_device_email: parts.live.require_device_email,
+            erasure: parts.live.erasure,
             prelogin_key,
             quota_gate: tokio::sync::Mutex::new(()),
         }))

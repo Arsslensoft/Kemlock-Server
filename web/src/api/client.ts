@@ -6,6 +6,7 @@
 // worker, whose key the token is bound to. The server's DPoP nonce is remembered from every
 // response and retried once on `use-dpop-nonce`; an expired access token is refreshed once.
 import { ApiError, NetworkError } from './errors';
+import type { Proof } from './twoStep';
 import type {
   AccountKeysResponse,
   BatchRequest,
@@ -33,7 +34,10 @@ import type {
 
 const BASE = '/kem/v1';
 
-/** The server basics `POST /setup/finish` takes: the ones the server has a setting for. */
+/**
+ * The server basics `POST /setup/finish` takes. The address is only recorded (the server's
+ * `DOMAIN` is configuration); the file folder is not sent.
+ */
 export interface SetupBasicsBody {
   join: 'invite' | 'domains' | 'anyone';
   joinDomains: string;
@@ -42,6 +46,12 @@ export interface SetupBasicsBody {
   mailSecurity: 'starttls' | 'tls';
   mailFrom: string;
   mailUser: string;
+  address: string;
+  push: boolean;
+  backups: boolean;
+  backupEvery: 'night' | 'six-hours';
+  backupKeep: '7' | '14' | '30';
+  backupRecipient: string;
 }
 
 export interface Tokens {
@@ -341,7 +351,7 @@ export function createApi(deps: ApiDeps) {
         mode: 'auth',
       }),
     /** `proof` is the recovery code, asked for when another second step is on already. */
-    totpConfirm: (code: string, proof?: string) =>
+    totpConfirm: (code: string, proof?: Proof) =>
       none({
         method: 'POST',
         path: `${BASE}/account/two-factor/totp/confirm`,

@@ -13,8 +13,11 @@ use kemlock_api_bw::{
 use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::bw_events::{BwEvent, BwEvents, BwRelay};
 use kemlock_app::notices::{Notices, Outbox};
-use kemlock_app::ports::UserRepo;
+use kemlock_app::platform::Hasher;
+use kemlock_app::ports::{Clock, Random, StoreError, UserRepo};
+use kemlock_app::privacy::{EraseAccount, ErasureFiles, NoSends};
 use kemlock_crypto::seal::ServerSeal;
+use kemlock_domain::BlobId;
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use kemlock_store_sql::SqlStore;
 use serde_json::{Value, json};
@@ -69,6 +72,44 @@ fn shared_pem() -> &'static str {
 
 pub(crate) fn keys() -> TokenKeys {
     TokenKeys::from_pem(shared_pem()).expect("the key reads back")
+}
+
+/// The clock and randomness of the test environment, as the app crate's platform.
+struct TestPlatform(Arc<TestEnv>);
+
+impl Clock for TestPlatform {
+    fn now(&self) -> OffsetDateTime {
+        self.0.now()
+    }
+}
+
+impl Random for TestPlatform {
+    fn fill(&self, buf: &mut [u8]) {
+        self.0.fill(buf);
+    }
+}
+
+impl Hasher for TestPlatform {
+    fn sha256(&self, data: &[u8]) -> [u8; 32] {
+        kemlock_crypto::hash::sha256(data)
+    }
+
+    fn hmac_sha256(&self, key: &[u8], data: &[u8]) -> [u8; 32] {
+        kemlock_crypto::hash::hmac_sha256(key, data)
+    }
+}
+
+/// Files an erasure frees: the harness keeps them in memory, so there is nothing to delete.
+struct NoFiles;
+
+impl ErasureFiles for NoFiles {
+    async fn delete_blob(&self, _blob: BlobId) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    async fn delete_cipher_file(&self, _key: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 /// What a harness wires beyond the defaults.
@@ -236,6 +277,15 @@ impl Harness {
                 relay: live.relay,
                 notices: live.notices,
                 require_device_email: live.require_device_email,
+                erasure: Some(Arc::new(EraseAccount {
+                    users: store.clone(),
+                    eraser: store.clone(),
+                    sends: NoSends,
+                    files: NoFiles,
+                    settings: store.clone(),
+                    log: store.clone(),
+                    env: TestPlatform(env.clone()),
+                })),
             },
         });
         Harness {

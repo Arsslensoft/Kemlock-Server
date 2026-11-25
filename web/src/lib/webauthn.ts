@@ -6,9 +6,17 @@
 // The PRF output and the root key never leave the browser: only the wrap of the root key under the
 // PRF output goes to the server (docs/crypto.md, "The passkey PRF wrap of the root key").
 import type { PasskeyDto, PasskeysApi, SecurityKeyApi } from '@/api/passkeys';
+import type { WebauthnProof } from '@/api/twoStep';
 import type { CryptoPort } from '@/crypto-port';
 import { encodeB64, wipe } from './b64url';
-import { PasskeyError, createPasskey, decodeCreationOptions, encodeNewCredential, passkeysAvailable } from './passkey';
+import {
+  PasskeyError,
+  assertWithPasskey,
+  createPasskey,
+  decodeCreationOptions,
+  encodeNewCredential,
+  passkeysAvailable,
+} from './passkey';
 
 export { decodeB64 as fromBase64Url, encodeB64 as toBase64Url } from './b64url';
 export {
@@ -75,4 +83,22 @@ export async function registerSecurityKey(deps: RegisterSecurityKeyDeps, name: s
   const options = await deps.keys.creationOptions();
   const credential = await (deps.create ?? createSecurityKey)(options);
   await deps.keys.confirm(name, credential);
+}
+
+export interface ProveWithKeyDeps {
+  /** `createSecondStepsApi(...).proofKeyOptions`: the options for the account's keys and passkeys. */
+  options: () => Promise<Record<string, unknown>>;
+  /** Defaults to `assertWithPasskey`; tests pass a fake authenticator. */
+  assert?: typeof assertWithPasskey;
+}
+
+/**
+ * Proves it is the account's owner with a security key or passkey: asks the server for options,
+ * has the person touch the key, and returns the answer in the `{ webauthn }` shape every request
+ * that takes a fresh proof accepts. The challenge is good once, for two minutes.
+ */
+export async function proveWithKey(deps: ProveWithKeyDeps): Promise<WebauthnProof> {
+  if (!passkeysAvailable()) throw new PasskeyError('unavailable');
+  const options = await deps.options();
+  return { webauthn: await (deps.assert ?? assertWithPasskey)(options) };
 }

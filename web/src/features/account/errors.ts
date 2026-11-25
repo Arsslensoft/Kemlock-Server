@@ -17,6 +17,10 @@ export function describeAccountError(error: unknown): Described {
     return { id: error.reason === 'cancelled' ? 'security.passkeys.cancelled' : 'security.passkeys.unavailable' };
   }
   if (isApiError(error)) {
+    // Deleting the account is refused while it is the only owner of a space with others in it.
+    if (error.status === 400 && error.detail?.includes('only owner of a space')) {
+      return { id: 'security.delete.lastOwner' };
+    }
     switch (error.slug) {
       case 'space-keys-pending':
         return { id: 'space.error.keysPending' };

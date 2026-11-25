@@ -1,5 +1,5 @@
 //! Wires `kemlock-notify` into the server: mail for the notices the API raises, the live hub
-//! and its fan-out between replicas, Kemlock's push relay, Bitwarden's `/notifications/hub` and
+//! and its fan-out between replicas, push to the phones, Bitwarden's `/notifications/hub` and
 //! the events the Bitwarden API publishes to it, with Bitwarden's own push relay (`PUSH_*`).
 //!
 //! Settings are Vaultwarden's where they exist: `SMTP_HOST`, `SMTP_FROM`, `SMTP_FROM_NAME`,
@@ -7,14 +7,17 @@
 //! `SMTP_ACCEPT_INVALID_CERTS` and `SMTP_ACCEPT_INVALID_HOSTNAMES`; `PUSH_ENABLED`,
 //! `PUSH_INSTALLATION_ID`, `PUSH_INSTALLATION_KEY`, `PUSH_RELAY_URI`, `PUSH_IDENTITY_URI` and
 //! `REQUIRE_DEVICE_EMAIL`.
-//! Kemlock's own: `KEMLOCK_PUSH_RELAY`
-//! (`true` registers this server with the relay at start when it hasn't yet) and
-//! `KEMLOCK_PUSH_RELAY_URL` (another relay than Kemlock's).
+//! Kemlock's own: the server pushes to iPhones itself with an Apple key,
+//! `KEMLOCK_APNS_KEY_FILE`, `KEMLOCK_APNS_KEY_ID` and `KEMLOCK_APNS_TEAM_ID` (all three or none),
+//! `KEMLOCK_APNS_TOPIC` (default `com.kemlock.app`) and `KEMLOCK_APNS_SANDBOX` (default false); to
+//! Android phones through UnifiedPush with no setting. The hosted relay is an optional fallback for
+//! iPhones, off unless turned on: `KEMLOCK_PUSH_RELAY` (`true` registers this server with the relay
+//! at start when it hasn't yet) and `KEMLOCK_PUSH_RELAY_URL` (another relay than Kemlock's).
 
 use crate::adapters::ServerCrypto;
 use crate::app::RunError;
 use crate::config::Config;
-use crate::live::SwitchMailer;
+use crate::live::{PushValues, Snapshot, SwitchMailer};
 use axum::Router;
 use kemlock_api_bw::BwLive;
 use kemlock_api_bw::BwSettings;
@@ -28,18 +31,19 @@ use kemlock_domain::{DeviceId, Owner, UserId};
 use kemlock_notify::Notify;
 use kemlock_notify::audience::{Audience, SpaceMembers};
 use kemlock_notify::bitwarden::{
-    BitwardenPush, BitwardenPushConfig, BwHub, BwNotifier, BwPushing, HubAuth, HubConfig,
-    HubIdentity,
+    BitwardenPush, BitwardenPushConfig, BwHub, BwNotifier, BwPushSwitch, BwPushing, HubAuth,
+    HubConfig, HubIdentity,
 };
 use kemlock_notify::fanout::{Fanout, FanoutOptions, Sink};
 use kemlock_notify::mail::{
     AdminMail, Branding, LogMailer, MailOutbox, Mailer, SmtpConfig, SmtpMailer,
 };
 use kemlock_notify::push::{
-    DEFAULT_RELAY_URL, PushDispatcher, PushRelayAdmin, RelayClient, enable_relay,
+    ApnsConfig, ApnsSender, BuiltInPush, DEFAULT_RELAY_URL, DirectSenders, PushDispatcher,
+    PushRelayAdmin, RelayClient, UnifiedPushSender, enable_relay,
 };
 use kemlock_store_sql::SqlStore;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -61,8 +65,11 @@ pub struct Notifications {
     /// The same SMTP server for the admin console's alerts and invitations to the server; says no
     /// mail is set up without `SMTP_HOST`.
     pub admin_mail: AdminMail,
-    /// Turns Kemlock's push relay on and off for the admin console (`/admin/v1/push-relay`).
+    /// Shows push for the admin console and turns Kemlock's optional relay on and off
+    /// (`/admin/v1/push-relay`).
     pub push_relay: Arc<dyn PushRelayControl>,
+    /// Applies the saved push settings to the running relays.
+    pub push_follower: PushFollower,
 }
 
 impl std::fmt::Debug for Notifications {
@@ -191,26 +198,46 @@ pub async fn start(
         .map_err(|e| RunError::Store(format!("can't set up live sync between replicas: {e}")))?;
     tracing::info!(transport = ?fanout.transport(), "live sync is set up");
 
-    // Kemlock's push relay. It does nothing until the server has registered with it.
+    // The server's own Apple push, when it has a key. A bad setting stops the start.
+    let apns = ApnsConfig::from_lookup(env)
+        .map_err(|e| RunError::Config(e.to_string()))?
+        .map(ApnsSender::new)
+        .transpose()
+        .map_err(|e| RunError::Config(format!("KEMLOCK_APNS_*: {e}")))?;
+    match &apns {
+        Some(apns) => tracing::info!(
+            sandbox = apns.sandbox(),
+            "iPhones are pushed to through Apple"
+        ),
+        None => tracing::info!("no Apple push key (KEMLOCK_APNS_*): iPhones need the relay"),
+    }
+    let built_in = BuiltInPush::of(apns.as_ref());
+    let direct = DirectSenders {
+        apns,
+        unified_push: UnifiedPushSender::from_lookup(env).map_err(RunError::Config)?,
+    };
+
+    // Kemlock's optional push relay. It does nothing until the server has registered with it.
     let relay_url = env("KEMLOCK_PUSH_RELAY_URL")
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned());
     let client = RelayClient::new(&relay_url)
         .map_err(|e| RunError::Config(format!("KEMLOCK_PUSH_RELAY_URL: {e}")))?;
-    if enabled(env("KEMLOCK_PUSH_RELAY")) {
-        register_with_relay(store.clone(), crypto.clone(), client.clone());
-    }
+    // Registering with the relay when `KEMLOCK_PUSH_RELAY` is on is the follower's job, so a
+    // setting saved later counts as much as the environment.
     let push_relay: Arc<dyn PushRelayControl> = Arc::new(PushRelayAdmin::new(
         store.clone(),
         crypto.clone(),
         client.clone(),
         relay_url.clone(),
+        built_in,
     ));
     let push = PushDispatcher::start(
         store.clone(),
         SpaceMembers(store.clone()),
         crypto.clone(),
-        client,
+        client.clone(),
+        direct,
         kemlock_notify::push::DEFAULT_WINDOW,
     );
     let notify = Notify::new(fanout, Some(push));
@@ -222,7 +249,8 @@ pub async fn start(
         move |owner| notify.nudge(owner)
     });
 
-    let bw_live = bitwarden_live(env, store, &bw_hub, notify, notices.clone())?;
+    let (bw_live, bw_switch) = bitwarden_live(env, store, &bw_hub, notify, notices.clone())?;
+    let push_follower = PushFollower::new(bw_switch, client, store.clone(), crypto.clone());
     let bitwarden = bitwarden_hub(config, store, &bw_hub)?;
     Ok(Notifications {
         hub,
@@ -232,12 +260,128 @@ pub async fn start(
         mailer,
         admin_mail,
         push_relay,
+        push_follower,
     })
+}
+
+/// What the push relays last followed, so a snapshot that changed something else leaves them be.
+#[derive(Default)]
+struct Followed {
+    bitwarden: Option<PushValues>,
+    registered: bool,
+}
+
+/// Makes the push relays follow the saved settings while the server runs: Bitwarden's relay is
+/// rebuilt when its settings change, Kemlock's client is pointed at the relay address now set, and
+/// the server registers with Kemlock's relay the first time `KEMLOCK_PUSH_RELAY` turns on. A
+/// setting that doesn't make a usable relay leaves the one in use as it is.
+#[derive(Clone)]
+pub struct PushFollower {
+    switch: BwPushSwitch,
+    client: RelayClient,
+    store: SqlStore,
+    crypto: ServerCrypto,
+    followed: Arc<Mutex<Followed>>,
+}
+
+impl std::fmt::Debug for PushFollower {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PushFollower").finish_non_exhaustive()
+    }
+}
+
+impl PushFollower {
+    pub fn new(
+        switch: BwPushSwitch,
+        client: RelayClient,
+        store: SqlStore,
+        crypto: ServerCrypto,
+    ) -> PushFollower {
+        PushFollower {
+            switch,
+            client,
+            store,
+            crypto,
+            followed: Arc::new(Mutex::new(Followed::default())),
+        }
+    }
+
+    /// Applies `snapshot`. Call it from a Tokio runtime: registering is a background task.
+    pub fn follow(&self, snapshot: &Snapshot) {
+        let mut followed = self.followed.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(why) = &snapshot.push_error {
+            tracing::warn!(%why, "the push settings are unusable; pushes go out as before");
+        } else if followed.bitwarden.as_ref() != Some(&snapshot.push) {
+            match snapshot.push.config().and_then(|config| {
+                config
+                    .map(|config| BitwardenPush::new(config).map(Arc::new))
+                    .transpose()
+                    .map_err(|e| e.to_string())
+            }) {
+                Ok(relay) => {
+                    if relay.is_some() {
+                        tracing::info!("Bitwarden's push relay is on");
+                    } else {
+                        tracing::info!("Bitwarden's push relay is off");
+                    }
+                    self.switch.set(relay);
+                    followed.bitwarden = Some(snapshot.push.clone());
+                }
+                Err(why) => {
+                    tracing::warn!(%why, "the Bitwarden push settings are unusable; pushes go out as before");
+                }
+            }
+        }
+        let url = if snapshot.kemlock_relay_url.trim().is_empty() {
+            DEFAULT_RELAY_URL.to_owned()
+        } else {
+            snapshot.kemlock_relay_url.trim().to_owned()
+        };
+        let url = url.trim_end_matches('/').to_owned();
+        let move_to = (url != self.client.base()).then_some(url);
+        let register = snapshot.kemlock_relay && !followed.registered;
+        followed.registered = snapshot.kemlock_relay;
+        drop(followed);
+        if move_to.is_none() && !register {
+            return;
+        }
+        let (store, crypto, client) =
+            (self.store.clone(), self.crypto.clone(), self.client.clone());
+        tokio::spawn(async move {
+            if let Some(url) = move_to {
+                // The installation key goes to whatever relay the client talks to, and turning
+                // the relay off erases the installation there: another address is taken only by
+                // a server that isn't registered, so the key never reaches a relay that didn't
+                // issue it. Turn the relay off first.
+                match kemlock_app::push::PushRepo::installation(&store).await {
+                    Ok(None) => {
+                        if let Err(error) = client.set_base(&url) {
+                            tracing::warn!(%error, "the Kemlock push relay address is unusable; the old one stays");
+                            return;
+                        }
+                    }
+                    Ok(Some(_)) => {
+                        tracing::warn!(
+                            "the server is registered with the push relay, so its address stays; turn the relay off before changing it"
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "couldn't read the push installation; the relay address stays");
+                        return;
+                    }
+                }
+            }
+            if register {
+                register_with_relay(store, crypto, client);
+            }
+        });
+    }
 }
 
 /// Registers with the relay in the background when the server hasn't, so start isn't held up by
 /// a network call. A failure is logged; the next start tries again.
-fn register_with_relay(store: SqlStore, crypto: ServerCrypto, client: RelayClient) {
+pub(crate) fn register_with_relay(store: SqlStore, crypto: ServerCrypto, client: RelayClient) {
     tokio::spawn(async move {
         match kemlock_app::push::PushRepo::installation(&store).await {
             Ok(Some(_)) => return,
@@ -265,7 +409,7 @@ fn bitwarden_live(
     bw_hub: &BwHub,
     notify: Notify,
     notices: Notices,
-) -> Result<BwLive, RunError> {
+) -> Result<(BwLive, BwPushSwitch), RunError> {
     let relay = BitwardenPushConfig::from_lookup(env)
         .map_err(|e| RunError::Config(e.to_string()))?
         .map(|config| BitwardenPush::new(config).map(Arc::new))
@@ -274,16 +418,22 @@ fn bitwarden_live(
     if relay.is_some() {
         tracing::info!("Bitwarden's push relay is on (PUSH_ENABLED)");
     }
-    let pushing = relay.clone().map(|relay| BwPushing {
-        relay,
+    // The switch is what the later settings change: the notifier and the device routes both
+    // hold it.
+    let switch = BwPushSwitch::new(relay);
+    let pushing = Some(BwPushing {
+        relay: switch.clone(),
         devices: store.clone(),
     });
-    Ok(BwLive {
+    let live = BwLive {
         events: Arc::new(BwNotifier::new(bw_hub.clone(), notify, pushing)),
-        relay: relay.map(|relay| relay as Arc<dyn BwRelay>),
+        relay: Some(Arc::new(switch.clone()) as Arc<dyn BwRelay>),
         notices,
         require_device_email: enabled(env("REQUIRE_DEVICE_EMAIL")),
-    })
+        // Set by the app, which holds the files the erasure deletes.
+        erasure: None,
+    };
+    Ok((live, switch))
 }
 
 /// `/notifications/hub`, over the Bitwarden API's token keys. Empty when that API is off.
@@ -303,4 +453,128 @@ fn bitwarden_hub(config: &Config, store: &SqlStore, bw_hub: &BwHub) -> Result<Ro
         bw_hub.clone(),
         Arc::new(auth),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::live::{Layered, SettingsWatch};
+    use kemlock_app::admin::{Change, NoEnv, Settings};
+    use kemlock_crypto::opaque::OpaqueServer;
+    use kemlock_crypto::seal::ServerSeal;
+    use std::collections::BTreeMap;
+
+    fn crypto() -> ServerCrypto {
+        ServerCrypto::new(ServerSeal::new(&[7u8; 32]), OpaqueServer::generate())
+    }
+
+    async fn save(store: &SqlStore, pairs: &[(&str, &str)]) {
+        let settings = Settings {
+            repo: store.clone(),
+            seal: crypto(),
+            env: NoEnv,
+        };
+        let changes = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), Change::Set((*v).to_owned())))
+            .collect();
+        settings.apply(&changes).await.expect("saved");
+    }
+
+    struct Rig {
+        store: SqlStore,
+        watch: Arc<SettingsWatch>,
+        follower: PushFollower,
+        switch: BwPushSwitch,
+    }
+
+    async fn rig() -> Rig {
+        let store = SqlStore::connect("sqlite::memory:").await.expect("a store");
+        let watch = SettingsWatch::start(
+            store.clone(),
+            crypto(),
+            Layered::new(|_| None, BTreeMap::new()),
+        )
+        .await
+        .expect("read");
+        let switch = BwPushSwitch::new(None);
+        let client = RelayClient::new("https://relay.example.org").expect("a client");
+        let follower = PushFollower::new(switch.clone(), client, store.clone(), crypto());
+        Rig {
+            store,
+            watch,
+            follower,
+            switch,
+        }
+    }
+
+    impl Rig {
+        async fn follow(&self) {
+            self.watch.refresh().await.expect("read again");
+            self.follower.follow(&self.watch.current());
+        }
+    }
+
+    #[tokio::test]
+    async fn bitwardens_relay_is_switched_on_swapped_and_left_alone_when_nothing_changed() {
+        let rig = rig().await;
+        rig.follow().await;
+        assert!(rig.switch.get().is_none());
+
+        save(
+            &rig.store,
+            &[
+                ("push_enabled", "true"),
+                ("push_installation_id", "inst-1"),
+                ("push_installation_key", "key-1"),
+            ],
+        )
+        .await;
+        rig.follow().await;
+        let first = rig.switch.get().expect("on");
+
+        // A snapshot with the same push settings leaves the relay (and its token) in place.
+        save(&rig.store, &[("trash_days", "45")]).await;
+        rig.follow().await;
+        assert!(Arc::ptr_eq(&first, &rig.switch.get().expect("on")));
+
+        // New settings swap it.
+        save(&rig.store, &[("push_installation_id", "inst-2")]).await;
+        rig.follow().await;
+        assert!(!Arc::ptr_eq(&first, &rig.switch.get().expect("on")));
+
+        // Turning it off switches it off.
+        save(&rig.store, &[("push_enabled", "false")]).await;
+        rig.follow().await;
+        assert!(rig.switch.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_unusable_push_setting_keeps_the_relay_in_use() {
+        let rig = rig().await;
+        save(
+            &rig.store,
+            &[
+                ("push_enabled", "true"),
+                ("push_installation_id", "inst-1"),
+                ("push_installation_key", "key-1"),
+            ],
+        )
+        .await;
+        rig.follow().await;
+        let before = rig.switch.get().expect("on");
+
+        // A sealed value that doesn't open: the snapshot says so and the relay stays.
+        kemlock_app::admin::SettingsRepo::put_setting(
+            &rig.store,
+            "setting.push_installation_key",
+            "AAAA",
+        )
+        .await
+        .expect("saved");
+        rig.watch.refresh().await.expect("read again");
+        assert!(rig.watch.current().push_error.is_some());
+        rig.follower.follow(&rig.watch.current());
+        assert!(Arc::ptr_eq(&before, &rig.switch.get().expect("still on")));
+    }
 }

@@ -1,11 +1,13 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { SendDto } from '@/api/sends';
 import { encodeB64, utf8 } from '@/lib/b64url';
+import { I18nProvider } from '@/i18n';
 import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
 import { renderWithIntl } from '@/test/render';
 import { type SendRow, SendView, formatSize, isSpent, rowsFrom } from './Send';
+import { serializeEnvelope } from './itemEnvelope';
 import { makeSend } from './sendCrypto';
 
 const NOW = new Date('2026-11-22T10:00:00Z');
@@ -73,6 +75,8 @@ describe('SendView', () => {
     await user.click(screen.getByRole('button', { name: 'Copy the link of Guest Wi-Fi' }));
     expect(props.onCopy).toHaveBeenCalledWith(ROWS[0]);
     await user.click(screen.getByRole('button', { name: 'Delete Guest Wi-Fi' }));
+    expect(props.onDelete).not.toHaveBeenCalled();
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Delete' }));
     expect(props.onDelete).toHaveBeenCalledWith(ROWS[0]);
   });
 
@@ -205,5 +209,67 @@ describe('rowsFrom', () => {
       link: `https://vault.example.org/#/send/ACCESS1/${made.key}`,
     });
     expect(rows[1]).toMatchObject({ name: 'send-2', link: null, size: 2_200_000 });
+  });
+
+  it('marks an item Send with the kind of its item, and leaves a text Send alone', async () => {
+    resetFakeCrypto();
+    await crypto.unlock('u', utf8('wrapped:u'), new Uint8Array(), new Uint8Array());
+    const input = { kind: 'text' as const, deleteAfterDays: 1, maxViews: null, hideEmail: false };
+    const item = await makeSend(
+      {
+        ...input,
+        name: 'Visa',
+        text: serializeEnvelope({ kemlockSend: 1, kind: 'card', name: 'Visa', fields: { number: '4111' } }),
+      },
+      { crypto },
+      NOW,
+    );
+    const plain = await makeSend({ ...input, name: 'Note', text: '{"kemlockSend":1,"kind":"card"}' }, { crypto }, NOW);
+    const dto = (made: typeof item, accessId: string): SendDto => ({
+      kind: 'text',
+      id: made.id,
+      accessId,
+      meta: made.request.meta,
+      sealedKey: made.request.sealedKey,
+      payload: made.request.payload,
+      file: null,
+      accessCount: 0,
+      maxAccess: null,
+      hideEmail: false,
+      disabled: false,
+      expiresAt: null,
+      deletionAt: 1_795_000_000,
+      createdAt: 1_794_000_000,
+      revisedAt: 1_794_000_000,
+      hasPassword: false,
+    });
+    const rows = await rowsFrom([dto(item, 'A1'), dto(plain, 'A2')], 'https://vault.example.org', crypto);
+    expect(rows[0]?.itemKind).toBe('card');
+    expect(rows[1]?.itemKind).toBeUndefined();
+  });
+});
+
+describe('SendView after a Send is made', () => {
+  it('empties the form so a second press cannot make it twice', async () => {
+    const onCreate = vi.fn();
+    const ui = (createdLink?: string) => (
+      <I18nProvider>
+        <SendView rows={[]} now={NOW} onCreate={onCreate} onCopy={vi.fn()} onDelete={vi.fn()} createdLink={createdLink} />
+      </I18nProvider>
+    );
+    const { rerender } = render(ui());
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Name'), 'Door code');
+    await user.type(screen.getByLabelText('Text'), '4 7 1 9');
+    expect(screen.getByRole('button', { name: 'Create link' })).toBeEnabled();
+    rerender(ui('https://vault.example.org/#/send/z/KEY'));
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue(''));
+    expect(screen.getByLabelText('Text')).toHaveValue('');
+    expect(screen.getByRole('button', { name: 'Create link' })).toBeDisabled();
+  });
+
+  it('keeps the Delete buttons still while a delete is in flight', () => {
+    view({ deleting: true });
+    expect(screen.getByRole('button', { name: 'Delete Guest Wi-Fi' })).toBeDisabled();
   });
 });

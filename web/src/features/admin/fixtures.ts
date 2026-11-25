@@ -194,6 +194,8 @@ export function peer(patch: Partial<Peer> = {}): Peer {
     identityKey: 'BQYHCA',
     state: 'online',
     offlineSince: null,
+    lastSeen: NOW - 12,
+    latencyMs: 48,
     lagSeconds: null,
     lagChanges: null,
     lastChangeAt: NOW - 12,

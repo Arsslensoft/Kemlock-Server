@@ -178,13 +178,6 @@ describe('SecurityView', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: 'Set up' }));
     expect(props.onStartTotp).toHaveBeenCalled();
   });
-
-  it('says plainly what is not built yet', () => {
-    security();
-    expect(screen.getByText('API key')).toBeInTheDocument();
-    expect(screen.queryByText('Recovery Kit')).not.toBeInTheDocument();
-    expect(screen.getByText('Delete account')).toBeInTheDocument();
-  });
 });
 
 describe('EmergencyCard', () => {
@@ -204,6 +197,17 @@ describe('EmergencyCard', () => {
       kind: 'view',
       waitDays: 14,
     });
+  });
+
+  it('keeps the invitation form and what was typed when the invitation fails', async () => {
+    const invite = vi.fn().mockResolvedValue(false);
+    security({}, { trustedContacts: [viewOf({ state: 'confirmed' })], actions: { ...emergencyProps().actions, invite } });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add a contact' }));
+    await user.type(screen.getByLabelText('Their email'), 'priya@example.co');
+    await user.click(screen.getByRole('button', { name: 'Send the invitation' }));
+    expect(invite).toHaveBeenCalled();
+    expect(screen.getByLabelText('Their email')).toHaveValue('priya@example.co');
   });
 
   it('starts the confirmation of an accepted contact', async () => {

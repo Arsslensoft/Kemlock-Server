@@ -1,6 +1,6 @@
 // The websites of a login, each with its own match rule (canvas: ItemWebsites). The list and its
 // rules are part of the item's ciphertext: the server sees nothing of them.
-import { Link, useNavigate, useParams } from '@tanstack/react-router';
+import { Link, useCanGoBack, useNavigate, useParams, useRouter } from '@tanstack/react-router';
 import { useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
@@ -204,6 +204,8 @@ function rowsOf(rules: WebsiteRule[]): WebsiteRow[] {
 export default function ItemWebsites() {
   const t = useT();
   const navigate = useNavigate();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
   const { itemId } = useParams({ strict: false }) as { itemId?: string };
   const { item, isLoading } = useVaultItem(itemId);
   const { save } = useVaultActions();
@@ -229,19 +231,20 @@ export default function ItemWebsites() {
     );
   }
   const rows = edited ?? rowsOf(readWebsites(item.data));
-  const back = () => void navigate({ to: '/vault/$itemId', params: { itemId: item.id } });
+  const toItem = () => void navigate({ to: '/vault/$itemId', params: { itemId: item.id }, replace: true });
+  const cancel = () => (canGoBack ? router.history.back() : toItem());
   return (
     <WebsitesView
       name={itemName(item)}
       rows={rows}
       onChange={setEdited}
-      onCancel={back}
+      onCancel={cancel}
       pending={save.isPending}
       error={save.error ? describeError(save.error) : undefined}
       onSave={() =>
         save.mutate(
           { existing: item, kind: item.kind, owner: item.owner, fields: writeWebsites(rows) },
-          { onSuccess: back },
+          { onSuccess: toItem },
         )
       }
     />

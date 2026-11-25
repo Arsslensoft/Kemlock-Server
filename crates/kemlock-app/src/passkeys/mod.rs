@@ -13,6 +13,7 @@
 
 mod manage;
 pub mod ports;
+mod proof;
 mod second_step;
 mod security_keys;
 mod sign_in;
@@ -21,6 +22,7 @@ pub mod webauthn;
 use crate::error::AppError;
 pub use manage::{FinishRegistration, ManagePasskeys};
 pub use ports::{ChallengeKind, ChallengeRepo, PasskeyRepo, PasskeyStore};
+pub use proof::{AssertionProof, PROOF_TTL};
 pub use second_step::SecurityKeyStep;
 pub use security_keys::{
     ImportedKey, KeyList, MAX_KEYS, PURPOSE_WEBAUTHN, SecurityKeyError, SecurityKeyInfo,

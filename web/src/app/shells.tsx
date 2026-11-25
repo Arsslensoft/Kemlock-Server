@@ -1,6 +1,14 @@
 // The page frames: the vault's header and sidebar, and the admin console's. They are layout
 // routes, so they stay mounted while the screens inside them change.
-import { Link, Outlet, useNavigate, useSearch } from '@tanstack/react-router';
+import {
+  Link,
+  Outlet,
+  useLinkProps,
+  useNavigate,
+  useRouter,
+  useRouterState,
+  useSearch,
+} from '@tanstack/react-router';
 import { useVault } from '@/features/vault/hooks';
 import { FailoverBanner } from '@/features/failover/Banner';
 import { useT } from '@/i18n';
@@ -8,6 +16,7 @@ import { Icon, type IconName, Wordmark } from '@/ui/Icon';
 import { buttonClass } from '@/ui/Button';
 import { lockVault, signOut } from './actions';
 import { session } from './services';
+import { isKindActive, withQuery } from './shellNav';
 import { useSessionState } from './session';
 
 function initials(name: string | null, email: string | null): string {
@@ -28,11 +37,37 @@ function Item({ icon, count, children }: { icon: IconName; count?: number; child
   );
 }
 
+/**
+ * "All items", "Logins" and "Notes": the vault list filtered by kind. Which one is current depends
+ * on the path and the kind only; the search box, the page and the favourites filter must not turn
+ * the highlight off, so it is not the router's own match (which compares the whole search).
+ */
+function KindLink({ kind, icon, count, children }: { kind?: string; icon: IconName; count: number; children: string }) {
+  const props = useLinkProps({ to: '/vault', search: kind ? { kind } : {} });
+  const active = useRouterState({
+    select: (s) =>
+      isKindActive(s.location.pathname, (s.location.search as { kind?: unknown }).kind, kind),
+  });
+  return (
+    <a
+      {...props}
+      aria-current={active ? 'page' : undefined}
+      data-status={active ? 'active' : undefined}
+    >
+      <Item icon={icon} count={count}>
+        {children}
+      </Item>
+    </a>
+  );
+}
+
 export function VaultShell() {
   const t = useT();
   const navigate = useNavigate();
+  const router = useRouter();
   const state = useSessionState(session);
   const search = useSearch({ strict: false }) as { q?: string };
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { active, trashed } = useVault();
   const count = (kind: string) => active.filter((item) => item.kind === kind).length;
   return (
@@ -57,7 +92,13 @@ export function VaultShell() {
             value={search.q ?? ''}
             onChange={(event) => {
               const q = event.target.value;
-              void navigate({ to: '/vault', search: { q: q === '' ? undefined : q }, replace: true });
+              // On the list, typing refines it in place: the filters stay and one history entry is
+              // reused. From any other page the first letter leaves it, as a step Back can undo.
+              if (pathname === '/vault') {
+                void navigate({ to: '/vault', search: (previous) => withQuery(previous, q), replace: true });
+              } else {
+                void navigate({ to: '/vault', search: q === '' ? {} : { q } });
+              }
             }}
           />
         </div>
@@ -81,15 +122,15 @@ export function VaultShell() {
       <div className="shell-body">
         <nav className="nav" aria-label={t('shell.nav.vault')}>
           <h2>{t('shell.nav.vault')}</h2>
-          <Link to="/vault" activeOptions={{ exact: true }}>
-            <Item icon="items" count={active.length}>{t('nav.all')}</Item>
-          </Link>
-          <Link to="/vault" search={{ kind: 'login' }} activeOptions={{ exact: true }}>
-            <Item icon="login" count={count('login')}>{t('nav.logins')}</Item>
-          </Link>
-          <Link to="/vault" search={{ kind: 'note' }} activeOptions={{ exact: true }}>
-            <Item icon="note" count={count('note')}>{t('nav.notes')}</Item>
-          </Link>
+          <KindLink icon="items" count={active.length}>
+            {t('nav.all')}
+          </KindLink>
+          <KindLink kind="login" icon="login" count={count('login')}>
+            {t('nav.logins')}
+          </KindLink>
+          <KindLink kind="note" icon="note" count={count('note')}>
+            {t('nav.notes')}
+          </KindLink>
           <h2>{t('shell.nav.spaces')}</h2>
           <Link to="/spaces">
             <Item icon="building">{t('nav.spaces')}</Item>
@@ -131,7 +172,9 @@ export function VaultShell() {
           <button
             type="button"
             onClick={() => {
-              void lockVault().then(() => navigate({ to: '/unlock' }));
+              // The unlock screen brings the person back to the page they locked from.
+              const next = router.state.location.href;
+              void lockVault().then(() => navigate({ to: '/unlock', search: { next } }));
             }}
           >
             <Icon name="lock" />

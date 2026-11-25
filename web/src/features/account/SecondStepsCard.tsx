@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import type { DuoKeysInput, SecurityKeyDto, TwoStepSetupDto } from '@/api/twoStep';
+import type { DuoKeysInput, Proof, SecurityKeyDto, TwoStepSetupDto } from '@/api/twoStep';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { CopyButton } from '@/ui/CopyButton';
 import { TextInput } from './controls';
+import { type KeyProof, ProofInput, proofBlank, proofValue } from './ProofInput';
 
 /** What a change answers: true when it went through, so the panel that asked can close. */
 type Done = Promise<boolean>;
@@ -19,22 +20,24 @@ export interface SecondStepsProps {
   hasRecoveryCode: boolean | undefined;
   /** Whether an authenticator app is on: the card can't see it, and it counts as a second step. */
   totpOn?: boolean;
+  /** Answers a fresh proof with a security key or passkey; undefined when the account has none. */
+  keyProof?: KeyProof | undefined;
   busy: boolean;
   actions: {
     /** With another second step on, `proof` is the fresh proof that adding one asks for. */
-    addSecurityKey: (name: string, proof?: string) => Done;
+    addSecurityKey: (name: string, proof?: Proof) => Done;
     /** Mails the one-time code that proves the owner, for turning a second step off. */
     askProof: () => Done;
-    removeSecurityKey: (slot: number, proof: string) => Done;
+    removeSecurityKey: (slot: number, proof: Proof) => Done;
     emailBegin: (address: string) => Done;
-    emailConfirm: (address: string, code: string, proof?: string) => Done;
-    emailOff: (proof: string) => Done;
-    yubikeySet: (otps: string[], nfc: boolean, proof?: string) => Done;
-    yubikeyOff: (proof: string) => Done;
-    duoSet: (keys: DuoKeysInput | null, proof?: string) => Done;
-    duoOff: (proof: string) => Done;
+    emailConfirm: (address: string, code: string, proof?: Proof) => Done;
+    emailOff: (proof: Proof) => Done;
+    yubikeySet: (otps: string[], nfc: boolean, proof?: Proof) => Done;
+    yubikeyOff: (proof: Proof) => Done;
+    duoSet: (keys: DuoKeysInput | null, proof?: Proof) => Done;
+    duoOff: (proof: Proof) => Done;
     /** The recovery code, or null when the account has none; undefined when the call failed. */
-    showRecoveryCode: (proof: string) => Promise<string | null | undefined>;
+    showRecoveryCode: (proof: Proof) => Promise<string | null | undefined>;
   };
 }
 
@@ -44,17 +47,19 @@ function ProofField({
   onChange,
   onAgain,
   busy,
+  keyProof,
 }: {
-  value: string;
-  onChange: (next: string) => void;
+  value: Proof;
+  onChange: (next: Proof) => void;
   onAgain: () => void;
   busy: boolean;
+  keyProof?: KeyProof | undefined;
 }) {
   const t = useT();
   return (
     <>
       <p className="hint">{t('security.proofAdd.sent')}</p>
-      <TextInput label={t('security.proof.code')} value={value} onChange={onChange} mono />
+      <ProofInput value={value} onChange={onChange} keyProof={keyProof} busy={busy} required={false} />
       <div className="actions">
         <Button isDisabled={busy} onPress={onAgain}>
           {t('security.proof.again')}
@@ -81,6 +86,7 @@ export function SecondStepsCard({
   hasRecoveryCode,
   totpOn = false,
   busy,
+  keyProof,
   actions,
 }: SecondStepsProps) {
   const t = useT();
@@ -91,7 +97,7 @@ export function SecondStepsCard({
   const askProof = () => void actions.askProof();
   // Turning a second step off asks for a fresh proof: a code mailed to the account's address.
   const [removing, setRemoving] = useState<Removal | null>(null);
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   function askToRemove(what: Removal) {
     setRemoving(what);
     setProof('');
@@ -99,7 +105,7 @@ export function SecondStepsCard({
   }
   async function remove() {
     if (!removing) return;
-    const code = proof.trim();
+    const code = proofValue(proof);
     const done =
       removing.kind === 'key'
         ? await actions.removeSecurityKey(removing.slot, code)
@@ -117,6 +123,7 @@ export function SecondStepsCard({
         available={securityKeysAvailable}
         busy={busy}
         proofNeeded={anotherOn}
+        keyProof={keyProof}
         onAskProof={askProof}
         onAdd={actions.addSecurityKey}
         onRemove={(slot) => askToRemove({ kind: 'key', slot })}
@@ -125,6 +132,7 @@ export function SecondStepsCard({
         setup={setup}
         busy={busy}
         proofNeeded={anotherOn}
+        keyProof={keyProof}
         onAskProof={askProof}
         onSet={actions.yubikeySet}
         onOff={() => askToRemove({ kind: 'yubikey' })}
@@ -133,6 +141,7 @@ export function SecondStepsCard({
         setup={setup}
         busy={busy}
         proofNeeded={anotherOn}
+        keyProof={keyProof}
         onAskProof={askProof}
         onSet={actions.duoSet}
         onOff={() => askToRemove({ kind: 'duo' })}
@@ -141,6 +150,7 @@ export function SecondStepsCard({
         setup={setup}
         busy={busy}
         proofNeeded={anotherOn}
+        keyProof={keyProof}
         onAskProof={askProof}
         onBegin={actions.emailBegin}
         onConfirm={actions.emailConfirm}
@@ -155,9 +165,9 @@ export function SecondStepsCard({
           }}
         >
           <p className="hint">{t('security.proof.sent')}</p>
-          <TextInput label={t('security.proof.code')} value={proof} onChange={setProof} mono required />
+          <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} />
           <div className="actions">
-            <Button type="submit" variant="danger" isDisabled={busy || proof.trim() === ''}>
+            <Button type="submit" variant="danger" isDisabled={busy || proofBlank(proof)}>
               {t('security.proof.confirm')}
             </Button>
             <Button isDisabled={busy} onPress={() => void actions.askProof()}>
@@ -170,6 +180,7 @@ export function SecondStepsCard({
       <RecoveryRows
         has={loading ? undefined : hasRecoveryCode}
         busy={busy}
+        keyProof={keyProof}
         onAskProof={askProof}
         onShow={actions.showRecoveryCode}
       />
@@ -183,6 +194,7 @@ function SecurityKeysRows({
   available,
   busy,
   proofNeeded,
+  keyProof,
   onAskProof,
   onAdd,
   onRemove,
@@ -191,14 +203,15 @@ function SecurityKeysRows({
   available: boolean;
   busy: boolean;
   proofNeeded: boolean;
+  keyProof?: KeyProof | undefined;
   onAskProof: () => void;
-  onAdd: (name: string, proof?: string) => Done;
+  onAdd: (name: string, proof?: Proof) => Done;
   onRemove: (slot: number) => void;
 }) {
   const t = useT();
   const [naming, setNaming] = useState(false);
   const [name, setName] = useState('');
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   return (
     <>
       <div className="row">
@@ -228,8 +241,8 @@ function SecurityKeysRows({
           onSubmit={(event) => {
             event.preventDefault();
             const given = name.trim() === '' ? t('security.webauthn.defaultName') : name.trim();
-            const code = proof.trim();
-            void (code ? onAdd(given, code) : onAdd(given)).then((done) => {
+            const code = proofValue(proof);
+            void (!proofBlank(code) ? onAdd(given, code) : onAdd(given)).then((done) => {
               if (!done) return;
               setNaming(false);
               setName('');
@@ -238,10 +251,10 @@ function SecurityKeysRows({
           }}
         >
           <TextInput label={t('security.webauthn.name')} value={name} onChange={setName} />
-          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} /> : null}
+          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} keyProof={keyProof} /> : null}
           <p className="hint">{t('security.webauthn.touch')}</p>
           <div className="actions">
-            <Button type="submit" variant="primary" isDisabled={busy || (proofNeeded && proof.trim() === '')}>
+            <Button type="submit" variant="primary" isDisabled={busy || (proofNeeded && proofBlank(proof))}>
               {t('security.webauthn.make')}
             </Button>
             <Button onPress={() => setNaming(false)}>{t('action.cancel')}</Button>
@@ -269,6 +282,7 @@ function YubikeyRows({
   setup,
   busy,
   proofNeeded,
+  keyProof,
   onAskProof,
   onSet,
   onOff,
@@ -276,13 +290,14 @@ function YubikeyRows({
   setup: TwoStepSetupDto | undefined;
   busy: boolean;
   proofNeeded: boolean;
+  keyProof?: KeyProof | undefined;
   onAskProof: () => void;
-  onSet: (otps: string[], nfc: boolean, proof?: string) => Done;
+  onSet: (otps: string[], nfc: boolean, proof?: Proof) => Done;
   onOff: () => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   const [otps, setOtps] = useState<string[]>(['', '', '', '', '']);
   const [nfc, setNfc] = useState(false);
   const on = setup === undefined ? undefined : setup.yubikey !== null;
@@ -324,8 +339,8 @@ function YubikeyRows({
           className="panel-body"
           onSubmit={(event) => {
             event.preventDefault();
-            const code = proof.trim();
-            void (code ? onSet(otps, nfc, code) : onSet(otps, nfc)).then((done) => {
+            const code = proofValue(proof);
+            void (!proofBlank(code) ? onSet(otps, nfc, code) : onSet(otps, nfc)).then((done) => {
               if (!done) return;
               setOpen(false);
               setOtps(['', '', '', '', '']);
@@ -347,12 +362,12 @@ function YubikeyRows({
             <input type="checkbox" checked={nfc} onChange={(event) => setNfc(event.target.checked)} />
             {t('security.yubikey.nfc')}
           </label>
-          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} /> : null}
+          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} keyProof={keyProof} /> : null}
           <div className="actions">
             <Button
               type="submit"
               variant="primary"
-              isDisabled={busy || otps.every((o) => o.trim() === '') || (proofNeeded && proof.trim() === '')}
+              isDisabled={busy || otps.every((o) => o.trim() === '') || (proofNeeded && proofBlank(proof))}
             >
               {t('security.yubikey.save')}
             </Button>
@@ -368,6 +383,7 @@ function DuoRows({
   setup,
   busy,
   proofNeeded,
+  keyProof,
   onAskProof,
   onSet,
   onOff,
@@ -375,13 +391,14 @@ function DuoRows({
   setup: TwoStepSetupDto | undefined;
   busy: boolean;
   proofNeeded: boolean;
+  keyProof?: KeyProof | undefined;
   onAskProof: () => void;
-  onSet: (keys: DuoKeysInput | null, proof?: string) => Done;
+  onSet: (keys: DuoKeysInput | null, proof?: Proof) => Done;
   onOff: () => void;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   const [host, setHost] = useState('');
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
@@ -426,8 +443,8 @@ function DuoRows({
           onSubmit={(event) => {
             event.preventDefault();
             const keys = own ? { host: host.trim(), clientId: clientId.trim(), clientSecret: clientSecret.trim() } : null;
-            const code = proof.trim();
-            void (code ? onSet(keys, code) : onSet(keys)).then((done) => {
+            const code = proofValue(proof);
+            void (!proofBlank(code) ? onSet(keys, code) : onSet(keys)).then((done) => {
               if (!done) return;
               setOpen(false);
               setProof('');
@@ -441,12 +458,12 @@ function DuoRows({
           <TextInput label={t('security.duo.host')} value={host} onChange={setHost} mono />
           <TextInput label={t('security.duo.clientId')} value={clientId} onChange={setClientId} mono />
           <TextInput label={t('security.duo.clientSecret')} value={clientSecret} onChange={setClientSecret} mono />
-          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} /> : null}
+          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} keyProof={keyProof} /> : null}
           <div className="actions">
             <Button
               type="submit"
               variant="primary"
-              isDisabled={busy || (!own && !setup?.duoServerKeys) || (proofNeeded && proof.trim() === '')}
+              isDisabled={busy || (!own && !setup?.duoServerKeys) || (proofNeeded && proofBlank(proof))}
             >
               {own || !setup?.duoServerKeys ? t('security.duo.save') : t('security.duo.useServer')}
             </Button>
@@ -462,6 +479,7 @@ function EmailRows({
   setup,
   busy,
   proofNeeded,
+  keyProof,
   onAskProof,
   onBegin,
   onConfirm,
@@ -470,16 +488,17 @@ function EmailRows({
   setup: TwoStepSetupDto | undefined;
   busy: boolean;
   proofNeeded: boolean;
+  keyProof?: KeyProof | undefined;
   onAskProof: () => void;
   onBegin: (address: string) => Done;
-  onConfirm: (address: string, code: string, proof?: string) => Done;
+  onConfirm: (address: string, code: string, proof?: Proof) => Done;
   onOff: () => void;
 }) {
   const t = useT();
   const [stage, setStage] = useState<'closed' | 'address' | 'code'>('closed');
   const [address, setAddress] = useState('');
   const [code, setCode] = useState('');
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   const on = setup === undefined ? undefined : setup.email !== null;
   function close() {
     setStage('closed');
@@ -535,8 +554,8 @@ function EmailRows({
           className="panel-body"
           onSubmit={(event) => {
             event.preventDefault();
-            const fresh = proof.trim();
-            const answered = fresh
+            const fresh = proofValue(proof);
+            const answered = !proofBlank(fresh)
               ? onConfirm(address.trim(), code.trim(), fresh)
               : onConfirm(address.trim(), code.trim());
             void answered.then((done) => {
@@ -546,12 +565,12 @@ function EmailRows({
         >
           <p className="hint">{t('security.email.sent', { address: address.trim() })}</p>
           <TextInput label={t('security.email.code')} value={code} onChange={setCode} mono required />
-          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} /> : null}
+          {proofNeeded ? <ProofField value={proof} onChange={setProof} onAgain={onAskProof} busy={busy} keyProof={keyProof} /> : null}
           <div className="actions">
             <Button
               type="submit"
               variant="primary"
-              isDisabled={busy || code.trim() === '' || (proofNeeded && proof.trim() === '')}
+              isDisabled={busy || code.trim() === '' || (proofNeeded && proofBlank(proof))}
             >
               {t('security.email.confirm')}
             </Button>
@@ -566,19 +585,21 @@ function EmailRows({
 function RecoveryRows({
   has,
   busy,
+  keyProof,
   onAskProof,
   onShow,
 }: {
   has: boolean | undefined;
   busy: boolean;
+  keyProof?: KeyProof | undefined;
   onAskProof: () => void;
-  onShow: (proof: string) => Promise<string | null | undefined>;
+  onShow: (proof: Proof) => Promise<string | null | undefined>;
 }) {
   const t = useT();
   const [code, setCode] = useState<string | null | undefined>(undefined);
   // The code proves removals and additions, so showing it asks for a fresh proof first.
   const [asking, setAsking] = useState(false);
-  const [proof, setProof] = useState('');
+  const [proof, setProof] = useState<Proof>('');
   return (
     <>
       <div className="row">
@@ -606,7 +627,7 @@ function RecoveryRows({
           className="panel-body"
           onSubmit={(event) => {
             event.preventDefault();
-            void onShow(proof.trim()).then((shown) => {
+            void onShow(proofValue(proof)).then((shown) => {
               if (shown === undefined) return;
               setCode(shown);
               setAsking(false);
@@ -615,9 +636,9 @@ function RecoveryRows({
           }}
         >
           <p className="hint">{t('security.recovery.proof')}</p>
-          <TextInput label={t('security.proof.code')} value={proof} onChange={setProof} mono required />
+          <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} />
           <div className="actions">
-            <Button type="submit" variant="primary" isDisabled={busy || proof.trim() === ''}>
+            <Button type="submit" variant="primary" isDisabled={busy || proofBlank(proof)}>
               {t('security.recovery.show')}
             </Button>
             <Button isDisabled={busy} onPress={onAskProof}>

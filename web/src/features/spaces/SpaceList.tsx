@@ -3,6 +3,7 @@ import { useNavigate } from '@tanstack/react-router';
 import { describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
 import { spaceDeps, spacesKey } from './deps';
+import { refreshSpaces } from './refresh';
 import { createSpace, loadSpaceList } from './model';
 import { SpaceListView } from './SpaceListView';
 
@@ -24,7 +25,7 @@ export default function SpaceList() {
       onCreate={(input) => {
         void create.run(() => createSpace(spaceDeps, input)).then(async (made) => {
           if (!made) return;
-          await queryClient.invalidateQueries({ queryKey: spacesKey });
+          await refreshSpaces(queryClient);
           await navigate({ to: '/spaces/$spaceId', params: { spaceId: made.space.id } });
         });
       }}

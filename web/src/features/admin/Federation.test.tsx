@@ -26,6 +26,22 @@ describe('FederationView', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/Home server has been offline for 47 min, since/);
   });
 
+  it('says when each peer was last seen and how fast it answered', () => {
+    view();
+    const peers = within(screen.getByRole('region', { name: 'Servers in this federation' }));
+    expect(peers.getAllByText(/Last seen now/).length).toBeGreaterThan(0);
+    expect(peers.getByText(/· 48 ms/)).toBeInTheDocument();
+  });
+
+  it('shows a peer that was never seen, and one that is slow', () => {
+    view({
+      ...OVERVIEW,
+      peers: [peer({ lastSeen: null, latencyMs: null }), peer({ serverId: 'c'.repeat(32), name: 'Slow', state: 'degraded' })],
+    });
+    expect(screen.getByText('Not seen yet')).toBeInTheDocument();
+    expect(screen.getByText('Slow or unsteady')).toBeInTheDocument();
+  });
+
   it('lists this server and its peers with their identity keys, worked out from the key', async () => {
     view();
     expect(await screen.findByText('words-of-AQIDBA')).toBeInTheDocument();

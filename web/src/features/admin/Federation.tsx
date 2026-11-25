@@ -13,6 +13,7 @@ import { CheckBox, ErrorNotice, Loading, PageHead, Toggle } from './ui';
 
 const STATE: Record<PeerState, MessageId> = {
   online: 'admin.fed.state.online',
+  degraded: 'admin.fed.state.degraded',
   offline: 'admin.fed.state.offline',
   'catching-up': 'admin.fed.state.catchingUp',
   revoked: 'admin.fed.state.revoked',
@@ -163,6 +164,14 @@ export function FederationView({
                   </td>
                   <td>
                     <span className={stateTag(peer.state)}>{t(STATE[peer.state])}</span>
+                    <div className="adm-cell-sub">
+                      {peer.lastSeen === null
+                        ? t('admin.fed.lastSeen.never')
+                        : t('admin.fed.lastSeen', { when: relative(peer.lastSeen, now) })}
+                      {peer.latencyMs !== null && peer.state !== 'offline'
+                        ? ` · ${t('admin.fed.latency', { ms: peer.latencyMs })}`
+                        : ''}
+                    </div>
                     {peer.mismatch ? (
                       <div>
                         <span className="tag bad">{t('admin.fed.mismatch.tag')}</span>

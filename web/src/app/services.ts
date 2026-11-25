@@ -3,9 +3,27 @@ import { QueryClient, queryOptions } from '@tanstack/react-query';
 import { createApi } from '@/api/client';
 import { ApiError, NetworkError } from '@/api/errors';
 import { vaultCrypto } from '@/crypto-port';
-import { createSession } from './session';
+import { createSession, tabStorage } from './session';
 
-export const session = createSession();
+// A reload of the tab keeps the person signed in, so the session lives in the tab's storage.
+export const session = createSession({ storage: tabStorage() });
+
+// Only a reload of this tab, soon after the page left, takes the session back (see session.ts).
+window.addEventListener('pagehide', () => session.leaving());
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) session.returned();
+});
+
+let sessionEndedHandler: (() => void) | undefined;
+
+/**
+ * Called after the session has ended because the server refused the refresh token. The router is
+ * made in main.tsx, which services.ts must not import, so main.tsx registers what the page does:
+ * forget the decrypted data and go to the sign-in.
+ */
+export function onSessionEndedPage(handler: () => void): void {
+  sessionEndedHandler = handler;
+}
 
 export const api = createApi({
   origin: window.location.origin,
@@ -14,6 +32,7 @@ export const api = createApi({
   onSessionEnded: () => {
     session.end();
     void vaultCrypto.lock();
+    sessionEndedHandler?.();
   },
 });
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { Proof } from '@/api/twoStep';
 import type { TotpEnrolResponse } from '@/api/types';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -7,12 +8,14 @@ import { CopyButton } from '@/ui/CopyButton';
 import { Notice } from '@/ui/Notice';
 import { QrCode } from '@/ui/QrCode';
 import '@/styles/account.css';
+import { ApiKeyCard, type ApiKeyProps } from './ApiKeyCard';
+import { DeleteAccountCard, type DeleteAccountProps } from './DeleteAccountCard';
 import { EmergencyCard, type EmergencyCardProps } from './EmergencyCard';
 import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
 import { RecoveryKitCard, type RecoveryKitProps } from './RecoveryKitCard';
 import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
-import { TextInput } from './controls';
+import { ProofInput, proofBlank, proofValue } from './ProofInput';
 import type { Described } from './errors';
 
 export interface TotpState {
@@ -34,7 +37,7 @@ export interface SecurityViewProps {
   onStartTotp: () => void;
   onCancelTotp: () => void;
   /** `proof` is the recovery code, given when another second step is on already. */
-  onConfirmTotp: (code: string, proof?: string) => void;
+  onConfirmTotp: (code: string, proof?: Proof) => void;
   emergency: EmergencyCardProps;
   /** The account's passkeys; omitted where passkeys are not offered. */
   passkeys?: PasskeysCardProps | undefined;
@@ -42,6 +45,10 @@ export interface SecurityViewProps {
   secondSteps?: SecondStepsProps | undefined;
   /** The Recovery Kit: make, make again, remove. */
   recoveryKit?: RecoveryKitProps | undefined;
+  /** The personal API key for the Bitwarden CLI: show, copy, replace. */
+  apiKey?: ApiKeyProps | undefined;
+  /** The danger zone: delete the account. */
+  deleteAccount?: DeleteAccountProps | undefined;
 }
 
 /** The methods drawn as "Later" where the screen is given no way to set them up. */
@@ -62,12 +69,14 @@ export function SecurityView({
   passkeys,
   secondSteps,
   recoveryKit,
+  apiKey,
+  deleteAccount,
 }: SecurityViewProps) {
   const t = useT();
   const totpOn = methods?.includes('totp') ?? false;
   // Another second step that is on asks for the recovery code before an app is added beside it.
   const othersOn = methods?.some((m) => m !== 'totp') ?? false;
-  const [recovery, setRecovery] = useState('');
+  const [recovery, setRecovery] = useState<Proof>('');
   const later: readonly (typeof LATER)[number][] = secondSteps ? [] : LATER;
 
   return (
@@ -164,13 +173,19 @@ export function SecurityView({
                 {othersOn ? (
                   <>
                     <p className="hint">{t('security.totp.proof')}</p>
-                    <TextInput label={t('security.totp.recovery')} value={recovery} onChange={setRecovery} mono />
+                    <ProofInput
+                      label={t('security.totp.recovery')}
+                      value={recovery}
+                      onChange={setRecovery}
+                      keyProof={secondSteps?.keyProof}
+                      required={false}
+                    />
                   </>
                 ) : null}
                 <CodeForm
                   label={t('twoStep.codeLabel')}
                   submitLabel={t('twoStep.submit')}
-                  onSubmit={(code) => (recovery.trim() ? onConfirmTotp(code, recovery.trim()) : onConfirmTotp(code))}
+                  onSubmit={(code) => (proofBlank(recovery) ? onConfirmTotp(code) : onConfirmTotp(code, proofValue(recovery)))}
                   pending={busy || !totp.enrol}
                 />
                 <div className="actions">
@@ -196,23 +211,8 @@ export function SecurityView({
         <div className="acct-col">
           <EmergencyCard {...emergency} />
 
-          <section className="card" aria-labelledby="h-later">
-            <div className="card-head">
-              <div className="grow">
-                <h2 id="h-later">{t('security.notBuilt.title')}</h2>
-                <p className="hint">{t('security.notBuilt.lede')}</p>
-              </div>
-            </div>
-            {(['apiKey', 'delete'] as const).map((item) => (
-              <div className="row" key={item}>
-                <div className="grow">
-                  <div>{t(`security.notBuilt.${item}`)}</div>
-                  <div className="hint">{t(`security.notBuilt.${item}.hint`)}</div>
-                </div>
-                <span className="tag off">{t('security.later')}</span>
-              </div>
-            ))}
-          </section>
+          {apiKey ? <ApiKeyCard {...apiKey} /> : null}
+          {deleteAccount ? <DeleteAccountCard {...deleteAccount} /> : null}
         </div>
       </div>
     </>

@@ -36,15 +36,18 @@ async fn tokens_and_installation(store: &SqlStore) {
     let mut again = registration(phone.id, ada.id, "two");
     again.kind = PushKind::Apns;
     store.put_registration(&again).await.expect("replaces");
+    // `unifiedpush` is longer than the table's first 8-character column.
+    let mut tab = registration(tablet.id, ada.id, "tab");
+    tab.kind = PushKind::UnifiedPush;
     store
-        .put_registration(&registration(tablet.id, ada.id, "tab"))
+        .put_registration(&tab)
         .await
         .expect("registers the tablet");
 
     let mut found = store.registrations_for(&[ada.id]).await.expect("lists");
     found.sort_by_key(|r| r.token.clone());
     assert_eq!(found.len(), 2);
-    assert_eq!(found[0].token, "tab");
+    assert_eq!(found[0], tab);
     assert_eq!(found[1], again);
     assert!(
         store

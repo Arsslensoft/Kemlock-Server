@@ -2,6 +2,7 @@
 //! port bounds once. `router::router` wires them to paths.
 
 pub(crate) mod account;
+pub(crate) mod api_key;
 mod auth;
 pub(crate) mod connector;
 pub(crate) mod contract;

@@ -3,6 +3,7 @@
 // console. Guards live in `beforeLoad`, before any chunk is fetched.
 import type { QueryClient } from '@tanstack/react-query';
 import {
+  type RouterHistory,
   Outlet,
   createRootRouteWithContext,
   createRoute,
@@ -12,6 +13,7 @@ import {
 } from '@tanstack/react-router';
 import { z } from 'zod';
 import type { ConfigResponse } from '@/api/types';
+import { safeNext } from '@/lib/safe-next';
 import { configQuery } from './services';
 import type { Session } from './session';
 import { NotFound, PendingScreen, RouteError } from './states';
@@ -94,7 +96,8 @@ const indexRoute = createRoute({
   path: '/',
   beforeLoad: ({ context }) => {
     if (context.config.setup === 'needs-admin') throw redirect({ to: '/setup' });
-    throw redirect({ to: context.session.getState().status === 'unlocked' ? '/vault' : '/sign-in' });
+    const status = context.session.getState().status;
+    throw redirect({ to: status === 'unlocked' ? '/vault' : status === 'locked' ? '/unlock' : '/sign-in' });
   },
 });
 
@@ -111,9 +114,9 @@ const about = createRoute({
 
 /** Steps after the admin account exists need that admin signed in with the vault open. */
 function needsAdminSession({ context, location }: { context: RouterContext; location: { href: string } }) {
-  if (context.session.getState().status !== 'unlocked') {
-    throw redirect({ to: '/sign-in', search: { next: location.href } });
-  }
+  const status = context.session.getState().status;
+  if (status === 'locked') throw redirect({ to: '/unlock', search: { next: location.href } });
+  if (status === 'signed-out') throw redirect({ to: '/sign-in', search: { next: location.href } });
 }
 
 const setupCode = createRoute({
@@ -146,12 +149,27 @@ const setupDone = createRoute({
 
 // ---- Signing in ---------------------------------------------------------------------------
 
+/**
+ * A sign-in screen has nothing to do once the vault is open (Back from the vault lands on one): it
+ * leads on to the page asked for, if that is a path on this origin, or to the vault.
+ */
+function leaveWhenUnlocked({ context, search }: { context: RouterContext; search: { next?: string | undefined } }) {
+  if (context.session.getState().status !== 'unlocked') return;
+  const target = safeNext(search.next);
+  // `href` takes a whole path with its query; the typed options only know route ids.
+  throw redirect(target ? ({ href: target } as unknown as Parameters<typeof redirect>[0]) : { to: '/vault' });
+}
+
 const signIn = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sign-in',
   validateSearch: (search): NextSearch => nextSearch.parse(search),
-  beforeLoad: ({ context }) => {
-    if (context.session.getState().status === 'unlocked') throw redirect({ to: '/vault' });
+  beforeLoad: (args) => {
+    leaveWhenUnlocked(args);
+    // Signed in with the vault shut: the master password opens it, there is no one to sign in.
+    if (args.context.session.getState().status === 'locked') {
+      throw redirect({ to: '/unlock', search: { next: args.search.next } });
+    }
   },
   component: lazyRouteComponent(() => import('@/features/auth/SignInScreen')),
 });
@@ -159,8 +177,9 @@ const password = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sign-in/password',
   validateSearch: (search): PasswordSearch => passwordSearch.parse(search),
-  beforeLoad: ({ search }) => {
-    if (!search.email) throw redirect({ to: '/sign-in' });
+  beforeLoad: (args) => {
+    leaveWhenUnlocked(args);
+    if (!args.search.email) throw redirect({ to: '/sign-in', search: { next: args.search.next } });
   },
   component: lazyRouteComponent(() => import('@/features/auth/Password')),
 });
@@ -168,8 +187,9 @@ const deviceApproval = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sign-in/device',
   validateSearch: (search): PasswordSearch => passwordSearch.parse(search),
-  beforeLoad: ({ search }) => {
-    if (!search.email) throw redirect({ to: '/sign-in' });
+  beforeLoad: (args) => {
+    leaveWhenUnlocked(args);
+    if (!args.search.email) throw redirect({ to: '/sign-in', search: { next: args.search.next } });
   },
   component: lazyRouteComponent(() => import('@/features/auth/DeviceApproval')),
 });
@@ -177,16 +197,20 @@ const ssoReturn = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sign-in/sso',
   validateSearch: (search): SsoSearch => ssoSearch.parse(search),
+  // The one-time code was spent: Back to this address must not replay it.
+  beforeLoad: ({ context }) => {
+    if (context.session.getState().status === 'unlocked') throw redirect({ to: '/vault' });
+  },
   component: lazyRouteComponent(() => import('@/features/auth/SsoReturn')),
 });
 const unlock = createRoute({
   getParentRoute: () => rootRoute,
   path: '/unlock',
   validateSearch: (search): NextSearch => nextSearch.parse(search),
-  beforeLoad: ({ context }) => {
+  beforeLoad: ({ context, search }) => {
     const status = context.session.getState().status;
     if (status === 'signed-out') throw redirect({ to: '/sign-in' });
-    if (status === 'unlocked') throw redirect({ to: '/vault' });
+    leaveWhenUnlocked({ context, search });
   },
   component: lazyRouteComponent(() => import('@/features/auth/Unlock')),
 });
@@ -404,9 +428,10 @@ const routeTree = rootRoute.addChildren([
   ]),
 ]);
 
-export function createAppRouter(context: RouterContext) {
+export function createAppRouter(context: RouterContext, history?: RouterHistory) {
   return createRouter({
     routeTree,
+    ...(history ? { history } : {}),
     context,
     defaultPreload: 'intent',
     defaultPendingMs: 250,

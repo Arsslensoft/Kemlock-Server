@@ -2,27 +2,29 @@ import { Link, getRouteApi, useNavigate, useRouter } from '@tanstack/react-route
 import { useEffect, useState } from 'react';
 import { createDevicesApi } from '@/api/devices';
 import { createKeysApi } from '@/api/keys';
+import { createSecurityKeyStepApi } from '@/api/passkeys';
 import { createSsoApi } from '@/api/sso';
 import { api, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import { useT } from '@/i18n';
-import { describeError } from '@/lib/errors';
 import { thisDevice } from '@/lib/device';
 import { AuthPage } from '@/ui/AuthPage';
-import { CodeForm } from '@/ui/CodeForm';
 import { Notice } from '@/ui/Notice';
 import { afterSignIn } from './afterSignIn';
+import { describeSignInError } from './describeSignIn';
 import { enrolNewAccountKeys } from './enrolKeys';
-import { type SsoDeps, type SsoOutcome, completeSso, secondSsoStep } from './ssoFlow';
+import { SecondStep } from './SecondStep';
+import { type SsoDeps, type SsoOutcome, completeSso, secondSsoKeyStep, secondSsoStep } from './ssoFlow';
 import { unlockWithTrustedDevice } from './trustedDevice';
 
 const route = getRouteApi('/sign-in/sso');
 const sso = createSsoApi(api);
 const keys = createKeysApi(api);
 const devices = createDevicesApi(api);
+const securityKey = createSecurityKeyStepApi(api);
 
 function deps(): SsoDeps {
-  return { sso, api, session, device: thisDevice, origin: location.origin };
+  return { sso, api, securityKey, session, device: thisDevice, origin: location.origin };
 }
 
 /** A code is good once and React may run an effect twice: one trip to `finish` per code. */
@@ -42,7 +44,7 @@ export default function SsoReturn() {
   const [outcome, setOutcome] = useState<SsoOutcome | 'working' | 'refused'>(
     refused ? 'refused' : 'working',
   );
-  const [error, setError] = useState<ReturnType<typeof describeError>>();
+  const [error, setError] = useState<ReturnType<typeof describeSignInError>>();
   const [pending, setPending] = useState(false);
 
   async function proceed(result: SsoOutcome) {
@@ -63,8 +65,18 @@ export default function SsoReturn() {
     }
   }
 
+  /** A second step, with a code or a key. A failure leaves the step open to try again. */
+  function runStep(attempt: Promise<SsoOutcome>) {
+    setPending(true);
+    setError(undefined);
+    attempt
+      .then(proceed)
+      .catch((caught: unknown) => setError(describeSignInError(caught)))
+      .finally(() => setPending(false));
+  }
+
   function fail(caught: unknown) {
-    setError(describeError(caught));
+    setError(describeSignInError(caught));
     setOutcome({ status: 'lost' });
   }
 
@@ -107,26 +119,15 @@ export default function SsoReturn() {
           <p>{error ? t(error.id, error.values) : t('sso.lost')}</p>
         </Notice>
       ) : null}
-      {second ? (
-        <>
-          <Notice icon="shield">
-            <p>{t('sso.codeNote')}</p>
-          </Notice>
-          <CodeForm
-            label={t('password.codeLabel')}
-            submitLabel={t('password.codeSubmit')}
-            pending={pending}
-            error={error}
-            onSubmit={(value) => {
-              setPending(true);
-              setError(undefined);
-              secondSsoStep(deps(), email, value)
-                .then(proceed)
-                .catch((caught: unknown) => setError(describeError(caught)))
-                .finally(() => setPending(false));
-            }}
-          />
-        </>
+      {typeof outcome === 'object' && outcome.status === 'second-step' ? (
+        <SecondStep
+          methods={outcome.methods}
+          source="sso"
+          pending={pending}
+          error={error}
+          onCode={(value) => void runStep(secondSsoStep(deps(), email, value))}
+          onSecurityKey={() => void runStep(secondSsoKeyStep(deps(), email))}
+        />
       ) : null}
       {outcome !== 'working' && !second && !(typeof outcome === 'object' && outcome.status === 'new-account') ? (
         <p className="hint">

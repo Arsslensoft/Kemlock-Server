@@ -25,7 +25,7 @@
 use super::auth::token_response;
 use super::guard;
 use super::new_device::announce;
-use crate::dto::{TokenResponse, decode};
+use crate::dto::{FreshProof, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
 use crate::openapi::ProblemDoc;
 use crate::problem::{Problem, rate_limited};
@@ -435,7 +435,7 @@ pub(crate) struct EmailConfirmRequest {
     /// The code that was mailed.
     pub(crate) code: String,
     /// A fresh proof, as a removal takes: needed when another second step is on already.
-    pub(crate) proof: Option<String>,
+    pub(crate) proof: Option<FreshProof>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -447,7 +447,7 @@ pub(crate) struct YubikeySetRequest {
     #[serde(default)]
     pub(crate) nfc: bool,
     /// A fresh proof, as a removal takes: needed when another second step is on already.
-    pub(crate) proof: Option<String>,
+    pub(crate) proof: Option<FreshProof>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -458,7 +458,7 @@ pub(crate) struct DuoSetRequest {
     pub(crate) client_id: Option<String>,
     pub(crate) client_secret: Option<String>,
     /// A fresh proof, as a removal takes: needed when another second step is on already.
-    pub(crate) proof: Option<String>,
+    pub(crate) proof: Option<FreshProof>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -561,7 +561,7 @@ pub(crate) async fn require_proof_to_add<S, P, K, R>(
     steps: &TwoStep<S, P, P, R>,
     user: kemlock_domain::UserId,
     own: Option<TwoFactorMethod>,
-    proof: Option<&str>,
+    proof: Option<&FreshProof>,
 ) -> Result<(), Problem>
 where
     S: Store,
@@ -577,8 +577,7 @@ where
         return Err(AppError::Duplicate.into());
     }
     let proof = proof
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
+        .filter(|p| !p.is_blank())
         .ok_or(AppError::Invalid(PROOF_NEEDED))?;
     require_proof(api, steps, user, proof).await
 }
@@ -589,9 +588,66 @@ pub(crate) trait MailedProof: std::fmt::Debug + Send + Sync {
     fn check(
         &self,
         user: kemlock_domain::UserId,
-        proof: String,
+        proof: FreshProof,
         recovery: bool,
     ) -> kemlock_app::notices::BoxFuture<'_, Result<(), Problem>>;
+}
+
+/// How a route checks a security key's or passkey's answer as a proof: [`passkeys_router`]
+/// registers the relying party and the stored keys with the API state, as [`two_step_router`] does
+/// the mailed codes.
+///
+/// [`passkeys_router`]: super::passkeys::passkeys_router
+pub(crate) trait AssertionChecker: std::fmt::Debug + Send + Sync {
+    /// The request options for the account's security keys and passkeys; `NotFound` with none.
+    fn options(
+        &self,
+        user: kemlock_domain::UserId,
+    ) -> kemlock_app::notices::BoxFuture<'_, Result<serde_json::Value, Problem>>;
+
+    /// Whether the answer proves it (the challenge is spent whatever it is).
+    fn verify(
+        &self,
+        user: kemlock_domain::UserId,
+        response: Vec<u8>,
+    ) -> kemlock_app::notices::BoxFuture<'_, Result<(), kemlock_app::passkeys::SecurityKeyError>>;
+}
+
+/// Checks the answer of a security key or passkey as a proof. A refused answer counts against the
+/// account like a wrong code.
+async fn check_assertion<S, P, K>(
+    api: &Api<S, P, K>,
+    user: kemlock_domain::UserId,
+    assertion: &crate::dto::KeyAssertion,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let now = api.now();
+    let account = format!("2fa:{user}");
+    api.limits
+        .second_step
+        .blocked(&account, now)
+        .map_err(rate_limited)?;
+    let Some(checker) = api.assertions.get() else {
+        return Err(AppError::Invalid("this server can't check a security key proof").into());
+    };
+    let response = serde_json::to_vec(&assertion.webauthn)
+        .map_err(|_| AppError::Invalid("the security key's answer isn't valid"))?;
+    match checker.verify(user, response).await {
+        Ok(()) => Ok(()),
+        Err(kemlock_app::passkeys::SecurityKeyError::NoChallenge) => Err(AppError::Invalid(
+            "no security key proof is in progress, or it expired: ask for options again",
+        )
+        .into()),
+        Err(kemlock_app::passkeys::SecurityKeyError::Refused) => {
+            api.limits.second_step.fail(&account, now);
+            Err(AppError::Invalid("the security key's answer wasn't accepted").into())
+        }
+        Err(other) => Err(AppError::from(other).into()),
+    }
 }
 
 struct Mailed<S, P, K, R> {
@@ -615,7 +671,7 @@ where
     fn check(
         &self,
         user: kemlock_domain::UserId,
-        proof: String,
+        proof: FreshProof,
         recovery: bool,
     ) -> kemlock_app::notices::BoxFuture<'_, Result<(), Problem>> {
         Box::pin(async move {
@@ -623,7 +679,7 @@ where
                 return Err(AppError::Unauthorized.into());
             };
             let steps = proof_steps(&api, self.challenges.clone());
-            check_proof(&api, &steps, user, proof.trim(), recovery).await
+            check_proof(&api, &steps, user, &proof, recovery).await
         })
     }
 }
@@ -634,7 +690,7 @@ where
 pub(crate) async fn require_proof_via_api<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
-    proof: &str,
+    proof: &FreshProof,
     recovery: bool,
 ) -> Result<(), Problem>
 where
@@ -643,8 +699,12 @@ where
     K: TokenSigner + Clone + 'static,
 {
     if let Some(mailed) = api.proofs.get() {
-        return mailed.check(user, proof.to_owned(), recovery).await;
+        return mailed.check(user, proof.clone(), recovery).await;
     }
+    let proof = match proof {
+        FreshProof::Code(code) => code.as_str(),
+        FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
+    };
     let now = api.now();
     let account = format!("2fa:{user}");
     api.limits
@@ -663,7 +723,7 @@ pub(crate) async fn require_proof_to_add_via_api<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
     own: Option<TwoFactorMethod>,
-    proof: Option<&str>,
+    proof: Option<&FreshProof>,
 ) -> Result<(), Problem>
 where
     S: Store,
@@ -678,8 +738,7 @@ where
         return Err(AppError::Duplicate.into());
     }
     let proof = proof
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
+        .filter(|p| !p.is_blank())
         .ok_or(AppError::Invalid(PROOF_NEEDED))?;
     require_proof_via_api(api, user, proof, true).await
 }
@@ -688,16 +747,16 @@ where
 pub(crate) async fn require_proof_for_recovery_code<S, P, K>(
     api: &Api<S, P, K>,
     user: kemlock_domain::UserId,
-    proof: &str,
+    proof: Option<&FreshProof>,
 ) -> Result<(), Problem>
 where
     S: Store,
     P: Crypto,
     K: TokenSigner + Clone + 'static,
 {
-    if proof.trim().is_empty() {
-        return Err(AppError::Invalid("a fresh proof is needed to show the recovery code").into());
-    }
+    let proof = proof.filter(|p| !p.is_blank()).ok_or(AppError::Invalid(
+        "a fresh proof is needed to show the recovery code",
+    ))?;
     require_proof_via_api(api, user, proof, false).await
 }
 
@@ -722,8 +781,10 @@ where
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ProofRequest {
-    /// The code that was mailed; it works once.
-    pub(crate) proof: String,
+    /// The code that was mailed (it works once), a current code of the authenticator app, the
+    /// recovery code where the route takes it, or `{"webauthn": ...}`, the answer of a security key
+    /// or passkey to the options at `POST /kem/v1/account/two-factor/proof/webauthn/options`.
+    pub(crate) proof: FreshProof,
 }
 
 fn proof_error(e: ProtectedError) -> Problem {
@@ -813,7 +874,7 @@ pub(crate) async fn require_proof<S, P, K, R>(
     api: &Api<S, P, K>,
     steps: &TwoStep<S, P, P, R>,
     user: kemlock_domain::UserId,
-    proof: &str,
+    proof: &FreshProof,
 ) -> Result<(), Problem>
 where
     S: Store,
@@ -829,7 +890,7 @@ async fn check_proof<S, P, K, R>(
     api: &Api<S, P, K>,
     steps: &TwoStep<S, P, P, R>,
     user: kemlock_domain::UserId,
-    proof: &str,
+    proof: &FreshProof,
     recovery: bool,
 ) -> Result<(), Problem>
 where
@@ -838,6 +899,10 @@ where
     K: TokenSigner + Clone + 'static,
     R: ChallengeRepo + Clone + 'static,
 {
+    let code = match proof {
+        FreshProof::Code(code) => code.trim(),
+        FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
+    };
     let now = api.now();
     let account = format!("2fa:{user}");
     api.limits
@@ -847,10 +912,10 @@ where
     // Without mail, a current code of the authenticator app or the account's recovery code proves
     // it just as well. A TOTP code is spent here (it works once); the recovery code is kept. Neither
     // needs the mail to work.
-    if second_step_proof(api, user, proof, recovery).await {
+    if second_step_proof(api, user, code, recovery).await {
         return Ok(());
     }
-    match steps.protected_validate(user, proof.trim(), true).await {
+    match steps.protected_validate(user, code, true).await {
         Ok(()) => Ok(()),
         Err(error) => {
             api.limits.second_step.fail(&account, now);
@@ -1021,7 +1086,7 @@ where
         &steps,
         authed.actor.user,
         Some(TwoFactorMethod::Email),
-        request.proof.as_deref(),
+        request.proof.as_ref(),
     )
     .await
     {
@@ -1089,7 +1154,7 @@ where
         &steps,
         authed.actor.user,
         Some(TwoFactorMethod::YubiKey),
-        request.proof.as_deref(),
+        request.proof.as_ref(),
     )
     .await?;
     let data = steps.yubikey_store(authed.actor.user, checked).await?;
@@ -1162,7 +1227,7 @@ where
         &steps,
         authed.actor.user,
         Some(TwoFactorMethod::Duo),
-        request.proof.as_deref(),
+        request.proof.as_ref(),
     )
     .await?;
     let status = steps.duo_store(authed.actor.user, &plain).await?;
@@ -1532,6 +1597,8 @@ fn doc_duo_off() {}
         TokenResponse,
         TwoStepSetupResponse,
         ProofRequest,
+        crate::dto::FreshProof,
+        crate::dto::KeyAssertion,
         YubikeyShown,
         DuoShown,
         EmailBeginRequest,
