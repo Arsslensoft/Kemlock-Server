@@ -1,4 +1,5 @@
-// What a merge keeps of the linked items and custom fields, whatever the kind, and the vault pick.
+// What a merge keeps of the linked items and custom fields, whatever the kind, how it keeps the
+// links of the other items whole, and the vault pick.
 import { describe, expect, it } from 'vitest';
 import { SPACE, vaultItem } from '@/test/tools-fixtures';
 import {
@@ -11,6 +12,7 @@ import {
   undoWrites,
   vaultsOf,
 } from './merge';
+import { rewriteLinks } from './relink';
 
 const NOW = new Date('2026-11-25T10:00:00Z');
 const X = '00000000-0000-4000-8000-0000000000a1';
@@ -163,5 +165,189 @@ describe('the name of the merged item', () => {
     const other = vaultItem('otp', { secret: 'JBSWY3DP' });
     const second = planMerge([unnamed, other], defaultPicks([unnamed, other]), NOW);
     expect(second && resultName(second)).toBe('');
+  });
+});
+
+describe('the items that pointed at an item that goes', () => {
+  // `a` stays and `b` goes; the others are third items the person may or may not write.
+  const A = '00000000-0000-4000-8000-0000000000e1';
+  const B = '00000000-0000-4000-8000-0000000000e2';
+  const P = '00000000-0000-4000-8000-0000000000f1';
+  const Q = '00000000-0000-4000-8000-0000000000f2';
+  const R = '00000000-0000-4000-8000-0000000000f3';
+  const S = '00000000-0000-4000-8000-0000000000f4';
+
+  function pair(aLinks?: unknown[], bLinks?: unknown[]) {
+    const a = vaultItem('contact', { name: 'Alex', email: 'a@b.c', updatedAt: 2, ...(aLinks ? { links: aLinks } : {}) }, { id: A });
+    const b = vaultItem('contact', { name: 'Alex C.', email: 'a@b.c', updatedAt: 1, ...(bLinks ? { links: bLinks } : {}) }, { id: B });
+    return [a, b] as const;
+  }
+  const linked = (id: string, links: unknown[], more: Record<string, unknown> = {}) =>
+    vaultItem('login', { name: id, username: 'u', links, ...more }, { id });
+
+  it('now name the kept item instead, each once and sorted, never themselves', () => {
+    const [a, b] = pair();
+    const p = linked(P, [{ id: B }, { id: Q }]);
+    const q = linked(Q, [{ id: B }, { id: A }, { id: Q }]);
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, p, q] });
+    const byId = new Map((plan?.relinks ?? []).map((relink) => [relink.item.id, relink]));
+    expect(byId.get(P)?.after['links']).toEqual([{ id: A }, { id: Q }]);
+    // q named both: the kept item once, and not q itself.
+    expect(byId.get(Q)?.after['links']).toEqual([{ id: A }]);
+    // What they held is recorded for Undo.
+    expect(byId.get(P)?.before['links']).toEqual([{ id: B }, { id: Q }]);
+  });
+
+  it('are listed on the kept item, which then links to every one of them', () => {
+    const [a, b] = pair([{ id: P }], [{ id: Q }]);
+    const p = linked(P, []);
+    const q = linked(Q, [{ id: B }]);
+    const r = linked(R, [{ id: B }]);
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, p, q, r] });
+    // a linked p, b linked q, r names b without b naming r: the kept item links to all three.
+    expect(plan?.fields['links']).toEqual([{ id: P }, { id: Q }, { id: R }]);
+  });
+
+  it('link back to the kept item when it now links to them and they do not name it', () => {
+    const [a, b] = pair([{ id: P }], [{ id: Q }]);
+    const p = linked(P, []);
+    const q = linked(Q, [{ id: S }]);
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, p, q] });
+    const byId = new Map((plan?.relinks ?? []).map((relink) => [relink.item.id, relink]));
+    expect(byId.get(P)?.after['links']).toEqual([{ id: A }]);
+    expect(byId.get(Q)?.after['links']).toEqual([{ id: A }, { id: S }]);
+  });
+
+  it('are left alone when they already name the kept item and nothing that goes', () => {
+    const [a, b] = pair([{ id: P }]);
+    const p = linked(P, [{ id: A }]);
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, p] });
+    expect(plan?.relinks).toEqual([]);
+    expect(plan?.fields['links']).toEqual([{ id: P }]);
+  });
+
+  it('are not written when the person may not change them, but the kept item still links to them', () => {
+    const [a, b] = pair();
+    const mine = linked(P, [{ id: B }]);
+    const theirs = linked(Q, [{ id: B }]);
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, {
+      all: [a, b, mine, theirs],
+      canWrite: (item) => item.id !== Q,
+    });
+    expect(plan?.relinks.map((relink) => relink.item.id)).toEqual([P]);
+    expect(plan?.fields['links']).toEqual([{ id: P }, { id: Q }]);
+  });
+
+  it('are written in the same batch as the merge, after the kept item and the trashed ones', () => {
+    const [a, b] = pair();
+    const p = linked(P, [{ id: B }]);
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, p] });
+    if (!plan) throw new Error('no plan');
+    const writes = mergeWrites(plan, NOW);
+    expect(writes.map((write) => write.existing?.id)).toEqual([A, B, P]);
+    expect(writes[2]?.fields).toEqual({ links: [{ id: A }] });
+  });
+
+  it('count in the plan, for the preview to say how many now point at the kept item', () => {
+    const [a, b] = pair();
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, linked(P, [{ id: B }]), linked(Q, [{ id: B }])] });
+    expect(plan?.relinks).toHaveLength(2);
+    expect(planMerge([a, b], defaultPicks([a, b]), NOW)?.relinks).toEqual([]);
+  });
+
+  it('are found among the trashed items too, which the vault list holds apart', () => {
+    const [a, b] = pair();
+    const trashed = linked(P, [{ id: B }], { trashedAt: '2026-11-01T00:00:00Z' });
+    expect(planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, trashed] })?.relinks).toHaveLength(1);
+  });
+
+  it('follow the kept item for an MFA code\'s linked login and a login\'s account', () => {
+    const a = vaultItem('login', { name: 'GitHub', username: 'sam', password: 'pw', urls: ['github.com'], updatedAt: 2 }, { id: A });
+    const b = vaultItem('login', { name: 'github.com', username: 'sam', password: 'pw', urls: ['gist.github.com'], updatedAt: 1 }, { id: B });
+    const code = vaultItem('otp', { name: 'GitHub code', secret: 'JBSWY3DPEHPK3PXP', linkedLoginId: B }, { id: P });
+    const other = vaultItem('otp', { name: 'Elsewhere', secret: 'MFRGGZDFMZTWQ2LK', linkedLoginId: R }, { id: Q });
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, code, other] });
+    expect(plan?.relinks.map((relink) => relink.item.id)).toEqual([P]);
+    expect(plan?.relinks[0]?.after).toEqual({ linkedLoginId: A });
+    expect(plan?.relinks[0]?.before).toEqual({ linkedLoginId: B });
+
+    // The other way: logins whose `accountId` names an MFA code that goes.
+    const c1 = vaultItem('otp', { name: 'c1', secret: 'JBSWY3DPEHPK3PXP', updatedAt: 2 }, { id: A });
+    const c2 = vaultItem('otp', { name: 'c2', secret: 'JBSWY3DPEHPK3PXP', updatedAt: 1 }, { id: B });
+    const viaB = vaultItem('login', { name: 'l1', username: 'u', accountId: B }, { id: P });
+    const viaOther = vaultItem('login', { name: 'l2', username: 'u', accountId: R }, { id: Q });
+    const second = planMerge([c1, c2], defaultPicks([c1, c2]), NOW, { all: [c1, c2, viaB, viaOther] });
+    expect(second?.relinks.map((relink) => [relink.item.id, relink.after['accountId']])).toEqual([[P, A]]);
+  });
+
+  it('give a kept login with no account the one of the login that goes', () => {
+    const a = vaultItem('login', { name: 'GitHub', username: 'sam', password: 'pw', urls: ['github.com'], updatedAt: 2 }, { id: A });
+    const b = vaultItem('login', { name: 'gh', username: 'sam', password: 'pw', urls: ['github.com'], accountId: R, updatedAt: 1 }, { id: B });
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW);
+    expect(plan?.fields['accountId']).toBe(R);
+    expect('accountId' in (plan?.before ?? {})).toBe(true);
+  });
+
+  describe('Undo', () => {
+    function merged() {
+      const [a, b] = pair();
+      const p = linked(P, [{ id: B }, { id: Q }]);
+      const code = vaultItem('otp', { name: 'code', secret: 'JBSWY3DPEHPK3PXP', linkedLoginId: B, links: [{ id: B }] }, { id: R });
+      const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, p, code] });
+      if (!plan) throw new Error('no plan');
+      // As the vault holds the items after the merge's batch.
+      const after = plan.relinks.map((relink) => ({
+        ...relink.item,
+        revision: relink.item.revision + 1,
+        data: { ...relink.item.data, ...relink.after },
+      }));
+      const saved = [{ ...a, revision: 2 }, { ...b, revision: 2 }, ...after];
+      return { plan, saved, after };
+    }
+
+    it('puts back what the merge changed while it still holds what the merge wrote', () => {
+      const { plan, saved, after } = merged();
+      const writes = undoWrites(plan, saved, (id) => after.find((item) => item.id === id));
+      const byId = new Map(writes.map((write) => [write.existing?.id, write]));
+      expect(byId.get(P)?.fields).toEqual({ links: [{ id: B }, { id: Q }] });
+      expect(byId.get(R)?.fields).toEqual({ links: [{ id: B }], linkedLoginId: B });
+      // The merged items come back as before: the kept one restored, the other out of the Trash.
+      expect(byId.get(A)?.fields).toEqual(plan.before);
+      expect(byId.get(B)?.fields).toEqual({ trashedAt: undefined });
+    });
+
+    it('leaves a member alone that was edited or linked elsewhere since', () => {
+      const { plan, saved, after } = merged();
+      const since = after.map((item) =>
+        item.id === P
+          ? { ...item, revision: item.revision + 1, data: { ...item.data, links: [{ id: A }, { id: S }] } }
+          : item.id === R
+            ? { ...item, revision: item.revision + 1, data: { ...item.data, linkedLoginId: S } }
+            : item,
+      );
+      const writes = undoWrites(plan, saved, (id) => since.find((item) => item.id === id));
+      const byId = new Map(writes.map((write) => [write.existing?.id, write]));
+      // p was linked on since: nothing of its links is put back. r's links still hold, its login does not.
+      expect(byId.has(P)).toBe(false);
+      expect(byId.get(R)?.fields).toEqual({ links: [{ id: B }] });
+      // The write is made on the revision the vault holds now, not the one the merge saved.
+      expect(byId.get(R)?.existing?.revision).toBe(since.find((item) => item.id === R)?.revision);
+    });
+
+    it('skips an item that is gone', () => {
+      const { plan, saved } = merged();
+      const writes = undoWrites(plan, saved, () => undefined);
+      expect(writes.map((write) => write.existing?.id).sort()).toEqual([A, B].sort());
+    });
+  });
+});
+
+describe('rewriteLinks', () => {
+  it('drops the ids, adds the one, and leaves nothing when nothing is left', () => {
+    const item = vaultItem('login', { name: 'p', links: [{ id: X, addedAt: 1 }, { id: Y }] }, { id: Z });
+    expect(rewriteLinks(item, new Set([Y.toLowerCase()]), undefined)).toEqual([{ id: X, addedAt: 1 }]);
+    expect(rewriteLinks(item, new Set([X, Y]), undefined)).toBeUndefined();
+    expect(rewriteLinks(item, new Set([X, Y]), Z)).toBeUndefined();
+    expect(rewriteLinks(item, new Set(), X)).toEqual([{ id: X, addedAt: 1 }, { id: Y }]);
   });
 });
