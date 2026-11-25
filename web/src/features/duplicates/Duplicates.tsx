@@ -13,8 +13,7 @@ import '@/styles/lists.css';
 import { useVault } from '@/features/vault/hooks';
 import { detailParts } from '@/features/vault/itemDetails';
 import { type KeyFacts, useKeyFacts } from '@/features/vault/keyFacts';
-import { KIND_ORDER, kindPlural } from '@/features/vault/kindList';
-import { kindLabel, tileLetter, timeAgo } from '@/features/vault/kinds';
+import { KIND_ORDER, kindLabel, kindPluralLabel, tileLetter, timeAgo } from '@/features/vault/kinds';
 import { ALL_VAULTS, PERSONAL, inVault, knownVault, vaultIdOf } from '@/features/vault/listFilters';
 import { VaultSelect } from '@/features/vault/VaultSelect';
 import { useVaultFilter } from '@/features/vault/vaultFilter';
@@ -41,7 +40,7 @@ export type { DuplicateFilter } from './viewState';
 
 const FILTERS: Array<{ id: DuplicateFilter; label: MessageId }> = [
   { id: 'all', label: 'dup.filter.all' },
-  ...KIND_ORDER.map((kind) => ({ id: kind, label: kindPlural(kind) })),
+  ...KIND_ORDER.map((kind) => ({ id: kind, label: kindPluralLabel(kind) })),
   { id: 'places', label: 'dup.filter.places' },
 ];
 

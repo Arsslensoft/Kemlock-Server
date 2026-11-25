@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SPACE, login, renderInRouter, vaultItem } from '@/test/tools-fixtures';
 import { FAMILY_ID, VAULTS } from '@/test/vault-fixtures';
 import { ItemListView, type ItemListProps } from './Main';
-import { KIND_ORDER } from './kindList';
+import { KIND_ORDER } from './kinds';
 import { filterItems } from './listFilters';
 import type { VaultItem } from './vault';
 

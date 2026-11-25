@@ -350,6 +350,7 @@
   "kind.plural.certificate": "Certificates",
   "kind.plural.ssh-key": "SSH keys",
   "kind.plural.pgp-key": "PGP keys",
+  "kind.plural.other": "Items",
 
   "table.name": "Name",
   "table.kind": "Kind",

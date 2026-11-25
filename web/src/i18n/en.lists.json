@@ -1,18 +1,4 @@
 {
-  "lists.plural.login": "Logins",
-  "lists.plural.note": "Notes",
-  "lists.plural.file": "Files",
-  "lists.plural.otp": "MFA codes",
-  "lists.plural.backupCodes": "Backup codes",
-  "lists.plural.passkey": "Passkeys",
-  "lists.plural.card": "Cards",
-  "lists.plural.identity": "Identities",
-  "lists.plural.contact": "Contacts",
-  "lists.plural.certificate": "Certificates",
-  "lists.plural.sshKey": "SSH keys",
-  "lists.plural.pgpKey": "PGP keys",
-  "lists.plural.other": "Items",
-
   "lists.sub.all": "Everything in your vault and in the spaces you belong to.",
   "lists.sub.login": "Usernames and passwords for websites and apps.",
   "lists.sub.note": "Free text, kept encrypted like everything else.",

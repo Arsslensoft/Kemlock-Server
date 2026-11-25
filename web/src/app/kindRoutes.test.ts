@@ -3,7 +3,7 @@
 import { QueryClient } from '@tanstack/react-query';
 import { createMemoryHistory } from '@tanstack/react-router';
 import { describe, expect, it } from 'vitest';
-import { KIND_ORDER } from '@/features/vault/kindList';
+import { KIND_ORDER } from '@/features/vault/kinds';
 import { createAppRouter } from './router';
 import { createSession } from './session';
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { KIND_ORDER } from '@/features/vault/kindList';
+import { KIND_ORDER } from '@/features/vault/kinds';
 import { DUPLICATE_FILTERS, createViewStore } from './viewState';
 
 function memory(initial?: string) {

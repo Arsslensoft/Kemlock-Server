@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { messages } from '@/i18n';
-import { KIND_ORDER, isListedKind, kindPlural, kindSubtitle, listKind } from './kindList';
-import { kindLabel } from './kinds';
+import { kindSubtitle, listKind } from './kindList';
+import { KIND_ORDER, kindLabel, kindPluralLabel } from './kinds';
 
-describe('the item types', () => {
+describe('the item types the lists show', () => {
   it('are in the order the design fixes, and the stored id of an MFA code is otp', () => {
     expect([...KIND_ORDER]).toEqual([
       'login',
@@ -22,7 +22,7 @@ describe('the item types', () => {
   });
 
   it('have the plural labels of the design', () => {
-    expect(KIND_ORDER.map((kind) => messages[kindPlural(kind)])).toEqual([
+    expect(KIND_ORDER.map((kind) => messages[kindPluralLabel(kind)])).toEqual([
       'Logins',
       'Notes',
       'Files',
@@ -64,8 +64,8 @@ describe('the item types', () => {
   });
 
   it('call a kind the app has no name for "Items", with the All items line', () => {
-    expect(isListedKind('hologram')).toBe(false);
-    expect(messages[kindPlural('hologram')]).toBe('Items');
+    expect(messages[kindPluralLabel('hologram')]).toBe('Items');
+    expect(messages[kindLabel('hologram')]).toBe('Item');
     expect(kindSubtitle('hologram')).toBe(kindSubtitle(undefined));
   });
 });

@@ -14,8 +14,8 @@ import { useVault } from './hooks';
 import { RowCopy } from './ItemCopy';
 import { detailParts } from './itemDetails';
 import { type KeyFacts, useKeyFacts } from './keyFacts';
-import { KIND_ORDER, kindPlural, kindSubtitle, listKind } from './kindList';
-import { kindIcon, kindLabel, tileLetter, timeAgo } from './kinds';
+import { kindSubtitle, listKind } from './kindList';
+import { KIND_ORDER, kindIcon, kindLabel, kindPluralLabel, tileLetter, timeAgo } from './kinds';
 import { ALL_VAULTS, filterItems, knownVault } from './listFilters';
 import { VaultPill, VaultSelect } from './VaultSelect';
 import { useVaultFilter } from './vaultFilter';
@@ -84,7 +84,7 @@ export function ItemListView({
   onRetry,
 }: ItemListProps) {
   const t = useT();
-  const title = kind ? t(kindPlural(kind)) : t('nav.all');
+  const title = kind ? t(kindPluralLabel(kind)) : t('nav.all');
   const vaultName = vaults.options.find((option: VaultOption) => option.id === vault)?.label ?? '';
   const footer =
     vault === ALL_VAULTS
@@ -112,7 +112,7 @@ export function ItemListView({
           </button>
           {KIND_ORDER.map((id) => (
             <button key={id} type="button" className="chip" aria-pressed="false" onClick={() => onKind(id)}>
-              {t(kindPlural(id))}
+              {t(kindPluralLabel(id))}
             </button>
           ))}
         </div>
