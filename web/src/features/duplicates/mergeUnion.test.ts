@@ -8,6 +8,7 @@ import {
   keepInVault,
   mergeWrites,
   planMerge,
+  relinkWrites,
   resultName,
   undoWrites,
   vaultsOf,
@@ -246,6 +247,17 @@ describe('the items that pointed at an item that goes', () => {
     const writes = mergeWrites(plan, NOW);
     expect(writes.map((write) => write.existing?.id)).toEqual([A, B, P]);
     expect(writes[2]?.fields).toEqual({ links: [{ id: A }] });
+  });
+
+  it('are the relink writes: one save of each item with the members the merge changes', () => {
+    const [a, b] = pair();
+    const plan = planMerge([a, b], defaultPicks([a, b]), NOW, { all: [a, b, linked(P, [{ id: B }]), linked(Q, [{ id: B }])] });
+    if (!plan) throw new Error('no plan');
+    const writes = relinkWrites(plan);
+    expect(writes.map((write) => write.existing?.id)).toEqual([P, Q]);
+    expect(writes.every((write) => write.fields['links'] !== undefined)).toBe(true);
+    // The merge's own batch ends with them.
+    expect(mergeWrites(plan, NOW).slice(-2)).toEqual(writes);
   });
 
   it('count in the plan, for the preview to say how many now point at the kept item', () => {
