@@ -39,6 +39,15 @@ pub struct OpenedBound {
     pub legacy: bool,
 }
 
+impl std::fmt::Debug for OpenedBound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The value is a secret.
+        f.debug_struct("OpenedBound")
+            .field("legacy", &self.legacy)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Opens a per-account secret: sealed for this account, or, for what was stored before secrets
 /// were bound to accounts, under the bare purpose (`legacy` is then set).
 pub fn open_bound<S: SecretSeal + ?Sized>(
