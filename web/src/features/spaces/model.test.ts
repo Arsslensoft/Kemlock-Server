@@ -98,6 +98,11 @@ describe('making a space', () => {
     expect(body?.id).toBe('99999999-0000-4000-8000-000000000001');
     expect(body?.collection.id).toBe('99999999-0000-4000-8000-000000000002');
     expect(fromUtf8(decodeB64(body?.sealedSpaceKey ?? ''))).toBe(`space-key:${body?.id}`);
+    // Each box goes with the maker's signature over it.
+    expect(fromUtf8(decodeB64(body?.sealedSpaceKeySignature ?? ''))).toBe(`space-key-signature:${body?.id}`);
+    expect(fromUtf8(decodeB64(body?.collection.sealedKeySignature ?? ''))).toBe(
+      `collection-key-signature:${body?.collection.id}`,
+    );
     expect(body?.name).not.toContain('Example');
     expect(fromUtf8(decodeB64(body?.name ?? ''))).toContain('Example Co');
   });
@@ -143,6 +148,9 @@ describe('confirming a member', () => {
     expect(user).toBe(THEO);
     expect(body?.collectionKeys.map((k) => k.collection)).toEqual([FINANCE]);
     expect(decodeB64(body?.fingerprint ?? '')).toHaveLength(64);
+    // Every key sealed to the member is signed by the confirmer, who verifies as the sealer.
+    expect(decodeB64(body?.sealedSpaceKeySignature ?? '').length).toBeGreaterThan(0);
+    expect(body?.collectionKeys.every((k) => k.signature.length > 0)).toBe(true);
     // The worker builds the statement and signs it under the one context it signs.
     const statement = JSON.parse(fromUtf8(decodeB64(body?.statement ?? ''))) as string[];
     expect(statement[2]).toBe(THEO);

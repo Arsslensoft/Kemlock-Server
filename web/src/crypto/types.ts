@@ -341,6 +341,8 @@ export interface OpenSpaceItemInput {
 export interface SealedCollection {
   name: string;
   sealedKey: string;
+  /** The maker's sig1 signature over `sealedKey` (docs/crypto.md, "Signed key boxes"). */
+  sealedKeySignature: string;
 }
 
 export interface NewSpaceInput {
@@ -353,7 +355,30 @@ export interface NewSpaceInput {
 export interface NewSpaceResult {
   name: string;
   sealedSpaceKey: string;
+  /** The maker's sig1 signature over `sealedSpaceKey`. */
+  sealedSpaceKeySignature: string;
   collection: SealedCollection;
+}
+
+/** A key sealed to a member and the signature of the account that sealed it (base64url). */
+export interface SignedBox {
+  sealed: string;
+  signature: string;
+}
+
+/** What a key box signature is checked against (docs/crypto.md, "Signed key boxes"). */
+export interface KeyBoxCheck {
+  /** The sealer's public-key bundle; their account id and key version are its own. */
+  sealerBundle: string;
+  spaceId: string;
+  /** The collection of a collection key's box; left out for the space key's. */
+  collectionId?: string;
+  /** The version of the key the box holds. */
+  keyVersion: number;
+  /** The account id the box is sealed to, as base64url of its 16 bytes. */
+  recipientId: string;
+  sealed: string;
+  signature: string;
 }
 
 /** The names of a space's parts are encrypted under the space key of a key version. */
@@ -564,14 +589,16 @@ export interface CryptoApi {
     spaceId: string;
     recipientKx1: string;
     recipientId: string;
-  }): Promise<string>;
+  }): Promise<SignedBox>;
   /** The newest key held of a collection, sealed to a member (bound to space, collection, version). */
   sealCollectionKeyTo(input: {
     spaceId: string;
     collectionId: string;
     recipientKx1: string;
     recipientId: string;
-  }): Promise<string>;
+  }): Promise<SignedBox>;
+  /** Whether a key box signature is the sealer's over exactly this box, for this key and recipient. */
+  verifyKeyBox(check: KeyBoxCheck): Promise<boolean>;
   /** Forgets the DPoP key (sign-out of this device). */
   dpopReset(): Promise<void>;
 
@@ -770,14 +797,15 @@ export interface Ops {
   };
   sealSpaceKeyTo: {
     args: [input: { spaceId: string; recipientKx1: string; recipientId: string }];
-    result: string;
+    result: SignedBox;
   };
   sealCollectionKeyTo: {
     args: [
       input: { spaceId: string; collectionId: string; recipientKx1: string; recipientId: string },
     ];
-    result: string;
+    result: SignedBox;
   };
+  verifyKeyBox: { args: [check: KeyBoxCheck]; result: boolean };
   newDeviceKey: { args: []; result: DeviceKey };
   openApprovedKey: {
     args: [deviceKey: DeviceKeyHandle, accountId: string, requestId: string, sealed: string];

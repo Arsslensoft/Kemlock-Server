@@ -26,6 +26,7 @@ import {
   type PrfWrap,
   type Ops,
   type SealedCollection,
+  type SignedBox,
   type SealedItem,
   type SealedSend,
   type TotpEnrolment,
@@ -309,6 +310,17 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         check.signature,
       );
     },
+    async verifyKeyBox(check) {
+      return (await current()).verifyKeyBox(
+        check.sealerBundle,
+        check.spaceId,
+        check.collectionId ?? '',
+        toKeyVersion(check.keyVersion),
+        check.recipientId,
+        check.sealed,
+        check.signature,
+      );
+    },
     async openEmergencyKey(sealed) {
       return (await current()).openEmergencyKey(sealed) as EmergencyKeyHandle;
     },
@@ -346,10 +358,12 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       return parse<SealedCollection>((await current()).newCollection(spaceId, collectionId, name));
     },
     async sealSpaceKeyTo({ spaceId, recipientKx1, recipientId }) {
-      return (await current()).sealSpaceKeyTo(spaceId, recipientKx1, recipientId);
+      return parse<SignedBox>((await current()).sealSpaceKeyTo(spaceId, recipientKx1, recipientId));
     },
     async sealCollectionKeyTo({ spaceId, collectionId, recipientKx1, recipientId }) {
-      return (await current()).sealCollectionKeyTo(spaceId, collectionId, recipientKx1, recipientId);
+      return parse<SignedBox>(
+        (await current()).sealCollectionKeyTo(spaceId, collectionId, recipientKx1, recipientId),
+      );
     },
     async verifySpaceChain({ spaceId, records, anchor }) {
       return parse<ChainVerdict>(

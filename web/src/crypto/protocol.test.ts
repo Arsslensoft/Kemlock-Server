@@ -59,16 +59,20 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
       JSON.stringify({
         name: 'bmFtZQ',
         sealedSpaceKey: 'c3BhY2U',
-        collection: { name: 'Y29sbA', sealedKey: 'Y29sbC1rZXk' },
+        sealedSpaceKeySignature: 'c3BhY2Utc2ln',
+        collection: { name: 'Y29sbA', sealedKey: 'Y29sbC1rZXk', sealedKeySignature: 'Y29sbC1zaWc' },
       }),
     ),
     openSpace: vi.fn(),
     openCollection: vi.fn(),
     openName: vi.fn(() => 'Family'),
     sealName: vi.fn(() => 'c2VhbGVk'),
-    newCollection: vi.fn(() => JSON.stringify({ name: 'bmFtZQ', sealedKey: 'a2V5' })),
-    sealSpaceKeyTo: vi.fn(() => 'c3BhY2Uta2V5'),
-    sealCollectionKeyTo: vi.fn(() => 'Y29sbC1rZXk'),
+    newCollection: vi.fn(() =>
+      JSON.stringify({ name: 'bmFtZQ', sealedKey: 'a2V5', sealedKeySignature: 'a2V5c2ln' }),
+    ),
+    sealSpaceKeyTo: vi.fn(() => JSON.stringify({ sealed: 'c3BhY2Uta2V5', signature: 'c2ln' })),
+    sealCollectionKeyTo: vi.fn(() => JSON.stringify({ sealed: 'Y29sbC1rZXk', signature: 'c2lnMg' })),
+    verifyKeyBox: vi.fn(() => true),
     newDeviceKey: vi.fn(() => JSON.stringify({ handle: 31, publicKey: 'cHVi' })),
     openApprovedKey: vi.fn(() => 32),
     newSsoAccount: vi.fn(() =>
@@ -345,6 +349,7 @@ describe('the dispatcher', () => {
     expect(await dispatch('newCollection', [{ spaceId: UUID, collectionId: UUID, name: 'Private' }])).toEqual({
       name: 'bmFtZQ',
       sealedKey: 'a2V5',
+      sealedKeySignature: 'a2V5c2ln',
     });
 
     await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s' }]);
@@ -393,12 +398,42 @@ describe('the dispatcher', () => {
     expect(await dispatch('sealName', [{ ...address, name: 'Family' }])).toBe('c2VhbGVk');
     expect(vault.sealName).toHaveBeenCalledWith(UUID, 1, 'space', UUID, 'Family');
 
-    await dispatch('sealSpaceKeyTo', [{ spaceId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' }]);
+    // A key sealed to a member comes back with the signature of the account that sealed it.
+    expect(
+      await dispatch('sealSpaceKeyTo', [{ spaceId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' }]),
+    ).toEqual({ sealed: 'c3BhY2Uta2V5', signature: 'c2ln' });
     expect(vault.sealSpaceKeyTo).toHaveBeenCalledWith(UUID, 'a3g', 'aWQ');
-    await dispatch('sealCollectionKeyTo', [
-      { spaceId: UUID, collectionId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' },
-    ]);
+    expect(
+      await dispatch('sealCollectionKeyTo', [
+        { spaceId: UUID, collectionId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' },
+      ]),
+    ).toEqual({ sealed: 'Y29sbC1rZXk', signature: 'c2lnMg' });
     expect(vault.sealCollectionKeyTo).toHaveBeenCalledWith(UUID, UUID, 'a3g', 'aWQ');
+
+    // A key box signature is checked against the sealer's bundle; the collection is empty for a space key.
+    const check = {
+      sealerBundle: 'YnVuZGxl',
+      spaceId: UUID,
+      keyVersion: 3,
+      recipientId: 'aWQ',
+      sealed: 'Ym94',
+      signature: 'c2ln',
+    };
+    expect(await dispatch('verifyKeyBox', [check])).toBe(true);
+    expect(vault.verifyKeyBox).toHaveBeenLastCalledWith('YnVuZGxl', UUID, '', 3, 'aWQ', 'Ym94', 'c2ln');
+    await dispatch('verifyKeyBox', [{ ...check, collectionId: UUID }]);
+    expect(vault.verifyKeyBox).toHaveBeenLastCalledWith(
+      'YnVuZGxl',
+      UUID,
+      UUID,
+      3,
+      'aWQ',
+      'Ym94',
+      'c2ln',
+    );
+    await expect(dispatch('verifyKeyBox', [{ ...check, keyVersion: -1 }])).rejects.toMatchObject({
+      code: 'invalid',
+    });
   });
 
   it('answers a vault failure on a sharing operation with its code and nothing else', async () => {

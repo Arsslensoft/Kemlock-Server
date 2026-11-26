@@ -149,10 +149,12 @@ export async function createSpace(deps: SpaceDeps, input: NewSpaceInput): Promis
     id: spaceId,
     name: encodeB64(keys.name),
     sealedSpaceKey: encodeB64(keys.sealedSpaceKey),
+    sealedSpaceKeySignature: encodeB64(keys.sealedSpaceKeySignature),
     collection: {
       id: collectionId,
       name: encodeB64(keys.collection.name),
       sealedKey: encodeB64(keys.collection.sealedKey),
+      sealedKeySignature: encodeB64(keys.collection.sealedKeySignature),
     },
   });
 }
@@ -360,20 +362,20 @@ function recipientOf(
   return checked;
 }
 
+/** A collection key sealed to a member, and the signature of this account over the box. */
 async function collectionKeyFor(
   deps: SpaceDeps,
   spaceId: string,
   collectionId: string,
   recipient: Recipient,
-): Promise<string> {
-  return encodeB64(
-    await deps.crypto.sealCollectionKeyTo({
-      spaceId,
-      collectionId,
-      recipientKx1: recipient.kx1,
-      recipientId: recipient.id,
-    }),
-  );
+): Promise<{ sealed: string; signature: string }> {
+  const box = await deps.crypto.sealCollectionKeyTo({
+    spaceId,
+    collectionId,
+    recipientKx1: recipient.kx1,
+    recipientId: recipient.id,
+  });
+  return { sealed: encodeB64(box.sealed), signature: encodeB64(box.signature) };
 }
 
 // ---- membership ----------------------------------------------------------------------------
@@ -422,7 +424,7 @@ export async function confirmMember(
     recipientKx1: recipient.kx1,
     recipientId: recipient.id,
   });
-  const collectionKeys: Array<{ collection: string; sealed: string }> = [];
+  const collectionKeys: Array<{ collection: string; sealed: string; signature: string }> = [];
   for (const collection of collectionsOfMember(
     member.user,
     detail.view.collections,
@@ -431,7 +433,7 @@ export async function confirmMember(
   )) {
     collectionKeys.push({
       collection,
-      sealed: await collectionKeyFor(deps, spaceId, collection, recipient),
+      ...(await collectionKeyFor(deps, spaceId, collection, recipient)),
     });
   }
   // What the confirmer signs (docs/crypto.md, "Member confirmation"): that they compared this
@@ -448,7 +450,8 @@ export async function confirmMember(
     fingerprint: encodeB64(fingerprint.bytes),
     statement: encodeB64(statement),
     signature: encodeB64(signature),
-    sealedSpaceKey: encodeB64(sealedSpaceKey),
+    sealedSpaceKey: encodeB64(sealedSpaceKey.sealed),
+    sealedSpaceKeySignature: encodeB64(sealedSpaceKey.signature),
     collectionKeys,
   });
 }
@@ -492,7 +495,13 @@ export async function createCollection(
     parent: input.parent ?? null,
     name: encodeB64(made.name),
     // The maker gets Manage, and the key sealed to them is all anyone else's grant adds to.
-    keys: [{ user: detail.view.me.user, sealed: encodeB64(made.sealedKey) }],
+    keys: [
+      {
+        user: detail.view.me.user,
+        sealed: encodeB64(made.sealedKey),
+        signature: encodeB64(made.sealedKeySignature),
+      },
+    ],
   });
 }
 
@@ -539,9 +548,9 @@ async function keysForNewcomers(
   collection: string,
   before: Set<string>,
   after: Set<string>,
-): Promise<Array<{ collection: string; user: string; sealed: string }>> {
+): Promise<Array<{ collection: string; user: string; sealed: string; signature: string }>> {
   requireUnchained(detail);
-  const keys: Array<{ collection: string; user: string; sealed: string }> = [];
+  const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const user of after) {
     if (before.has(user)) continue;
     const member = detail.members.find((m) => m.user === user);
@@ -552,7 +561,7 @@ async function keysForNewcomers(
     keys.push({
       collection,
       user,
-      sealed: await collectionKeyFor(deps, detail.view.space.id, collection, recipient),
+      ...(await collectionKeyFor(deps, detail.view.space.id, collection, recipient)),
     });
   }
   return keys;
@@ -567,7 +576,7 @@ export async function setGroupMembers(
 ) {
   const { grants, groups, collections } = detail.view;
   const changed = groups.map((g) => (g.id === group ? { ...g, members } : g));
-  const keys: Array<{ collection: string; user: string; sealed: string }> = [];
+  const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const collection of collections) {
     if (!grants.some((g) => g.collection === collection.id && g.grantee === `group:${group}`)) continue;
     keys.push(
@@ -602,6 +611,6 @@ export async function grantAccess(
   );
   return deps.api.grant(detail.view.space.id, {
     ...input,
-    keys: keys.map((k) => ({ user: k.user, sealed: k.sealed })),
+    keys: keys.map((k) => ({ user: k.user, sealed: k.sealed, signature: k.signature })),
   });
 }

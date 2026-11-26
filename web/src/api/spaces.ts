@@ -46,6 +46,13 @@ export interface ConfirmationDto {
   signature: string;
 }
 
+/** Who sealed a key copy, at which key version of theirs, and their sig1 signature over the box. */
+export interface SealedByDto {
+  account: string;
+  keyVersion: number;
+  signature: string;
+}
+
 export interface MemberDto {
   user: string;
   role: SpaceRole;
@@ -56,6 +63,8 @@ export interface MemberDto {
   acceptedAt: number | null;
   /** The space key sealed to this member; present only while confirmed. */
   sealedSpaceKey: string | null;
+  /** Who sealed that box and their signature over it; null before keys were signed, and for a chained space. */
+  sealedBy?: SealedByDto | null;
   keyVersion: number | null;
   confirmation: ConfirmationDto | null;
   revokedAt: number | null;
@@ -96,6 +105,8 @@ export interface KeyCopyDto {
   collection: string;
   keyVersion: number;
   sealed: string;
+  /** Who sealed this copy and their signature over it; null before keys were signed. */
+  sealedBy?: SealedByDto | null;
 }
 
 export interface SpaceSummaryDto {
@@ -121,18 +132,22 @@ export interface OffboardedDto {
 export interface UserKeyDto {
   user: string;
   sealed: string;
+  /** The sealer's sig1 signature over the box (docs/crypto.md, "Signed key boxes"). */
+  signature: string;
 }
 export interface CollectionKeyDto {
   collection: string;
   user: string;
   sealed: string;
+  signature: string;
 }
 
 export interface CreateSpaceRequest {
   id: string;
   name: string;
   sealedSpaceKey: string;
-  collection: { id: string; name: string; sealedKey: string };
+  sealedSpaceKeySignature: string;
+  collection: { id: string; name: string; sealedKey: string; sealedKeySignature: string };
 }
 
 export interface InviteRequest {
@@ -149,7 +164,8 @@ export interface ConfirmRequest {
   /** The confirmer's sig1 signature over the statement. */
   signature: string;
   sealedSpaceKey: string;
-  collectionKeys: Array<{ collection: string; sealed: string }>;
+  sealedSpaceKeySignature: string;
+  collectionKeys: Array<{ collection: string; sealed: string; signature: string }>;
 }
 
 export interface CreateCollectionRequest {

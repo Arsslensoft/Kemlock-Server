@@ -84,6 +84,16 @@ export interface WasmVault {
     statement: string,
     signature: string,
   ): boolean;
+  /** Whether a key box signature is the sealer's (`collectionId` empty for a space key). */
+  verifyKeyBox(
+    sealerBundle: string,
+    spaceId: string,
+    collectionId: string,
+    keyVersion: number,
+    recipientId: string,
+    sealed: string,
+    signature: string,
+  ): boolean;
   openEmergencyKey(sealed: string): number;
   openEmergencyItem(
     handle: number,
@@ -156,6 +166,7 @@ export interface WasmVault {
   openName(spaceId: string, keyVersion: number, kind: string, id: string, ciphertext: string): string;
   sealName(spaceId: string, keyVersion: number, kind: string, id: string, name: string): string;
   newCollection(spaceId: string, collectionId: string, name: string): string;
+  /** `{sealed, signature}` as JSON (base64url). */
   sealSpaceKeyTo(spaceId: string, recipientKx1: string, recipientId: string): string;
   sealCollectionKeyTo(
     spaceId: string,
