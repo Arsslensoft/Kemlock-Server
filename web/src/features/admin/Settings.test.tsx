@@ -249,7 +249,7 @@ describe('the hint under each switch', () => {
     const signups = within(screen.getByRole('region', { name: 'Who can make an account' }));
     expect(signups.getByText('When off, people join only by an invitation or through SSO.')).toBeInTheDocument();
     expect(
-      signups.getByText("Sends a link to the new address. The account can't sign in until the link is opened."),
+      signups.getByText("Sends a link to the new address. The account can't sign in or be used until the link is opened, and single sign-on won't link to it by email before then. It needs mail: set an SMTP host first, or it does nothing."),
     ).toBeInTheDocument();
     expect(
       signups.getByText('Admins can invite people from Users & spaces, even while sign-up is off.'),
@@ -263,7 +263,7 @@ describe('the hint under each switch', () => {
       'When off, people join only by an invitation or through SSO.',
     );
     expect(named('Verify the email of a new account')).toHaveAccessibleDescription(
-      "Sends a link to the new address. The account can't sign in until the link is opened.",
+      "Sends a link to the new address. The account can't sign in or be used until the link is opened, and single sign-on won't link to it by email before then. It needs mail: set an SMTP host first, or it does nothing.",
     );
     expect(named('Admins may invite people')).toHaveAccessibleDescription(
       'Admins can invite people from Users & spaces, even while sign-up is off.',
