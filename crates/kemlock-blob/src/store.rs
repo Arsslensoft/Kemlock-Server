@@ -70,6 +70,14 @@ fn path_of(blob: BlobId) -> Path {
     Path::from(format!("{}/{name}", &name[..2]))
 }
 
+/// Where a pre-signed upload lands: `staging/<blob id>`, never the blob's own path. The signed URL
+/// names this and nothing the server serves, so a `PUT` to it after the upload was checked (the URL
+/// stays valid for its whole lifetime) can't change the file. `BlobStore::verify` checks
+/// what is here and moves it to the blob's own path.
+fn staging_path_of(blob: BlobId) -> Path {
+    Path::from(format!("staging/{blob}"))
+}
+
 /// Where a raw file is kept: its key, a few `/`-separated parts of `[A-Za-z0-9_-]`, such as
 /// Vaultwarden's `<cipher id>/<attachment id>`. A key that could leave the folder (`..`, an absolute
 /// path, a dot or backslash) is refused. A first part of two hex digits is a folder of blob ids, so
@@ -230,17 +238,57 @@ impl ObjectBlobStore {
         self
     }
 
-    /// A pre-signed URL for `method`, when the store signs and the setting is on.
+    /// Moves what a pre-signed upload put under `blob`'s staging name to the blob's own path, when
+    /// there is something there. The signed URL can't be made to name a length or to stop working
+    /// once the upload is settled, so the server doesn't trust what is under it: the object must
+    /// be `expected` bytes, and its bytes are read and written again under the blob's own name
+    /// through the same `KMA1` checks and size cap as an upload through the server. The staging
+    /// object goes afterwards. A later `PUT` to the URL makes a new staging object and nothing
+    /// else.
+    ///
+    /// `Ok` also when there is nothing staged (a local folder, or an upload settled already).
+    /// `WrongSize` and `NotKma1` leave the staging object for the caller's `delete`.
+    async fn adopt_staged(&self, blob: BlobId, expected: u64) -> Result<(), BlobError> {
+        let staging = staging_path_of(blob);
+        let found = match self.store.get_opts(&staging, GetOptions::new()).await {
+            Ok(found) => found,
+            Err(object_store::Error::NotFound { .. }) => return Ok(()),
+            Err(e) => return Err(backend(e)),
+        };
+        let size = found.meta.size;
+        if size != expected {
+            return Err(BlobError::WrongSize);
+        }
+        let mut body = match found.payload {
+            GetResultPayload::File(file, _) => file_stream(file, size),
+            GetResultPayload::Stream(stream) => stream.map_err(backend).boxed(),
+        };
+        let mut upload = self.upload(blob, expected, Some(StreamCheck::new()));
+        while let Some(chunk) = body.try_next().await? {
+            if let Err(e) = upload.write(chunk).await {
+                upload.abort().await;
+                return Err(e);
+            }
+        }
+        if upload.finish().await? != expected {
+            // Fewer bytes arrived than the object's size said: it changed under the read.
+            self.delete_path(path_of(blob)).await?;
+            return Err(BlobError::WrongSize);
+        }
+        self.delete_path(staging).await
+    }
+
+    /// A pre-signed URL for `method` on `path`, when the store signs and the setting is on.
     async fn presigned(
         &self,
         method: Method,
-        blob: BlobId,
+        path: &Path,
     ) -> Result<Option<PresignedUrl>, BlobError> {
         let (Some(signer), Some(expires_in)) = (&self.signer, self.presign_ttl) else {
             return Ok(None);
         };
         let url = signer
-            .signed_url(method, &path_of(blob), expires_in)
+            .signed_url(method, path, expires_in)
             .await
             .map_err(backend)?;
         Ok(Some(PresignedUrl {
@@ -413,6 +461,9 @@ impl BlobStore for ObjectBlobStore {
     }
 
     async fn verify(&self, blob: BlobId, expected: u64) -> Result<(), BlobError> {
+        // A pre-signed upload arrives under the staging name. Move it to the blob's own, checked
+        // as it goes, before looking at the blob: from here on the signed URL can't reach it.
+        self.adopt_staged(blob, expected).await?;
         let path = path_of(blob);
         let meta = self
             .store
@@ -438,16 +489,21 @@ impl BlobStore for ObjectBlobStore {
         kma1::Header::parse(&head).map(|_| ()).map_err(not_kma1)
     }
 
+    /// Deletes the blob and whatever a pre-signed upload left under its staging name.
     async fn delete(&self, blob: BlobId) -> Result<(), BlobError> {
-        self.delete_path(path_of(blob)).await
+        self.delete_path(path_of(blob)).await?;
+        self.delete_path(staging_path_of(blob)).await
     }
 
+    /// The URL names the staging path, not the blob's own: the signature can't limit the length of
+    /// what is sent or end when the upload is settled, so what arrives there is checked and moved
+    /// by `verify`, and a later `PUT` to the URL only makes a new staging object.
     async fn presigned_upload(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
-        self.presigned(Method::PUT, blob).await
+        self.presigned(Method::PUT, &staging_path_of(blob)).await
     }
 
     async fn presigned_download(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
-        self.presigned(Method::GET, blob).await
+        self.presigned(Method::GET, &path_of(blob)).await
     }
 }
 

@@ -359,6 +359,16 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   migrations and file storage. The image's `HEALTHCHECK` runs `kemlock-server healthcheck`, because
   the image has no shell or curl.
 - Logs: text, or `KEMLOCK_LOG_FORMAT=json`.
+- Direct uploads to a bucket. With `KEMLOCK_ATTACHMENT_PRESIGN=true` (off by default; Kemlock API
+  only, bucket storage only) clients `PUT` files straight to the bucket through a pre-signed URL
+  that lives `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 300). A signed URL can't fix the
+  length of what is sent, so the URL names `staging/<blob id>`, not the file's own name. When the
+  client finishes the upload the server checks the object there (it must be the size announced
+  and a `KMA1` file), writes it again under the file's own name and deletes the staging object; a
+  `PUT` to the URL after that only makes a new staging object that nothing reads. Set a lifecycle
+  rule on the bucket that expires `staging/` after a day, so such objects, and the ones of
+  uploads that never finish, don't pile up (the orphan purge also deletes the staging object of
+  an upload nobody finished).
 - File permissions. On Unix a data folder the server creates is `0700`, and the SQLite database
   (with its `-wal` and `-shm` files and the copy made before a migration) and `server.key` are
   `0600`. A data folder that already exists keeps its mode, and the server warns at start-up when

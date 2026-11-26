@@ -91,7 +91,9 @@ pub trait BlobStore: Send + Sync {
 
     /// Checks a blob that was written some other way (a pre-signed upload): it must be
     /// `expected` bytes, start with a `KMA1` header and have a length chunks make. `NotFound`
-    /// when nothing is stored; `WrongSize` and `NotKma1` otherwise.
+    /// when nothing is stored; `WrongSize` and `NotKma1` otherwise. A store whose pre-signed URLs
+    /// name a staging object checks that and moves it to the blob's own name here, so a later
+    /// `PUT` to the URL can't change the blob (see `kemlock-blob`).
     fn verify(
         &self,
         blob: BlobId,
