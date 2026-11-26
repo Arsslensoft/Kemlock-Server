@@ -239,6 +239,10 @@ export interface AdminSpace {
   liveItems: number;
   /** Set while the space waits for its keys to be replaced. */
   keysPendingSince: number | null;
+  /** Whether the space is a Bitwarden organization (the list and one-space routes say; the answer to a change of owner leaves it false). */
+  bitwardenOrganization: boolean;
+  /** The invited members of an organization who have a Bitwarden invitation, whose link can be copied. */
+  bitwardenInvitations: SpaceOwner[];
 }
 
 /**

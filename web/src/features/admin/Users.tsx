@@ -127,18 +127,18 @@ function OwnerPanel({
  */
 function InviteLinkPanel({
   space,
-  candidates,
   onGet,
   onCancel,
 }: {
   space: AdminSpace;
-  candidates: AdminUser[];
   /** The link, or undefined when the request failed (its error is shown by the page). */
   onGet: (userId: string) => Promise<string | undefined>;
   onCancel: () => void;
 }) {
   const t = useT();
-  const [pick, setPick] = useState(candidates[0]?.id ?? '');
+  // Only the space's invited members who have a Bitwarden invitation: nobody else has a link.
+  const members = space.bitwardenInvitations;
+  const [pick, setPick] = useState(members[0]?.userId ?? '');
   const [link, setLink] = useState<string | undefined>();
   const [pending, setPending] = useState(false);
 
@@ -153,16 +153,20 @@ function InviteLinkPanel({
 
   return (
     <div className="adm-pad" role="group" aria-label={t('admin.users.inviteLink.title')}>
-      <SelectBox
-        label={t('admin.users.inviteLink.member', { space: space.id.slice(0, 8) })}
-        value={pick}
-        onChange={(value) => {
-          setPick(value);
-          setLink(undefined);
-        }}
-        hint={t('admin.users.inviteLink.hint')}
-        options={candidates.map((user) => ({ value: user.id, label: user.name ?? user.email }))}
-      />
+      {members.length === 0 ? (
+        <p className="hint">{t('admin.users.inviteLink.none', { space: space.id.slice(0, 8) })}</p>
+      ) : (
+        <SelectBox
+          label={t('admin.users.inviteLink.member', { space: space.id.slice(0, 8) })}
+          value={pick}
+          onChange={(value) => {
+            setPick(value);
+            setLink(undefined);
+          }}
+          hint={t('admin.users.inviteLink.hint')}
+          options={members.map((member) => ({ value: member.userId, label: member.email }))}
+        />
+      )}
       {link ? (
         <Notice tone="warn" live>
           <p>{t('admin.users.inviteLink.warning')}</p>
@@ -176,9 +180,11 @@ function InviteLinkPanel({
         <Button size="small" onPress={onCancel}>
           {t('admin.users.inviteLink.close')}
         </Button>
-        <Button size="small" variant="primary" isDisabled={pick === '' || pending} onPress={() => void get()}>
-          {t('admin.users.inviteLink.get')}
-        </Button>
+        {members.length > 0 ? (
+          <Button size="small" variant="primary" isDisabled={pick === '' || pending} onPress={() => void get()}>
+            {t('admin.users.inviteLink.get')}
+          </Button>
+        ) : null}
       </div>
     </div>
   );
@@ -452,7 +458,7 @@ export function UsersView(props: UsersViewProps) {
                           >
                             {t('admin.users.owner.changeShort')}
                           </Button>
-                          {getLink ? (
+                          {getLink && space.bitwardenOrganization ? (
                             <Button
                               size="small"
                               aria-label={t('admin.users.inviteLink.openFor', { space: name })}
@@ -487,7 +493,6 @@ export function UsersView(props: UsersViewProps) {
           <InviteLinkPanel
             key={linkOf.id}
             space={linkOf}
-            candidates={users}
             onCancel={() => setLinkOf(null)}
             onGet={(userId) => getLink(linkOf, userId)}
           />
