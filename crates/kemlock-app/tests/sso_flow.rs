@@ -786,12 +786,50 @@ async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_
     assert_eq!(step.methods, vec![TwoFactorMethod::Totp]);
     assert_eq!(sso.repos.identities().len(), 1, "the identity is linked");
     assert!(
+        !sso.repos.identities()[0].confirmed,
+        "linked while the account owes a second step"
+    );
+    assert!(
         sso.world.store.devices_of(existing).is_empty(),
         "no device before the second step"
     );
 
-    // Once linked, the provider's multi-factor answer is taken as before.
-    sso.provider.say(mfa());
+    // The challenge was abandoned. Signing in again is no way round it: the identity is linked
+    // now, but a link made to an account with a second step is not one the provider's `amr` may
+    // stand in for.
+    for n in 2..=3 {
+        sso.provider.say(mfa());
+        let again = sso
+            .sign_in(&format!("provider-code-{n}"))
+            .await
+            .expect("signs in");
+        assert!(!again.mfa_via_sso);
+        assert!(
+            matches!(again.outcome, SignedIn::SecondStep(_)),
+            "the second step is still owed on sign-in {n}"
+        );
+    }
+    assert!(sso.world.store.devices_of(existing).is_empty());
+    assert!(sso.world.store.refresh_tokens().is_empty());
+    assert_eq!(sso.repos.identities().len(), 1);
+}
+
+#[tokio::test]
+async fn an_account_with_no_second_step_links_at_once_and_keeps_the_amr_skip_after_it_turns_one_on() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    let first = sso.sign_in("provider-code-1").await.expect("links");
+    assert!(matches!(first.outcome, SignedIn::Tokens(_)));
+    assert!(sso.repos.identities()[0].confirmed);
+
+    // The owner turns a second step on later: the provider's multi-factor answer is taken, as for
+    // any identity linked before.
+    enable_totp(&sso.world, existing).await;
+    sso.provider.say({
+        let mut c = claims("sub-1", "ada@example.org");
+        c.amr = vec!["mfa".to_owned()];
+        c
+    });
     let again = sso.sign_in("provider-code-2").await.expect("signs in");
     assert!(matches!(again.outcome, SignedIn::Tokens(_)));
     assert!(again.mfa_via_sso);

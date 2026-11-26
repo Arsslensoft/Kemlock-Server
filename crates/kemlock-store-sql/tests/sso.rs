@@ -95,6 +95,7 @@ async fn identities(store: &SqlStore) {
         email: "ada@example.org".to_owned(),
         linked_at: linked,
         last_login_at: linked,
+        confirmed: true,
     };
     let first = link(ada.id, "sub-a", datetime!(2026-01-02 03:04:05 UTC));
     let second = link(ada.id, "sub-a2", datetime!(2026-01-03 03:04:05 UTC));

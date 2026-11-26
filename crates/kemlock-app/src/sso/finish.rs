@@ -144,7 +144,7 @@ where
         let email = self.trusted_email(&settings, &claims).await?;
 
         // 3. The account: linked, linkable by email, or new.
-        let (user, new_account, linked_now) = self
+        let (user, new_account, amr_trusted) = self
             .resolve_account(&settings, &claims, &email, now)
             .await?;
         // The provider has said who this is, so the account may be told it is disabled. Before the
@@ -181,10 +181,11 @@ where
             .map(|t| t.method)
             .collect();
         // What the provider's `amr` says is how the provider's user signed in, not that they own this
-        // account: it is taken in place of Kemlock's own second step only for an identity that was
-        // linked before this sign-in. The sign-in that makes the link (an account found by its
-        // email) always answers the account's own second step.
-        let provider_did_mfa = amr_shows_mfa(&claims.amr) && !linked_now;
+        // account: it is taken in place of Kemlock's own second step only for a confirmed identity.
+        // One made by linking to an account that has a second step never is, so the account's own
+        // second step is asked at every sign-in with it, not only at the one that linked it (which
+        // may have been abandoned at the challenge, leaving the link behind).
+        let provider_did_mfa = amr_shows_mfa(&claims.amr) && amr_trusted;
         if !methods.is_empty() && !provider_did_mfa {
             // The device is registered only after the second step, as after a password.
             let device = input.device.resolve(user.id, &self.sessions.env);
@@ -299,7 +300,7 @@ where
                 .by_id(identity.user)
                 .await?
                 .ok_or(SsoError::Unauthorized)?;
-            return Ok((user, false, false));
+            return Ok((user, false, identity.confirmed));
         }
 
         if settings.require_verified_domain && !self.domain_verified(email.as_str()).await? {
@@ -321,8 +322,19 @@ where
             if self.sessions.config.signups_verify && self.users.email_unconfirmed(user.id).await? {
                 return Err(AppError::EmailNotConfirmed.into());
             }
-            self.link(&user, claims, email, now).await?;
-            return Ok((user, false, true));
+            // A link made while the account has a second step is not confirmed: nothing has shown
+            // this sign-in is the account's owner, so the provider's `amr` never stands in for
+            // that second step.
+            let owes_second_step = self
+                .two_factor
+                .list(user.id)
+                .await?
+                .iter()
+                .any(|t| t.enabled);
+            let confirmed = self
+                .link(&user, claims, email, now, !owes_second_step)
+                .await?;
+            return Ok((user, false, confirmed));
         }
 
         if !settings.create_accounts {
@@ -330,7 +342,7 @@ where
         }
         let user = self.new_account(claims, email, now);
         self.users.insert(&user).await?;
-        self.link(&user, claims, email, now).await?;
+        self.link(&user, claims, email, now, true).await?;
         Ok((user, true, true))
     }
 
@@ -340,7 +352,8 @@ where
         claims: &IdentityClaims,
         email: &Email,
         now: OffsetDateTime,
-    ) -> Result<(), SsoError> {
+        confirmed: bool,
+    ) -> Result<bool, SsoError> {
         let identity = SsoIdentity {
             issuer: claims.issuer.clone(),
             subject: claims.subject.clone(),
@@ -348,16 +361,17 @@ where
             email: email.as_str().to_owned(),
             linked_at: now,
             last_login_at: now,
+            confirmed,
         };
         match self.repos.insert_identity(&identity).await {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(confirmed),
             // Another sign-in linked this subject a moment ago: fine if it was to this account.
             Err(StoreError::Duplicate) => match self
                 .repos
                 .find_identity(&claims.issuer, &claims.subject)
                 .await?
             {
-                Some(existing) if existing.user == user.id => Ok(()),
+                Some(existing) if existing.user == user.id => Ok(existing.confirmed),
                 _ => Err(SsoError::Unauthorized),
             },
             Err(e) => Err(e.into()),

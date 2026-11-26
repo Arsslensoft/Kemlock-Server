@@ -127,9 +127,11 @@ provider doesn't check) gets the Kemlock account of that address. Kemlock narrow
 - the provider's `email_verified` must be true (`SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION` accepts a
   token with no such claim only where the domain is proven by DNS in the console);
 - an account whose email was never confirmed (see `SIGNUPS_VERIFY`) is never linked;
-- the sign-in that makes the link always asks for the account's own second step, whatever the
-  provider's `amr` says; the `amr` skip ("Via SSO") applies only to identities that were linked
-  before. An administrator's account counts as an admin only with a second step turned on, so
+- a link made to an account that has a second step is recorded as unconfirmed, and the account's
+  own second step is asked at every sign-in with it, whatever the provider's `amr` says (abandoning
+  the first challenge and signing in again doesn't help). The `amr` skip ("Via SSO") applies only
+  to identities of accounts SSO made, links made while the account had no second step, and
+  identities linked before this rule; An administrator's account counts as an admin only with a second step turned on, so
   linking to one by email asks for it before any token is issued.
 
 Safer settings: set `SSO_SIGNUPS_MATCH_EMAIL=false` and let SSO make its own accounts (an existing
