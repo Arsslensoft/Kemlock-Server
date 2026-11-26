@@ -18,7 +18,8 @@ use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use kemlock_backup::{
-    AgeIdentity, Attachments, Manifest, parse_identity, read_archive, verify_unpacked,
+    AgeIdentity, Attachments, Manifest, is_never_restored, is_restorable_config_name,
+    is_restorable_data_file, parse_identity, read_archive, verify_unpacked,
 };
 use kemlock_store_sql::{SnapshotTable, SqlStore};
 use std::net::SocketAddr;
@@ -156,6 +157,27 @@ fn data_name(path: &str) -> Option<&str> {
     path.strip_prefix("data/").filter(|n| !n.contains('/'))
 }
 
+/// Refuses an archive that names a file a backup never writes and a restore must never install:
+/// the server key or a database file (`database` is the configured SQLite file, when there is
+/// one). Checked before anything is changed, so a refused archive leaves the server as it was.
+fn refuse_planted_files(manifest: &Manifest, database: Option<&Path>) -> Result<(), String> {
+    let database = database.and_then(Path::file_name);
+    for entry in &manifest.files {
+        let Some(name) = data_name(&entry.path) else {
+            continue;
+        };
+        if is_never_restored(name) || database.is_some_and(|file| file == std::ffi::OsStr::new(name))
+        {
+            return Err(format!(
+                "the archive holds {}, which a backup of this server never writes and a restore \
+                 never installs: it was not made by this server. Nothing was changed",
+                entry.path
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Replaces this server's database and files with the archive's. Stop the server first. The
 /// database is migrated to this version, then every table is emptied and refilled in one
 /// transaction; the data folder's files and the attachments are copied over what is there.
@@ -198,6 +220,7 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
         .map_err(|e| format!("can't make a working folder: {e}"))?;
     let unpacked = scratch.path().join("unpacked");
     let manifest = unpack(&options.archive, &options.identity, &unpacked).await?;
+    refuse_planted_files(&manifest, sqlite_file(&config.database_url).as_deref())?;
 
     // The database.
     let store = SqlStore::connect(&config.database_url)
@@ -226,8 +249,14 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
     for entry in &manifest.files {
         let from = unpacked.join(&entry.path);
         if let Some(name) = data_name(&entry.path) {
-            copy_file(&from, &config.data_folder.join(name))?;
-            files += 1;
+            if is_restorable_data_file(name) {
+                copy_file(&from, &config.data_folder.join(name))?;
+                files += 1;
+            } else {
+                notes.push(format!(
+                    "data/{name} isn't a file a restore installs, so it was skipped"
+                ));
+            }
         } else if let Some(relative) = entry.path.strip_prefix("attachments/") {
             match &attachments_folder {
                 Some(folder) => {
@@ -245,6 +274,12 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
                 }
             }
         } else if let Some(name) = entry.path.strip_prefix("config/") {
+            if !is_restorable_config_name(name) {
+                notes.push(format!(
+                    "config/{name} isn't a TOML configuration file name, so it was skipped"
+                ));
+                continue;
+            }
             let target = config
                 .config_file
                 .clone()
@@ -344,6 +379,7 @@ pub async fn restore_check(
     // 1. Open the archive and check every file and every table's rows against the manifest.
     let unpacked = scratch.path().join("unpacked");
     let manifest = unpack(archive, identity, &unpacked).await?;
+    refuse_planted_files(&manifest, None)?;
 
     // 2. Lay the files out as a data folder, with the key that was stored apart.
     let data = scratch.path().join("data");
@@ -352,8 +388,10 @@ pub async fn restore_check(
     for entry in &manifest.files {
         let from = unpacked.join(&entry.path);
         if let Some(name) = data_name(&entry.path) {
-            copy_file(&from, &data.join(name))?;
-            files += 1;
+            if is_restorable_data_file(name) {
+                copy_file(&from, &data.join(name))?;
+                files += 1;
+            }
         } else if let Some(relative) = entry.path.strip_prefix("attachments/") {
             copy_file(&from, &data.join("attachments").join(relative))?;
             files += 1;
@@ -569,6 +607,55 @@ mod tests {
             None,
         )
         .expect("valid")
+    }
+
+    fn manifest_with(paths: &[&str]) -> Manifest {
+        Manifest {
+            format: 1,
+            created_at: "2026-11-26T03:00:00Z".to_owned(),
+            kemlock_version: "0.1.4".to_owned(),
+            database: "sqlite".to_owned(),
+            migrations: Vec::new(),
+            tables: Vec::new(),
+            files: paths
+                .iter()
+                .map(|path| kemlock_backup::FileEntry {
+                    path: (*path).to_owned(),
+                    size: 0,
+                    sha256: String::new(),
+                })
+                .collect(),
+            attachments: Attachments::External,
+        }
+    }
+
+    #[test]
+    fn an_archive_that_carries_the_server_key_or_a_database_is_refused() {
+        let fine = manifest_with(&[
+            "db/users.jsonl",
+            "data/opaque-setup.sealed",
+            "data/rsa_key.pem",
+            "attachments/ab/abcdef",
+            "config/kemlock.toml",
+        ]);
+        assert!(refuse_planted_files(&fine, None).is_ok());
+        for planted in [
+            "data/server.key",
+            "data/db.sqlite3",
+            "data/db.sqlite3-wal",
+            "data/vault.db",
+        ] {
+            let refused = refuse_planted_files(&manifest_with(&["data/rsa_key.pem", planted]), None)
+                .expect_err(planted);
+            assert!(refused.contains(planted), "{refused}");
+            assert!(refused.contains("Nothing was changed"), "{refused}");
+        }
+        // The configured database file counts whatever it is called.
+        let custom = manifest_with(&["data/vault-store"]);
+        assert!(refuse_planted_files(&custom, None).is_ok());
+        assert!(refuse_planted_files(&custom, Some(Path::new("/data/vault-store"))).is_err());
+        // A name with a folder in it never reaches the data folder at all.
+        assert!(refuse_planted_files(&manifest_with(&["data/x/server.key"]), None).is_ok());
     }
 
     #[test]

@@ -99,6 +99,44 @@ pub fn create_private_file(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
+/// Whether a restore puts `data/<name>` back into the data folder. A backup writes the sealed
+/// secrets (`*.sealed`), the Bitwarden token key (`rsa_key.pem`) and the Vaultwarden settings file
+/// (`config.json`) there; any other name is not something a restore installs, so an archive
+/// can't use it to replace the configuration, the database or the next start's files.
+pub fn is_restorable_data_file(name: &str) -> bool {
+    let sealed_name = |stem: &str| {
+        !stem.is_empty()
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    matches!(name, "rsa_key.pem" | "config.json")
+        || name.strip_suffix(".sealed").is_some_and(sealed_name)
+}
+
+/// Whether `name` is a file that never goes in an archive and a restore refuses outright: the
+/// server key, and the database (SQLite's file, its `-wal`, `-shm` and `-journal` files). The
+/// database comes back as rows; a database file in an archive replaces the one the restore has
+/// just filled.
+pub fn is_never_restored(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == SERVER_KEY_FILE
+        || lower.contains(".sqlite")
+        || lower.ends_with(".db")
+        || lower.ends_with("-wal")
+        || lower.ends_with("-shm")
+        || lower.ends_with("-journal")
+}
+
+/// Whether a restore puts `config/<name>` in place of the TOML configuration file: a plain name
+/// ending in `.toml`.
+pub fn is_restorable_config_name(name: &str) -> bool {
+    name.len() > ".toml".len()
+        && name.ends_with(".toml")
+        && !name.contains(['/', '\'])
+        && !name.starts_with('.')
+}
+
 /// A path as it is written in an archive: `/`-separated.
 fn archive_path(prefix: &str, relative: &Path) -> String {
     let mut out = prefix.to_owned();
@@ -750,6 +788,48 @@ mod tests {
         }
         assert!(!TableEntry::is_valid_name(&"a".repeat(65)));
         assert!(TableEntry::is_valid_name("item_revisions2"));
+    }
+
+    #[test]
+    fn only_the_files_a_backup_writes_are_restored() {
+        for ok in [
+            "opaque-setup.sealed",
+            "token-signing-key.sealed",
+            "federation-identity.sealed",
+            "rsa_key.pem",
+            "config.json",
+        ] {
+            assert!(is_restorable_data_file(ok), "{ok}");
+            assert!(!is_never_restored(ok), "{ok}");
+        }
+        for other in [
+            "server.key",
+            "db.sqlite3",
+            "kemlock.toml",
+            "authorized_keys",
+            ".sealed",
+            "UPPER.sealed",
+            "a b.sealed",
+            "rsa_key.pem.bak",
+        ] {
+            assert!(!is_restorable_data_file(other), "{other}");
+        }
+        for never in [
+            "server.key",
+            "SERVER.KEY",
+            "db.sqlite3",
+            "db.sqlite3-wal",
+            "db.sqlite3-shm",
+            "vault.db",
+            "vault.db-journal",
+            "x.sqlite",
+        ] {
+            assert!(is_never_restored(never), "{never}");
+        }
+        assert!(is_restorable_config_name("kemlock.toml"));
+        for bad in ["server.key", ".toml", "a/b.toml", "..\x.toml", ".hidden.toml", "k.json"] {
+            assert!(!is_restorable_config_name(bad), "{bad}");
+        }
     }
 
     #[test]
