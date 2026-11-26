@@ -9,7 +9,9 @@ use crate::store::SqlStore;
 use crate::tables::items::{owner_from, owner_parts};
 use crate::tables::{live_nudges, push_tokens, settings};
 use kemlock_app::ports::StoreError;
-use kemlock_app::push::{NudgeEntry, NudgeLog, PushInstallation, PushRegistration, PushRepo};
+use kemlock_app::push::{
+    NudgeEntry, NudgeLog, PushCapReached, PushInstallation, PushRegistration, PushRepo,
+};
 use kemlock_domain::{DeviceId, Owner, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::OnConflict;
@@ -63,25 +65,74 @@ async fn put_setting<C: sea_orm::ConnectionTrait>(
     }
 }
 
+/// Stores or replaces a device's token on `db`.
+async fn put_token<C: sea_orm::ConnectionTrait>(
+    db: &C,
+    registration: &PushRegistration,
+) -> Result<(), StoreError> {
+    let conflict = OnConflict::column(push_tokens::Column::DeviceId)
+        .update_columns([
+            push_tokens::Column::UserId,
+            push_tokens::Column::Kind,
+            push_tokens::Column::Token,
+            push_tokens::Column::UpdatedAt,
+        ])
+        .to_owned();
+    // A device that doesn't exist is `NotFound` (the foreign key refuses the row).
+    match push_tokens::Entity::insert(push_tokens::active(registration))
+        .on_conflict(conflict)
+        .exec(db)
+        .await
+    {
+        // MySQL counts a replaced row with identical values as zero rows affected.
+        Ok(_) | Err(DbErr::RecordNotInserted) => Ok(()),
+        Err(err) => Err(map_db(err)),
+    }
+}
+
 impl PushRepo for SqlStore {
     async fn put_registration(&self, registration: &PushRegistration) -> Result<(), StoreError> {
-        let conflict = OnConflict::column(push_tokens::Column::DeviceId)
-            .update_columns([
-                push_tokens::Column::UserId,
-                push_tokens::Column::Kind,
-                push_tokens::Column::Token,
-                push_tokens::Column::UpdatedAt,
-            ])
-            .to_owned();
-        // A device that doesn't exist is `NotFound` (the foreign key refuses the row).
-        match push_tokens::Entity::insert(push_tokens::active(registration))
-            .on_conflict(conflict)
-            .exec(self.writer())
-            .await
-        {
-            // MySQL counts a replaced row with identical values as zero rows affected.
-            Ok(_) | Err(DbErr::RecordNotInserted) => Ok(()),
-            Err(err) => Err(map_db(err)),
+        put_token(self.writer(), registration).await
+    }
+
+    /// The count and the write in one transaction, under the store's gate (the one the attachment
+    /// quota uses): on SQLite the single writer connection already serializes them, and on
+    /// PostgreSQL and MySQL the gate keeps two registrations from each counting before either
+    /// has written.
+    async fn put_registration_within_cap(
+        &self,
+        registration: &PushRegistration,
+        cap: usize,
+    ) -> Result<Result<(), PushCapReached>, StoreError> {
+        let _gate = self.quota_gate().await;
+        let txn = self.writer().begin().await.store()?;
+        let outcome = async {
+            let held = push_tokens::Entity::find()
+                .filter(push_tokens::Column::UserId.eq(registration.user.0))
+                .filter(push_tokens::Column::Kind.eq(registration.kind.as_str()))
+                .filter(push_tokens::Column::DeviceId.ne(registration.device.0))
+                .all(&txn)
+                .await
+                .store()?
+                .len();
+            if held >= cap {
+                return Ok(Err(PushCapReached));
+            }
+            put_token(&txn, registration).await?;
+            Ok::<_, StoreError>(Ok(()))
+        }
+        .await;
+        match outcome {
+            Ok(done) => {
+                txn.commit().await.store()?;
+                Ok(done)
+            }
+            Err(err) => {
+                if let Err(rollback) = txn.rollback().await {
+                    tracing::warn!(%rollback, "rollback after registering a push token failed");
+                }
+                Err(err)
+            }
         }
     }
 
