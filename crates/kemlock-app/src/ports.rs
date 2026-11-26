@@ -132,6 +132,26 @@ pub trait UserRepo: Send + Sync {
         async { Ok(false) }
     }
 
+
+    /// Inserts a new account that is held until its link is opened, in one step: the account and
+    /// its hold go in together or not at all, so the account is never there unheld. `Duplicate`
+    /// when the email is taken. The default inserts and then holds in two steps, which leaves a
+    /// moment between them; a store that serves requests concurrently overrides it with a
+    /// transaction.
+    fn insert_held(
+        &self,
+        user: &User,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            self.insert(user).await?;
+            self.hold_unconfirmed(user.id, token_hash, requested_at, expires_at)
+                .await
+        }
+    }
+
     /// Holds the account until its link is opened, in place of any hold it had: `token_hash` is
     /// the SHA-256 of the link's token, which stops working at `expires_at`.
     fn hold_unconfirmed(

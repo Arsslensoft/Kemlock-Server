@@ -91,6 +91,23 @@ async fn holds(store: &SqlStore) {
     assert_eq!(store.spend_confirmation(second, T0).await, Ok(None));
     assert_eq!(store.email_unconfirmed(ada).await, Ok(true));
 
+    // An account made held is there with its hold; one refused (its email is taken) leaves no
+    // hold behind.
+    let made = user(&unique_email("hold-made"));
+    store
+        .insert_held(&made, hash(), T0, T0 + lifetime)
+        .await
+        .expect("inserts the account and its hold together");
+    assert_eq!(store.by_id(made.id).await.map(|u| u.is_some()), Ok(true));
+    assert_eq!(store.email_unconfirmed(made.id).await, Ok(true));
+    let clash = user(made.email.as_str());
+    assert_eq!(
+        store.insert_held(&clash, hash(), T0, T0 + lifetime).await,
+        Err(StoreError::Duplicate)
+    );
+    assert_eq!(store.by_id(clash.id).await, Ok(None));
+    assert_eq!(store.email_unconfirmed(clash.id).await, Ok(false));
+
     // A hold for an account that doesn't exist is refused by the foreign key.
     assert_eq!(
         store

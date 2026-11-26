@@ -18,6 +18,7 @@ use crate::platform::{Platform, random_uuid};
 use crate::ports::{PasswordAuth, UserRepo};
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, SetupError, User, UserId};
 use std::sync::Arc;
+use time::OffsetDateTime;
 
 /// `"kemlock/v1/bundle"`, the start of a public-key bundle.
 pub const BUNDLE_PREFIX: &[u8] = b"kemlock/v1/bundle";
@@ -68,6 +69,15 @@ pub struct RegisterInput {
     pub setup_grant: Option<String>,
 }
 
+/// A hold to write with the account: it may not sign in or be used until the link whose token
+/// has this SHA-256 is opened (see `signup_verify`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmailHold {
+    pub token_hash: [u8; 32],
+    /// When the link stops working.
+    pub expires_at: OffsetDateTime,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Registered {
     pub user: UserId,
@@ -93,6 +103,16 @@ impl<U: UserRepo + FirstAdminRepo, P: PasswordAuth, E: Platform> Register<U, P, 
 
     /// Registration, last message: stores the account.
     pub async fn finish(&self, input: RegisterInput) -> Result<Registered, AppError> {
+        self.finish_with(input, None).await
+    }
+
+    /// [`Register::finish`] with a `hold` to write in the same transaction as the account, so the
+    /// account never exists without it. The first admin is never held.
+    pub async fn finish_with(
+        &self,
+        input: RegisterInput,
+        hold: Option<EmailHold>,
+    ) -> Result<Registered, AppError> {
         let email = Email::parse(&input.email).map_err(|_| AppError::Invalid("not an email"))?;
         check_keys(&input)?;
         let now = self.env.now();
@@ -111,7 +131,7 @@ impl<U: UserRepo + FirstAdminRepo, P: PasswordAuth, E: Platform> Register<U, P, 
             return Err(AppError::Forbidden);
         }
 
-        let result = self.create(input, email, admin).await;
+        let result = self.create(input, email, admin, hold).await;
         match &result {
             Ok(registered) if admin => self.setup.registered(registered.user),
             Ok(_) => {}
@@ -135,6 +155,7 @@ impl<U: UserRepo + FirstAdminRepo, P: PasswordAuth, E: Platform> Register<U, P, 
         input: RegisterInput,
         email: Email,
         admin: bool,
+        hold: Option<EmailHold>,
     ) -> Result<Registered, AppError> {
         let record = self.auth.registration_record(&input.upload)?;
         let now = self.env.now();
@@ -164,6 +185,10 @@ impl<U: UserRepo + FirstAdminRepo, P: PasswordAuth, E: Platform> Register<U, P, 
             // The account and the first-admin marker go in together: a second first admin
             // (another replica has its own setup code) fails here, in the database.
             self.users.insert_first_admin(&user).await?;
+        } else if let Some(hold) = hold {
+            self.users
+                .insert_held(&user, hold.token_hash, now, hold.expires_at)
+                .await?;
         } else {
             self.users.insert(&user).await?;
         }

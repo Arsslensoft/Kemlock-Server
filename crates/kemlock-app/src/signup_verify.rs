@@ -16,6 +16,7 @@ use crate::error::AppError;
 use crate::notices::{Notice, Notices, SignupVerifyNotice};
 use crate::platform::Platform;
 use crate::ports::UserRepo;
+use crate::register::EmailHold;
 use kemlock_domain::{Email, User, UserId};
 use time::Duration;
 
@@ -24,6 +25,22 @@ pub const LIFETIME: Duration = Duration::hours(24);
 /// How soon another link may be asked for: a person who registered an address they don't own
 /// can't make the server mail it over and over.
 pub const RESEND_AFTER: Duration = Duration::minutes(5);
+
+/// A link made but not yet in use: the hold to write with the account, and the token that goes in
+/// the mail.
+pub struct PreparedLink {
+    pub hold: EmailHold,
+    /// The secret of the link, base64url. Never logged.
+    pub token: String,
+}
+
+impl std::fmt::Debug for PreparedLink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedLink")
+            .field("hold", &self.hold)
+            .finish_non_exhaustive()
+    }
+}
 
 /// Holds a new account until its address is confirmed, mails the link, and opens it.
 #[derive(Debug)]
@@ -34,28 +51,39 @@ pub struct SignupVerify<U, E> {
 }
 
 impl<U: UserRepo, E: Platform> SignupVerify<U, E> {
-    /// A new link for `user`, in place of any before it, mailed to the account's address. A mail
-    /// that can't be sent leaves the hold: the link is asked for again from the sign-in screen.
-    async fn send_link(&self, user: &User) -> Result<(), AppError> {
-        let now = self.env.now();
+    /// A link and the hold that goes with it, to be written with a new account (see
+    /// [`Register::finish_with`](crate::register::Register::finish_with)) and mailed with
+    /// [`SignupVerify::mail`] once the account exists.
+    pub fn prepare(&self) -> PreparedLink {
         let token = b64url::encode(&self.env.bytes::<32>());
-        self.users
-            .hold_unconfirmed(user.id, self.env.sha256(token.as_bytes()), now, now + LIFETIME)
-            .await?;
+        let hold = EmailHold {
+            token_hash: self.env.sha256(token.as_bytes()),
+            expires_at: self.env.now() + LIFETIME,
+        };
+        PreparedLink { hold, token }
+    }
+
+    /// Mails the link to `to`. A mail that can't be sent leaves the account held: its owner asks for
+    /// a new link from the sign-in screen.
+    pub async fn mail(&self, to: &Email, token: String) {
         let notice = Notice::SignupVerify(SignupVerifyNotice {
-            to: user.email.clone(),
+            to: to.clone(),
             token,
         });
         if let Err(error) = self.notices.send_checked(notice).await {
             tracing::warn!(%error, "the mail that confirms a new account's address was not sent");
         }
-        Ok(())
     }
 
-    /// Holds the account just made until its address is confirmed, and mails the link.
-    pub async fn begin(&self, user: UserId) -> Result<(), AppError> {
-        let user = self.users.by_id(user).await?.ok_or(AppError::NotFound)?;
-        self.send_link(&user).await
+    /// A new link for `user`, in place of any before it, mailed to the account's address.
+    async fn send_link(&self, user: &User) -> Result<(), AppError> {
+        let now = self.env.now();
+        let link = self.prepare();
+        self.users
+            .hold_unconfirmed(user.id, link.hold.token_hash, now, link.hold.expires_at)
+            .await?;
+        self.mail(&user.email, link.token).await;
+        Ok(())
     }
 
     /// Mails a new link to the address, when an account with that address is held and no link was

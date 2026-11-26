@@ -9,7 +9,7 @@ use kemlock_app::ports::{EmailConfirmation, StoreError, UserRepo};
 use kemlock_domain::{Email, User, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, TransactionTrait};
 use time::OffsetDateTime;
 
 impl UserRepo for SqlStore {
@@ -123,6 +123,33 @@ impl UserRepo for SqlStore {
             .await
             .store()?
             .map(|row| row.due_at))
+    }
+
+    /// The account and its hold in one transaction.
+    async fn insert_held(
+        &self,
+        user: &User,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
+        users::Entity::insert(users::active(user))
+            .exec(&txn)
+            .await
+            .store()?;
+        email_confirmations::Entity::insert(email_confirmations::ActiveModel {
+            user_id: Set(user.id.0),
+            token_hash: Set(token_hash.to_vec()),
+            requested_at: Set(utc(requested_at)),
+            expires_at: Set(utc(expires_at)),
+        })
+        .exec(&txn)
+        .await
+        .store()?;
+        // A failure above drops the transaction, which rolls it back.
+        txn.commit().await.store()?;
+        Ok(())
     }
 
     /// Read from the writer: a hold made a moment ago must be seen, or a stale read would let an
