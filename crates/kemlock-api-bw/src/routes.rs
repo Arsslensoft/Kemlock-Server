@@ -367,11 +367,16 @@ struct SendEmailLoginData {
     master_password_hash: Option<String>,
 }
 
-async fn send_email_login<S: BwStore>(State(app): State<App<S>>, body: Bytes) -> EmptyResult {
+async fn send_email_login<S: BwStore>(
+    State(app): State<App<S>>,
+    Peer(ip): Peer,
+    body: Bytes,
+) -> EmptyResult {
     let data: SendEmailLoginData = parse(&body)?;
     empty(
         identity::send_email_login(
             &app,
+            ip,
             data.email.as_deref(),
             data.master_password_hash.as_deref(),
         )

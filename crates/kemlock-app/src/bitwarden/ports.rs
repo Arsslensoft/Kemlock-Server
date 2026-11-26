@@ -91,3 +91,28 @@ pub trait BwUserKeyIdRepo: Send + Sync {
         key_id: &str,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 }
+
+/// Tries made at one secret of one account (a second-step code, a request for an emailed code),
+/// counted in a window and kept in the database, so a guess can't be made at the speed of the
+/// network by many addresses, and a restart doesn't give the tries back. A caller counts a try
+/// before it checks the secret, so tries that arrive together are each counted.
+pub trait BwTryRepo: Send + Sync {
+    /// Counts one try of `kind` for `user` at `now` (Unix seconds) and returns how many tries the
+    /// window holds, this one included. A window begins at its first try and ends `window_secs`
+    /// seconds later; the first try after that begins a new one. `NotFound` when there is no such
+    /// user.
+    fn count_try(
+        &self,
+        user: UserId,
+        kind: &str,
+        now: i64,
+        window_secs: i64,
+    ) -> impl Future<Output = Result<u32, StoreError>> + Send;
+
+    /// Forgets the tries of `kind` for `user`, as a right answer does.
+    fn forget_tries(
+        &self,
+        user: UserId,
+        kind: &str,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+}

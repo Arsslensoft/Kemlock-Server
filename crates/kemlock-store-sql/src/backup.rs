@@ -43,7 +43,7 @@ use crate::tables::space_tables;
 use crate::tables::sso;
 use crate::tables::{
     admin, attachments, auth_requests, bw_account_extras, bw_accounts, bw_attachments, bw_devices,
-    bw_docs, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
+    bw_docs, bw_tries, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
     device_key_copies, devices, duplicate_dismissals, email_changes, emergency_access, events,
     federation, federation_insight, federation_keys, federation_logs, federation_wiring, item_tags,
     items, passkeys, pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens,
@@ -191,6 +191,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         bw_accounts::Entity,
         bw_account_extras::Entity,
         bw_user_key_ids::Entity,
+        bw_tries::Entity,
         auth_requests::Entity,
         device_key_copies::Entity,
         emergency_access::Entity,

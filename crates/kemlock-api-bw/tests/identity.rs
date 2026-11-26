@@ -1532,3 +1532,26 @@ async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["scope"], "api");
 }
+
+#[tokio::test]
+async fn a_request_for_an_emailed_code_is_limited_by_address_like_a_sign_in() {
+    let h = Harness::with(|s| s.login_ratelimit_max_burst = 2).await;
+    h.account("ada@example.com", HASH).await;
+    let ask = || async {
+        h.json(
+            "POST",
+            "/api/two-factor/send-email-login",
+            None,
+            Some(json!({"email": "ada@example.com", "masterPasswordHash": HASH})),
+        )
+        .await
+    };
+    for _ in 0..2 {
+        let (status, body) = ask().await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["message"], "Email 2FA is disabled");
+    }
+    let (status, body) = ask().await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["message"], "Too many login requests");
+}

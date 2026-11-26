@@ -6,6 +6,7 @@ mod approvals;
 mod attachments;
 mod bw_accounts;
 mod bw_devices;
+mod bw_tries;
 mod bw_docs;
 mod bw_user_key_ids;
 mod custom_fields;
