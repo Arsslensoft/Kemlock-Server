@@ -8,6 +8,7 @@ import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
 import { duplicatesViewStore } from '@/features/duplicates/viewState';
 import { manifestKeeper } from '@/manifest/instance';
+import { signedApi } from '@/api/signedWrites';
 import { trackedApi } from '@/manifest/tracked';
 import { forgetKeyFacts } from './keyFacts';
 import { type KindCounts, countByKind } from './listFilters';
@@ -35,10 +36,11 @@ import {
 
 // Items of a space open once the worker holds the space's keys: the loader opens them on demand.
 const spaceKeys = createSpaceKeyLoader(spaceDeps);
-// The API the vault reads and writes through is watched by the manifest keeper (src/manifest): what
+// Every write this browser makes is signed by the account (docs/crypto.md, "Signed item writes").
+// The API the vault reads and writes through is also watched by the manifest keeper (src/manifest): what
 // the server serves is checked against the signed manifest, and this browser's writes are signed in.
 const deps: VaultDeps = {
-  api: trackedApi(api, manifestKeeper),
+  api: trackedApi(signedApi(api, vaultCrypto), manifestKeeper),
   crypto: vaultCrypto,
   ensureSpaceKeys: spaceKeys.ensure,
   served: (dto, opened) => manifestKeeper.served(dto, opened),

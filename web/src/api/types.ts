@@ -166,6 +166,16 @@ export interface ItemDto {
    * the server; it may be sent back unchanged and is ignored.
    */
   deletedAt?: string | null;
+  /**
+   * The account that wrote this revision and signed it (docs/crypto.md, "Signed item writes"): all
+   * three members come together or not at all. The server stores and serves them; it never makes
+   * one.
+   */
+  writer?: string | null;
+  /** The key version of the writer's bundle that signed. */
+  writerKeyVersion?: number | null;
+  /** The writer's sig1 signature of the write, base64url. */
+  writeSignature?: string | null;
 }
 
 export interface BatchWrite {
