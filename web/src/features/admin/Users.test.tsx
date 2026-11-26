@@ -227,3 +227,47 @@ describe('a request that fails', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });
+
+describe('the Bitwarden invitation link', () => {
+  const LINK = 'https://vault.example.org/#/accept-organization/?token=secret';
+
+  it('is not offered where the console has no route for it', () => {
+    view();
+    expect(screen.queryByRole('button', { name: /invitation link/i })).not.toBeInTheDocument();
+  });
+
+  it('asks for the link of the account picked, and shows it once with its warning', async () => {
+    const onInviteLink = vi.fn().mockResolvedValue(LINK);
+    view({ onInviteLink });
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Copy a Bitwarden invitation link for space s1aaaaaa' }),
+    );
+    await user.selectOptions(screen.getByLabelText('Invited member of space s1aaaaaa'), 'u1');
+    expect(screen.queryByText(LINK)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Get the link' }));
+    expect(onInviteLink).toHaveBeenCalledWith(SPACES[0], 'u1');
+    expect(await screen.findByText(LINK)).toBeInTheDocument();
+    expect(screen.getByText(/Whoever opens this link accepts the invitation for that account/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy invitation link' })).toBeInTheDocument();
+
+    // Picking another account clears the link, so it is never taken for theirs.
+    await user.selectOptions(screen.getByLabelText('Invited member of space s1aaaaaa'), 'u0');
+    expect(screen.queryByText(LINK)).not.toBeInTheDocument();
+  });
+
+  it('shows no link when the request failed, and keeps the panel open', async () => {
+    const onInviteLink = vi.fn().mockResolvedValue(undefined);
+    view({ onInviteLink });
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Copy a Bitwarden invitation link for space s2bbbbbb' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Get the link' }));
+    expect(onInviteLink).toHaveBeenCalledWith(SPACES[1], expect.any(String));
+    expect(screen.queryByText(/Whoever opens this link/)).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Bitwarden invitation link' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('group', { name: 'Bitwarden invitation link' })).not.toBeInTheDocument();
+  });
+});

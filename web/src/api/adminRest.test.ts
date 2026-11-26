@@ -138,3 +138,16 @@ describe('the custom fields', () => {
     });
   });
 });
+
+describe('the Bitwarden invitation link', () => {
+  it('reads the link of one member with the step-up token', async () => {
+    const answer = { link: 'https://vault.example.org/#/accept-organization/?token=t', expiresAt: 1_800_000_000 };
+    const { admin, calls } = transport({ [`GET ${BASE}/spaces/s1/members/u1/invite-link`]: answer });
+    expect(await admin.spaceInviteLink('s1', 'u1', 'tok')).toEqual(answer);
+    expect(calls[0]).toMatchObject({
+      method: 'GET',
+      path: `${BASE}/spaces/s1/members/u1/invite-link`,
+      headers: { 'Step-Up-Token': 'tok' },
+    });
+  });
+});
