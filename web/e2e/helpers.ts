@@ -41,8 +41,36 @@ export async function expectAccessible(page: Page): Promise<void> {
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze();
+  // axe reads all of an element's text as its visible label, so a menu entry with a label and a
+  // description under it ("Move to Trash" / "Kept there for 30 days…") fails label-in-name. That is
+  // the ARIA pattern for it, so such a node passes, but only when its text is exactly its
+  // aria-labelledby text followed by its aria-describedby text.
+  const labelThenDescription = async (selector: string): Promise<boolean> =>
+    page.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return false;
+      const text = (ids: string | null) =>
+        (ids ?? '')
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent ?? '')
+          .join('');
+      const squash = (s: string) => s.replace(/\s+/g, '');
+      const label = text(el.getAttribute('aria-labelledby'));
+      const description = text(el.getAttribute('aria-describedby'));
+      return label !== '' && description !== '' && squash(el.textContent ?? '') === squash(label + description);
+    }, selector);
+  for (const v of results.violations) {
+    if (v.id !== 'label-content-name-mismatch') continue;
+    const kept: typeof v.nodes = [];
+    for (const n of v.nodes) {
+      if (!(await labelThenDescription(n.target.join(' ')))) kept.push(n);
+    }
+    v.nodes = kept;
+  }
+  results.violations = results.violations.filter((v) => v.nodes.length > 0);
   const summary = results.violations.map(
-    (v) => `${v.id}: ${v.help}\n  ${v.nodes.map((n) => n.target.join(' ')).join('\n  ')}`,
+    // The selector and the start of the element's HTML, so a generated id still says what it is.
+    (v) => `${v.id}: ${v.help}\n  ${v.nodes.map((n) => `${n.target.join(' ')} ${n.html.slice(0, 160)}`).join('\n  ')}`,
   );
   // Soft: the journey goes on, so one run lists every page's violations, and still fails.
   expect.soft(summary, 'accessibility violations').toEqual([]);

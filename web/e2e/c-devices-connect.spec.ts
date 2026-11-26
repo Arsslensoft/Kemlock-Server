@@ -161,7 +161,10 @@ test('Devices & apps: Connect, and trust in the table', async ({ page, context }
   await trust.click();
   const mine = page.locator('.row', { hasText: 'This browser' });
   await expect(mine.getByRole('button', { name: 'Trusted device' })).toBeVisible({ timeout: 30_000 });
+  // The shield's tooltip shows on focus, as the phone's did.
+  await mine.getByRole('button', { name: 'Trusted device' }).focus();
   await expect(mine.getByRole('tooltip')).toContainText('Trusted since');
+  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Actions for this browser' }).click();
   await expect(page.getByRole('menuitem')).toHaveText(['Stop trusting', 'Sign out of this browser']);
   await page.getByRole('menuitem', { name: 'Stop trusting' }).click();

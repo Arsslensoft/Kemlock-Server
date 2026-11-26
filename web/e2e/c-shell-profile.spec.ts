@@ -60,13 +60,13 @@ test('the avatar menu, the New menu and the sidebar', async ({ page }) => {
   // The sidebar: All items and every type, each with its count, and no Account section.
   const sidebar = page.getByRole('navigation', { name: 'Vault' });
   await expect(sidebar.getByRole('heading', { name: 'Account' })).toHaveCount(0);
-  await expect(sidebar.getByRole('link', { name: /^All items\d+$/ })).toBeVisible();
+  await expect(sidebar.getByRole('link', { name: /^All items \d+$/ })).toBeVisible();
   for (const plural of PLURALS) {
-    await expect(sidebar.getByRole('link', { name: new RegExp(`^${plural}\\d+$`) }), plural).toBeVisible();
+    await expect(sidebar.getByRole('link', { name: new RegExp(`^${plural} \\d+$`) }), plural).toBeVisible();
   }
-  await sidebar.getByRole('link', { name: /^MFA codes\d+$/ }).click();
+  await sidebar.getByRole('link', { name: /^MFA codes \d+$/ }).click();
   await expect(page).toHaveURL(/\/vault\?kind=otp$/);
-  await sidebar.getByRole('link', { name: /^All items\d+$/ }).click();
+  await sidebar.getByRole('link', { name: /^All items \d+$/ }).click();
   await expect(page).toHaveURL(/\/vault$/);
 
   // The New menu: every type, in order, each one a creation form.
@@ -80,10 +80,12 @@ test('the avatar menu, the New menu and the sidebar', async ({ page }) => {
   await page.getByRole('button', { name: 'New item' }).click();
   await types.getByRole('link', { name: 'Note', exact: true }).click();
   await expect(page).toHaveURL(/\/vault\/new\?kind=note$/);
+  // The form loads, then focuses its Name: wait for that, or it takes the focus from the next step.
+  await expect(page.getByLabel('Name', { exact: true })).toBeFocused();
 
   // The avatar menu: who, then the entries, the console's among them for an admin.
   const avatar = page.getByRole('button', { name: /^Account menu for / });
-  await expect(avatar).toHaveText('SR');
+  await expect(avatar.locator('[aria-hidden="true"]')).toHaveText('SR');
   const menu = await openAccountMenu(page);
   await expect(page.getByText(ADMIN.email)).toBeVisible();
   await expect(menu.locator('a, button')).toHaveText([
@@ -179,11 +181,11 @@ test('Profile: the name, the address and the master password', async ({ page }) 
   const code = await nextCode();
   await pw.getByLabel('Second-step code').fill(code);
   await pw.getByLabel('Current master password').fill(ADMIN.password);
-  await pw.getByLabel('New master password').fill('too short');
+  await pw.getByLabel('New master password', { exact: true }).fill('too short');
   await pw.getByLabel('Type it again').fill('too short');
   await pw.getByRole('button', { name: 'Change master password' }).click();
   await expect(pw.getByRole('alert')).toContainText('at least 12 characters');
-  await pw.getByLabel('New master password').fill(NEW_PASSWORD);
+  await pw.getByLabel('New master password', { exact: true }).fill(NEW_PASSWORD);
   await pw.getByLabel('Type it again').fill(`${NEW_PASSWORD} `);
   await pw.getByRole('button', { name: 'Change master password' }).click();
   await expect(pw.getByRole('alert')).toContainText("don't match");
@@ -193,7 +195,7 @@ test('Profile: the name, the address and the master password', async ({ page }) 
   await pw.getByLabel('Type it again').fill(NEW_PASSWORD);
   await pw.getByRole('button', { name: 'Change master password' }).click();
   await expect(page.getByText('That is not your current master password.')).toBeVisible({ timeout: 60_000 });
-  await expect(pw.getByLabel('New master password')).toHaveValue(NEW_PASSWORD);
+  await expect(pw.getByLabel('New master password', { exact: true })).toHaveValue(NEW_PASSWORD);
 
   // The change: the boxes empty, and the account opens with the new password. The code was not
   // spent by the refusals, which never reached the server, but a failed try empties its box.
@@ -208,7 +210,7 @@ test('Profile: the name, the address and the master password', async ({ page }) 
 
   // Back to the old one, with this tab still signed in: then a sign-in proves the final record.
   await pw.getByLabel('Current master password').fill(NEW_PASSWORD);
-  await pw.getByLabel('New master password').fill(ADMIN.password);
+  await pw.getByLabel('New master password', { exact: true }).fill(ADMIN.password);
   await pw.getByLabel('Type it again').fill(ADMIN.password);
   await pw.getByLabel('Second-step code').fill(await nextCode());
   await pw.getByRole('checkbox', { name: /Sign out my other devices/ }).uncheck();

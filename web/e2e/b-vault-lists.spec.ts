@@ -94,6 +94,9 @@ test('the lists filter by type and by vault, and Trash and Duplicates say which 
   // The lock's tooltip shows on keyboard focus.
   await page.getByRole('button', { name: 'End-to-end encrypted' }).focus();
   await expect(page.getByRole('tooltip')).toContainText('The server keeps ciphertext only');
+  // Escape puts it away: open, it lies over the type chips.
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('tooltip')).toBeHidden();
 
   // A type chip leads to that type's page: its title and line, no chips, only its items.
   await page.getByRole('group', { name: 'Filter by type' }).getByRole('button', { name: 'Notes' }).click();
