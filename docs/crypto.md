@@ -1471,8 +1471,9 @@ once per space and device, before the device trusts the chain.
 - An invitee's device: `P` is the inviter, the `by` of the `invite` that is in effect for this
   account. If the inviter is no longer a confirmed member, `P` is a confirmed Owner the person picks.
 - A confirmed member's new device: `P` is the confirmer, the `by` of the record that last confirmed
-  this account. A device whose own account's current key signed or cosigned a record after that one
-  needs no comparison: its own key vouches for the chain.
+  this account. A device whose own account's current key signed a `rekey` after that one (the state
+  keeps the `seq` of the member's last `rekey`) needs no comparison: its own key vouches for the
+  chain. Other records the account signed since don't count, because the state doesn't keep them.
 - The creator's device made `create` itself and is its own anchor.
 
 So a client's answer is one of three, never a bare "none": **no comparison** (the creator's device, or
