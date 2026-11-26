@@ -20,6 +20,7 @@ import {
   readdPasskeyUnlock,
   RotationBlockedError,
   RotationPasswordError,
+  RotationProofSpentError,
   rotateKeys,
 } from './rotationModel';
 import { useKeyProof } from './useKeyProof';
@@ -37,9 +38,12 @@ function describeRotation(error: unknown): Described {
   if (error instanceof RotationBlockedError) {
     if (error.reason === 'spaces') return { id: 'security.rotate.blocked.spaces' };
     if (error.reason === 'compatible') return { id: 'security.rotate.blocked.compatible' };
+    if (error.reason === 'federated') return { id: 'security.rotate.blocked.federated' };
     return { id: 'security.rotate.error.items' };
   }
+  if (error instanceof RotationProofSpentError) return { id: 'security.rotate.error.proof' };
   if (isApiError(error, 'rotation-incomplete')) return { id: 'security.rotate.error.incomplete' };
+  if (isApiError(error, 'rotation-federated')) return { id: 'security.rotate.blocked.federated' };
   if (isApiError(error, 'spaces-need-rekey')) return { id: 'security.rotate.blocked.spaces' };
   return describeProfileError(error);
 }
@@ -83,7 +87,13 @@ export function useRotateKeys(email: string, twoStep: boolean) {
 
   const planError = plan.error instanceof ApiError ? plan.error : undefined;
   const blocked: RotateKeysProps['blocked'] =
-    planError?.slug === 'compatible-account' ? 'compatible' : (plan.data?.spaces ?? 0) > 0 ? 'spaces' : null;
+    planError?.slug === 'compatible-account'
+      ? 'compatible'
+      : planError?.slug === 'rotation-federated'
+        ? 'federated'
+        : (plan.data?.spaces ?? 0) > 0
+          ? 'spaces'
+          : null;
   const impact: RotateImpact | undefined = plan.data
     ? {
         contacts: contacts.data ?? [],
@@ -124,6 +134,12 @@ export function useRotateKeys(email: string, twoStep: boolean) {
       start: async ({ password, makeKit, emergencyKeep, proof }) => {
         const { userId, deviceId } = state;
         if (!userId || !deviceId) return false;
+        // The new Recovery Kit's pieces exist only here: kept from the moment the server has the keys,
+        // so a failure after that, in this browser, does not lose them.
+        const installed: { kit: { kitId: string; pieces: string[] } | null; seen: boolean } = {
+          kit: null,
+          seen: false,
+        };
         const deps: RotationDeps = {
           api: {
             ...rotationApi,
@@ -135,6 +151,10 @@ export function useRotateKeys(email: string, twoStep: boolean) {
           crypto: vaultCrypto,
           userId,
           deviceId,
+          onInstalled: ({ kit }) => {
+            installed.kit = kit;
+            installed.seen = true;
+          },
         };
         setProgress({ phase: 'plan', done: 0, total: 1 });
         const result = await run(() =>
@@ -145,7 +165,20 @@ export function useRotateKeys(email: string, twoStep: boolean) {
           ),
         );
         setProgress(null);
-        if (!result) return false;
+        if (!result) {
+          if (installed.seen) {
+            // The server has the new keys and this browser could not finish: the other devices are
+            // signed out and this one signs in again. Show the kit, which nothing else holds.
+            setDone({
+              fingerprint: '',
+              failed: true,
+              kit: installed.kit,
+              removed: { passkeys: [], emergency: 0, recovery: 0 },
+              passkeys: [],
+            });
+          }
+          return false;
+        }
         // The new security stamp ended this device's tokens: carry on with the ones it was given.
         if (result.tokens) session.tokenStore.set(tokensFromResponse(result.tokens, Date.now()));
         // This tab's reload copy is for the old key version: make it again, or the next reload asks.

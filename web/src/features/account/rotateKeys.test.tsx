@@ -128,3 +128,44 @@ describe('RotateKeysCard', () => {
     expect(props.actions.askProof).toHaveBeenCalled();
   });
 });
+
+describe('RotateKeysCard for an account with no password', () => {
+  const noPassword = { contacts: [], passkeys: 0, emergency: 0, recovery: 0, hasKit: false, hasPassword: false };
+
+  it('asks for no password, makes a new kit whatever is ticked, and needs a passkey to be touched', async () => {
+    const keyProof = vi.fn(async () => ({ webauthn: { id: 'AAAA' } }));
+    const props = card({ impact: noPassword, keyProof: keyProof as never });
+    await userEvent.click(screen.getByRole('button', { name: 'Rotate keys' }));
+    expect(screen.queryByLabelText('Master password')).toBeNull();
+    const box = screen.getByLabelText(/Make a new Recovery Kit/) as HTMLInputElement;
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(true);
+    expect(screen.getByText(/Touch a passkey or security key/)).toBeTruthy();
+    // Nothing yet proves the owner: it can't be sent.
+    expect(screen.getByRole('button', { name: 'Rotate keys now' }).hasAttribute('disabled')).toBe(true);
+    expect(props.actions.start).not.toHaveBeenCalled();
+    // And no mailed code is asked for: there is no code to type.
+    expect(props.actions.askProof).not.toHaveBeenCalled();
+  });
+
+  it('says to add a passkey first when the browser has none to offer', async () => {
+    card({ impact: noPassword });
+    await userEvent.click(screen.getByRole('button', { name: 'Rotate keys' }));
+    expect(screen.getByText(/Add a passkey or security key first/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rotate keys now' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('shows the kit and a warning when this browser could not finish after the server had the keys', () => {
+    card({
+      done: {
+        fingerprint: '',
+        failed: true,
+        kit: { kitId: 'NEWKIT22', pieces: PIECES },
+        removed: { passkeys: [], emergency: 0, recovery: 0 },
+        passkeys: [],
+      },
+    });
+    expect(screen.getByText(/could not finish/)).toBeTruthy();
+    expect(screen.getByTestId('rotated-kit-piece-1')).toBeTruthy();
+  });
+});

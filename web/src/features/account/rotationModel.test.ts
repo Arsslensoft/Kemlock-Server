@@ -10,6 +10,7 @@ import { registerLocalStore } from '@/local/registry';
 import {
   RotationBlockedError,
   RotationPasswordError,
+  RotationProofSpentError,
   type RotationDeps,
   readdPasskeyUnlock,
   rotateKeys,
@@ -147,6 +148,54 @@ describe('rotateKeys', () => {
     expect(fakeCalls.filter((call) => call === 'rotationResealItem')).toHaveLength(2);
     expect(fakeCalls.indexOf('rotationCommit')).toBeGreaterThan(fakeCalls.indexOf('rotationWrapPassword'));
     expect(fakeCalls).not.toContain('rotationAbort');
+  });
+
+  it('always makes a new Recovery Kit for an account with no password', async () => {
+    const { deps, installs } = setup({ plans: [plan({ hasPassword: false })] });
+    const result = await rotateKeys(deps, { email: 'sam@example.org', password: '', makeKit: false });
+    expect(installs[0]?.kit?.kitId).toBe('NEWKIT22');
+    expect(result.kit?.pieces).toHaveLength(3);
+  });
+
+  it('asks for a new proof, and does not retry with the one it used, when the account changed', async () => {
+    const { deps, api } = setup({
+      install: async () => {
+        throw incomplete();
+      },
+    });
+    await expect(
+      rotateKeys(deps, { email: 'sam@example.org', password: 'pw', makeKit: false, proof: '123456' }),
+    ).rejects.toBeInstanceOf(RotationProofSpentError);
+    expect(api.install).toHaveBeenCalledTimes(1);
+    expect(api.abandon).toHaveBeenCalled();
+  });
+
+  it('hands the new kit over as soon as the server has the keys, before they are made the account\'s', async () => {
+    const seen: Array<string | undefined> = [];
+    const failing = {
+      ...fakeCrypto,
+      rotationCommit: vi.fn(async () => Promise.reject(new Error('the worker failed'))),
+    };
+    const { deps } = setup();
+    await expect(
+      rotateKeys(
+        { ...deps, crypto: failing, onInstalled: ({ kit }) => seen.push(kit?.kitId) },
+        { email: 'sam@example.org', password: 'pw', makeKit: true },
+      ),
+    ).rejects.toThrow('the worker failed');
+    // The pieces were given before the commit that failed.
+    expect(seen).toEqual(['NEWKIT22']);
+  });
+
+  it('says a federated account is not rotated here, before the worker starts', async () => {
+    const { deps, api } = setup();
+    api.plan.mockRejectedValue(
+      new ApiError(409, { type: 'urn:kemlock:problem:rotation-federated', title: 'federated' } as never),
+    );
+    await expect(
+      rotateKeys(deps, { email: 'sam@example.org', password: 'pw', makeKit: false }),
+    ).rejects.toMatchObject({ reason: 'federated' });
+    expect(fakeCalls).not.toContain('rotationStart');
   });
 
   it('names a Send made while the items were moved, by reading and moving the Sends again each round', async () => {

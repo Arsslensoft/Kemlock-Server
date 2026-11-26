@@ -35,6 +35,8 @@ export interface RotateDone {
   fingerprint: string;
   kit: { kitId: string; pieces: string[] } | null;
   removed: { passkeys: Array<{ id: string; credentialId: string }>; emergency: number; recovery: number };
+  /** The server has the new keys but this browser could not finish: the kit is all that is shown. */
+  failed?: boolean;
   /** The passkeys whose unlock was removed, to add back one by one. */
   passkeys: Array<{ id: string; name: string }>;
 }
@@ -43,7 +45,7 @@ export interface RotateKeysProps {
   /** undefined while loading */
   impact: RotateImpact | undefined;
   /** The account is in a space or shared with Bitwarden apps: the page does not rotate it. */
-  blocked: 'spaces' | 'compatible' | null;
+  blocked: 'spaces' | 'compatible' | 'federated' | null;
   twoStep: boolean;
   keyProof?: KeyProof | undefined;
   busy: boolean;
@@ -73,6 +75,8 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
   const [makeKit, setMakeKit] = useState(true);
   const [proof, setProof] = useState<Proof>('');
   const [compared, setCompared] = useState<Set<string>>(new Set());
+  // With no password, the way in is a passkey or security key: its fresh answer is required.
+  const needsKey = impact !== undefined && !impact.hasPassword;
   const [readded, setReadded] = useState<Set<string>>(new Set());
 
   async function submit() {
@@ -84,7 +88,7 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
       password,
       makeKit,
       emergencyKeep,
-      ...(twoStep && !proofBlank(proof) ? { proof: proofValue(proof) } : {}),
+      ...((twoStep || needsKey) && !proofBlank(proof) ? { proof: proofValue(proof) } : {}),
     });
     if (ok) {
       setPassword('');
@@ -106,7 +110,7 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
             isDisabled={busy}
             onPress={() => {
               setOpen(true);
-              if (twoStep) void actions.askProof();
+              if (twoStep && !needsKey) void actions.askProof();
             }}
           >
             {t('security.rotate.start')}
@@ -152,7 +156,12 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
             </label>
           ))}
           <label className="check">
-            <input type="checkbox" checked={makeKit} onChange={(event) => setMakeKit(event.target.checked)} />{' '}
+            <input
+              type="checkbox"
+              checked={makeKit || !impact.hasPassword}
+              disabled={!impact.hasPassword}
+              onChange={(event) => setMakeKit(event.target.checked)}
+            />{' '}
             {impact.hasKit ? t('security.rotate.kitReplace') : t('security.rotate.kitMake')}
           </label>
           {impact.hasPassword ? (
@@ -164,7 +173,12 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
               required
             />
           ) : null}
-          {twoStep ? <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} /> : null}
+          {needsKey ? (
+            <p className="hint">{t(keyProof ? 'security.rotate.passkeyOnly' : 'security.rotate.needPasskey')}</p>
+          ) : null}
+          {twoStep || needsKey ? (
+            <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} />
+          ) : null}
           {progress ? (
             <p role="status" className="hint">
               {t(`security.rotate.phase.${progress.phase}`, { done: progress.done, total: progress.total })}
@@ -174,7 +188,12 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
             <Button
               type="submit"
               variant="danger"
-              isDisabled={busy || (impact.hasPassword && password === '') || (twoStep && proofBlank(proof) && !keyProof)}
+              isDisabled={
+                busy ||
+                (impact.hasPassword && password === '') ||
+                (needsKey && (!keyProof || proofBlank(proof))) ||
+                (twoStep && !needsKey && proofBlank(proof) && !keyProof)
+              }
             >
               {t('security.rotate.submit')}
             </Button>
@@ -187,7 +206,11 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
 
       {done ? (
         <div className="panel-body kit-sheet" data-testid="rotated">
-          <Notice tone="info">{t('security.rotate.done', { fingerprint: done.fingerprint })}</Notice>
+          {done.failed ? (
+            <Notice tone="error">{t('security.rotate.failedAfter')}</Notice>
+          ) : (
+            <Notice tone="info">{t('security.rotate.done', { fingerprint: done.fingerprint })}</Notice>
+          )}
           {done.removed.passkeys.length + done.removed.emergency + done.removed.recovery > 0 ? (
             <Notice tone="warn">
               {t('security.rotate.removed', {

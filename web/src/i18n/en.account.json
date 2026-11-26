@@ -413,5 +413,10 @@
   "security.rotate.readd.button": "Add unlock",
   "security.rotate.phase.done": "Done",
   "security.rotate.error.incomplete": "Your account kept changing while the keys were being rotated, so nothing was changed. Try again when your other devices are quiet.",
+  "security.rotate.blocked.federated": "This account's vault is held on other servers too, which a rotation here can't reach, so its keys can't be rotated.",
+  "security.rotate.passkeyOnly": "This account has no master password. Touch a passkey or security key to prove it is you.",
+  "security.rotate.needPasskey": "This account has no master password. Add a passkey or security key first: a session alone can't rotate its keys.",
+  "security.rotate.failedAfter": "The keys were rotated on the server, but this browser could not finish. Your other devices and this one are signed out: sign in again. Keep the new Recovery Kit below.",
+  "security.rotate.error.proof": "Your account changed while the keys were being rotated, so nothing was changed and the code you gave may be spent. Get a new one and try again.",
   "security.rotate.error.items": "An item of your vault can't be rotated here. Nothing was changed."
 }

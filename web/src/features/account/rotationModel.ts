@@ -36,11 +36,23 @@ import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 /** The page can't rotate this account. */
 export class RotationBlockedError extends Error {
-  readonly reason: 'spaces' | 'compatible' | 'unsupported-items';
-  constructor(reason: 'spaces' | 'compatible' | 'unsupported-items') {
+  readonly reason: 'spaces' | 'compatible' | 'federated' | 'unsupported-items';
+  constructor(reason: 'spaces' | 'compatible' | 'federated' | 'unsupported-items') {
     super(`Keys can't be rotated here: ${reason}`);
     this.name = 'RotationBlockedError';
     this.reason = reason;
+  }
+}
+
+/**
+ * The account changed while the keys were being rotated, after a one-time second-step proof had
+ * been given, which the server may have spent. Nothing was changed; the person starts again with a
+ * new proof.
+ */
+export class RotationProofSpentError extends Error {
+  constructor() {
+    super('The account changed meanwhile; a new proof is needed');
+    this.name = 'RotationProofSpentError';
   }
 }
 
@@ -89,6 +101,11 @@ export interface RotationDeps {
    */
   recoveryKeys?: (space: string, keySeq: number) => Promise<Uint8Array | undefined>;
   randomBytes?: (length: number) => Uint8Array;
+  /**
+   * Called as soon as the server has the new keys, before they are made the account's here: the
+   * page shows the new Recovery Kit from this, so that a failure after it does not lose the pieces.
+   */
+  onInstalled?: (installed: { kit: { kitId: string; pieces: string[] } | null }) => void;
 }
 
 export interface RotationInput {
@@ -311,7 +328,12 @@ export async function rotateKeys(
 ): Promise<RotationResult> {
   const random = deps.randomBytes ?? ((n: number) => globalThis.crypto.getRandomValues(new Uint8Array(n)));
   onProgress({ phase: 'plan', done: 0, total: 1 });
-  let plan: RotationPlanDto = await deps.api.plan();
+  let plan: RotationPlanDto = await deps.api.plan().catch((error: unknown) => {
+    if (error instanceof ApiError && error.slug === 'rotation-federated') {
+      throw new RotationBlockedError('federated');
+    }
+    throw error;
+  });
   if (plan.spaces > 0) throw new RotationBlockedError('spaces');
 
   const rotationId = encodeB64(random(16));
@@ -349,7 +371,9 @@ export async function rotateKeys(
     };
     let sendsNow = await moveSends((done, total) => onProgress({ phase: 'sends', done, total }));
     // The kit and this browser's copy do not change between rounds.
-    const kit = input.makeKit ? await deps.crypto.rotationKitMake() : null;
+    // An account with no password has the kit and its devices as its ways back in: it always gets
+    // a new kit, since the old one's pieces open nothing after the rotation.
+    const kit = input.makeKit || !plan.hasPassword ? await deps.crypto.rotationKitMake() : null;
     let deviceCopy: InstallRequest['deviceCopy'];
     if (plan.deviceCopies.some((copy) => copy.deviceId === deps.deviceId)) {
       const copy = await deps.crypto.rotationDeviceCopySeal(deps.userId, deps.deviceId, toVersion);
@@ -400,11 +424,16 @@ export async function rotateKeys(
         rotated = await deps.api.install(request);
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) throw new RotationPasswordError();
+        // A one-time proof may be spent: ask for a new one, don't retry with it.
+        if (isIncomplete(error) && input.proof !== undefined) throw new RotationProofSpentError();
         if (!isIncomplete(error) || round === MAX_ROUNDS - 1) throw error;
       }
     }
     if (!rotated) throw new Error('the rotation was not installed');
     installed = true;
+    // The server has the new keys. The kit's pieces exist only here: hand them over before anything
+    // that could fail.
+    deps.onInstalled?.({ kit: kit ? { kitId: kit.kitId, pieces: kit.pieces } : null });
 
     // What this browser keeps sealed under the old keys (space anchors and pins, and whatever else
     // registers in `local/`) moves to the new ones now, while the worker holds both. A store that
