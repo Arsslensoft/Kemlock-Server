@@ -71,7 +71,7 @@ describe('the kinds of item', () => {
     expect(new Set(KIND_ORDER.map((kind) => kindIcon(kind))).size).toBe(KIND_ORDER.length);
     expect(kindIcon('from-a-newer-app')).toBe('items');
     expect(kindLabel('from-a-newer-app')).toBe('kind.other');
-    expect(kindPluralLabel('from-a-newer-app')).toBe('kind.other');
+    expect(kindPluralLabel('from-a-newer-app')).toBe('kind.plural.other');
   });
 
   it('are editable except the passkey, which a website makes', () => {
