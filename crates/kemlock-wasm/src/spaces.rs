@@ -107,7 +107,7 @@ impl SpaceKeys {
 
     /// Refuses an operation that opens, seals or names keys outside the chain, for a space that
     /// has one: the page can't skip the chain by calling the older operations.
-    fn require_unchained(&self, space: &[u8; 16]) -> Result<(), Error> {
+    pub(crate) fn require_unchained(&self, space: &[u8; 16]) -> Result<(), Error> {
         if self.chains.contains_key(space) || self.refused.contains(space) {
             Err(Error::Invalid)
         } else {
