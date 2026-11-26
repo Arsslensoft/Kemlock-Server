@@ -124,7 +124,9 @@ impl<S: FedStore> Replica<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::extra::ErasureOutbox;
     use crate::memory::MemoryStore;
+    use crate::ports::VaultRepo;
     use crate::suite::Suite;
     use crate::testing::identity;
     use kemlock_domain::UserId;

@@ -30,16 +30,17 @@ fn bundle_is_signed(account: &MemberAccount) -> bool {
 /// first.
 fn account_predates_member(records: &[StoredHomeRecord], user: UserId) -> bool {
     let key = user.0.as_bytes().to_vec();
-    let about = |kind: &str| {
+    let indexes = |kind: &str| -> Vec<u64> {
         records
             .iter()
             .filter(|r| r.record.kind == kind)
             .filter(|r| entity_key(&r.record.payload).as_deref() == Some(key.as_slice()))
             .map(|r| r.record.index)
+            .collect()
     };
     match (
-        about(members::KIND).max(),
-        about(crate::spaces::KIND_MEMBER).min(),
+        indexes(members::KIND).into_iter().max(),
+        indexes(crate::spaces::KIND_MEMBER).into_iter().min(),
     ) {
         (Some(account), Some(member)) => account < member,
         _ => false,
@@ -300,6 +301,7 @@ impl<S: FedStore> Replica<S> {
 mod tests {
     use super::*;
     use crate::memory::MemoryStore;
+    use crate::ports::VaultRepo;
     use crate::suite::Suite;
     use crate::testing::identity;
     use kemlock_domain::{AccountMode, DeviceKind, KdfParams, SpaceId, UserId};
