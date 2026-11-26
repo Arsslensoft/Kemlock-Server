@@ -8,8 +8,9 @@
 use super::authority;
 use super::collections::check_grantee;
 use super::error::SpacesError;
+use super::key_boxes::KeyBoxVerifier;
 use super::ports::{SpaceChanges, SpaceRepo};
-use super::support::{SealedCollectionKey, key_changes, load_open, record};
+use super::support::{SealedCollectionKey, key_changes, key_removals, load_open, record};
 use crate::authenticate::Actor;
 use crate::ports::{Clock, EventLog};
 use kemlock_domain::SpaceId;
@@ -18,13 +19,14 @@ use kemlock_domain::spaces::{
 };
 
 #[derive(Debug)]
-pub struct GrantAccess<R, V, C> {
+pub struct GrantAccess<R, V, C, K> {
     pub spaces: R,
     pub events: V,
     pub clock: C,
+    pub boxes: K,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> GrantAccess<R, V, C> {
+impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> GrantAccess<R, V, C, K> {
     /// Grants `grantee` a permission on a collection, or changes the one they have. `keys` seals
     /// the collection key to each confirmed member who gains access (the grantee, or the members of
     /// the group); a change of permission for someone who already holds the key takes none.
@@ -58,7 +60,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> GrantAccess<R, V, C> {
         let holders = self.spaces.holders(space).await?;
         let delta = after.key_delta(&holders);
         let now = self.clock.now();
-        let sealed = key_changes(&after, &delta, keys, now)?;
+        let sealed = key_changes(&after, &delta, keys, now, &self.boxes, actor.user).await?;
         self.spaces
             .apply(SpaceChanges {
                 grants: vec![grant],
@@ -121,7 +123,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> RevokeGrant<R, V, C> {
             return Err(SpaceError::Invalid("the space's keys and grants disagree").into());
         }
         let now = self.clock.now();
-        let sealed = key_changes(&after, &delta, Vec::new(), now)?;
+        let sealed = key_removals(&after, &delta, now)?;
         self.spaces
             .apply(SpaceChanges {
                 grants_removed: vec![(collection, grantee)],

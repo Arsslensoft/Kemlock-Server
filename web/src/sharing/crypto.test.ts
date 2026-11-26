@@ -18,7 +18,12 @@ function worker() {
     newSpace: vi.fn(async () => ({
       name: encodeB64(utf8('name')),
       sealedSpaceKey: encodeB64(utf8('space-key')),
-      collection: { name: encodeB64(utf8('coll')), sealedKey: encodeB64(utf8('coll-key')) },
+      sealedSpaceKeySignature: encodeB64(utf8('space-sig')),
+      collection: {
+        name: encodeB64(utf8('coll')),
+        sealedKey: encodeB64(utf8('coll-key')),
+        sealedKeySignature: encodeB64(utf8('coll-sig')),
+      },
     })),
     openSpace: vi.fn(async () => undefined),
     openCollection: vi.fn(async () => undefined),
@@ -27,9 +32,17 @@ function worker() {
     newCollection: vi.fn(async () => ({
       name: encodeB64(utf8('coll')),
       sealedKey: encodeB64(utf8('coll-key')),
+      sealedKeySignature: encodeB64(utf8('coll-sig')),
     })),
-    sealSpaceKeyTo: vi.fn(async () => encodeB64(utf8('space-box'))),
-    sealCollectionKeyTo: vi.fn(async () => encodeB64(utf8('coll-box'))),
+    sealSpaceKeyTo: vi.fn(async () => ({
+      sealed: encodeB64(utf8('space-box')),
+      signature: encodeB64(utf8('space-box-sig')),
+    })),
+    sealCollectionKeyTo: vi.fn(async () => ({
+      sealed: encodeB64(utf8('coll-box')),
+      signature: encodeB64(utf8('coll-box-sig')),
+    })),
+    verifyKeyBox: vi.fn(async () => true),
     confirmationStatement: vi.fn(async () => encodeB64(utf8('statement'))),
     verifyBundle: vi.fn(async (_bundle: string, _signature: string) => true),
     ownFingerprint: vi.fn(async () => '11111 22222'),
@@ -199,20 +212,47 @@ describe('spaces over the worker', () => {
     ).toBe('sealed-name');
     const collection = await spaces.newCollection({ spaceId: SPACE, collectionId: COLLECTION, name: 'Private' });
     expect(fromUtf8(collection.sealedKey)).toBe('coll-key');
+    expect(fromUtf8(collection.sealedKeySignature)).toBe('coll-sig');
 
-    expect(fromUtf8(await spaces.sealSpaceKeyTo({ spaceId: SPACE, recipientKx1: kx, recipientId: id }))).toBe(
-      'space-box',
-    );
+    const spaceBox = await spaces.sealSpaceKeyTo({ spaceId: SPACE, recipientKx1: kx, recipientId: id });
+    expect(fromUtf8(spaceBox.sealed)).toBe('space-box');
+    expect(fromUtf8(spaceBox.signature)).toBe('space-box-sig');
     expect(api.sealSpaceKeyTo).toHaveBeenCalledWith({
       spaceId: SPACE,
       recipientKx1: encodeB64(kx),
       recipientId: encodeB64(id),
     });
+    const collectionBox = await spaces.sealCollectionKeyTo({
+      spaceId: SPACE,
+      collectionId: COLLECTION,
+      recipientKx1: kx,
+      recipientId: id,
+    });
+    expect(fromUtf8(collectionBox.sealed)).toBe('coll-box');
+    expect(fromUtf8(collectionBox.signature)).toBe('coll-box-sig');
+
+    // A key box signature is checked in the worker against the sealer's bundle, from bytes.
+    const bundle = new Uint8Array(7242).fill(3);
     expect(
-      fromUtf8(
-        await spaces.sealCollectionKeyTo({ spaceId: SPACE, collectionId: COLLECTION, recipientKx1: kx, recipientId: id }),
-      ),
-    ).toBe('coll-box');
+      await spaces.verifyKeyBox({
+        sealerBundle: bundle,
+        spaceId: SPACE,
+        collectionId: COLLECTION,
+        keyVersion: 2,
+        recipientId: id,
+        sealed: collectionBox.sealed,
+        signature: collectionBox.signature,
+      }),
+    ).toBe(true);
+    expect(api.verifyKeyBox).toHaveBeenCalledWith({
+      sealerBundle: encodeB64(bundle),
+      spaceId: SPACE,
+      collectionId: COLLECTION,
+      keyVersion: 2,
+      recipientId: encodeB64(id),
+      sealed: encodeB64(collectionBox.sealed),
+      signature: encodeB64(collectionBox.signature),
+    });
     expect(api.sealCollectionKeyTo).toHaveBeenCalledWith({
       spaceId: SPACE,
       collectionId: COLLECTION,

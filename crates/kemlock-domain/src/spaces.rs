@@ -312,6 +312,9 @@ pub struct Member {
     pub accepted_at: Option<OffsetDateTime>,
     /// The space key, sealed to this member's `kx1` key. Present only while confirmed.
     pub sealed_space_key: Option<Vec<u8>>,
+    /// Who sealed `sealed_space_key` and their signature over it (docs/crypto.md, "Signed key
+    /// boxes"). `None` for a copy made before keys were signed, and for a space with a chain.
+    pub sealed_by: Option<KeyBoxSignature>,
     /// The version of `sealed_space_key`.
     pub key_version: Option<u32>,
     pub confirmation: Option<Confirmation>,
@@ -342,6 +345,7 @@ impl Member {
             invited_at: now,
             accepted_at: None,
             sealed_space_key: None,
+            sealed_by: None,
             key_version: None,
             confirmation: None,
             revoked_at: None,
@@ -418,6 +422,18 @@ pub struct CollectionGrant {
     pub permission: CollectionPermission,
 }
 
+/// The signature of the member who sealed a key copy (docs/crypto.md, "Signed key boxes"). The
+/// server checked it when the copy was stored and keeps it for the recipient's client to verify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyBoxSignature {
+    /// The sealer.
+    pub by: UserId,
+    /// The key version of the sealer's bundle whose key signed.
+    pub key_version: u32,
+    /// The `sig1` signature over the statement, context `"key-box"`.
+    pub signature: Vec<u8>,
+}
+
 /// A collection key sealed to one member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyCopy {
@@ -426,6 +442,8 @@ pub struct KeyCopy {
     /// The collection key version that was sealed.
     pub key_version: u32,
     pub sealed: Vec<u8>,
+    /// Who sealed it and their signature over it, as for a member's space key copy.
+    pub sealed_by: Option<KeyBoxSignature>,
 }
 
 /// Why a space rule refused something.
@@ -543,6 +561,17 @@ pub fn check_sealed_name(value: &[u8]) -> Result<(), SpaceError> {
     } else {
         Err(SpaceError::Invalid(
             "an encrypted name must be a sealed value of at most 4 KiB",
+        ))
+    }
+}
+
+/// A key box signature must be a 3,373-byte `sig1` signature.
+pub fn check_key_box_signature(signature: &[u8]) -> Result<(), SpaceError> {
+    if signature.len() == CONFIRMATION_SIGNATURE_LEN {
+        Ok(())
+    } else {
+        Err(SpaceError::Invalid(
+            "a key box signature must be a 3,373-byte sig1 signature",
         ))
     }
 }

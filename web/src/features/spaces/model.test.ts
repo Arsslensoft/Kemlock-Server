@@ -1,11 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import type { MemberViewDto } from '@/api/spaces';
-import { decodeB64, fromUtf8 } from '@/lib/b64url';
-import { checkedFingerprint, fingerprintText, fingerprintBytes } from '@/sharing/bundle';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { checkedFingerprint, fingerprintText, fingerprintBytes, uuidBytes } from '@/sharing/bundle';
 import { memoryPinStore } from '@/spaces/anchors';
 import { makeBundleB64 } from '@/test/bundles';
-import { fakeSpaceCrypto } from '@/test/fake-space-crypto';
+import { fakeBoxSignature, fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
   FINANCE,
   INFRA,
@@ -20,6 +20,7 @@ import {
   fingerprintTextOf,
   memberView,
   members,
+  spaceView,
 } from './fixtures';
 import {
   type SpaceDeps,
@@ -98,6 +99,11 @@ describe('making a space', () => {
     expect(body?.id).toBe('99999999-0000-4000-8000-000000000001');
     expect(body?.collection.id).toBe('99999999-0000-4000-8000-000000000002');
     expect(fromUtf8(decodeB64(body?.sealedSpaceKey ?? ''))).toBe(`space-key:${body?.id}`);
+    // Each box goes with the maker's signature over it.
+    expect(fromUtf8(decodeB64(body?.sealedSpaceKeySignature ?? ''))).toBe(`space-key-signature:${body?.id}`);
+    expect(fromUtf8(decodeB64(body?.collection.sealedKeySignature ?? ''))).toBe(
+      `collection-key-signature:${body?.collection.id}`,
+    );
     expect(body?.name).not.toContain('Example');
     expect(fromUtf8(decodeB64(body?.name ?? ''))).toContain('Example Co');
   });
@@ -143,6 +149,9 @@ describe('confirming a member', () => {
     expect(user).toBe(THEO);
     expect(body?.collectionKeys.map((k) => k.collection)).toEqual([FINANCE]);
     expect(decodeB64(body?.fingerprint ?? '')).toHaveLength(64);
+    // Every key sealed to the member is signed by the confirmer, who verifies as the sealer.
+    expect(decodeB64(body?.sealedSpaceKeySignature ?? '').length).toBeGreaterThan(0);
+    expect(body?.collectionKeys.every((k) => k.signature.length > 0)).toBe(true);
     // The worker builds the statement and signs it under the one context it signs.
     const statement = JSON.parse(fromUtf8(decodeB64(body?.statement ?? ''))) as string[];
     expect(statement[2]).toBe(THEO);
@@ -241,6 +250,50 @@ describe('pinning a member', () => {
     const pins = memoryPinStore();
     await pinMember({ ...spaceDeps, pins }, ME, memberView(LEE, 'lee@example.co'), await shown(LEE));
     expect((await loadSpaceDetail({ ...spaceDeps, pins }, SPACE)).unverified).toBeUndefined();
+  });
+
+  it('asks to compare the member who sealed a key it can not trace, and opens the keys once it matched', async () => {
+    const { spaceDeps, api, crypto } = deps();
+    crypto.ownFingerprintText = await fingerprintTextOf(memberView(ME, 'sam@example.co'));
+    // Lee, an admin nobody confirmed, sealed the Infrastructure key served to me.
+    const roster = members().map((m) => (m.user === LEE ? { ...m, role: 'admin' as const } : m));
+    api.members.mockResolvedValue(roster);
+    const lee = roster.find((m) => m.user === LEE) as MemberViewDto;
+    const box = utf8('ck-infra');
+    const signature = fakeBoxSignature({
+      sealerBundle: decodeB64(lee.publicBundle),
+      spaceId: SPACE,
+      collectionId: INFRA,
+      keyVersion: 1,
+      recipientId: uuidBytes(ME),
+      sealed: box,
+    });
+    api.get.mockResolvedValue(
+      spaceView({
+        collectionKeys: [
+          {
+            collection: INFRA,
+            keyVersion: 1,
+            sealed: encodeB64(box),
+            sealedBy: { account: LEE, keyVersion: 1, signature: encodeB64(signature) },
+          },
+        ],
+      }),
+    );
+
+    // Nothing opens, and the page is told whose fingerprint to compare.
+    const closed = await loadSpaceDetail(spaceDeps, SPACE);
+    expect(closed.readable).toBe(false);
+    expect(closed.compare).toBe(LEE);
+    expect(crypto.calls).not.toContain(`openCollection:${INFRA}`);
+
+    // The person compared Lee's fingerprint here and it matched: the space opens.
+    const pins = memoryPinStore();
+    await pinMember({ ...spaceDeps, pins }, ME, lee, await shown(LEE));
+    const open = await loadSpaceDetail({ ...spaceDeps, pins }, SPACE);
+    expect(open.readable).toBe(true);
+    expect(open.compare).toBeUndefined();
+    expect(crypto.calls).toContain(`openCollection:${INFRA}`);
   });
 });
 

@@ -56,6 +56,36 @@ export interface FakeSpaces extends SpaceCrypto {
   chain: ChainView | { ok: false; reason: string; seq: number | null };
   /** What `ownFingerprint` answers: set it to the fingerprint of the test's own bundle. */
   ownFingerprintText: string;
+  /** The bundle of the account this fake seals as: what its key box signatures name. */
+  ownBundle: Uint8Array;
+  /** The key version the fake seals every key at (the real worker seals at the newest it holds). */
+  keyVersion: number;
+}
+
+/**
+ * The signature this fake gives a key box: it names the sealer's bundle, the key and version and the
+ * recipient and box, so it verifies only for exactly them (the real one is the sealer's sig1
+ * signature over the same things).
+ */
+export function fakeBoxSignature(facts: {
+  sealerBundle: Uint8Array;
+  spaceId: string;
+  collectionId?: string;
+  keyVersion: number;
+  recipientId: Uint8Array;
+  sealed: Uint8Array;
+}): Uint8Array {
+  return utf8(
+    JSON.stringify([
+      'key-box',
+      encodeB64(facts.sealerBundle),
+      facts.spaceId,
+      facts.collectionId ?? '',
+      facts.keyVersion,
+      encodeB64(facts.recipientId),
+      encodeB64(facts.sealed),
+    ]),
+  );
 }
 
 function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string, name: string) {
@@ -69,6 +99,8 @@ export function fakeSpaceCrypto(): FakeSpaces {
   const fake: FakeSpaces = {
     ...base,
     ownFingerprintText: '',
+    ownBundle: utf8('own-bundle'),
+    keyVersion: 1,
     chain: NO_CHAIN,
     async verifySpaceChain({ spaceId }) {
       calls.push(`verifySpaceChain:${spaceId}`);
@@ -98,9 +130,11 @@ export function fakeSpaceCrypto(): FakeSpaces {
       return {
         name: nameBytes(spaceId, 1, 'space', spaceId, spaceName),
         sealedSpaceKey: utf8(`space-key:${spaceId}`),
+        sealedSpaceKeySignature: utf8(`space-key-signature:${spaceId}`),
         collection: {
           name: nameBytes(spaceId, 1, 'collection', collectionId, collectionName),
           sealedKey: utf8(`collection-key:${collectionId}`),
+          sealedKeySignature: utf8(`collection-key-signature:${collectionId}`),
         },
       };
     },
@@ -131,15 +165,37 @@ export function fakeSpaceCrypto(): FakeSpaces {
       return {
         name: nameBytes(spaceId, 1, 'collection', collectionId, name),
         sealedKey: utf8(`collection-key:${collectionId}`),
+        sealedKeySignature: utf8(`collection-key-signature:${collectionId}`),
       };
     },
     async sealSpaceKeyTo({ spaceId, recipientId }) {
       calls.push(`sealSpaceKeyTo:${recipientId.length}`);
-      return utf8(`space-key-for:${spaceId}`);
+      const sealed = utf8(`space-key-for:${spaceId}`);
+      const signature = fakeBoxSignature({
+        sealerBundle: fake.ownBundle,
+        spaceId,
+        keyVersion: fake.keyVersion,
+        recipientId,
+        sealed,
+      });
+      return { sealed, signature };
     },
-    async sealCollectionKeyTo({ collectionId }) {
+    async sealCollectionKeyTo({ spaceId, collectionId, recipientId }) {
       calls.push(`sealCollectionKeyTo:${collectionId}`);
-      return utf8(`collection-key-for:${collectionId}`);
+      const sealed = utf8(`collection-key-for:${collectionId}`);
+      const signature = fakeBoxSignature({
+        sealerBundle: fake.ownBundle,
+        spaceId,
+        collectionId,
+        keyVersion: fake.keyVersion,
+        recipientId,
+        sealed,
+      });
+      return { sealed, signature };
+    },
+    async verifyKeyBox({ signature, ...facts }) {
+      calls.push(`verifyKeyBox:${facts.collectionId ?? 'space'}`);
+      return fromUtf8(signature) === fromUtf8(fakeBoxSignature({ ...facts }));
     },
     async confirmationStatement({ space, member, memberKeyVersion }) {
       calls.push('confirmationStatement');

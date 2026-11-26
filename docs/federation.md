@@ -633,12 +633,18 @@ space key and confirmation), `space-group`, `space-collection` (with its grants 
 `space-keys` (the collection keys sealed to one member), `space-policies` and `space-held` (the ids of
 the live items a key replacement left held, the whole set each time: a replica replaces its own set
 with it, so it keeps the same held state and never serves a held item as live; made only for a
-space that has held items or had them). A revoked or removed
+space that has held items or had them). From the release that signs key boxes (docs/crypto.md,
+"Signed key boxes"), a `space-member` record may carry field 12 (who sealed the space key, and their
+signature) and each key copy of a `space-keys` record a fourth part (the same for that copy); both
+are left out when nobody signed the copy. A peer that predates it refuses a record with either as
+malformed, so **upgrade every replica before its home**: a home that signs boxes sends the new fields
+to every peer, and an older replica then refuses those records and stops applying that space. A
+revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
 admins to redo or drop. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
-(`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement` and
+(`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement`, `reseal` and
 `policies`) are refused at a server that is not the home with `409`, a
 `urn:kemlock:problem:home-only` problem that names the home (`home.server`, `home.address`) and the
 `X-Kemlock-Home` header; at the home, a write that succeeded makes the home records at once and

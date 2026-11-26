@@ -138,6 +138,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     confirmationStatement: (facts) => call('confirmationStatement', [facts]),
     signStatement: (statement, context) => call('signStatement', [statement, context]),
     verifyConfirmation: (check) => call('verifyConfirmation', [check]),
+    verifyKeyBox: (check) => call('verifyKeyBox', [check]),
     openEmergencyKey: (sealed) => call('openEmergencyKey', [sealed]),
     openEmergencyItem: (handle, input) => call('openEmergencyItem', [handle, input]),
     newSpace: (input) => call('newSpace', [input]),

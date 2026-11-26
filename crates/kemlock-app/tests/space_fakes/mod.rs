@@ -12,14 +12,15 @@ use kemlock_app::spaces::{
     ChangeRole, ConfirmInput, ConfirmMember, ConfirmationFacts, CreateCollection,
     CreateCollectionInput, CreateGroup, CreateGroupInput, CreateSpace, CreateSpaceInput,
     DeleteCollection, DeleteGroup, EditCollection, EditGroup, GetSpace, GrantAccess, InviteInput,
-    InviteMember, KeyReplacement, ListMembers, ListSpaces, NewCollection, Offboard,
-    PendingExternal, PutSpaceBatch, PutSpaceItem, RecoveryBox, ReplaceKeys, RevokeGrant,
-    SealedCollectionKey, SpaceChainRepo, SpaceChanges, SpaceFacts, SpaceItemInfo,
-    SpaceRecoveryRepo, SpaceRepo, StoredRecord, StoredSeal, SyncOwners,
+    InviteMember, KeyBoxFacts, KeyBoxVerifier, KeyReplacement, ListMembers, ListSpaces,
+    NewCollection, Offboard, PendingExternal, PutSpaceBatch, PutSpaceItem, RecoveryBox,
+    ReplaceKeys, ResealKeys, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceChainRepo,
+    SpaceChanges, SpaceFacts, SpaceItemInfo, SpaceRecoveryRepo, SpaceRepo, SpacesError,
+    StoredRecord, StoredSeal, SyncOwners,
 };
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, CustomPermissions, Grantee,
-    Group, GroupId, KeyCopy, Member, SEALED_KEY_LEN, Space, SpaceRole, SpaceState,
+    Group, GroupId, KeyCopy, Member, SEALED_KEY_LEN, Space, SpaceError, SpaceRole, SpaceState,
 };
 use kemlock_domain::{
     Item, ItemDraft, ItemFormat, ItemId, ItemKind, ItemWrite, Owner, Revision, Sealed, SpaceId,
@@ -469,6 +470,24 @@ impl BundleFingerprints for FakeFingerprints {
     }
 }
 
+/// The real check of a key box signature is `kemlock-crypto`'s, and runs in the API tests with real
+/// keys; here a box passes, as signed by key version 1, when it carries `signature()`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FakeKeyBoxes;
+
+impl KeyBoxVerifier for FakeKeyBoxes {
+    async fn verify(&self, _facts: &KeyBoxFacts<'_>, signature: &[u8]) -> Result<u32, SpacesError> {
+        if signature == self::signature().as_slice() {
+            Ok(1)
+        } else {
+            Err(
+                SpaceError::Invalid("the key's signature isn't the sealing member's over this box")
+                    .into(),
+            )
+        }
+    }
+}
+
 /// A sealed-looking collection or space key (the right length and version byte).
 pub(crate) fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
@@ -491,6 +510,16 @@ pub(crate) fn key_for(collection: CollectionId, user: UserId, fill: u8) -> Seale
         collection,
         user,
         sealed: sealed_key(fill),
+        signature: signature(),
+    }
+}
+
+/// The space key sealed to `user`, signed.
+pub(crate) fn space_key_for(user: UserId, fill: u8) -> SealedSpaceKey {
+    SealedSpaceKey {
+        user,
+        sealed: sealed_key(fill),
+        signature: signature(),
     }
 }
 
@@ -513,11 +542,12 @@ impl SpaceWorld {
         make_user(&self.world, email).await
     }
 
-    pub(crate) fn create_space(&self) -> CreateSpace<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn create_space(&self) -> CreateSpace<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         CreateSpace {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -540,13 +570,14 @@ impl SpaceWorld {
 
     pub(crate) fn confirm(
         &self,
-    ) -> ConfirmMember<Spaces, FakeStore, FakeFingerprints, FakeStore, FakeEnv> {
+    ) -> ConfirmMember<Spaces, FakeStore, FakeFingerprints, FakeStore, FakeEnv, FakeKeyBoxes> {
         ConfirmMember {
             spaces: self.spaces.clone(),
             users: self.world.store.clone(),
             fingerprints: FakeFingerprints,
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -593,11 +624,14 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn create_collection(&self) -> CreateCollection<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn create_collection(
+        &self,
+    ) -> CreateCollection<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         CreateCollection {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -625,11 +659,12 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn edit_group(&self) -> EditGroup<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn edit_group(&self) -> EditGroup<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         EditGroup {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -641,11 +676,12 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn grant(&self) -> GrantAccess<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn grant(&self) -> GrantAccess<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         GrantAccess {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -657,9 +693,19 @@ impl SpaceWorld {
         }
     }
 
+    pub(crate) fn reseal(&self) -> ResealKeys<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
+        ResealKeys {
+            spaces: self.spaces.clone(),
+            events: self.world.store.clone(),
+            clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
+        }
+    }
+
     pub(crate) fn replace_keys(
         &self,
-    ) -> ReplaceKeys<Spaces, FakeStore, FakeStore, FakeStore, FakeNotifier, FakeEnv> {
+    ) -> ReplaceKeys<Spaces, FakeStore, FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeKeyBoxes>
+    {
         ReplaceKeys {
             spaces: self.spaces.clone(),
             items: self.world.store.clone(),
@@ -668,6 +714,7 @@ impl SpaceWorld {
             push: self.world.notifier.clone(),
             clock: self.world.env.clone(),
             config: self.world.config,
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -729,10 +776,12 @@ impl SpaceWorld {
                     id: space,
                     name: name(1),
                     sealed_space_key: sealed_key(2),
+                    space_key_signature: signature(),
                     collection: NewCollection {
                         id: collection,
                         name: name(3),
                         sealed_key: sealed_key(4),
+                        key_signature: signature(),
                     },
                 },
             )
@@ -761,6 +810,7 @@ impl SpaceWorld {
             statement: b"I compared the fingerprint".to_vec(),
             signature: signature(),
             sealed_space_key: sealed_key(9),
+            space_key_signature: signature(),
             collection_keys,
         }
     }

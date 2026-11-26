@@ -17,6 +17,7 @@ use crate::{
     bundle::{self, Bundle},
     confirm::{STATEMENT_LEN, Statement},
     dedup, ed25519, kem1,
+    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     keys::{ITEM_WRAP_LABEL, RootKey, SecretKey},
     kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
@@ -1305,6 +1306,143 @@ fn confirm_file<B: Backend>(doc: &Value) {
     }
 }
 
+fn key_box_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let name = s(case, "name");
+        let context = s(case, "context");
+        let kind = match context {
+            "space-key" => KeyBoxKind::Space,
+            "collection-key" => KeyBoxKind::Collection,
+            other => panic!("{name}: no key box for {other}"),
+        };
+        let space: [u8; 16] = arr(case, "space");
+        let recipient: [u8; 16] = arr(case, "recipient");
+        let sealer: [u8; 16] = arr(case, "sealer");
+        let key_version = u32::try_from(int(case, "key_version")).expect("u32");
+        let sealer_version = u32::try_from(int(case, "sealer_key_version")).expect("u32");
+
+        // The aad is the one of the sealed-box contexts.
+        let aad = bytes(case, "aad");
+        let rebuilt = match kind {
+            KeyBoxKind::Space => key_box::space_aad(&space, key_version, &recipient),
+            KeyBoxKind::Collection => {
+                let collection: [u8; 16] = arr(case, "collection");
+                key_box::collection_aad(&space, &collection, key_version, &recipient)
+            }
+        };
+        assert_eq!(aad, rebuilt, "{name}");
+        assert_eq!(
+            aad.len(),
+            match kind {
+                KeyBoxKind::Space => 36,
+                KeyBoxKind::Collection => 52,
+            },
+            "{name}"
+        );
+
+        // The box is a real box of the key, and opens for the recipient.
+        let boxed = bytes(case, "box");
+        assert_eq!(boxed.len(), key_box::BOX_LEN, "{name}");
+        assert_eq!(boxed[0], 1, "{name}");
+        let private = kx1::PrivateKey::from_bytes(&arr(case, "recipient_private_key"));
+        let opened = sealed_box::open_in::<B>(&private, context, &aad, &boxed).expect("open");
+        assert_eq!(
+            opened.as_slice(),
+            bytes(case, "secret"),
+            "{} {name}",
+            B::NAME
+        );
+
+        // The statement, rebuilt by hand from the documented layout.
+        let mut expected = b"kemlock/v1/key-box".to_vec();
+        lp(&mut expected, context.as_bytes()).expect("lp");
+        lp(&mut expected, &aad).expect("lp");
+        lp(&mut expected, &boxed).expect("lp");
+        expected.extend_from_slice(&sealer);
+        expected.extend_from_slice(&sealer_version.to_be_bytes());
+        let statement = bytes(case, "statement");
+        assert_eq!(
+            statement.len(),
+            match kind {
+                KeyBoxKind::Space => 1756,
+                KeyBoxKind::Collection => 1777,
+            },
+            "{name}"
+        );
+        assert_eq!(statement, expected, "{name}");
+        let rebuilt = KeyBoxStatement {
+            kind,
+            aad: &aad,
+            sealed_box: &boxed,
+            sealer,
+            sealer_key_version: sealer_version,
+        };
+        assert_eq!(rebuilt.to_bytes().expect("statement"), statement, "{name}");
+
+        let public =
+            sig1::PublicKey::from_bytes(&bytes(case, "sealer_public_key")).expect("public key");
+        let signing = sig1::SigningKey::from_bytes(&arr(case, "sealer_private_key"));
+        assert_eq!(
+            sig1::public_key_in::<B>(&signing).expect("public"),
+            public,
+            "{} {name}",
+            B::NAME
+        );
+        let signature = bytes(case, "signature");
+        assert_eq!(signature.len(), sig1::SIGNATURE_LEN, "{name}");
+        sig1::verify_in::<B>(&public, "key-box", &statement, &signature)
+            .expect("the box signature verifies");
+        rebuilt
+            .verify(&public, &signature)
+            .expect("the crate's own verification agrees");
+
+        for wrong in list(case, "wrong_contexts") {
+            let wrong = wrong.as_str().expect("a context");
+            assert_ne!(wrong, "key-box");
+            assert!(
+                sig1::verify_in::<B>(&public, wrong, &statement, &signature).is_err(),
+                "{name} {wrong}"
+            );
+        }
+        for changed in list(case, "changed_statements") {
+            let other = bytes(changed, "statement");
+            assert_eq!(other.len(), statement.len(), "{name}");
+            assert_ne!(other, statement, "{name} {}", s(changed, "name"));
+            assert!(
+                sig1::verify_in::<B>(&public, "key-box", &other, &signature).is_err(),
+                "{name} {}",
+                s(changed, "name")
+            );
+        }
+        assert!(
+            sig1::verify_in::<B>(
+                &public,
+                "key-box",
+                &flip(statement.clone(), 700),
+                &signature
+            )
+            .is_err()
+        );
+        for index in [0usize, 3308, 3309, 3372] {
+            assert!(
+                sig1::verify_in::<B>(
+                    &public,
+                    "key-box",
+                    &statement,
+                    &flip(signature.clone(), index)
+                )
+                .is_err(),
+                "{name} byte {index}"
+            );
+        }
+        let own = sig1::sign_in::<B>(&signing, "key-box", &statement).expect("sign");
+        sig1::verify_in::<B>(&public, "key-box", &statement, &own).expect("own signature");
+        if B::NAME == "rustcrypto" {
+            assert_eq!(own, signature, "{name}");
+        }
+    }
+}
+
 fn prf_wrap_file<B: Backend>(doc: &Value) {
     for case in cases(doc) {
         let prf_output: [u8; 32] = arr(case, "prf_output");
@@ -1606,6 +1744,7 @@ pub(crate) fn check_on<B: Backend>(name: &str, doc: &Value) {
         "private-keys" => private_keys_file::<B>(doc),
         "prf-wrap" => prf_wrap_file::<B>(doc),
         "confirm" => confirm_file::<B>(doc),
+        "key-box" => key_box_file::<B>(doc),
         "send" => send_file::<B>(doc),
         "space-names" => space_names_file::<B>(doc),
         "space-chain" => super::space_chain::check::<B>(doc),

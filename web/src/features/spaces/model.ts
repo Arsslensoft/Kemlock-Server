@@ -29,6 +29,8 @@ import {
   openChainedKeys,
   overlayChain,
 } from './chain';
+import type { BoxStore } from '@/spaces/boxstore';
+import { KeyBoxRefused, lazyContext, openKeyBox, openUnchainedKeys, signedInAccount } from './boxes';
 import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
@@ -39,6 +41,10 @@ export interface SpaceDeps {
   anchors?: AnchorStore;
   /** Where it keeps the members whose fingerprint a person compared here. */
   pins?: PinStore;
+  /** Where it keeps the key boxes it accepted, so one sealed before keys were signed is flagged once. */
+  boxes?: BoxStore;
+  /** The id of the account signed in here, from the session; the server's word for it is only checked against it. */
+  account?: () => string | null;
 }
 
 /**
@@ -81,7 +87,14 @@ async function openSpaceName(
   summary: SpaceSummaryDto,
 ): Promise<{ name: string | null; trust: SpaceTrust }> {
   const spaceId = summary.space.id;
-  const trust = await checkSpaceChain(deps, spaceId, summary.member.user);
+  let me: string;
+  try {
+    me = signedInAccount(deps, summary.member.user);
+  } catch {
+    // The server names someone else as me: nothing about this space is opened or shown as checked.
+    return { name: null, trust: { kind: 'unverified', reason: 'account', seq: null } };
+  }
+  const trust = await checkSpaceChain(deps, spaceId, me);
   const sealed = summary.member.sealedSpaceKey;
   if (!sealed || trust.kind === 'unverified' || trust.kind === 'first-contact') {
     return { name: null, trust };
@@ -94,7 +107,12 @@ async function openSpaceName(
       await openChainedKey(deps, spaceId, trust.view, null, servedVersion, sealed);
       keyVersion = nameVersionOf(trust.view, 'space', spaceId);
     } else {
-      await deps.crypto.openSpace({ spaceId, keyVersion: servedVersion, sealed: decodeB64(sealed) });
+      await openKeyBox(lazyContext(deps, spaceId, me), {
+        key: 'space',
+        version: servedVersion,
+        sealed,
+        sealedBy: summary.member.sealedBy,
+      });
     }
     return {
       name: await deps.crypto.openName({
@@ -149,10 +167,12 @@ export async function createSpace(deps: SpaceDeps, input: NewSpaceInput): Promis
     id: spaceId,
     name: encodeB64(keys.name),
     sealedSpaceKey: encodeB64(keys.sealedSpaceKey),
+    sealedSpaceKeySignature: encodeB64(keys.sealedSpaceKeySignature),
     collection: {
       id: collectionId,
       name: encodeB64(keys.collection.name),
       sealedKey: encodeB64(keys.collection.sealedKey),
+      sealedKeySignature: encodeB64(keys.collection.sealedKeySignature),
     },
   });
 }
@@ -188,14 +208,29 @@ export interface SpaceDetail {
    * fingerprint a person could compare to put that right. Confirming them again does too.
    */
   unverified?: Array<{ user: string; compare?: string }>;
+  /**
+   * The keys of a space with no chain that were sealed before keys were signed (`space`, or
+   * `collection:<id>`): this browser accepted them once, and they are replaced when the keys are or
+   * when an owner confirms this account again (docs/crypto.md, "Signed key boxes").
+   */
+  legacyKeys?: string[];
+  /**
+   * The member whose fingerprint a person should compare so the keys of a space with no chain open:
+   * the member who sealed one of them, or the root of the confirmations that lead to them, whom this
+   * browser can't trace yet (`startPin` asks for it).
+   */
+  compare?: string;
 }
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
   const [served, servedMembers] = await Promise.all([deps.api.get(spaceId), deps.api.members(spaceId)]);
-  const trust = await checkSpaceChain(deps, spaceId, served.me.user);
+  const me = signedInAccount(deps, served.me.user);
+  const trust = await checkSpaceChain(deps, spaceId, me);
   let view = served;
   let members = servedMembers;
   let readable = false;
+  let legacyKeys: string[] = [];
+  let compare: string | undefined;
   let nameVersion = (_kind: 'space' | 'collection' | 'group', _id: string) => served.space.keyVersion;
   if (trust.kind === 'verified') {
     // The space as its chain gives it; keys open at the chain's version, under its commitments.
@@ -209,23 +244,25 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
       readable = false;
     }
   } else if (trust.kind === 'unchained' && served.me.sealedSpaceKey) {
+    // Each key opens only after its sealer's signature is checked (boxes.ts); one sealed before keys
+    // were signed is accepted once and flagged.
     try {
-      await deps.crypto.openSpace({
-        spaceId,
-        keyVersion: served.me.keyVersion ?? served.space.keyVersion,
-        sealed: decodeB64(served.me.sealedSpaceKey),
+      const ctx = {
+        ...lazyContext(deps, spaceId, me),
+        members: async () => servedMembers,
+        access: async () => ({ grants: served.grants, groups: served.groups }),
+      };
+      legacyKeys = await openUnchainedKeys(ctx, {
+        me: served.me,
+        spaceKeyVersion: served.space.keyVersion,
+        collectionKeys: served.collectionKeys,
       });
-      for (const copy of served.collectionKeys) {
-        await deps.crypto.openCollection({
-          spaceId,
-          collectionId: copy.collection,
-          keyVersion: copy.keyVersion,
-          sealed: decodeB64(copy.sealed),
-        });
-      }
       readable = true;
-    } catch {
+    } catch (error) {
       readable = false;
+      // A sealer nobody here has compared: what would put it right is a person comparing their
+      // fingerprint, as for first contact with a chain.
+      if (error instanceof KeyBoxRefused && error.compare) compare = error.compare.user;
     }
   }
   const unverified: NonNullable<SpaceDetail['unverified']> = [];
@@ -263,6 +300,8 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     members,
     readable,
     trust,
+    ...(legacyKeys.length > 0 ? { legacyKeys } : {}),
+    ...(compare ? { compare } : {}),
     ...(unverified.length > 0 ? { unverified } : {}),
     name: await title('space', space.id, space.name),
     collections: await Promise.all(
@@ -350,7 +389,7 @@ function recipientOf(
         crypto: deps.crypto,
         spaceId: detail.view.space.id,
         members: detail.members,
-        me: detail.view.me.user,
+        me: signedInAccount(deps, detail.view.me.user),
         pins: deps.pins,
       },
       member,
@@ -360,20 +399,20 @@ function recipientOf(
   return checked;
 }
 
+/** A collection key sealed to a member, and the signature of this account over the box. */
 async function collectionKeyFor(
   deps: SpaceDeps,
   spaceId: string,
   collectionId: string,
   recipient: Recipient,
-): Promise<string> {
-  return encodeB64(
-    await deps.crypto.sealCollectionKeyTo({
-      spaceId,
-      collectionId,
-      recipientKx1: recipient.kx1,
-      recipientId: recipient.id,
-    }),
-  );
+): Promise<{ sealed: string; signature: string }> {
+  const box = await deps.crypto.sealCollectionKeyTo({
+    spaceId,
+    collectionId,
+    recipientKx1: recipient.kx1,
+    recipientId: recipient.id,
+  });
+  return { sealed: encodeB64(box.sealed), signature: encodeB64(box.signature) };
 }
 
 // ---- membership ----------------------------------------------------------------------------
@@ -422,7 +461,7 @@ export async function confirmMember(
     recipientKx1: recipient.kx1,
     recipientId: recipient.id,
   });
-  const collectionKeys: Array<{ collection: string; sealed: string }> = [];
+  const collectionKeys: Array<{ collection: string; sealed: string; signature: string }> = [];
   for (const collection of collectionsOfMember(
     member.user,
     detail.view.collections,
@@ -431,7 +470,7 @@ export async function confirmMember(
   )) {
     collectionKeys.push({
       collection,
-      sealed: await collectionKeyFor(deps, spaceId, collection, recipient),
+      ...(await collectionKeyFor(deps, spaceId, collection, recipient)),
     });
   }
   // What the confirmer signs (docs/crypto.md, "Member confirmation"): that they compared this
@@ -448,7 +487,8 @@ export async function confirmMember(
     fingerprint: encodeB64(fingerprint.bytes),
     statement: encodeB64(statement),
     signature: encodeB64(signature),
-    sealedSpaceKey: encodeB64(sealedSpaceKey),
+    sealedSpaceKey: encodeB64(sealedSpaceKey.sealed),
+    sealedSpaceKeySignature: encodeB64(sealedSpaceKey.signature),
     collectionKeys,
   });
 }
@@ -492,7 +532,13 @@ export async function createCollection(
     parent: input.parent ?? null,
     name: encodeB64(made.name),
     // The maker gets Manage, and the key sealed to them is all anyone else's grant adds to.
-    keys: [{ user: detail.view.me.user, sealed: encodeB64(made.sealedKey) }],
+    keys: [
+      {
+        user: detail.view.me.user,
+        sealed: encodeB64(made.sealedKey),
+        signature: encodeB64(made.sealedKeySignature),
+      },
+    ],
   });
 }
 
@@ -539,9 +585,9 @@ async function keysForNewcomers(
   collection: string,
   before: Set<string>,
   after: Set<string>,
-): Promise<Array<{ collection: string; user: string; sealed: string }>> {
+): Promise<Array<{ collection: string; user: string; sealed: string; signature: string }>> {
   requireUnchained(detail);
-  const keys: Array<{ collection: string; user: string; sealed: string }> = [];
+  const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const user of after) {
     if (before.has(user)) continue;
     const member = detail.members.find((m) => m.user === user);
@@ -552,7 +598,7 @@ async function keysForNewcomers(
     keys.push({
       collection,
       user,
-      sealed: await collectionKeyFor(deps, detail.view.space.id, collection, recipient),
+      ...(await collectionKeyFor(deps, detail.view.space.id, collection, recipient)),
     });
   }
   return keys;
@@ -567,7 +613,7 @@ export async function setGroupMembers(
 ) {
   const { grants, groups, collections } = detail.view;
   const changed = groups.map((g) => (g.id === group ? { ...g, members } : g));
-  const keys: Array<{ collection: string; user: string; sealed: string }> = [];
+  const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const collection of collections) {
     if (!grants.some((g) => g.collection === collection.id && g.grantee === `group:${group}`)) continue;
     keys.push(
@@ -602,6 +648,6 @@ export async function grantAccess(
   );
   return deps.api.grant(detail.view.space.id, {
     ...input,
-    keys: keys.map((k) => ({ user: k.user, sealed: k.sealed })),
+    keys: keys.map((k) => ({ user: k.user, sealed: k.sealed, signature: k.signature })),
   });
 }

@@ -30,6 +30,7 @@ fn member(space: SpaceId, user: UserId, role: SpaceRole, state: MemberState) -> 
         invited_at: AT,
         accepted_at: Some(AT),
         sealed_space_key: confirmed.then(|| vec![5; 64]),
+        sealed_by: None,
         key_version: confirmed.then_some(1),
         confirmation: None,
         revoked_at: None,
@@ -128,6 +129,7 @@ async fn a_space_travels_between_two_stores_as_records() {
                 user: owner,
                 key_version: 1,
                 sealed: vec![9; 80],
+                sealed_by: None,
             }],
             ..SpaceChanges::new(space)
         },

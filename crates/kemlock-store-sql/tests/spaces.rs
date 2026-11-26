@@ -10,7 +10,7 @@ use kemlock_app::spaces::{
     AcceptInvitation, BundleFingerprints, CollectionRekey, ConfirmInput, ConfirmMember,
     ConfirmationFacts, CreateSpace, CreateSpaceInput, GetSpace, InviteInput, InviteMember,
     KeyReplacement, NewCollection, OWNER_REQUIRED, Offboard, PutSpaceItem, ReplaceKeys,
-    ReplacementInput, SealedCollectionKey, SpaceChanges, SpaceRepo, SyncOwners,
+    ReplacementInput, SealedCollectionKey, SealedSpaceKey, SpaceChanges, SpaceRepo, SyncOwners,
 };
 use kemlock_app::{Actor, AuthConfig};
 use kemlock_domain::spaces::{
@@ -63,6 +63,20 @@ impl BundleFingerprints for FirstBytes {
     }
 }
 
+/// Any key box signature of the right length: these tests are of the store, not of `sig1`.
+#[derive(Clone, Copy)]
+struct AnySignature;
+
+impl kemlock_app::spaces::KeyBoxVerifier for AnySignature {
+    async fn verify(
+        &self,
+        _facts: &kemlock_app::spaces::KeyBoxFacts<'_>,
+        _signature: &[u8],
+    ) -> Result<u32, kemlock_app::spaces::SpacesError> {
+        Ok(1)
+    }
+}
+
 fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
     key[0] = 1;
@@ -107,6 +121,7 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
         spaces: store.clone(),
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner),
@@ -114,10 +129,12 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
             id: space,
             name: name(1),
             sealed_space_key: sealed_key(2),
+            space_key_signature: vec![0x55; 3373],
             collection: NewCollection {
                 id: collection,
                 name: name(3),
                 sealed_key: sealed_key(4),
+                key_signature: vec![0x55; 3373],
             },
         },
     )
@@ -166,6 +183,7 @@ async fn join(
         fingerprints: FirstBytes,
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner.id),
@@ -176,10 +194,12 @@ async fn join(
             statement: b"compared".to_vec(),
             signature: vec![0x55; 3373],
             sealed_space_key: sealed_key(5),
+            space_key_signature: vec![0x55; 3373],
             collection_keys: vec![SealedCollectionKey {
                 collection,
                 user: member.id,
                 sealed: sealed_key(6),
+                signature: vec![0x55; 3373],
             }],
         },
     )
@@ -219,6 +239,7 @@ fn put_space_item(
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
+        boxes: AnySignature,
     }
 }
 
@@ -479,6 +500,7 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
+        boxes: AnySignature,
     }
     .execute(
         &actor(sam.id),
@@ -486,7 +508,11 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
         ReplacementInput {
             space_key_version: 2,
             space_name: Some(name(40)),
-            sealed_space_keys: vec![(sam.id, sealed_key(20))],
+            sealed_space_keys: vec![SealedSpaceKey {
+                user: sam.id,
+                sealed: sealed_key(20),
+                signature: vec![0x55; 3373],
+            }],
             collection_names: vec![(everyone, name(41))],
             group_names: Vec::new(),
             collections: vec![CollectionRekey {
@@ -496,6 +522,7 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
                     collection: everyone,
                     user: sam.id,
                     sealed: sealed_key(21),
+                    signature: vec![0x55; 3373],
                 }],
             }],
             writes: vec![(everyone, write(space, id, Some(1), 2, 2))],
@@ -694,6 +721,7 @@ fn put_space_batch(
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
+        boxes: AnySignature,
     }
 }
 

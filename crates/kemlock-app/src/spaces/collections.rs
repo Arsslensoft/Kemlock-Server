@@ -5,6 +5,7 @@
 //! every confirmed grantee got a copy and nobody else did.
 
 use super::error::SpacesError;
+use super::key_boxes::KeyBoxVerifier;
 use super::ports::{SpaceChanges, SpaceRepo};
 use super::support::{SealedCollectionKey, key_changes, load_open, record};
 use crate::authenticate::Actor;
@@ -39,10 +40,11 @@ pub(crate) fn check_grantee(state: &SpaceState, grantee: Grantee) -> Result<(), 
 }
 
 #[derive(Debug)]
-pub struct CreateCollection<R, V, C> {
+pub struct CreateCollection<R, V, C, K> {
     pub spaces: R,
     pub events: V,
     pub clock: C,
+    pub boxes: K,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +60,7 @@ pub struct CreateCollectionInput {
     pub keys: Vec<SealedCollectionKey>,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> CreateCollection<R, V, C> {
+impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> CreateCollection<R, V, C, K> {
     /// Makes a collection at key version 1. Owners, admins and Custom members who may create
     /// collections can; the space must not be waiting for a key replacement.
     pub async fn execute(
@@ -96,6 +98,14 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateCollection<R, V, C> {
         let listed = input.grants.iter().any(|(g, _)| *g == creator);
         let implicit = (!listed).then_some((creator, CollectionPermission::Manage));
         for (grantee, permission) in input.grants.into_iter().chain(implicit) {
+            // The creator always holds Manage: they seal the key to the grantees, and a grantee's
+            // client accepts that box only from a member who may manage the collection (docs/crypto.md,
+            // "Signed key boxes"), which a Custom member gets from nowhere else.
+            let permission = if grantee == creator {
+                CollectionPermission::Manage
+            } else {
+                permission
+            };
             check_grantee(&state, grantee)?;
             if !seen.insert(grantee) {
                 return Err(SpaceError::Invalid("a grantee is listed twice").into());
@@ -119,7 +129,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateCollection<R, V, C> {
             needed,
             ..KeyDelta::default()
         };
-        let keys = key_changes(&after, &delta, input.keys, now)?;
+        let keys = key_changes(&after, &delta, input.keys, now, &self.boxes, actor.user).await?;
 
         self.spaces
             .apply(SpaceChanges {

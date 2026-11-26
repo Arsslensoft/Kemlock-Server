@@ -19,13 +19,36 @@ import { createSharingCrypto, type SharingCrypto, unavailableSharingCrypto } fro
 
 export type { ChainAnchor, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
 
+/** A key sealed to a member, and the signature of the account that sealed it. */
+export interface SignedBox {
+  sealed: Uint8Array;
+  signature: Uint8Array;
+}
+
+/** What a key box signature is checked against (docs/crypto.md, "Signed key boxes"). */
+export interface KeyBoxFacts {
+  /** The sealer's public-key bundle: their account id and key version are its own. */
+  sealerBundle: Uint8Array;
+  spaceId: string;
+  /** The collection of a collection key's box; left out for the space key's. */
+  collectionId?: string;
+  /** The version of the key the box holds. */
+  keyVersion: number;
+  /** The 16 bytes of the account id the box is sealed to. */
+  recipientId: Uint8Array;
+  sealed: Uint8Array;
+  signature: Uint8Array;
+}
+
 export interface NewSpaceKeys {
   /** The space's name under the new space key. */
   name: Uint8Array;
   /** The space key sealed to the maker's own kx1 key. */
   sealedSpaceKey: Uint8Array;
+  /** The maker's signature over that box (docs/crypto.md, "Signed key boxes"). */
+  sealedSpaceKeySignature: Uint8Array;
   /** The first collection. */
-  collection: { name: Uint8Array; sealedKey: Uint8Array };
+  collection: { name: Uint8Array; sealedKey: Uint8Array; sealedKeySignature: Uint8Array };
 }
 
 /** What a member confirmation says (docs/crypto.md, "Member confirmation"). */
@@ -73,20 +96,22 @@ export interface SpaceCrypto extends SharingCrypto {
     spaceId: string;
     collectionId: string;
     name: string;
-  }): Promise<{ name: Uint8Array; sealedKey: Uint8Array }>;
+  }): Promise<{ name: Uint8Array; sealedKey: Uint8Array; sealedKeySignature: Uint8Array }>;
   /** The space key sealed to a member's kx1 key (context `space-key`, bound to the space, key version and member). */
   sealSpaceKeyTo(input: {
     spaceId: string;
     recipientKx1: Uint8Array;
     recipientId: Uint8Array;
-  }): Promise<Uint8Array>;
+  }): Promise<SignedBox>;
   /** A collection key sealed to a member (context `collection-key`, bound to the space, collection, key version and member). */
   sealCollectionKeyTo(input: {
     spaceId: string;
     collectionId: string;
     recipientKx1: Uint8Array;
     recipientId: Uint8Array;
-  }): Promise<Uint8Array>;
+  }): Promise<SignedBox>;
+  /** Whether a key box signature is the sealer's over exactly this box, for this key and recipient. */
+  verifyKeyBox(facts: KeyBoxFacts): Promise<boolean>;
   /** The 134-byte statement the unlocked account signs to confirm a member (it is the confirmer). */
   confirmationStatement(input: ConfirmationFacts): Promise<Uint8Array>;
   /**
@@ -142,6 +167,7 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   newCollection: () => unavailable(),
   sealSpaceKeyTo: () => unavailable(),
   sealCollectionKeyTo: () => unavailable(),
+  verifyKeyBox: () => unavailable(),
   confirmationStatement: () => unavailable(),
   verifyBundle: () => unavailable(),
   ownFingerprint: () => unavailable(),
@@ -166,6 +192,7 @@ type SpaceWorker = Pick<
   | 'newCollection'
   | 'sealSpaceKeyTo'
   | 'sealCollectionKeyTo'
+  | 'verifyKeyBox'
   | 'confirmationStatement'
   | 'verifyBundle'
   | 'ownFingerprint'
@@ -187,9 +214,11 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
       return {
         name: decodeB64(made.name),
         sealedSpaceKey: decodeB64(made.sealedSpaceKey),
+        sealedSpaceKeySignature: decodeB64(made.sealedSpaceKeySignature),
         collection: {
           name: decodeB64(made.collection.name),
           sealedKey: decodeB64(made.collection.sealedKey),
+          sealedKeySignature: decodeB64(made.collection.sealedKeySignature),
         },
       };
     },
@@ -204,27 +233,39 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
     },
     async newCollection(input) {
       const made = await api.newCollection(input);
-      return { name: decodeB64(made.name), sealedKey: decodeB64(made.sealedKey) };
+      return {
+        name: decodeB64(made.name),
+        sealedKey: decodeB64(made.sealedKey),
+        sealedKeySignature: decodeB64(made.sealedKeySignature),
+      };
     },
     async sealSpaceKeyTo({ spaceId, recipientKx1, recipientId }) {
-      return decodeB64(
-        await api.sealSpaceKeyTo({
-          spaceId,
-          recipientKx1: encodeB64(recipientKx1),
-          recipientId: encodeB64(recipientId),
-        }),
-      );
+      const made = await api.sealSpaceKeyTo({
+        spaceId,
+        recipientKx1: encodeB64(recipientKx1),
+        recipientId: encodeB64(recipientId),
+      });
+      return { sealed: decodeB64(made.sealed), signature: decodeB64(made.signature) };
     },
     async sealCollectionKeyTo({ spaceId, collectionId, recipientKx1, recipientId }) {
-      return decodeB64(
-        await api.sealCollectionKeyTo({
-          spaceId,
-          collectionId,
-          recipientKx1: encodeB64(recipientKx1),
-          recipientId: encodeB64(recipientId),
-        }),
-      );
+      const made = await api.sealCollectionKeyTo({
+        spaceId,
+        collectionId,
+        recipientKx1: encodeB64(recipientKx1),
+        recipientId: encodeB64(recipientId),
+      });
+      return { sealed: decodeB64(made.sealed), signature: decodeB64(made.signature) };
     },
+    verifyKeyBox: ({ sealerBundle, spaceId, collectionId, keyVersion, recipientId, sealed, signature }) =>
+      api.verifyKeyBox({
+        sealerBundle: encodeB64(sealerBundle),
+        spaceId,
+        ...(collectionId === undefined ? {} : { collectionId }),
+        keyVersion,
+        recipientId: encodeB64(recipientId),
+        sealed: encodeB64(sealed),
+        signature: encodeB64(signature),
+      }),
     async confirmationStatement({ space, member, memberKeyVersion, fingerprint }) {
       return decodeB64(
         await api.confirmationStatement({

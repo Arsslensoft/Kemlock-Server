@@ -27,7 +27,7 @@ use crate::{
     ids,
     session::{self, FIRST_KEY_VERSION, SealedItemRef, Session},
     sharing,
-    spaces::NameKind,
+    spaces::{self, NameKind},
 };
 
 const ACCOUNT_KEYS: &str = include_str!("../../../test-vectors/account-keys.json");
@@ -983,7 +983,7 @@ fn a_session_without_private_keys_signs_nothing() {
 fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     let space = [0x81u8; 16];
     let collection = [0x82u8; 16];
-    let (mut maker, _) = open_account([0x83; 16]);
+    let (mut maker, maker_bundle) = open_account([0x83; 16]);
     let (mut member, member_bundle) = open_account([0x84; 16]);
     let member_kx = member_bundle.kx1_public.as_bytes();
 
@@ -994,6 +994,68 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     assert_eq!(made.sealed_space_key.len(), 1 + 1600 + 12 + 32 + 16);
     assert_eq!(made.collection.sealed_key.len(), 1 + 1600 + 12 + 32 + 16);
     assert_eq!(made.sealed_space_key[0], 1);
+    // Both boxes are signed by the maker (docs/crypto.md, "Signed key boxes"), whose bundle verifies
+    // them, for this space, this version and this recipient only.
+    assert_eq!(made.sealed_space_key_signature.len(), 3373);
+    assert_eq!(made.collection.sealed_key_signature.len(), 3373);
+    let maker_bytes = maker_bundle.to_bytes();
+    let own = &maker_bundle.account_id;
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        own,
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        Some(&collection),
+        1,
+        own,
+        &made.collection.sealed_key,
+        &made.collection.sealed_key_signature
+    ));
+    // Not as the other kind of key, another version, another recipient or someone else's key.
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        own,
+        &made.collection.sealed_key,
+        &made.collection.sealed_key_signature
+    ));
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        2,
+        own,
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        &[0xEE; 16],
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
+    let (_, other_bundle) = open_account([0x85; 16]);
+    assert!(!spaces::verify_key_box(
+        &other_bundle.to_bytes(),
+        &space,
+        None,
+        1,
+        own,
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
     assert_eq!(made.name.len(), 12 + "Family".len() + 16);
     assert_eq!(made.collection.name.len(), 12 + "Everyone".len() + 16);
 
@@ -1060,11 +1122,41 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     let for_member_collection = maker
         .seal_collection_key_to(&space, &collection, member_kx, &member_bundle.account_id)
         .expect("seal the collection key");
+    // The boxes the maker seals to the member are signed by the maker, for the member.
+    let member_id = &member_bundle.account_id;
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        member_id,
+        &for_member_space.sealed,
+        &for_member_space.signature
+    ));
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        Some(&collection),
+        1,
+        member_id,
+        &for_member_collection.sealed,
+        &for_member_collection.signature
+    ));
+    // A server that made its own box for the member has no signature of the maker's to put on it.
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        Some(&collection),
+        1,
+        member_id,
+        &for_member_collection.sealed,
+        &for_member_space.signature
+    ));
     member
-        .open_space(&space, 1, &for_member_space)
+        .open_space(&space, 1, &for_member_space.sealed)
         .expect("open the space key");
     member
-        .open_collection(&space, &collection, 1, &for_member_collection)
+        .open_collection(&space, &collection, 1, &for_member_collection.sealed)
         .expect("open the collection key");
     assert_eq!(
         member
@@ -1075,21 +1167,25 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     // Contexts keep the two kinds of key apart, and a box is for its recipient alone.
     assert!(
         member
-            .open_space(&space, 1, &for_member_collection)
+            .open_space(&space, 1, &for_member_collection.sealed)
             .is_err()
     );
     assert!(
         member
-            .open_collection(&space, &collection, 1, &for_member_space)
+            .open_collection(&space, &collection, 1, &for_member_space.sealed)
             .is_err()
     );
-    assert!(maker.open_space(&space, 1, &for_member_space).is_err());
+    assert!(
+        maker
+            .open_space(&space, 1, &for_member_space.sealed)
+            .is_err()
+    );
     // The recipient's id is the box's aad: a box sealed for one account id does not open for
     // another account with the same key.
     let misaddressed = maker
         .seal_space_key_to(&space, member_kx, &[0xEE; 16])
         .expect("seal");
-    assert!(member.open_space(&space, 1, &misaddressed).is_err());
+    assert!(member.open_space(&space, 1, &misaddressed.sealed).is_err());
 
     // A rename by the member is a fresh name that the maker reads.
     let renamed = member
@@ -1235,10 +1331,10 @@ fn a_key_box_opens_only_for_the_space_collection_and_version_it_was_sealed_for()
     let box_a = maker
         .seal_space_key_to(&space_a, kx, &bundle.account_id)
         .expect("seal A");
-    assert!(member.open_space(&space_b, 1, &box_a).is_err());
-    assert!(member.open_space(&space_a, 2, &box_a).is_err());
+    assert!(member.open_space(&space_b, 1, &box_a.sealed).is_err());
+    assert!(member.open_space(&space_a, 2, &box_a.sealed).is_err());
     member
-        .open_space(&space_a, 1, &box_a)
+        .open_space(&space_a, 1, &box_a.sealed)
         .expect("A opens as A");
 
     // The same for a collection: another collection, another space, another version.
@@ -1247,25 +1343,25 @@ fn a_key_box_opens_only_for_the_space_collection_and_version_it_was_sealed_for()
         .expect("seal X");
     assert!(
         member
-            .open_collection(&space_a, &coll_y, 1, &box_x)
+            .open_collection(&space_a, &coll_y, 1, &box_x.sealed)
             .is_err()
     );
     assert!(
         member
-            .open_collection(&space_b, &coll_x, 1, &box_x)
+            .open_collection(&space_b, &coll_x, 1, &box_x.sealed)
             .is_err()
     );
     assert!(
         member
-            .open_collection(&space_a, &coll_x, 2, &box_x)
+            .open_collection(&space_a, &coll_x, 2, &box_x.sealed)
             .is_err()
     );
     member
-        .open_collection(&space_a, &coll_x, 1, &box_x)
+        .open_collection(&space_a, &coll_x, 1, &box_x.sealed)
         .expect("X opens as X");
 
     // Not as the other kind of key, either.
-    assert!(member.open_space(&space_a, 1, &box_x).is_err());
+    assert!(member.open_space(&space_a, 1, &box_x.sealed).is_err());
 }
 
 #[wasm_bindgen_test]

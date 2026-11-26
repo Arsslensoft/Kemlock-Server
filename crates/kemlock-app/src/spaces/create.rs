@@ -3,6 +3,7 @@
 //! nobody configures works like a shared file.
 
 use super::error::SpacesError;
+use super::key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, check_box};
 use super::ports::{SpaceChanges, SpaceRepo};
 use super::support::record;
 use crate::authenticate::Actor;
@@ -15,10 +16,11 @@ use kemlock_domain::spaces::{
 };
 
 #[derive(Debug)]
-pub struct CreateSpace<R, V, C> {
+pub struct CreateSpace<R, V, C, K> {
     pub spaces: R,
     pub events: V,
     pub clock: C,
+    pub boxes: K,
 }
 
 /// The space's first collection.
@@ -30,6 +32,8 @@ pub struct NewCollection {
     pub name: Vec<u8>,
     /// The collection key, sealed to the maker.
     pub sealed_key: Vec<u8>,
+    /// The maker's signature over that box (docs/crypto.md, "Signed key boxes").
+    pub key_signature: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,10 +45,12 @@ pub struct CreateSpaceInput {
     pub name: Vec<u8>,
     /// The space key, sealed to the maker.
     pub sealed_space_key: Vec<u8>,
+    /// The maker's signature over that box (docs/crypto.md, "Signed key boxes").
+    pub space_key_signature: Vec<u8>,
     pub collection: NewCollection,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
+impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> CreateSpace<R, V, C, K> {
     /// Makes the space. `Duplicate` when the id is taken.
     pub async fn execute(
         &self,
@@ -64,6 +70,34 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
         {
             return Err(SpacesError::Duplicate);
         }
+        // The maker seals both keys to themselves and signs them, so a client reading the space
+        // later finds a box signed by its own account.
+        let space_key_by = check_box(
+            &self.boxes,
+            KeyBoxFacts {
+                space: input.id,
+                key: KeyBoxKey::Space,
+                key_version: FIRST_KEY_VERSION,
+                recipient: actor.user,
+                sealed_box: &input.sealed_space_key,
+                sealer: actor.user,
+            },
+            &input.space_key_signature,
+        )
+        .await?;
+        let collection_key_by = check_box(
+            &self.boxes,
+            KeyBoxFacts {
+                space: input.id,
+                key: KeyBoxKey::Collection(input.collection.id),
+                key_version: FIRST_KEY_VERSION,
+                recipient: actor.user,
+                sealed_box: &input.collection.sealed_key,
+                sealer: actor.user,
+            },
+            &input.collection.key_signature,
+        )
+        .await?;
         let now = self.clock.now();
 
         let space = Space {
@@ -84,6 +118,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
             invited_at: now,
             accepted_at: Some(now),
             sealed_space_key: Some(input.sealed_space_key),
+            sealed_by: Some(space_key_by),
             key_version: Some(FIRST_KEY_VERSION),
             confirmation: None,
             revoked_at: None,
@@ -108,6 +143,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
             user: actor.user,
             key_version: FIRST_KEY_VERSION,
             sealed: input.collection.sealed_key,
+            sealed_by: Some(collection_key_by),
         };
 
         let state = SpaceState {

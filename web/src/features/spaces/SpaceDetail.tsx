@@ -9,6 +9,8 @@ import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
 import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
+import { signedInAccount } from './boxes';
+import { resealKeys } from './reseal';
 import { spaceDeps } from './deps';
 import { acceptFirstContact } from './chain';
 import { refreshSpaces } from './refresh';
@@ -118,11 +120,12 @@ export default function SpaceDetail() {
         invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input)),
         acceptFirstContact: () => {
           if (!detail) return;
-          void change(() => acceptFirstContact(spaceDeps, spaceId, detail.view.me.user));
+          void change(() => acceptFirstContact(spaceDeps, spaceId, signedInAccount(spaceDeps, detail.view.me.user)));
         },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
         startPin: (member) => void startConfirm(member, 'pin'),
+        reseal: async () => !!detail && (await worked(() => resealKeys(spaceDeps, detail))),
         cancelConfirm: () => setConfirming(null),
         confirm: () => {
           const current = confirming;
@@ -131,7 +134,7 @@ export default function SpaceDetail() {
           const fingerprint = current.fingerprint;
           const act = (): Promise<unknown> =>
             current.mode === 'pin'
-              ? pinMember(spaceDeps, detail.view.me.user, member, fingerprint).then(() => true)
+              ? pinMember(spaceDeps, signedInAccount(spaceDeps, detail.view.me.user), member, fingerprint).then(() => true)
               : confirmMember(spaceDeps, detail, member, fingerprint);
           void change(act).then((done) => {
             if (done) setConfirming(null);

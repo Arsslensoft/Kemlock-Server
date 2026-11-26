@@ -426,6 +426,20 @@ impl BundleFingerprints for FirstBytes {
     }
 }
 
+/// Any key box signature of the right length: these tests are of the store, not of `sig1`.
+#[derive(Clone, Copy)]
+struct AnySignature;
+
+impl kemlock_app::spaces::KeyBoxVerifier for AnySignature {
+    async fn verify(
+        &self,
+        _facts: &kemlock_app::spaces::KeyBoxFacts<'_>,
+        _signature: &[u8],
+    ) -> Result<u32, kemlock_app::spaces::SpacesError> {
+        Ok(1)
+    }
+}
+
 fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
     key[0] = 1;
@@ -463,6 +477,7 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
         spaces: store.clone(),
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor_of(owner),
@@ -470,10 +485,12 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
             id: space,
             name: vec![1; 40],
             sealed_space_key: sealed_key(2),
+            space_key_signature: vec![0x55; 3373],
             collection: NewCollection {
                 id: collection,
                 name: vec![3; 40],
                 sealed_key: sealed_key(4),
+                key_signature: vec![0x55; 3373],
             },
         },
     )
@@ -522,6 +539,7 @@ async fn join(
         fingerprints: FirstBytes,
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor_of(owner.user.id),
@@ -532,10 +550,12 @@ async fn join(
             statement: b"compared".to_vec(),
             signature: vec![0x55; 3373],
             sealed_space_key: sealed_key(5),
+            space_key_signature: vec![0x55; 3373],
             collection_keys: vec![SealedCollectionKey {
                 collection,
                 user: member.user.id,
                 sealed: sealed_key(6),
+                signature: vec![0x55; 3373],
             }],
         },
     )

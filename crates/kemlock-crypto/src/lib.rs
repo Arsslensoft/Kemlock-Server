@@ -82,6 +82,7 @@ pub mod ed25519;
 pub mod fips;
 pub mod hash;
 pub mod kem1;
+pub mod key_box;
 pub mod keys;
 pub mod kma1;
 pub mod kx1;
