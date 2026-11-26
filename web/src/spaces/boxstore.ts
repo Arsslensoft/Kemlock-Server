@@ -5,8 +5,9 @@
 //    A box with that hash is accepted again without asking who sealed it, so a sealer who has since
 //    left, or whose account moved to another key version, doesn't lock a member out of a key they
 //    already hold; a box that differs is checked afresh, and an unsigned one that differs is refused;
-//  - for each (space, key) the newest version of which it accepted a **signed** box, so a server
-//    can't take the signature away again by serving an unsigned box of that key.
+//  - for each space, whether it ever accepted a **signed** box of it: from then on an unsigned box
+//    of any key it hadn't already accepted is refused, so a server can't take the signatures away
+//    again, or serve an unsigned box of a key it made itself, once any key of the space is signed.
 //
 // It lives in IndexedDB in a database of its own, each value sealed by the worker under the
 // account's user key (`sealLocal`) and bound to its key, so the server can't reach it and a script
@@ -29,8 +30,8 @@ export type KeyRef = string;
 export interface BoxStore {
   load(account: string, space: string, key: KeyRef, version: number): Promise<BoxRecord | undefined>;
   save(account: string, space: string, key: KeyRef, version: number, record: BoxRecord): Promise<void>;
-  /** The newest version of this key of which a signed box was accepted. */
-  newestSigned(account: string, space: string, key: KeyRef): Promise<number | undefined>;
+  /** Whether a signed box of any key of this space was ever accepted. */
+  hasSigned(account: string, space: string): Promise<boolean>;
 }
 
 const DATABASE = 'kemlock-space-boxes';
@@ -38,8 +39,7 @@ const BOXES = 'boxes';
 
 const boxKey = (account: string, space: string, key: KeyRef, version: number) =>
   `box/${account}/${space}/${key}/${version}`;
-const signedKey = (account: string, space: string, key: KeyRef) =>
-  `signed/${account}/${space}/${key}`;
+const signedKey = (account: string, space: string) => `signed/${account}/${space}`;
 
 function isRecord(value: unknown): value is BoxRecord {
   if (typeof value !== 'object' || value === null) return false;
@@ -54,29 +54,20 @@ export function parseBoxRecord(text: string): BoxRecord {
   return { hash: value.hash, signed: value.signed };
 }
 
-function parseVersion(text: string): number {
-  const version = Number(text);
-  if (!Number.isSafeInteger(version) || version < 0) throw new Error('the kept key version is damaged');
-  return version;
-}
-
 /** The accepted boxes in memory: for tests, and the fallback when IndexedDB can't be used. */
 export function memoryBoxStore(): BoxStore {
   const records = new Map<string, BoxRecord>();
-  const newest = new Map<string, number>();
+  const signed = new Set<string>();
   return {
     async load(account, space, key, version) {
       return records.get(boxKey(account, space, key, version));
     },
     async save(account, space, key, version, record) {
       records.set(boxKey(account, space, key, version), record);
-      if (record.signed) {
-        const kept = newest.get(signedKey(account, space, key));
-        if (kept === undefined || kept < version) newest.set(signedKey(account, space, key), version);
-      }
+      if (record.signed) signed.add(signedKey(account, space));
     },
-    async newestSigned(account, space, key) {
-      return newest.get(signedKey(account, space, key));
+    async hasSigned(account, space) {
+      return signed.has(signedKey(account, space));
     },
   };
 }
@@ -133,16 +124,10 @@ export function indexedDbBoxStore(seal: LocalSeal, factory: IDBFactory = indexed
     },
     async save(account, space, key, version, record) {
       await write(boxKey(account, space, key, version), JSON.stringify(record));
-      if (record.signed) {
-        const kept = await store.newestSigned(account, space, key);
-        if (kept === undefined || kept < version) {
-          await write(signedKey(account, space, key), String(version));
-        }
-      }
+      if (record.signed) await write(signedKey(account, space), '1');
     },
-    async newestSigned(account, space, key) {
-      const text = await read(signedKey(account, space, key));
-      return text === undefined ? undefined : parseVersion(text);
+    async hasSigned(account, space) {
+      return (await read(signedKey(account, space))) === '1';
     },
   };
   return store;

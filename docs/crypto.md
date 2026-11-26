@@ -649,20 +649,39 @@ who made them. The rule keeps existing spaces usable without opening the door to
 - A client **accepts and remembers** an unsigned box once per (space, key, version): the first time
   it meets one it opens it, stores its SHA-256 as in 2 and marks it "sealed before keys were
   signed". The mark is shown to the person on the space ("Some keys of this space were sealed before
-  keys were signed; ask an owner to confirm you again"), and goes when the box is replaced.
+  keys were signed; ask an owner or admin to re-seal them"), and goes when the box is replaced.
 - An unsigned box that differs from the one remembered for that (space, key, version) is refused.
-- An unsigned box is refused for a (space, key) once the client has accepted a **signed** box of it, at
-  any version: every box made since signatures began carries one, so an unsigned box after a signed
-  one is a signature taken away. Signed boxes are accepted at any version.
-- A box is replaced by a signed one when the key is replaced (the next key version is sealed and
-  signed by whoever replaces it) or when an owner or admin confirms the member again, which seals
-  the current space key and the member's collection keys anew. Nothing else is needed: there is no
-  separate migration step.
+- A client also keeps, for each space, whether it ever accepted a **signed** box of it. From then on
+  it refuses an unsigned box of any key it had not already accepted: every box made since signatures
+  began carries one, so such a box is a signature taken away, or a key the server made. A box it
+  accepted before still opens (rule 2). When a space serves both kinds, a client takes the unsigned
+  boxes first, so one pass doesn't depend on the order the server lists them in.
+- An unsigned box is replaced by a signed one when the key is replaced (the next key version is
+  sealed and signed by whoever replaces it), when an owner or admin confirms the member again (which
+  seals the current space key and the member's collection keys anew), or when an owner or admin
+  **re-seals the space's keys**.
 
-What this leaves open is stated plainly: a device that has never opened a key of that (space, key,
-version) accepts an unsigned box on first sight, so a server that already forged one for a member's
-new device before the member first sees it is not caught, until the key is replaced. The mark
-makes such boxes visible, and a replacement removes the exposure.
+**Re-sealing.** `POST /kem/v1/spaces/{id}/reseal`, for a space with no chain whose keys aren't
+waiting for a replacement, takes
+`{"members": [{"user", "sealedSpaceKey", "sealedSpaceKeySignature", "collectionKeys": [{"collection",
+"sealed", "signature"}]}]}`: a fresh box, signed as above by the signed-in owner or admin, of the
+current space key for each confirmed member listed, and of the current key of any collection that
+member already holds a copy of. The server checks them as it does on a confirmation (each box
+1661 bytes and its signature the sealer's over this box, at the current key version, for that
+member; each collection one the member holds a copy of, none twice, none waiting for replacement),
+replaces those copies and their signatures in one transaction, changes no role, grant or key
+version, and answers `200` with `{"resealed": n}`; `403` for anyone but an owner or admin, `409` for a
+space with a chain. A client re-seals only to members it verified as for a confirmation, and only
+the collection keys it holds (an owner or admin holds those of the collections it is granted), so a
+collection whose key no owner or admin holds stays unsigned until its key is replaced.
+
+What this leaves open, stated plainly: a device that has seen **no signed box of that space** yet
+accepts an unsigned box on first sight, for the space key and every collection key, because nothing
+yet tells it that signatures have begun. A server that serves such a device boxes of its own before
+the device has accepted any signed one is not caught, until the space is re-sealed or its keys are
+replaced and the device has seen the signed boxes. The mark makes such boxes visible, and re-sealing
+(or a key replacement) removes the exposure; a server can't use it on a device that has already
+accepted a signed box of the space.
 
 **A sealer's key version.** The statement binds the key version of the sealer's bundle, so a client
 verifies a signature against the sealer's bundle **at the version the signature names**, not only

@@ -253,10 +253,20 @@ describe('a key box from before keys were signed', () => {
     const forged = { sealed: encodeB64(utf8('server-made-key')), sealedBy: null };
     expect(await refusal(openKeyBox(ctx, { key: finance, version: 2, ...forged }))).toBe('unsigned-downgrade');
     expect(crypto.calls.some((call) => call.startsWith('openCollection'))).toBe(false);
-    // Another key of the space has no signed box yet, so its old box is still taken once.
-    await expect(
-      openKeyBox(ctx, { key: { collection: INFRA }, version: 1, ...unsigned }),
-    ).resolves.toEqual({ legacy: true });
+    // Nor is a box of another key of the space that this browser hadn't accepted before the first
+    // signed one: the space has begun to be signed.
+    expect(await refusal(openKeyBox(ctx, { key: { collection: INFRA }, version: 1, ...unsigned }))).toBe(
+      'unsigned-downgrade',
+    );
+  });
+
+  it('stays open after the space began to be signed, when this browser accepted it before', async () => {
+    const { ctx, lee } = await setup();
+    await openKeyBox(ctx, { key: finance, version: 1, ...unsigned });
+    await openKeyBox(ctx, { key: { collection: INFRA }, version: 1, ...signedBy(lee, { collection: INFRA }, 1) });
+    await expect(openKeyBox(ctx, { key: finance, version: 1, ...unsigned })).resolves.toEqual({
+      legacy: true,
+    });
   });
 
   it('is replaced by a signed box of the same key and version', async () => {

@@ -15,11 +15,10 @@
 //     member out of a key they hold;
 //  3. a box made before keys were signed has no signature. It is accepted and remembered once per
 //     (space, key, version), flagged "sealed before keys were signed", unless this browser already
-//     accepted a different box for it, or any signed box of that key (every box made since keys
-//     were signed carries a signature, so an unsigned one after a signed one is a signature taken
-//     away).
-//     A signed box replaces it at the next key replacement or when an owner confirms the member
-//     again.
+//     accepted a different box for it, or any signed box of the space (every box made since keys
+//     were signed carries a signature, so an unsigned one this browser hadn't already accepted is
+//     a signature taken away, or a key the server made). An owner or admin replaces such boxes with
+//     signed ones by re-sealing the keys, and a key replacement or a new confirmation does too.
 //
 // Anything else is refused, and the space's keys show as "can't be checked".
 import type { GrantDto, GroupDto, KeyCopyDto, MemberDto, MemberViewDto, SealedByDto } from '@/api/spaces';
@@ -269,11 +268,12 @@ export async function openKeyBox(ctx: BoxContext, box: BoxToOpen): Promise<{ leg
     return { legacy: false };
   }
 
-  // A box from before keys were signed: once per (space, key, version), and never after a different
-  // one was accepted, or any signed one of this key.
+  // A box from before keys were signed: once per (space, key, version), never in place of a different
+  // one that was accepted, and never once this browser accepted any signed box of the space: every
+  // box made since signing began carries a signature, so one without that this browser hadn't
+  // already accepted is a signature taken away, or a key the server made.
   if (kept) throw new KeyBoxRefused(ref, 'unsigned-changed');
-  const newest = await store.newestSigned(ctx.me, ctx.spaceId, ref);
-  if (newest !== undefined) throw new KeyBoxRefused(ref, 'unsigned-downgrade');
+  if (await store.hasSigned(ctx.me, ctx.spaceId)) throw new KeyBoxRefused(ref, 'unsigned-downgrade');
   await openIn(ctx, box, bytes);
   await store.save(ctx.me, ctx.spaceId, ref, box.version, { hash, signed: false });
   return { legacy: true };
@@ -292,25 +292,30 @@ export interface UnchainedKeys {
  * Resolves with the keys that are from before keys were signed (`space`, or `collection:<id>`).
  */
 export async function openUnchainedKeys(ctx: BoxContext, served: UnchainedKeys): Promise<KeyRef[]> {
-  const legacy: KeyRef[] = [];
   const sealed = served.me.sealedSpaceKey;
   if (!sealed) throw new Error('the space key is not sealed to this account yet');
-  const space = await openKeyBox(ctx, {
-    key: 'space',
-    version: served.me.keyVersion ?? served.spaceKeyVersion,
-    sealed,
-    sealedBy: served.me.sealedBy,
-  });
-  if (space.legacy) legacy.push('space');
-  for (const copy of served.collectionKeys) {
-    const key: BoxKey = { collection: copy.collection };
-    const opened = await openKeyBox(ctx, {
-      key,
+  const boxes: BoxToOpen[] = [
+    {
+      key: 'space',
+      version: served.me.keyVersion ?? served.spaceKeyVersion,
+      sealed,
+      sealedBy: served.me.sealedBy,
+    },
+    ...served.collectionKeys.map((copy) => ({
+      key: { collection: copy.collection } as BoxKey,
       version: copy.keyVersion,
       sealed: copy.sealed,
       sealedBy: copy.sealedBy,
-    });
-    if (opened.legacy) legacy.push(keyRef(key));
+    })),
+  ];
+  // The boxes from before keys were signed come first: once a signed box has been accepted, an
+  // unsigned one this browser hadn't already accepted is refused, and one pass of a space that is
+  // part way through being signed must not depend on the order the server lists its keys in.
+  const ordered = [...boxes.filter((b) => !b.sealedBy), ...boxes.filter((b) => b.sealedBy)];
+  const legacy: KeyRef[] = [];
+  for (const box of ordered) {
+    const opened = await openKeyBox(ctx, box);
+    if (opened.legacy) legacy.push(keyRef(box.key));
   }
   return legacy;
 }
