@@ -181,7 +181,7 @@ describe('the chips and the reason of every kind', () => {
 
   it('names a copy by its vault and the details of its kind', async () => {
     await renderInRouter(<View groups={everyKind()} initial="card" />);
-    expect(screen.getAllByText(/Your vault · Ending 1111 · expires 05\/29/)).toHaveLength(2);
+    expect(screen.getAllByText(/Your vault · ending 1111 · expires 05\/29/)).toHaveLength(2);
     await userEvent.setup().click(screen.getByRole('button', { name: 'Backup codes' }));
     expect(screen.getAllByText(/Your vault · 2 codes, 1 unused/).length).toBeGreaterThan(0);
   });
