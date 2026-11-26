@@ -633,6 +633,11 @@ impl Session {
             }
         };
         if verified.state.head.is_none() {
+            // A space whose served chain was refused has a chain: serving it nothing now is not
+            // "no chain", it is the chain taken back.
+            if unlocked.spaces.refused.contains(space) {
+                return Ok(Verdict::Refused(Refused::new("rolled back", None)));
+            }
             return Ok(Verdict::View(Box::new(unchained())));
         }
 

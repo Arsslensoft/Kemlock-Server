@@ -1852,3 +1852,20 @@ fn a_local_value_opens_for_its_account_and_label_only() {
         Err(Error::Locked)
     );
 }
+
+#[wasm_bindgen_test]
+fn a_space_whose_chain_was_refused_is_never_served_as_having_none() {
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF5; 16]);
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], false);
+    // The server now serves nothing: that is the chain taken back, not a space with none.
+    let nothing = verdict_json(&mut session, &space, &[]);
+    assert_eq!(nothing["ok"], false);
+    assert_eq!(nothing["reason"], "rolled back");
+    // A space the page never had a chain for is still one with none.
+    assert_eq!(verdict_json(&mut session, &[0xAB; 16], &[])["chained"], false);
+}

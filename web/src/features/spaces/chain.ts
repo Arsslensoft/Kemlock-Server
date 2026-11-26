@@ -82,7 +82,18 @@ export async function checkSpaceChain(
       records,
       ...(anchor ? { anchor } : {}),
     });
-    if (!verdict.ok) return { kind: 'unverified', reason: verdict.reason, seq: verdict.seq };
+    if (!verdict.ok) {
+      // A chain that was refused is still a chain: remember it, so none served next is not "none".
+      if (records.length > 0) await store.markSeen(me, spaceId);
+      return { kind: 'unverified', reason: verdict.reason, seq: verdict.seq };
+    }
+    if (verdict.chained) {
+      await store.markSeen(me, spaceId);
+    } else if (await store.seen(me, spaceId)) {
+      // This account has been served a chain for the space before (first contact may never have
+      // been done, so there is no anchor): a server that serves none now has taken it back.
+      return { kind: 'unverified', reason: 'rolled back', seq: null };
+    }
     // The anchor is kept once first contact is done, and moves forward with every chain verified.
     const next = verdict.chained && verdict.trusted ? anchorOf(verdict) : undefined;
     if (next) await store.save(me, spaceId, next, verdict.divergence !== undefined);

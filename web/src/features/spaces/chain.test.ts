@@ -107,7 +107,7 @@ describe('checking a space’s chain', () => {
       trusted: false,
       firstContact: { kind: 'compare', person: ME, fingerprint: '12345 67890', owners: [] },
     });
-    const { deps, anchors, crypto } = setup(waiting);
+    const { deps, anchors } = setup(waiting);
     const trust = await checkSpaceChain(deps, SPACE, ME);
     expect(trust.kind).toBe('first-contact');
     expect(await anchors.load(ME, SPACE)).toBeUndefined();
@@ -124,6 +124,36 @@ describe('checking a space’s chain', () => {
     expect(await anchors.load(ME, SPACE)).toBeUndefined();
   });
 
+  it('never reads a space as unchained again once a chain was served for it', async () => {
+    // First contact was never done, so there is no anchor: the chain was only seen.
+    const waiting = view({
+      trusted: false,
+      firstContact: { kind: 'pick', owners: [] },
+    });
+    const { deps, anchors, crypto } = setup(waiting);
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('first-contact');
+    expect(await anchors.load(ME, SPACE)).toBeUndefined();
+    expect(await anchors.seen(ME, SPACE)).toBe(true);
+    // Another unlock, and the server serves nothing: a chain taken back, not a space with none.
+    const fresh = fakeSpaceCrypto();
+    fresh.chain = NO_CHAIN;
+    expect(await checkSpaceChain({ ...deps, crypto: fresh }, SPACE, ME)).toEqual({
+      kind: 'unverified',
+      reason: 'rolled back',
+      seq: null,
+    });
+    // A space it never saw one for is as before.
+    expect(await checkSpaceChain({ ...deps, crypto: fresh }, THEO, ME)).toEqual({ kind: 'unchained' });
+  });
+
+  it('remembers a refused chain too', async () => {
+    const { deps, anchors, crypto } = setup({ ok: false, reason: 'forked', seq: 3 });
+    await checkSpaceChain(deps, SPACE, ME);
+    expect(await anchors.seen(ME, SPACE)).toBe(true);
+    crypto.chain = NO_CHAIN;
+    expect(await checkSpaceChain(deps, SPACE, ME)).toMatchObject({ kind: 'unverified', reason: 'rolled back' });
+  });
+
   it('is unverified, not unchained, when the chain can not be read', async () => {
     const { deps, api } = setup();
     api.chain.mockRejectedValue(new Error('offline'));
@@ -135,6 +165,8 @@ describe('checking a space’s chain', () => {
     const broken: AnchorStore = {
       load: () => Promise.reject(new Error('indexeddb')),
       save: () => Promise.resolve(),
+      seen: () => Promise.resolve(false),
+      markSeen: () => Promise.resolve(),
     };
     const trust = await checkSpaceChain({ ...deps, anchors: broken } satisfies ChainDeps, SPACE, ME);
     expect(trust).toMatchObject({ kind: 'unverified', reason: 'unreachable' });

@@ -1503,6 +1503,15 @@ that the `confirm` records its own bundle, byte for byte.
 
 ### Using the state
 
+A space with no chain is not covered by any of this. Its client takes who is in it and which key
+version is current from the server, and checks only what it can: that a member's bundle is theirs and
+that someone it can trace to itself, or to a fingerprint its person compared, confirmed exactly those
+keys. A server can still hand an unchained space's members a key of its own at the next version, or
+leave one out of a replacement, and nothing in the space shows it: **an unchained space trusts the
+server for which key version is current, and a chained space doesn't.** That is why a client that has
+ever been served a chain for a space never reads the space as unchained again, and why a space is
+made as a chain wherever the client can build one.
+
 - **Bundles.** A member's keys are the chain's bundle, never the server's. A member the server lists
   but the chain doesn't confirm, or whose server bundle differs by a byte from the chain's, gets no
   seal, and the client logs it.

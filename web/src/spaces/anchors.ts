@@ -31,6 +31,12 @@ export interface AnchorStore {
    * back, except by a fence ("Epochs"), which `afterFence` says this is.
    */
   save(account: string, space: string, anchor: ChainAnchor, afterFence?: boolean): Promise<void>;
+  /**
+   * Whether this account has ever been served a chain for the space, whether or not first contact
+   * was done: a space served with none after that is a chain taken back, not a space with none.
+   */
+  seen(account: string, space: string): Promise<boolean>;
+  markSeen(account: string, space: string): Promise<void>;
 }
 
 /** The members a person compared the fingerprint of, here. A pin is a fingerprint, 12 groups of 5 digits. */
@@ -46,6 +52,7 @@ const ANCHORS = 'anchors';
 const PINS = 'pins';
 
 const anchorKey = (account: string, space: string) => `anchor/${account}/${space}`;
+const seenKey = (account: string, space: string) => `seen/${account}/${space}`;
 const pinKey = (account: string, member: string) => `pin/${account}/${member}`;
 
 /** Whether `kept` is at least as far along as `next`, so `next` must not replace it. */
@@ -75,6 +82,7 @@ export function parseAnchor(text: string): ChainAnchor {
 export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
   const anchors = new Map<string, ChainAnchor>();
   const pins = new Map<string, string>();
+  const seen = new Set<string>();
   return {
     anchors: {
       async load(account, space) {
@@ -83,6 +91,12 @@ export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
       async save(account, space, anchor, afterFence = false) {
         const key = anchorKey(account, space);
         if (afterFence || !further(anchors.get(key), anchor)) anchors.set(key, anchor);
+      },
+      async seen(account, space) {
+        return seen.has(seenKey(account, space));
+      },
+      async markSeen(account, space) {
+        seen.add(seenKey(account, space));
       },
     },
     pins: {
@@ -163,6 +177,12 @@ export function indexedDbStores(
     async save(account, space, anchor, afterFence = false) {
       if (!afterFence && further(await this.load(account, space), anchor)) return;
       await write(ANCHORS, anchorKey(account, space), JSON.stringify(anchor));
+    },
+    async seen(account, space) {
+      return (await read(ANCHORS, seenKey(account, space))) === '1';
+    },
+    async markSeen(account, space) {
+      await write(ANCHORS, seenKey(account, space), '1');
     },
   };
   const pins: PinStore = {
