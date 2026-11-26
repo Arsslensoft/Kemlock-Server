@@ -2416,6 +2416,7 @@ fn signed_with(
         envelope: item_write::envelope_hash(1, sealed).expect("the hash"),
         writer: *writer.as_bytes(),
         writer_key_version: 1,
+        collection: None,
     };
     item["writer"] = json!(user);
     item["writerKeyVersion"] = json!(1);

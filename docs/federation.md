@@ -321,6 +321,7 @@ chain" below): a vault's servers need only form a chain of pairings.
 | 13 | written at | Unix milliseconds; a tombstone's deletion time too |
 | 14 | lineage | up to 64 change keys, packed, nearest ancestor first |
 | 15 | writer signature | 3393 bytes; absent on a `bw` record and on a `kem1` record written unsigned |
+| 16 | collection | 16 bytes, the collection of an item of a space, which the writer's signature covers; absent for an item of a vault, and on a record of a space written before collections were signed (a signed record of a space must have it) |
 
 A change key is `origin (16) ‖ u64be(seq)` (24 bytes). A record is refused when it has a zero
 sequence or revision, a tombstone with ciphertext, a live item without it, or a lineage that names
@@ -346,7 +347,8 @@ head against older versions until a write that names it in its lineage replaces 
 
 A `kem1` record also carries the **writing account's** signature of the write
 (`docs/crypto.md`, "Signed item writes"), in field 15: `writer (16) ‖ u32be(key version) ‖ sig1
-signature (3373)`, 3393 bytes, absent on a `bw` record and on a `kem1` record written without one.
+signature (3373)`, 3393 bytes, absent on a `bw` record and on a `kem1` record written without one,
+and the collection of an item of a space in field 16.
 The origin's signature covers the field, so a relay can't strip or swap it. A receiver of a `kem1`
 record checks, before it applies it:
 
@@ -355,7 +357,12 @@ record checks, before it applies it:
    replicated member list, which keeps the row of a revoked member) for a `space:` owner: a write
    is checked by who signed it, so one made before the account left is still good. The receiver holds the writer's bundle at the signature's key version (the
    replicated member account), and the signature verifies over the statement rebuilt from the
-   record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key.
+   record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key, and
+   for a `space:` owner the collection (field 16), which the writer must be allowed to edit: a
+   confirmed member with edit on it, or one taken out since, as the receiver's copy of the space
+   says; a collection it doesn't know yet is left out for now. A signed record of a space without
+   a collection is refused, so a replica that moves a signed item to another collection, or strips
+   it, breaks the origin's signature or the writer's.
    A record that fails is **refused**: counted, left out, the rest of the page applied. A writer who
    isn't in the member list yet, or a bundle the receiver doesn't hold yet, is left out **for now**
    (counted as refused, and as one to retry): the later comparison fetches the record again once

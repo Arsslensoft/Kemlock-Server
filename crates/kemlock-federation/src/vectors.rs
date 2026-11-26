@@ -1205,6 +1205,7 @@ fn record_json(r: &ChangeRecord) -> Json {
         "updated_at_ms": r.updated_at_ms,
         "lineage": r.lineage.iter().map(|k| hx(&k.to_bytes())).collect::<Vec<Json>>(),
         "writer_signature": r.write.as_ref().map(|w| hx(&w.to_stored())),
+        "collection": r.collection.map(|c| hx(c.0.as_bytes())),
     })
 }
 
@@ -1231,6 +1232,15 @@ fn record_from_json(v: &Json) -> Result<ChangeRecord> {
                 .ok_or(FedError::Malformed("a writer signature"))?,
         ),
     };
+    let collection = match v.get("collection") {
+        None | Some(Json::Null) => None,
+        Some(other) => {
+            let bytes: [u8; 16] = unhex(other)?
+                .try_into()
+                .map_err(|_| FedError::Malformed("a collection id"))?;
+            Some(kemlock_domain::spaces::CollectionId(uuid::Uuid::from_bytes(bytes)))
+        }
+    };
     Ok(ChangeRecord {
         change: ChangeId {
             origin: server_id(array_of::<16>(v, "origin")?),
@@ -1251,6 +1261,7 @@ fn record_from_json(v: &Json) -> Result<ChangeRecord> {
         updated_at_ms: uint_of(v, "updated_at_ms")?,
         lineage,
         write,
+        collection,
     })
 }
 
@@ -1284,6 +1295,7 @@ fn change_doc() -> Result<Json> {
                 },
             ],
             write: None,
+            collection: None,
         };
         let tombstone = ChangeRecord {
             change: ChangeId {
@@ -1340,6 +1352,30 @@ fn change_doc() -> Result<Json> {
             key_version: 2,
             signature: writer_signature,
         });
+        // The same, in a collection of a space: the collection is in the writer's statement too.
+        let mut in_space = ChangeRecord {
+            change: ChangeId {
+                origin,
+                seq: 12,
+                hlc: Hlc::from_parts(1_800_000_001_000, 0),
+            },
+            owner: Owner::Space(kemlock_domain::SpaceId(uuid::Uuid::from_bytes([0x32; 16]))),
+            collection: Some(kemlock_domain::spaces::CollectionId(uuid::Uuid::from_bytes(
+                [0x33; 16],
+            ))),
+            ..written.clone()
+        };
+        let in_space_statement = crate::writes::statement_of(&in_space)
+            .ok_or(FedError::Crypto)?
+            .to_bytes()
+            .map_err(|_| FedError::Crypto)?;
+        in_space.write = Some(WriteSignature {
+            writer,
+            key_version: 2,
+            signature: writer_key
+                .sign("item-write", &in_space_statement)
+                .map_err(|_| FedError::Crypto)?,
+        });
         let writer_public = crypto::sign_public(&writer_key)?;
         let mut cases = Vec::new();
         for (name, record) in [
@@ -1347,6 +1383,7 @@ fn change_doc() -> Result<Json> {
             ("tombstone", &tombstone),
             ("bitwarden-item-in-a-space-without-lineage", &bitwarden),
             ("live-item-signed-by-its-writer", &written),
+            ("live-item-in-a-collection-signed-by-its-writer", &in_space),
         ] {
             let signed = record.sign(&signing)?;
             let mut case = record_json(record);
@@ -1359,7 +1396,11 @@ fn change_doc() -> Result<Json> {
                 if record.write.is_some() {
                     map.insert("writer_signing_seed".to_owned(), hx(&writer_seed));
                     map.insert("writer_public_key".to_owned(), hx(writer_public.as_bytes()));
-                    map.insert("writer_statement".to_owned(), hx(&writer_statement));
+                    let statement = crate::writes::statement_of(record)
+                        .ok_or(FedError::Crypto)?
+                        .to_bytes()
+                        .map_err(|_| FedError::Crypto)?;
+                    map.insert("writer_statement".to_owned(), hx(&statement));
                 }
             }
             cases.push(case);
@@ -1523,7 +1564,8 @@ fn check_change(doc: &Json) -> Result<()> {
         // The tombstone's item survives the round trip through a stored item.
         let item = record.to_item()?;
         ensure(
-            ChangeRecord::from_item(&item, record.lineage.clone()) == record,
+            ChangeRecord::from_item(&item, record.lineage.clone()).in_collection(record.collection)
+                == record,
             "item round trip",
         )?;
     }

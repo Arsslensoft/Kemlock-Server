@@ -1836,7 +1836,10 @@ where
     super::write_sig::verify_writes(
         &env.api.store,
         caller.actor().user,
-        &writes.iter().map(|(_, write)| write).collect::<Vec<_>>(),
+        &writes
+            .iter()
+            .map(|(collection, write)| (write, Some(*collection)))
+            .collect::<Vec<_>>(),
     )
     .await?;
     let input = ReplacementInput {

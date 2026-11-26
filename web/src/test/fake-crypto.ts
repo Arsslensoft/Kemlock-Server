@@ -547,6 +547,7 @@ export function writeSignatureText(writer: string, keyVersion: number, fields: I
     fields.keyVersion,
     fields.ciphertext ?? '',
     fields.itemKey ?? '',
+    fields.collectionId ?? '',
   ])}`;
 }
 

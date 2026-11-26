@@ -220,6 +220,9 @@ pub struct Exported {
     /// The origin's signature, if one is stored. A change this server accepted has none until it
     /// is first sent.
     pub signature: Option<Vec<u8>>,
+    /// The collection of an item of a space, as this server holds it: what the writer's signature
+    /// covers. The same for every version of the item held, which is the item's current one.
+    pub collection: Option<kemlock_domain::spaces::CollectionId>,
 }
 
 /// A page of versions, in (origin, sequence) order.

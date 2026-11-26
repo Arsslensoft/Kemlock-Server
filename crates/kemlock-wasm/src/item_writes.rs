@@ -35,6 +35,9 @@ pub(crate) struct WriteFields {
     ciphertext: Option<String>,
     #[serde(default)]
     item_key: Option<String>,
+    /// The collection of an item of a space, which the statement covers; none for a vault's item.
+    #[serde(default)]
+    collection_id: Option<String>,
     /// To check only: the account that wrote, and the key version of the bundle that signed.
     #[serde(default)]
     writer: Option<String>,
@@ -56,6 +59,7 @@ struct Parts {
     owner: Owner,
     id: [u8; 16],
     envelope: [u8; 32],
+    collection: Option<[u8; 16]>,
 }
 
 impl WriteFields {
@@ -78,10 +82,22 @@ impl WriteFields {
                 .as_ref()
                 .map(|(ciphertext, item_key)| (ciphertext.as_slice(), item_key.as_slice())),
         )?;
+        let owner = ids::parse_owner(&self.owner)?;
+        let collection = self
+            .collection_id
+            .as_deref()
+            .map(ids::parse_uuid)
+            .transpose()?;
+        // An item of a space is in a collection and an item of a vault is in none: the statement
+        // can't be made otherwise.
+        if collection.is_some() != (owner.kind() == OwnerKind::Space) {
+            return Err(Error::Invalid);
+        }
         Ok(Parts {
-            owner: ids::parse_owner(&self.owner)?,
+            owner,
             id: ids::parse_uuid(&self.id)?,
             envelope,
+            collection,
         })
     }
 
@@ -95,6 +111,7 @@ impl WriteFields {
             envelope: parts.envelope,
             writer,
             writer_key_version,
+            collection: parts.collection,
         }
     }
 
@@ -133,6 +150,7 @@ pub(crate) fn sign_rotated(
         envelope,
         writer,
         writer_key_version: key_version,
+        collection: None,
     };
     let signature = statement.sign(key)?;
     Ok(WriteSigned {

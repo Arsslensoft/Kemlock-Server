@@ -58,6 +58,8 @@ struct State {
     cursors: HashMap<(ServerId, Owner), VersionVector>,
     vaults: HashMap<Owner, VaultFederation>,
     home_records: Vec<StoredHomeRecord>,
+    /// The collection of each item of a space, as the newest version applied names it.
+    collections: HashMap<ItemId, kemlock_domain::spaces::CollectionId>,
 }
 
 fn millis(time: OffsetDateTime) -> u64 {
@@ -129,6 +131,7 @@ impl State {
         self.ensure_meta(&item);
         let meta = self.meta.get(&ChangeKey::of(&item.change));
         Exported {
+            collection: self.collections.get(&item.id).copied(),
             lineage: meta.map(|m| m.lineage.clone()).unwrap_or_default(),
             signature: meta.and_then(|m| m.signature.clone()),
             item,
@@ -168,6 +171,8 @@ struct Extras {
     members: HashMap<Owner, Vec<UserId>>,
     /// The members `writer_ids` adds to them: those who left.
     former_members: HashMap<Owner, Vec<UserId>>,
+    /// What `writer_may_edit` answers, where a test says: absent means yes.
+    edits: HashMap<(Owner, UserId, kemlock_domain::spaces::CollectionId), Option<bool>>,
     /// The account copies applied: the home that signed and the user.
     accounts_applied: Vec<(ServerId, UserId)>,
     /// The accounts that live here, for `member_account`.
@@ -211,6 +216,7 @@ impl MemoryStore {
                 cursors: HashMap::new(),
                 vaults: HashMap::new(),
                 home_records: Vec::new(),
+                collections: HashMap::new(),
             })),
         }
     }
@@ -334,6 +340,28 @@ impl MemoryStore {
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
     pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
         self.extras().members.insert(vault, members);
+    }
+
+    /// Sets what `writer_may_edit` answers for `user` and `collection` of `vault`.
+    pub fn set_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+        answer: Option<bool>,
+    ) {
+        self.extras().edits.insert((vault, user, collection), answer);
+    }
+
+    /// Puts a version of an item of a space into `collection`, as a write that names it does.
+    pub fn put_in_collection(
+        &self,
+        draft: ItemDraft,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Item, StoreError> {
+        let item = self.put(draft)?;
+        self.lock().collections.insert(item.id, collection);
+        Ok(item)
     }
 
     /// Sets who `writer_ids` adds to the members of `vault`: accounts that were members.
@@ -683,6 +711,11 @@ impl ReplicaStore for MemoryStore {
             },
         );
         st.last_hlc = st.last_hlc.max(record.change.hlc);
+        if m.head == key
+            && let Some(collection) = record.collection
+        {
+            st.collections.insert(record.item, collection);
+        }
         let outcome = if m.head == key {
             ApplyOutcome::Applied
         } else {
@@ -926,6 +959,20 @@ impl crate::extra::MemberStore for MemoryStore {
             .get(&vault)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn writer_may_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .extras()
+            .edits
+            .get(&(vault, user, collection))
+            .copied()
+            .unwrap_or(Some(true)))
     }
 
     async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {

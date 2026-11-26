@@ -1278,6 +1278,8 @@ alter one.
 statement = "kemlock/v1/item-write" ‖ owner (17) ‖ item id (16) ‖ lp(kind) ‖ u64be(revision)
             ‖ u64be(replaces) ‖ u8(deleted) ‖ envelope hash (32)
             ‖ writer account id (16) ‖ u32be(writer key version)
+            ‖ u8(0)                          for an item of a vault
+              or u8(1) ‖ collection id (16)  for an item of a space
 signature = sig1 signature of the writer's own key, context "item-write", over the statement
 ```
 
@@ -1294,15 +1296,19 @@ signature = sig1 signature of the writer's own key, context "item-write", over t
   another key.
 - `writer account id` and `writer key version` name the account and the bundle version whose
   `sig1` key made the signature.
+- `collection` is the collection the item is written into, for an item of a space, and nothing for an
+  item of a vault: the statement has the flag byte `0` there. A statement of a space's item without
+  a collection, or of a vault's with one, is not a statement. The collection is the one `PUT`
+  names (`collectionId`), so a replica can't move a signed item into another collection, and the
+  writer's right to edit it can be checked by whoever holds the record.
 
-The statement is `21 + 17 + 16 + (4 + len(kind)) + 8 + 8 + 1 + 32 + 16 + 4` bytes; the signature
+The statement is `21 + 17 + 16 + (4 + len(kind)) + 8 + 8 + 1 + 32 + 16 + 4 + 1` bytes, and 16 more for
+an item of a space; the signature
 is 3373 bytes. `kemlock-crypto`'s `item_write` module builds it, and `test-vectors/item-write.json`
 pins the bytes, the envelope hashes, the signatures and the statements a signature must not cover.
 
-What the signature does not cover: the collection a space item is in (it is the space's metadata,
-and the item key is wrapped under that collection's key, so another collection's key can't open
-it), the server's change id, HLC time and lineage (the origin server's signature covers those), and
-`bw` items, which have no `kem1` envelope.
+What the signature does not cover: the server's change id, HLC time and lineage (the origin server's
+signature covers those), and `bw` items, which have no `kem1` envelope.
 
 ### Who may write
 
@@ -1345,7 +1351,10 @@ subject to this.
 
 1. if it carries a signature, the writer must be allowed for the record's owner (the owner's own
    account for a vault, a member of the space or one taken out of it, per the peer's replicated
-   member list), the
+   member list), and for a space the record names the collection (field 16) and the writer must be
+   allowed to edit it (a confirmed member with edit on it, or one taken out since: what they signed
+   before is theirs); a collection or member the peer doesn't know yet is left out for now, not
+   refused. The
    peer must hold the writer's bundle at the signature's key version (the replicated account or
    member copy), and the signature must verify over the statement rebuilt from the record. Else the
    record is refused, as a record from a stranger is;
@@ -1406,9 +1415,9 @@ re-signed by a malicious replica. A vault or space that no signing client has wr
 signed-only, so a replica can still delete or roll back its items. And signing does not stop a
 replica from **withholding** records, or from replaying an old signed revision *to a client that
 never saw a later one*; the manifest and "Sync cursor" are what notice those. A signer who has lost
-control of the account's keys can still write. For a space, the check at a federation peer is of
-membership, not of the collection ("What the signature does not cover"): the home server checked the
-collection at write time.
+control of the account's keys can still write. For a space, a federation peer checks that the
+writer may edit the collection the record names, from the member list and grants it holds; a
+member taken out since counts for what they signed before, since the grants then are not known.
 
 ### Key versions
 

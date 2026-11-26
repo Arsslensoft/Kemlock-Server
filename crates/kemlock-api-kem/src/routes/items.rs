@@ -96,7 +96,12 @@ where
     let collection = dto.collection();
     let write = dto.into_write(expected)?;
     let actor = caller.actor();
-    super::write_sig::verify_writes(&env.api.store, actor.user, &[&write]).await?;
+    super::write_sig::verify_writes(
+        &env.api.store,
+        actor.user,
+        &[(&write, collection)],
+    )
+    .await?;
     let item = match (write.owner, collection) {
         (Owner::User(_), None) => env.api.put_item().execute(&actor, write).await?,
         (Owner::User(_), Some(_)) => {
@@ -167,7 +172,10 @@ where
     super::write_sig::verify_writes(
         &env.api.store,
         actor.user,
-        &writes.iter().map(|(write, _)| write).collect::<Vec<_>>(),
+        &writes
+            .iter()
+            .map(|(write, collection)| (write, *collection))
+            .collect::<Vec<_>>(),
     )
     .await?;
     // A batch of vault items alone is the plain batch; one that names a space or a collection

@@ -54,6 +54,7 @@ pub fn statement_of(record: &ChangeRecord) -> Option<item_write::Statement<'_>> 
         envelope: item_write::envelope_hash(record.key_version, sealed).ok()?,
         writer: *write.writer.as_bytes(),
         writer_key_version: write.key_version,
+        collection: record.collection.map(|c| *c.0.as_bytes()),
     })
 }
 
@@ -97,6 +98,33 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
             Owner::Space(_) => Verdict::Defer(why),
         });
     }
+    // A write into a space names its collection, which the signature covers, and the writer must
+    // be able to edit it. The home checked that at write time; this stops a member from writing
+    // into a collection they can't edit through a replica that doesn't ask. A collection or
+    // member this server doesn't know yet is left out for now.
+    if let Owner::Space(_) = record.owner {
+        let Some(collection) = record.collection else {
+            return Ok(Verdict::Refuse(
+                "a signed change of a space that names no collection",
+            ));
+        };
+        match store
+            .writer_may_edit(record.owner, write.writer, collection)
+            .await?
+        {
+            Some(true) => {}
+            Some(false) => {
+                return Ok(Verdict::Refuse(
+                    "a change into a collection its writer may not edit",
+                ));
+            }
+            None => {
+                return Ok(Verdict::Defer(
+                    "a change into a collection this server does not know yet",
+                ));
+            }
+        }
+    }
     // The bundle of the key version the signature names, which may be one the account has
     // replaced since (docs/crypto.md, "Signed item writes", "Key versions").
     let Some(bundle) = store.writer_bundle(write.writer, write.key_version).await? else {
@@ -136,6 +164,7 @@ mod tests {
     use crate::members::MemberAccount;
     use crate::memory::MemoryStore;
     use kemlock_crypto::{bundle::Bundle, kx1, sig1};
+    use kemlock_domain::spaces::CollectionId;
     use kemlock_domain::{
         AccountMode, ChangeId, Hlc, ItemId, ItemKind, KdfParams, Revision, ServerId, SpaceId,
         UserId, WriteSignature,
@@ -180,7 +209,12 @@ mod tests {
             updated_at_ms: 1_700_000_000_123,
             lineage: Vec::new(),
             write: None,
+            collection: None,
         };
+        // An item of a space is written into a collection, which the signature covers.
+        if matches!(owner, Owner::Space(_)) {
+            record.collection = Some(CollectionId(uuid::Uuid::from_bytes([0xC0; 16])));
+        }
         sign(&mut record, writer, key);
         record
     }
@@ -323,6 +357,44 @@ mod tests {
         assert!(matches!(
             judge(&store, &forged).await,
             Ok(Verdict::Refuse(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_signed_write_into_a_space_is_for_the_collection_it_names_and_one_its_writer_may_edit() {
+        let writer = UserId::random();
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let store = store_for(writer, &key);
+        let space = Owner::Space(SpaceId::random());
+        store.set_members(space, vec![writer]);
+        let record = signed_record(space, writer, &key);
+        let collection = record.collection.expect("a collection");
+        assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+
+        // The collection is what was signed: a replica that moves the item breaks the signature.
+        let moved = record
+            .clone()
+            .in_collection(Some(CollectionId(uuid::Uuid::from_bytes([0xC1; 16]))));
+        assert!(matches!(
+            judge(&store, &moved).await,
+            Ok(Verdict::Refuse(_))
+        ));
+        // A signed write of a space that names no collection is no write of the space.
+        assert!(matches!(
+            judge(&store, &record.clone().in_collection(None)).await,
+            Ok(Verdict::Refuse(_))
+        ));
+        // A member who may not edit the collection did not write into it, whatever they signed.
+        store.set_edit(space, writer, collection, Some(false));
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Refuse(_))
+        ));
+        // A collection this server hasn't heard of yet is a reason to wait.
+        store.set_edit(space, writer, collection, None);
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Defer(_))
         ));
     }
 

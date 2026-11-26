@@ -5,18 +5,21 @@
 //! statement = "kemlock/v1/item-write" ‖ owner (17) ‖ item id (16) ‖ lp(kind) ‖ u64be(revision)
 //!             ‖ u64be(replaces) ‖ u8(deleted) ‖ envelope hash (32)
 //!             ‖ writer account id (16) ‖ u32be(writer key version)
+//!             ‖ u8(0), or u8(1) ‖ collection id (16)
 //! envelope hash = SHA-256(u32be(key version) ‖ lp(ciphertext) ‖ lp(item key)), or 32 zero bytes
 //!                 for a tombstone
 //! ```
 //!
-//! `replaces` is the revision the write replaces, `revision - 1`. The writer signs the statement
-//! with their own `sig1` key under context `"item-write"`.
+//! `replaces` is the revision the write replaces, `revision - 1`. The collection is the one the item
+//! is written into: present exactly when the owner is a space, so a replica can't move a signed item
+//! into another collection, or write one into a collection the writer can't edit. The writer signs
+//! the statement with their own `sig1` key under context `"item-write"`.
 
 use crate::{
     Error,
     bundle::Bundle,
     hash::sha256,
-    owner::{self, Owner},
+    owner::{self, Owner, OwnerKind},
     sig1::{self, context::ITEM_WRITE},
     wire::lp,
 };
@@ -54,16 +57,21 @@ pub struct Statement<'a> {
     pub envelope: [u8; 32],
     pub writer: [u8; 16],
     pub writer_key_version: u32,
+    /// The collection of a space's item; `None` for an item of a vault. Present exactly when the
+    /// owner is a space.
+    pub collection: Option<[u8; 16]>,
 }
 
 impl Statement<'_> {
-    /// The bytes that are signed. Fails for a revision of 0, a kind that isn't 1 to 64 bytes, and
-    /// a tombstone whose hash isn't zero.
+    /// The bytes that are signed. Fails for a revision of 0, a kind that isn't 1 to 64 bytes, a
+    /// tombstone whose hash isn't zero, and a collection that is missing for a space's item or given
+    /// for a vault's.
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         if self.revision == 0
             || self.kind.is_empty()
             || self.kind.len() > MAX_KIND_LEN
             || (self.deleted && self.envelope != [0; 32])
+            || self.collection.is_some() != (self.owner.kind() == OwnerKind::Space)
         {
             return Err(Error::invalid());
         }
@@ -78,6 +86,13 @@ impl Statement<'_> {
         out.extend_from_slice(&self.envelope);
         out.extend_from_slice(&self.writer);
         out.extend_from_slice(&self.writer_key_version.to_be_bytes());
+        match self.collection {
+            Some(collection) => {
+                out.push(1);
+                out.extend_from_slice(&collection);
+            }
+            None => out.push(0),
+        }
         Ok(out)
     }
 
@@ -146,6 +161,7 @@ mod tests {
             envelope,
             writer: [0xA1; 16],
             writer_key_version: 2,
+            collection: Some([0xC0; 16]),
         }
     }
 
@@ -159,7 +175,7 @@ mod tests {
     #[test]
     fn layout_matches_the_doc() {
         let bytes = live().to_bytes().expect("encode");
-        assert_eq!(bytes.len(), 21 + 17 + 16 + 4 + 5 + 8 + 8 + 1 + 32 + 16 + 4);
+        assert_eq!(bytes.len(), 21 + 17 + 16 + 4 + 5 + 8 + 8 + 1 + 32 + 16 + 4 + 1 + 16);
         assert_eq!(&bytes[..21], b"kemlock/v1/item-write");
         assert_eq!(bytes[21], 2);
         assert_eq!(&bytes[22..38], &[0x51; 16]);
@@ -171,7 +187,17 @@ mod tests {
         assert_eq!(bytes[79], 0);
         assert_eq!(&bytes[80..112], &live().envelope);
         assert_eq!(&bytes[112..128], &[0xA1; 16]);
-        assert_eq!(&bytes[128..], &[0, 0, 0, 2]);
+        assert_eq!(&bytes[128..132], &[0, 0, 0, 2]);
+        assert_eq!(bytes[132], 1);
+        assert_eq!(&bytes[133..], &[0xC0; 16]);
+        // A vault's item has a single zero byte there.
+        let vault = Statement {
+            owner: Owner::user([0x51; 16]),
+            collection: None,
+            ..live()
+        };
+        let bytes = vault.to_bytes().expect("encode");
+        assert_eq!(&bytes[128..], &[0, 0, 0, 2, 0]);
     }
 
     #[test]
@@ -216,6 +242,16 @@ mod tests {
         let changed = [
             Statement {
                 owner: Owner::user([0x51; 16]),
+                collection: None,
+                ..live()
+            },
+            // Another collection, or none, is another statement.
+            Statement {
+                collection: Some([0xC1; 16]),
+                ..live()
+            },
+            Statement {
+                collection: None,
                 ..live()
             },
             Statement {
@@ -275,6 +311,16 @@ mod tests {
         // A tombstone has no envelope hash.
         assert!(statement([1; 32], true).to_bytes().is_err());
         assert!(statement([0; 32], true).to_bytes().is_ok());
+        // A space's item has a collection and a vault's has none.
+        assert!(Statement { collection: None, ..live() }.to_bytes().is_err());
+        assert!(
+            Statement {
+                owner: Owner::user([0x51; 16]),
+                ..live()
+            }
+            .to_bytes()
+            .is_err()
+        );
     }
 
     #[test]

@@ -220,6 +220,22 @@ pub trait MemberStore: Send + Sync {
         self.member_ids(vault)
     }
 
+    /// Whether `user` may edit `collection` of the space `vault`, from the member list and grants
+    /// this server holds: `Some(true)` for a confirmed member with edit on it, and for one taken out
+    /// of the space since (what they signed before is theirs, and what they could edit then is not
+    /// known), `Some(false)` for a confirmed member without, and `None` when the server doesn't
+    /// know the collection yet (the space's records may not have arrived).
+    ///
+    /// The default says yes, for a store that keeps no spaces.
+    fn writer_may_edit(
+        &self,
+        _vault: Owner,
+        _user: UserId,
+        _collection: kemlock_domain::spaces::CollectionId,
+    ) -> impl Future<Output = R<Option<bool>>> + Send {
+        ready(Ok(Some(true)))
+    }
+
     /// The public part of an account that lives on this server, with its device registrations.
     /// `None` when there is no such account or it is a copy from another server.
     fn member_account(

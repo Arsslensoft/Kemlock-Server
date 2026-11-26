@@ -1353,6 +1353,8 @@ fn item_write_doc() -> Result<Value, Error> {
             let writer_private: [u8; 64] = rnd()?;
             let signing = sig1::SigningKey::from_bytes(&writer_private);
             let writer_public = sig1::public_key_in::<G>(&signing)?;
+            // An item of a space is written into a collection, which the signature covers.
+            let collection: Option<[u8; 16]> = if owner_is_space { Some(rnd()?) } else { None };
             let owner = if owner_is_space {
                 Owner::space(owner_id)
             } else {
@@ -1369,6 +1371,7 @@ fn item_write_doc() -> Result<Value, Error> {
                 envelope,
                 writer,
                 writer_key_version,
+                collection,
             };
             let bytes = statement.to_bytes()?;
             let signature = sig1::sign_in::<G>(&signing, ITEM_WRITE, &bytes)?;
@@ -1388,9 +1391,18 @@ fn item_write_doc() -> Result<Value, Error> {
             other_envelope[0] ^= 1;
             let mut changed = vec![
                 (
+                    "another-collection",
+                    item_write::Statement {
+                        collection: Some(other_item),
+                        ..statement
+                    },
+                ),
+                (
                     "another-owner",
                     item_write::Statement {
                         owner: other_owner,
+                        // A vault's item has no collection and a space's has one.
+                        collection: if owner_is_space { None } else { Some(other_item) },
                         ..statement
                     },
                 ),
@@ -1456,6 +1468,10 @@ fn item_write_doc() -> Result<Value, Error> {
                     },
                 ));
             }
+            // A vault's item names no collection, so a statement that does is no statement.
+            if !owner_is_space {
+                changed.remove(0);
+            }
             let changed: Vec<Value> = changed
                 .into_iter()
                 .map(|(what, s)| json!({ "name": what, "statement": hx(&s.to_bytes().unwrap_or_default()) }))
@@ -1473,6 +1489,7 @@ fn item_write_doc() -> Result<Value, Error> {
                 "envelope_hash": hx(&envelope),
                 "writer": hx(&writer),
                 "writer_key_version": writer_key_version,
+                "collection": collection.as_ref().map(|c| hx(c)),
                 "writer_private_key": hx(&writer_private),
                 "writer_public_key": hx(writer_public.as_bytes()),
                 "statement": hx(&bytes),
@@ -1491,7 +1508,8 @@ fn item_write_doc() -> Result<Value, Error> {
             "item-write",
             "Signed item writes (docs/crypto.md): statement = \"kemlock/v1/item-write\" || owner \
              (17) || item id (16) || lp(kind) || u64be(revision) || u64be(revision - 1) || \
-             u8(deleted) || envelope_hash (32) || writer id (16) || u32be(writer key version); \
+             u8(deleted) || envelope_hash (32) || writer id (16) || u32be(writer key version) \
+             || u8(0), or u8(1) || collection id (16) (a collection exactly when the owner is a space); \
              envelope_hash = SHA-256(u32be(key_version) || lp(ciphertext) || lp(item_key)), or 32 \
              zero bytes for a tombstone; signature = sig1 signature of the writer's own key under \
              context \"item-write\" over the statement (3373 bytes); stored = writer id (16) || \

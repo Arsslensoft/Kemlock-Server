@@ -323,6 +323,32 @@ impl MemberStore for SqlStore {
         }
     }
 
+    async fn writer_may_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        let Owner::Space(space) = vault else {
+            return Ok(Some(false));
+        };
+        let Some(state) = SpaceRepo::load(self, space).await? else {
+            return Ok(None);
+        };
+        if state.collection(collection).is_none() {
+            return Ok(None);
+        }
+        let Some(member) = state.members.iter().find(|m| m.user == user) else {
+            return Ok(Some(false));
+        };
+        Ok(Some(match member.state {
+            MemberState::Confirmed => state.access(user, collection).is_some_and(|a| a.edit),
+            // Taken out since: what they signed before is theirs.
+            MemberState::Revoked => true,
+            _ => false,
+        }))
+    }
+
     async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
         match vault {
             Owner::User(_) => MemberStore::member_ids(self, vault).await,

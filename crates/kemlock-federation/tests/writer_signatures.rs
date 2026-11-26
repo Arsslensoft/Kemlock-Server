@@ -116,6 +116,7 @@ impl Writer {
             envelope: item_write::envelope_hash(draft.key_version, sealed).expect("hash"),
             writer: *self.id.as_bytes(),
             writer_key_version: 1,
+            collection: None,
         };
         let signature = statement.sign(&self.key).expect("signs");
         draft.signature = Some(WriteSignature {
@@ -340,6 +341,7 @@ async fn a_record_that_names_the_head_at_a_lower_revision_is_not_applied() {
         updated_at_ms: unix_now() * 1000,
         lineage: vec![ChangeKey::of(&head.change)],
         write: None,
+        collection: None,
     };
     assert_eq!(
         store.apply(&replay, &[7; 8]).await,
@@ -437,6 +439,7 @@ async fn a_record_that_relabels_an_item_as_bitwarden_is_refused() {
         updated_at_ms: unix_now() * 1000,
         lineage: vec![ChangeKey::of(&head.change)],
         write: None,
+        collection: None,
     };
     assert_eq!(
         store.apply(&relabelled, &[7; 8]).await,
@@ -473,6 +476,7 @@ async fn a_replay_with_a_late_clock_that_leaves_the_head_out_of_its_lineage_neve
         updated_at_ms: unix_now() * 1000,
         lineage: Vec::new(),
         write: None,
+        collection: None,
     };
     assert_eq!(
         store.apply_ranked(&replay, &[7; 8], Rank::Revision).await,

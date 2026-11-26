@@ -6,6 +6,7 @@ mod common;
 
 use common::{draft, memory, put, user_owner};
 use kemlock_app::ports::StoreError;
+use uuid::Uuid;
 use kemlock_domain::{ChangeId, Hlc, ItemId, Owner, Revision, ServerId, VersionVector};
 use kemlock_federation::change::ChangeRecord;
 use kemlock_federation::home::{HomeRecord, VaultFederation};
@@ -228,6 +229,52 @@ async fn apply_all(to: &SqlStore, records: &[(ChangeRecord, Vec<u8>)]) -> Vec<Ap
         );
     }
     outcomes
+}
+
+#[tokio::test]
+async fn a_version_of_a_space_keeps_the_collection_its_record_names_and_exports_it_again() {
+    let a = memory().await;
+    let b = memory().await;
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let id = ItemId::random();
+    let collection = kemlock_domain::spaces::CollectionId(Uuid::new_v4());
+    let moved_to = kemlock_domain::spaces::CollectionId(Uuid::new_v4());
+    put(&a, draft(id, space, None, 1)).await;
+    let (record, signature) = records_of(&a, space).await.remove(0);
+    // The item is in the collection its newest version names, here and when it is sent on.
+    let first = record.in_collection(Some(collection));
+    assert_eq!(
+        ReplicaStore::apply(&b, &first, &signature).await,
+        Ok(ApplyOutcome::Applied)
+    );
+    let page = ReplicaStore::export_since(&b, space, &VersionVector::new(), 10)
+        .await
+        .expect("export");
+    assert_eq!(page.entries[0].collection, Some(collection));
+
+    // A newer version that names another collection moves it.
+    put(&a, draft(id, space, Some(1), 2)).await;
+    let newest = records_of(&a, space)
+        .await
+        .into_iter()
+        .find(|(r, _)| r.revision == Revision(2))
+        .expect("revision 2");
+    let second = newest.0.in_collection(Some(moved_to));
+    assert_eq!(
+        ReplicaStore::apply(&b, &second, &newest.1).await,
+        Ok(ApplyOutcome::Applied)
+    );
+    let page = ReplicaStore::export_since(&b, space, &VersionVector::new(), 10)
+        .await
+        .expect("export");
+    assert!(page.entries.iter().all(|e| e.collection == Some(moved_to)));
+    // A vault's item has none.
+    let vault = user_owner();
+    put(&a, draft(ItemId::random(), vault, None, 1)).await;
+    let page = ReplicaStore::export_since(&a, vault, &VersionVector::new(), 10)
+        .await
+        .expect("export");
+    assert!(page.entries.iter().all(|e| e.collection.is_none()));
 }
 
 #[tokio::test]

@@ -439,6 +439,8 @@ export interface ItemWriteFields {
   keyVersion: number;
   ciphertext?: string;
   itemKey?: string;
+  /** The collection an item of a space is in; the signature covers it. None for a vault's item. */
+  collectionId?: string;
   writer?: string;
   writerKeyVersion?: number;
 }

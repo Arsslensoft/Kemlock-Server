@@ -73,9 +73,17 @@ describe('writeFields', () => {
       keyVersion: 1,
     });
   });
+
+  it('names the collection of an item of a space, which the signature covers, and none for a vault', () => {
+    const collectionId = '33333333-3333-4333-8333-333333333333';
+    const inSpace: ItemDto = { ...live('a', 3), owner: 'space:44444444-4444-4444-8444-444444444444', collectionId };
+    expect(writeFields(inSpace)).toMatchObject({ collectionId });
+    // A vault's item has none to name, whatever the dto carries.
+    expect(writeFields({ ...live('a', 3), collectionId })).not.toHaveProperty('collectionId');
+  });
 });
 
-describe('signedItem', () => {
+describe('signedItem, () => {
   it('adds the writer, its key version and the signature of a kem1 item', async () => {
     const signed = await signedItem(crypto, live('a', 2));
     expect(signed.writer).toBe(ACCOUNT);

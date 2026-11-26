@@ -18,15 +18,20 @@ use kemlock_app::signed_writes::GetBundleAt;
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::{AppError, b64url};
 use kemlock_crypto::{item_write, owner::Owner as CryptoOwner};
+use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::{ItemError, ItemWrite, UserId};
 
 fn invalid() -> Problem {
     Problem::from(AppError::Item(ItemError::BadSignature))
 }
 
-/// The statement `write` says it signed, rebuilt from the write. `None` when the write carries no
-/// signature or can't have a statement.
-pub(crate) fn statement_of(write: &ItemWrite) -> Option<item_write::Statement<'_>> {
+/// The statement `write` says it signed, rebuilt from the write and the collection it names (an
+/// item of a space is written into one, an item of a vault into none). `None` when the write
+/// carries no signature or can't have a statement.
+pub(crate) fn statement_of(
+    write: &ItemWrite,
+    collection: Option<CollectionId>,
+) -> Option<item_write::Statement<'_>> {
     let signature = write.signature.as_ref()?;
     let sealed = write
         .sealed
@@ -41,6 +46,7 @@ pub(crate) fn statement_of(write: &ItemWrite) -> Option<item_write::Statement<'_
         envelope: item_write::envelope_hash(write.key_version, sealed).ok()?,
         writer: *signature.writer.as_bytes(),
         writer_key_version: signature.key_version,
+        collection: collection.map(|c| *c.0.as_bytes()),
     })
 }
 
@@ -51,9 +57,9 @@ pub(crate) fn statement_of(write: &ItemWrite) -> Option<item_write::Statement<'_
 pub(crate) async fn verify_writes<U: UserRepo>(
     users: &U,
     actor: UserId,
-    writes: &[&ItemWrite],
+    writes: &[(&ItemWrite, Option<CollectionId>)],
 ) -> Result<(), Problem> {
-    if writes.iter().all(|w| w.signature.is_none()) {
+    if writes.iter().all(|(w, _)| w.signature.is_none()) {
         return Ok(());
     }
     let account = users
@@ -61,7 +67,7 @@ pub(crate) async fn verify_writes<U: UserRepo>(
         .await
         .map_err(|e| Problem::from(AppError::from(e)))?
         .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
-    for write in writes {
+    for (write, collection) in writes {
         let Some(signature) = &write.signature else {
             continue;
         };
@@ -81,7 +87,7 @@ pub(crate) async fn verify_writes<U: UserRepo>(
         if signature.writer != actor || account.public_bundle.is_empty() {
             return Err(invalid());
         }
-        let statement = statement_of(write).ok_or_else(invalid)?;
+        let statement = statement_of(write, *collection).ok_or_else(invalid)?;
         item_write::verify_with_bundle(&statement, &account.public_bundle, &signature.signature)
             .map_err(|_| invalid())?;
     }

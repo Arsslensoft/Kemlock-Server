@@ -268,6 +268,7 @@ pub fn check_staged_write(
             .map_err(|_| bad())?,
         writer: *user.as_bytes(),
         writer_key_version: install.to_version,
+        collection: None,
     };
     kemlock_crypto::item_write::verify_with_bundle(
         &statement,
@@ -881,6 +882,7 @@ mod tests {
             envelope: item_write::envelope_hash(2, Some((&[7; 40], &[8; 60]))).expect("a hash"),
             writer: *user.as_bytes(),
             writer_key_version: version,
+            collection: None,
         };
         let signature = statement.sign(key).expect("a signature");
         let mut request = request();

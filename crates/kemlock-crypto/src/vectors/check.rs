@@ -1318,6 +1318,15 @@ fn item_write_file<B: Backend>(doc: &Value) {
         let key_version = u32::try_from(int(case, "key_version")).expect("u32");
         let writer: [u8; 16] = arr(case, "writer");
         let writer_version = u32::try_from(int(case, "writer_key_version")).expect("u32");
+        let collection: Option<[u8; 16]> = case
+            .get("collection")
+            .filter(|v| !v.is_null())
+            .map(|_| arr(case, "collection"));
+        assert_eq!(
+            collection.is_some(),
+            owner[0] == 2,
+            "{name}: a collection exactly when the owner is a space"
+        );
 
         // The envelope hash, rebuilt by hand from the documented layout.
         let envelope: [u8; 32] = arr(case, "envelope_hash");
@@ -1353,6 +1362,13 @@ fn item_write_file<B: Backend>(doc: &Value) {
         expected.extend_from_slice(&envelope);
         expected.extend_from_slice(&writer);
         expected.extend_from_slice(&writer_version.to_be_bytes());
+        match collection {
+            Some(collection) => {
+                expected.push(1);
+                expected.extend_from_slice(&collection);
+            }
+            None => expected.push(0),
+        }
         let statement = bytes(case, "statement");
         assert_eq!(statement, expected, "{name}");
         let rebuilt = item_write::Statement {
@@ -1364,6 +1380,7 @@ fn item_write_file<B: Backend>(doc: &Value) {
             envelope,
             writer,
             writer_key_version: writer_version,
+            collection,
         };
         assert_eq!(rebuilt.to_bytes().expect("encode"), statement, "{name}");
 

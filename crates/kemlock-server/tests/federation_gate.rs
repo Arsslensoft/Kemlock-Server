@@ -1749,6 +1749,7 @@ fn signed(
             envelope: item_write::envelope_hash(draft.key_version, sealed).expect("a hash"),
             writer: *writer.as_bytes(),
             writer_key_version: 1,
+            collection: None,
         }
         .sign(key)
         .expect("a signature")

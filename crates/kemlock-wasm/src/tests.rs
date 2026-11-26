@@ -2244,6 +2244,10 @@ fn write_fields(owner: &str, writer: Option<(&str, u32)>, deleted: bool) -> Stri
         fields["ciphertext"] = json!(b64::encode(&[7u8; 40]));
         fields["itemKey"] = json!(b64::encode(&[8u8; 60]));
     }
+    // An item of a space is written into a collection, which the signature covers.
+    if owner.starts_with("space:") {
+        fields["collectionId"] = json!("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    }
     if let Some((writer, version)) = writer {
         fields["writer"] = json!(writer);
         fields["writerKeyVersion"] = json!(version);
@@ -2314,6 +2318,34 @@ fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle()
     session
         .sign_item_write(&WriteFields::parse(&write_fields(space, None, false)).expect("fields"))
         .expect("a member signs for a space");
+    // The collection is part of what is signed: another one is another signature, and a space's
+    // write that names none (or a vault's that names one) is no statement at all.
+    let space_fields = write_fields(space, None, false);
+    let mut elsewhere: serde_json::Value = serde_json::from_str(&space_fields).expect("json");
+    let signed_here = session
+        .sign_item_write(&WriteFields::parse(&space_fields).expect("fields"))
+        .expect("signs");
+    elsewhere["collectionId"] = json!("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    let signed_there = session
+        .sign_item_write(&WriteFields::parse(&elsewhere.to_string()).expect("fields"))
+        .expect("signs");
+    assert_ne!(signed_here.write_signature, signed_there.write_signature);
+    elsewhere.as_object_mut().expect("an object").remove("collectionId");
+    assert_eq!(
+        session
+            .sign_item_write(&WriteFields::parse(&elsewhere.to_string()).expect("fields"))
+            .err(),
+        Some(Error::Invalid)
+    );
+    let mut vault: serde_json::Value =
+        serde_json::from_str(&write_fields(&owner, None, false)).expect("json");
+    vault["collectionId"] = json!("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    assert_eq!(
+        session
+            .sign_item_write(&WriteFields::parse(&vault.to_string()).expect("fields"))
+            .err(),
+        Some(Error::Invalid)
+    );
     let someone_elses = write_fields("user:93939393-9393-9393-9393-939393939393", None, false);
     assert_eq!(
         session

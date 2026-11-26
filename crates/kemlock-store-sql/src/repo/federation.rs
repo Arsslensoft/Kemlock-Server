@@ -20,6 +20,7 @@ use crate::tables::federation_keys::{
 };
 use crate::tables::federation_wiring::federation_erasures;
 use crate::tables::items::{self, owner_parts};
+use crate::tables::space_tables::item_collections;
 use crate::tables::{changes, server_meta};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{Item, ItemId, Owner, Revision, ServerId, VersionVector};
@@ -233,6 +234,24 @@ async fn ensure_meta(
     Ok((lineage, None))
 }
 
+/// The collection each item of a space is in, for the versions about to be exported.
+async fn collections_of(
+    txn: &DatabaseTransaction,
+    items: &[ItemId],
+) -> Result<HashMap<Uuid, kemlock_domain::spaces::CollectionId>, StoreError> {
+    if items.is_empty() {
+        return Ok(HashMap::new());
+    }
+    Ok(item_collections::Entity::find()
+        .filter(item_collections::Column::ItemId.is_in(items.iter().map(|i| i.0)))
+        .all(txn)
+        .await
+        .store()?
+        .into_iter()
+        .map(|row| (row.item_id, kemlock_domain::spaces::CollectionId(row.collection_id)))
+        .collect())
+}
+
 async fn export_in(
     txn: &DatabaseTransaction,
     server: ServerId,
@@ -279,12 +298,22 @@ async fn export_in(
     versions.truncate(page_len);
 
     let mut next = since.clone();
+    let collections = collections_of(
+        txn,
+        &versions
+            .iter()
+            .filter(|i| matches!(i.owner, Owner::Space(_)))
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     let mut entries = Vec::with_capacity(versions.len());
     for item in versions {
         next.observe(&item.change);
         let (_, siblings) = held_versions(txn, item.id).await?;
         let (lineage, signature) = ensure_meta(txn, server, &item, &keys_of(&siblings)).await?;
         entries.push(Exported {
+            collection: collections.get(&item.id.0).copied(),
             item,
             lineage,
             signature,
@@ -304,6 +333,11 @@ async fn export_items_in(
     ids: &[ItemId],
 ) -> Result<Vec<Exported>, StoreError> {
     lock_meta(txn).await?;
+    let collections = if matches!(owner, Owner::Space(_)) {
+        collections_of(txn, ids).await?
+    } else {
+        HashMap::new()
+    };
     let mut out = Vec::new();
     for id in ids {
         let (head, siblings) = held_versions(txn, *id).await?;
@@ -314,6 +348,7 @@ async fn export_items_in(
             }
             let (lineage, signature) = ensure_meta(txn, server, &item, &sibling_keys).await?;
             out.push(Exported {
+                collection: collections.get(&item.id.0).copied(),
                 item,
                 lineage,
                 signature,
@@ -492,6 +527,12 @@ async fn apply_in(
             .exec(txn)
             .await
             .store()?;
+    }
+    // The item is in the collection its newest version names.
+    if merge.head == key
+        && let (Owner::Space(space), Some(collection)) = (record.owner, record.collection)
+    {
+        super::spaces::link_item(txn, record.item, space, collection).await?;
     }
     Ok(if merge.head == key {
         ApplyOutcome::Applied

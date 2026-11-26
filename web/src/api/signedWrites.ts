@@ -25,6 +25,8 @@ export function writeFields(item: ItemDto): ItemWriteFields {
     keyVersion: item.keyVersion,
     ...(!deleted && item.ciphertext ? { ciphertext: item.ciphertext } : {}),
     ...(!deleted && item.itemKey ? { itemKey: item.itemKey } : {}),
+    // The collection of an item of a space is part of what is signed, so a replica can't move it.
+    ...(item.owner.startsWith('space:') && item.collectionId ? { collectionId: item.collectionId } : {}),
   };
 }
 

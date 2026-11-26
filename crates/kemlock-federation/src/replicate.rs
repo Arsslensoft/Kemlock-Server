@@ -639,7 +639,8 @@ impl<S: FedStore> Replica<S> {
     /// The signed envelope of a stored version, signing it first if this server accepted it and
     /// hasn't sent it before.
     async fn signed_record(&self, entry: &Exported) -> Result<Vec<u8>> {
-        let record = ChangeRecord::from_item(&entry.item, entry.lineage.clone());
+        let record = ChangeRecord::from_item(&entry.item, entry.lineage.clone())
+            .in_collection(entry.collection);
         let signature = match &entry.signature {
             Some(signature) => signature.clone(),
             None => {
