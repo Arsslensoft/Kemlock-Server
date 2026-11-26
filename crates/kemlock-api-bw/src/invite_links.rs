@@ -9,7 +9,7 @@
 
 use crate::app::{App, BwStore};
 use crate::orgs::members::{LinkRefusal, pending_link_of};
-use crate::orgs::model::{ADMIN, KIND_ORG, OWNER, level};
+use crate::orgs::model::{ADMIN, INVITED, KIND_ORG, OWNER, level};
 use kemlock_app::bitwarden::{
     Asker, BwInviteLinks, BwOrgStore, InviteLinkError, MemberInviteLink, SharedInviteLinks,
 };
@@ -71,6 +71,19 @@ impl<S: BwStore> BwInviteLinks for Links<S> {
             BwOrgStore::doc_get(&self.0.store, space.0, KIND_ORG, "")
                 .await
                 .is_ok_and(|doc| doc.is_some())
+        })
+    }
+
+    fn pending_invitations(&self, space: SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
+        Box::pin(async move {
+            let org = self.0.load_org(space).await.ok().flatten()?;
+            Some(
+                org.members
+                    .iter()
+                    .filter(|(_, doc)| doc.status == INVITED)
+                    .map(|(user, _)| *user)
+                    .collect(),
+            )
         })
     }
 }

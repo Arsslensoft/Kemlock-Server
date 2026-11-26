@@ -65,6 +65,10 @@ impl BwInviteLinks for FakeLinks {
     fn is_organization(&self, _space: SpaceId) -> BoxFuture<'_, bool> {
         Box::pin(async move { !matches!(self.answer, Err(InviteLinkError::NotOrganization)) })
     }
+
+    fn pending_invitations(&self, _space: SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
+        Box::pin(async { None })
+    }
 }
 
 /// A device signed in to a server with these links, or with none.

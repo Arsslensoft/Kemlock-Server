@@ -67,6 +67,12 @@ pub trait BwInviteLinks: Send + Sync {
     /// Whether `space` is a Bitwarden organization (it has an organization side), so a page can
     /// offer the invitation link only where it applies. Any failure to tell is "no".
     fn is_organization(&self, space: SpaceId) -> BoxFuture<'_, bool>;
+
+    /// The members of the organization `space` who are still invited and have a Bitwarden
+    /// invitation, which is what a link can be made for; `None` when the space is not a Bitwarden
+    /// organization. A member invited through the Kemlock API alone (a space row and no Bitwarden
+    /// member document) is not in it. Any failure to tell is `None`.
+    fn pending_invitations(&self, space: SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>>;
 }
 
 /// What the server layers on its router as a request extension, so both APIs can reach the port.

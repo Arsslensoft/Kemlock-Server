@@ -391,6 +391,9 @@ pub(crate) struct MemberViewDto {
     user_key_version: u32,
     /// A confirmed member whose account changed key version since: confirm them again.
     needs_reconfirmation: bool,
+    /// An invited member of a Bitwarden organization who has a Bitwarden invitation, so an owner or
+    /// admin can copy its link. False for a member invited through the Kemlock API alone.
+    bitwarden_invitation: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -997,6 +1000,7 @@ where
 async fn list_members<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
+    links: MaybeInviteLinks,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<MemberViewDto>>, Problem>
 where
@@ -1005,12 +1009,19 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + Clone + 'static,
 {
+    let space = space_id(&id)?;
     let views = ListMembers {
         spaces: env.spaces.clone(),
         users: env.api.store.clone(),
     }
-    .execute(&caller.actor(), space_id(&id)?)
+    .execute(&caller.actor(), space)
     .await?;
+    // Who has a Bitwarden invitation to copy the link of: none on a server without the
+    // Bitwarden API, and none in a space that is not one of its organizations.
+    let pending = match links.0 {
+        Some(links) => links.pending_invitations(space).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
     Ok(Json(
         views
             .iter()
@@ -1022,6 +1033,7 @@ where
                 bundle_signature: b64url::encode(&v.bundle_signature),
                 user_key_version: v.user_key_version,
                 needs_reconfirmation: v.needs_reconfirmation,
+                bitwarden_invitation: pending.contains(&v.member.user),
             })
             .collect(),
     ))
@@ -1815,7 +1827,7 @@ fn doc_get_space() {}
     params(
         ("id" = String, Path, description = "A UUID, or `me` for the caller where a member is meant"),
     ),
-    responses((status = 200, description = "The members the caller's role may see", body = Vec<MemberViewDto>))
+    responses((status = 200, description = "The members the caller's role may see. `bitwardenInvitation` is true for an invited member of a Bitwarden organization who has a Bitwarden invitation, whose link `.../members/{user}/invite-link` can be copied", body = Vec<MemberViewDto>))
 )]
 #[allow(dead_code)]
 fn doc_list_members() {}
