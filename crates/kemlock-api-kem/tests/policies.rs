@@ -294,6 +294,18 @@ async fn an_owner_sets_policies_and_a_member_reads_them() {
 
     // Require SSO is one of the policies (there is no narrower route for it): the owner turns it
     // on, a member reads it, and a member can't turn it off.
+    // It needs a provider: with none set up, turning it on is refused and nothing changes.
+    let unset = set_policies(&sam, space, json!({"requireSso": true})).await;
+    assert_eq!(unset.status, StatusCode::CONFLICT, "{:?}", unset.json());
+    let read = sam
+        .call("GET", &format!("/kem/v1/spaces/{space}/policies"), None)
+        .await;
+    assert_eq!(read.json()["policies"]["requireSso"], false);
+    rig.app.store.set_sso(kemlock_app::sso::SsoSettings::new(
+        "https://idp.test",
+        "kemlock",
+        datetime!(2026-11-26 10:00:00 UTC),
+    ));
     let sso = set_policies(&sam, space, json!({"requireSso": true})).await;
     assert_eq!(sso.status, StatusCode::OK, "{:?}", sso.json());
     assert_eq!(sso.json()["policies"]["requireSso"], true);
