@@ -320,6 +320,7 @@ chain" below): a vault's servers need only form a chain of pairings.
 | 12 | deleted | 0 or 1 |
 | 13 | written at | Unix milliseconds; a tombstone's deletion time too |
 | 14 | lineage | up to 64 change keys, packed, nearest ancestor first |
+| 15 | writer signature | 3393 bytes; absent on a `bw` record and on a `kem1` record written unsigned |
 
 A change key is `origin (16) ‖ u64be(seq)` (24 bytes). A record is refused when it has a zero
 sequence or revision, a tombstone with ciphertext, a live item without it, or a lineage that names
@@ -340,6 +341,46 @@ changes already stamped with a far time: an HLC time is part of the record its o
 that peers already hold, so a peer's change can't be re-stamped, and re-stamping a local one would
 invalidate a signature peers may have taken. They stay as they are; such an item keeps winning the
 head against older versions until a write that names it in its lineage replaces it.
+
+### Writer signatures
+
+A `kem1` record also carries the **writing account's** signature of the write
+(`docs/crypto.md`, "Signed item writes"), in field 15: `writer (16) ‖ u32be(key version) ‖ sig1
+signature (3373)`, 3393 bytes, absent on a `bw` record and on a `kem1` record written without one.
+The origin's signature covers the field, so a relay can't strip or swap it. A receiver of a `kem1`
+record checks, before it applies it:
+
+1. **With a signature.** The writer is allowed for the owner: the vault's own account for a
+   `user:` owner, a confirmed member of the space (from the receiver's replicated member list) for
+   a `space:` owner. The receiver holds the writer's bundle at the signature's key version (the
+   replicated member account), and the signature verifies over the statement rebuilt from the
+   record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key.
+   A record that fails is **refused**: counted, left out, the rest of the page applied. A writer or
+   bundle the receiver doesn't hold yet is refused the same way, and the later comparison fetches
+   the record again once the home's records have arrived (a pull that applied a refusal compares
+   at once instead of waiting for the next round).
+2. **Without one.** If the receiver holds the owner as **signed-only** (it has applied a signed
+   record for it, or the owner asked) the record is refused.
+3. **Applying a signed record** makes the owner signed-only at the receiver.
+
+A `bw` record is checked by neither rule.
+
+### Rollback
+
+A version replaces another only if it has a **higher revision**. A record whose lineage names a
+version the receiver holds at an equal or higher revision is refused, not merged: a replica that
+re-signs an old ciphertext as a new change naming the current head in its lineage can't roll the
+item back, with or without a writer signature. A conflict between two servers' concurrent edits is
+unaffected: neither lineage names the other.
+
+### Per-origin quotas
+
+A receiver counts, per origin server and per rolling hour, the records and the bytes of records it
+takes, and bounds the size of one. The defaults are 50,000 records and 1 GiB an hour per origin and
+4 MiB for one record; they are settings of the engine (`Replica::with_quota`). A record past a
+bound is refused like any other refusal, so it is fetched again, when the hour has passed or the
+admin raised the bound, by the periodic comparison. Honest catch-up of a large vault is the case
+the defaults leave room for; the bound is what keeps one malicious replica from writing without end.
 
 ### Lineage, versions and siblings
 
@@ -502,7 +543,7 @@ words. That is 96 bits.
   seconds from the receiver's clock is refused, and the responder keeps the nonces of the last
   5 minutes (only authenticated peers add to the cache, and it is capped).
 - **Frames.** Per-direction counters and the header in the AAD, as above.
-- **Changes.** Each change id is applied once; origin signatures cover the record and its lineage.
+- **Changes.** Each change id is applied once; origin signatures cover the record and its lineage; a `kem1` record carries its writing account's signature too, a version never replaces one of a higher revision, and an origin is held to a rate and a size ("Writer signatures", "Rollback", "Per-origin quotas").
 - **Unknown servers.** Only a peer paired for the vault gets past the first message; everything
   before it is cheap (length checks, a signature) and the KEM work comes after.
 - **A key that doesn't match.** Nothing is accepted silently, and there is no trust on first use
@@ -529,7 +570,7 @@ checked by CI to regenerate byte for byte. Each file is `{"format", "version", "
 | `federation-handshake.json` | Hello, reply, transcript hash, the three shared secrets, the master secret, per-direction keys and the first frames, for both implemented suites; hellos that must be refused |
 | `federation-frames.json` | Frames of both suites with and without padding, the rekey, the key schedule, and streams that must fail (replayed, dropped, reordered, flipped last flag, truncated, after the last) |
 | `federation-pairing.json` | CPace with its two random draws, the ISK, the derived keys, the binding and sealed descriptors; the fingerprint; proquints; code normalisation |
-| `federation-change.json` | Signed change records (live, tombstone, Bitwarden format, with and without lineage), a promotion and a home record, the epoch verdicts |
+| `federation-change.json` | Signed change records (live, tombstone, Bitwarden format, with and without lineage, with a writer signature), a promotion and a home record, the epoch verdicts |
 | `federation-hashtree.json` | Leaf digests, bucket digests and the root |
 
 A verifier rebuilds every value from the inputs a file lists: derives public keys from seeds,
