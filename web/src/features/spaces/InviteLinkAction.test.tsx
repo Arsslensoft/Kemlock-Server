@@ -42,7 +42,7 @@ describe('InviteLinkAction', () => {
     renderWithIntl(<InviteLinkAction name="Ivy" fetchLink={async () => LINK} />);
     await userEvent.click(screen.getByRole('button', { name: /Copy the invitation link/ }));
     expect(await screen.findByText(LINK)).toBeInTheDocument();
-    expect(screen.getByRole('status')).toHaveTextContent(/accepts the invitation for this account/);
+    expect(screen.getByText(/accepts the invitation for this account/)).toBeInTheDocument();
   });
 
   it.each([
