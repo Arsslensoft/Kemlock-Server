@@ -41,7 +41,7 @@ describe('DeviceApprovalView', () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
-  it('asks the person to compare the account's fingerprint before the vault counts as open', async () => {
+  it("asks the person to compare the account's fingerprint before the vault counts as open", async () => {
     const onCompare = vi.fn();
     renderWithIntl(
       <DeviceApprovalView

@@ -163,7 +163,7 @@ describe('signInWithAnotherDevice', () => {
     expect(run.session.tokenStore.get()).toBeUndefined();
   });
 
-  it('refuses keys that are not the bundle's the server serves, and asks nobody to compare', async () => {
+  it("refuses keys that are not the bundle's the server serves, and asks nobody to compare", async () => {
     // The root key opens (a server sealed its own), but its private keys are not the bundle's.
     const run = setup({ polls: [approvedFor()], publicBundle: encodeB64(utf8('bundle:somebody-else')) });
     const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
