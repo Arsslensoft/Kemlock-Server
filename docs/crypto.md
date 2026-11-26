@@ -727,7 +727,11 @@ manifest = "kemlock/v1/manifest" ‖ owner (17) ‖ u64be(counter) ‖ u32be(n)
 ```
 
 Entries are sorted by item id bytes. A tombstone's hash is 32 zero bytes. The writer signs it with
-`sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen.
+`sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen. A server
+refuses a write whose counter is more than 2^32 above the one it stores for that owner (`400`), so
+no writer can set it near its limit and make every later write stale. A space's manifest may be
+written by any confirmed member with edit on a collection ("Using the state"), so this bound is what
+keeps one of them from freezing it.
 
 ## Space chain
 
