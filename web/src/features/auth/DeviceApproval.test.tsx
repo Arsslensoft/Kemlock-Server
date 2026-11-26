@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { ApprovalRefused } from './approvalFlow';
-import { DeviceApprovalView } from './DeviceApproval';
+import { DeviceApprovalView, lastGroup } from './DeviceApproval';
 
 // AuthPage reads the server's config through React Query and `Link` needs a router, so the view is
 // rendered with both stubbed out: only what the screen says is under test here.
@@ -22,6 +22,14 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
 }));
 
 const noop = () => undefined;
+
+describe('lastGroup', () => {
+  it('is the last group of digits of a fingerprint', () => {
+    expect(lastGroup('11111 22222 67890')).toBe('67890');
+    expect(lastGroup('  67890 ')).toBe('67890');
+    expect(lastGroup('')).toBe('');
+  });
+});
 
 describe('DeviceApprovalView', () => {
   it('shows the five words and what to do with them, and can be cancelled', async () => {
@@ -54,8 +62,17 @@ describe('DeviceApprovalView', () => {
     );
     expect(screen.getByText('11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890')).toBeInTheDocument();
     const user = userEvent.setup();
-    await user.click(screen.getByRole('button', { name: 'They are the same' }));
+    // "Same" is deliberate: it opens only once the last group of digits has been typed as shown elsewhere.
+    const same = screen.getByRole('button', { name: 'They are the same' });
+    expect(same).toBeDisabled();
+    await user.type(screen.getByLabelText('Type the last group of digits as the other device shows it'), '67891');
+    expect(same).toBeDisabled();
+    await user.clear(screen.getByLabelText('Type the last group of digits as the other device shows it'));
+    await user.type(screen.getByLabelText('Type the last group of digits as the other device shows it'), '67890');
+    expect(same).toBeEnabled();
+    await user.click(same);
     expect(onCompare).toHaveBeenLastCalledWith(true);
+    // Saying they differ needs nothing typed.
     await user.click(screen.getByRole('button', { name: 'They are not the same' }));
     expect(onCompare).toHaveBeenLastCalledWith(false);
   });

@@ -258,6 +258,22 @@ export function DevicesView({
         </Notice>
       ) : null}
 
+      {ownFingerprint !== undefined ? (
+        <section className="card" aria-labelledby="h-fp">
+          <div className="card-head">
+            <h2 id="h-fp">{t('devices.fingerprint.title')}</h2>
+          </div>
+          {ownFingerprint ? (
+            <p className="phrase">{ownFingerprint}</p>
+          ) : (
+            <Notice tone="warn">
+              <p>{t('devices.approval.noFingerprint')}</p>
+            </Notice>
+          )}
+          <p className="hint">{t('devices.fingerprint.hint')}</p>
+        </section>
+      ) : null}
+
       {(approvals ?? []).map((row) => (
         <section className="approval" key={row.id} aria-labelledby={`h-req-${row.id}`}>
           <div className="body">
@@ -272,18 +288,6 @@ export function DevicesView({
                 <p>{t('devices.approval.noKey')}</p>
               </Notice>
             )}
-            {ownFingerprint ? (
-              <>
-                <p className="hint">{t('devices.approval.fingerprint')}</p>
-                <p className="phrase" aria-label={t('devices.approval.fingerprintLabel')}>
-                  {ownFingerprint}
-                </p>
-              </>
-            ) : ownFingerprint === null ? (
-              <Notice tone="warn">
-                <p>{t('devices.approval.noFingerprint')}</p>
-              </Notice>
-            ) : null}
             <p className="hint">{t('devices.approval.what')}</p>
             {!cryptoAvailable ? (
               <Notice tone="warn">
@@ -301,7 +305,7 @@ export function DevicesView({
             </Button>
             <Button
               variant="primary"
-              isDisabled={busy || !row.phrase || !cryptoAvailable}
+              isDisabled={busy || !row.phrase || !cryptoAvailable || ownFingerprint === null}
               aria-label={t('devices.approval.approveFor', { name: row.deviceName })}
               onPress={() => onApprove(row)}
             >

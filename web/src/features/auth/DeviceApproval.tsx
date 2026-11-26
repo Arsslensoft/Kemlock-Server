@@ -6,6 +6,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type MessageId, useT } from '@/i18n';
 import { describeError } from '@/lib/errors';
 import { thisDevice } from '@/lib/device';
+import { TextInput } from '@/features/account/controls';
 import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
@@ -21,6 +22,43 @@ import {
 const route = getRouteApi('/sign-in/device');
 
 type Ended = Exclude<ApprovalOutcome, { status: 'signed-in' }>;
+
+/** The last group of digits of a fingerprint: what the person types to say they compared it. */
+export function lastGroup(fingerprint: string): string {
+  return fingerprint.trim().split(/\s+/).at(-1) ?? '';
+}
+
+/**
+ * The answer to the comparison. "Same" is a deliberate act: it opens only when the person has
+ * typed the last group of digits as the approving device shows it, so it is not pressed blindly.
+ */
+function FingerprintAnswer({
+  fingerprint,
+  onCompare,
+}: {
+  fingerprint: string;
+  onCompare?: ((matches: boolean) => void) | undefined;
+}) {
+  const t = useT();
+  const [typed, setTyped] = useState('');
+  const typedRight = typed.replace(/\s+/g, '') === lastGroup(fingerprint);
+  return (
+    <>
+      <TextInput
+        label={t('deviceApproval.fingerprint.type')}
+        value={typed}
+        onChange={setTyped}
+        mono
+      />
+      <Button variant="primary" size="large" block isDisabled={!typedRight} onPress={() => onCompare?.(true)}>
+        {t('deviceApproval.fingerprint.match')}
+      </Button>
+      <Button block onPress={() => onCompare?.(false)}>
+        {t('deviceApproval.fingerprint.differ')}
+      </Button>
+    </>
+  );
+}
 
 function refusedMessage(error: ApprovalRefused): MessageId {
   if (error.reason === 'fingerprint') return 'deviceApproval.fingerprintRefused';
@@ -117,12 +155,7 @@ export function DeviceApprovalView({
             </p>
             <p className="hint">{t('deviceApproval.fingerprint.hint')}</p>
           </div>
-          <Button variant="primary" size="large" block onPress={() => onCompare?.(true)}>
-            {t('deviceApproval.fingerprint.match')}
-          </Button>
-          <Button block onPress={() => onCompare?.(false)}>
-            {t('deviceApproval.fingerprint.differ')}
-          </Button>
+          <FingerprintAnswer fingerprint={progress.fingerprint} onCompare={onCompare} />
         </>
       ) : (
         <p role="status">

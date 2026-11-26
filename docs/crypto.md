@@ -416,10 +416,17 @@ phrase = the five words, lower case, joined by single spaces
   The new device therefore needs the account's bundle and sealed private keys, and opens its vault
   only if the public halves of the `kx1` and `sig1` private keys it opens are exactly the bundle's,
   for the account and key version it signed in with. It then shows the bundle's fingerprint
-  ("Public-key bundle and fingerprint") and treats the vault as open only after the person says it is
-  the same as the fingerprint the approving device shows for its own account, beside the request. A
-  mismatch, or no answer, locks the vault and ends the session. A server that forged the bundle too
-  is caught only by this comparison.
+  ("Public-key bundle and fingerprint") and treats the vault as open only after the person has typed
+  the last group of five digits as the approving device shows it (so "same" is not pressed blindly)
+  and confirmed. A mismatch, or no answer, locks the vault and ends the session. A server that
+  forged the bundle too is caught only by this comparison.
+- **What the approving device shows.** Every client that can approve (the Kemlock app, the browser
+  extension, the web vault) shows the fingerprint of its own account's bundle, worked out from its own
+  unlocked keys and never taken from the server, on a screen of its own that is reachable at any
+  time: at least on its devices screen, whether or not a request is pending, and not only inside the
+  request. The new device sends the person there after approval, when the request has gone from the
+  list, so a fingerprint shown only beside a pending request cannot be compared. An approving device
+  that cannot work the fingerprint out says so, and does not approve.
 
 `phrase.json` in test-vectors pins the digest, the five 13-bit groups, their indexes and the phrase
 for several keys, one of them with a group that wraps the list.
