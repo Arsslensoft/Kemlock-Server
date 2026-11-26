@@ -202,3 +202,30 @@ async fn an_admin_without_two_step_login_gets_no_admin_token_either() {
     .expect("verifies");
     assert!(!claims.admin);
 }
+
+#[tokio::test]
+async fn an_access_token_dies_with_a_refresh_token_used_twice() {
+    let (world, _user, first) = signed_in().await;
+    let second = world
+        .refresh()
+        .execute(&first.refresh_token, JKT)
+        .await
+        .expect("the first use works");
+    world
+        .authenticate()
+        .execute(&second.access_token, JKT)
+        .await
+        .expect("the rotated token's access token works");
+
+    // A copy of the first refresh token comes back: the family is revoked and the device's key no
+    // longer vouches for it, so the access token the device holds stops at once as well.
+    let reuse = world.refresh().execute(&first.refresh_token, JKT).await;
+    assert_eq!(reuse, Err(AppError::SessionEnded("refresh-token-reuse")));
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&second.access_token, JKT)
+            .await,
+        Err(AppError::SessionEnded("signed-out"))
+    );
+}
