@@ -28,7 +28,7 @@ use kemlock_app::ports::TokenSigner;
 use kemlock_app::sso::RequireSso;
 use kemlock_app::{Sessions, TokenPair, b64url};
 use kemlock_domain::unlock::{ApprovalId, DeviceKeyCopy, KeyProtection};
-use kemlock_domain::{DeviceId, DeviceKind};
+use kemlock_domain::{DeviceId, DeviceKind, Email};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -40,16 +40,23 @@ use uuid::Uuid;
 /// stops one address spraying requests at many accounts.
 const REQUESTS_PER_IP_PER_HOUR: u32 = 30;
 
+/// Requests per address and email an hour, whether or not the email has an account: so one address
+/// can't use up an account's 10 (and the owner's mailbox) alone, and the 429 it gets past this is
+/// the same for every email.
+const REQUESTS_PER_EMAIL_PER_IP_PER_HOUR: u32 = 3;
+
 /// The limiter of this router, held in an extension so the shared `Api` state needn't know it.
 #[derive(Debug)]
 pub(crate) struct DeviceLimits {
     requests: Limiter,
+    per_email: Limiter,
 }
 
 impl DeviceLimits {
     fn new() -> Self {
         DeviceLimits {
             requests: Limiter::new(REQUESTS_PER_IP_PER_HOUR, 3600),
+            per_email: Limiter::new(REQUESTS_PER_EMAIL_PER_IP_PER_HOUR, 3600),
         }
     }
 }
@@ -320,6 +327,15 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
     ) -> Result<(StatusCode, Json<ApprovalRequestResponse>), Problem> {
         guard(&limits.requests, &ip_key(proof.ip), api.now())?;
         let request: ApprovalRequestBody = body.json()?;
+        // An email too long to be one is refused by the use case; it isn't counted here.
+        if request.email.len() <= Email::MAX_LEN {
+            let email = request.email.trim().to_lowercase();
+            guard(
+                &limits.per_email,
+                &format!("{email}|{}", ip_key(proof.ip)),
+                api.now(),
+            )?;
+        }
         let requested = api
             .request_approval()
             .execute(ApprovalRequestInput {

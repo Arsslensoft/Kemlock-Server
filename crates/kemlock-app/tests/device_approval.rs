@@ -4,7 +4,7 @@ mod fakes;
 
 use fakes::unlock::*;
 use fakes::*;
-use kemlock_app::devices::{Answer, ApprovalRequestInput, Poll, phrase_for};
+use kemlock_app::devices::{Answer, ApprovalRequestInput, NOTICES_PER_HOUR, Poll, phrase_for};
 use kemlock_app::ports::Clock;
 use kemlock_app::{Actor, AppError, DeviceInfo, SignedIn};
 use kemlock_domain::unlock::{
@@ -154,7 +154,7 @@ async fn malformed_requests_are_refused() {
 }
 
 #[tokio::test]
-async fn an_account_takes_ten_requests_an_hour() {
+async fn past_ten_requests_an_hour_the_answer_is_the_same_and_nothing_is_stored_or_sent() {
     let (world, _, _) = account().await;
     let notices = FakeNotices::default();
     let use_case = request_approval(&world, &notices);
@@ -166,25 +166,61 @@ async fn an_account_takes_ten_requests_an_hour() {
             .await
             .expect("inside the limit");
     }
-    world.env.clock.advance(Duration::seconds(1));
-    let refused = use_case
-        .execute(input(EMAIL, public_key(99)))
-        .await
-        .expect_err("the eleventh is refused");
-    // The first of the ten was made 10 seconds ago, so its slot opens in 3590 seconds.
-    assert_eq!(
-        refused,
-        AppError::SlowDown {
-            retry_after_secs: 3590
-        }
-    );
     assert_eq!(world.store.auth_request_count(), HOURLY_REQUEST_LIMIT);
+    // The owner is mailed about the first few only.
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
 
+    // The eleventh is answered like a request for an email with no account: no refusal tells a
+    // stranger the account exists or that its hour is spent, and nothing is stored or mailed.
+    world.env.clock.advance(Duration::seconds(1));
+    let key = public_key(99);
+    let eleventh = use_case
+        .execute(input(EMAIL, key.clone()))
+        .await
+        .expect("answered like any other");
+    let stranger = use_case
+        .execute(input("nobody@example.org", key.clone()))
+        .await
+        .expect("answered");
+    assert_eq!(eleventh.phrase, phrase_for(&world.env, &key));
+    assert_eq!(eleventh.phrase, stranger.phrase);
+    assert_eq!(eleventh.expires_at, stranger.expires_at);
+    assert_eq!(world.store.auth_request_count(), HOURLY_REQUEST_LIMIT);
+    assert!(world.store.auth_request(eleventh.id).is_none());
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
+
+    // The first of the ten was made 10 seconds ago, so its slot opens in 3590 seconds.
     world.env.clock.advance(Duration::seconds(3590));
-    use_case
+    let later = use_case
         .execute(input(EMAIL, public_key(100)))
         .await
         .expect("the first slot has opened");
+    assert!(world.store.auth_request(later.id).is_some());
+}
+
+#[tokio::test]
+async fn the_owner_is_mailed_about_three_requests_an_hour_however_many_come() {
+    let (world, _, _) = account().await;
+    let notices = FakeNotices::default();
+    let use_case = request_approval(&world, &notices);
+    for i in 0..NOTICES_PER_HOUR + 2 {
+        world.env.clock.advance(Duration::seconds(1));
+        use_case
+            .execute(input(EMAIL, public_key(i as u8)))
+            .await
+            .expect("accepted");
+    }
+    // Every request is stored and shows on the open devices; only the first three are mailed.
+    assert_eq!(world.store.auth_request_count(), NOTICES_PER_HOUR + 2);
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
+
+    // An hour on, the next request is mailed again.
+    world.env.clock.advance(Duration::hours(1));
+    use_case
+        .execute(input(EMAIL, public_key(50)))
+        .await
+        .expect("accepted");
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR + 1);
 }
 
 #[tokio::test]

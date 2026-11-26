@@ -39,6 +39,9 @@ fn answer_error(e: ApprovalError) -> AppError {
     }
 }
 
+/// How many of an account's requests in an hour the owner is mailed about.
+pub const NOTICES_PER_HOUR: usize = 3;
+
 /// What a new device says when it asks.
 #[derive(Clone, Debug)]
 pub struct ApprovalRequestInput {
@@ -72,7 +75,11 @@ pub struct RequestApproval<U, A, N, E> {
 impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApproval<U, A, N, E> {
     /// Stores the request and tells the account's owner. The answer for an email with no account
     /// looks the same as for one with an account, so this can't be used to find accounts; the
-    /// request just never appears anywhere. An account takes 10 requests an hour.
+    /// request just never appears anywhere. An account takes 10 requests an hour, and the owner is
+    /// mailed about the first 3 of them: past a limit the answer is still the same one, and nothing
+    /// is stored or sent, so the limit shows nothing about the account and the mails can't be used
+    /// to fill its owner's mailbox. (A route may answer a source that asks too often with a 429,
+    /// but it must do so for any email alike.)
     pub async fn execute(&self, input: ApprovalRequestInput) -> Result<Requested, AppError> {
         if input.public_key.len() != KX1_PUBLIC_KEY_LEN {
             return Err(AppError::Invalid(
@@ -101,11 +108,12 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             .requests_since(user.id, now - Duration::hours(1))
             .await?;
         if recent.len() >= HOURLY_REQUEST_LIMIT {
-            // The next slot opens when the request that fills the last one ages out.
-            let blocking = recent[recent.len() - HOURLY_REQUEST_LIMIT];
-            let wait = (blocking + Duration::hours(1) - now).whole_seconds().max(1);
-            return Err(AppError::SlowDown {
-                retry_after_secs: u64::try_from(wait).unwrap_or(1),
+            // A refusal here would tell anyone who asks which emails have accounts, and let them
+            // use up an account's hour: answer as for an email with no account.
+            return Ok(Requested {
+                id: ApprovalId(random_uuid(&self.env)),
+                phrase,
+                expires_at,
             });
         }
 
@@ -126,15 +134,19 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             expires_at,
         };
         self.approvals.insert_request(&request).await?;
-        self.notices
-            .new_device(NewDeviceNotice {
-                to: user.email,
-                device_name,
-                device_kind: request.device_kind,
-                ip: request.ip.clone(),
-                at: now,
-            })
-            .await;
+        // Only the first few requests of an hour are mailed: the rest are still shown on the
+        // account's open devices, but cost its owner no more mail.
+        if recent.len() < NOTICES_PER_HOUR {
+            self.notices
+                .new_device(NewDeviceNotice {
+                    to: user.email,
+                    device_name,
+                    device_kind: request.device_kind,
+                    ip: request.ip.clone(),
+                    at: now,
+                })
+                .await;
+        }
         Ok(Requested {
             id: request.id,
             phrase,
