@@ -111,8 +111,8 @@ accounts that existed before the setting was turned on are confirmed. The hold o
 `register/finish` answer then carries `"emailConfirmationRequired": true`; with the setting off it
 is the answer it always was. The Bitwarden API follows the same setting for its own registration.
 
-Without a mail server the setting can't work, so the console refuses to turn it on until an SMTP host
-is saved, and a server started with `SIGNUPS_VERIFY=true` and no `SMTP_HOST` logs a warning and
+Without a mail server the setting can't work, so the console refuses to turn it on until a mail server (an SMTP host and a sender address, with a
+user name only together with its password) is saved, and a server started with `SIGNUPS_VERIFY=true` and no `SMTP_HOST` logs a warning and
 holds no one back. Without it anyone can register any address first: with sign-ups limited to
 `@corp.com`, someone could take `ceo@corp.com` before its owner does. Turn it on whenever sign-ups
 are open to people you don't know, or limited to a domain.

@@ -29,7 +29,7 @@
   "admin.stat.events": "Events in the last 24 hours",
 
   "admin.settings.hint.signups_allowed": "When off, people join only by an invitation or through SSO.",
-  "admin.settings.hint.signups_verify": "Sends a link to the new address. The account can't sign in or be used until the link is opened, and single sign-on won't link to it by email before then. It needs mail: set an SMTP host first, or it does nothing.",
+  "admin.settings.hint.signups_verify": "Sends a link to the new address. The account can't sign in or be used until the link is opened, and single sign-on won't link to it by email before then. It needs mail: set up SMTP (a host and a sender address) first, or it does nothing.",
   "admin.settings.hint.invitations_allowed": "Admins can invite people from Users & spaces, even while sign-up is off.",
   "admin.settings.hint.push_enabled": "Wakes Bitwarden's phone apps through Bitwarden's push relay, which becomes a processor of these pushes. It is sent the user, device and item ids and the kind of change, never an item's contents. Kemlock's apps are woken by this server itself, whatever this says.",
   "admin.settings.hint.kemlock_push_relay": "This server pushes to Kemlock's iPhones (Apple push) and Android phones (UnifiedPush) itself. The relay is only an optional fallback for iPhones on a server with no Apple key, and a server with an Apple key never uses it. It is sent a push token and this server's installation id, never an item or an email.",

@@ -1484,12 +1484,38 @@ async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
     assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
     assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
 
-    // With the mail server in the same save it is taken, and then it can be changed on its own.
+    // A host alone is not a mail server: the server needs a sender too, and a user name with its
+    // password or neither.
+    for changes in [
+        json!({"signups_verify": "true", "smtp_host": "mail.example.org"}),
+        json!({
+            "signups_verify": "true", "smtp_host": "mail.example.org",
+            "smtp_from": "vault@example.org", "smtp_username": "vault"
+        }),
+    ] {
+        let refused = root
+            .write(
+                "PUT",
+                "/admin/v1/settings",
+                Some(json!({"changes": changes})),
+                &token,
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    }
+    assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
+
+    // With the whole mail server in the same save it is taken, and then it can be changed on its
+    // own.
     let saved = root
         .write(
             "PUT",
             "/admin/v1/settings",
-            Some(json!({"changes": {"signups_verify": "true", "smtp_host": "mail.example.org"}})),
+            Some(json!({"changes": {
+                "signups_verify": "true",
+                "smtp_host": "mail.example.org",
+                "smtp_from": "vault@example.org"
+            }})),
             &token,
         )
         .await;

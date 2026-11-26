@@ -727,6 +727,52 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
         Ok(Some(plain))
     }
 
+    /// What `key` will be once `changes` are saved, as text: empty when unset.
+    async fn after(
+        &self,
+        changes: &BTreeMap<String, Change>,
+        key: &str,
+    ) -> Result<String, AdminError> {
+        Ok(match changes.get(key) {
+            Some(Change::Set(value)) => value.trim().to_owned(),
+            Some(Change::Reset) => String::new(),
+            None => self.get(key).await?.unwrap_or_default().trim().to_owned(),
+        })
+    }
+
+    /// Refuses unless the SMTP settings, as they will be, make a mail server: the same rules
+    /// `SmtpConfig` applies at the server (a host, a sender, and a user name with its password or
+    /// neither).
+    async fn check_mail_is_set_up(
+        &self,
+        changes: &BTreeMap<String, Change>,
+    ) -> Result<(), AdminError> {
+        let refuse = |why: &str| {
+            Err(AdminError::Invalid(format!(
+                "verifying new accounts needs mail: {why}"
+            )))
+        };
+        if self.after(changes, "smtp_host").await?.is_empty() {
+            return refuse("set the SMTP host first");
+        }
+        if self.after(changes, "smtp_from").await?.is_empty() {
+            return refuse("set the SMTP sender address (smtp_from) too");
+        }
+        let user = !self.after(changes, "smtp_username").await?.is_empty();
+        let password = match changes.get("smtp_password") {
+            Some(Change::Set(value)) => !value.is_empty(),
+            Some(Change::Reset) => false,
+            None => self
+                .secret("smtp_password")
+                .await?
+                .is_some_and(|value| !value.is_empty()),
+        };
+        if user != password {
+            return refuse("the SMTP user name and password go together");
+        }
+        Ok(())
+    }
+
     /// Applies `changes`, all or none: every change is checked before any is stored. A setting
     /// the environment sets is refused with [`AdminError::ReadOnly`], an unknown name with
     /// [`AdminError::Invalid`].
@@ -756,18 +802,11 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
             }
         }
         // A link can't be mailed without a mail server, and an account held back for one that never
-        // comes can't be used: turning the setting on needs an SMTP host, saved with it or already set.
+        // comes can't be used: turning the setting on needs the SMTP settings the server needs to
+        // make a mail server, saved with it or already set (a host and a sender, and a user name
+        // with its password or neither).
         if verifies {
-            let host = match changes.get("smtp_host") {
-                Some(Change::Set(host)) => host.trim().to_owned(),
-                Some(Change::Reset) => String::new(),
-                None => self.get("smtp_host").await?.unwrap_or_default(),
-            };
-            if host.trim().is_empty() {
-                return Err(AdminError::Invalid(
-                    "verifying new accounts needs mail: set the SMTP host first".to_owned(),
-                ));
-            }
+            self.check_mail_is_set_up(changes).await?;
         }
         for (key, value) in writes {
             let stored_key = format!("{KEY_PREFIX}{key}");
