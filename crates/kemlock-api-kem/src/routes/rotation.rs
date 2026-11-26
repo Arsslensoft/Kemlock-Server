@@ -25,7 +25,7 @@ use crate::problem::Problem;
 use crate::state::{Api, Crypto, Store};
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, put};
 use axum::{Extension, Json, Router, middleware};
 use kemlock_app::AppError;
 use kemlock_app::b64url;
