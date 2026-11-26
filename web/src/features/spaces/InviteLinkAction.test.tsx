@@ -13,6 +13,7 @@ vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(() => Promise.resolve(true))
 
 const LINK = 'https://vault.test/#/accept-organization/?token=secret';
 const IVY = '20000000-0000-4000-8000-000000000009';
+const KAY = '20000000-0000-4000-8000-00000000000a';
 
 function problem(status: number, slug: string): ApiError {
   return new ApiError(status, { type: `urn:kemlock:problem:${slug}`, title: 'x', status } as never);
@@ -46,7 +47,7 @@ describe('InviteLinkAction', () => {
   });
 
   it.each([
-    [404, 'not-found', /not a Bitwarden organization/],
+    [404, 'not-found', /no Bitwarden invitation to copy/],
     [403, 'forbidden', /Only an owner or admin can copy this link/],
     [409, 'not-invited', /already accepted/],
   ])('says so when the server answers %i', async (status, slug, words) => {
@@ -68,7 +69,7 @@ describe('the invitation link on the space page', () => {
   function page(
     role: 'owner' | 'admin' | 'member',
     inviteLink: SpaceActions['inviteLink'],
-    organization: boolean | 'unsaid' = true,
+    invitation: boolean | 'unsaid' = true,
   ) {
     const actions = {
       invite: vi.fn(),
@@ -95,10 +96,16 @@ describe('the invitation link on the space page', () => {
       <SpaceDetailView
         detail={{
           ...base,
-          view: spaceView({ me: member(ME, { role }), ...(organization === 'unsaid' ? {} : { bitwardenOrganization: organization }) }),
+          view: spaceView({ me: member(ME, { role }) }),
           members: [
             ...base.members,
-            memberView(IVY, 'ivy@example.co', { state: 'invited', name: 'Ivy Chen' }),
+            memberView(IVY, 'ivy@example.co', {
+              state: 'invited',
+              name: 'Ivy Chen',
+              ...(invitation === 'unsaid' ? {} : { bitwardenInvitation: invitation }),
+            }),
+            // Invited through the Kemlock API alone: no Bitwarden invitation, so no link.
+            memberView(KAY, 'kay@example.co', { state: 'invited', name: 'Kay Ito', bitwardenInvitation: false }),
           ],
         }}
         loading={false}
@@ -133,16 +140,19 @@ describe('the invitation link on the space page', () => {
     expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();
   });
 
-  it('is not offered in a space that is not a Bitwarden organization, or one the server does not say of', () => {
+  it('is offered only for an invited member who has a Bitwarden invitation', () => {
     const inviteLink = vi.fn(async () => LINK);
+    // Kay was invited through the Kemlock API alone, so only Ivy has a button; and none where the
+    // server says Ivy has no invitation, or says nothing.
+    page('owner', inviteLink, true);
+    expect(screen.getAllByRole('button', { name: /Copy the invitation link/ })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /Kay Ito/ })).not.toBeInTheDocument();
+    cleanup();
     page('owner', inviteLink, false);
     expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();
     cleanup();
     page('admin', inviteLink, 'unsaid');
     expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();
-    cleanup();
-    page('admin', inviteLink, true);
-    expect(screen.getByRole('button', { name: 'Copy the invitation link of Ivy Chen' })).toBeInTheDocument();
   });
 });
 

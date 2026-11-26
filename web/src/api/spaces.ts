@@ -69,6 +69,11 @@ export interface MemberViewDto extends MemberDto {
   bundleSignature: string;
   userKeyVersion: number;
   needsReconfirmation: boolean;
+  /**
+   * An invited member of a Bitwarden organization who has a Bitwarden invitation, so an owner or
+   * admin can copy its link. Left out by a server that doesn't say, which counts as no.
+   */
+  bitwardenInvitation?: boolean;
 }
 
 export interface CollectionDto {

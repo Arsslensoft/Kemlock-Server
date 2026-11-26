@@ -369,9 +369,8 @@ export function SpaceDetailView({
   const members = waiting ? [] : detail.members;
   const me = view.me;
   const manage = canManageUsers(me);
-  // Only an owner or admin may hand an invitation link over (the server says 403 to anyone else),
-  // and only in a Bitwarden organization, which the server says of the space.
-  const handsOver = (me.role === 'owner' || me.role === 'admin') && view.bitwardenOrganization === true;
+  // Only an owner or admin may hand an invitation link over (the server says 403 to anyone else).
+  const handsOver = me.role === 'owner' || me.role === 'admin';
   const pendingKeys =
     view.space.keysPendingSince !== null || view.collections.some((c) => c.staleSince !== null);
   const title = detail.name ?? t('space.detail.locked');
@@ -499,7 +498,7 @@ export function SpaceDetailView({
                             {t('space.members.accept')}
                           </Button>
                         ) : null}
-                        {!isMe && handsOver && member.state === 'invited' && inviteLink ? (
+                        {!isMe && handsOver && member.state === 'invited' && member.bitwardenInvitation === true && inviteLink ? (
                           <InviteLinkAction
                             name={name}
                             fetchLink={() => inviteLink(member.user)}

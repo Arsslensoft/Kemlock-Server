@@ -73,7 +73,7 @@
   "space.inviteLink.copyFor": "Copy the invitation link of {name}",
   "space.inviteLink.copied": "Link copied. Whoever opens it accepts the invitation for this account, so hand it only to the person invited.",
   "space.inviteLink.manual": "Your browser would not copy it. Copy the link below. Whoever opens it accepts the invitation for this account, so hand it only to the person invited.",
-  "space.inviteLink.notOrganization": "This space is not a Bitwarden organization, so it has no invitation link.",
+  "space.inviteLink.noInvitation": "There is no Bitwarden invitation to copy for this member.",
   "space.inviteLink.forbidden": "Only an owner or admin can copy this link, and only an owner for the invitation of an admin or manager.",
   "space.inviteLink.accepted": "This member has already accepted, so there is no link to copy.",
   "space.members.confirm": "Confirm",

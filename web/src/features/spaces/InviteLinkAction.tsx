@@ -18,7 +18,7 @@ type State =
 /** What a refusal says: the server's three answers have words of their own. */
 function describeLinkError(error: unknown): { id: MessageId; values?: Record<string, string | number> | undefined } {
   if (isApiError(error)) {
-    if (error.status === 404) return { id: 'space.inviteLink.notOrganization' };
+    if (error.status === 404) return { id: 'space.inviteLink.noInvitation' };
     if (error.status === 403) return { id: 'space.inviteLink.forbidden' };
     if (error.status === 409) return { id: 'space.inviteLink.accepted' };
   }
