@@ -838,7 +838,7 @@ mod tests {
         assert!(takes_my_place(2, &other, 2, &mine));
         // A newer version can't be the bundle I hold, so it is refused whatever its bytes.
         assert!(takes_my_place(3, &other, 2, &mine));
-        assert!(takes_my_place(3, &mine, 2, &mine) == false);
+        assert!(!takes_my_place(3, &mine, 2, &mine));
         // An older one is one I replaced since.
         assert!(!takes_my_place(1, &other, 2, &mine));
     }
