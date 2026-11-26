@@ -6,6 +6,9 @@
 import { crypto as worker } from '@/crypto';
 import {
   type ChainAnchor,
+  type ChainAppend,
+  type ChainBuilt,
+  type ChainChange,
   type ChainRecord,
   type ChainVerdict,
   type ChainView,
@@ -17,7 +20,17 @@ import {
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { createSharingCrypto, type SharingCrypto, unavailableSharingCrypto } from '@/sharing/crypto';
 
-export type { ChainAnchor, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
+export type {
+  ChainAnchor,
+  ChainAppend,
+  ChainBuilt,
+  ChainChange,
+  ChainRecord,
+  ChainVerdict,
+  ChainView,
+  NameKind,
+  SealHashEntry,
+};
 
 export interface NewSpaceKeys {
   /** The space's name under the new space key. */
@@ -98,6 +111,22 @@ export interface SpaceCrypto extends SharingCrypto {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
+  /**
+   * A new space as a chain: the body of the append route, with the `create` record signed here,
+   * both keys sealed to the maker and both names under the space key. `at` is Unix seconds.
+   */
+  newChainedSpace(input: {
+    spaceId: string;
+    collectionId: string;
+    spaceName: string;
+    collectionName: string;
+    at: number;
+  }): Promise<ChainAppend>;
+  /**
+   * The records of one change to a chained space, built and signed in the worker from the state it
+   * verified, or the verifier's reason for refusing the change. No records: nothing to do.
+   */
+  buildChainRecords(input: { spaceId: string; at: number; change: ChainChange }): Promise<ChainBuilt>;
   /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
   sealLocal(label: string, text: string): Promise<string>;
   /** Opens what `sealLocal` sealed under the same label and account. */
@@ -147,6 +176,8 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   ownFingerprint: () => unavailable(),
   verifyConfirmation: () => unavailable(),
   verifySpaceChain: () => unavailable(),
+  newChainedSpace: () => unavailable(),
+  buildChainRecords: () => unavailable(),
   spaceChainView: () => unavailable(),
   sealLocal: () => unavailable(),
   openLocal: () => unavailable(),
@@ -171,6 +202,8 @@ type SpaceWorker = Pick<
   | 'ownFingerprint'
   | 'verifyConfirmation'
   | 'verifySpaceChain'
+  | 'newChainedSpace'
+  | 'buildChainRecords'
   | 'spaceChainView'
   | 'sealLocal'
   | 'openLocal'
@@ -236,6 +269,8 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
       );
     },
     verifySpaceChain: (input) => api.verifySpaceChain(input),
+    newChainedSpace: (input) => api.newChainedSpace(input),
+    buildChainRecords: (input) => api.buildChainRecords(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
     sealLocal: (label, text) => api.sealLocal(label, text),
     openLocal: (label, sealed) => api.openLocal(label, sealed),

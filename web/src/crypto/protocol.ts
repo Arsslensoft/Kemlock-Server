@@ -9,6 +9,8 @@ import {
   CryptoError,
   type CryptoErrorCode,
   type ApprovedKeyHandle,
+  type ChainAppend,
+  type ChainBuilt,
   type ChainVerdict,
   type ChainView,
   type DeviceKey,
@@ -358,6 +360,18 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
           JSON.stringify(records),
           anchor === undefined ? undefined : JSON.stringify(anchor),
         ),
+      );
+    },
+    async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {
+      if (!Number.isInteger(at) || at < 0 || at > 0xffff_ffff) throw new CryptoError('invalid');
+      return parse<ChainAppend>(
+        (await current()).newChainedSpace(spaceId, collectionId, spaceName, collectionName, at),
+      );
+    },
+    async buildChainRecords({ spaceId, at, change }) {
+      if (!Number.isInteger(at) || at < 0 || at > 0xffff_ffff) throw new CryptoError('invalid');
+      return parse<ChainBuilt>(
+        (await current()).buildChainRecords(spaceId, at, JSON.stringify(change)),
       );
     },
     async sealLocal(label, text) {

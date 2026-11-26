@@ -171,6 +171,14 @@ export interface WasmVault {
   manifestVerify(signerBundle: string, manifest: string, signature: string): boolean;
   // The space chain: JSON in and out (see crates/kemlock-wasm/src/chain.rs).
   verifySpaceChain(spaceId: string, records: string, anchor?: string): string;
+  newChainedSpace(
+    spaceId: string,
+    collectionId: string,
+    spaceName: string,
+    collectionName: string,
+    at: number,
+  ): string;
+  buildChainRecords(spaceId: string, at: number, change: string): string;
   spaceChainView(spaceId: string): string | undefined;
   sealLocal(label: string, text: string): string;
   openLocal(label: string, sealed: string): string;

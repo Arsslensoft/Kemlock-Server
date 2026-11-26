@@ -2,7 +2,7 @@
 // the same failure points (a name opens only under the id, kind and key version it was sealed
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
-import type { ChainView } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
@@ -56,6 +56,14 @@ export interface FakeSpaces extends SpaceCrypto {
   chain: ChainView | { ok: false; reason: string; seq: number | null };
   /** What `ownFingerprint` answers: set it to the fingerprint of the test's own bundle. */
   ownFingerprintText: string;
+  /** What `buildChainRecords` answers instead of the default one record per change, when set. */
+  built: ChainBuilt | null;
+  /** The changes `buildChainRecords` was asked for, in order. */
+  changes: ChainChange[];
+}
+
+function utf8Text(text: string): string {
+  return encodeB64(utf8(text));
 }
 
 function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string, name: string) {
@@ -70,6 +78,38 @@ export function fakeSpaceCrypto(): FakeSpaces {
     ...base,
     ownFingerprintText: '',
     chain: NO_CHAIN,
+    built: null,
+    changes: [],
+    async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {
+      calls.push(`newChainedSpace:${at}`);
+      return {
+        ok: true,
+        records: [{ entry: utf8Text('create-record'), signature: utf8Text('create-signature') }],
+        seals: [
+          { box: utf8Text(`collection-key:${collectionId}`), key: `collection:${collectionId}`, member: 'me', seq: 0, version: 1 },
+          { box: utf8Text(`space-key:${spaceId}`), key: 'space', member: 'me', seq: 0, version: 1 },
+        ],
+        names: [
+          { name: encodeB64(nameBytes(spaceId, 1, 'collection', collectionId, collectionName)), seq: 0, target: `collection:${collectionId}` },
+          { name: encodeB64(nameBytes(spaceId, 1, 'space', spaceId, spaceName)), seq: 0, target: 'space' },
+        ],
+      };
+    },
+    async buildChainRecords({ change }) {
+      fake.changes.push(change);
+      calls.push(`buildChainRecords:${change.action}`);
+      if (fake.built) return fake.built;
+      // One record for the change; a seal with nothing to share makes none.
+      return {
+        ok: true,
+        records:
+          change.action === 'seal'
+            ? []
+            : [{ entry: utf8Text(JSON.stringify(change)), signature: utf8Text('signature') }],
+        seals: [],
+        names: [],
+      };
+    },
     async verifySpaceChain({ spaceId }) {
       calls.push(`verifySpaceChain:${spaceId}`);
       held = fake.chain.ok && fake.chain.chained ? fake.chain : null;

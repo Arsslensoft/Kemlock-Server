@@ -97,6 +97,15 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     manifestSign: vi.fn(() => 'c2lnbmF0dXJl'),
     manifestVerifyOwn: vi.fn(() => true),
     manifestVerify: vi.fn(() => true),
+    newChainedSpace: vi.fn(() =>
+      JSON.stringify({
+        ok: true,
+        records: [{ entry: 'ZW50cnk', signature: 'c2ln' }],
+        seals: [{ box: 'Ym94', key: 'space', member: '00010203-0405-0607-0809-0a0b0c0d0e0f', seq: 0, version: 1 }],
+        names: [{ name: 'bmFtZQ', seq: 0, target: 'space' }],
+      }),
+    ),
+    buildChainRecords: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [] })),
     verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn((): string | undefined => undefined),
     sealLocal: vi.fn(() => 'c2VhbGVk'),
@@ -351,6 +360,29 @@ describe('the dispatcher', () => {
     expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s');
     await dispatch('openCollection', [{ spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s' }]);
     expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s');
+
+    // A new chained space and one change to it: the request comes back parsed, and the time is checked.
+    const created = await dispatch('newChainedSpace', [
+      { spaceId: UUID, collectionId: UUID, spaceName: 'Family', collectionName: 'Everyone', at: 1_700_000_000 },
+    ]);
+    expect(created.records).toEqual([{ entry: 'ZW50cnk', signature: 'c2ln' }]);
+    expect(vault.newChainedSpace).toHaveBeenCalledWith(UUID, UUID, 'Family', 'Everyone', 1_700_000_000);
+    await expect(
+      dispatch('newChainedSpace', [
+        { spaceId: UUID, collectionId: UUID, spaceName: 'a', collectionName: 'b', at: -1 },
+      ]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    const change = { action: 'remove' as const, member: UUID };
+    expect(await dispatch('buildChainRecords', [{ spaceId: UUID, at: 5, change }])).toEqual({
+      ok: true,
+      records: [],
+      seals: [],
+      names: [],
+    });
+    expect(vault.buildChainRecords).toHaveBeenCalledWith(UUID, 5, JSON.stringify(change));
+    await expect(
+      dispatch('buildChainRecords', [{ spaceId: UUID, at: 1.5, change }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
 
     // The space chain: JSON goes in and comes out, and a key version is checked before the module.
     const record = { entry: 'ZW50cnk', signature: 'c2ln' };

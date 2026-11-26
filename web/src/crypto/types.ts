@@ -296,6 +296,65 @@ export interface ChainView {
 
 export type ChainVerdict = ChainView | ChainRefusal;
 
+/** A grant of a collection to a member, in an invitation. */
+export interface ChainCollectionGrant {
+  collection: string;
+  permission: string;
+}
+
+/**
+ * One change to a chained space that the worker makes as signed records (docs/crypto.md, "Space
+ * chain", "Kinds"): it builds them from the verified state it holds, signs them with the unlocked
+ * account's key and checks them with the verifier before returning them.
+ */
+export type ChainChange =
+  | {
+      action: 'invite';
+      member: string;
+      role: ChainMember['role'];
+      custom: string[];
+      grants: ChainCollectionGrant[];
+    }
+  | {
+      action: 'confirm';
+      member: string;
+      /** The member's bundle and its own signature, as the server registered them. */
+      bundle: string;
+      bundleSignature: string;
+      /** The 64 fingerprint bytes the person compared. */
+      fingerprint: string;
+    }
+  | { action: 'role'; member: string; role: ChainMember['role']; custom: string[] }
+  | { action: 'remove'; member: string }
+  | { action: 'grant'; collection: string; grantee: string; permission: string }
+  | { action: 'ungrant'; collection: string; grantee: string }
+  | {
+      action: 'collection';
+      collection: string;
+      name: string;
+      parent?: string;
+      /** Granted to the maker with `manage` when left out. */
+      grants?: Array<{ grantee: string; permission: string }>;
+    }
+  | { action: 'collection-delete'; collection: string }
+  | { action: 'rename'; target: string; name: string }
+  | { action: 'group'; group: string; name: string; members?: string[] }
+  | { action: 'group-members'; group: string; add: string[]; remove: string[] }
+  | { action: 'group-delete'; group: string }
+  /** Shares the keys this account holds with the members awaiting them. */
+  | { action: 'seal' };
+
+/** What POST /kem/v1/spaces/{id}/chain takes: records, and the boxes and names they commit. */
+export interface ChainAppend {
+  ok: true;
+  records: ChainRecord[];
+  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
+  names: Array<{ name: string; seq: number; target: string }>;
+}
+
+/** Records ready to append, or the verifier's reason for refusing the change. */
+export type ChainBuilt = ChainAppend | ChainRefusal;
+
 /** An entry of the server's seal hash list for a record (GET /chain/{seq}/seals). */
 export interface SealHashEntry {
   bundleVersion: number;
@@ -667,6 +726,24 @@ export interface CryptoApi {
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
   /**
+   * A new space as a chain: the body of POST /kem/v1/spaces/{id}/chain, with a `create` record
+   * signed by the unlocked account, both keys sealed to it and both names under the space key.
+   * `at` is the time in Unix seconds. No key is kept: the space opens through its chain once the
+   * record is appended and verified.
+   */
+  newChainedSpace(input: NewSpaceInput & { at: number }): Promise<ChainAppend>;
+  /**
+   * The records of one change to a chained space, from the verified state the worker holds for it
+   * (first contact done), signed by the unlocked account. Resolves with `{ok: false, reason}` when
+   * the chain's rules refuse the change, and with no records when there is nothing to do.
+   */
+  buildChainRecords(input: {
+    spaceId: string;
+    /** The time in Unix seconds. */
+    at: number;
+    change: ChainChange;
+  }): Promise<ChainBuilt>;
+  /**
    * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
    * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
    */
@@ -835,6 +912,11 @@ export interface Ops {
   verifySpaceChain: {
     args: [input: { spaceId: string; records: ChainRecord[]; anchor?: ChainAnchor }];
     result: ChainVerdict;
+  };
+  newChainedSpace: { args: [input: NewSpaceInput & { at: number }]; result: ChainAppend };
+  buildChainRecords: {
+    args: [input: { spaceId: string; at: number; change: ChainChange }];
+    result: ChainBuilt;
   };
   sealLocal: { args: [label: string, text: string]; result: string };
   openLocal: { args: [label: string, sealed: string]; result: string };
