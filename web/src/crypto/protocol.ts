@@ -13,6 +13,7 @@ import {
   type ChainView,
   type DeviceKey,
   type EmergencyKeyHandle,
+  type ItemWriteSignature,
   type MasterKeyHandle,
   type NewAccount,
   type NewSpaceResult,
@@ -458,6 +459,15 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
     async manifestVerify(signerBundle, manifest, signature) {
       return (await current()).manifestVerify(signerBundle, manifest, signature);
+    },
+    async itemWriteSign(fields) {
+      return parse<ItemWriteSignature>((await current()).itemWriteSign(JSON.stringify(fields)));
+    },
+    async itemWriteVerifyOwn(fields, signature) {
+      return (await current()).itemWriteVerifyOwn(JSON.stringify(fields), signature);
+    },
+    async itemWriteVerify(signerBundle, fields, signature) {
+      return (await current()).itemWriteVerify(signerBundle, JSON.stringify(fields), signature);
     },
   };
 

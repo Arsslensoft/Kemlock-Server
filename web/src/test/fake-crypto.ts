@@ -3,7 +3,8 @@
 // under the id, revision, kind and owner it was sealed with, like the real AAD), so the app's
 // logic is tested without WebAssembly.
 import type { CryptoPort } from '@/crypto-port';
-import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import type { ItemWriteFields } from '@/crypto/types';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 
 const calls: string[] = [];
 
@@ -352,7 +353,53 @@ export const crypto: CryptoPort = {
     const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
     return signer !== undefined && fromUtf8(signature) === `msig:${signer}:${encodeB64(manifest)}`;
   },
+  // Signed item writes. A signature names its writer, the key version and every field of the
+  // write it covers, so a test sees that it checks only for that writer and only for those fields.
+  async itemWriteSign(fields) {
+    calls.push('itemWriteSign');
+    if (locked) throw new Error('the vault is locked');
+    if (fields.owner.startsWith('user:') && fields.owner !== `user:${openedFor}`) {
+      throw new Error('another account');
+    }
+    return {
+      writer: openedFor,
+      writerKeyVersion: 1,
+      writeSignature: encodeB64(utf8(writeSignatureText(openedFor, 1, fields))),
+    };
+  },
+  async itemWriteVerifyOwn(fields, signature) {
+    calls.push('itemWriteVerifyOwn');
+    if (locked) throw new Error('the vault is locked');
+    return (
+      fields.writer === openedFor &&
+      fields.writerKeyVersion === 1 &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(openedFor, 1, fields)
+    );
+  },
+  async itemWriteVerify(signerBundle, fields, signature) {
+    calls.push('itemWriteVerify');
+    const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
+    return (
+      signer !== undefined &&
+      fields.writer === signer &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(signer, fields.writerKeyVersion ?? 0, fields)
+    );
+  },
 };
+
+/** What the fake's write signature says: who, at which key version, over which fields. */
+export function writeSignatureText(writer: string, keyVersion: number, fields: ItemWriteFields): string {
+  return `wsig:${writer}:${keyVersion}:${JSON.stringify([
+    fields.owner,
+    fields.id,
+    fields.kind,
+    fields.revision,
+    fields.deleted,
+    fields.keyVersion,
+    fields.ciphertext ?? '',
+    fields.itemKey ?? '',
+  ])}`;
+}
 
 const deviceKeys = { count: 0, spent: new Set<string>() };
 

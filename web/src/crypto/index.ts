@@ -166,6 +166,10 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     manifestVerifyOwn: (manifest, signature) => call('manifestVerifyOwn', [manifest, signature]),
     manifestVerify: (signerBundle, manifest, signature) =>
       call('manifestVerify', [signerBundle, manifest, signature]),
+    itemWriteSign: (fields) => call('itemWriteSign', [fields]),
+    itemWriteVerifyOwn: (fields, signature) => call('itemWriteVerifyOwn', [fields, signature]),
+    itemWriteVerify: (signerBundle, fields, signature) =>
+      call('itemWriteVerify', [signerBundle, fields, signature]),
     verifySpaceChain: (input) => call('verifySpaceChain', [input]),
     sealLocal: (label, text) => call('sealLocal', [label, text]),
     openLocal: (label, sealed) => call('openLocal', [label, sealed]),
