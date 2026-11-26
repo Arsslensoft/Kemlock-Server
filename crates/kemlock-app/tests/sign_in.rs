@@ -1,7 +1,7 @@
 mod fakes;
 
 use fakes::*;
-use kemlockapp::ports::{Clock, SecretSeal, TokenSigner, TwoFactorMethod};
+use kemlock_app::ports::{Clock, SecretSeal, TokenSigner, TwoFactorMethod};
 use kemlock_app::{
     AppError, DeviceInfo, OpaqueFinishInput, OpaqueStartInput, SecondStepInput, SignedIn, b64url,
 };
