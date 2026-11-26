@@ -14,6 +14,11 @@ export interface ManifestRecord {
 
 export interface RecordStore {
   get(key: string): Promise<ManifestRecord | undefined>;
+  /**
+   * Keeps `record` unless the one held has a higher counter: the highest counter seen is what a
+   * server is held to, so a stale tab or a slow write can never lower it. The comparison and the
+   * write are one step.
+   */
   put(key: string, record: ManifestRecord): Promise<void>;
 }
 
@@ -22,7 +27,8 @@ export function memoryRecordStore(): RecordStore {
   return {
     get: async (key) => records.get(key),
     put: async (key, record) => {
-      records.set(key, record);
+      const held = records.get(key);
+      if (!held || held.counter <= record.counter) records.set(key, record);
     },
   };
 }
@@ -67,7 +73,25 @@ export function indexedDbRecordStore(factory: IDBFactory): RecordStore {
       return (await withStore(factory, 'readonly', (s) => s.get(key))) as ManifestRecord | undefined;
     },
     async put(key, record) {
-      await withStore(factory, 'readwrite', (s) => s.put(record, key));
+      const db = await open(factory);
+      try {
+        // One transaction reads the held record and writes the new one, so two tabs that both
+        // read before either wrote cannot leave the lower counter standing.
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction(STORE, 'readwrite');
+          const store = tx.objectStore(STORE);
+          const read = store.get(key);
+          read.onsuccess = () => {
+            const held = read.result as ManifestRecord | undefined;
+            if (!held || held.counter <= record.counter) store.put(record, key);
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error ?? new Error('indexeddb'));
+          tx.onabort = () => reject(tx.error ?? new Error('indexeddb'));
+        });
+      } finally {
+        db.close();
+      }
     },
   };
 }
