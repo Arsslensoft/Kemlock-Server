@@ -13,6 +13,9 @@ export const fakeCalls = calls;
 let locked = true;
 export const isFakeLocked = () => locked;
 
+/** The tabs that have a reload key, as IndexedDB would keep them: a test deletes one to age it out. */
+export const fakeTabKeys = new Set<string>();
+
 export const crypto: CryptoPort = {
   async masterKey(password, kdf) {
     calls.push('masterKey');
@@ -243,21 +246,44 @@ export const crypto: CryptoPort = {
       wrappedRootKey: new Uint8Array(),
     };
   },
-  async deviceCopySeal(accountId, deviceId, keyVersion) {
+  // The trusted-device copy and a tab's reload copy are sealed under different keys: a copy opens
+  // only under the key it was made with, and a tab's only while that tab's key still exists.
+  async deviceCopySeal(accountId, deviceId, keyVersion, tabId) {
     calls.push('deviceCopySeal');
     if (locked) throw new Error('the vault is locked');
-    return utf8(JSON.stringify(['device-copy', accountId, deviceId, keyVersion]));
+    if (tabId !== undefined) fakeTabKeys.add(tabId);
+    return utf8(JSON.stringify([tabId === undefined ? 'device-copy' : `tab-copy:${tabId}`, accountId, deviceId, keyVersion]));
   },
-  async deviceCopyOpen(accountId, deviceId, keyVersion, sealed) {
+  async deviceCopyOpen(accountId, deviceId, keyVersion, sealed, tabId) {
     calls.push('deviceCopyOpen');
     const [label, account, device, version] = JSON.parse(fromUtf8(sealed)) as [string, string, string, number];
-    if (label !== 'device-copy' || account !== accountId || device !== deviceId || version !== keyVersion) {
+    const expected = tabId === undefined ? 'device-copy' : `tab-copy:${tabId}`;
+    if (tabId !== undefined && !fakeTabKeys.has(tabId)) throw new Error('this tab has no key');
+    if (label !== expected || account !== accountId || device !== deviceId || version !== keyVersion) {
       throw new Error('this browser does not open this copy');
     }
     return utf8(`root:${accountId}`);
   },
-  async deviceCopyReset() {
+  async deviceCopyReset(tabId) {
     calls.push('deviceCopyReset');
+    if (tabId !== undefined) fakeTabKeys.delete(tabId);
+  },
+  async tabSeal(tabId, accountId, deviceId, data) {
+    calls.push('tabSeal');
+    fakeTabKeys.add(tabId);
+    return utf8(JSON.stringify(['tab-session', tabId, accountId, deviceId, fromUtf8(data)]));
+  },
+  async tabOpen(tabId, accountId, deviceId, sealed) {
+    calls.push('tabOpen');
+    if (!fakeTabKeys.has(tabId)) throw new Error('this tab has no key');
+    const [label, tab, account, device, data] = JSON.parse(fromUtf8(sealed)) as [string, string, string, string, string];
+    if (label !== 'tab-session' || tab !== tabId || account !== accountId || device !== deviceId) {
+      throw new Error('this tab does not open this');
+    }
+    return utf8(data);
+  },
+  async dpopReset() {
+    calls.push('dpopReset');
   },
   async unlockWithRoot(accountId, root) {
     calls.push('unlockWithRoot');
@@ -334,6 +360,7 @@ function openFakeSend(
 export function resetFakeCrypto(): void {
   calls.length = 0;
   locked = true;
+  fakeTabKeys.clear();
   sendKeys.count = 0;
   deviceKeys.count = 0;
   deviceKeys.spent.clear();

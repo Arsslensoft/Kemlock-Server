@@ -249,16 +249,32 @@ export interface CryptoPort {
    * never leaves this browser (docs/crypto.md, "The trusted-device copy of the root key"). The
    * root key does not reach the page. The server keeps the blob (`PUT /devices/key-copy`).
    */
-  deviceCopySeal(accountId: string, deviceId: string, keyVersion: number): Promise<Uint8Array>;
+  deviceCopySeal(
+    accountId: string,
+    deviceId: string,
+    keyVersion: number,
+    tabId?: string,
+  ): Promise<Uint8Array>;
   /** Opens that copy into a root-key handle for `unlockWithRoot`; refuses any other copy. */
   deviceCopyOpen(
     accountId: string,
     deviceId: string,
     keyVersion: number,
     sealed: Uint8Array,
+    tabId?: string,
   ): Promise<Uint8Array>;
   /** Forgets this browser's key, so its copies stop opening. */
-  deviceCopyReset(): Promise<void>;
+  deviceCopyReset(tabId?: string): Promise<void>;
+  /**
+   * With a `tabId`, the three calls above use that one tab's own key and not the trusted-device
+   * key: the copy a reload of the tab opens the vault from, which a closed tab cannot leave behind
+   * (src/app/tabKey.ts). `tabSeal` seals the session's tokens under the same key.
+   */
+  tabSeal(tabId: string, accountId: string, deviceId: string, data: Uint8Array): Promise<Uint8Array>;
+  /** Opens what `tabSeal` sealed; refuses anything else, and everything once the tab's key is gone. */
+  tabOpen(tabId: string, accountId: string, deviceId: string, sealed: Uint8Array): Promise<Uint8Array>;
+  /** Forgets this browser's DPoP key: the next sign-in makes a new one. */
+  dpopReset(): Promise<void>;
   /** Opens the vault with the approved root key; consumes it. */
   unlockWithRoot(
     accountId: string,
@@ -437,14 +453,21 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         wrappedRootKey: decodeB64(made.wrappedRootKey),
       };
     },
-    async deviceCopySeal(accountId, deviceId, keyVersion) {
-      return decodeB64(await api.deviceCopySeal(accountId, deviceId, keyVersion));
+    async deviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+      return decodeB64(await api.deviceCopySeal(accountId, deviceId, keyVersion, tabId));
     },
-    async deviceCopyOpen(accountId, deviceId, keyVersion, sealed) {
-      const root = await api.deviceCopyOpen(accountId, deviceId, keyVersion, encodeB64(sealed));
+    async deviceCopyOpen(accountId, deviceId, keyVersion, sealed, tabId) {
+      const root = await api.deviceCopyOpen(accountId, deviceId, keyVersion, encodeB64(sealed), tabId);
       return handleBytes(root);
     },
-    deviceCopyReset: () => api.deviceCopyReset(),
+    deviceCopyReset: (tabId) => api.deviceCopyReset(tabId),
+    async tabSeal(tabId, accountId, deviceId, data) {
+      return decodeB64(await api.tabSeal(tabId, accountId, deviceId, encodeB64(data)));
+    },
+    async tabOpen(tabId, accountId, deviceId, sealed) {
+      return decodeB64(await api.tabOpen(tabId, accountId, deviceId, encodeB64(sealed)));
+    },
+    dpopReset: () => api.dpopReset(),
     unlockWithRoot: (accountId, root, options) =>
       api.unlockWithRoot(accountId, handleOf<'approved-key'>(root), {
         ...(options?.keyVersion !== undefined ? { keyVersion: options.keyVersion } : {}),

@@ -95,11 +95,13 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     opaqueLoginFinish: (state, masterKey, response) =>
       call('opaqueLoginFinish', [state, masterKey, response]),
     newSsoAccount: (accountId) => call('newSsoAccount', [accountId]),
-    deviceCopySeal: (accountId, deviceId, keyVersion) =>
-      call('deviceCopySeal', [accountId, deviceId, keyVersion]),
-    deviceCopyOpen: (accountId, deviceId, keyVersion, sealed) =>
-      call('deviceCopyOpen', [accountId, deviceId, keyVersion, sealed]),
-    deviceCopyReset: () => call('deviceCopyReset', []),
+    deviceCopySeal: (accountId, deviceId, keyVersion, tabId) =>
+      call('deviceCopySeal', [accountId, deviceId, keyVersion, tabId]),
+    deviceCopyOpen: (accountId, deviceId, keyVersion, sealed, tabId) =>
+      call('deviceCopyOpen', [accountId, deviceId, keyVersion, sealed, tabId]),
+    deviceCopyReset: (tabId) => call('deviceCopyReset', [tabId]),
+    tabSeal: (tabId, accountId, deviceId, data) => call('tabSeal', [tabId, accountId, deviceId, data]),
+    tabOpen: (tabId, accountId, deviceId, sealed) => call('tabOpen', [tabId, accountId, deviceId, sealed]),
     newAccount: (accountId, masterKey, exportKey) =>
       call('newAccount', [accountId, masterKey, exportKey]),
     rewrapRoot: (masterKey, exportKey) => call('rewrapRoot', [masterKey, exportKey]),

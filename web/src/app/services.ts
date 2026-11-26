@@ -4,9 +4,11 @@ import { createApi } from '@/api/client';
 import { ApiError, NetworkError } from '@/api/errors';
 import { vaultCrypto } from '@/crypto-port';
 import { createSession, tabStorage } from './session';
+import { createTabSealer } from './tabSeal';
 
-// A reload of the tab keeps the person signed in, so the session lives in the tab's storage.
-export const session = createSession({ storage: tabStorage() });
+// A reload of the tab keeps the person signed in, so the session lives in the tab's storage, its
+// tokens sealed under the tab's own key.
+export const session = createSession({ storage: tabStorage(), seal: createTabSealer(vaultCrypto) });
 
 // Only a reload of this tab, soon after the page left, takes the session back (see session.ts).
 window.addEventListener('pagehide', () => session.leaving());

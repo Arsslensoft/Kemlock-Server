@@ -7,10 +7,15 @@ import { createAppRouter } from '@/app/router';
 import { forgetEndedSession } from '@/app/actions';
 import { sessionEndedTarget } from '@/app/sessionEnded';
 import { api, onSessionEndedPage, queryClient, session } from '@/app/services';
+import { keepTabKeyAlive, purgeClosedTabKeys } from '@/app/tabKey';
 import { vaultCrypto } from '@/crypto-port';
 import { I18nProvider } from '@/i18n';
 import { installImportWorker } from '@/import/install';
 import './styles/index.css';
+
+// First of all: a closed tab's reload key must not outlive it, so every load of the origin deletes
+// the keys of tabs that have gone quiet before anything can use one (see src/app/tabKey.ts).
+const purged = purgeClosedTabKeys();
 
 // A person's own choice of theme wins over the system's. Nothing here is a secret.
 try {
@@ -32,7 +37,11 @@ keepRootSealed(persistence);
 // A reload keeps the person signed in and the vault open. The route guards read the session
 // synchronously, so the router waits for this (a spinner shows meanwhile, and a server that does not
 // answer is given up on after a few seconds); on any failure the vault is just shut.
-const restored = restoreSession(persistence).catch(() => undefined);
+const restored = purged.then(() => restoreSession(persistence)).catch(() => undefined);
+
+// Only once the restore has settled does this page say its tab is open: before that the tab id in
+// the storage may be a closed tab's, which must not look alive.
+void restored.then(() => keepTabKeyAlive(session));
 
 // The server refusing the refresh token ends the session while a page is open: forget what that
 // page decrypted and go to the sign-in, keeping the page as `next`. Not before the router is up.

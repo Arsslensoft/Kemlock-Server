@@ -98,3 +98,23 @@ describe('the trusted-device copy of the root key', () => {
     expect([...aad.slice(label.length + 32)]).toEqual([0, 0, 1, 2]);
   });
 });
+
+describe("a tab's reload copy", () => {
+  it('opens only under its own label, never as the trusted-device copy or the other way round', async () => {
+    const { store } = memory();
+    const device = createDeviceWrap({ store });
+    const tab = createDeviceWrap({ store, label: 'kemlock/v1/reload-wrap/root' });
+    const session = createDeviceWrap({ store, label: 'kemlock/v1/reload-wrap/session' });
+    const sealed = await tab.seal(root(), ACCOUNT, DEVICE, 1);
+    expect([...(await tab.open(sealed, ACCOUNT, DEVICE, 1))]).toEqual([...root()]);
+    // Same key, other additional data: nothing opens across the purposes.
+    await expect(device.open(sealed, ACCOUNT, DEVICE, 1)).rejects.toMatchObject({ code: 'invalid' });
+    await expect(session.open(sealed, ACCOUNT, DEVICE, 1)).rejects.toMatchObject({ code: 'invalid' });
+    const trusted = await device.seal(root(), ACCOUNT, DEVICE, 1);
+    await expect(tab.open(trusted, ACCOUNT, DEVICE, 1)).rejects.toMatchObject({ code: 'invalid' });
+  });
+
+  it('keeps the trusted-device label the default, so the pinned format does not move', () => {
+    expect([...deviceWrapAad(ACCOUNT, DEVICE, 1)]).toEqual([...deviceWrapAad(ACCOUNT, DEVICE, 1, 'kemlock/v1/root-wrap/device')]);
+  });
+});

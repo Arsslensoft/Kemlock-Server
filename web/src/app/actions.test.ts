@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { forgetEndedSession, lockVault } from './actions';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { crypto as fakeCrypto, fakeCalls } from '@/test/fake-crypto';
+import { forgetEndedSession, lockVault, signOut } from './actions';
 import { queryClient, session } from './services';
 
 beforeEach(() => queryClient.clear());
@@ -34,5 +35,23 @@ describe('forgetting what a session decrypted', () => {
     expect(queryClient.getQueryData(['vault'])).toBeUndefined();
     expect(queryClient.getQueryData(['devices', 'list'])).toBeUndefined();
     expect(queryClient.getQueryData(['config'])).toEqual({ setup: 'complete' });
+  });
+});
+
+describe('signing out', () => {
+  it("forgets this browser's DPoP key and trusted-device key with the session", async () => {
+    session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'd', admin: false });
+    fakeCalls.length = 0;
+    await signOut();
+    expect(session.getState().status).toBe('signed-out');
+    expect(fakeCalls).toEqual(expect.arrayContaining(['lock', 'dpopReset', 'deviceCopyReset']));
+  });
+
+  it('still signs out when a key cannot be forgotten', async () => {
+    session.signedIn({ email: 'sam@example.co', userId: 'u', deviceId: 'd', admin: false });
+    const spy = vi.spyOn(fakeCrypto, 'dpopReset').mockRejectedValueOnce(new Error('blocked'));
+    await expect(signOut()).resolves.toBeUndefined();
+    expect(session.getState().status).toBe('signed-out');
+    spy.mockRestore();
   });
 });

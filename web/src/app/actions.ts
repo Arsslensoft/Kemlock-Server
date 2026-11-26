@@ -34,11 +34,17 @@ export function forgetEndedSession(): void {
   forgetGrant();
 }
 
-/** Forgets the keys and the tokens. */
+/**
+ * Forgets the keys and the tokens, and this browser's own keys with them: the DPoP key the tokens
+ * were bound to, and the trusted-device key (the server drops this device's copy of the root key
+ * when it signs the device out, so that key only opens what is already dead). The next sign-in
+ * makes new ones.
+ */
 export async function signOut(): Promise<void> {
   await vaultCrypto.lock();
   clearVault();
   session.end();
+  await Promise.all([vaultCrypto.dpopReset(), vaultCrypto.deviceCopyReset()]).catch(() => undefined);
   forgetGrant();
   queryClient.clear();
 }

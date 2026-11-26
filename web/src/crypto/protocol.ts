@@ -37,6 +37,12 @@ export interface DispatcherDeps {
   dpop: Dpop;
   /** This browser's trusted-device key; without it the device-copy operations are unavailable. */
   deviceWrap?: DeviceWrap;
+  /**
+   * One tab's own key for the copy a reload opens the vault from (`root`), and for the session's
+   * tokens (`session`): the same key, kept apart by the additional data. Without it the tab
+   * operations are unavailable.
+   */
+  tabWrap?: (tabId: string, purpose: 'root' | 'session') => DeviceWrap;
 }
 
 export type Dispatcher = <Op extends OpName>(
@@ -98,6 +104,18 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     return deps.deviceWrap;
   }
 
+  /** The wrap of the trusted-device key, or, given a tab, that tab's own reload key. */
+  function copyWrap(tabId: string | undefined): DeviceWrap {
+    if (tabId === undefined) return deviceWrap();
+    if (!deps.tabWrap) throw new CryptoError('unavailable');
+    return deps.tabWrap(tabId, 'root');
+  }
+
+  function sessionWrap(tabId: string): DeviceWrap {
+    if (!deps.tabWrap) throw new CryptoError('unavailable');
+    return deps.tabWrap(tabId, 'session');
+  }
+
   const handlers: { [Op in OpName]: (...args: Ops[Op]['args']) => Promise<Ops[Op]['result']> } = {
     async masterKey(password, kdf) {
       const v = await current();
@@ -134,8 +152,8 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async newSsoAccount(accountId) {
       return parse<NewAccount>((await current()).newSsoAccount(accountId));
     },
-    async deviceCopySeal(accountId, deviceId, keyVersion) {
-      const wrap = deviceWrap();
+    async deviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+      const wrap = copyWrap(tabId);
       const root = b64urlDecode((await current()).exportRoot());
       try {
         return b64urlEncode(await wrap.seal(root, accountId, deviceId, keyVersion));
@@ -143,16 +161,32 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         root.fill(0);
       }
     },
-    async deviceCopyOpen(accountId, deviceId, keyVersion, sealed) {
-      const root = await deviceWrap().open(b64urlDecode(sealed), accountId, deviceId, keyVersion);
+    async deviceCopyOpen(accountId, deviceId, keyVersion, sealed, tabId) {
+      const root = await copyWrap(tabId).open(b64urlDecode(sealed), accountId, deviceId, keyVersion);
       try {
         return (await current()).importRoot(b64urlEncode(root)) as ApprovedKeyHandle;
       } finally {
         root.fill(0);
       }
     },
-    async deviceCopyReset() {
-      await deviceWrap().reset();
+    async deviceCopyReset(tabId) {
+      await copyWrap(tabId).reset();
+    },
+    async tabSeal(tabId, accountId, deviceId, data) {
+      const plain = b64urlDecode(data);
+      try {
+        return b64urlEncode(await sessionWrap(tabId).seal(plain, accountId, deviceId, 0));
+      } finally {
+        plain.fill(0);
+      }
+    },
+    async tabOpen(tabId, accountId, deviceId, sealed) {
+      const plain = await sessionWrap(tabId).open(b64urlDecode(sealed), accountId, deviceId, 0);
+      try {
+        return b64urlEncode(plain);
+      } finally {
+        plain.fill(0);
+      }
     },
     async newAccount(accountId, masterKey, exportKey) {
       return parse<NewAccount>((await current()).newAccount(accountId, masterKey, exportKey));
