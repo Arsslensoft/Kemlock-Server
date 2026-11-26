@@ -34,9 +34,10 @@ container_ip() {
 # latest release archive for this machine and SHA256SUMS, checks the SHA-256, unpacks into the
 # directory it is given and prints the version. It exits non-zero, touching nothing else, if
 # anything fails. The release assets are kemlock-<version>-<target>.tar.gz and SHA256SUMS
-# (.github/workflows/release.yml), each with a cosign bundle (<file>.sigstore.json). The cosign
-# signature is not checked: cosign is in no Debian 13 package, and verifying needs network access
-# to Sigstore. docs/self-hosting.md has the command for checking it by hand.
+# (.github/workflows/release.yml), each with a cosign bundle (<file>.sigstore.json). When cosign
+# happens to be installed it also checks the archive's signature against the release workflow's
+# identity and fails if that does not verify; cosign is in no Debian 13 package, so otherwise only
+# the SHA-256 is checked. docs/self-hosting.md has the command for checking the signature by hand.
 write_fetch_helper() {
   cat <<'EOT' >/usr/local/bin/kemlock-fetch-release
 #!/bin/sh
@@ -74,6 +75,20 @@ actual="$(sha256sum "${tmp}/${asset}" | awk '{print $1}')"
 if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   echo "SHA-256 of ${asset} does not match SHA256SUMS" >&2
   exit 1
+fi
+# The signature, when cosign is here to check it: the archive must be signed by this repository's
+# release workflow at this tag (a short-lived Fulcio certificate, logged in Rekor).
+if command -v cosign >/dev/null 2>&1; then
+  curl -fsSL -o "${tmp}/${asset}.sigstore.json" "${base}/${asset}.sigstore.json"
+  repo_re="$(printf '%s' "$REPO" | sed 's/\./\\./g')"
+  tag_re="$(printf '%s' "$tag" | sed 's/\./\\./g')"
+  if ! cosign verify-blob "${tmp}/${asset}" \
+    --bundle "${tmp}/${asset}.sigstore.json" \
+    --certificate-identity-regexp "^https://github\\.com/${repo_re}/\\.github/workflows/release\\.yml@refs/tags/${tag_re}\$" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null 2>&1; then
+    echo "the cosign signature of ${asset} does not verify" >&2
+    exit 1
+  fi
 fi
 mkdir -p "${tmp}/unpacked"
 tar -xzf "${tmp}/${asset}" -C "${tmp}/unpacked"
@@ -217,6 +232,9 @@ ProtectControlGroups=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectKernelLogs=yes
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
@@ -226,6 +244,8 @@ NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 UMask=0077
 WorkingDirectory=${APP_DIR}
 ReadWritePaths=${APP_DIR}/data
