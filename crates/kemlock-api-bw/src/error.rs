@@ -40,7 +40,16 @@ impl BwError {
 
 impl From<StoreError> for BwError {
     fn from(e: StoreError) -> Self {
-        BwError::Server(e.to_string())
+        match e {
+            // A collection or group id another space holds (docs/crypto.md, S4): the client's
+            // to change, a 400 as Vaultwarden answers a refused request.
+            StoreError::Duplicate => BwError::msg("That id is already in use"),
+            // A space change that would leave members and no owner.
+            StoreError::Backend(message) if message == kemlock_app::spaces::OWNER_REQUIRED => {
+                BwError::msg(message)
+            }
+            other => BwError::Server(other.to_string()),
+        }
     }
 }
 
@@ -106,6 +115,22 @@ mod tests {
         assert!(body["exceptionMessage"].is_null());
         assert_eq!(body["object"], "error");
         assert_eq!(body.as_object().map(|o| o.len()), Some(9));
+    }
+
+    #[test]
+    fn a_refused_space_change_is_the_clients_400_not_a_server_failure() {
+        for refused in [
+            StoreError::Duplicate,
+            StoreError::Backend(kemlock_app::spaces::OWNER_REQUIRED.to_owned()),
+        ] {
+            let error = BwError::from(refused);
+            assert!(matches!(error, BwError::Msg(_)), "{error:?}");
+            assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);
+        }
+        assert!(matches!(
+            BwError::from(StoreError::Backend("down".to_owned())),
+            BwError::Server(_)
+        ));
     }
 
     #[test]
