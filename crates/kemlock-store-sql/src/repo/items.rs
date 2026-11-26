@@ -484,6 +484,18 @@ pub(super) async fn release_written(
     Ok(())
 }
 
+/// Whether `owner` takes signed writes only, read in the caller's transaction.
+pub(super) async fn signed_only_in<C: sea_orm::ConnectionTrait>(
+    conn: &C,
+    owner: Owner,
+) -> Result<bool, StoreError> {
+    Ok(signed_writes::Entity::find_by_id(items::owner_parts(owner))
+        .one(conn)
+        .await
+        .store()?
+        .is_some())
+}
+
 /// Marks `owner` as accepting signed writes only (docs/crypto.md, "Signed item writes"), once. The
 /// caller holds the `server_meta` lock, so two writers can't both insert the row.
 pub(super) async fn mark_signed_only(

@@ -31,8 +31,8 @@ use kemlock_domain::unlock::{
     DeviceKeyCopy, EmergencyState, GrantId, KeyProtection, MAX_WRAPPED_KEY_LEN,
 };
 use kemlock_domain::{
-    AccountMode, ChangeId, DeviceId, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap, Revision,
-    SpaceId, User, UserId,
+    AccountMode, ChangeId, DeviceId, ItemError, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap,
+    Revision, SpaceId, User, UserId, WriteSignature,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -105,6 +105,10 @@ pub struct StagedItem {
     pub base_revision: Revision,
     pub ciphertext: Vec<u8>,
     pub item_key: Vec<u8>,
+    /// The account's signature of the write the rotation makes of this item, by the new keys (docs/crypto.md,
+    /// "Rotating the root key"): checked at the install, against the new bundle. A vault that takes
+    /// signed writes only installs no item without one.
+    pub signature: Option<WriteSignature>,
 }
 
 impl std::fmt::Debug for StagedItem {
@@ -220,6 +224,58 @@ impl From<StoreError> for RotationError {
     fn from(e: StoreError) -> Self {
         RotationError::App(AppError::from(e))
     }
+}
+
+/// Checks the signature of one staged item at the install, against the bundle the install brings:
+/// it must be the account's own signature, at the new key version, of exactly the write the install
+/// makes (`revision` of `kind`, sealed as staged). A vault that takes signed writes only
+/// (`signed_only`) installs no item without one. Returns the signature to keep with the write.
+///
+/// `kind` and `item` are what the install writes; they are the live item's, not the client's.
+#[allow(clippy::too_many_arguments)]
+pub fn check_staged_write(
+    install: &InstallRequest,
+    user: UserId,
+    id: ItemId,
+    kind: &str,
+    revision: Revision,
+    sealed: (&[u8], &[u8]),
+    signature: Option<WriteSignature>,
+    signed_only: bool,
+) -> Result<Option<WriteSignature>, RotationError> {
+    let Some(signature) = signature else {
+        return if signed_only {
+            Err(AppError::Item(ItemError::SignatureRequired).into())
+        } else {
+            Ok(None)
+        };
+    };
+    let bad = || RotationError::from(AppError::Item(ItemError::BadSignature));
+    if signature.writer != user
+        || signature.key_version != install.to_version
+        || signature.signature.len() != WriteSignature::SIGNATURE_LEN
+    {
+        return Err(bad());
+    }
+    let statement = kemlock_crypto::item_write::Statement {
+        owner: kemlock_crypto::owner::Owner::from_bytes(&Owner::User(user).to_bytes())
+            .map_err(|_| bad())?,
+        item_id: *id.as_bytes(),
+        kind,
+        revision: revision.0,
+        deleted: false,
+        envelope: kemlock_crypto::item_write::envelope_hash(install.to_version, Some(sealed))
+            .map_err(|_| bad())?,
+        writer: *user.as_bytes(),
+        writer_key_version: install.to_version,
+    };
+    kemlock_crypto::item_write::verify_with_bundle(
+        &statement,
+        &install.public_bundle,
+        &signature.signature,
+    )
+    .map_err(|_| bad())?;
+    Ok(Some(signature))
 }
 
 // ---- the port ----
@@ -512,6 +568,17 @@ where
             {
                 return Err(AppError::Invalid("a sealed value is malformed").into());
             }
+            // The signature is the account's own, by the keys the rotation installs.
+            if let Some(signature) = &staged.signature
+                && (signature.writer != user
+                    || signature.key_version != to_version
+                    || signature.signature.len() != WriteSignature::SIGNATURE_LEN)
+            {
+                return Err(AppError::Invalid(
+                    "a staged item's signature is not the account's, by the new key version",
+                )
+                .into());
+            }
             let stored = self.items.get(staged.id).await?;
             let fits = stored.is_some_and(|item| {
                 item.owner == Owner::User(user)
@@ -787,6 +854,119 @@ mod tests {
             now,
             staged_since: now,
         }
+    }
+
+    /// An install of a rotation to key version 2 that brings the bundle of `key`, and the signature
+    /// the account made of one staged write with `key`, as `version`.
+    fn signed_write(
+        key: &kemlock_crypto::sig1::SigningKey,
+        bundle_key: &kemlock_crypto::sig1::SigningKey,
+        user: UserId,
+        id: ItemId,
+        version: u32,
+    ) -> (InstallRequest, WriteSignature) {
+        use kemlock_crypto::{bundle::Bundle, item_write, kx1, owner::Owner as CryptoOwner};
+        let bundle = Bundle {
+            account_id: *user.as_bytes(),
+            key_version: 2,
+            kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+            sig1_public: bundle_key.public_key().expect("a public key"),
+        };
+        let statement = item_write::Statement {
+            owner: CryptoOwner::from_bytes(&Owner::User(user).to_bytes()).expect("an owner"),
+            item_id: *id.as_bytes(),
+            kind: "login",
+            revision: 4,
+            deleted: false,
+            envelope: item_write::envelope_hash(2, Some((&[7; 40], &[8; 60]))).expect("a hash"),
+            writer: *user.as_bytes(),
+            writer_key_version: version,
+        };
+        let signature = statement.sign(key).expect("a signature");
+        let mut request = request();
+        request.public_bundle = bundle.to_bytes();
+        (
+            request,
+            WriteSignature {
+                writer: user,
+                key_version: version,
+                signature,
+            },
+        )
+    }
+
+    fn checked(
+        request: &InstallRequest,
+        user: UserId,
+        id: ItemId,
+        signature: Option<WriteSignature>,
+        signed_only: bool,
+    ) -> Result<Option<WriteSignature>, RotationError> {
+        check_staged_write(
+            request,
+            user,
+            id,
+            "login",
+            Revision(4),
+            (&[7; 40], &[8; 60]),
+            signature,
+            signed_only,
+        )
+    }
+
+    #[test]
+    fn a_staged_item_is_signed_by_the_new_keys_of_exactly_the_write_the_install_makes() {
+        use kemlock_crypto::sig1::SigningKey;
+        let (user, id) = (UserId::random(), ItemId::random());
+        let new_key = SigningKey::from_bytes(&[6; 64]);
+        let old_key = SigningKey::from_bytes(&[5; 64]);
+        let (request, signature) = signed_write(&new_key, &new_key, user, id, 2);
+        assert_eq!(
+            checked(&request, user, id, Some(signature.clone()), true),
+            Ok(Some(signature.clone()))
+        );
+
+        // Another item, another account, another revision or another kind is another statement.
+        assert!(checked(&request, user, ItemId::random(), Some(signature.clone()), true).is_err());
+        assert!(checked(&request, UserId::random(), id, Some(signature.clone()), true).is_err());
+        let moved = check_staged_write(
+            &request,
+            user,
+            id,
+            "login",
+            Revision(5),
+            (&[7; 40], &[8; 60]),
+            Some(signature.clone()),
+            true,
+        );
+        assert!(moved.is_err());
+        let other_kind = check_staged_write(
+            &request,
+            user,
+            id,
+            "card",
+            Revision(4),
+            (&[7; 40], &[8; 60]),
+            Some(signature.clone()),
+            true,
+        );
+        assert!(other_kind.is_err());
+        // The old keys can't sign it: the bundle the install brings is the new one.
+        let (_, by_old) = signed_write(&old_key, &new_key, user, id, 2);
+        assert!(checked(&request, user, id, Some(by_old), true).is_err());
+        // Nor can a signature at the old key version.
+        let (_, at_old_version) = signed_write(&new_key, &new_key, user, id, 1);
+        assert!(checked(&request, user, id, Some(at_old_version), true).is_err());
+    }
+
+    #[test]
+    fn an_unsigned_staged_item_is_installed_unless_the_vault_takes_signed_writes_only() {
+        let (user, id) = (UserId::random(), ItemId::random());
+        assert_eq!(checked(&request(), user, id, None, false), Ok(None));
+        assert_eq!(
+            checked(&request(), user, id, None, true),
+            Err(RotationError::App(AppError::Item(ItemError::SignatureRequired)))
+        );
     }
 
     fn item(id: ItemId, revision: u64) -> (ItemId, Revision, ItemFormat) {

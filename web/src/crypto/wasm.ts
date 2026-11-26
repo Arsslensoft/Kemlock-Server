@@ -212,7 +212,7 @@ export interface WasmVault {
   ): void;
   /** `{keyVersion, publicBundle, bundleSignature, sealedPrivateKeys, sealedPreviousPrivateKeys, fingerprint}`. */
   rotationStart(): string;
-  /** `{ciphertext, itemKey, revision, keyVersion}`: the item under a fresh key, at revision + 1. */
+  /** `{ciphertext, itemKey, revision, keyVersion, writer, writerKeyVersion, writeSignature}`: the item under a fresh key, at revision + 1, signed by the new keys. */
   rotationResealItem(
     id: string,
     owner: string,

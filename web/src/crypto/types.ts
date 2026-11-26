@@ -537,6 +537,10 @@ export interface ResealedItem {
   /** The revision it is sealed at: the old one plus one. */
   revision: number;
   keyVersion: number;
+  /** The account's signature of the write this makes, by the new keys (docs/crypto.md, "Rotating the root key"). */
+  writer: string;
+  writerKeyVersion: number;
+  writeSignature: string;
 }
 
 /** A Send's sealed key and meta under the new keys. */

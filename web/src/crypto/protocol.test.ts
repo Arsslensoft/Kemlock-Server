@@ -129,7 +129,15 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
       }),
     ),
     rotationResealItem: vi.fn(() =>
-      JSON.stringify({ ciphertext: 'bmV3', itemKey: 'a2V5', revision: 8, keyVersion: 4 }),
+      JSON.stringify({
+        ciphertext: 'bmV3',
+        itemKey: 'a2V5',
+        revision: 8,
+        keyVersion: 4,
+        writer: UUID,
+        writerKeyVersion: 4,
+        writeSignature: 'c2ln',
+      }),
     ),
     rotationResealSend: vi.fn(() => JSON.stringify({ sealedKey: 'c2s', meta: 'bWV0YQ' })),
     rotationWrapPassword: vi.fn(() => 'bmV3d3JhcA'),
@@ -631,6 +639,9 @@ describe('the dispatcher', () => {
       itemKey: 'a2V5',
       revision: 8,
       keyVersion: 4,
+      writer: UUID,
+      writerKeyVersion: 4,
+      writeSignature: 'c2ln',
     });
     expect(vault.rotationResealItem).toHaveBeenCalledWith(
       UUID,

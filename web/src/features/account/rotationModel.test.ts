@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/errors';
-import type { InstallRequest, RotationPlanDto } from '@/api/rotation';
+import type { InstallRequest, RotationPlanDto, StagedItemDto } from '@/api/rotation';
 import type { ItemDto } from '@/api/types';
 import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import { makeBundleB64 } from '@/test/bundles';
@@ -63,6 +63,7 @@ function setup(overrides: { plans?: RotationPlanDto[]; pages?: ItemDto[][]; inst
   const plans = overrides.plans ?? [plan()];
   const pages = overrides.pages ?? [[item(A, 1), item(B, 3)]];
   const staged: Array<{ rotationId: string; toVersion: number; ids: string[]; bytes: number }> = [];
+  const stagedItems: StagedItemDto[] = [];
   const installs: InstallRequest[] = [];
   let planCalls = 0;
   let syncCalls = 0;
@@ -72,8 +73,9 @@ function setup(overrides: { plans?: RotationPlanDto[]; pages?: ItemDto[][]; inst
       async (request: {
         rotationId: string;
         toVersion: number;
-        items: Array<{ id: string; ciphertext: string; itemKey: string }>;
+        items: StagedItemDto[];
       }) => {
+      stagedItems.push(...request.items);
       staged.push({
         rotationId: request.rotationId,
         toVersion: request.toVersion,
@@ -104,7 +106,7 @@ function setup(overrides: { plans?: RotationPlanDto[]; pages?: ItemDto[][]; inst
     deviceId: DEVICE,
     randomBytes: (n) => new Uint8Array(n).fill(7),
   };
-  return { api, deps, staged, installs };
+  return { api, deps, staged, installs, stagedItems };
 }
 
 describe('rotateKeys', () => {
@@ -149,6 +151,23 @@ describe('rotateKeys', () => {
     expect(fakeCalls.filter((call) => call === 'rotationResealItem')).toHaveLength(2);
     expect(fakeCalls.indexOf('rotationCommit')).toBeGreaterThan(fakeCalls.indexOf('rotationWrapPassword'));
     expect(fakeCalls).not.toContain('rotationAbort');
+  });
+
+  it('signs each item it moves as a write of the account, by the new keys, and lists it signed', async () => {
+    const { deps, stagedItems } = setup();
+    const result = await rotateKeys(deps, { email: 'sam@example.org', password: 'correct horse', makeKit: false });
+    expect(stagedItems).toHaveLength(2);
+    for (const entry of stagedItems) {
+      expect(entry.writer).toBe(USER);
+      expect(entry.writerKeyVersion).toBe(2);
+      expect(entry.writeSignature).toBeTruthy();
+    }
+    // What the keeper lists next carries the same signatures.
+    expect(result.rewritten.map((i) => [i.writer, i.writerKeyVersion])).toEqual([
+      [USER, 2],
+      [USER, 2],
+    ]);
+    expect(result.rewritten.every((i) => i.writeSignature)).toBe(true);
   });
 
   it('always makes a new Recovery Kit for an account with no password', async () => {

@@ -37,7 +37,7 @@ use kemlock_app::rotation::{
 };
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{GrantId, KeyProtection};
-use kemlock_domain::{ItemId, Owner, PasskeyId, Revision, SpaceId, UserId};
+use kemlock_domain::{ItemId, Owner, PasskeyId, Revision, SpaceId, UserId, WriteSignature};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
@@ -269,6 +269,16 @@ pub(crate) struct StagedItemDto {
     ciphertext: String,
     /// The new item key wrapped under the new item-wrap key, base64url, 60 bytes.
     item_key: String,
+    /// The account that signed the write the rotation makes of this item, with the key version of
+    /// the bundle (the new one) and the `sig1` signature, base64url (docs/crypto.md, "Rotating the
+    /// root key"): all three or none. A vault that takes signed writes only is not installed without
+    /// them.
+    #[serde(default)]
+    writer: Option<Uuid>,
+    #[serde(default)]
+    writer_key_version: Option<u32>,
+    #[serde(default)]
+    write_signature: Option<String>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -664,11 +674,25 @@ where
         .items
         .iter()
         .map(|item| {
+            let signature = match (item.writer, item.writer_key_version, item.write_signature.as_deref()) {
+                (None, None, None) => None,
+                (Some(writer), Some(key_version), Some(signature)) => Some(WriteSignature {
+                    writer: UserId(writer),
+                    key_version,
+                    signature: decode("writeSignature", signature)?,
+                }),
+                _ => {
+                    return Err(Problem::bad_request(
+                        "writer, writerKeyVersion and writeSignature come together or not at all",
+                    ));
+                }
+            };
             Ok(StagedItem {
                 id: ItemId(item.id),
                 base_revision: Revision(item.base_revision),
                 ciphertext: decode("ciphertext", &item.ciphertext)?,
                 item_key: decode("itemKey", &item.item_key)?,
+                signature,
             })
         })
         .collect::<Result<Vec<_>, Problem>>()?;

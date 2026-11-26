@@ -411,6 +411,10 @@ export interface ResealedItem {
   itemKey: Uint8Array;
   revision: number;
   keyVersion: number;
+  /** The account's signature of the write this makes, by the new keys: the three members the server takes. */
+  writer: string;
+  writerKeyVersion: number;
+  writeSignature: string;
 }
 
 /** The app's crypto port over a worker client. */
@@ -638,6 +642,9 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         itemKey: decodeB64(moved.itemKey),
         revision: moved.revision,
         keyVersion: moved.keyVersion,
+        writer: moved.writer,
+        writerKeyVersion: moved.writerKeyVersion,
+        writeSignature: moved.writeSignature,
       };
     },
     async rotationResealSend({ id, kind, sealedKey, meta }) {

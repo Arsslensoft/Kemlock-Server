@@ -424,7 +424,7 @@ The items are the only part that can be large, so they travel apart from the ins
 holds them **staged**, invisible to every reader and to sync:
 
 ```
-PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRevision, ciphertext, itemKey}]}
+PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRevision, ciphertext, itemKey, writer?, writerKeyVersion?, writeSignature?}]}
 ```
 
 - `rotationId` is 16 random bytes the client makes, base64url: it names one attempt. A request with
@@ -436,6 +436,13 @@ PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRe
   checks the lengths (`ciphertext` 28 bytes up to the item limit, `itemKey` 60 bytes), that the item
   is live, the account's own, in format `kem1`, and at `baseRevision` now, and that `toVersion` is
   the account's version plus one.
+- **Each item is signed.** The re-encrypted item is a write of the account like any other (revision
+  `baseRevision + 1`, `keyVersion = N′`), so the client signs it ("Signed item writes"): the statement
+  of that write, with the writer's key version `N′`, signed by the **new** `sig1` key `R′` brings,
+  and sends `writer`, `writerKeyVersion` (`N′`) and `writeSignature` beside the item, all three or
+  none. The server cannot check it when it is staged (it holds the new bundle only from the install),
+  so it keeps it with the row and checks the signature, and that the writer is the account at
+  version `N′`, at the install; see step 8.
 - `DELETE /kem/v1/account/rotation` discards the staged rows (abandoning); rows older than two hours
   are ignored and deleted by the next request. Staged rows change nothing a device can see. A page
   that is closed mid-rotation loses `R′` with it, and its staged rows are useless: the next attempt
@@ -512,6 +519,13 @@ read it) or `400 invalid-request` (what is malformed), and one that loses a race
    `rotation-incomplete`, naming how many; the client stages those again (a round that stages only
    the changed items) and installs again. A live item of format `bw` is `409
    rotation-unsupported-items`.
+   Each staged item's signature, when it has one, verifies over the statement of the write the install
+   makes (the item's id, owner and kind, revision `baseRevision + 1`, its sealed value at `N′`),
+   under the new `sig1` key of the bundle the request brings; one that doesn't is refused (`422
+   invalid-signature`), and nothing is written. An owner that takes signed writes only ("The
+   signed-only flag") has no unsigned staged item installed (`422 signature-required`): a vault that
+   asked for signed writes only stays that way through a rotation, and a client that cannot sign
+   (an old one) cannot rotate it. The signature is stored with the item like any signed write.
 9. The account is in no space, or `spacesHandled` is true (`409 spaces-need-rekey`). Only accepted and
    confirmed memberships count: an invitation not yet accepted does not. And if an earlier
    rotation's previous keys are still kept for the spaces, the install is refused
@@ -1406,6 +1420,11 @@ version) therefore keeps every bundle it had, and what it signed before stays ve
   bundle is written, and whichever path replaces it keeps the one it replaces first, so a key
   replacement can't lose the version before it. It accepts a **new** write only under the
   account's **current** key version, so a replaced key can't sign again.
+- **A rotation of the root key** writes every item again at the new key version, so each is signed by
+  the new key at that version: the client signs the statement of each re-encrypted item when it
+  moves it, and the install keeps the signature with the item ("Rotating the root key", staging).
+  Without that, the items a rotation writes would be unsigned and refused by a vault that takes
+  signed writes only, and by a client that holds an item at a floor.
 - **Reading one.** `GET /kem/v1/accounts/{id}/bundles/{version}` answers
   `{keyVersion, publicBundle, bundleSignature}` (base64url) to the account itself and to a
   confirmed member of a space the account is a confirmed member of. An unknown account, a version it

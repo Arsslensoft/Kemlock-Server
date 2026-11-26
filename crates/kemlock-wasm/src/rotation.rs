@@ -51,10 +51,12 @@ pub(crate) struct Started {
     pub(crate) fingerprint: String,
 }
 
-/// An item moved, with the key version it is now wrapped under.
+/// An item moved, with the key version it is now wrapped under and the account's signature of the
+/// write the move makes, by the new keys.
 pub(crate) struct MovedItem {
     pub(crate) moved: ResealedItem,
     pub(crate) key_version: u32,
+    pub(crate) signature: crate::item_writes::WriteSigned,
 }
 
 /// The PRF output is exactly 32 bytes.
@@ -141,9 +143,23 @@ impl Session {
             item.ciphertext,
             item.item_key,
         )?;
+        // The re-encrypted item is a write like any other, so the account signs it, with the key of
+        // the version the server installs it under: the new one.
+        let signature = crate::item_writes::sign_rotated(
+            item.owner,
+            item.id,
+            item.kind,
+            moved.revision,
+            pending.key_version,
+            &moved.ciphertext,
+            &moved.item_key,
+            unlocked.account_id,
+            &pending.private.1,
+        )?;
         Ok(MovedItem {
             moved,
             key_version: pending.key_version,
+            signature,
         })
     }
 

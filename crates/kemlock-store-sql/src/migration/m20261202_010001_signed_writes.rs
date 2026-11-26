@@ -4,7 +4,7 @@
 //! accept signed writes only.
 //!
 //! Nothing is filled in for what is stored now: those revisions were written unsigned, and an
-//! owner becomes signed-only with its first signed write.
+//! owner is signed-only only when it asks.
 
 use super::cols::{big_blob, time_col};
 use sea_orm_migration::prelude::*;

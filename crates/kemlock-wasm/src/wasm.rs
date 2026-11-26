@@ -189,6 +189,10 @@ struct ResealedItemOut {
     item_key: String,
     revision: u64,
     key_version: u32,
+    /// The account's signature of the write, by the new keys.
+    writer: String,
+    writer_key_version: u32,
+    write_signature: String,
 }
 
 #[derive(Serialize)]
@@ -1580,7 +1584,8 @@ impl Vault {
     }
 
     /// Moves one item of the account's own vault to the new keys: `{ciphertext, itemKey, revision,
-    /// keyVersion}`, at `revision + 1` under a fresh item key.
+    /// keyVersion, writer, writerKeyVersion, writeSignature}`, at `revision + 1` under a fresh item
+    /// key, signed by the new keys as a write of the account.
     #[wasm_bindgen(js_name = rotationResealItem)]
     #[allow(clippy::too_many_arguments)]
     pub fn rotation_reseal_item(
@@ -1614,6 +1619,9 @@ impl Vault {
             item_key: b64::encode(&moved.moved.item_key),
             revision: moved.moved.revision,
             key_version: moved.key_version,
+            writer: moved.signature.writer,
+            writer_key_version: moved.signature.writer_key_version,
+            write_signature: moved.signature.write_signature,
         })
     }
 

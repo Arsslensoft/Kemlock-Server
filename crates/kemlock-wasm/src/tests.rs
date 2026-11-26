@@ -3222,6 +3222,32 @@ fn a_rotation_moves_an_item_and_the_account_to_the_new_keys() {
     assert_eq!(moved.moved.revision, 4);
     assert_eq!(moved.key_version, FIRST_KEY_VERSION + 1);
 
+    // The move is a write of the account, signed by the new keys at the new key version, so a vault
+    // that takes signed writes only installs it, and the old keys can't have made it.
+    assert_eq!(moved.signature.writer_key_version, FIRST_KEY_VERSION + 1);
+    let rotated_fields = json!({
+        "owner": "user:a7a7a7a7-a7a7-a7a7-a7a7-a7a7a7a7a7a7",
+        "id": "31313131-3131-3131-3131-313131313131",
+        "kind": "login",
+        "revision": 4,
+        "deleted": false,
+        "keyVersion": FIRST_KEY_VERSION + 1,
+        "ciphertext": b64::encode(&moved.moved.ciphertext),
+        "itemKey": b64::encode(&moved.moved.item_key),
+        "writer": moved.signature.writer,
+        "writerKeyVersion": moved.signature.writer_key_version,
+    })
+    .to_string();
+    let rotated_fields = WriteFields::parse(&rotated_fields).expect("fields");
+    let signature = b64::decode(&moved.signature.write_signature).expect("a signature");
+    crate::item_writes::verify_item_write(&started.public_bundle, &rotated_fields, &signature)
+        .expect("the new bundle verifies the rotated write");
+    assert!(
+        crate::item_writes::verify_item_write(&old_bundle.to_bytes(), &rotated_fields, &signature)
+            .is_err(),
+        "the old keys did not sign it"
+    );
+
     // Until the commit the account still opens only the old item.
     assert!(
         session

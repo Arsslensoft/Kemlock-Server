@@ -14,6 +14,8 @@ pub struct Model {
     pub base_revision: i64,
     pub ciphertext: Vec<u8>,
     pub item_key: Vec<u8>,
+    /// The account's signature of the write the rotation makes of the item, in its stored form.
+    pub write_sig: Option<Vec<u8>>,
     pub staged_at: TimeDateTimeWithTimeZone,
 }
 

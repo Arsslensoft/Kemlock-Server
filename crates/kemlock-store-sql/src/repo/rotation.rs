@@ -8,11 +8,11 @@
 //! The items go through `items::write_in`, the write every item write goes through, so they get
 //! their change ids, their tags cleared and the same checks as any write.
 
-use super::items::{lock_meta, write_in};
+use super::items::{lock_meta, signed_only_in, write_in};
 use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
-use crate::tables::items::owner_parts;
+use crate::tables::items::{owner_parts, stored_signature};
 use crate::tables::{
     auth_requests, device_key_copies, devices, emergency_access, items, passkeys, recovery_kits,
     rotation_previous_keys, rotation_staged_items, sends, space_recovery, space_tables::members,
@@ -21,7 +21,7 @@ use crate::tables::{
 use kemlock_app::ports::StoreError;
 use kemlock_app::rotation::{
     Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
-    device_copy_row,
+    check_staged_write, device_copy_row,
 };
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
@@ -285,6 +285,7 @@ impl RotationStore for SqlStore {
                     base_revision: Set(base),
                     ciphertext: Set(item.ciphertext),
                     item_key: Set(item.item_key),
+                    write_sig: Set(item.signature.as_ref().map(WriteSignature::to_stored)),
                     staged_at: Set(utc(now)),
                 })
                 .exec(&txn)
@@ -409,6 +410,8 @@ impl SqlStore {
         // The items, through the one write every item write goes through, a chunk at a time: the
         // ciphertexts of a large vault are not all held at once.
         let mut change = None;
+        // A vault that takes signed writes only installs no item the account didn't sign.
+        let signed_only = signed_only_in(txn, Owner::User(user)).await?;
         for chunk in staged.chunks(WRITE_CHUNK) {
             let ids: Vec<Uuid> = chunk.iter().map(|(item, _)| *item).collect();
             let mut live = std::collections::HashMap::new();
@@ -438,6 +441,16 @@ impl SqlStore {
                 let next = base.next().ok_or_else(|| {
                     RotationError::Incomplete("items: a revision is spent".to_owned())
                 })?;
+                let signature = check_staged_write(
+                    request,
+                    user,
+                    item.id,
+                    item.kind.as_str(),
+                    next,
+                    (&row.ciphertext, &row.item_key),
+                    stored_signature(row.write_sig.as_deref())?,
+                    signed_only,
+                )?;
                 drafts.push(ItemDraft {
                     id: item.id,
                     owner: item.owner,
@@ -450,6 +463,7 @@ impl SqlStore {
                     item_key: Some(row.item_key),
                     deleted_at: None,
                     updated_at: now,
+                    signature,
                 });
             }
             if drafts.is_empty() {

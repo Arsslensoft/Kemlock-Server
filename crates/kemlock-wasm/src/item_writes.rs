@@ -108,6 +108,40 @@ impl WriteFields {
     }
 }
 
+/// Signs a write the rotation made: the item `id` of `owner` as it is sealed under the new keys, by
+/// the **new** `sig1` key at the new key version (docs/crypto.md, "Rotating the root key"). The
+/// statement is the layout of any signed write; the key is the rotation's own, which no page holds.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sign_rotated(
+    owner: &Owner,
+    id: &[u8; 16],
+    kind: &str,
+    revision: u64,
+    key_version: u32,
+    ciphertext: &[u8],
+    item_key: &[u8],
+    writer: [u8; 16],
+    key: &kemlock_crypto::sig1::SigningKey,
+) -> Result<WriteSigned, Error> {
+    let envelope = item_write::envelope_hash(key_version, Some((ciphertext, item_key)))?;
+    let statement = Statement {
+        owner: *owner,
+        item_id: *id,
+        kind,
+        revision,
+        deleted: false,
+        envelope,
+        writer,
+        writer_key_version: key_version,
+    };
+    let signature = statement.sign(key)?;
+    Ok(WriteSigned {
+        writer: uuid_text(&writer),
+        writer_key_version: key_version,
+        write_signature: b64::encode(&signature),
+    })
+}
+
 impl Session {
     /// The key version the account is unlocked at: the one its root key was wrapped under, which
     /// the server can't change without the wrap failing to open. A signature at an older version

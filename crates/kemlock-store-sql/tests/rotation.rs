@@ -88,6 +88,7 @@ fn staged(id: ItemId, base: u64) -> StagedItem {
         base_revision: Revision(base),
         ciphertext: vec![0x77; 60],
         item_key: vec![0x66; 60],
+        signature: None,
     }
 }
 
@@ -447,7 +448,59 @@ async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &
     assert_eq!(after.grantee, Some(sam.id));
 }
 
+async fn a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store: &SqlStore) {
+    let sam = account(store).await;
+    let owner = Owner::User(sam.id);
+    let id = ItemId::random();
+    put(store, draft(id, owner, None, 1)).await;
+    ItemStore::require_signed_writes(store, owner, T0)
+        .await
+        .expect("the owner asked");
+    RotationStore::stage(
+        store,
+        sam.id,
+        ROTATION,
+        vec![staged(id, 1)],
+        T0,
+        T0 - time::Duration::hours(2),
+    )
+    .await
+    .expect("stage");
+    // The staged item carries no signature: nothing is installed, the account stays as it was.
+    let result = RotationStore::install(store, install_of(&sam, request())).await;
+    assert_eq!(
+        result,
+        Err(RotationError::App(kemlock_app::AppError::Item(
+            kemlock_domain::ItemError::SignatureRequired
+        )))
+    );
+    assert_eq!(
+        UserRepo::by_id(store, sam.id)
+            .await
+            .expect("read")
+            .expect("account")
+            .key_version,
+        1
+    );
+    assert_eq!(
+        ItemStore::get(store, id)
+            .await
+            .expect("read")
+            .expect("item")
+            .revision,
+        Revision(1)
+    );
+    // An item that isn't signed-only is installed as before.
+    ItemStore::clear_signed_writes(store, owner)
+        .await
+        .expect("cleared");
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+}
+
 async fn all(store: &SqlStore) {
+    a_vault_that_takes_signed_writes_only_installs_no_unsigned_item(store).await;
     rotation(store).await;
     a_stale_account_row_writes_nothing(store).await;
     staging_is_per_attempt_and_can_be_abandoned(store).await;

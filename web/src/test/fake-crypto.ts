@@ -299,6 +299,9 @@ export const crypto: CryptoPort = {
       itemKey: utf8(`item-key:v${fakePendingVersion}`),
       revision: revision + 1,
       keyVersion: fakePendingVersion,
+      writer: openedFor,
+      writerKeyVersion: fakePendingVersion,
+      writeSignature: encodeB64(utf8(`rotation-write:${openedFor}:v${fakePendingVersion}:${id}:${revision + 1}`)),
     };
   },
   async rotationResealSend({ id, kind, sealedKey, meta }) {
