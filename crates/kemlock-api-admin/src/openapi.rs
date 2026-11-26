@@ -831,7 +831,7 @@ doc!(
         ),
         (
             status = 400,
-            description = "The source isn't a plausible Vaultwarden source",
+            description = "The source isn't a Vaultwarden SQLite database in the import folder of the data folder",
             body = ProblemDoc,
             content_type = "application/problem+json"
         ),
