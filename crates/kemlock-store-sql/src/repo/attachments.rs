@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::lock_owner;
 use crate::store::SqlStore;
 use crate::tables::attachments::{self, PENDING, READY};
 use crate::tables::items;
@@ -71,6 +72,9 @@ impl AttachmentRepo for SqlStore {
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
             if limit.is_some() {
+                // The owner's row is the lock across replicas on PostgreSQL and MySQL (see
+                // `owner_lock`); the gate above covers this process.
+                lock_owner(&txn, attachment.owner).await?;
                 let used = bytes_of(&txn, attachment.owner).await?;
                 if let Err(refusal) = check(limit, used, attachment.size) {
                     return Ok(Err(refusal));

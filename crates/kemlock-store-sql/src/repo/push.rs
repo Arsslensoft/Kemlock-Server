@@ -5,6 +5,7 @@
 
 use crate::convert::{corrupt, utc};
 use crate::error::{StoreResult, map_db};
+use crate::owner_lock::lock_owner;
 use crate::store::SqlStore;
 use crate::tables::items::{owner_from, owner_parts};
 use crate::tables::{live_nudges, push_tokens, settings};
@@ -107,6 +108,9 @@ impl PushRepo for SqlStore {
         let _gate = self.quota_gate().await;
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
+            // Across replicas on PostgreSQL and MySQL, where the gate above is this process's only:
+            // the account's row is the lock the count and the write hold.
+            lock_owner(&txn, Owner::User(registration.user)).await?;
             let held = push_tokens::Entity::find()
                 .filter(push_tokens::Column::UserId.eq(registration.user.0))
                 .filter(push_tokens::Column::Kind.eq(registration.kind.as_str()))
