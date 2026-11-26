@@ -190,6 +190,11 @@ impl RetentionOverrides {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub signups_allowed: bool,
+    /// "Verify the email of a new account", while the server can send mail: a new account is held
+    /// until the link mailed to its address is opened.
+    pub signups_verify: bool,
+    /// The setting is on but no SMTP server is set up, so it does nothing: no link could be sent.
+    pub signups_verify_needs_mail: bool,
     /// Lower-case; empty means no whitelist.
     pub signups_domains: Vec<String>,
     pub invitations_allowed: bool,
@@ -316,6 +321,7 @@ impl Snapshot {
             outranks.then(|| u64::try_from(int(size)).unwrap_or(1).saturating_mul(MIB));
 
         let (smtp, smtp_error) = smtp_of(settings, &views, process_env).await;
+        let verify_wanted = flag(view("signups_verify")?);
         let (push, push_error) = match push_of(settings, &views).await {
             Ok(push) => (push, None),
             Err(why) => (PushValues::default(), Some(why)),
@@ -323,6 +329,8 @@ impl Snapshot {
 
         Ok(Snapshot {
             signups_allowed: flag(view("signups_allowed")?),
+            signups_verify: verify_wanted && smtp.is_some(),
+            signups_verify_needs_mail: verify_wanted && smtp.is_none(),
             signups_domains: domains,
             invitations_allowed: flag(view("invitations_allowed")?),
             max_file_size,
@@ -548,6 +556,12 @@ impl Mailer for SwitchMailer {
 /// Puts `snapshot` into the running parts.
 pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchMailer) {
     live.set_signups_allowed(snapshot.signups_allowed);
+    live.set_signups_verify(snapshot.signups_verify);
+    if snapshot.signups_verify_needs_mail {
+        tracing::warn!(
+            "SIGNUPS_VERIFY is on but no SMTP server is set up (SMTP_HOST), so it does nothing: new accounts are not held back"
+        );
+    }
     live.set_signup_domains(&snapshot.signups_domains);
     live.set_invitations_allowed(snapshot.invitations_allowed);
     live.set_max_file_size(snapshot.max_file_size.unwrap_or(0));
@@ -972,6 +986,32 @@ mod tests {
             .expect("stored");
         assert!(!stored.contains("hunter2"), "sealed in the store");
         assert!(!format!("{snapshot:?}").contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn verifying_new_accounts_follows_only_while_the_server_can_mail() {
+        let store = new_store().await;
+        let without = watching(&store, layered(&[("SIGNUPS_VERIFY", "true")], &[]))
+            .await
+            .current();
+        assert!(!without.signups_verify, "no link could be sent");
+        assert!(without.signups_verify_needs_mail);
+
+        let env = layered(
+            &[
+                ("SIGNUPS_VERIFY", "true"),
+                ("SMTP_HOST", "mail.example.org"),
+                ("SMTP_FROM", "vault@example.org"),
+            ],
+            &[],
+        );
+        let with = watching(&store, env).await.current();
+        assert!(with.signups_verify);
+        assert!(!with.signups_verify_needs_mail);
+
+        let off = watching(&store, layered(&[], &[])).await.current();
+        assert!(!off.signups_verify);
+        assert!(!off.signups_verify_needs_mail);
     }
 
     #[tokio::test]

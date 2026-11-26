@@ -1,12 +1,14 @@
 //! `DeviceRepo` on `devices`.
 
+use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::{devices, refresh_tokens};
 use kemlock_app::ports::{DeviceRepo, StoreError};
 use kemlock_domain::{Device, DeviceId, UserId};
-use sea_orm::sea_query::OnConflict;
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait};
+use time::OffsetDateTime;
 
 impl DeviceRepo for SqlStore {
     async fn get(&self, id: DeviceId) -> Result<Option<Device>, StoreError> {
@@ -40,6 +42,31 @@ impl DeviceRepo for SqlStore {
             Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
             Err(err) => Err(map_db(err)),
         }
+    }
+
+    async fn touch_seen(
+        &self,
+        id: DeviceId,
+        jkt: &str,
+        at: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
+        // One statement that names the key, so a key cleared a moment ago is not put back.
+        let updated = devices::Entity::update_many()
+            .col_expr(devices::Column::LastSeenAt, Expr::value(utc(at)))
+            .filter(devices::Column::Id.eq(id.0))
+            .filter(devices::Column::DpopJkt.eq(jkt))
+            .exec(self.writer())
+            .await
+            .store()?;
+        if updated.rows_affected == 1 {
+            return Ok(true);
+        }
+        // MySQL counts a row written with the value it had as not affected.
+        Ok(devices::Entity::find_by_id(id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some_and(|row| row.dpop_jkt.as_deref() == Some(jkt)))
     }
 
     async fn list(&self, user: UserId) -> Result<Vec<Device>, StoreError> {

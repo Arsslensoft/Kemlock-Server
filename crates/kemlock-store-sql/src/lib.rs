@@ -16,6 +16,7 @@
 //!   log later.
 
 mod backup;
+mod bind_secrets;
 mod connect;
 mod convert;
 mod error;
@@ -30,6 +31,7 @@ mod store;
 mod tables;
 
 pub use backup::{Snapshot, SnapshotTable, snapshot_database};
+pub use bind_secrets::BindReport;
 pub use connect::{SqliteSync, StoreOptions};
 pub use fanout::{Dialect, NUDGE_CHANNEL, NudgeListener};
 pub use migrate::{pending_migrations, pre_migration_path};

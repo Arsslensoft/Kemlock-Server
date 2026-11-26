@@ -9,6 +9,8 @@
 //! The row's `sealed_secret` is that JSON sealed under `server.key`, with a purpose per method.
 
 use crate::ports::{Random, SecretSeal, TwoFactorMethod};
+use crate::sealed::{open_bound, seal_bound};
+use kemlock_domain::UserId;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
@@ -208,6 +210,31 @@ pub(crate) fn sealed<T: Serialize, S: SecretSeal>(seal: &S, purpose: &str, value
     // These types are plain structs of text and numbers: encoding them can't fail.
     let json = serde_json::to_vec(value).unwrap_or_default();
     seal.seal(purpose, &json)
+}
+
+/// Opens a row's sealed JSON as `T`: a secret of `user`'s own row, sealed for that account, or
+/// under the bare purpose as rows were before secrets were bound to accounts. A row that is
+/// written again is sealed bound, so the old ones go as they are used.
+pub(crate) fn open_row<T: for<'de> Deserialize<'de>, S: SecretSeal>(
+    seal: &S,
+    purpose: &str,
+    user: UserId,
+    sealed: &[u8],
+) -> Option<T> {
+    let opened = open_bound(seal, purpose, user, sealed).ok()?;
+    serde_json::from_slice(&opened.value).ok()
+}
+
+/// Seals `value` as JSON for `user`'s row.
+pub(crate) fn sealed_row<T: Serialize, S: SecretSeal>(
+    seal: &S,
+    purpose: &str,
+    user: UserId,
+    value: &T,
+) -> Vec<u8> {
+    // These types are plain structs of text and numbers: encoding them can't fail.
+    let json = serde_json::to_vec(value).unwrap_or_default();
+    seal_bound(seal, purpose, user, &json)
 }
 
 #[cfg(test)]

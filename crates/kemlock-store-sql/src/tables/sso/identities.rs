@@ -17,6 +17,8 @@ pub struct Model {
     pub email: String,
     pub linked_at: TimeDateTimeWithTimeZone,
     pub last_login_at: TimeDateTimeWithTimeZone,
+    /// Whether `amr` may stand in for the account's second step (`SsoIdentity::confirmed`).
+    pub confirmed: bool,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -33,6 +35,7 @@ impl Model {
             email: self.email,
             linked_at: self.linked_at,
             last_login_at: self.last_login_at,
+            confirmed: self.confirmed,
         }
     }
 }
@@ -45,6 +48,7 @@ pub(crate) fn active(identity: &SsoIdentity) -> ActiveModel {
         email: Set(identity.email.clone()),
         linked_at: Set(utc(identity.linked_at)),
         last_login_at: Set(utc(identity.last_login_at)),
+        confirmed: Set(identity.confirmed),
     }
 }
 
@@ -62,6 +66,7 @@ mod tests {
             email: "ada@example.org".into(),
             linked_at: datetime!(2026-01-02 03:04:05 UTC),
             last_login_at: datetime!(2026-02-02 03:04:05 UTC),
+            confirmed: false,
         };
         let model = Model {
             issuer: identity.issuer.clone(),
@@ -70,6 +75,7 @@ mod tests {
             email: identity.email.clone(),
             linked_at: identity.linked_at,
             last_login_at: identity.last_login_at,
+            confirmed: identity.confirmed,
         };
         assert_eq!(model.into_domain(), identity);
         assert_eq!(active(&identity).subject, Set("7f3a".to_owned()));

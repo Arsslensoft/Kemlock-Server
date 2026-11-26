@@ -87,6 +87,15 @@ where
             post(A::<S, P, K>::handle_register_finish),
         )
         .route(
+            "/kem/v1/accounts/confirm-email",
+            get(A::<S, P, K>::handle_confirm_signup_page)
+                .post(A::<S, P, K>::handle_confirm_signup_email),
+        )
+        .route(
+            "/kem/v1/accounts/confirm-email/resend",
+            post(A::<S, P, K>::handle_resend_signup_email),
+        )
+        .route(
             "/kem/v1/auth/opaque/start",
             post(A::<S, P, K>::handle_opaque_start),
         )

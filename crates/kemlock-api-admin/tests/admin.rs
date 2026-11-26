@@ -847,6 +847,12 @@ async fn signing_an_account_out_ends_its_session() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let after = sam.get("/kem/v1/sync").await;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED, "{:?}", after.json());
+    // No device keeps the key it could sign back in with (a replica's device-key sign-in).
+    let devices = kemlock_app::ports::DeviceRepo::list(&rig.app.store, sam.id)
+        .await
+        .expect("devices");
+    assert!(!devices.is_empty());
+    assert!(devices.iter().all(|d| d.dpop_jkt.is_none()));
     assert_eq!(
         root.write(
             "POST",
@@ -1508,6 +1514,74 @@ async fn the_server_is_told_when_settings_are_saved_and_only_then() {
     assert_eq!(refused.status, StatusCode::BAD_REQUEST);
     root.get("/admin/v1/settings").await;
     assert_eq!(rig.settings_saves.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+
+    let refused = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "true"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
+
+    // A host alone is not a mail server: the server needs a sender too, and a user name with its
+    // password or neither.
+    for changes in [
+        json!({"signups_verify": "true", "smtp_host": "mail.example.org"}),
+        json!({
+            "signups_verify": "true", "smtp_host": "mail.example.org",
+            "smtp_from": "vault@example.org", "smtp_username": "vault"
+        }),
+    ] {
+        let refused = root
+            .write(
+                "PUT",
+                "/admin/v1/settings",
+                Some(json!({"changes": changes})),
+                &token,
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    }
+    assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
+
+    // With the whole mail server in the same save it is taken, and then it can be changed on its
+    // own.
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {
+                "signups_verify": "true",
+                "smtp_host": "mail.example.org",
+                "smtp_from": "vault@example.org"
+            }})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    assert_eq!(
+        rig.admin.saved_setting("setting.signups_verify").as_deref(),
+        Some("true")
+    );
+    let off = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "false"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
 }
 
 #[tokio::test]

@@ -157,6 +157,12 @@ impl From<AppError> for Problem {
                 "account-being-deleted",
                 "This account is being deleted",
             ),
+            AppError::EmailNotConfirmed => Problem::new(
+                StatusCode::FORBIDDEN,
+                "email-not-confirmed",
+                "This account's email address isn't confirmed",
+            )
+            .detail("Open the link mailed to the address, or ask for a new one."),
             AppError::SsoRequired { space } => Problem::new(
                 StatusCode::FORBIDDEN,
                 "sso-required",
@@ -346,6 +352,12 @@ mod tests {
         assert_eq!(
             disabled.to_json()["type"],
             "urn:kemlock:problem:account-disabled"
+        );
+        let unconfirmed = Problem::from(AppError::EmailNotConfirmed);
+        assert_eq!(unconfirmed.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            unconfirmed.to_json()["type"],
+            "urn:kemlock:problem:email-not-confirmed"
         );
         let required = Problem::from(AppError::SsoRequired {
             space: kemlock_domain::SpaceId::random(),

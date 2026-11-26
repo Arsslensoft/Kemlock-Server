@@ -3,7 +3,8 @@
 //! The token's signature and expiry are checked by the `TokenSigner`; here its `cnf.jkt` must be
 //! the proof's key (a token copied off a phone is useless elsewhere), its security stamp must
 //! still be the account's (a password change ends every session), and its device must still be one
-//! of the account's (signing a device out ends its session at once, not when the token runs out).
+//! of the account's, registered with that same key (signing a device out, or a refresh token used
+//! twice, ends its session at once, not when the token runs out).
 
 use crate::error::AppError;
 use crate::ports::{Clock, DeviceRepo, TokenSigner, TwoFactorRepo, UserRepo};
@@ -38,6 +39,8 @@ pub struct Authenticate<U, D, F, K, C> {
     pub two_factor: F,
     pub signer: K,
     pub clock: C,
+    /// Whether held accounts are refused (`AuthConfig::signups_verify`).
+    pub verify_email: bool,
 }
 
 impl<U: UserRepo, D: DeviceRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock>
@@ -59,12 +62,24 @@ impl<U: UserRepo, D: DeviceRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock>
         if user.security_stamp != claims.security_stamp {
             return Err(AppError::SessionEnded("security-stamp-changed"));
         }
+        // An account made on a sign-up that asks for a confirmed address is not used until the link
+        // mailed to it is opened, whatever tokens it holds.
+        if self.verify_email && self.users.email_unconfirmed(user.id).await? {
+            return Err(AppError::EmailNotConfirmed);
+        }
         // A device that was signed out is gone from the account: its access token, which would
-        // otherwise live out its ten minutes, goes with it.
+        // otherwise live out its ten minutes, goes with it. So does one whose key no longer
+        // vouches for it (a refresh token used twice, or sessions ended everywhere, clear the
+        // device's key): the same check an open socket makes every minute.
         self.devices
             .get(claims.device)
             .await?
-            .filter(|device| device.user == claims.user)
+            .filter(|device| {
+                device.user == claims.user
+                    && device.dpop_jkt.as_deref().is_some_and(|registered| {
+                        bool::from(registered.as_bytes().ct_eq(jkt.as_bytes()))
+                    })
+            })
             .ok_or(AppError::SessionEnded("signed-out"))?;
         Ok(Actor {
             user: claims.user,

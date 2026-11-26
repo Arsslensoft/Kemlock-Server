@@ -37,6 +37,7 @@ pub fn attempt_outcome<T, E: Clone + Into<AppError>>(
                 AppError::Unauthorized
                 | AppError::AccountDisabled
                 | AppError::AccountBeingDeleted
+                | AppError::EmailNotConfirmed
                 | AppError::SsoRequired { .. }
                 | AppError::SessionEnded(_)
                 | AppError::Forbidden => Some(SignInOutcome::Failure),

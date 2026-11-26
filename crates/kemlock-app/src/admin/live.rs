@@ -25,6 +25,7 @@ fn quota(value: &AtomicU64) -> Option<u64> {
 
 struct Shared {
     signups_allowed: AtomicBool,
+    signups_verify: AtomicBool,
     invitations_allowed: AtomicBool,
     /// Lower-case domains; empty means no whitelist.
     signup_domains: RwLock<Vec<String>>,
@@ -66,6 +67,7 @@ impl Live {
     pub fn new(signups_allowed: bool) -> Live {
         Live(Arc::new(Shared {
             signups_allowed: AtomicBool::new(signups_allowed),
+            signups_verify: AtomicBool::new(false),
             invitations_allowed: AtomicBool::new(true),
             signup_domains: RwLock::new(Vec::new()),
             max_file_size: AtomicU64::new(0),
@@ -82,6 +84,16 @@ impl Live {
 
     pub fn set_signups_allowed(&self, allowed: bool) {
         self.0.signups_allowed.store(allowed, Ordering::Relaxed);
+    }
+
+    /// Whether a new account must confirm its email first. The server sets it only while it can
+    /// send mail.
+    pub fn signups_verify(&self) -> bool {
+        self.0.signups_verify.load(Ordering::Relaxed)
+    }
+
+    pub fn set_signups_verify(&self, verify: bool) {
+        self.0.signups_verify.store(verify, Ordering::Relaxed);
     }
 
     pub fn invitations_allowed(&self) -> bool {

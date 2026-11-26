@@ -184,6 +184,12 @@ pub struct SsoIdentity {
     pub email: String,
     pub linked_at: OffsetDateTime,
     pub last_login_at: OffsetDateTime,
+    /// Whether the provider's `amr` may stand in for the account's own second step at sign-in.
+    /// An identity made by linking to an account that has a second step is not: the sign-in that
+    /// linked it was never shown to be the account's owner (it may have been abandoned at the
+    /// challenge), so that account's second step is always asked. Links of accounts with no
+    /// second step, and accounts SSO made, are confirmed, as every identity was before this field.
+    pub confirmed: bool,
 }
 
 /// An email domain an admin claims, and whether DNS proves it.

@@ -16,7 +16,7 @@ use crate::platform::Platform;
 use crate::ports::{
     PasswordAuth, SecretSeal, Totp, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
-use crate::sealed::PURPOSE_TOTP;
+use crate::sealed::{PURPOSE_TOTP, open_bound};
 use crate::sign_in::credential_id;
 use kemlock_domain::UserId;
 use time::Duration;
@@ -205,9 +205,7 @@ where
             .ok_or(AdminError::State(
                 "this account has no authenticator app; use the password check",
             ))?;
-        let secret = self
-            .seal
-            .open(PURPOSE_TOTP, &factor.sealed_secret)
+        let secret = open_bound(&self.seal, PURPOSE_TOTP, actor.user, &factor.sealed_secret)
             .map_err(|_| {
                 AdminError::App(crate::AppError::Store(
                     "a stored TOTP secret doesn't open".to_owned(),
@@ -215,7 +213,7 @@ where
             })?;
         let step = self
             .totp
-            .verify_step(&secret, code.trim(), self.env.now())
+            .verify_step(&secret.value, code.trim(), self.env.now())
             .ok_or(AdminError::StepUpFailed)?;
         if !self.two_factor.accept_totp_step(actor.user, step).await? {
             return Err(AdminError::StepUpFailed);

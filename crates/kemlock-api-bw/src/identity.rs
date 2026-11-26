@@ -16,6 +16,7 @@ use crate::app::{App, BwStore};
 use crate::env::{random_bytes, random_uuid};
 use crate::error::{BwError, BwResult};
 use crate::tokens::{LoginClaims, RememberClaims};
+use crate::webauthn::SealRef;
 use kemlock_app::b64url;
 use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::bw_events::BwDeviceRepo;
@@ -26,7 +27,7 @@ use kemlock_app::ports::{
     DeviceRepo, Event, EventLog, RefreshToken, TokenRepo, TwoFactorMethod, TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::{NewSignIn, record_sign_in};
-use kemlock_app::sealed::PURPOSE_TOTP;
+use kemlock_app::sealed::{PURPOSE_TOTP, open_bound};
 use kemlock_app::sso::{RequireSso, SignInMethod, SsoError};
 use kemlock_app::two_step::{method_of_provider, provider_type};
 use kemlock_crypto::{hash, totp};
@@ -633,10 +634,9 @@ impl<S: BwStore> App<S> {
                     .find(|f| f.enabled && f.method == TwoFactorMethod::Totp)
                     .map(|f| f.sealed_secret.as_slice())
                     .ok_or_else(|| BwError::msg("Two factor doesn't exist"))?;
-                let secret = self
-                    .seal
-                    .open(PURPOSE_TOTP, sealed)
-                    .map_err(|_| BwError::Server("a stored TOTP secret doesn't open".to_owned()))?;
+                let secret = open_bound(&SealRef(&self.seal), PURPOSE_TOTP, user.id, sealed)
+                    .map_err(|_| BwError::Server("a stored TOTP secret doesn't open".to_owned()))?
+                    .value;
                 let unix = u64::try_from(now.unix_timestamp()).unwrap_or(0);
                 let refused = || {
                     BwError::msg(format!(

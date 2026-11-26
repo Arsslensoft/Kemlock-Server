@@ -8,6 +8,7 @@ use crate::error::AppError;
 use crate::passkeys::{ChallengeKind, ChallengeRepo};
 use crate::platform::Platform;
 use crate::ports::{SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo};
+use crate::sealed::{open_bound, seal_bound};
 use kemlock_domain::{User, UserId};
 use serde::{Deserialize, Serialize};
 use time::Duration;
@@ -62,11 +63,9 @@ where
 
     /// The keys a Duo row stands for: the ones it holds, or else the server's.
     fn duo_status_of(&self, row: &TwoFactor) -> DuoStatus {
-        let own = self
-            .seal
-            .open(PURPOSE_DUO, &row.sealed_secret)
+        let own = open_bound(&self.seal, PURPOSE_DUO, row.user, &row.sealed_secret)
             .ok()
-            .and_then(|plain| serde_json::from_slice::<DuoKeys>(&plain).ok())
+            .and_then(|opened| serde_json::from_slice::<DuoKeys>(&opened.value).ok())
             .filter(DuoKeys::is_complete);
         if let Some(keys) = own {
             return DuoStatus::User(keys);
@@ -145,7 +144,7 @@ where
             .put(&TwoFactor {
                 user,
                 method: TwoFactorMethod::Duo,
-                sealed_secret: self.seal.seal(PURPOSE_DUO, plain),
+                sealed_secret: seal_bound(&self.seal, PURPOSE_DUO, user, plain),
                 enabled: true,
                 created_at: self.env.now(),
             })

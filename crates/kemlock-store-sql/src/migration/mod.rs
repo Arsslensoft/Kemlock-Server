@@ -53,6 +53,8 @@ mod m20261130_010001_email_changes;
 mod m20261130_020001_custom_fields;
 mod m20261201_010001_second_step_attempts;
 mod m20261201_010001_vw_import_ids;
+mod m20261201_010001_email_confirmations;
+mod m20261201_020001_sso_identity_confirmed;
 
 use sea_orm_migration::prelude::*;
 
@@ -111,6 +113,8 @@ impl MigratorTrait for Migrator {
             Box::new(m20261130_020001_custom_fields::Migration),
             Box::new(m20261201_010001_second_step_attempts::Migration),
             Box::new(m20261201_010001_vw_import_ids::Migration),
+            Box::new(m20261201_010001_email_confirmations::Migration),
+            Box::new(m20261201_020001_sso_identity_confirmed::Migration),
         ]
     }
 }

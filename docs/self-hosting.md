@@ -99,6 +99,45 @@ name or a link that opens anything without signing in.
 A bad value stops the start and names the setting. The admin console shows whether mail is set up.
 The Kemlock API mails from a task of its own, so a slow SMTP server does not hold up a sign-in.
 
+### Verifying the email of a new account (`SIGNUPS_VERIFY`)
+
+Off by default. When it is on and the server can send mail (`SMTP_HOST` is set), an account made on
+a sign-up is held back until the link mailed to its address is opened: it can't sign in or be used,
+the Kemlock API answers `email-not-confirmed` (403), and single sign-on does not link to it by
+email. The link opens a page with a Confirm button (a mail scanner that fetches the link spends nothing; the button posts the token); it works once and runs out in 24 hours; `POST /kem/v1/accounts/confirm-email/resend`
+(the sign-in screen's "send it again") mails a new one, at most one in five minutes. An account made
+from an invitation (its token was mailed to the address) or as the first admin is not held, and
+accounts that existed before the setting was turned on are confirmed. The hold only counts while the setting is on and mail works: turning it off (or losing `SMTP_HOST`) releases every held account. The Kemlock API's
+`register/finish` answer then carries `"emailConfirmationRequired": true`; with the setting off it
+is the answer it always was. The Bitwarden API follows the same setting for its own registration.
+
+Without a mail server the setting can't work, so the console refuses to turn it on until a mail server (an SMTP host and a sender address, with a
+user name only together with its password) is saved, and a server started with `SIGNUPS_VERIFY=true` and no `SMTP_HOST` logs a warning and
+holds no one back. Without it anyone can register any address first: with sign-ups limited to
+`@corp.com`, someone could take `ceo@corp.com` before its owner does. Turn it on whenever sign-ups
+are open to people you don't know, or limited to a domain.
+
+### Single sign-on and linking by email (`SSO_*`)
+
+`SSO_SIGNUPS_MATCH_EMAIL` (default `true`, as in Vaultwarden) lets a person's first sign-in with the
+provider link to the account that already has the email the provider vouches for. That is the risk
+to weigh: whoever controls an address at the provider (an open sign-up, an alias, a mail domain the
+provider doesn't check) gets the Kemlock account of that address. Kemlock narrows it:
+
+- the provider's `email_verified` must be true (`SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION` accepts a
+  token with no such claim only where the domain is proven by DNS in the console);
+- an account whose email was never confirmed (see `SIGNUPS_VERIFY`) is never linked;
+- a link made to an account that has a second step is recorded as unconfirmed, and the account's
+  own second step is asked at every sign-in with it, whatever the provider's `amr` says (abandoning
+  the first challenge and signing in again doesn't help). The `amr` skip ("Via SSO") applies only
+  to identities of accounts SSO made, links made while the account had no second step, and
+  identities linked before this rule; An administrator's account counts as an admin only with a second step turned on, so
+  linking to one by email asks for it before any token is issued.
+
+Safer settings: set `SSO_SIGNUPS_MATCH_EMAIL=false` and let SSO make its own accounts (an existing
+account then stays out of SSO and the sign-in answers `sso-linking-off`); or keep it on, require a
+proven domain (the console's "Only accept people whose email domain is verified here") and turn `SIGNUPS_VERIFY` on.
+
 ### Push to phones
 
 The server wakes the Kemlock apps itself, with a push that says only "sync now": no email, account

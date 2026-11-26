@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { proveWithKey, registerPasskey, registerSecurityKey } from './webauthn';
+import { preparePasskey, proveWithKey, registerPasskey, registerSecurityKey } from './webauthn';
 
 function deps(prfOutput?: Uint8Array) {
   const passkeys = {
@@ -40,6 +40,29 @@ describe('registerPasskey', () => {
     await registerPasskey(d, 'Key');
     expect(d.crypto.prfWrapRoot).not.toHaveBeenCalled();
     expect(d.passkeys.register).toHaveBeenCalledWith('Key', { id: 'c' }, undefined);
+  });
+
+  it('sends the fresh proof an account with a second step on has to give', async () => {
+    const d = deps();
+    await registerPasskey(d, 'Key', '123456');
+    expect(d.passkeys.register).toHaveBeenCalledWith('Key', { id: 'c' }, undefined, '123456');
+    await registerPasskey(d, 'Key', { webauthn: { id: 'k' } });
+    expect(d.passkeys.register).toHaveBeenLastCalledWith('Key', { id: 'c' }, undefined, { webauthn: { id: 'k' } });
+  });
+
+  it('makes the credential once and stores it again with a new proof when the first is refused', async () => {
+    const prf = new Uint8Array([5, 5, 5]);
+    const d = deps(prf);
+    d.passkeys.register.mockRejectedValueOnce(new Error('wrong code'));
+    const made = await preparePasskey(d);
+    await expect(made.register('Key', '111111')).rejects.toThrow('wrong code');
+    await made.register('Key', '222222');
+    expect(d.create).toHaveBeenCalledOnce();
+    expect(d.passkeys.creationOptions).toHaveBeenCalledOnce();
+    expect(d.passkeys.register).toHaveBeenCalledTimes(2);
+    expect(d.passkeys.register).toHaveBeenLastCalledWith('Key', { id: 'c' }, { wrappedKey: 'AQID', keyVersion: 4 }, '222222');
+    // Nothing secret is held for the retry.
+    expect([...prf]).toEqual([0, 0, 0]);
   });
 
   it('wipes the PRF output when the server refuses the passkey', async () => {

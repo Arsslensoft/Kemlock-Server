@@ -824,12 +824,15 @@ where
             .into_iter()
             .find(|f| f.method == TwoFactorMethod::Totp && f.enabled);
         if let Some(factor) = totp
-            && let Ok(secret) = api
-                .crypto
-                .open(kemlock_app::sealed::PURPOSE_TOTP, &factor.sealed_secret)
+            && let Ok(secret) = kemlock_app::sealed::open_bound(
+                &api.crypto,
+                kemlock_app::sealed::PURPOSE_TOTP,
+                user,
+                &factor.sealed_secret,
+            )
             && let Some(step) = u64::try_from(api.now())
                 .ok()
-                .and_then(|now| kemlock_crypto::totp::verify_step(&secret, &entered, now))
+                .and_then(|now| kemlock_crypto::totp::verify_step(&secret.value, &entered, now))
         {
             // A code works once, as at sign-in: the step is kept per account, so a code seen
             // over a shoulder or in a log proves nothing for the rest of its window.

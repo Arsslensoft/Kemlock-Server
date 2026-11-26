@@ -410,6 +410,7 @@ async fn sso(store: &SqlStore) {
             email: "ada@example.org".to_owned(),
             linked_at: T0,
             last_login_at: T0,
+            confirmed: true,
         },
     )
     .await

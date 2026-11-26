@@ -26,6 +26,7 @@
   "error.code": "Type the 6 digits from your authenticator app.",
   "error.credentials": "The email or password is wrong, or the code has expired.",
   "error.email": "Type an email address, like name@example.co.",
+  "error.emailNotConfirmed": "Confirm your email address first: open the link in the mail we sent you. If it is gone, signing in again after five minutes sends a new one.",
   "error.exists": "That already exists.",
   "error.forbidden": "You can't do that here.",
   "error.generic": "Something went wrong. Try again.",

@@ -98,6 +98,25 @@ impl fmt::Debug for EmailChangeNotice {
     }
 }
 
+/// The link that confirms the address of a new account (`SIGNUPS_VERIFY`). The token in it is the
+/// proof that the person reads the address, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SignupVerifyNotice {
+    /// The address the account was made with: the mail goes there.
+    pub to: Email,
+    /// The secret of the link, base64url.
+    pub token: String,
+}
+
+impl fmt::Debug for SignupVerifyNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignupVerifyNotice")
+            .field("to", &self.to)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 /// A change of the sign-in address was asked for. The mail goes to the old address, so a change
 /// the owner didn't ask for doesn't go unnoticed. It carries no link and no secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,6 +184,8 @@ pub enum Notice {
     EmailChanged(EmailChangedNotice),
     /// The master password changed, mailed to the account's address.
     PasswordChanged(PasswordChangedNotice),
+    /// The link that confirms the address of a new account, mailed to that address.
+    SignupVerify(SignupVerifyNotice),
 }
 
 impl Notice {
@@ -184,6 +205,7 @@ impl Notice {
             Notice::EmailTaken(_) => "email-taken",
             Notice::EmailChanged(_) => "email-changed",
             Notice::PasswordChanged(_) => "password-changed",
+            Notice::SignupVerify(_) => "signup-verify",
         }
     }
 }

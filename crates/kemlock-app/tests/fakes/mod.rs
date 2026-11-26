@@ -6,7 +6,8 @@
 #![allow(dead_code, unused_imports)]
 
 use kemlock_app::ports::{
-    AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, Event, EventLog, ItemStore, Notifier,
+    AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, EmailConfirmation, Event, EventLog,
+    ItemStore, Notifier,
     PasswordAuth, Random, RefreshToken, SecretSeal, ServerInfo, StoreError, TokenRepo, TokenSigner,
     Totp, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
@@ -84,6 +85,9 @@ struct StoreInner {
     erasing: HashMap<UserId, OffsetDateTime>,
     /// The second-step attempts each account has reserved.
     second_step: HashMap<UserId, kemlock_app::second_step_guard::Attempts>,
+    /// The accounts held back until the link mailed to their address is opened: the SHA-256 of the
+    /// link's token, when it was made and when it runs out.
+    unconfirmed: HashMap<UserId, ([u8; 32], OffsetDateTime, OffsetDateTime)>,
     /// The `settings` table.
     settings: std::collections::BTreeMap<String, String>,
 }
@@ -378,6 +382,52 @@ impl UserRepo for FakeStore {
     async fn erasure_pending(&self, id: UserId) -> Result<Option<OffsetDateTime>, StoreError> {
         Ok(self.lock().erasing.get(&id).copied())
     }
+
+    async fn email_unconfirmed(&self, id: UserId) -> Result<bool, StoreError> {
+        Ok(self.lock().unconfirmed.contains_key(&id))
+    }
+
+    async fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .unconfirmed
+            .insert(id, (token_hash, requested_at, expires_at));
+        Ok(())
+    }
+
+    async fn confirmation_of(&self, id: UserId) -> Result<Option<EmailConfirmation>, StoreError> {
+        Ok(self
+            .lock()
+            .unconfirmed
+            .get(&id)
+            .map(|(_, requested_at, expires_at)| EmailConfirmation {
+                user: id,
+                requested_at: *requested_at,
+                expires_at: *expires_at,
+            }))
+    }
+
+    async fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> Result<Option<UserId>, StoreError> {
+        let mut g = self.lock();
+        let found = g
+            .unconfirmed
+            .iter()
+            .find(|(_, (hash, _, expires_at))| *hash == token_hash && *expires_at > now)
+            .map(|(id, _)| *id);
+        if let Some(id) = found {
+            g.unconfirmed.remove(&id);
+        }
+        Ok(found)
+    }
 }
 
 impl kemlock_app::FirstAdminRepo for FakeStore {
@@ -488,6 +538,19 @@ impl TwoFactorRepo for FakeStore {
             .retain(|t| !(t.user == two_factor.user && t.method == two_factor.method));
         g.two_factor.push(two_factor.clone());
         Ok(())
+    }
+
+    async fn replace_if_sealed(&self, from: &[u8], to: &TwoFactor) -> Result<bool, StoreError> {
+        let mut g = self.lock();
+        match g.two_factor.iter_mut().find(|t| {
+            t.user == to.user && t.method == to.method && t.sealed_secret == from
+        }) {
+            Some(row) => {
+                *row = to.clone();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn remove(&self, user: UserId, method: TwoFactorMethod) -> Result<(), StoreError> {
@@ -976,6 +1039,12 @@ impl World {
         self
     }
 
+    /// With "verify the email of a new account" on: a held account is refused.
+    pub(crate) fn with_email_verification(mut self) -> Self {
+        self.config.signups_verify = true;
+        self
+    }
+
     pub(crate) fn first_run(&self) -> FirstRun<FakeStore, FakeEnv> {
         FirstRun {
             users: self.store.clone(),
@@ -1072,6 +1141,7 @@ impl World {
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.env.clone(),
+            verify_email: self.config.signups_verify,
         }
     }
 
@@ -1339,10 +1409,10 @@ pub(crate) fn totp_code(world: &World, user: UserId) -> String {
         .into_iter()
         .find(|t| t.method == TwoFactorMethod::Totp)
         .expect("the user has a TOTP enrolment");
-    let secret = world
-        .seal
-        .open("totp", &row.sealed_secret)
-        .expect("the secret opens");
+    // Sealed to the account, or the old way under the bare purpose, as a test may leave it.
+    let secret = kemlock_app::sealed::open_bound(&world.seal, "totp", user, &row.sealed_secret)
+        .expect("the secret opens")
+        .value;
     kemlock_crypto::totp::code_at(&secret, unix(world.env.now()))
 }
 

@@ -27,7 +27,8 @@
 //!   `auth_requests.sealed_key`, `emergency_access.sealed_key`, `members.sealed_space_key`,
 //!   `collection_keys.sealed`, `space_recovery_boxes.sealed`, `sends.sealed_key` and
 //!   `passkeys.prf_wrapped_key`.
-//! - **Hashes**: `refresh_tokens`, `admin_invites.token_hash`, `email_changes.token_hash` and
+//! - **Hashes**: `refresh_tokens`, `admin_invites.token_hash`, `email_changes.token_hash`,
+//!   `email_confirmations.token_hash` and
 //!   `sends.password_hash`.
 //! - **Plain**: `push_tokens.token`, `bw_devices.push_token` and `webauthn_challenges.state` (a
 //!   short-lived ceremony state)
@@ -44,14 +45,17 @@ use crate::tables::sso;
 use crate::tables::{
     admin, attachments, auth_requests, bw_account_extras, bw_accounts, bw_attachments, bw_devices,
     bw_docs, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
-    device_key_copies, devices, duplicate_dismissals, email_changes, emergency_access, events,
+    device_key_copies, devices, duplicate_dismissals, email_changes, email_confirmations,
+    emergency_access, events,
     federation, federation_insight, federation_keys, federation_logs, federation_wiring, item_tags,
     items, passkeys, pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens,
     revoked_families, second_step_attempts, sends, server_meta, settings, sign_in_log,
     signed_manifests, sync_horizon, two_factor, two_factor_recovery, two_step_versions, users,
     vw_import_ids, vw_rows, webauthn_challenges,
 };
+use kemlock_app::admin::SettingsRepo;
 use kemlock_app::b64url;
+use kemlock_app::sealed::SECRETS_BOUND_KEY;
 use kemlock_app::ports::StoreError;
 use sea_orm::sea_query::{Alias, Expr, Order, Query};
 use sea_orm::{
@@ -189,6 +193,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         passkeys::Entity,
         recovery_kits::Entity,
         email_changes::Entity,
+        email_confirmations::Entity,
         webauthn_challenges::Entity,
         bw_accounts::Entity,
         bw_account_extras::Entity,
@@ -647,7 +652,12 @@ impl SqlStore {
         }
         let txn = self.writer().begin().await.store()?;
         match restore_in(&txn, dir, tables, &registry).await {
-            Ok(()) => txn.commit().await.store(),
+            Ok(()) => {
+                txn.commit().await.store()?;
+                // What came back may hold secrets sealed the old way: the start-up pass seals
+                // them to their accounts again, and until it has run nothing may say it has.
+                SettingsRepo::delete_setting(self, SECRETS_BOUND_KEY).await
+            }
             Err(err) => {
                 if let Err(rollback) = txn.rollback().await {
                     tracing::warn!(%rollback, "rollback after a failed restore failed");

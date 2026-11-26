@@ -13,7 +13,7 @@ use kemlock_app::sso::{
     SsoError, SsoFinish, SsoLogout, SsoSettings, SsoSignedIn, SsoStart, StartInput,
 };
 use kemlock_app::{AppError, DeviceInfo, SecondStepInput, SignedIn, b64url};
-use kemlock_domain::{DeviceKind, Email, SpaceId, User, UserId};
+use kemlock_domain::{DeviceKind, Email, Role, SpaceId, User, UserId};
 use sso_fakes::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -763,6 +763,138 @@ async fn an_existing_account_with_the_same_verified_email_is_linked_and_left_alo
 }
 
 #[tokio::test]
+async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_second_step() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    enable_totp(&sso.world, existing).await;
+    let mfa = || {
+        let mut c = claims("sub-1", "ada@example.org");
+        c.amr = vec!["mfa".to_owned()];
+        c
+    };
+
+    // The provider says its user did multi-factor authentication, which says nothing about who
+    // owns this account: the account's own second step is asked all the same.
+    sso.provider.say(mfa());
+    let first = sso.sign_in("provider-code-1").await.expect("links");
+    assert_eq!(first.user, existing);
+    assert!(!first.new_account);
+    assert!(!first.mfa_via_sso);
+    let SignedIn::SecondStep(step) = &first.outcome else {
+        panic!("a second step expected");
+    };
+    assert_eq!(step.methods, vec![TwoFactorMethod::Totp]);
+    assert_eq!(sso.repos.identities().len(), 1, "the identity is linked");
+    assert!(
+        !sso.repos.identities()[0].confirmed,
+        "linked while the account owes a second step"
+    );
+    assert!(
+        sso.world.store.devices_of(existing).is_empty(),
+        "no device before the second step"
+    );
+
+    // The challenge was abandoned. Signing in again is no way round it: the identity is linked
+    // now, but a link made to an account with a second step is not one the provider's `amr` may
+    // stand in for.
+    for n in 2..=3 {
+        sso.provider.say(mfa());
+        let again = sso
+            .sign_in(&format!("provider-code-{n}"))
+            .await
+            .expect("signs in");
+        assert!(!again.mfa_via_sso);
+        assert!(
+            matches!(again.outcome, SignedIn::SecondStep(_)),
+            "the second step is still owed on sign-in {n}"
+        );
+    }
+    assert!(sso.world.store.devices_of(existing).is_empty());
+    assert!(sso.world.store.refresh_tokens().is_empty());
+    assert_eq!(sso.repos.identities().len(), 1);
+}
+
+#[tokio::test]
+async fn an_account_with_no_second_step_links_at_once_and_keeps_the_amr_skip_after_it_turns_one_on() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    let first = sso.sign_in("provider-code-1").await.expect("links");
+    assert!(matches!(first.outcome, SignedIn::Tokens(_)));
+    assert!(sso.repos.identities()[0].confirmed);
+
+    // The owner turns a second step on later: the provider's multi-factor answer is taken, as for
+    // any identity linked before.
+    enable_totp(&sso.world, existing).await;
+    sso.provider.say({
+        let mut c = claims("sub-1", "ada@example.org");
+        c.amr = vec!["mfa".to_owned()];
+        c
+    });
+    let again = sso.sign_in("provider-code-2").await.expect("signs in");
+    assert!(matches!(again.outcome, SignedIn::Tokens(_)));
+    assert!(again.mfa_via_sso);
+}
+
+#[tokio::test]
+async fn linking_to_an_administrators_account_by_email_asks_for_its_second_step_first() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    let mut account = sso.world.store.user(existing).expect("the account");
+    account.role = Role::Admin;
+    sso.world.store.put_user(account);
+    enable_totp(&sso.world, existing).await;
+    // The provider says its user did multi-factor authentication: no help for the admin's account.
+    sso.provider.say({
+        let mut c = claims("sub-1", "ada@example.org");
+        c.amr = vec!["mfa".to_owned()];
+        c
+    });
+
+    let signed_in = sso.sign_in("provider-code-1").await.expect("links");
+    assert_eq!(signed_in.user, existing);
+    assert!(!signed_in.mfa_via_sso);
+    let SignedIn::SecondStep(step) = &signed_in.outcome else {
+        panic!("the admin's second step is owed, not tokens");
+    };
+    assert_eq!(step.methods, vec![TwoFactorMethod::Totp]);
+    assert!(sso.world.store.devices_of(existing).is_empty());
+    assert!(sso.world.store.refresh_tokens().is_empty());
+
+    // The second step then issues the tokens, with the admin's rights.
+    let tokens = sso
+        .world
+        .sign_in()
+        .second_step(SecondStepInput {
+            challenge: step.challenge.clone(),
+            method: TwoFactorMethod::Totp,
+            code: totp_code(&sso.world, existing),
+            jkt: JKT.to_owned(),
+        })
+        .await
+        .expect("the second step completes");
+    assert_eq!(tokens.user, existing);
+    assert!(tokens.admin);
+}
+
+#[tokio::test]
+async fn an_account_whose_email_isnt_confirmed_is_not_linked_by_email() {
+    let mut sso = Sso::new();
+    sso.world.config.signups_verify = true;
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    let now = sso.world.env.now();
+    UserRepo::hold_unconfirmed(&sso.world.store, existing, [1; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+
+    assert_eq!(
+        sso.sign_in("provider-code-1").await,
+        Err(SsoError::App(AppError::EmailNotConfirmed))
+    );
+    assert!(sso.repos.identities().is_empty(), "nothing is linked");
+    assert!(sso.world.store.devices_of(existing).is_empty());
+}
+
+#[tokio::test]
 async fn a_disabled_account_is_refused_once_the_provider_has_said_who_it_is() {
     let sso = Sso::new();
     let existing = make_user(&sso.world, "ada@example.org").await;
@@ -1237,6 +1369,14 @@ async fn a_logout_token_ends_the_subjects_sessions_on_every_device() {
     // The account and its devices remain; only the sessions ended.
     assert!(sso.world.store.user(first.user).is_some());
     assert_eq!(sso.world.store.devices_of(first.user).len(), 2);
+    // No device keeps the key it could sign back in with (a replica's device-key sign-in).
+    assert!(
+        sso.world
+            .store
+            .devices_of(first.user)
+            .iter()
+            .all(|d| d.dpop_jkt.is_none())
+    );
     assert!(
         sso.world
             .store

@@ -162,11 +162,15 @@ where
             .await?
             .ok_or(AppError::Unauthorized)?;
         self.account_allows(&user).await?;
+        // Only the time is written, and only while the device still has this key: sessions may
+        // have been ended since it was read, and writing the whole row back would put its key back.
+        if !self.sessions.devices.touch_seen(device.id, jkt, now).await? {
+            return Err(AppError::Unauthorized);
+        }
         let device = Device {
             last_seen_at: now,
             ..device
         };
-        self.sessions.devices.upsert(&device).await?;
         let tokens = self.sessions.issue(&user, &device, jkt, None).await?;
         self.sessions
             .record("auth.device_key", user.id, Some(device.id))

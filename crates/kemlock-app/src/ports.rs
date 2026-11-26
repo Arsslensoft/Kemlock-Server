@@ -60,6 +60,16 @@ pub trait ServerInfo: Send + Sync {
     fn server_id(&self) -> ServerId;
 }
 
+/// A hold on an account until the link mailed to its address is opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmailConfirmation {
+    pub user: UserId,
+    /// When the link was made.
+    pub requested_at: OffsetDateTime,
+    /// When it stops working.
+    pub expires_at: OffsetDateTime,
+}
+
 pub trait UserRepo: Send + Sync {
     fn by_id(&self, id: UserId) -> impl Future<Output = Result<Option<User>, StoreError>> + Send;
     fn by_email(
@@ -109,6 +119,75 @@ pub trait UserRepo: Send + Sync {
         let _ = id;
         async { Ok(None) }
     }
+
+    /// Whether the account is held back until the link mailed to its address is opened (the
+    /// "verify the email of a new account" setting): it may not sign in or act until then. An
+    /// account with no hold is confirmed, as every account is that existed before the setting.
+    /// A store with no such holds keeps this default: nothing is held.
+    fn email_unconfirmed(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        let _ = id;
+        async { Ok(false) }
+    }
+
+
+    /// Inserts a new account that is held until its link is opened, in one step: the account and
+    /// its hold go in together or not at all, so the account is never there unheld. `Duplicate`
+    /// when the email is taken. The default inserts and then holds in two steps, which leaves a
+    /// moment between them; a store that serves requests concurrently overrides it with a
+    /// transaction.
+    fn insert_held(
+        &self,
+        user: &User,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            self.insert(user).await?;
+            self.hold_unconfirmed(user.id, token_hash, requested_at, expires_at)
+                .await
+        }
+    }
+
+    /// Holds the account until its link is opened, in place of any hold it had: `token_hash` is
+    /// the SHA-256 of the link's token, which stops working at `expires_at`.
+    fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = (id, token_hash, requested_at, expires_at);
+        async {
+            Err(StoreError::Backend(
+                "this store can't hold an account until its email is confirmed".to_owned(),
+            ))
+        }
+    }
+
+    /// The account's hold, if it has one: when its link was made and when it runs out.
+    fn confirmation_of(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<Option<EmailConfirmation>, StoreError>> + Send {
+        let _ = id;
+        async { Ok(None) }
+    }
+
+    /// Spends the link whose token has this SHA-256: the hold is removed and the account is
+    /// said. `None` for a link that is unknown, spent or out of time at `now`.
+    fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> impl Future<Output = Result<Option<UserId>, StoreError>> + Send {
+        let _ = (token_hash, now);
+        async { Ok(None) }
+    }
 }
 
 pub trait DeviceRepo: Send + Sync {
@@ -118,6 +197,29 @@ pub trait DeviceRepo: Send + Sync {
     fn list(&self, user: UserId) -> impl Future<Output = Result<Vec<Device>, StoreError>> + Send;
     /// Deletes the device, its refresh tokens and any key copy it holds.
     fn remove(&self, id: DeviceId) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Records that the device was seen at `at`, only while it is still registered with the DPoP
+    /// key `jkt`, and says whether it was. A device whose key was cleared meanwhile (a refresh
+    /// token used twice, sessions ended everywhere) stays as it is: writing back the whole row a
+    /// caller read earlier would put the cleared key back. The default reads and writes in two
+    /// steps; a store that serves requests concurrently overrides it with a conditional write.
+    fn touch_seen(
+        &self,
+        id: DeviceId,
+        jkt: &str,
+        at: OffsetDateTime,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            match self.get(id).await? {
+                Some(mut device) if device.dpop_jkt.as_deref() == Some(jkt) => {
+                    device.last_seen_at = at;
+                    self.upsert(&device).await?;
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+    }
 }
 
 /// A refresh token as stored: only its SHA-256, so a database copy can't be replayed.
@@ -487,6 +589,29 @@ pub trait TwoFactorRepo: Send + Sync {
     -> impl Future<Output = Result<Vec<TwoFactor>, StoreError>> + Send;
     /// Inserts or replaces the user's enrolment of that method.
     fn put(&self, two_factor: &TwoFactor) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// Replaces the account's enrolment of `to.method` with `to`, only while its sealed secret is
+    /// still `from`, and says whether it did. A caller that read an enrolment, then writes a
+    /// change of its own (sealing a seed to the account, turning the method on), must not undo
+    /// what happened in between: a removal, or a new enrolment with another secret. The default
+    /// reads and writes in two steps; a store that serves requests concurrently overrides it with
+    /// a conditional write.
+    fn replace_if_sealed(
+        &self,
+        from: &[u8],
+        to: &TwoFactor,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            let held = self
+                .list(to.user)
+                .await?
+                .into_iter()
+                .any(|t| t.method == to.method && t.sealed_secret == from);
+            if held {
+                self.put(to).await?;
+            }
+            Ok(held)
+        }
+    }
     /// Records `step` as the newest accepted step of the user's TOTP enrolment, atomically, only
     /// if it is newer than the one recorded. `false` means the step is at or before the last
     /// accepted one (or there is no TOTP enrolment): the code is a replay and must be refused.

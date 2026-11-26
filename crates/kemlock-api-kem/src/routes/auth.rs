@@ -139,21 +139,38 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         let invitation = api
             .accept_invitation(&request.email, request.invite_token.as_deref())
             .await?;
+        let invited = invitation.is_some();
+        // "Verify the email of a new account": one made on a sign-up is held until the link mailed to
+        // its address is opened. Not the first admin (made at setup), and not one that came by an
+        // invitation, which was mailed to the address and so proved it. The hold is written in the
+        // same transaction as the account, so there is no moment in which the account exists and
+        // isn't held; the mail goes out afterwards, and a mail that fails leaves a held account whose
+        // owner asks for a new link from the sign-in screen.
+        let link = (api.live.signups_verify() && request.setup_grant.is_none() && !invited)
+            .then(|| api.signup_verify().prepare());
+        let address = Email::parse(&request.email).ok();
         let registered = api
-            .register_for(&request.email, invitation.is_some())
-            .finish(RegisterInput {
-                user: UserId(request.user_id),
-                email: request.email,
-                name: request.name,
-                upload: decode("upload", &request.upload)?,
-                kdf: request.kdf.to_params()?,
-                public_bundle: decode("publicBundle", &request.public_bundle)?,
-                bundle_signature: decode("bundleSignature", &request.bundle_signature)?,
-                sealed_private_keys: decode("sealedPrivateKeys", &request.sealed_private_keys)?,
-                wrapped_root_key: decode("wrappedRootKey", &request.wrapped_root_key)?,
-                setup_grant: request.setup_grant,
-            })
+            .register_for(&request.email, invited)
+            .finish_with(
+                RegisterInput {
+                    user: UserId(request.user_id),
+                    email: request.email,
+                    name: request.name,
+                    upload: decode("upload", &request.upload)?,
+                    kdf: request.kdf.to_params()?,
+                    public_bundle: decode("publicBundle", &request.public_bundle)?,
+                    bundle_signature: decode("bundleSignature", &request.bundle_signature)?,
+                    sealed_private_keys: decode("sealedPrivateKeys", &request.sealed_private_keys)?,
+                    wrapped_root_key: decode("wrappedRootKey", &request.wrapped_root_key)?,
+                    setup_grant: request.setup_grant,
+                },
+                link.as_ref().map(|link| link.hold),
+            )
             .await?;
+        let held = link.is_some();
+        if let (Some(link), Some(address)) = (link, address) {
+            api.signup_verify().mail(&address, link.token).await;
+        }
         // The account exists: the invitation is spent. A failure here leaves it pending, which
         // can't let anyone register again (the address is taken), so it is only logged.
         if let Some(invitation) = invitation {
@@ -164,6 +181,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             Json(RegisterFinishResponse {
                 user_id: registered.user.0,
                 admin: registered.admin,
+                email_confirmation_required: held,
             }),
         ))
     }
@@ -210,6 +228,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         let request: OpaqueFinishRequest = body.json()?;
         check_email_len(&request.email)?;
         let login_state = decode("loginState", &request.login_state)?;
+        let address = Email::parse(&request.email).ok();
         // Only a genuine, fresh login state gets as far as being counted or remembered, so
         // made-up ones spend nobody's attempts and take no room.
         api.sign_in().check_login_state(&login_state)?;
@@ -243,6 +262,14 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             })
             .await;
         attempts::end_password_attempt(&api, &attempt, &finished);
+        // The password was right but the address of a new account isn't confirmed: a new link is
+        // mailed when one is due, so the person isn't left with a mail that ran out.
+        if matches!(&finished, Err(AppError::EmailNotConfirmed))
+            && let Some(address) = address
+            && let Err(error) = api.signup_verify().resend(&address).await
+        {
+            tracing::warn!(%error, "couldn't send a new link to confirm an address");
+        }
         api.log_attempt(api.attempt("password", None, &finished, proof.ip, signed_in_ids))
             .await;
         let signed_in = finished?;

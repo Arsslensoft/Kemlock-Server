@@ -172,6 +172,26 @@ where
         .await
         .map_err(|e| RunError::Store(e.to_string()))?;
     let crypto = ServerCrypto::new(seal, opaque);
+    // Secrets stored before they were sealed to their accounts are sealed again, bound, and the
+    // old form then stops opening: it would let someone who can write the database keep a copy of
+    // a secret sealed the old way and paste it into any row. Run at every start, since a restore
+    // can bring old rows back. A failure leaves the old form readable and says so.
+    match store.bind_secrets(&crypto).await {
+        Ok(report) => {
+            kemlock_app::sealed::allow_bare_secrets(false);
+            if report.sealed_again > 0 || report.unreadable > 0 {
+                tracing::info!(
+                    sealed_again = report.sealed_again,
+                    unreadable = report.unreadable,
+                    "stored second-step secrets are sealed to their accounts"
+                );
+            }
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "couldn't seal the stored secrets to their accounts; the old form stays readable"
+        ),
+    }
     // SSO settings from `SSO_*` fill an empty table; a bad value turns SSO off and says why.
     match sso::seed_from_env(&store, &crypto, &|name| std::env::var(name).ok()).await {
         Ok(true) => tracing::info!("single sign-on is set up from the SSO_* settings"),
