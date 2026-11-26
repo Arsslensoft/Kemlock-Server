@@ -259,23 +259,44 @@ impl ObjectBlobStore {
         if size != expected {
             return Err(BlobError::WrongSize);
         }
-        let mut body = match found.payload {
+        let body = match found.payload {
             GetResultPayload::File(file, _) => file_stream(file, size),
             GetResultPayload::Stream(stream) => stream.map_err(backend).boxed(),
         };
-        let mut upload = self.upload(blob, expected, Some(StreamCheck::new()));
-        while let Some(chunk) = body.try_next().await? {
-            if let Err(e) = upload.write(chunk).await {
-                upload.abort().await;
-                return Err(e);
-            }
-        }
-        if upload.finish().await? != expected {
+        let total = self.write_blob(blob, expected, body).await?;
+        if total != expected {
             // Fewer bytes arrived than the object's size said: it changed under the read.
             self.delete_path(path_of(blob)).await?;
             return Err(BlobError::WrongSize);
         }
         self.delete_path(staging).await
+    }
+
+    /// Writes `body` as the blob `blob` through the `KMA1` checks, at most `max_size` bytes, and
+    /// returns how many. A body that fails half way (the read of the staging object broke) or
+    /// breaks a rule gives up the parts already stored, as an upload through the server does.
+    async fn write_blob(
+        &self,
+        blob: BlobId,
+        max_size: u64,
+        mut body: ByteStream,
+    ) -> Result<u64, BlobError> {
+        let mut upload = self.upload(blob, max_size, Some(StreamCheck::new()));
+        loop {
+            let chunk = match body.try_next().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(e) => {
+                    upload.abort().await;
+                    return Err(e);
+                }
+            };
+            if let Err(e) = upload.write(chunk).await {
+                upload.abort().await;
+                return Err(e);
+            }
+        }
+        upload.finish().await
     }
 
     /// A pre-signed URL for `method` on `path`, when the store signs and the setting is on.
@@ -512,5 +533,46 @@ impl SendBlobs for ObjectBlobStore {
     /// same random blob ids as any file, held to the size cap alone.
     async fn begin_raw(&self, blob: BlobId, max_size: u64) -> Result<ObjectUpload, BlobError> {
         Ok(self.upload(blob, max_size, None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_read_that_breaks_half_way_stores_nothing() {
+        // Parts of 8 bytes, so the first chunk starts a multipart upload.
+        let store = ObjectBlobStore::memory().with_part_size(8);
+        let blob = BlobId::random();
+        let body: ByteStream = futures_util::stream::iter(vec![
+            Ok(Bytes::from_static(b"KMA1 some bytes here")),
+            Err(BlobError::Backend("the connection dropped".to_owned())),
+        ])
+        .boxed();
+
+        let outcome = store.write_blob(blob, 1 << 20, body).await;
+
+        assert_eq!(
+            outcome,
+            Err(BlobError::Backend("the connection dropped".to_owned()))
+        );
+        assert_eq!(store.get_blob_raw(blob).await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn a_body_over_its_size_is_refused_and_stores_nothing() {
+        let store = ObjectBlobStore::memory().with_part_size(8);
+        let blob = BlobId::random();
+        let body: ByteStream = futures_util::stream::iter(vec![
+            Ok(Bytes::from_static(b"KMA1 some bytes here")),
+            Ok(Bytes::from_static(b"and some more")),
+        ])
+        .boxed();
+
+        let outcome = store.write_blob(blob, 10, body).await;
+
+        assert_eq!(outcome, Err(BlobError::TooLarge));
+        assert_eq!(store.get_blob_raw(blob).await, Ok(None));
     }
 }
