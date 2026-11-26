@@ -18,6 +18,8 @@ use crate::sso;
 use crate::two_step;
 use axum::Router;
 use axum::http::StatusCode;
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::server::conn::auto::Builder as ConnectionBuilder;
 use kemlock_api_bw::SendStore;
 use kemlock_api_fed::AdminGate;
 use kemlock_api_kem::{Api, ApiConfig, ApiSecrets, JwsTokenSigner};
@@ -32,6 +34,7 @@ use kemlock_store_sql::SqlStore;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tower::ServiceExt as _;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::{MakeSpan, TraceLayer};
 
@@ -503,6 +506,140 @@ fn is_remote_plain_http(domain: &str) -> bool {
     }
 }
 
+/// How long a client has to send the head of a request, on a new connection and between requests
+/// on a kept-alive one. The request timeout starts only once a request reaches the router, so
+/// without this a client that opens a connection and trickles (or never sends) its headers holds
+/// the connection for as long as it likes.
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a stop waits for requests in flight before it ends the connections still open.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What the listener enforces before a request reaches the router.
+#[derive(Debug, Clone, Copy)]
+struct ServeLimits {
+    /// How long a request's head may take to arrive.
+    header_read_timeout: Duration,
+    /// How many connections are served at once; 0 for no limit.
+    max_connections: usize,
+}
+
+impl ServeLimits {
+    fn from_config(config: &Config) -> Self {
+        Self {
+            header_read_timeout: HEADER_READ_TIMEOUT,
+            max_connections: config.max_connections,
+        }
+    }
+}
+
+/// Serves `router` on `listener` until `shutdown` resolves, then lets the requests in flight
+/// finish (for at most [`DRAIN_TIMEOUT`]) and returns. Like `axum::serve` it answers WebSocket
+/// upgrades and gives the handlers each client's `ConnectInfo<SocketAddr>`, and it adds the limits
+/// of [`ServeLimits`]. Past the connection limit the listener stops accepting: further clients
+/// wait in the operating system's queue until a connection ends.
+async fn serve(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    limits: ServeLimits,
+    shutdown: impl std::future::Future<Output = ()>,
+) {
+    let mut shutdown = std::pin::pin!(shutdown);
+    let (stop, stopping) = tokio::sync::watch::channel(false);
+    let max_connections = if limits.max_connections == 0 {
+        usize::MAX
+    } else {
+        limits.max_connections
+    };
+    let mut connections = tokio::task::JoinSet::new();
+    loop {
+        tokio::select! {
+            biased;
+            () = &mut shutdown => break,
+            // Reaps the finished connections, so the count below is the open ones.
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept(), if connections.len() < max_connections => {
+                match accepted {
+                    Ok((stream, peer)) => {
+                        connections.spawn(serve_connection(
+                            stream,
+                            peer,
+                            router.clone(),
+                            limits.header_read_timeout,
+                            stopping.clone(),
+                        ));
+                    }
+                    Err(e) if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::ConnectionRefused
+                    ) => {}
+                    Err(e) => {
+                        // Out of file descriptors, most likely: wait for some to free up.
+                        tracing::warn!(error = %e, "can't accept a connection");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    }
+    // No new connections; the open ones finish their request and close.
+    drop(listener);
+    let _ = stop.send(true);
+    let drained = async { while connections.join_next().await.is_some() {} };
+    if tokio::time::timeout(DRAIN_TIMEOUT, drained).await.is_err() {
+        tracing::warn!(
+            open = connections.len(),
+            "ending the connections still open after the stop"
+        );
+        connections.abort_all();
+    }
+}
+
+/// One client's connection: HTTP/1 (and HTTP/2 when the client opens with it) over `stream`, the
+/// requests answered by `router`, ended gracefully once `stopping` turns true.
+async fn serve_connection(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    router: Router,
+    header_read_timeout: Duration,
+    mut stopping: tokio::sync::watch::Receiver<bool>,
+) {
+    let service = hyper::service::service_fn(
+        move |mut request: axum::http::Request<hyper::body::Incoming>| {
+            // What `into_make_service_with_connect_info` adds, for the handlers that name the peer.
+            request
+                .extensions_mut()
+                .insert(axum::extract::ConnectInfo(peer));
+            router.clone().oneshot(request)
+        },
+    );
+    let mut builder = ConnectionBuilder::new(TokioExecutor::new());
+    builder
+        .http1()
+        .timer(TokioTimer::new())
+        .header_read_timeout(header_read_timeout);
+    let connection = builder.serve_connection_with_upgrades(TokioIo::new(stream), service);
+    let mut connection = std::pin::pin!(connection);
+    let mut asked_to_stop = false;
+    loop {
+        tokio::select! {
+            result = connection.as_mut() => {
+                if let Err(e) = result {
+                    tracing::debug!(%peer, error = %e, "a connection ended with an error");
+                }
+                break;
+            }
+            // Resolves when the server is stopping (or gone); asks for one more answer at most.
+            _ = stopping.changed(), if !asked_to_stop => {
+                asked_to_stop = true;
+                connection.as_mut().graceful_shutdown();
+            }
+        }
+    }
+}
+
 /// Runs the server until it is asked to stop.
 pub async fn run(config: Config) -> Result<(), RunError> {
     if is_remote_plain_http(&config.domain) {
@@ -584,11 +721,12 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     crate::backups::settings(&config).map_err(RunError::Config)?;
     let layout = crate::backups::layout(&config).map_err(RunError::Config)?;
     let backups = crate::backups::spawn_backups(store.clone(), settings.clone(), layout);
-    let served = axum::serve(
+    serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router,
+        ServeLimits::from_config(&config),
+        shutdown_signal(),
     )
-    .with_graceful_shutdown(shutdown_signal())
     .await;
     background.abort();
     retention.abort();
@@ -602,7 +740,7 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     if let Err(e) = store.close().await {
         tracing::warn!(error = %e, "couldn't close the database cleanly");
     }
-    served.map_err(RunError::Serve)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -647,6 +785,140 @@ mod tests {
         }
     }
 
+    /// A router with one route that names the peer it was reached from.
+    fn peer_router() -> Router {
+        async fn peer(axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<SocketAddr>) -> String {
+            peer.ip().to_string()
+        }
+        Router::new().route("/", axum::routing::get(peer))
+    }
+
+    /// Serves `peer_router` on a free local port; the sender stops it, the handle ends with it.
+    async fn serve_for_test(
+        limits: ServeLimits,
+    ) -> (
+        SocketAddr,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let address = listener.local_addr().expect("address");
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            serve(listener, peer_router(), limits, async {
+                let _ = stopped.await;
+            })
+            .await;
+        });
+        (address, stop, task)
+    }
+
+    /// Sends one request over `stream` and reads the answer up to the end of its body.
+    async fn ask(stream: &mut tokio::net::TcpStream) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: test\r\n\r\n")
+            .await
+            .expect("write");
+        let mut answer = Vec::new();
+        let mut chunk = [0u8; 512];
+        while !answer.ends_with(b"127.0.0.1") {
+            let read = stream.read(&mut chunk).await.expect("read");
+            assert_ne!(read, 0, "the connection closed before the answer");
+            answer.extend_from_slice(&chunk[..read]);
+        }
+        String::from_utf8(answer).expect("utf-8")
+    }
+
+    const LIMITS: ServeLimits = ServeLimits {
+        header_read_timeout: Duration::from_secs(10),
+        max_connections: 0,
+    };
+
+    #[tokio::test]
+    async fn the_listener_answers_and_names_the_peer() {
+        let (address, stop, task) = serve_for_test(LIMITS).await;
+        let mut stream = tokio::net::TcpStream::connect(address).await.expect("connect");
+        let answer = ask(&mut stream).await;
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        drop(stream);
+        let _ = stop.send(());
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the server stopped")
+            .expect("task");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_finishes_its_headers_is_cut_off() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (address, stop, task) = serve_for_test(ServeLimits {
+            header_read_timeout: Duration::from_millis(300),
+            max_connections: 0,
+        })
+        .await;
+        let mut stream = tokio::net::TcpStream::connect(address).await.expect("connect");
+        // The start of a request, then nothing.
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: test\r\nX-Slow: ")
+            .await
+            .expect("write");
+        let mut rest = Vec::new();
+        let closed =
+            tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest)).await;
+        assert!(closed.is_ok(), "the half-sent request held the connection open");
+        let _ = stop.send(());
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn connections_past_the_limit_wait_for_one_to_end() {
+        let (address, stop, task) = serve_for_test(ServeLimits {
+            header_read_timeout: Duration::from_secs(30),
+            max_connections: 1,
+        })
+        .await;
+        let mut first = tokio::net::TcpStream::connect(address).await.expect("connect");
+        ask(&mut first).await;
+        // The second connects (the operating system queues it) but isn't served while the first
+        // is open.
+        let mut second = tokio::net::TcpStream::connect(address).await.expect("connect");
+        let waiting = tokio::time::timeout(Duration::from_millis(400), ask(&mut second)).await;
+        assert!(waiting.is_err(), "a second connection was served over the limit");
+        drop(first);
+        // The request `ask` sent is still queued, and the answer follows once the slot is free.
+        let answer = tokio::time::timeout(Duration::from_secs(5), async {
+            use tokio::io::AsyncReadExt;
+            let mut answer = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !answer.ends_with(b"127.0.0.1") {
+                let read = second.read(&mut chunk).await.expect("read");
+                assert_ne!(read, 0, "closed before the answer");
+                answer.extend_from_slice(&chunk[..read]);
+            }
+            String::from_utf8(answer).expect("utf-8")
+        })
+        .await
+        .expect("the second connection was served once the first ended");
+        assert!(answer.contains("200"), "{answer}");
+        let _ = stop.send(());
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_ends_idle_connections_and_returns() {
+        let (address, stop, task) = serve_for_test(LIMITS).await;
+        let mut idle = tokio::net::TcpStream::connect(address).await.expect("connect");
+        ask(&mut idle).await;
+        // The connection stays open, kept alive; the stop must not wait for the client.
+        let _ = stop.send(());
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the stop waited on an idle connection")
+            .expect("task");
+    }
     #[test]
     fn the_request_span_has_the_path_and_never_the_query() {
         let captured = Captured::default();

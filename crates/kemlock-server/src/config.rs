@@ -38,6 +38,9 @@ pub const IGNORED_VAULTWARDEN_VARS: &[&str] = &[
     "LOG_FILE",
 ];
 
+/// How many connections the server serves at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
     #[error("{name} must be {expected}, not {value:?}")]
@@ -94,6 +97,9 @@ pub struct Config {
     /// `KEMLOCK_FEDERATION_PROBE_SECONDS`: how often this server probes each paired peer's health, in
     /// seconds; 0 turns the probes off. Default 60. Failed probes back off up to ten minutes.
     pub federation_probe_seconds: u64,
+    /// `KEMLOCK_MAX_CONNECTIONS`: how many connections the server serves at once; further ones wait
+    /// in the operating system's queue until one ends. 0 turns the limit off. Default 1024.
+    pub max_connections: usize,
     /// Vaultwarden settings that were set and are not used.
     pub ignored: Vec<String>,
     /// The TOML file that was read, if any.
@@ -127,6 +133,7 @@ struct FileConfig {
     browser_extension_ids: Option<Vec<String>>,
     source_url: Option<String>,
     federation_probe_seconds: Option<u64>,
+    max_connections: Option<usize>,
 }
 
 fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {
@@ -353,6 +360,14 @@ impl Config {
             })?,
             None => file.federation_probe_seconds.unwrap_or(60),
         };
+        let max_connections = match lookup(env, "KEMLOCK_MAX_CONNECTIONS") {
+            Some(value) => value.trim().parse().map_err(|_| ConfigError::Bad {
+                name: "KEMLOCK_MAX_CONNECTIONS",
+                expected: "a number of connections, 0 for no limit",
+                value: value.clone(),
+            })?,
+            None => file.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
+        };
         let ignored = IGNORED_VAULTWARDEN_VARS
             .iter()
             .filter(|name| lookup(env, name).is_some())
@@ -379,6 +394,7 @@ impl Config {
             browser_extension_ids,
             source_url,
             federation_probe_seconds,
+            max_connections,
             ignored,
             config_file: None,
             settings_env,
@@ -643,6 +659,30 @@ mod tests {
             config(&[("KEMLOCK_FEDERATION_PROBE_SECONDS", "often")], None),
             Err(ConfigError::Bad {
                 name: "KEMLOCK_FEDERATION_PROBE_SECONDS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn connections_are_limited_unless_the_operator_says_otherwise() {
+        let c = config(&[], None).expect("valid");
+        assert_eq!(c.max_connections, DEFAULT_MAX_CONNECTIONS);
+        let c = config(&[("KEMLOCK_MAX_CONNECTIONS", " 200 ")], None).expect("valid");
+        assert_eq!(c.max_connections, 200);
+        let c = config(&[], Some("max_connections = 300\n")).expect("valid");
+        assert_eq!(c.max_connections, 300);
+        // The environment outranks the file, and 0 turns the limit off.
+        let c = config(
+            &[("KEMLOCK_MAX_CONNECTIONS", "0")],
+            Some("max_connections = 300\n"),
+        )
+        .expect("valid");
+        assert_eq!(c.max_connections, 0);
+        assert!(matches!(
+            config(&[("KEMLOCK_MAX_CONNECTIONS", "many")], None),
+            Err(ConfigError::Bad {
+                name: "KEMLOCK_MAX_CONNECTIONS",
                 ..
             })
         ));

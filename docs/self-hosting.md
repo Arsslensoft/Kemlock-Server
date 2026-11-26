@@ -344,6 +344,12 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   of the proxies above, or a tunnel, in front of any address that isn't on a network you trust.
   A `DOMAIN` that starts with `http://` and isn't `localhost` or a loopback address makes the
   server log a warning at start-up.
+- Slow clients and floods. The server drops a client that takes more than 10 seconds to send the
+  head of a request, and serves at most `KEMLOCK_MAX_CONNECTIONS` connections at once (default
+  1024, `max_connections` in `kemlock.toml`, 0 for no limit); further clients wait in the
+  operating system's queue until one ends. Every client counts, WebSockets included, and behind a
+  proxy the proxy's connections are the ones counted. Raise the limit together with the
+  process's open-file limit (`LimitNOFILE` in systemd, `--ulimit nofile` in Docker).
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
   /64.
 

@@ -383,6 +383,7 @@ pub async fn restore_check(
         browser_extension_ids: Vec::new(),
         source_url: None,
         federation_probe_seconds: 60,
+        max_connections: 1024,
         ignored: Vec::new(),
         config_file: None,
         settings_env: crate::config::settings_env(&|name| std::env::var(name).ok()),
