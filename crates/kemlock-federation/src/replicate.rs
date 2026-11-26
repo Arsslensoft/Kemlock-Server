@@ -11,6 +11,7 @@
 
 use crate::blobs::BlobFiles;
 use crate::change::{self, ChangeRecord};
+use crate::conflict::Rank;
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
 use crate::eventsync::EventSync;
@@ -674,6 +675,17 @@ impl<S: FedStore> Replica<S> {
             .ok_or(FedError::UnknownVault)?;
         let me = self.server_id();
         let now_ms = crate::session::unix_now().saturating_mul(1000);
+        // The head is chosen by revision first only while every server of the vault says it ranks so
+        // (`x-kemlock-signed-writes1`): servers must agree on the head, and one that ranks by clock
+        // alone would pick another.
+        let rank = if self
+            .vault_advertises(vault, writes::SIGNED_WRITES_CAPABILITY)
+            .await?
+        {
+            Rank::Revision
+        } else {
+            Rank::Clock
+        };
         let mut counts = Counts::default();
         for envelope in envelopes {
             let record = change::open(envelope, &keys)?;
@@ -725,7 +737,7 @@ impl<S: FedStore> Replica<S> {
                 continue;
             }
             let signature = Signed::decode(envelope)?.signature;
-            match self.store.apply(&record, &signature).await {
+            match self.store.apply_ranked(&record, &signature, rank).await {
                 Ok(ApplyOutcome::Applied) => counts.applied += 1,
                 Ok(ApplyOutcome::Sibling) => counts.siblings += 1,
                 Ok(ApplyOutcome::Duplicate) => counts.duplicates += 1,

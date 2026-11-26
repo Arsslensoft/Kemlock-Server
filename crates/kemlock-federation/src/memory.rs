@@ -3,7 +3,7 @@
 //! an HLC time not before the last one, a log entry) and keeps the replication state beside them.
 
 use crate::change::{ChangeRecord, MAX_LINEAGE};
-use crate::conflict::{Version, merge};
+use crate::conflict::{Rank, Version, merge_ranked};
 use crate::eventsync::{EventSync, LogEntry, PeerEvent};
 use crate::extra::{ErasureOutbox, PendingErasure, VaultErased, VaultErasure};
 use crate::hashtree::{Leaf, leaf_digest};
@@ -586,10 +586,11 @@ impl ReplicaStore for MemoryStore {
         Ok(())
     }
 
-    async fn apply(
+    async fn apply_ranked(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
+        rank: Rank,
     ) -> Result<ApplyOutcome, StoreError> {
         let incoming_item = record
             .to_item()
@@ -629,7 +630,7 @@ impl ReplicaStore for MemoryStore {
             })
             .collect();
         let held_head = st.heads.get(&record.item).map(|h| ChangeKey::of(&h.change));
-        let m = merge(&held, held_head, &Version::of(record));
+        let m = merge_ranked(&held, held_head, &Version::of(record), rank);
         if m.regressed {
             return Ok(ApplyOutcome::Refused);
         }

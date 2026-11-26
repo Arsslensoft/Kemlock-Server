@@ -25,7 +25,7 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::{Item, ItemId, Owner, Revision, ServerId, VersionVector};
 use kemlock_federation::FedError;
 use kemlock_federation::change::{ChangeRecord, MAX_LINEAGE};
-use kemlock_federation::conflict::{self, Version};
+use kemlock_federation::conflict::{self, Rank, Version};
 use kemlock_federation::hashtree::{Leaf, leaf_digest};
 use kemlock_federation::home::VaultFederation;
 use kemlock_federation::ports::{
@@ -369,6 +369,7 @@ async fn apply_in(
     server: ServerId,
     record: &ChangeRecord,
     signature: &[u8],
+    rank: Rank,
 ) -> Result<ApplyOutcome, StoreError> {
     lock_meta(txn).await?;
     let key = record.key();
@@ -413,7 +414,7 @@ async fn apply_in(
         });
     }
     let held_head = head.as_ref().map(|h| ChangeKey::of(&h.change));
-    let merge = conflict::merge(&held, held_head, &Version::of(record));
+    let merge = conflict::merge_ranked(&held, held_head, &Version::of(record), rank);
     if merge.regressed {
         // A version replaces the head only at a higher revision (docs/federation.md, "Rollback").
         return Ok(ApplyOutcome::Refused);
@@ -592,13 +593,14 @@ impl ReplicaStore for SqlStore {
         finish(txn, result).await
     }
 
-    async fn apply(
+    async fn apply_ranked(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
+        rank: Rank,
     ) -> Result<ApplyOutcome, StoreError> {
         let txn = self.writer().begin().await.store()?;
-        let result = apply_in(&txn, self.origin(), record, signature).await;
+        let result = apply_in(&txn, self.origin(), record, signature, rank).await;
         finish(txn, result).await
     }
 

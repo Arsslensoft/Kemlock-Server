@@ -5,6 +5,7 @@
 //! `async fn` and callers stay `Send` for axum, as in `kemlock_app::ports`.
 
 use crate::change::ChangeRecord;
+use crate::conflict::Rank;
 use crate::error::{FedError, Result};
 use crate::hashtree::Leaf;
 use crate::home::{HomeRecord, VaultFederation};
@@ -273,12 +274,23 @@ pub trait ReplicaStore: Send + Sync {
     ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send;
 
     /// Applies a verified record from another server: merges it with the versions held, as
-    /// `conflict::merge` says, and keeps its signature for relaying. One transaction.
+    /// `conflict::merge_ranked` says with `rank`, and keeps its signature for relaying. One
+    /// transaction.
+    fn apply_ranked(
+        &self,
+        record: &ChangeRecord,
+        signature: &[u8],
+        rank: Rank,
+    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send;
+
+    /// [`apply_ranked`](Self::apply_ranked), choosing the head by clock alone.
     fn apply(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
-    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send;
+    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send {
+        self.apply_ranked(record, signature, Rank::Clock)
+    }
 
     /// A digest per item of `owner`, over the versions held.
     fn leaves(

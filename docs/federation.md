@@ -403,7 +403,12 @@ holds as siblings at that moment, and signs it with the record. A version that i
 lineage is **replaced**.
 
 Servers can't merge items, so they keep every version that nothing replaced. Of those, the **head**
-is the one with the latest HLC time, then the higher origin id, then the higher sequence number. It
+is the one with the highest revision, then the latest HLC time, then the higher origin id, then the
+higher sequence number. (The revision comes first so that a replay of an old revision with a late
+clock that leaves the head out of its lineage stays a sibling and never takes the head; two
+concurrent edits of one revision are still ordered by clock. A server that doesn't say
+`x-kemlock-signed-writes1` ranks by clock alone and may pick another head when revisions differ, so
+the ranking is part of what every server of a set must be upgraded for.) It
 is what devices sync and what Bitwarden apps see. The others are **siblings**, kept until a write
 supersedes them; the next Kemlock app to sync merges them with its field-level merge and writes a
 version whose lineage names every one. The rule depends only on the set of versions, so servers

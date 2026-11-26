@@ -32,10 +32,31 @@ impl Version {
         }
     }
 
-    /// Later versions sort higher: HLC time, then origin id, then sequence number.
-    fn rank(&self) -> (Hlc, ChangeKey) {
-        (self.hlc, self.key)
+    /// Later versions sort higher: HLC time, then origin id, then sequence number; with
+    /// [`Rank::Revision`], the revision first.
+    ///
+    /// The revision comes first so that a version below another unreplaced version's revision never
+    /// takes the head from it, however late its clock: a replica that re-signs an old ciphertext as a
+    /// new change that leaves the head out of its lineage can't roll the item back that way
+    /// (docs/federation.md, "Rollback"). Concurrent edits of one revision are still ordered by clock.
+    fn rank(&self, by: Rank) -> (Revision, Hlc, ChangeKey) {
+        let revision = match by {
+            Rank::Clock => Revision(0),
+            Rank::Revision => self.revision,
+        };
+        (revision, self.hlc, self.key)
     }
+}
+
+/// How the head is chosen among the versions nothing replaced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Rank {
+    /// By clock alone: what servers did before writer signatures. Used while a server of the vault
+    /// doesn't say it ranks by revision (`x-kemlock-signed-writes1`), so all of them agree.
+    #[default]
+    Clock,
+    /// By revision first.
+    Revision,
 }
 
 /// The result of adding a version to what a server holds.
@@ -57,8 +78,19 @@ pub struct Merge {
     pub head_changed: bool,
 }
 
-/// Adds `incoming` to the versions `held` (the head and the siblings; at least the head).
+/// Adds `incoming` to the versions `held` (the head and the siblings; at least the head), the head
+/// chosen by clock.
 pub fn merge(held: &[Version], held_head: Option<ChangeKey>, incoming: &Version) -> Merge {
+    merge_ranked(held, held_head, incoming, Rank::Clock)
+}
+
+/// [`merge`], choosing the head as `rank` says.
+pub fn merge_ranked(
+    held: &[Version],
+    held_head: Option<ChangeKey>,
+    incoming: &Version,
+    rank: Rank,
+) -> Merge {
     // A version replaces the head only at a higher revision (docs/federation.md, "Rollback"): a
     // replica that re-signs an old ciphertext as a new change naming the head can't roll it back.
     let regressed = held_head.is_some_and(|head| {
@@ -85,7 +117,7 @@ pub fn merge(held: &[Version], held_head: Option<ChangeKey>, incoming: &Version)
                 .any(|w| w.key != v.key && w.lineage.contains(&v.key))
         })
         .collect();
-    maximal.sort_by_key(|v| std::cmp::Reverse(v.rank()));
+    maximal.sort_by_key(|v| std::cmp::Reverse(v.rank(rank)));
 
     let dropped: Vec<ChangeKey> = held
         .iter()
@@ -247,6 +279,32 @@ mod tests {
         assert!(m.kept);
         assert_eq!(m.head, first.key);
         assert!(m.head_changed);
+    }
+
+    #[test]
+    fn a_replay_with_a_late_clock_that_leaves_the_head_out_of_its_lineage_stays_a_sibling() {
+        // The head is revision 5. A replica re-signs revision 3 with a clock far ahead and a
+        // lineage that names only the base: nothing replaces the head, and the replay is not it.
+        let base = v(1, 1, 10, 1, &[]);
+        let head = v(1, 9, 20, 5, &[base.key]);
+        let replay = v(2, 4, 99, 3, &[base.key]);
+        let m = merge_ranked(&[head.clone()], Some(head.key), &replay, Rank::Revision);
+        assert!(m.kept);
+        assert!(!m.regressed);
+        assert_eq!(m.head, head.key);
+        assert_eq!(m.siblings, vec![replay.key]);
+        assert!(!m.head_changed);
+        // Whatever order they arrive in, the head is the same.
+        let m = merge_ranked(
+            std::slice::from_ref(&replay),
+            Some(replay.key),
+            &head,
+            Rank::Revision,
+        );
+        assert_eq!(m.head, head.key);
+        // By clock alone, as servers that don't rank by revision do, the replay takes the head.
+        let m = merge(&[head.clone()], Some(head.key), &replay);
+        assert_eq!(m.head, replay.key);
     }
 
     #[test]

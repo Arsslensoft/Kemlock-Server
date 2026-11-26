@@ -440,3 +440,39 @@ async fn a_record_that_relabels_an_item_as_bitwarden_is_refused() {
     );
     assert_eq!(store.get(item).expect("the head").format, ItemFormat::Kem1);
 }
+
+#[tokio::test]
+async fn a_replay_with_a_late_clock_that_leaves_the_head_out_of_its_lineage_never_takes_the_head() {
+    use kemlock_federation::conflict::Rank;
+    let store = MemoryStore::new(kemlock_domain::ServerId::random());
+    let owner = Owner::User(UserId::random());
+    let item = ItemId::random();
+    store.put(draft(item, owner, None, 1, 1_000)).expect("rev 1");
+    let head = store.put(draft(item, owner, Some(1), 2, 2_000)).expect("rev 2");
+
+    // Revision 1 re-sent with a clock far ahead and a lineage that names nothing held.
+    let replay = ChangeRecord {
+        change: ChangeId {
+            origin: kemlock_domain::ServerId::random(),
+            seq: 1,
+            hlc: Hlc::from_parts(unix_now() * 1000, 0),
+        },
+        item,
+        owner,
+        kind: ItemKind::try_from("login".to_owned()).expect("kind"),
+        format: ItemFormat::Kem1,
+        revision: Revision(1),
+        key_version: 1,
+        ciphertext: Some(vec![1; 40]),
+        item_key: Some(vec![9; 60]),
+        deleted: false,
+        updated_at_ms: unix_now() * 1000,
+        lineage: Vec::new(),
+        write: None,
+    };
+    assert_eq!(
+        store.apply_ranked(&replay, &[7; 8], Rank::Revision).await,
+        Ok(ApplyOutcome::Sibling)
+    );
+    assert_eq!(store.get(item).expect("the head").change, head.change);
+}
