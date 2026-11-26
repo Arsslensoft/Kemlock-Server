@@ -204,6 +204,10 @@ pub(crate) struct AppendOut {
     /// The items of the replaced collections re-written under their new key versions.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     writes: Vec<WriteOut>,
+    /// The keys (`space`, `collection:<uuid>`) the `keys` record replaces: only items of these
+    /// can be re-written or named held.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    rotated: Vec<String>,
 }
 
 /// An item sealed again as the next revision under a fresh item key, wrapped under the collection
@@ -341,6 +345,8 @@ struct Build<'a> {
     held: Vec<String>,
     /// Items re-written under a replaced collection's new key.
     writes: Vec<WriteOut>,
+    /// The keys the `keys` record replaces.
+    rotated: Vec<String>,
 }
 
 fn sorted<T: Ord>(mut list: Vec<T>) -> Vec<T> {
@@ -400,6 +406,7 @@ impl<'a> Build<'a> {
             sealed_names: Vec::new(),
             held: Vec::new(),
             writes: Vec::new(),
+            rotated: Vec::new(),
         }
     }
 
@@ -411,6 +418,7 @@ impl<'a> Build<'a> {
             names: self.names,
             held: self.held,
             writes: self.writes,
+            rotated: self.rotated,
         }
     }
 
@@ -631,6 +639,7 @@ impl<'a> Build<'a> {
             None => None,
         };
         self.push(Body::Keys { names, rotate })?;
+        self.rotated = fresh.keys().map(KeyRef::text).collect();
 
         let owner = Owner::space(self.space);
         for item in &input.items {
@@ -1155,6 +1164,7 @@ impl Session {
             names: Vec::new(),
             held: left,
             writes,
+            rotated: Vec::new(),
         }))
     }
 

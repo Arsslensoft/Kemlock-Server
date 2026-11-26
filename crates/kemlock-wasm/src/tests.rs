@@ -2725,6 +2725,7 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     assert_eq!(out["names"].as_array().expect("names").len(), 2);
     assert_eq!(out["seals"].as_array().expect("seals").len(), 2);
     assert_eq!(out["held"], json!([uuid_text(&junk)]));
+    assert_eq!(out["rotated"], json!([format!("collection:{general_text}"), "space"]));
     let writes = out["writes"].as_array().expect("writes");
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0]["collection"], general_text);
