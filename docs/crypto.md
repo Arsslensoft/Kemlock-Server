@@ -1001,8 +1001,13 @@ version) therefore keeps every bundle it had, and what it signed before stays ve
   bundle from the server's history only when all of these hold: it parses as that account's bundle
   at that version; it carries a valid signature of its own key; and its fingerprint is the one the
   client **pinned** while that bundle was the account's current one: its own keys vouched for the
-  account's own bundle, and the member list the space vouches for ("Using the state") for a
-  member's. The pins are kept sealed in the browser's local store, one per version, never replaced.
+  account's own bundle, and the verified space chain ("Using the state") for a member's. The pins
+  are kept sealed in the browser's local store, one per version, never replaced.
+  **A space whose chain this client doesn't verify** (the web vault, until it does) has only the
+  server's member list to go by, and that is not vouching: nothing is pinned from it, so a
+  member's write under a key version they have since replaced has no verdict there, and a
+  member's current bundle is the server's word, as it is for their manifest. The chain is what
+  removes that reliance; a space without one stays on the server's word for who its members are.
   A version the client never saw vouched has no verdict (`unknown`), and so does one above the
   writer's current version, because a bundle the server serves for an old version is otherwise a
   bundle the server can make up. A client that first sees an account after it replaced its keys
