@@ -10,18 +10,29 @@
 //   unsigned  none came;
 //   invalid   one came and fails, or it names another account for the account's own vault;
 //   unknown   it can't be checked now: the vault is locked, or the space doesn't vouch for the
-//             writer (a member who has left, say), or the member list couldn't be reached.
+//             writer (a member who has left, say), or the member list couldn't be reached, or the
+//             write names an older key version of the writer whose bundle this browser has no pin
+//             for (bundleHistory.ts).
+//
+// A write names the key version it was signed under. At the writer's current version it is checked
+// with the account's own key (its own vault) or the bundle the space vouches for; at an older one
+// with that version's bundle from the server's history, taken only when it is the one this browser
+// pinned when it was current. A version newer than the current one is unknown.
 //
 // A `bw` item has no `kem1` envelope to sign: it has no verdict at all.
 import type { ItemDto } from '@/api/types';
 import { writeFields } from '@/api/signedWrites';
 import type { CryptoPort } from '@/crypto-port';
+import { parseBundle } from '@/sharing/bundle';
+import type { BundleHistory } from './bundleHistory';
 import type { SpaceSigner } from './keeper';
 
 export type WriteVerdict = 'signed' | 'unsigned' | 'invalid' | 'unknown';
 
 export interface WriteCheckerDeps {
-  crypto: Pick<CryptoPort, 'itemWriteVerifyOwn' | 'itemWriteVerify'>;
+  crypto: Pick<CryptoPort, 'itemWriteVerifyOwn' | 'itemWriteVerify' | 'ownKeyVersion'>;
+  /** The bundles before an account's current key version. Without it an older version is unknown. */
+  history?: BundleHistory;
   /** The signed-in account's id, or null. */
   accountId: () => string | null;
   /** The bundle of a member the space vouches for, or null (see `SpaceSigner`). */
@@ -34,6 +45,8 @@ export interface WriteChecker {
 }
 
 export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
+  /** The versions pinned this session: once each is enough. */
+  const pinned = new Set<string>();
   return {
     async verdict(dto) {
       if (dto.format !== 'kem1') return undefined;
@@ -46,12 +59,30 @@ export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
           // A person's own vault is written by that person only, and checked with their own key.
           if (dto.owner !== `user:${writer}`) return 'invalid';
           if (deps.accountId() !== writer) return 'unknown';
-          return (await deps.crypto.itemWriteVerifyOwn(fields, writeSignature)) ? 'signed' : 'invalid';
+          const current = await deps.crypto.ownKeyVersion();
+          if (writerKeyVersion > current) return 'unknown';
+          if (writerKeyVersion === current) {
+            await deps.history?.pinOwn(current, pinned);
+            return (await deps.crypto.itemWriteVerifyOwn(fields, writeSignature)) ? 'signed' : 'invalid';
+          }
+          const past = await deps.history?.past(writer, writerKeyVersion);
+          if (!past) return 'unknown';
+          return (await deps.crypto.itemWriteVerify(past, fields, writeSignature)) ? 'signed' : 'invalid';
         }
         const space = dto.owner.slice('space:'.length);
         const bundle = await deps.spaceSigner(space, writer);
-        if (!bundle) return 'unknown';
-        return (await deps.crypto.itemWriteVerify(bundle, fields, writeSignature)) ? 'signed' : 'invalid';
+        const parsed = bundle ? parseBundle(bundle) : null;
+        if (!bundle || !parsed) return 'unknown';
+        if (writerKeyVersion > parsed.keyVersion) return 'unknown';
+        let signer = bundle;
+        if (writerKeyVersion === parsed.keyVersion) {
+          await deps.history?.pin(bundle, pinned);
+        } else {
+          const past = await deps.history?.past(writer, writerKeyVersion);
+          if (!past) return 'unknown';
+          signer = past;
+        }
+        return (await deps.crypto.itemWriteVerify(signer, fields, writeSignature)) ? 'signed' : 'invalid';
       } catch {
         // The worker is locked, or the member list could not be reached: no verdict.
         return 'unknown';

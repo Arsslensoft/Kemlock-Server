@@ -279,6 +279,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async ownFingerprint() {
       return (await current()).ownFingerprint();
     },
+    async ownKeyVersion() {
+      return (await current()).ownKeyVersion();
+    },
     async release(handle) {
       (await current()).release(handle);
     },

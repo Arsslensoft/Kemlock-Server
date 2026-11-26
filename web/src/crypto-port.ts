@@ -295,6 +295,8 @@ export interface CryptoPort {
   ): Promise<void>;
   /** The open account's own fingerprint: 12 groups of 5 digits. Needs the sealed private keys at unlock. */
   ownFingerprint(): Promise<string>;
+  /** The key version the account is unlocked at. */
+  ownKeyVersion(): Promise<number>;
   /** Drops a handle that will not be used (a one-time key whose request was refused). */
   release(handle: Uint8Array): Promise<void>;
   /** Seals an item of a space's collection under the collection's key. */
@@ -517,6 +519,7 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         ...(options?.publicBundle ? { publicBundle: encodeB64(options.publicBundle) } : {}),
       }),
     ownFingerprint: () => api.ownFingerprint(),
+    ownKeyVersion: () => api.ownKeyVersion(),
     async sealSpaceItem(input) {
       const sealed = await api.sealSpaceItem(input);
       return {

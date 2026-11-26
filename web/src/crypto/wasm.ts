@@ -46,6 +46,7 @@ export interface WasmVault {
     keyVersion?: number,
   ): string;
   ownFingerprint(): string;
+  ownKeyVersion(): number;
   fingerprint(publicBundle: string): string;
   verifyBundle(publicBundle: string, bundleSignature: string): boolean;
   totpEnrol(secret: string | undefined, issuer: string, account: string): string;

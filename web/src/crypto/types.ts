@@ -534,6 +534,8 @@ export interface CryptoApi {
   verifyBundle(publicBundle: string, bundleSignature: string): Promise<boolean>;
   /** The unlocked account's own fingerprint; needs `unlock` with `sealedPrivateKeys`. */
   ownFingerprint(): Promise<string>;
+  /** The key version the account is unlocked at: authenticated by the wrap that opened it. */
+  ownKeyVersion(): Promise<number>;
   /** Drops a handle that will not be used. */
   release(
     handle:
@@ -782,6 +784,7 @@ export interface Ops {
   fingerprint: { args: [publicBundle: string]; result: string };
   verifyBundle: { args: [publicBundle: string, bundleSignature: string]; result: boolean };
   ownFingerprint: { args: []; result: string };
+  ownKeyVersion: { args: []; result: number };
   release: { args: [handle: number]; result: void };
   dpopReset: { args: []; result: void };
   sealRootKey: {

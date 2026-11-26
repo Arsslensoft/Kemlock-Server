@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ItemDto } from '@/api/types';
 import { signedItem } from '@/api/signedWrites';
-import { utf8 } from '@/lib/b64url';
-import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
+import { encodeB64, utf8 } from '@/lib/b64url';
+import { memoryBundlePinStore } from '@/spaces/anchors';
+import { crypto, fakeBundleOf, resetFakeCrypto, setFakeKeyVersion } from '@/test/fake-crypto';
+import { createBundleHistory } from './bundleHistory';
 import { createWriteChecker } from './writes';
 
 const ACCOUNT = '99999999-9999-4999-8999-999999999999';
@@ -27,7 +29,7 @@ const item = (owner: string, revision = 2, extra: Partial<ItemDto> = {}): ItemDt
 });
 
 const spaceSigner = vi.fn(async (_space: string, signer: string) =>
-  signer === MEMBER ? utf8(`bundle:${MEMBER}`) : null,
+  signer === MEMBER ? fakeBundleOf(MEMBER, 1) : null,
 );
 
 function checker(account: string | null = ACCOUNT) {
@@ -100,5 +102,95 @@ describe('the verdict on a write signature', () => {
     spaceSigner.mockRejectedValueOnce(new Error('offline'));
     const signed = await signedItem(crypto, item(SPACE, 2, { writer: MEMBER, writerKeyVersion: 1, writeSignature: 'c2ln' }));
     expect(await checker().verdict(signed)).toBe('unknown');
+  });
+});
+
+describe('a write signed under a key version the writer has replaced', () => {
+  const served = (bundle: Uint8Array) => ({
+    keyVersion: 1,
+    publicBundle: encodeB64(bundle),
+    bundleSignature: encodeB64(utf8('sig')),
+  });
+
+  /** The fake worker, saying which bundle is the account's own at the version it is unlocked at. */
+  function ownWorker(version: () => number) {
+    return { ...crypto, ownFingerprint: async () => crypto.fingerprint(fakeBundleOf(ACCOUNT, version())) };
+  }
+
+  it('is checked against the pinned bundle of that version, for the account itself', async () => {
+    let current = 1;
+    const worker = ownWorker(() => current);
+    const history = createBundleHistory({
+      api: { at: async (_account, version) => (version === 1 ? served(fakeBundleOf(ACCOUNT, 1)) : null) },
+      crypto: worker,
+      accountId: () => ACCOUNT,
+      pins: memoryBundlePinStore(),
+    });
+    const check = createWriteChecker({ crypto: worker, accountId: () => ACCOUNT, spaceSigner, history });
+
+    // Signed while its keys were at version 1, and checked then: the browser pins that bundle.
+    const before = await signedItem(worker, item(OWN, 3));
+    expect(before.writerKeyVersion).toBe(1);
+    expect(await check.verdict(before)).toBe('signed');
+
+    // The account replaces its keys. What it signed before still verifies, and a forgery doesn't.
+    setFakeKeyVersion(2);
+    current = 2;
+    expect(await check.verdict(before)).toBe('signed');
+    expect(await check.verdict({ ...before, revision: 9 })).toBe('invalid');
+    // A write at the new version is checked with the account's own key, and one at a version
+    // beyond it is no verdict.
+    const after = await signedItem(worker, item(OWN, 4));
+    expect(after.writerKeyVersion).toBe(2);
+    expect(await check.verdict(after)).toBe('signed');
+    expect(await check.verdict({ ...after, writerKeyVersion: 3 })).toBe('unknown');
+  });
+
+  it('has no verdict in a browser that never saw that version vouched', async () => {
+    let current = 1;
+    const worker = ownWorker(() => current);
+    const before = await signedItem(worker, item(OWN, 3));
+    setFakeKeyVersion(2);
+    current = 2;
+    const history = createBundleHistory({
+      api: { at: async () => served(fakeBundleOf(ACCOUNT, 1)) },
+      crypto: worker,
+      accountId: () => ACCOUNT,
+      pins: memoryBundlePinStore(),
+    });
+    const check = createWriteChecker({ crypto: worker, accountId: () => ACCOUNT, spaceSigner, history });
+    expect(await check.verdict(before)).toBe('unknown');
+    // And without a history at all.
+    const bare = createWriteChecker({ crypto: worker, accountId: () => ACCOUNT, spaceSigner });
+    expect(await bare.verdict(before)).toBe('unknown');
+  });
+
+  it('is checked against the member\'s pinned bundle of that version in a space', async () => {
+    // The member signs on their own device, at key version 1.
+    resetFakeCrypto();
+    await crypto.unlock(MEMBER, utf8(`wrapped:${MEMBER}`), new Uint8Array(), new Uint8Array());
+    const signed = await signedItem(crypto, item(SPACE));
+    expect(signed.writerKeyVersion).toBe(1);
+    resetFakeCrypto();
+    await crypto.unlock(ACCOUNT, utf8(`wrapped:${ACCOUNT}`), new Uint8Array(), new Uint8Array());
+
+    let memberVersion = 1;
+    const signer = vi.fn(async (_space: string, writer: string) =>
+      writer === MEMBER ? fakeBundleOf(MEMBER, memberVersion) : null,
+    );
+    const history = createBundleHistory({
+      api: { at: async (_account, version) => (version === 1 ? served(fakeBundleOf(MEMBER, 1)) : null) },
+      crypto,
+      accountId: () => ACCOUNT,
+      pins: memoryBundlePinStore(),
+    });
+    const check = createWriteChecker({ crypto, accountId: () => ACCOUNT, spaceSigner: signer, history });
+    expect(await check.verdict(signed)).toBe('signed');
+
+    // The member rotates: the space vouches for their version 2 bundle now.
+    memberVersion = 2;
+    expect(await check.verdict(signed)).toBe('signed');
+    expect(await check.verdict({ ...signed, revision: 9 })).toBe('invalid');
+    expect(await check.verdict({ ...signed, writerKeyVersion: 3 })).toBe('unknown');
   });
 });

@@ -10,6 +10,7 @@ import type { SpaceDeps } from './model';
 const stores = defaultStores(spaceCrypto);
 
 export const floorStore = stores.floors;
+export const bundlePinStore = stores.bundles;
 
 export const spaceDeps: SpaceDeps = {
   api: createSpacesApi(api),

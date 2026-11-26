@@ -5,6 +5,7 @@
 import type { CryptoPort } from '@/crypto-port';
 import type { ItemWriteFields } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 const calls: string[] = [];
 
@@ -15,6 +16,11 @@ let locked = true;
 export const isFakeLocked = () => locked;
 /** The account the fake vault was opened for, for `ownFingerprint`. */
 let openedFor = '';
+/** The key version the fake vault is unlocked at; a test raises it to play a key replacement. */
+let ownVersion = 1;
+export const setFakeKeyVersion = (version: number) => {
+  ownVersion = version;
+};
 
 /** The tabs that have a reload key, as IndexedDB would keep them: a test deletes one to age it out. */
 export const fakeTabKeys = new Set<string>();
@@ -156,13 +162,19 @@ export const crypto: CryptoPort = {
   },
   async fingerprint(publicBundle) {
     calls.push('fingerprint');
-    const text = fromUtf8(publicBundle);
+    const parsed = parseBundle(publicBundle);
+    const text = parsed
+      ? `real:${signerOf(publicBundle) ?? ''}:${parsed.keyVersion}`
+      : fromUtf8(publicBundle);
     const sum = [...text].reduce((a, c) => (a * 31 + (c.codePointAt(0) ?? 0)) >>> 0, 11);
     return Array.from({ length: 12 }, (_, i) => String((sum + i * 7919) % 100000).padStart(5, '0')).join(' ');
   },
   async verifyBundle(publicBundle, bundleSignature) {
     calls.push('verifyBundle');
-    return fromUtf8(bundleSignature) === 'sig' && fromUtf8(publicBundle).startsWith('bundle:');
+    return (
+      fromUtf8(bundleSignature) === 'sig' &&
+      (parseBundle(publicBundle) !== null || fromUtf8(publicBundle).startsWith('bundle:'))
+    );
   },
   async lock() {
     calls.push('lock');
@@ -301,6 +313,11 @@ export const crypto: CryptoPort = {
     locked = false;
     openedFor = accountId;
   },
+  async ownKeyVersion() {
+    calls.push('ownKeyVersion');
+    if (locked) throw new Error('the vault is locked');
+    return ownVersion;
+  },
   async ownFingerprint() {
     calls.push('ownFingerprint');
     if (locked) throw new Error('the vault is locked');
@@ -363,8 +380,8 @@ export const crypto: CryptoPort = {
     }
     return {
       writer: openedFor,
-      writerKeyVersion: 1,
-      writeSignature: encodeB64(utf8(writeSignatureText(openedFor, 1, fields))),
+      writerKeyVersion: ownVersion,
+      writeSignature: encodeB64(utf8(writeSignatureText(openedFor, ownVersion, fields))),
     };
   },
   async itemWriteVerifyOwn(fields, signature) {
@@ -372,13 +389,13 @@ export const crypto: CryptoPort = {
     if (locked) throw new Error('the vault is locked');
     return (
       fields.writer === openedFor &&
-      fields.writerKeyVersion === 1 &&
-      fromUtf8(decodeB64(signature)) === writeSignatureText(openedFor, 1, fields)
+      fields.writerKeyVersion === ownVersion &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(openedFor, ownVersion, fields)
     );
   },
   async itemWriteVerify(signerBundle, fields, signature) {
     calls.push('itemWriteVerify');
-    const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
+    const signer = signerOf(signerBundle);
     return (
       signer !== undefined &&
       fields.writer === signer &&
@@ -386,6 +403,29 @@ export const crypto: CryptoPort = {
     );
   },
 };
+
+/**
+ * A bundle with the layout of docs/crypto.md for `account` at `version`, and nothing else in it, for
+ * tests that parse one. The fake worker reads its signer from the account id.
+ */
+export function fakeBundleOf(account: string, version: number): Uint8Array {
+  const label = utf8('kemlock/v1/bundle');
+  const out = new Uint8Array(label.length + 16 + 4 + 1600 + 1984);
+  out.set(label, 0);
+  out.set(uuidBytes(account), label.length);
+  new DataView(out.buffer).setUint32(label.length + 16, version);
+  return out;
+}
+
+/** Who a bundle names: a real-layout one by its account id, a `bundle:<account>` one by its text. */
+function signerOf(bundle: Uint8Array): string | undefined {
+  const parsed = parseBundle(bundle);
+  if (parsed) {
+    const hex = [...parsed.accountId].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return /^bundle:(.+)$/.exec(fromUtf8(bundle))?.[1];
+}
 
 /** What the fake's write signature says: who, at which key version, over which fields. */
 export function writeSignatureText(writer: string, keyVersion: number, fields: ItemWriteFields): string {
@@ -443,6 +483,7 @@ export function resetFakeCrypto(): void {
   locked = true;
   fakeTabKeys.clear();
   openedFor = '';
+  ownVersion = 1;
   sendKeys.count = 0;
   deviceKeys.count = 0;
   deviceKeys.spent.clear();

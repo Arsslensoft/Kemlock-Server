@@ -132,6 +132,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     verifyBundle: (publicBundle, bundleSignature) =>
       call('verifyBundle', [publicBundle, bundleSignature]),
     ownFingerprint: () => call('ownFingerprint', []),
+    ownKeyVersion: () => call('ownKeyVersion', []),
     release: (handle) => call('release', [handle]),
     dpopReset: () => call('dpopReset', []),
     sealRootKey: (recipientKx1, context, aad) => call('sealRootKey', [recipientKx1, context, aad]),

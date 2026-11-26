@@ -1,8 +1,11 @@
 // The app's manifest keeper: the real API, the real worker, this browser's IndexedDB.
+import { createBundlesApi } from '@/api/bundles';
 import { createManifestsApi } from '@/api/manifests';
 import { createSpacesApi } from '@/api/spaces';
 import { api, session } from '@/app/services';
+import { bundlePinStore } from '@/features/spaces/deps';
 import { vaultCrypto } from '@/crypto-port';
+import { createBundleHistory } from './bundleHistory';
 import { createManifestKeeper } from './keeper';
 import { createWriteChecker } from './writes';
 import { browserRecordStore } from './records';
@@ -26,4 +29,19 @@ export const manifestKeeper = createManifestKeeper({
 
 // The write signature of each item the server serves (docs/crypto.md, "Signed item writes"): the
 // account's own key for its own vault, the space's vouched member for a space.
-export const writeChecker = createWriteChecker({ crypto: vaultCrypto, accountId, spaceSigner });
+// A write names the key version it was signed under; one under a version the writer has replaced
+// is checked against that version's bundle, from the server's history, when it is the one this
+// browser pinned while it was current.
+const bundleHistory = createBundleHistory({
+  api: createBundlesApi(api),
+  crypto: vaultCrypto,
+  accountId,
+  pins: bundlePinStore,
+});
+
+export const writeChecker = createWriteChecker({
+  crypto: vaultCrypto,
+  accountId,
+  spaceSigner,
+  history: bundleHistory,
+});
