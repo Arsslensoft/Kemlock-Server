@@ -146,7 +146,7 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
                 }
               />{' '}
               {t('security.rotate.contact', { email: contact.email })}
-              <code className="mono" data-testid={`contact-fingerprint-`}>
+              <code className="mono" data-testid={`contact-fingerprint-${contact.id}`}>
                 {contact.fingerprint}
               </code>
             </label>
