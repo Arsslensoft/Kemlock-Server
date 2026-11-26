@@ -7,7 +7,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{DOMAIN, Harness};
-use kemlock_app::bitwarden::{Asker, BwInviteLinks, InviteLinkError, MemberInviteLink};
+use kemlock_app::bitwarden::{Asker, InviteLinkError, MemberInviteLink};
 use kemlock_domain::{SpaceId, UserId};
 use serde_json::{Value, json};
 use uuid::Uuid;

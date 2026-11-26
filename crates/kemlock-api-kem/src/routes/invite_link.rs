@@ -36,6 +36,14 @@ use utoipa::{OpenApi, ToSchema};
 #[derive(Clone)]
 pub struct MaybeInviteLinks(pub Option<SharedInviteLinks>);
 
+impl std::fmt::Debug for MaybeInviteLinks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MaybeInviteLinks")
+            .field(&self.0.is_some())
+            .finish()
+    }
+}
+
 impl<St: Send + Sync> FromRequestParts<St> for MaybeInviteLinks {
     type Rejection = Infallible;
 

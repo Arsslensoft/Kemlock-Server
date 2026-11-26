@@ -239,7 +239,6 @@ fn put_space_item(
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
-        boxes: AnySignature,
     }
 }
 
@@ -721,7 +720,6 @@ fn put_space_batch(
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
-        boxes: AnySignature,
     }
 }
 
