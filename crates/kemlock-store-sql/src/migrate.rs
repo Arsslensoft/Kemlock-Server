@@ -168,6 +168,10 @@ async fn pre_migration_copy(db: &DatabaseConnection) -> Result<(), StoreError> {
     db.execute_unprepared(&format!("VACUUM INTO '{literal}'"))
         .await
         .store()?;
+    // A copy of the whole database: private like the database itself.
+    if let Err(e) = crate::connect::restrict_to_owner(&target) {
+        tracing::warn!(copy = %target.display(), error = %e, "couldn't make the copy readable by its owner only");
+    }
     tracing::info!(copy = %target.display(), pending = pending.len(), "copied the database before migrating");
     Ok(())
 }

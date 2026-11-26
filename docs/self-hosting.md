@@ -359,6 +359,11 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   migrations and file storage. The image's `HEALTHCHECK` runs `kemlock-server healthcheck`, because
   the image has no shell or curl.
 - Logs: text, or `KEMLOCK_LOG_FORMAT=json`.
+- File permissions. On Unix a data folder the server creates is `0700`, and the SQLite database
+  (with its `-wal` and `-shm` files and the copy made before a migration) and `server.key` are
+  `0600`. A data folder that already exists keeps its mode, and the server warns at start-up when
+  other users can read it: `chmod 700` it. SQLite runs with `secure_delete`, so deleted rows are
+  overwritten with zeros rather than left in free pages.
 - Reports of problems: the server answers `/.well-known/security.txt` (RFC 9116). Set who should
   hear about a problem with your server in the console (Settings, Security) or with
   `KEMLOCK_SECURITY_CONTACT` (an email address, or a `mailto:`, `tel:` or `https:` address)

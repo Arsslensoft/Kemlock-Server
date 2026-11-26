@@ -153,7 +153,7 @@ where
     // A FIPS build serves nothing until the module says it is in FIPS mode.
     #[cfg(feature = "fips")]
     refuse_unless_fips(kemlock_crypto::fips::verify())?;
-    std::fs::create_dir_all(&config.data_folder).map_err(|source| RunError::DataFolder {
+    keys::create_data_folder(&config.data_folder).map_err(|source| RunError::DataFolder {
         path: config.data_folder.display().to_string(),
         source,
     })?;

@@ -242,7 +242,7 @@ fn refuse_planted_files(manifest: &Manifest, database: Option<&Path>) -> Result<
 /// database is migrated to this version, then every table is emptied and refilled in one
 /// transaction; the data folder's files and the attachments are copied over what is there.
 pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<RestoreReport, String> {
-    std::fs::create_dir_all(&config.data_folder)
+    crate::keys::create_data_folder(&config.data_folder)
         .map_err(|e| format!("can't make {}: {e}", config.data_folder.display()))?;
     let mut notes = Vec::new();
 

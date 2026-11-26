@@ -9,6 +9,7 @@ use crate::error::map_db;
 use kemlock_app::ports::StoreError;
 use sea_orm::sqlx::sqlite::{SqliteJournalMode, SqliteSynchronous};
 use sea_orm::{ConnectOptions, Database, DatabaseConnection};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// How durable SQLite commits are. `Full` (the default) syncs the WAL on every commit, so a
@@ -94,6 +95,79 @@ fn is_memory(url: &str) -> bool {
     url.contains(":memory:") || url.contains("mode=memory")
 }
 
+/// The file of a SQLite URL (`sqlite://path?mode=rwc`, `sqlite:path`); `None` for one in memory.
+fn sqlite_file(url: &str) -> Option<PathBuf> {
+    if is_memory(url) || url.contains("mode=ro") {
+        return None;
+    }
+    let rest = url
+        .strip_prefix("sqlite://")
+        .or_else(|| url.strip_prefix("sqlite:"))?;
+    let path = rest.split('?').next().unwrap_or(rest);
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// `path` with `suffix` added to its file name.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Makes `path` readable and writable by its owner only, when it is anything more. A no-op off
+/// Unix. Used for what holds the whole vault: the database and the copies made of it.
+pub(crate) fn restrict_to_owner(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Before SQLite opens its file: a new one is made readable by its owner only (SQLite gives the
+/// `-wal` and `-shm` files the main file's mode), and an existing one, and its `-wal` and `-shm`,
+/// are tightened to that. The server's data folder is 0700 where the server made it, but a
+/// database in a folder someone else made, or one an older version made, would otherwise be 0644.
+fn keep_database_private(url: &str) {
+    let Some(file) = sqlite_file(url) else {
+        return;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if !file.exists() {
+            // An empty file is a new database to SQLite. If the folder isn't there, SQLite says
+            // so when it connects.
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&file);
+        }
+    }
+    for path in [
+        file.clone(),
+        with_suffix(&file, "-wal"),
+        with_suffix(&file, "-shm"),
+    ] {
+        match restrict_to_owner(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                file = %path.display(),
+                error = %e,
+                "couldn't make the database file readable by its owner only"
+            ),
+        }
+    }
+}
+
 async fn open_sqlite(url: &str, options: &StoreOptions) -> Result<Pools, StoreError> {
     let memory = is_memory(url);
     let sync = match options.sqlite_sync {
@@ -101,6 +175,7 @@ async fn open_sqlite(url: &str, options: &StoreOptions) -> Result<Pools, StoreEr
         SqliteSync::Normal => SqliteSynchronous::Normal,
     };
 
+    keep_database_private(url);
     // The writer first: it creates the file and puts it in WAL mode before any reader opens it.
     let writer = connect_sqlite(url, 1, memory, sync).await?;
     if memory {
@@ -111,6 +186,9 @@ async fn open_sqlite(url: &str, options: &StoreOptions) -> Result<Pools, StoreEr
         });
     }
     let reader = connect_sqlite(url, options.sqlite_readers.max(1), memory, sync).await?;
+    // SQLite has made the -wal and -shm files by now; they follow the main file's mode, and this
+    // makes sure.
+    keep_database_private(url);
     Ok(Pools { writer, reader })
 }
 
@@ -133,7 +211,10 @@ async fn connect_sqlite(
         let opts = opts
             .foreign_keys(true)
             .busy_timeout(Duration::from_secs(10))
-            .synchronous(sync);
+            .synchronous(sync)
+            // Freed pages are overwritten with zeros, so a deleted item or account does not
+            // linger in the file (and in what a copy of it, a backup or a disk image, holds).
+            .pragma("secure_delete", "ON");
         if memory {
             opts
         } else {
@@ -166,6 +247,87 @@ mod tests {
         assert_eq!(options.sqlite_readers, 4);
     }
 
+
+    fn file_url(path: &Path) -> String {
+        format!(
+            "sqlite://{}?mode=rwc",
+            path.to_string_lossy().replace('\', "/")
+        )
+    }
+
+    async fn pragma(db: &DatabaseConnection, name: &str) -> i64 {
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+        db.query_one_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            format!("PRAGMA {name}"),
+        ))
+        .await
+        .expect("the pragma runs")
+        .expect("a row")
+        .try_get_by_index::<i64>(0)
+        .expect("a number")
+    }
+
+    #[tokio::test]
+    async fn deleted_data_is_overwritten_on_every_connection() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let pools = open(
+            &file_url(&dir.path().join("db.sqlite3")),
+            &StoreOptions::default(),
+        )
+        .await
+        .expect("opens");
+        assert_eq!(pragma(&pools.writer, "secure_delete").await, 1);
+        assert_eq!(pragma(&pools.reader, "secure_delete").await, 1);
+    }
+
+    #[test]
+    fn the_file_of_a_sqlite_url_is_found() {
+        assert_eq!(
+            sqlite_file("sqlite://data/db.sqlite3?mode=rwc"),
+            Some(PathBuf::from("data/db.sqlite3"))
+        );
+        assert_eq!(
+            sqlite_file("sqlite:///var/lib/kemlock/db"),
+            Some(PathBuf::from("/var/lib/kemlock/db"))
+        );
+        assert_eq!(sqlite_file("sqlite::memory:"), None);
+        assert_eq!(sqlite_file("sqlite://x?mode=memory&cache=shared"), None);
+        assert_eq!(sqlite_file("sqlite://x?mode=ro"), None);
+        assert_eq!(sqlite_file("postgres://u@h/db"), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_database_files_are_readable_by_their_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).expect("a file").permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().expect("a temp dir");
+
+        // A new database is made private from the start.
+        let fresh = dir.path().join("fresh.sqlite3");
+        let pools = open(&file_url(&fresh), &StoreOptions::default())
+            .await
+            .expect("opens");
+        assert_eq!(mode(&fresh), 0o600);
+        for suffix in ["-wal", "-shm"] {
+            let side = with_suffix(&fresh, suffix);
+            if side.exists() {
+                assert_eq!(mode(&side), 0o600, "{suffix}");
+            }
+        }
+        drop(pools);
+
+        // One an older version made, world-readable, is tightened.
+        let old = dir.path().join("old.sqlite3");
+        std::fs::write(&old, b"").expect("an old file");
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o644)).expect("loosened");
+        let pools = open(&file_url(&old), &StoreOptions::default())
+            .await
+            .expect("opens");
+        assert_eq!(mode(&old), 0o600);
+        drop(pools);
+    }
     #[tokio::test]
     async fn an_unknown_scheme_is_refused_without_echoing_the_url() {
         let err = open("redis://secret@host", &StoreOptions::default())
