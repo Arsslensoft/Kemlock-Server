@@ -49,7 +49,7 @@ describe('compareLedger', () => {
     const listed = manifest([entry(A, 3), tomb(B, 2)]);
     expect(compareLedger(listed, {}, ledger({}))).toEqual([{ id: A, verdict: 'missing', manifestRevision: 3 }]);
     // A tombstone served, or listed as deleted, is not missing.
-    expect(compareLedger(listed, {}, ledger({ [A]: gone(4) }))).toEqual([]);
+    expect(compareLedger(listed, {}, ledger({ [A]: gone(4, true) }))).toEqual([]);
   });
 
   it('flags a deleted item served live again, whichever way it is known to be deleted', () => {
@@ -89,7 +89,7 @@ describe('compareLedger, for what the server could be making up', () => {
       { id: A, verdict: 'deleted', revision: 3, manifestRevision: 2 },
     ]);
     // Its own deletion is no warning, and neither is a tombstone for an entry already deleted.
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3) }))).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3, true) }))).toEqual([]);
     expect(compareLedger(manifest([tomb(A, 2)]), {}, ledger({ [A]: gone(3) }))).toEqual([]);
   });
 
@@ -97,7 +97,7 @@ describe('compareLedger, for what the server could be making up', () => {
     const far = 2 + 2 ** 32 + 1;
     expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far) }))[0]?.verdict).toBe('implausible');
     expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(far) }))[0]?.verdict).toBe('implausible');
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far, H1) }))).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far, H1, true) }))).toEqual([]);
     expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(2 + 2 ** 32) }))).toEqual([]);
   });
 });

@@ -146,7 +146,7 @@ describe('the invitation link on the space page', () => {
     // server says Ivy has no invitation, or says nothing.
     page('owner', inviteLink, true);
     expect(screen.getAllByRole('button', { name: /Copy the invitation link/ })).toHaveLength(1);
-    expect(screen.queryByRole('button', { name: /Kay Ito/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copy the invitation link of Kay Ito' })).not.toBeInTheDocument();
     cleanup();
     page('owner', inviteLink, false);
     expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();

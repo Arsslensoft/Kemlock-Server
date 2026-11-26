@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { hasUnsavedItemForm, useUnsavedMark } from './unsaved';
@@ -29,8 +29,8 @@ describe('unsaved item forms', () => {
     const user = userEvent.setup();
     const a = render(<Form />);
     const b = render(<Form />);
-    await user.type(a.getAllByLabelText('Name')[0] as HTMLElement, 'x');
-    await user.type(b.getAllByLabelText('Name')[0] as HTMLElement, 'y');
+    await user.type(within(a.container).getByLabelText('Name'), 'x');
+    await user.type(within(b.container).getByLabelText('Name'), 'y');
     a.unmount();
     expect(hasUnsavedItemForm()).toBe(true);
     b.unmount();

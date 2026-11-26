@@ -331,7 +331,7 @@ export const crypto: CryptoPort = {
   async rotationSealRootKey(recipientKx1, context, aad) {
     calls.push('rotationSealRootKey');
     if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
-    return utf8(`box:${context}:${fromUtf8(recipientKx1)}:${fromUtf8(aad)}`);
+    return utf8(`box:${context}:${encodeB64(recipientKx1)}:${encodeB64(aad)}`);
   },
   async rotationCommit() {
     calls.push('rotationCommit');

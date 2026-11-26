@@ -194,7 +194,7 @@ describe('keeping the vault open across a reload', () => {
     const { session } = setup(storage);
     session.tokenStore.set(tokens);
     session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
-    await vi.waitFor(() => expect(JSON.parse(storedTokens(storage) ?? 'null')).toEqual(tokens));
+    await vi.waitFor(() => expect(JSON.parse((JSON.parse(storedTokens(storage) ?? '[]') as string[])[4] ?? 'null')).toEqual(tokens));
     expect(session.tokenStore.get()).toEqual(tokens);
   });
 

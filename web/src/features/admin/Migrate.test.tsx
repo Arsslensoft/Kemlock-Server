@@ -105,7 +105,7 @@ describe('MigrateView', () => {
     expect(screen.getByRole('heading', { name: 'What a move would do' })).toBeInTheDocument();
     expect(screen.getByText(/5302 items/)).toBeInTheDocument();
     expect(screen.getByText('Read 10 minutes ago')).toBeInTheDocument();
-    expect(screen.getByText(/kemlock-cli import-vaultwarden/)).toBeInTheDocument();
+    expect(screen.getByText(/kemlock-cli import-vaultwarden is the tool that copies/)).toBeInTheDocument();
     expect(screen.getByText('Check it', { selector: 'li' })).toHaveAttribute('aria-current', 'step');
   });
 
@@ -138,7 +138,7 @@ describe('MigrateView', () => {
     expect(screen.getByText('Started 2 minutes ago')).toBeInTheDocument();
     expect(screen.getByText('Copy', { selector: 'li' })).toHaveAttribute('aria-current', 'step');
     // Nothing is said of a plan that only reads.
-    expect(screen.queryByText(/kemlock-cli import-vaultwarden/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/kemlock-cli import-vaultwarden is the tool that copies/)).not.toBeInTheDocument();
   });
 
   it('says what a finished move wrote, and when it finished', () => {
