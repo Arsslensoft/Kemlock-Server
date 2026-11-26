@@ -2,7 +2,8 @@
 
 use super::TwoStep;
 use super::data::{
-    EmailData, PURPOSE_EMAIL, PURPOSE_EMAIL_SETUP, numeric_code, open, same, sealed,
+    EmailData, PURPOSE_EMAIL, PURPOSE_EMAIL_SETUP, numeric_code, open, open_row, same, sealed,
+    sealed_row,
 };
 use crate::error::AppError;
 use crate::notices::{Notice, TwoStepCodeNotice};
@@ -51,7 +52,7 @@ where
         else {
             return Ok(None);
         };
-        let data = open::<EmailData, _>(&self.seal, PURPOSE_EMAIL, &row.sealed_secret)
+        let data = open_row::<EmailData, _>(&self.seal, PURPOSE_EMAIL, user, &row.sealed_secret)
             .ok_or_else(|| AppError::Store("a stored email setup doesn't open".to_owned()))?;
         Ok(Some((row, data)))
     }
@@ -182,7 +183,7 @@ where
             .put(&TwoFactor {
                 user,
                 method: TwoFactorMethod::Email,
-                sealed_secret: sealed(&self.seal, PURPOSE_EMAIL, &data),
+                sealed_secret: sealed_row(&self.seal, PURPOSE_EMAIL, user, &data),
                 enabled: true,
                 created_at: now,
             })
@@ -211,7 +212,7 @@ where
             .map_err(|_| AppError::Invalid("the address set up for email codes isn't valid"))?;
         self.two_factor
             .put(&TwoFactor {
-                sealed_secret: sealed(&self.seal, PURPOSE_EMAIL, &data),
+                sealed_secret: sealed_row(&self.seal, PURPOSE_EMAIL, user.id, &data),
                 ..row
             })
             .await?;
@@ -245,7 +246,7 @@ where
         let sent = data.token_sent;
         self.two_factor
             .put(&TwoFactor {
-                sealed_secret: sealed(&self.seal, PURPOSE_EMAIL, &data),
+                sealed_secret: sealed_row(&self.seal, PURPOSE_EMAIL, user, &data),
                 ..row
             })
             .await?;

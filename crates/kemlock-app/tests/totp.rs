@@ -2,7 +2,9 @@ mod fakes;
 
 use fakes::*;
 use kemlock_app::AppError;
+use kemlock_app::sealed::bound_purpose;
 use kemlock_app::ports::{SecretSeal, TwoFactorMethod};
+use kemlock_domain::UserId;
 
 #[tokio::test]
 async fn enrolling_stores_a_sealed_secret_that_is_not_yet_enabled() {
@@ -35,8 +37,21 @@ async fn enrolling_stores_a_sealed_secret_that_is_not_yet_enabled() {
     assert!(!rows[0].enabled);
     // Sealed: the stored bytes are not the 20-byte secret itself.
     assert!(rows[0].sealed_secret.len() > 20);
-    assert!(world.seal.open("totp", &rows[0].sealed_secret).is_ok());
+    assert!(
+        world
+            .seal
+            .open(&bound_purpose("totp", user), &rows[0].sealed_secret)
+            .is_ok()
+    );
+    // Bound to the account: not the bare purpose, another purpose or another account.
+    assert!(world.seal.open("totp", &rows[0].sealed_secret).is_err());
     assert!(world.seal.open("webauthn", &rows[0].sealed_secret).is_err());
+    assert!(
+        world
+            .seal
+            .open(&bound_purpose("totp", UserId::random()), &rows[0].sealed_secret)
+            .is_err()
+    );
 }
 
 #[tokio::test]

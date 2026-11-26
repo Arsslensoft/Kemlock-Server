@@ -20,7 +20,7 @@ use crate::ports::{
     Event, EventLog, PasswordAuth, SecretSeal, Totp, TwoFactorMethod, TwoFactorRepo, UserRepo,
 };
 use crate::register::{RegisterInput, check_keys};
-use crate::sealed::PURPOSE_TOTP;
+use crate::sealed::{PURPOSE_TOTP, open_bound};
 use kemlock_domain::{AccountMode, Email, KdfParams, User, UserId};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
@@ -309,13 +309,11 @@ where
             return Err(AppError::Forbidden);
         };
         let code = code.ok_or(AppError::Unauthorized)?;
-        let secret = self
-            .seal
-            .open(PURPOSE_TOTP, &totp.sealed_secret)
+        let secret = open_bound(&self.seal, PURPOSE_TOTP, user, &totp.sealed_secret)
             .map_err(|_| AppError::Store("a stored TOTP secret does not open".to_owned()))?;
         let step = self
             .totp
-            .verify_step(&secret, code.trim(), self.env.now())
+            .verify_step(&secret.value, code.trim(), self.env.now())
             .ok_or(AppError::Unauthorized)?;
         if !self.two_factor.accept_totp_step(user, step).await? {
             return Err(AppError::Unauthorized);

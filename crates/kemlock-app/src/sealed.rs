@@ -2,7 +2,7 @@
 //! state and the two-step challenge. Each carries its own expiry, is sealed under `server.key`
 //! with its own purpose, and is checked when it comes back.
 
-use crate::ports::Zeroizing;
+use crate::ports::{CryptoError, SecretSeal, Zeroizing};
 use kemlock_domain::{DeviceId, DeviceKind, UserId};
 use uuid::Uuid;
 
@@ -12,6 +12,52 @@ pub const PURPOSE_LOGIN: &str = "opaque-login";
 pub const PURPOSE_CHALLENGE: &str = "two-factor-challenge";
 /// `SecretSeal` purpose of a stored TOTP secret.
 pub const PURPOSE_TOTP: &str = "totp";
+
+/// The purpose a per-account secret is sealed under: the secret's own purpose and the account's
+/// id, so a sealed value copied into another account's row (by someone who can write the database
+/// but doesn't hold `server.key`) doesn't open there. The purpose is the key's HKDF input and the
+/// seal's associated data, so the binding needs no change to the seal.
+pub fn bound_purpose(purpose: &str, user: UserId) -> String {
+    format!("{purpose}:{user}")
+}
+
+/// Seals a per-account secret under [`bound_purpose`].
+pub fn seal_bound<S: SecretSeal + ?Sized>(
+    seal: &S,
+    purpose: &str,
+    user: UserId,
+    value: &[u8],
+) -> Vec<u8> {
+    seal.seal(&bound_purpose(purpose, user), value)
+}
+
+/// A per-account secret as [`open_bound`] read it.
+pub struct OpenedBound {
+    pub value: Zeroizing<Vec<u8>>,
+    /// Whether it was sealed the old way, under the bare purpose: the caller seals it again with
+    /// [`seal_bound`] where it can write the row back.
+    pub legacy: bool,
+}
+
+/// Opens a per-account secret: sealed for this account, or, for what was stored before secrets
+/// were bound to accounts, under the bare purpose (`legacy` is then set).
+pub fn open_bound<S: SecretSeal + ?Sized>(
+    seal: &S,
+    purpose: &str,
+    user: UserId,
+    sealed: &[u8],
+) -> Result<OpenedBound, CryptoError> {
+    match seal.open(&bound_purpose(purpose, user), sealed) {
+        Ok(value) => Ok(OpenedBound {
+            value,
+            legacy: false,
+        }),
+        Err(_) => seal.open(purpose, sealed).map(|value| OpenedBound {
+            value,
+            legacy: true,
+        }),
+    }
+}
 
 struct Writer(Vec<u8>);
 
@@ -190,6 +236,43 @@ impl Challenge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestSeal(kemlock_crypto::seal::ServerSeal);
+
+    impl SecretSeal for TestSeal {
+        fn seal(&self, purpose: &str, value: &[u8]) -> Vec<u8> {
+            self.0.seal(purpose, value)
+        }
+        fn open(&self, purpose: &str, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
+            self.0
+                .open(purpose, sealed)
+                .map_err(|_| CryptoError::Invalid)
+        }
+    }
+
+    fn seal() -> TestSeal {
+        TestSeal(kemlock_crypto::seal::ServerSeal::new(&[9u8; 32]))
+    }
+
+    #[test]
+    fn a_bound_secret_opens_for_its_account_only() {
+        let (sam, kim) = (UserId::random(), UserId::random());
+        let sealed = seal_bound(&seal(), PURPOSE_TOTP, sam, b"seed");
+        let opened = open_bound(&seal(), PURPOSE_TOTP, sam, &sealed).expect("opens");
+        assert_eq!(opened.value.as_slice(), b"seed");
+        assert!(!opened.legacy);
+        // Copied into another account's row, it doesn't open there, bare or bound.
+        assert!(open_bound(&seal(), PURPOSE_TOTP, kim, &sealed).is_err());
+    }
+
+    #[test]
+    fn a_secret_sealed_under_the_bare_purpose_still_opens_and_says_so() {
+        let sam = UserId::random();
+        let sealed = seal().seal(PURPOSE_TOTP, b"seed");
+        let opened = open_bound(&seal(), PURPOSE_TOTP, sam, &sealed).expect("opens");
+        assert_eq!(opened.value.as_slice(), b"seed");
+        assert!(opened.legacy);
+    }
 
     #[test]
     fn login_state_round_trips_and_refuses_trailing_bytes() {

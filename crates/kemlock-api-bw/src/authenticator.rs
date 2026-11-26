@@ -26,7 +26,8 @@ use axum::http::StatusCode;
 use axum::routing::{post, put};
 use kemlock_app::enrol_totp::{SECRET_LEN, base32};
 use kemlock_app::ports::{TwoFactor, TwoFactorMethod, TwoFactorRepo};
-use kemlock_app::sealed::PURPOSE_TOTP;
+use crate::webauthn::SealRef;
+use kemlock_app::sealed::{PURPOSE_TOTP, open_bound, seal_bound};
 use kemlock_crypto::totp;
 use kemlock_domain::UserId;
 use serde::{Deserialize, Serialize};
@@ -204,10 +205,14 @@ async fn get_authenticator<S: BwStore>(
     .await?;
     let (enabled, key) = match enabled_enrolment(&app, authed.user.id).await? {
         Some(enrolment) => {
-            let secret = app
-                .seal
-                .open(PURPOSE_TOTP, &enrolment.sealed_secret)
-                .map_err(|_| BwError::Server("a stored TOTP secret doesn't open".to_owned()))?;
+            let secret = open_bound(
+                &SealRef(&app.seal),
+                PURPOSE_TOTP,
+                authed.user.id,
+                &enrolment.sealed_secret,
+            )
+            .map_err(|_| BwError::Server("a stored TOTP secret doesn't open".to_owned()))?
+            .value;
             (true, base32(&secret))
         }
         None => (false, base32(&random_bytes::<SECRET_LEN>(app.env.as_ref()))),
@@ -269,7 +274,7 @@ async fn activate_authenticator<S: BwStore>(
         &TwoFactor {
             user,
             method: TwoFactorMethod::Totp,
-            sealed_secret: app.seal.seal(PURPOSE_TOTP, &secret),
+            sealed_secret: seal_bound(&SealRef(&app.seal), PURPOSE_TOTP, user, &secret),
             enabled: true,
             created_at: now,
         },
@@ -313,10 +318,14 @@ async fn disable_authenticator<S: BwStore>(
     )?;
 
     if let Some(enrolment) = enabled_enrolment(&app, user).await? {
-        let secret = app
-            .seal
-            .open(PURPOSE_TOTP, &enrolment.sealed_secret)
-            .map_err(|_| BwError::Server("a stored TOTP secret doesn't open".to_owned()))?;
+        let secret = open_bound(
+            &SealRef(&app.seal),
+            PURPOSE_TOTP,
+            user,
+            &enrolment.sealed_secret,
+        )
+        .map_err(|_| BwError::Server("a stored TOTP secret doesn't open".to_owned()))?
+        .value;
         if base32(&secret) != data.key {
             return Err(BwError::msg(format!(
                 "TOTP key for user {} does not match recorded value, cannot deactivate",

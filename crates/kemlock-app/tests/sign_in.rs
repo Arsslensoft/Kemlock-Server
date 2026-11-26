@@ -457,7 +457,7 @@ fn code_at(world: &World, user: UserId, unix: u64) -> String {
         .expect("the user has a TOTP enrolment");
     let secret = world
         .seal
-        .open("totp", &row.sealed_secret)
+        .open(&kemlock_app::sealed::bound_purpose("totp", user), &row.sealed_secret)
         .expect("the secret opens");
     kemlock_crypto::totp::code_at(&secret, unix)
 }
@@ -682,4 +682,84 @@ async fn a_deletion_scheduled_between_the_password_and_the_code_gets_no_session(
         .await;
     assert_eq!(result.map(|_| ()), Err(AppError::AccountBeingDeleted));
     assert!(world.store.devices_of(user).is_empty());
+}
+
+/// The account's TOTP row as the store has it.
+fn totp_row(world: &World, user: UserId) -> kemlock_app::ports::TwoFactor {
+    world
+        .store
+        .two_factor_of(user)
+        .into_iter()
+        .find(|t| t.method == TwoFactorMethod::Totp)
+        .expect("the user has a TOTP enrolment")
+}
+
+#[tokio::test]
+async fn a_secret_stored_before_binding_still_signs_in_and_is_sealed_to_its_account() {
+    use kemlock_app::ports::TwoFactorRepo;
+    use kemlock_app::sealed::bound_purpose;
+    let (world, user) = two_step_world().await;
+    // Put the secret back the way earlier versions (and an import from Vaultwarden) stored it:
+    // under the bare purpose.
+    let mut row = totp_row(&world, user);
+    let secret = world
+        .seal
+        .open(&bound_purpose("totp", user), &row.sealed_secret)
+        .expect("opens");
+    row.sealed_secret = world.seal.seal("totp", &secret);
+    TwoFactorRepo::put(&world.store, &row)
+        .await
+        .expect("stored");
+
+    let code = totp_code_of(&world, user, &secret);
+    second_step_with(&world, challenge_for(&world).await, code)
+        .await
+        .expect("a legacy secret still signs in");
+
+    let after = totp_row(&world, user);
+    assert!(
+        world
+            .seal
+            .open(&bound_purpose("totp", user), &after.sealed_secret)
+            .is_ok(),
+        "sealed to the account once it was used"
+    );
+    assert!(world.seal.open("totp", &after.sealed_secret).is_err());
+    assert!(after.enabled);
+}
+
+fn totp_code_of(world: &World, _user: UserId, secret: &[u8]) -> String {
+    kemlock_crypto::totp::code_at(secret, unix(world.env.now()))
+}
+
+#[tokio::test]
+async fn a_secret_copied_from_another_accounts_row_does_not_sign_in() {
+    use kemlock_app::ports::TwoFactorRepo;
+    let (world, user) = two_step_world().await;
+    // Another account with its own enrolled authenticator.
+    let other = make_user(&world, "kim@example.org").await;
+    world
+        .enrol_totp()
+        .execute(other)
+        .await
+        .expect("enrolment works");
+    let other_code = totp_code(&world, other);
+    world
+        .confirm_totp()
+        .execute(other, &other_code)
+        .await
+        .expect("confirmed");
+
+    // Someone who can write the database, not read `server.key`, copies their own sealed secret
+    // into the victim's row, and holds the code for it.
+    let mut victim = totp_row(&world, user);
+    victim.sealed_secret = totp_row(&world, other).sealed_secret;
+    TwoFactorRepo::put(&world.store, &victim)
+        .await
+        .expect("stored");
+    let code = totp_code(&world, other);
+
+    let result = second_step_with(&world, challenge_for(&world).await, code).await;
+    assert!(result.is_err(), "the copied secret does not open here");
+    assert_eq!(world.store.devices_of(user).len(), 0);
 }

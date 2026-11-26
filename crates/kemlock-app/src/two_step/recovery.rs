@@ -13,6 +13,7 @@ use crate::enrol_totp::base32;
 use crate::error::AppError;
 use crate::platform::Platform;
 use crate::ports::{SecretSeal, StoreError, TwoFactorRepo};
+use crate::sealed::{open_bound, seal_bound};
 use kemlock_domain::UserId;
 use std::future::Future;
 use time::OffsetDateTime;
@@ -76,7 +77,7 @@ where
     /// as Vaultwarden's `generate_recover_code` is.
     pub async fn ensure(&self, user: UserId) -> Result<(), AppError> {
         let code = base32(&self.env.bytes::<CODE_BYTES>());
-        let sealed = self.seal.seal(PURPOSE_RECOVERY, code.as_bytes());
+        let sealed = seal_bound(&self.seal, PURPOSE_RECOVERY, user, code.as_bytes());
         self.recovery
             .put_recovery_code_if_absent(user, &sealed, self.env.now())
             .await?;
@@ -93,10 +94,9 @@ where
                 None => return Ok(None),
             },
         };
-        let plain = self
-            .seal
-            .open(purpose, &sealed)
-            .map_err(|_| AppError::Store("a stored recovery code doesn't open".to_owned()))?;
+        let plain = open_bound(&self.seal, purpose, user, &sealed)
+            .map_err(|_| AppError::Store("a stored recovery code doesn't open".to_owned()))?
+            .value;
         String::from_utf8(plain.as_slice().to_vec())
             .map(Some)
             .map_err(|_| AppError::Store("a stored recovery code isn't text".to_owned()))

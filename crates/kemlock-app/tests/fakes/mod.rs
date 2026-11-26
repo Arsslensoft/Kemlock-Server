@@ -1283,7 +1283,7 @@ pub(crate) fn totp_code(world: &World, user: UserId) -> String {
         .expect("the user has a TOTP enrolment");
     let secret = world
         .seal
-        .open("totp", &row.sealed_secret)
+        .open(&kemlock_app::sealed::bound_purpose("totp", user), &row.sealed_secret)
         .expect("the secret opens");
     kemlock_crypto::totp::code_at(&secret, unix(world.env.now()))
 }

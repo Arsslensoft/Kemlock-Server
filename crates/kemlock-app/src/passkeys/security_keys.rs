@@ -18,6 +18,7 @@ use crate::config::AuthConfig;
 use crate::error::AppError;
 use crate::platform::Platform;
 use crate::ports::{SecretSeal, StoreError, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo};
+use crate::sealed::{open_bound, seal_bound};
 use kemlock_domain::{Passkey, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -190,11 +191,11 @@ async fn load_keys<F: TwoFactorRepo, S: SecretSeal>(
         .find(|t| t.method == TwoFactorMethod::WebAuthn && t.enabled);
     let (created_at, keys) = match row {
         Some(row) => {
-            let plain = seal
-                .open(PURPOSE_WEBAUTHN, &row.sealed_secret)
+            let plain = open_bound(seal, PURPOSE_WEBAUTHN, user, &row.sealed_secret)
                 .map_err(|_| {
                     AppError::Store("a stored security key list doesn't open".to_owned())
-                })?;
+                })?
+                .value;
             let stored: StoredKeys = serde_json::from_slice(&plain).map_err(|_| {
                 AppError::Store("a stored security key list isn't valid".to_owned())
             })?;
@@ -224,7 +225,7 @@ async fn save_keys<F: TwoFactorRepo, S: SecretSeal, E: Platform>(
         .put(&TwoFactor {
             user,
             method: TwoFactorMethod::WebAuthn,
-            sealed_secret: seal.seal(PURPOSE_WEBAUTHN, &plain),
+            sealed_secret: seal_bound(seal, PURPOSE_WEBAUTHN, user, &plain),
             enabled: true,
             created_at: created_at.unwrap_or_else(|| env.now()),
         })

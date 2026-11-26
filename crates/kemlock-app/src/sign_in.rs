@@ -9,10 +9,12 @@ use crate::error::AppError;
 use crate::platform::Platform;
 use crate::ports::{
     DeviceRepo, EventLog, PasswordAuth, SecretSeal, TokenRepo, TokenSigner, Totp, TwoFactorMethod,
-    TwoFactorRepo, UserRepo, Zeroizing,
+    TwoFactor, TwoFactorRepo, UserRepo, Zeroizing,
 };
 use crate::privacy::ensure_not_pending;
-use crate::sealed::{Challenge, LoginState, PURPOSE_CHALLENGE, PURPOSE_LOGIN, PURPOSE_TOTP};
+use crate::sealed::{
+    Challenge, LoginState, PURPOSE_CHALLENGE, PURPOSE_LOGIN, PURPOSE_TOTP, open_bound, seal_bound,
+};
 use crate::session::{DeviceInfo, Sessions, TokenPair};
 use crate::sso::{MembershipFacts, RequireSso, SignInMethod};
 use kemlock_domain::{Device, Email, User, UserId};
@@ -256,18 +258,32 @@ where
             .ok_or(AppError::Unauthorized)?;
         match factor.method {
             TwoFactorMethod::Totp => {
-                let secret = self
-                    .seal
-                    .open(PURPOSE_TOTP, &factor.sealed_secret)
+                let opened = open_bound(&self.seal, PURPOSE_TOTP, user.id, &factor.sealed_secret)
                     .map_err(|_| AppError::Store("a stored TOTP secret doesn't open".to_owned()))?;
                 let step = self
                     .totp
-                    .verify_step(&secret, input.code.trim(), now)
+                    .verify_step(&opened.value, input.code.trim(), now)
                     .ok_or(AppError::Unauthorized)?;
                 // The same step can be accepted once: a code seen over a shoulder or in a
                 // proxy log is useless for the rest of its window.
                 if !self.two_factor.accept_totp_step(user.id, step).await? {
                     return Err(AppError::Unauthorized);
+                }
+                if opened.legacy {
+                    // Stored before secrets were bound to accounts: sealed again, bound. Failing
+                    // to write it back loses nothing, the next sign-in tries again.
+                    let bound = TwoFactor {
+                        sealed_secret: seal_bound(
+                            &self.seal,
+                            PURPOSE_TOTP,
+                            user.id,
+                            &opened.value,
+                        ),
+                        ..factor.clone()
+                    };
+                    if let Err(error) = self.two_factor.put(&bound).await {
+                        tracing::warn!(%error, "couldn't seal a TOTP secret to its account");
+                    }
                 }
             }
             // These have their own calls: a security key answers a challenge of its own
