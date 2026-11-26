@@ -162,12 +162,19 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     /// Stores the tags that came with a single write and shapes the answer: the item as before,
     /// plus `tagsStored` and `matches` when the write carried tags. The item is already written, so
     /// a store failure here leaves it without tags and is only logged.
-    pub(crate) async fn answer_with_tags(&self, item: &Item, tags: TagSet) -> Value {
+    pub(crate) async fn answer_with_tags<R: SpaceRepo>(
+        &self,
+        spaces: R,
+        actor: &Actor,
+        item: &Item,
+        tags: TagSet,
+    ) -> Value {
         let mut answer = json!(ItemDto::from_item(item));
         let outcome = StoreTags {
             tags: self.store.clone(),
+            spaces,
         }
-        .after_write(item, tags)
+        .after_write(actor, item, tags)
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "couldn't store an item's tags");
@@ -191,8 +198,10 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
 
     /// [`answer_with_tags`](Self::answer_with_tags) for a batch: the items as before, plus `tags`
     /// (one entry per write that carried tags) when any did.
-    pub(crate) async fn answer_batch_with_tags(
+    pub(crate) async fn answer_batch_with_tags<R: SpaceRepo>(
         &self,
+        spaces: R,
+        actor: &Actor,
         items: &[Item],
         tags: HashMap<ItemId, TagSet>,
     ) -> Value {
@@ -208,8 +217,9 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .collect();
         let outcomes = StoreTags {
             tags: self.store.clone(),
+            spaces,
         }
-        .after_batch(items, tags)
+        .after_batch(actor, items, tags)
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "couldn't store a batch's tags");
