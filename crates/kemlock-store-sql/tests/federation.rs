@@ -383,3 +383,40 @@ async fn a_signature_is_kept_once_and_an_item_id_of_another_owner_is_refused() {
     let outcome = ReplicaStore::apply(&b, &records[0].0, &records[0].1).await;
     assert!(matches!(outcome, Err(StoreError::Duplicate)));
 }
+
+/// A peer's record with an HLC time at the top of the range used to raise `last_hlc` to it, and
+/// the next local write then took a time the column can't hold: every write failed, across
+/// restarts. The clock stops at the limit now, and the start-up repair sets it back.
+#[tokio::test]
+async fn a_record_with_a_huge_hlc_time_neither_stops_local_writes_nor_survives_a_restart() {
+    let (store, dir) = common::file().await;
+    let source = memory().await;
+    let owner = user_owner();
+    put(&source, draft(ItemId::random(), owner, None, 1)).await;
+    let (mut record, signature) = records_of(&source, owner).await.remove(0);
+    record.change.hlc = Hlc(u64::MAX >> 1);
+    assert_eq!(
+        ReplicaStore::apply(&store, &record, &signature)
+            .await
+            .expect("apply"),
+        ApplyOutcome::Applied
+    );
+
+    // The clock is at the limit: a local write still goes through, at the limit.
+    let written = put(&store, draft(ItemId::random(), user_owner(), None, 1)).await;
+    assert_eq!(written.change.hlc, Hlc::MAX);
+
+    // After a restart the clock is back at the wall clock.
+    let url = common::file_url(&dir.path().join("kemlock.db"));
+    drop(store);
+    let store = SqlStore::connect(&url).await.expect("reconnect");
+    let written = put(&store, draft(ItemId::random(), user_owner(), None, 1)).await;
+    let now_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000)
+        .expect("a time after 1970");
+    assert!(
+        written.change.hlc.millis() <= now_ms + 60_000,
+        "the repaired clock is near the wall clock, not at {}",
+        written.change.hlc.millis()
+    );
+    assert!(written.change.hlc.millis() >= now_ms - 60_000);
+}

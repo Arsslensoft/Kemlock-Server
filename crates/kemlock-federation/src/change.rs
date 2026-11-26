@@ -215,6 +215,20 @@ pub fn open(envelope: &[u8], keys: &dyn KeyDirectory) -> Result<ChangeRecord> {
     Ok(record)
 }
 
+/// How far ahead of this server's clock a record's HLC time may be, in milliseconds: the 300
+/// seconds of clock skew every other check here allows.
+pub const MAX_FUTURE_MS: u64 = 300_000;
+
+/// Refuses a record whose HLC time is more than [`MAX_FUTURE_MS`] ahead of `now_ms` (Unix
+/// milliseconds). Old records are normal (a peer that was away); a time far ahead would raise this
+/// server's clock with it, and a clock at the top of its range can't tick again.
+pub fn check_not_future(record: &ChangeRecord, now_ms: u64) -> Result<()> {
+    if record.change.hlc.millis() > now_ms.saturating_add(MAX_FUTURE_MS) {
+        return Err(FedError::Refused("a change from the future"));
+    }
+    Ok(())
+}
+
 /// The server that signs a record.
 pub fn origin_of(record: &ChangeRecord) -> ServerId {
     record.change.origin
@@ -354,6 +368,21 @@ mod tests {
             entries.push((99, Value::Uint(1)));
         }
         assert!(ChangeRecord::from_body(&value.encode()).is_err());
+    }
+
+    #[test]
+    fn a_record_from_the_future_is_refused_and_an_old_one_is_not() {
+        let origin = ServerId::random();
+        let mut r = record(origin, 5, 3);
+        let now_ms = 1_700_000_000_000;
+        r.change.hlc = Hlc::from_parts(now_ms + MAX_FUTURE_MS, 9);
+        assert!(check_not_future(&r, now_ms).is_ok(), "the skew allowance is kept");
+        r.change.hlc = Hlc::from_parts(now_ms + MAX_FUTURE_MS + 1, 0);
+        assert!(matches!(check_not_future(&r, now_ms), Err(FedError::Refused(_))));
+        r.change.hlc = Hlc(u64::MAX >> 1);
+        assert!(check_not_future(&r, now_ms).is_err());
+        r.change.hlc = Hlc::from_parts(1_000, 0);
+        assert!(check_not_future(&r, now_ms).is_ok(), "old records are normal");
     }
 
     #[test]

@@ -303,6 +303,15 @@ A change key is `origin (16) ‖ u64be(seq)` (24 bytes). A record is refused whe
 sequence or revision, a tombstone with ciphertext, a live item without it, or a lineage that names
 the record itself. The ciphertext and item key are exactly as stored and servers can't read them.
 
+**HLC times are bounded.** A receiver leaves out a record whose HLC time (the milliseconds in its
+high 48 bits) is more than 300 seconds ahead of its own clock, the skew every check here allows;
+the rest of the page is applied, the cursor moves on, and a later comparison fetches the record
+again, when it is accepted if the clock has caught up. Old times are normal and never refused.
+Without the bound one record could carry a server's clock to the top of its range, where every
+later local write would fail. A server's own clock also stops at `2^63 - 1` instead of overflowing,
+and at start-up it sets a stored clock more than a day ahead of the wall clock back to it (and logs
+that it did), which repairs a server a record already damaged.
+
 ### Lineage, versions and siblings
 
 The **lineage** of a version is the versions it replaced. The origin works it out once, for a

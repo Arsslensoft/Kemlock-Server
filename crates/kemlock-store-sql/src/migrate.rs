@@ -1,14 +1,17 @@
 //! Running the migrations under a lock, and loading or making this server's identity.
 
-use crate::convert::utc;
+use crate::convert::{unix_millis, utc};
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::lease;
 use crate::migration::{Migrator, job_leases_table};
 use crate::tables::server_meta;
 use kemlock_app::ports::StoreError;
-use kemlock_domain::ServerId;
+use kemlock_domain::{Hlc, ServerId};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, Statement};
+use sea_orm::sea_query::Expr;
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter, Statement,
+};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
@@ -111,6 +114,49 @@ pub(crate) async fn load_or_create_server_id(
         .store()?
         .map(|row| ServerId(row.server_id))
         .ok_or_else(|| StoreError::Backend("server_meta has no row after creating it".to_owned()))
+}
+
+/// How far ahead of the wall clock a stored HLC time may be before start-up treats it as damage:
+/// a day, far more than clock skew between servers or a client's wrong clock explains.
+const CLOCK_REPAIR_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Puts `server_meta.last_hlc` back to the wall clock when it is far in the future (or out of
+/// range), which is what a peer's change record with a huge HLC time used to leave behind: every
+/// later write took a time above what the column holds and failed. Returns whether it changed.
+/// Items that already carry the large time keep it; only what this server writes next is affected.
+pub(crate) async fn repair_future_clock(
+    db: &DatabaseConnection,
+    now: OffsetDateTime,
+) -> Result<bool, StoreError> {
+    let Some(meta) = server_meta::Entity::find_by_id(server_meta::ROW_ID)
+        .one(db)
+        .await
+        .store()?
+    else {
+        return Ok(false);
+    };
+    let now_ms = unix_millis(now);
+    let limit = Hlc::from_parts(now_ms.saturating_add(CLOCK_REPAIR_AHEAD_MS), 0);
+    let damaged = !u64::try_from(meta.last_hlc).is_ok_and(|stored| stored <= limit.0);
+    if !damaged {
+        return Ok(false);
+    }
+    let repaired = Hlc::from_parts(now_ms, 0);
+    server_meta::Entity::update_many()
+        .col_expr(
+            server_meta::Column::LastHlc,
+            Expr::value(i64::try_from(repaired.0).unwrap_or(i64::MAX)),
+        )
+        .filter(server_meta::Column::Id.eq(server_meta::ROW_ID))
+        .exec(db)
+        .await
+        .store()?;
+    tracing::warn!(
+        was = meta.last_hlc,
+        now = repaired.0,
+        "the stored change clock was far in the future (a peer's record, most likely): set back to the wall clock"
+    );
+    Ok(true)
 }
 
 /// The file a SQLite database is copied to before migrations change it, inside the database's own

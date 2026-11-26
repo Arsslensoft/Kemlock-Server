@@ -613,11 +613,20 @@ impl<S: FedStore> Replica<S> {
             .await?
             .ok_or(FedError::UnknownVault)?;
         let me = self.server_id();
+        let now_ms = crate::session::unix_now().saturating_mul(1000);
         let mut counts = Counts::default();
         for envelope in envelopes {
             let record = change::open(envelope, &keys)?;
             if record.owner != vault {
                 return Err(FedError::Invalid("a record for another vault"));
+            }
+            // A time far ahead of our clock would raise it with the record. The record is left
+            // out and the rest of the batch goes on, so one bad record doesn't stop the sync; a
+            // later comparison fetches it again, once the clock has caught up.
+            if change::check_not_future(&record, now_ms).is_err() {
+                tracing::warn!(origin = %record.change.origin, "a change with a time far ahead of this server's clock was refused");
+                counts.refused += 1;
+                continue;
             }
             // A relayed change is accepted from an origin we are paired with or one in the vault's
             // set (whose key a peer vouched for), and from no other.
@@ -1054,6 +1063,34 @@ mod tests {
                 .expect("cursor")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn a_change_from_far_in_the_future_is_left_out_and_the_rest_still_sync() {
+        let t = two().await;
+        let ahead = crate::session::unix_now() * 1000 + 3_600_000;
+        t.a.store
+            .put(draft(ItemId::random(), t.vault, None, 1, 1_000))
+            .expect("put");
+        t.a.store
+            .put(draft(ItemId::random(), t.vault, None, 1, ahead))
+            .expect("put");
+        let mut channel = Direct {
+            remote: &t.a,
+            caller: t.b.server_id(),
+        };
+        let report =
+            t.b.pull(&mut channel, t.a.server_id(), t.vault)
+                .await
+                .expect("pull");
+        assert_eq!((report.counts.applied, report.counts.refused), (1, 1));
+        assert_eq!(t.b.store.len(), 1);
+        // B's clock was not raised with it, so B's next write gets an ordinary time.
+        let written =
+            t.b.store
+                .put(draft(ItemId::random(), t.vault, None, 1, 2_000))
+                .expect("put");
+        assert!(written.change.hlc.millis() < ahead);
     }
 
     #[tokio::test]

@@ -21,6 +21,10 @@ impl Hlc {
     const LOGICAL_BITS: u32 = 16;
     const LOGICAL_MASK: u64 = (1 << Self::LOGICAL_BITS) - 1;
 
+    /// The largest time a clock can hold: the stores keep it in a signed 64-bit column, so a time
+    /// above this one could never be written.
+    pub const MAX: Hlc = Hlc(u64::MAX >> 1);
+
     pub fn from_parts(millis: u64, logical: u16) -> Self {
         Hlc((millis << Self::LOGICAL_BITS) | u64::from(logical))
     }
@@ -35,23 +39,20 @@ impl Hlc {
     }
 
     /// The next time for a local event, given the wall clock now (ms). Never goes backwards, even
-    /// when the wall clock does.
+    /// when the wall clock does. It stays at or below [`Hlc::MAX`] (a clock already there stays
+    /// there), so a time pushed to the limit can't make every later write fail.
     pub fn tick(self, now_millis: u64) -> Hlc {
         if now_millis > self.millis() {
-            Hlc::from_parts(now_millis, 0)
+            Hlc::from_parts(now_millis, 0).min(Hlc::MAX)
         } else {
-            Hlc(self.0 + 1)
+            Hlc(self.0.saturating_add(1)).min(Hlc::MAX)
         }
     }
 
-    /// The next time after receiving `remote`, given the wall clock now (ms).
+    /// The next time after receiving `remote`, given the wall clock now (ms). Bounded like
+    /// [`tick`](Self::tick).
     pub fn receive(self, remote: Hlc, now_millis: u64) -> Hlc {
-        let latest = self.max(remote);
-        if now_millis > latest.millis() {
-            Hlc::from_parts(now_millis, 0)
-        } else {
-            Hlc(latest.0 + 1)
-        }
+        self.max(remote).tick(now_millis)
     }
 }
 
@@ -206,6 +207,18 @@ mod tests {
         assert_eq!(t.tick(2_000), Hlc::from_parts(2_000, 0));
         let remote = Hlc::from_parts(5_000, 7);
         assert_eq!(t.receive(remote, 1_000), Hlc::from_parts(5_000, 8));
+    }
+
+    #[test]
+    fn hlc_stays_inside_a_signed_column_at_the_limit() {
+        // A time at the limit (what a hostile peer could push a server's clock to) must not make
+        // the next write overflow: the clock stops there and never panics or wraps.
+        assert_eq!(Hlc::MAX.tick(1_000), Hlc::MAX);
+        assert_eq!(Hlc::MAX.receive(Hlc(u64::MAX), 1_000), Hlc::MAX);
+        assert_eq!(Hlc(u64::MAX).tick(1_000), Hlc::MAX);
+        assert!(i64::try_from(Hlc(u64::MAX).tick(5).0).is_ok());
+        // Below the limit nothing changes.
+        assert_eq!(Hlc::from_parts(10, 0).tick(5), Hlc::from_parts(10, 1));
     }
 
     #[test]

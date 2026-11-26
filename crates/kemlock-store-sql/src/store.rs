@@ -64,6 +64,7 @@ impl SqlStore {
         let Pools { writer, reader } = connect::open(url, &options).await?;
         migrate::run(&writer).await?;
         let server_id = migrate::load_or_create_server_id(&writer).await?;
+        migrate::repair_future_clock(&writer, time::OffsetDateTime::now_utc()).await?;
         tracing::info!(%server_id, "database ready");
         Ok(SqlStore {
             inner: Arc::new(Inner {
