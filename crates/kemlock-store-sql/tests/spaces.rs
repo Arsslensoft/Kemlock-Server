@@ -1119,3 +1119,54 @@ async fn two_owners_removing_each_other_together_leave_one_of_them() {
         .count();
     assert_eq!(owners, 1);
 }
+
+#[tokio::test]
+async fn a_rotation_counts_only_accepted_and_confirmed_memberships() {
+    use kemlock_app::rotation::RotationStore;
+    let store = memory().await;
+    let owner = person(&store, 1, "owner-rot@example.org").await;
+    let guest = person(&store, 2, "guest-rot@example.org").await;
+    let (space, collection) = make_space(&store, owner.id).await;
+    let spaces_of = |user: UserId| {
+        let store = store.clone();
+        async move {
+            RotationStore::holdings(&store, user)
+                .await
+                .expect("holdings")
+                .spaces
+        }
+    };
+    assert_eq!(spaces_of(owner.id).await, 1);
+
+    // Invited and not accepted: no membership, so a rotation need not move any space's keys.
+    InviteMember {
+        spaces: store.clone(),
+        users: store.clone(),
+        events: store.clone(),
+        clock: FixedClock,
+    }
+    .execute(
+        &actor(owner.id),
+        space,
+        InviteInput {
+            email: guest.email.clone(),
+            role: SpaceRole::Member,
+            custom: CustomPermissions::NONE,
+            grants: vec![(collection, CollectionPermission::Edit)],
+        },
+    )
+    .await
+    .expect("invited");
+    assert_eq!(spaces_of(guest.id).await, 0);
+
+    // Accepted: a member now.
+    AcceptInvitation {
+        spaces: store.clone(),
+        events: store.clone(),
+        clock: FixedClock,
+    }
+    .execute(&actor(guest.id), space)
+    .await
+    .expect("accepted");
+    assert_eq!(spaces_of(guest.id).await, 1);
+}

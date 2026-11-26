@@ -137,7 +137,8 @@ async fn holdings_in<C: ConnectionTrait>(db: &C, user: UserId) -> Result<Holding
 
     let spaces = members::Entity::find()
         .filter(members::Column::UserId.eq(user.0))
-        .filter(members::Column::State.ne("revoked"))
+        // An invitation not yet accepted is no membership, and a removed member has none.
+        .filter(members::Column::State.is_in(["accepted", "confirmed"]))
         .count(db)
         .await
         .store()?;
