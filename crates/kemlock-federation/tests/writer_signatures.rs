@@ -227,7 +227,10 @@ async fn a_signature_made_by_another_key_is_refused() {
     assert_eq!(report.counts.applied, 0);
     assert_eq!(report.counts.refused, 1);
     assert!(b.store().get(item).is_none());
-    assert_eq!(report.counts.retry, 1);
+    assert_eq!(
+        report.counts.retry, 0,
+        "a signature that does not verify is refused for good"
+    );
 }
 
 #[tokio::test]

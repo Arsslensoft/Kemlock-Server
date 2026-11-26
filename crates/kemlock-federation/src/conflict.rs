@@ -288,7 +288,12 @@ mod tests {
         let base = v(1, 1, 10, 1, &[]);
         let head = v(1, 9, 20, 5, &[base.key]);
         let replay = v(2, 4, 99, 3, &[base.key]);
-        let m = merge_ranked(std::slice::from_ref(&head), Some(head.key), &replay, Rank::Revision);
+        let m = merge_ranked(
+            std::slice::from_ref(&head),
+            Some(head.key),
+            &replay,
+            Rank::Revision,
+        );
         assert!(m.kept);
         assert!(!m.regressed);
         assert_eq!(m.head, head.key);

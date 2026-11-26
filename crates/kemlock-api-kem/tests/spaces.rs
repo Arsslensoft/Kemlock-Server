@@ -1958,9 +1958,9 @@ async fn an_owner_seals_the_keys_again_and_the_copies_come_back_signed() {
         .await;
     assert_eq!(by_member.status, StatusCode::FORBIDDEN);
 
-    let done = sam
-        .post(&uri, reseal_body(&sam, &ana, space, collection, 30))
-        .await;
+    // A signature is made afresh each time (ML-DSA is hedged), so the one sent is the one to find.
+    let body = reseal_body(&sam, &ana, space, collection, 30);
+    let done = sam.post(&uri, body.clone()).await;
     assert_eq!(done.status, StatusCode::OK, "{:?}", done.json());
     assert_eq!(done.json()["resealed"], 1);
     let view = ana.get(&format!("/kem/v1/spaces/{space}")).await.json();
@@ -1968,7 +1968,7 @@ async fn an_owner_seals_the_keys_again_and_the_copies_come_back_signed() {
     assert_eq!(view["me"]["sealedBy"]["account"], json!(sam.id.to_string()));
     assert_eq!(
         view["me"]["sealedBy"]["signature"],
-        json!(key_sig(&sam, space, None, 1, ana.id, 30))
+        body["members"][0]["sealedSpaceKeySignature"]
     );
     assert_eq!(view["collectionKeys"][0]["sealed"], sealed(31));
     assert_eq!(

@@ -1775,6 +1775,10 @@ async fn a_replica_cannot_delete_or_replay_what_the_account_signed() {
         .await
         .expect("an account");
     let owner = Owner::User(member.id);
+    // The owner asked for signed writes only, so an unsigned change is never taken in for it.
+    ItemStore::require_signed_writes(a.store(), owner, OffsetDateTime::now_utc())
+        .await
+        .expect("signed writes only");
     let (one, two) = (ItemId::random(), ItemId::random());
     for (n, id) in [one, two].into_iter().enumerate() {
         ItemStore::put(
