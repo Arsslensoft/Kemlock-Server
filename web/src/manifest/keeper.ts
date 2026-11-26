@@ -73,12 +73,20 @@ export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
  * chain is verified in the web vault, `spaceSigner.ts` answers from the member list the server
  * serves, which is the server's word.
  */
-export type SpaceSigner = (
-  space: string,
-  signer: string,
-  /** For a write signature: a member taken out since signed what they signed before. */
-  options?: { former?: boolean },
-) => Promise<Uint8Array | null>;
+export interface SpaceSigner {
+  (
+    space: string,
+    signer: string,
+    /** For a write signature: a member taken out since signed what they signed before. */
+    options?: { former?: boolean },
+  ): Promise<Uint8Array | null>;
+  /**
+   * Whether the bundle it answers for a member other than this account is vouched by the verified
+   * space chain. Until the web vault verifies the chain it is the server's word, and nothing is
+   * pinned from it (`writes.ts`): a pin would hold the server to a bundle it made up.
+   */
+  vouched?: boolean;
+}
 
 export interface KeeperDeps {
   api: Pick<ManifestsApi, 'get' | 'put'>;

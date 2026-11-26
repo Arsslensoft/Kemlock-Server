@@ -105,6 +105,40 @@ describe('the verdict on a write signature', () => {
   });
 });
 
+describe('a space member's past bundle', () => {
+  it('is not pinned from a member list that is only the server's word', async () => {
+    resetFakeCrypto();
+    await crypto.unlock(MEMBER, utf8(`wrapped:${MEMBER}`), new Uint8Array(), new Uint8Array());
+    const signed = await signedItem(crypto, item(SPACE));
+    resetFakeCrypto();
+    await crypto.unlock(ACCOUNT, utf8(`wrapped:${ACCOUNT}`), new Uint8Array(), new Uint8Array());
+    let memberVersion = 1;
+    const signer = vi.fn(async (_space: string, writer: string) =>
+      writer === MEMBER ? fakeBundleOf(MEMBER, memberVersion) : null,
+    );
+    const pins = memoryBundlePinStore();
+    const history = createBundleHistory({
+      api: {
+        at: async () => ({
+          keyVersion: 1,
+          publicBundle: encodeB64(fakeBundleOf(MEMBER, 1)),
+          bundleSignature: encodeB64(utf8('sig')),
+        }),
+      },
+      crypto,
+      accountId: () => ACCOUNT,
+      pins,
+    });
+    const check = createWriteChecker({ crypto, accountId: () => ACCOUNT, spaceSigner: signer, history });
+    expect(await check.verdict(signed)).toBe('signed');
+    expect(await pins.load(ACCOUNT, MEMBER, 1)).toBeUndefined();
+    // Once the member has moved on, a past version nothing vouched has no verdict.
+    memberVersion = 2;
+    check.beginSync();
+    expect(await check.verdict(signed)).toBe('unknown');
+  });
+});
+
 describe('what a sync looks up', () => {
   const signedBy = async () => {
     resetFakeCrypto();
@@ -214,8 +248,11 @@ describe('a write signed under a key version the writer has replaced', () => {
     await crypto.unlock(ACCOUNT, utf8(`wrapped:${ACCOUNT}`), new Uint8Array(), new Uint8Array());
 
     let memberVersion = 1;
-    const signer = vi.fn(async (_space: string, writer: string) =>
-      writer === MEMBER ? fakeBundleOf(MEMBER, memberVersion) : null,
+    const signer = Object.assign(
+      vi.fn(async (_space: string, writer: string) =>
+        writer === MEMBER ? fakeBundleOf(MEMBER, memberVersion) : null,
+      ),
+      { vouched: true },
     );
     const history = createBundleHistory({
       api: { at: async (_account, version) => (version === 1 ? served(fakeBundleOf(MEMBER, 1)) : null) },

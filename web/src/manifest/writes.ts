@@ -114,7 +114,12 @@ export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
         if (writerKeyVersion > parsed.keyVersion) return 'unknown';
         let signer = bundle;
         if (writerKeyVersion === parsed.keyVersion) {
-          await deps.history?.pin(bundle, pinned);
+          // This account's own bundle is known for certain. Another member's is the server's word
+          // until the space chain is verified here, and a pin of it would hold the server to a bundle
+          // it made up, so nothing is pinned and an older version of theirs has no verdict.
+          if (writer === deps.accountId() || deps.spaceSigner.vouched === true) {
+            await deps.history?.pin(bundle, pinned);
+          }
         } else {
           const past = await pastBundle(writer, writerKeyVersion);
           if (!past) return 'unknown';

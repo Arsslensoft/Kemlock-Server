@@ -93,7 +93,8 @@ async function lookup(
 }
 
 export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
-  return async (space, signer, options) => {
+  // CHAIN HOOK: `vouched` becomes true when `lookup` reads the verified chain.
+  const answer: SpaceSigner = async (space, signer, options) => {
     const bundle = await lookup(deps, space, signer, options?.former === true);
     if (!bundle) return null;
     if (signer === deps.accountId()) {
@@ -103,4 +104,6 @@ export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
     }
     return bundle;
   };
+  answer.vouched = false;
+  return answer;
 }
