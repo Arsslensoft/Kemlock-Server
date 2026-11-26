@@ -143,6 +143,7 @@ describe('Export', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('radio', { name: /CSV, not encrypted/ }));
     expect(screen.getByText(/A CSV file isn't encrypted/)).toBeInTheDocument();
+    expect(screen.getByText(/Spreadsheet apps may still treat some cells as formulas/)).toBeInTheDocument();
     expect(screen.queryByLabelText('New export password')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Export' }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));

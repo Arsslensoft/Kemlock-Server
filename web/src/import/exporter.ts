@@ -1,8 +1,11 @@
 // Export: which items go in, the CSV written here, and the file handed to the browser.
 //
 // CSV uses Bitwarden's CSV columns, which every password manager can import, and only holds
-// logins and notes (the other kinds have no column). A value is quoted when it needs it and never
-// altered: a password that starts with `=` stays as it is.
+// logins and notes (the other kinds have no column). A value is quoted when it needs it. Another
+// member of a space can name an item or write a note, and a spreadsheet reads a cell that starts
+// with `=`, `+`, `-` or `@` as a formula, so those cells get a `'` in front. The password and the
+// one-time code secret are the exception, since a `'` there would change the secret, and the
+// export warning says a spreadsheet may still run formulas.
 import type { VaultItem } from '@/features/vault/vault';
 import { readWebsites } from '@/features/vault/websites';
 import type { ExportItem } from './contract';
@@ -20,6 +23,14 @@ export const CSV_COLUMNS = [
   'login_password',
   'login_totp',
 ] as const;
+
+/** What a spreadsheet takes for the start of a formula: `=`, `+`, `-`, `@`, a tab or a carriage return. */
+const FORMULA_START = /^[=+\-@\t\r]/;
+
+/** The text with a `'` in front when a spreadsheet would run it as a formula. */
+export function neutralise(value: string): string {
+  return FORMULA_START.test(value) ? `'${value}` : value;
+}
 
 function cell(value: string): string {
   return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
@@ -50,15 +61,16 @@ export function toCsv(items: VaultItem[]): CsvResult {
     const isLogin = item.kind === 'login';
     const uris = isLogin ? readWebsites(item.data).map((rule) => rule.uri) : [];
     const values = [
-      text(item, 'folder'),
+      neutralise(text(item, 'folder')),
       item.data['favorite'] === true ? '1' : '',
       isLogin ? 'login' : 'note',
-      text(item, 'name'),
-      isLogin ? text(item, 'notes') : text(item, 'text'),
+      neutralise(text(item, 'name')),
+      neutralise(isLogin ? text(item, 'notes') : text(item, 'text')),
       '',
       '0',
-      uris.join('\n'),
-      isLogin ? text(item, 'username') : '',
+      neutralise(uris.join('\n')),
+      neutralise(isLogin ? text(item, 'username') : ''),
+      // Written as they are: a `'` in front would change the secret.
       isLogin ? text(item, 'password') : '',
       isLogin ? text(item, 'totp') : '',
     ];

@@ -319,6 +319,7 @@ export function ImportExportView({
             ) : (
               <Notice tone="warn">
                 <p>{t('ie.csvWarning')}</p>
+                <p>{t('ie.csvFormulas')}</p>
               </Notice>
             )}
             {exportState.error ? (

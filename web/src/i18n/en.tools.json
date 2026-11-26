@@ -84,6 +84,7 @@
   "ie.export.bitwardenHint": "For moving to a Bitwarden or Vaultwarden account. Logins, cards, identities, notes, SSH keys.",
   "ie.export.csv": "CSV, not encrypted",
   "ie.export.csvHint": "Logins and notes only. Anyone who gets the file reads every password in it.",
+  "ie.csvFormulas": "Spreadsheet apps may still treat some cells as formulas. Names, notes, usernames and websites that start with =, +, - or @ get a ' in front, but passwords and one-time code secrets are written exactly as they are.",
   "ie.csvWarning": "A CSV file isn't encrypted. Keep it off shared folders and delete it after you use it.",
   "ie.include": "Include",
   "ie.scopeCount": "{name}, {count, plural, one {# item} other {# items}}",
