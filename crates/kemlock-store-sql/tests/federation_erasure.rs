@@ -258,15 +258,17 @@ async fn a_replica_never_erases_an_account_that_lives_on_it() {
     let (ada, items) = account_with_items(&store, "ada", 2).await;
 
     // Asked to erase the vault of an account that is this server's own (no copy marker), it
-    // deletes the vault's rows but leaves the account: erasing an account is the home's act, and
-    // the home is this server.
-    let erased = VaultErasure::erase_vault(&store, Owner::User(ada.id))
-        .await
-        .expect("the vault rows go");
+    // refuses and deletes nothing: a peer that became the vault's home (an admin here accepted a
+    // promotion) can't wipe a local user's items with an Erase.
+    let refused = VaultErasure::erase_vault(&store, Owner::User(ada.id)).await;
+    assert!(refused.is_err(), "{refused:?}");
 
-    assert_eq!(erased.accounts, 0);
-    assert_eq!(erased.items, 2);
-    assert_eq!(ItemStore::get(&store, items[0]).await, Ok(None));
+    for item in &items {
+        assert!(
+            ItemStore::get(&store, *item).await.expect("a read").is_some(),
+            "the item stays"
+        );
+    }
     assert!(
         UserRepo::by_id(&store, ada.id)
             .await
