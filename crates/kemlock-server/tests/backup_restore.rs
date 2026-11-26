@@ -245,3 +245,40 @@ async fn a_restore_without_a_key_says_to_put_it_in_place() {
         report.notes
     );
 }
+
+/// The key files a restore puts down are readable by their owner only, whatever the umask and
+/// whatever mode the archive's copies had.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_restore_leaves_the_key_files_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture().await;
+    let target = config(&f.root.path().join("target"));
+
+    restore(
+        &target,
+        &RestoreOptions {
+            archive: f.archive.clone(),
+            identity: f.identity_file.clone(),
+            server_key: Some(f.key_file.clone()),
+        },
+    )
+    .await
+    .expect("the restore works");
+
+    let mut checked = 0;
+    for name in [
+        "server.key",
+        "opaque-setup.sealed",
+        "token-signing-key.sealed",
+        "rsa_key.pem",
+    ] {
+        let path = target.data_folder.join(name);
+        if let Ok(meta) = std::fs::metadata(&path) {
+            let mode = meta.permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{name} is {mode:o}");
+            checked += 1;
+        }
+    }
+    assert!(checked >= 3, "the key files were restored: {checked}");
+}

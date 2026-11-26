@@ -77,7 +77,7 @@ pub fn parse_server_key(text: &str) -> Result<[u8; 32], KeyError> {
 }
 
 /// Opens a new file for private data: it must not exist, and on Unix only its owner can read it.
-fn create_private(path: &Path) -> io::Result<std::fs::File> {
+pub(crate) fn create_private(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

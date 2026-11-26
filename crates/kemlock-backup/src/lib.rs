@@ -22,8 +22,8 @@ pub mod manifest;
 
 pub use age::x25519::Identity as AgeIdentity;
 pub use archive::{
-    ArchiveSpec, SERVER_KEY_FILE, parse_identity, parse_recipient, read_archive, verify_unpacked,
-    write_archive,
+    ArchiveSpec, SERVER_KEY_FILE, create_private_file, parse_identity, parse_recipient,
+    read_archive, verify_unpacked, write_archive,
 };
 pub use destination::{ArchiveInfo, Destination, DestinationConfig, S3Destination};
 pub use error::BackupError;

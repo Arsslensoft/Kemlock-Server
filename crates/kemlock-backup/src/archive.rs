@@ -79,6 +79,26 @@ fn age_error(e: impl std::fmt::Display) -> BackupError {
     BackupError::Age(e.to_string())
 }
 
+/// Creates `path` (or empties it) for private data: on Unix only its owner can read or write it,
+/// whatever the umask and whatever mode the file had before. A restore unpacks and copies
+/// `rsa_key.pem` and the sealed secrets this way, so they never sit readable by other users.
+pub fn create_private_file(path: &Path) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
 /// A path as it is written in an archive: `/`-separated.
 fn archive_path(prefix: &str, relative: &Path) -> String {
     let mut out = prefix.to_owned();
@@ -334,7 +354,7 @@ pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<
             std::fs::create_dir_all(parent)
                 .map_err(|e| BackupError::io(format!("can't make {}", parent.display()), e))?;
         }
-        let mut out = File::create(&target)
+        let mut out = create_private_file(&target)
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
         std::io::copy(&mut entry, &mut out)
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
@@ -522,6 +542,34 @@ mod tests {
             b"blob bytes"
         );
         assert!(!unpacked.join("data/server.key").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unpacked_files_are_readable_by_their_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        let identity = Identity::generate();
+        let skip = skip_list(&f);
+        let out = f._root.path().join("out.age");
+        write_archive(&spec(&f, &identity.to_public(), &skip), &out).expect("written");
+        let unpacked = f._root.path().join("unpacked");
+        // A file that is already there with a loose mode is tightened, not just kept.
+        std::fs::create_dir_all(unpacked.join("data")).expect("a folder");
+        let existing = unpacked.join("data/opaque-setup.sealed");
+        std::fs::write(&existing, b"old").expect("an old file");
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o666))
+            .expect("loosened");
+
+        read_archive(&out, &identity, &unpacked).expect("read");
+
+        for path in ["data/opaque-setup.sealed", "attachments/ab/abcdef", MANIFEST_NAME] {
+            let mode = std::fs::metadata(unpacked.join(path))
+                .expect("a file")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{path} is {mode:o}");
+        }
     }
 
     #[test]

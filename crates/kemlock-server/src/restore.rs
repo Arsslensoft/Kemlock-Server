@@ -81,14 +81,30 @@ async fn unpack(archive: &Path, identity: &Path, dest: &Path) -> Result<Manifest
     .map_err(|e| format!("the unpacking task stopped: {e}"))?
 }
 
+/// Copies `from` to `to`, which only its owner can read afterwards: what is restored may be
+/// `rsa_key.pem`, a sealed secret or an attachment, and `std::fs::copy` would give the target the
+/// mode the unpacked file happened to have.
 fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("can't make {}: {e}", parent.display()))?;
     }
-    std::fs::copy(from, to)
-        .map(|_| ())
-        .map_err(|e| format!("can't copy {} to {}: {e}", from.display(), to.display()))
+    let failed = |e: std::io::Error| format!("can't copy {} to {}: {e}", from.display(), to.display());
+    let mut source = std::fs::File::open(from).map_err(failed)?;
+    let mut target = kemlock_backup::create_private_file(to).map_err(failed)?;
+    std::io::copy(&mut source, &mut target)
+        .and_then(|_| target.sync_all())
+        .map_err(failed)
+}
+
+/// Writes `server.key` at `path` as the server does when it makes one: a new file that only its
+/// owner can read.
+fn write_server_key(path: &Path, key: &[u8]) -> Result<(), String> {
+    let mut file = crate::keys::create_private(path)
+        .map_err(|e| format!("can't write {}: {e}", path.display()))?;
+    std::io::Write::write_all(&mut file, key)
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("can't write {}: {e}", path.display()))
 }
 
 fn snapshot_tables(manifest: &Manifest) -> Vec<SnapshotTable> {
@@ -163,8 +179,7 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
             }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::write(&key_path, &wanted)
-                    .map_err(|e| format!("can't write {}: {e}", key_path.display()))?;
+                write_server_key(&key_path, &wanted)?;
                 server_key_installed = true;
             }
             Err(e) => return Err(format!("can't read {}: {e}", key_path.display())),
@@ -344,8 +359,7 @@ pub async fn restore_check(
             files += 1;
         }
     }
-    std::fs::write(data.join(kemlock_backup::SERVER_KEY_FILE), &key)
-        .map_err(|e| format!("can't write the server key: {e}"))?;
+    write_server_key(&data.join(kemlock_backup::SERVER_KEY_FILE), &key)?;
 
     // 3. Restore the rows into a SQLite database there and count them.
     let url = format!(
