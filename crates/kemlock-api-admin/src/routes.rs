@@ -20,8 +20,8 @@ use kemlock_api_kem::problem::rate_limited;
 use kemlock_api_kem::ratelimit::ip_key;
 use kemlock_api_kem::replay::Full;
 use kemlock_api_kem::{
-    Api, Crypto, CustomFieldDto, CustomFieldsDto, Problem, Store, forget_second_step,
-    reserve_second_step,
+    Api, Crypto, CustomFieldDto, CustomFieldsDto, MaybeInviteLinks, Problem, Store,
+    forget_second_step, reserve_second_step,
 };
 use kemlock_app::admin::events::{cursor_text, filter as event_filter, parse_cursor};
 use kemlock_app::admin::{
@@ -512,6 +512,38 @@ where
             )
             .await?;
         json_ok(AdminSpaceDto::from(&row))
+    }
+
+    /// `GET /admin/v1/spaces/{id}/members/{user}/invite-link`: the link that accepts a member's
+    /// invitation to a Bitwarden organization, for a server that can't mail it. Whoever opens it
+    /// accepts for that account, so it needs a fresh step-up like a write, is recorded in the
+    /// event log and is never cached.
+    async fn space_invite_link(
+        State(env): State<Self>,
+        writer: Writer,
+        links: MaybeInviteLinks,
+        Path((id, user)): Path<(String, String)>,
+    ) -> Result<([(header::HeaderName, &'static str); 1], Json<InviteLinkDto>), ApiError> {
+        let links = links.0.ok_or(AdminError::NotConfigured(
+            "the Bitwarden API isn't running on this server",
+        ))?;
+        let link = env
+            .spaces()
+            .invite_link(
+                &*links,
+                &writer.actor,
+                Some(writer.ip),
+                SpaceId(uuid(&id)?),
+                UserId(uuid(&user)?),
+            )
+            .await?;
+        Ok((
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(InviteLinkDto {
+                link: link.link,
+                expires_at: link.expires_at,
+            }),
+        ))
     }
 
     // ---- custom fields ----
@@ -1153,6 +1185,10 @@ where
         .route("/admin/v1/spaces", get(h!(spaces_list)))
         .route("/admin/v1/spaces/{id}", get(h!(space_get)))
         .route("/admin/v1/spaces/{id}/owner", put(h!(space_change_owner)))
+        .route(
+            "/admin/v1/spaces/{id}/members/{user}/invite-link",
+            get(h!(space_invite_link)),
+        )
         .route(
             "/admin/v1/custom-fields",
             get(h!(custom_fields_list)).post(h!(custom_field_create)),

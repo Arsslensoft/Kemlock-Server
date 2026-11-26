@@ -811,3 +811,13 @@ pub struct ServerAddressDto {
     /// `DATA_FOLDER`, when the server says; the environment alone sets it.
     pub data_folder: Option<String>,
 }
+
+/// The link that accepts a member's invitation to a Bitwarden organization.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InviteLinkDto {
+    /// The address to open in the web vault. Whoever opens it accepts for the invited account.
+    pub link: String,
+    /// When the link stops working, in Unix seconds.
+    pub expires_at: i64,
+}
