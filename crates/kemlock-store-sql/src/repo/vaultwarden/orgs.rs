@@ -81,6 +81,18 @@ fn role_of(atype: i64) -> &'static str {
     }
 }
 
+/// The custom permissions of a member: a manager that has every collection is given the right to
+/// create collections, the permission the Bitwarden API reads as "has every collection" (a manager
+/// without it has only what its collections grant).
+fn custom_of(atype: i64, access_all: bool) -> i64 {
+    if atype == 3 && access_all {
+        // `CustomPermissions::CREATE_COLLECTIONS`.
+        1 << 2
+    } else {
+        0
+    }
+}
+
 /// Vaultwarden's member statuses: revoked (-1), invited (0), accepted (1) and confirmed (2).
 fn state_of(status: i64) -> &'static str {
     match status {
@@ -131,7 +143,10 @@ pub(super) async fn put_members(ctx: &Ctx, table: &Table) -> Res<()> {
             space_id: Set(space),
             user_id: Set(user),
             role: Set(role_of(row.int("atype").unwrap_or(2)).to_owned()),
-            custom_permissions: Set(0),
+            custom_permissions: Set(custom_of(
+                row.int("atype").unwrap_or(2),
+                row.int("access_all").unwrap_or(0) != 0,
+            )),
             state: Set(state_of(status).to_owned()),
             invited_by: Set(inviter.unwrap_or(user)),
             invited_at: Set(invited_at),
@@ -563,6 +578,16 @@ mod tests {
         assert_eq!(state_of(0), "invited");
         assert_eq!(state_of(1), "accepted");
         assert_eq!(state_of(2), "confirmed");
+    }
+
+    #[test]
+    fn a_manager_with_every_collection_keeps_it_as_a_permission() {
+        // The Bitwarden API drops "every collection" from a manager whose row lacks the
+        // create-collections permission, so an import has to give it.
+        assert_eq!(custom_of(3, true), 4);
+        assert_eq!(custom_of(3, false), 0);
+        assert_eq!(custom_of(2, true), 0);
+        assert_eq!(custom_of(1, true), 0);
     }
 
     #[test]
