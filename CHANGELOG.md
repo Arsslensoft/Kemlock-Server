@@ -10,6 +10,11 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+### Added
+
+- Re-seal keys: an owner or admin of a space with no chain seals its current keys again, signed, so
+  the space has no boxes from before keys were signed (`POST /kem/v1/spaces/{id}/reseal`).
+
 ### Changed
 
 - A member who seals a space key or collection key to someone now signs the box, for spaces with no
