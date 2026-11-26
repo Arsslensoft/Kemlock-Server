@@ -562,7 +562,7 @@ async fn clock_ignores_a_far_future_draft(store: &SqlStore) {
     let written = put(store, ahead).await;
     let now_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000).expect("a time");
     assert!(
-        written.change.hlc.millis() <= now_ms + 301_000,
+        written.change.hlc.millis() <= now_ms + 61_000,
         "the clock stayed near the server's, at {}",
         written.change.hlc.millis()
     );

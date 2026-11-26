@@ -453,9 +453,10 @@ async fn write_one(
     write_over(txn, origin, draft, seq, hlc, stored).await
 }
 
-/// How far ahead of this server's clock a draft's time may pull the HLC, in milliseconds: the
-/// 300 seconds of skew a receiving server allows a change record (docs/federation.md).
-const HLC_SKEW_MS: u64 = 300_000;
+/// How far ahead of this server's clock a draft's time may pull the HLC, in milliseconds: a minute,
+/// well inside the 300 seconds of skew a receiving server allows a change record
+/// (docs/federation.md), so a record made on a clock a little fast is still taken.
+const HLC_SKEW_MS: u64 = 60_000;
 
 /// [`write_one`] given the row it read. The update must change exactly that row: one that
 /// changed none means the row was replaced or purged after it was read, and the write is refused
