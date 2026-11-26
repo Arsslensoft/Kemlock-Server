@@ -67,12 +67,12 @@ async function endOnServer(): Promise<void> {
 }
 
 /**
- * Ends the session on the server, then forgets the keys and the tokens, and this browser's own keys
- * with them: the DPoP key the tokens were bound to, and the trusted-device key (the server drops
- * this device's copy of the root key when it signs the device out, so that key only opens what is
- * already dead). The next sign-in makes new ones. With `server: false` the server is not asked, for
- * callers that have just had the server end this session (leaving a browser from Devices, an
- * account erased).
+ * Ends the session on the server, then forgets the keys and the tokens. The browser's DPoP key and
+ * trusted-device key are left alone: they are shared by every account and every tab of this
+ * browser, so resetting them would sign other tabs out and break other accounts' trusted copies
+ * (the server unbinds this device's DPoP key when it ends the session). The tab's own reload key
+ * goes with the session. With `server: false` the server is not asked, for callers that have just
+ * had the server end this session (a device removed from Devices, an account erased).
  */
 export async function signOut(options: { server?: boolean } = {}): Promise<void> {
   void clearCopiedSecret();
@@ -82,7 +82,6 @@ export async function signOut(options: { server?: boolean } = {}): Promise<void>
   await vaultCrypto.lock();
   clearVault();
   session.end();
-  await Promise.all([vaultCrypto.dpopReset(), vaultCrypto.deviceCopyReset()]).catch(() => undefined);
   forgetGrant();
   queryClient.clear();
 }
