@@ -1325,6 +1325,7 @@ fn a_new_device_opens_the_approved_root_key_for_its_own_request_only() {
             root,
             FIRST_KEY_VERSION,
             Some(&account.sealed_private_keys),
+            Some(&account.public_bundle),
         )
         .expect("unlock with the approved root key");
     assert!(device.is_unlocked());
@@ -1350,6 +1351,126 @@ fn a_new_device_opens_the_approved_root_key_for_its_own_request_only() {
     assert!(device.own_fingerprint().is_ok());
     // The root handle was consumed.
     assert!(device.root_slot(root).is_err());
+}
+
+#[wasm_bindgen_test]
+fn an_approved_root_key_opens_the_vault_only_with_the_accounts_own_keys() {
+    let account_id = [0x65u8; 16];
+    // Two accounts under one id: the real one, and the one a malicious server made up. Each has
+    // its own root key, sealed private keys and bundle.
+    let make = || {
+        let mut session = Session::new();
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        let account = session
+            .new_account(&account_id, master, export)
+            .expect("account");
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        session
+            .unlock(
+                &account_id,
+                &account.wrapped_root_key,
+                master,
+                export,
+                FIRST_KEY_VERSION,
+                Some(&account.sealed_private_keys),
+            )
+            .expect("unlock");
+        (session, account)
+    };
+    let (real_session, real) = make();
+    let (fake_session, fake) = make();
+    let real_root = real_session.export_root().expect("root");
+    let fake_root = fake_session.export_root().expect("root");
+
+    let mut device = Session::new();
+    let fake_handle = device.import_root(&fake_root[..]).expect("handle");
+    // The server's root key and sealed keys, against the real account's bundle: refused, nothing
+    // is unlocked, and the handle stays for the page to release.
+    assert!(
+        device
+            .unlock_with_root(
+                &account_id,
+                fake_handle,
+                FIRST_KEY_VERSION,
+                Some(&fake.sealed_private_keys),
+                Some(&real.public_bundle),
+            )
+            .is_err()
+    );
+    assert!(!device.is_unlocked());
+    assert!(device.root_slot(fake_handle).is_ok());
+
+    let real_handle = device.import_root(&real_root[..]).expect("handle");
+    // A bundle needs the private keys to be checked against it.
+    assert!(
+        device
+            .unlock_with_root(
+                &account_id,
+                real_handle,
+                FIRST_KEY_VERSION,
+                None,
+                Some(&real.public_bundle),
+            )
+            .is_err()
+    );
+    // A bundle with one half swapped for another account's keys, a bundle for another account,
+    // another key version, and bytes that are no bundle, are all refused.
+    let real_bundle = Bundle::from_bytes(&real.public_bundle).expect("bundle");
+    let fake_bundle = Bundle::from_bytes(&fake.public_bundle).expect("bundle");
+    let swapped_sig = Bundle {
+        sig1_public: fake_bundle.sig1_public.clone(),
+        ..real_bundle.clone()
+    };
+    let swapped_kx = Bundle {
+        kx1_public: fake_bundle.kx1_public.clone(),
+        ..real_bundle.clone()
+    };
+    let other_account = Bundle {
+        account_id: [0x66; 16],
+        ..real_bundle.clone()
+    };
+    let other_version = Bundle {
+        key_version: FIRST_KEY_VERSION + 1,
+        ..real_bundle.clone()
+    };
+    for bad in [
+        swapped_sig.to_bytes(),
+        swapped_kx.to_bytes(),
+        other_account.to_bytes(),
+        other_version.to_bytes(),
+        real.public_bundle[1..].to_vec(),
+    ] {
+        assert!(
+            device
+                .unlock_with_root(
+                    &account_id,
+                    real_handle,
+                    FIRST_KEY_VERSION,
+                    Some(&real.sealed_private_keys),
+                    Some(&bad),
+                )
+                .is_err()
+        );
+        assert!(!device.is_unlocked());
+    }
+
+    // The account's own keys and bundle open it.
+    device
+        .unlock_with_root(
+            &account_id,
+            real_handle,
+            FIRST_KEY_VERSION,
+            Some(&real.sealed_private_keys),
+            Some(&real.public_bundle),
+        )
+        .expect("the account's own bundle matches its keys");
+    assert!(device.is_unlocked());
+    assert_eq!(
+        device.own_fingerprint().expect("fingerprint"),
+        real.fingerprint
+    );
 }
 
 #[wasm_bindgen_test]
@@ -1513,6 +1634,7 @@ fn a_passkey_prf_wrap_opens_the_vault_on_another_device_and_only_for_its_own_inp
             root,
             key_version,
             Some(&account.sealed_private_keys),
+            None,
         )
         .expect("unlock with the PRF-opened root key");
     assert!(device.is_unlocked());
@@ -1546,6 +1668,7 @@ fn an_account_with_no_password_is_made_unlocked_and_opens_on_a_device_from_its_r
             handle,
             FIRST_KEY_VERSION,
             Some(&account.sealed_private_keys),
+            None,
         )
         .expect("unlock with the device's copy");
     let item = SealedItemRef {

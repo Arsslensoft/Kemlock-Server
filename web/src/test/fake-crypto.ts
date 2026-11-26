@@ -12,6 +12,8 @@ export const fakeCalls = calls;
 
 let locked = true;
 export const isFakeLocked = () => locked;
+/** The account the fake vault was opened for, for `ownFingerprint`. */
+let openedFor = '';
 
 export const crypto: CryptoPort = {
   async masterKey(password, kdf) {
@@ -55,6 +57,7 @@ export const crypto: CryptoPort = {
     calls.push('unlock');
     if (fromUtf8(wrappedRootKey) !== `wrapped:${accountId}`) throw new Error('wrong wrapped key');
     locked = false;
+    openedFor = accountId;
   },
   async sealItem({ id, owner, kind, revision, json }) {
     calls.push('sealItem');
@@ -236,6 +239,7 @@ export const crypto: CryptoPort = {
   async newSsoAccount(accountId) {
     calls.push('newSsoAccount');
     locked = false;
+    openedFor = accountId;
     return {
       publicBundle: utf8(`bundle:${accountId}`),
       bundleSignature: utf8('signature'),
@@ -259,10 +263,21 @@ export const crypto: CryptoPort = {
   async deviceCopyReset() {
     calls.push('deviceCopyReset');
   },
-  async unlockWithRoot(accountId, root) {
+  async unlockWithRoot(accountId, root, options) {
     calls.push('unlockWithRoot');
     if (fromUtf8(root) !== `root:${accountId}`) throw new Error("not this account's root key");
+    // Like the worker: with a bundle to check, the opened keys must be the bundle's, and the
+    // fake's bundles are `bundle:<account>`.
+    if (options?.publicBundle && fromUtf8(options.publicBundle) !== `bundle:${accountId}`) {
+      throw new Error("the keys are not the bundle's");
+    }
     locked = false;
+    openedFor = accountId;
+  },
+  async ownFingerprint() {
+    calls.push('ownFingerprint');
+    if (locked) throw new Error('the vault is locked');
+    return crypto.fingerprint(utf8(`bundle:${openedFor}`));
   },
   async sealSpaceItem({ spaceId, collectionId, id, kind, revision, json }) {
     calls.push('sealSpaceItem');
@@ -334,6 +349,7 @@ function openFakeSend(
 export function resetFakeCrypto(): void {
   calls.length = 0;
   locked = true;
+  openedFor = '';
   sendKeys.count = 0;
   deviceKeys.count = 0;
   deviceKeys.spent.clear();

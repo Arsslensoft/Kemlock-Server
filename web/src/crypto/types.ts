@@ -86,6 +86,13 @@ export interface UnlockOptions {
   keyVersion?: number;
   /** Also opens the kx1 and sig1 private keys (`ownFingerprint` needs them). */
   sealedPrivateKeys?: string;
+  /**
+   * `unlockWithRoot` only: the account's public bundle (base64url). The worker then refuses to
+   * unlock unless the opened `kx1` and `sig1` private keys are the bundle's, for this account and
+   * key version. A root key an approving device sent is authenticated by nothing on the new
+   * device, so that path always passes it (with `sealedPrivateKeys`).
+   */
+  publicBundle?: string;
 }
 
 /** What identifies an item inside its ciphertext's AAD. */

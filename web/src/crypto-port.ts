@@ -259,12 +259,18 @@ export interface CryptoPort {
   ): Promise<Uint8Array>;
   /** Forgets this browser's key, so its copies stop opening. */
   deviceCopyReset(): Promise<void>;
-  /** Opens the vault with the approved root key; consumes it. */
+  /**
+   * Opens the vault with the approved root key; consumes it. With `publicBundle` (and the sealed
+   * private keys) it refuses unless the keys they hold are the bundle's: a root key that an
+   * approving device sent is authenticated by nothing this device holds, so that path passes it.
+   */
   unlockWithRoot(
     accountId: string,
     root: Uint8Array,
-    options?: { keyVersion?: number; sealedPrivateKeys?: Uint8Array },
+    options?: { keyVersion?: number; sealedPrivateKeys?: Uint8Array; publicBundle?: Uint8Array },
   ): Promise<void>;
+  /** The open account's own fingerprint: 12 groups of 5 digits. Needs the sealed private keys at unlock. */
+  ownFingerprint(): Promise<string>;
   /** Drops a handle that will not be used (a one-time key whose request was refused). */
   release(handle: Uint8Array): Promise<void>;
   /** Seals an item of a space's collection under the collection's key. */
@@ -451,7 +457,9 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         ...(options?.sealedPrivateKeys
           ? { sealedPrivateKeys: encodeB64(options.sealedPrivateKeys) }
           : {}),
+        ...(options?.publicBundle ? { publicBundle: encodeB64(options.publicBundle) } : {}),
       }),
+    ownFingerprint: () => api.ownFingerprint(),
     async sealSpaceItem(input) {
       const sealed = await api.sealSpaceItem(input);
       return {

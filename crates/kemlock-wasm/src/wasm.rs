@@ -782,8 +782,11 @@ impl Vault {
     }
 
     /// Opens the vault with an approved root key (from `openApprovedKey`). With
-    /// `sealed_private_keys` it opens the `kx1` and `sig1` private keys too. Consumes the handle
-    /// on success.
+    /// `sealed_private_keys` it opens the `kx1` and `sig1` private keys too. With `public_bundle`
+    /// (base64url, the account's bundle) it also requires those keys to be the bundle's, and
+    /// refuses to unlock otherwise: the page passes it whenever the root key came from an
+    /// approving device, which nothing on the new device authenticates. Consumes the handle on
+    /// success.
     #[wasm_bindgen(js_name = unlockWithRoot)]
     pub fn unlock_with_root(
         &mut self,
@@ -791,6 +794,7 @@ impl Vault {
         root_handle: u32,
         key_version: u32,
         sealed_private_keys: Option<String>,
+        public_bundle: Option<String>,
     ) -> Result<(), JsError> {
         let account = ids::parse_uuid(account_id).map_err(fail)?;
         let sealed = sealed_private_keys
@@ -798,8 +802,19 @@ impl Vault {
             .map(b64::decode)
             .transpose()
             .map_err(fail)?;
+        let bundle = public_bundle
+            .as_deref()
+            .map(b64::decode)
+            .transpose()
+            .map_err(fail)?;
         self.session
-            .unlock_with_root(&account, root_handle, key_version, sealed.as_deref())
+            .unlock_with_root(
+                &account,
+                root_handle,
+                key_version,
+                sealed.as_deref(),
+                bundle.as_deref(),
+            )
             .map_err(fail)
     }
 

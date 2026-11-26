@@ -22,6 +22,12 @@ const route = getRouteApi('/sign-in/device');
 
 type Ended = Exclude<ApprovalOutcome, { status: 'signed-in' }>;
 
+function refusedMessage(error: ApprovalRefused): MessageId {
+  if (error.reason === 'fingerprint') return 'deviceApproval.fingerprintRefused';
+  if (error.reason === 'keys') return 'deviceApproval.keysRefused';
+  return 'deviceApproval.refused';
+}
+
 /** What the screen shows for a progress or an ending. Takes no router or network. */
 export function DeviceApprovalView({
   email,
@@ -29,6 +35,7 @@ export function DeviceApprovalView({
   ended,
   onCancel,
   onRetry,
+  onCompare,
   next,
 }: {
   email: string;
@@ -36,6 +43,8 @@ export function DeviceApprovalView({
   ended?: Ended | undefined;
   onCancel: () => void;
   onRetry: () => void;
+  /** The person's answer to the fingerprint comparison: `true` when the two were the same. */
+  onCompare?: ((matches: boolean) => void) | undefined;
   /** The page the person was headed for, kept when they go back to sign in. */
   next?: string | undefined;
 }) {
@@ -46,7 +55,9 @@ export function DeviceApprovalView({
   else if (ended?.status === 'cancelled') failure = 'deviceApproval.cancelled';
   else if (ended?.status === 'failed') {
     failure =
-      ended.error instanceof ApprovalRefused ? 'deviceApproval.refused' : describeError(ended.error).id;
+      ended.error instanceof ApprovalRefused
+        ? refusedMessage(ended.error)
+        : describeError(ended.error).id;
     if (failure === 'error.generic') failure = 'deviceApproval.failed';
   }
   return (
@@ -91,6 +102,28 @@ export function DeviceApprovalView({
             {t('deviceApproval.cancel')}
           </Button>
         </>
+      ) : progress.step === 'compare' ? (
+        <>
+          <div className="stack">
+            <p className="lbl" id="approval-fingerprint-label">
+              {t('deviceApproval.fingerprint')}
+            </p>
+            <p
+              className="mono phrase"
+              aria-labelledby="approval-fingerprint-label"
+              style={{ fontSize: '1.25rem', letterSpacing: '0.02em' }}
+            >
+              {progress.fingerprint}
+            </p>
+            <p className="hint">{t('deviceApproval.fingerprint.hint')}</p>
+          </div>
+          <Button variant="primary" size="large" block onPress={() => onCompare?.(true)}>
+            {t('deviceApproval.fingerprint.match')}
+          </Button>
+          <Button block onPress={() => onCompare?.(false)}>
+            {t('deviceApproval.fingerprint.differ')}
+          </Button>
+        </>
       ) : (
         <p role="status">
           {t(progress.step === 'requesting' ? 'deviceApproval.requesting' : 'deviceApproval.signingIn')}
@@ -100,7 +133,10 @@ export function DeviceApprovalView({
   );
 }
 
-const realDeps: DeviceApprovalDeps = {
+/** What the screen supplies itself: the person's answer to the fingerprint comparison. */
+type ScreenDeps = Omit<DeviceApprovalDeps, 'confirmFingerprint'>;
+
+const realDeps: ScreenDeps = {
   approval: createNewDeviceApi(api),
   api,
   crypto: vaultCrypto,
@@ -108,14 +144,35 @@ const realDeps: DeviceApprovalDeps = {
   device: thisDevice,
 };
 
-export default function DeviceApproval({ deps = realDeps }: { deps?: DeviceApprovalDeps }) {
+export default function DeviceApproval({ deps = realDeps }: { deps?: ScreenDeps }) {
   const router = useRouter();
   const { email = '', next } = route.useSearch();
   const [progress, setProgress] = useState<ApprovalProgress>({ step: 'requesting' });
   const [ended, setEnded] = useState<Ended | undefined>();
   const [attempt, setAttempt] = useState(0);
   const controller = useRef<AbortController | undefined>(undefined);
-  const stable = useMemo(() => deps, [deps]);
+  // Resolves the comparison the flow is waiting on; nothing waits for it outside the compare step.
+  const answer = useRef<((matches: boolean) => void) | undefined>(undefined);
+  const stable = useMemo<DeviceApprovalDeps>(
+    () => ({
+      ...deps,
+      confirmFingerprint: (_fingerprint, signal) =>
+        new Promise<boolean>((resolve) => {
+          if (signal.aborted) {
+            resolve(false);
+            return;
+          }
+          answer.current = resolve;
+          signal.addEventListener('abort', () => resolve(false), { once: true });
+        }),
+    }),
+    [deps],
+  );
+  const compare = useCallback((matches: boolean) => {
+    const resolve = answer.current;
+    answer.current = undefined;
+    resolve?.(matches);
+  }, []);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -138,6 +195,7 @@ export default function DeviceApproval({ deps = realDeps }: { deps?: DeviceAppro
       ended={ended}
       onCancel={cancel}
       onRetry={() => setAttempt((n) => n + 1)}
+      onCompare={compare}
       next={next}
     />
   );

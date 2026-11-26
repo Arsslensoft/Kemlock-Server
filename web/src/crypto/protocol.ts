@@ -362,6 +362,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         root,
         options?.keyVersion ?? 1,
         options?.sealedPrivateKeys,
+        options?.publicBundle,
       );
     },
     async sealSpaceItem({ spaceId, collectionId, id, kind, revision, json }) {

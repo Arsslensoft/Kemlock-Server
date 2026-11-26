@@ -424,7 +424,7 @@ describe('the dispatcher', () => {
     expect(root).toBe(33);
     expect(vault.prfOpenRoot).toHaveBeenCalledWith('cHJm', 'Y3JlZA', UUID, 3, 'd3JhcA');
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 3 }]);
-    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined);
+    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined, undefined);
   });
 
   it('makes a Recovery Kit in the worker and opens its wrap with pieces into a handle', async () => {
@@ -461,9 +461,16 @@ describe('the dispatcher', () => {
     expect(vault.openApprovedKey).toHaveBeenCalledWith(31, UUID, UUID, 'c2VhbGVk');
 
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 4, sealedPrivateKeys: 'c2s' }]);
-    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 32, 4, 'c2s');
+    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 32, 4, 'c2s', undefined);
     await dispatch('unlockWithRoot', [UUID, root]);
-    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 1, undefined);
+    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 1, undefined, undefined);
+    // The bundle the new device must check the opened keys against goes through as it is.
+    await dispatch('unlockWithRoot', [
+      UUID,
+      root,
+      { keyVersion: 4, sealedPrivateKeys: 'c2s', publicBundle: 'YnVuZGxl' },
+    ]);
+    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 4, 'c2s', 'YnVuZGxl');
   });
 
   it('answers a box that does not open with invalid and nothing else', async () => {

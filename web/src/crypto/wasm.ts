@@ -123,11 +123,13 @@ export interface WasmVault {
     keyVersion: number,
     wrapped: string,
   ): number;
+  /** With `publicBundle` it refuses unless the opened private keys are that bundle's. */
   unlockWithRoot(
     accountId: string,
     rootHandle: number,
     keyVersion: number,
     sealedPrivateKeys?: string,
+    publicBundle?: string,
   ): void;
   /** `{ciphertext, itemKey, keyVersion}`, the item key wrapped under the collection's newest key. */
   sealSpaceItem(

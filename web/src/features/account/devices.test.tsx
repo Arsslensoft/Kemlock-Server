@@ -313,6 +313,24 @@ describe('DevicesView', () => {
     expect(props.onDeny).toHaveBeenCalledWith('req-1');
   });
 
+  it('shows the account’s own key fingerprint beside a request, for the new device’s to be compared with', () => {
+    view({ approvals: [ROW], ownFingerprint: '12345 67890 11111 22222 33333 44444 55555 66666 77777 88888 99999 00000' });
+    expect(screen.getByLabelText("Your account's key fingerprint")).toHaveTextContent(
+      '12345 67890 11111 22222 33333 44444 55555 66666 77777 88888 99999 00000',
+    );
+  });
+
+  it('says so when this browser can not show the fingerprint', () => {
+    view({ approvals: [ROW], ownFingerprint: null });
+    expect(screen.getByText(/can't show your account's key fingerprint/)).toBeInTheDocument();
+  });
+
+  it('shows no fingerprint note while it is still being worked out', () => {
+    view({ approvals: [ROW], ownFingerprint: undefined });
+    expect(screen.queryByText(/can't show your account's key fingerprint/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Your account's key fingerprint")).not.toBeInTheDocument();
+  });
+
   it('will not approve a request whose key the server did not send', () => {
     view({ approvals: [{ ...ROW, phrase: null, publicKey: null }] });
     expect(screen.getByRole('button', { name: 'Approve Firefox on Linux' })).toBeDisabled();

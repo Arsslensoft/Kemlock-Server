@@ -41,6 +41,25 @@ describe('DeviceApprovalView', () => {
     expect(onCancel).toHaveBeenCalledOnce();
   });
 
+  it('asks the person to compare the account's fingerprint before the vault counts as open', async () => {
+    const onCompare = vi.fn();
+    renderWithIntl(
+      <DeviceApprovalView
+        email="sam@example.co"
+        progress={{ step: 'compare', fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890' }}
+        onCancel={noop}
+        onRetry={noop}
+        onCompare={onCompare}
+      />,
+    );
+    expect(screen.getByText('11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'They are the same' }));
+    expect(onCompare).toHaveBeenLastCalledWith(true);
+    await user.click(screen.getByRole('button', { name: 'They are not the same' }));
+    expect(onCompare).toHaveBeenLastCalledWith(false);
+  });
+
   it.each([
     ['requesting' as const, 'Asking for approval'],
     ['signing-in' as const, 'Approved. Opening your vault'],
@@ -55,6 +74,8 @@ describe('DeviceApprovalView', () => {
     [{ status: 'denied' as const }, /The other device refused this request/],
     [{ status: 'expired' as const }, /lapsed or was already used/],
     [{ status: 'failed' as const, error: new ApprovalRefused('phrase') }, /did not match this browser's key/],
+    [{ status: 'failed' as const, error: new ApprovalRefused('fingerprint') }, /fingerprints were not the same/],
+    [{ status: 'failed' as const, error: new ApprovalRefused('keys') }, /not the account.s own/],
     [{ status: 'failed' as const, error: new Error('x') }, /could not be completed/],
   ])('ends with a reason and a way to start again: %#', async (ended, reason) => {
     const onRetry = vi.fn();

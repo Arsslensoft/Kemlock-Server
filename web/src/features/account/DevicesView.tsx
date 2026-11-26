@@ -22,6 +22,12 @@ export interface DevicesViewProps {
   addressFailed?: boolean;
   approvals: ApprovalRow[] | undefined;
   approvalsError?: Described | undefined;
+  /**
+   * This account's key fingerprint, shown beside each request so the person can compare it with
+   * the one the new device shows once it has opened its keys. null: this browser can't work it
+   * out; undefined: still loading.
+   */
+  ownFingerprint?: string | null | undefined;
   /** null: the server has no device list; undefined: still loading. */
   others: DeviceEntryDto[] | null | undefined;
   /** null: this device holds no key copy; undefined: still loading. */
@@ -179,6 +185,7 @@ export function DevicesView({
   addressFailed,
   approvals,
   approvalsError,
+  ownFingerprint,
   others,
   keyCopy,
   cryptoAvailable,
@@ -265,6 +272,18 @@ export function DevicesView({
                 <p>{t('devices.approval.noKey')}</p>
               </Notice>
             )}
+            {ownFingerprint ? (
+              <>
+                <p className="hint">{t('devices.approval.fingerprint')}</p>
+                <p className="phrase" aria-label={t('devices.approval.fingerprintLabel')}>
+                  {ownFingerprint}
+                </p>
+              </>
+            ) : ownFingerprint === null ? (
+              <Notice tone="warn">
+                <p>{t('devices.approval.noFingerprint')}</p>
+              </Notice>
+            ) : null}
             <p className="hint">{t('devices.approval.what')}</p>
             {!cryptoAvailable ? (
               <Notice tone="warn">

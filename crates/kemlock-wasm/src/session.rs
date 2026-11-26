@@ -472,12 +472,22 @@ impl Session {
     /// Opens the vault with a root key already in hand (an approved device's), exactly as
     /// `unlock` does with the one its password wrap opened. `root_handle` is a `Slot::Root` and is
     /// consumed on success.
+    ///
+    /// `expected_bundle` is the account's public bundle. A root key opened from an approving
+    /// device's box is authenticated by nothing the new device holds, so a server could seal a
+    /// root key of its own, with sealed private keys that open under it, to the one-time key.
+    /// When the bundle is given, the sealed private keys must be too, and the vault opens only if
+    /// the public halves of the `kx1` and `sig1` keys they hold are the bundle's, for this
+    /// account and key version. Otherwise nothing is unlocked and the handle is kept. (The bundle
+    /// is still the server's word until a person compares its fingerprint with the approving
+    /// device's; this check makes sure that fingerprint is the one of the keys now in use.)
     pub(crate) fn unlock_with_root(
         &mut self,
         account_id: &[u8; 16],
         root_handle: u32,
         key_version: u32,
         sealed_private_keys: Option<&[u8]>,
+        expected_bundle: Option<&[u8]>,
     ) -> Result<(), Error> {
         let slot = self.root_slot(root_handle)?;
         let root = RootKey::from_bytes(&slot);
@@ -492,6 +502,10 @@ impl Session {
             )?),
             None => None,
         };
+        if let Some(bundle) = expected_bundle {
+            let (kx_private, sig_private) = private.as_ref().ok_or(Error::Invalid)?;
+            keys_match_bundle(bundle, account_id, key_version, kx_private, sig_private)?;
+        }
         self.slots.remove(&root_handle);
         self.unlocked = Some(Unlocked {
             account_id: *account_id,
@@ -655,6 +669,27 @@ impl Session {
     pub(crate) fn item_wrap_bytes(&self) -> Result<[u8; 32], Error> {
         Ok(*self.unlocked()?.item_wrap.as_bytes())
     }
+}
+
+/// Whether `bundle` is the public side of exactly these private keys: the same account and key
+/// version, and public keys that are the ones the private keys derive. Anything else, including a
+/// bundle that does not parse, is `Invalid`.
+pub(crate) fn keys_match_bundle(
+    bundle: &[u8],
+    account_id: &[u8; 16],
+    key_version: u32,
+    kx_private: &kx1::PrivateKey,
+    sig_private: &sig1::SigningKey,
+) -> Result<(), Error> {
+    let bundle = Bundle::from_bytes(bundle)?;
+    if bundle.account_id != *account_id
+        || bundle.key_version != key_version
+        || bundle.kx1_public != kx_private.public_key()?
+        || bundle.sig1_public != sig_private.public_key()?
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(())
 }
 
 /// A bundle's fingerprint as 12 groups of 5 digits joined by spaces. Public data, so it needs no

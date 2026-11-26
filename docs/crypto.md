@@ -410,6 +410,17 @@ phrase = the five words, lower case, joined by single spaces
   only and is never shown, or a server could substitute a key and send matching words to both
   screens.
 
+- **The keys the new device ends up with are checked.** The phrase shows the box went to the key the
+  new device made; nothing the new device holds shows that the root key inside is the account's, so a
+  server could seal a root key of its own to that key, with sealed private keys that open under it.
+  The new device therefore needs the account's bundle and sealed private keys, and opens its vault
+  only if the public halves of the `kx1` and `sig1` private keys it opens are exactly the bundle's,
+  for the account and key version it signed in with. It then shows the bundle's fingerprint
+  ("Public-key bundle and fingerprint") and treats the vault as open only after the person says it is
+  the same as the fingerprint the approving device shows for its own account, beside the request. A
+  mismatch, or no answer, locks the vault and ends the session. A server that forged the bundle too
+  is caught only by this comparison.
+
 `phrase.json` in test-vectors pins the digest, the five 13-bit groups, their indexes and the phrase
 for several keys, one of them with a group that wraps the list.
 
