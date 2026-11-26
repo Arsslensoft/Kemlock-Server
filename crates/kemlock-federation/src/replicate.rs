@@ -88,6 +88,10 @@ const PAGE_BYTES: usize = 1_500_000;
 const FETCH_CHUNK: usize = 256;
 /// The most quarantined home records one vault keeps; a stale-epoch record past it is dropped.
 const MAX_QUARANTINED: usize = 256;
+/// The most of them one signer may hold when who was the home of the record's epoch isn't known
+/// (a missed promotion): any member of the set could sign such records, so one can't fill the
+/// quarantine and push out the others'.
+const MAX_QUARANTINED_PER_SIGNER: usize = 32;
 
 /// Sends a request to a peer and returns its response.
 pub trait Channel: Send {
@@ -874,8 +878,20 @@ impl<S: FedStore> Replica<S> {
                             sync.refused += 1;
                             continue;
                         }
-                        if self.store.quarantined(vault).await?.len() >= MAX_QUARANTINED {
+                        let held = self.store.quarantined(vault).await?;
+                        if held.len() >= MAX_QUARANTINED {
                             tracing::warn!(%peer, "the vault's quarantine is full: a stale home record was dropped");
+                            sync.refused += 1;
+                            continue;
+                        }
+                        if current.epoch_home(record.epoch).is_none()
+                            && held
+                                .iter()
+                                .filter(|r| r.record.signer == record.signer)
+                                .count()
+                                >= MAX_QUARANTINED_PER_SIGNER
+                        {
+                            tracing::warn!(%peer, "a signer holds its share of the quarantine: a stale home record was dropped");
                             sync.refused += 1;
                             continue;
                         }
@@ -1705,14 +1721,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_vault_keeps_a_bounded_quarantine() {
+    async fn one_signer_cannot_fill_the_quarantine_when_the_epochs_home_is_unknown() {
         let (a, b, _ic, vault) = stale_world().await;
         let a_id = a.server_id();
-        for n in 1..=MAX_QUARANTINED as u64 {
+        // A already holds its share of stale records at B (B never saw who was home in epoch 1).
+        for n in 1..=MAX_QUARANTINED_PER_SIGNER as u64 {
             keep(
                 &b,
                 &a.identity(),
                 &stale(vault, a_id, home::home_index(1, n), 1),
+                HomeStatus::Quarantined,
+            )
+            .await;
+        }
+        let over = MAX_QUARANTINED_PER_SIGNER as u64 + 1;
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, home::home_index(1, over), 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.quarantined, sync.refused), (0, 1));
+        assert_eq!(
+            b.store.quarantined(vault).await.expect("held").len(),
+            MAX_QUARANTINED_PER_SIGNER,
+            "the room left is for the others"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vault_keeps_a_bounded_quarantine() {
+        let (a, b, _ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // Records of many members of the set, so the per-signer share isn't what stops this one.
+        let signers: Vec<ServerId> = (0..MAX_QUARANTINED / MAX_QUARANTINED_PER_SIGNER)
+            .map(|_| ServerId::random())
+            .collect();
+        for n in 1..=MAX_QUARANTINED as u64 {
+            let signer = signers[(n as usize - 1) / MAX_QUARANTINED_PER_SIGNER];
+            keep(
+                &b,
+                &a.identity(),
+                &stale(vault, signer, home::home_index(1, n), 1),
                 HomeStatus::Quarantined,
             )
             .await;

@@ -389,7 +389,9 @@ another epoch's range is refused, so a server can't claim the indexes a later ho
 stale-epoch record is kept for the admins only when its signer was the home of that epoch, as far as
 the receiver knows (each promotion adds the home it replaced to the vault's history, and an epoch the
 receiver never saw is not checked), and a vault keeps at most 256 quarantined records; a later one is
-dropped and logged. Two records by different servers at one index are not both kept: the first
+dropped and logged. For an epoch whose home the receiver never saw, one signer may hold at most 32 of
+them, so one member of the set can't fill the quarantine and push out the others'. Two records by
+different servers at one index are not both kept: the first
 stays and the second is refused and logged.
 
 **Promotion record**, an envelope signed with `sig1("federation-promotion", body)` by the *new*
