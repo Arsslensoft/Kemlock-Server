@@ -4,8 +4,8 @@ import { createSpacesApi } from '@/api/spaces';
 import { api, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
 import { checkSpaceChain } from '@/features/spaces/chain';
-import { spaceDeps } from '@/features/spaces/deps';
-import { createManifestKeeper } from './keeper';
+import { manifestHooks, spaceDeps } from '@/features/spaces/deps';
+import { type ManifestKeeper, createManifestKeeper } from './keeper';
 import { browserRecordStore } from './records';
 import { createSpaceSigner } from './spaceSigner';
 
@@ -13,7 +13,7 @@ const accountId = () => session.getState().userId;
 
 const spacesApi = createSpacesApi(api);
 
-export const manifestKeeper = createManifestKeeper({
+export const manifestKeeper: ManifestKeeper = createManifestKeeper({
   api: createManifestsApi(api),
   crypto: vaultCrypto,
   records: browserRecordStore(typeof indexedDB === 'undefined' ? undefined : indexedDB),
@@ -30,3 +30,6 @@ export const manifestKeeper = createManifestKeeper({
   spaces: async () =>
     (await spacesApi.list()).filter((entry) => entry.member.state === 'confirmed').map((entry) => entry.space.id),
 });
+
+// The items a key replacement writes into a space are listed in its manifest like any other write.
+manifestHooks.wrote = (items) => manifestKeeper.wrote(items);

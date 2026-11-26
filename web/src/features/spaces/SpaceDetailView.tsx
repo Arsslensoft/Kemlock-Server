@@ -19,6 +19,7 @@ import {
   type InviteInput,
   type ReplaceProgress,
   type Replaced,
+  type Resealed,
   type SpaceDetail,
   canManageUsers,
   keysAwaitReplacement,
@@ -40,6 +41,8 @@ export interface SpaceActions extends StructureActions {
   acceptFirstContact?: () => void;
   /** Replaces the keys that wait for it, for a space with a verified chain. */
   replaceKeys?: () => void;
+  /** Seals again the items still under an old key version. */
+  resealItems?: () => void;
   invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
@@ -66,6 +69,10 @@ export interface SpaceDetailViewProps {
   replacing?: ReplaceProgress | null;
   /** What the last key replacement did. */
   replaced?: Replaced | null;
+  /** How many items are still under an old key version of their collection. */
+  toReseal?: number;
+  /** What the last sealing again did. */
+  resealed?: Resealed | null;
   cryptoAvailable: boolean;
   actions: SpaceActions;
   onBack: () => void;
@@ -327,6 +334,24 @@ function ChainNotice({
   );
 }
 
+/** How far a key replacement or a sealing again is. */
+function Progress({ progress }: { progress: ReplaceProgress | null }) {
+  const t = useT();
+  if (!progress) return null;
+  return (
+    <p role="status">
+      {progress.phase === 'reading'
+        ? t('space.keys.reading', { done: progress.done })
+        : progress.phase === 'sealing'
+          ? t('space.keys.sealing', { total: progress.total })
+          : t('space.keys.sending', { done: progress.done, total: progress.total })}
+      {progress.phase === 'sending' && progress.total > 0 ? (
+        <progress value={progress.done} max={progress.total} aria-label={t('space.keys.progress')} />
+      ) : null}
+    </p>
+  );
+}
+
 type Offboard = { kind: 'revoke' | 'remove'; member: MemberViewDto } | null;
 
 export function SpaceDetailView({
@@ -340,6 +365,8 @@ export function SpaceDetailView({
   cryptoAvailable,
   replacing = null,
   replaced = null,
+  toReseal = 0,
+  resealed = null,
   actions,
   onBack,
 }: SpaceDetailViewProps) {
@@ -423,18 +450,7 @@ export function SpaceDetailView({
         <Notice tone="warn" live>
           <b>{t('space.keysPending.title')}</b>
           <p>{t('space.keysPending.chained')}</p>
-          {replacing ? (
-            <p role="status">
-              {replacing.phase === 'reading'
-                ? t('space.keys.reading', { done: replacing.done })
-                : replacing.phase === 'sealing'
-                  ? t('space.keys.sealing', { total: replacing.total })
-                  : t('space.keys.sending', { done: replacing.done, total: replacing.total })}
-              {replacing.phase === 'sending' && replacing.total > 0 ? (
-                <progress value={replacing.done} max={replacing.total} aria-label={t('space.keys.progress')} />
-              ) : null}
-            </p>
-          ) : null}
+          <Progress progress={replacing} />
           {actions.replaceKeys ? (
             <div className="actions">
               <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.replaceKeys}>
@@ -447,6 +463,26 @@ export function SpaceDetailView({
         <Notice tone="warn" live>
           <b>{t('space.keysPending.title')}</b>
           <p>{t('space.keysPending.body')}</p>
+        </Notice>
+      ) : null}
+      {toReseal > 0 && !keysAwaitReplacement(detail) ? (
+        <Notice tone="warn" live>
+          <b>{t('space.reseal.title', { count: toReseal })}</b>
+          <p>{t('space.reseal.body')}</p>
+          <Progress progress={replacing} />
+          {actions.resealItems ? (
+            <div className="actions">
+              <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.resealItems}>
+                {t('space.reseal.run')}
+              </Button>
+            </div>
+          ) : null}
+        </Notice>
+      ) : null}
+      {resealed ? (
+        <Notice tone="info" live>
+          <b>{t('space.reseal.done', { rewritten: resealed.rewritten })}</b>
+          {resealed.stuck > 0 ? <p>{t('space.reseal.stuck', { stuck: resealed.stuck })}</p> : null}
         </Notice>
       ) : null}
       {replaced ? (

@@ -13,13 +13,21 @@ import type {
   MemberDto,
   MemberViewDto,
   OffboardedDto,
+  ServedItemDto,
   SpaceRole,
   SpaceSummaryDto,
   SpaceViewDto,
   SpacesApi,
 } from '@/api/spaces';
 import { isApiError } from '@/api/errors';
-import type { ChainBuilt, ChainChange, ChainView, ChainWrite } from '@/crypto/types';
+import type { ItemDto } from '@/api/types';
+import type {
+  ChainBuilt,
+  ChainChange,
+  ChainReplacement,
+  ChainView,
+  ChainWrite,
+} from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
 import type { AnchorStore, PinStore } from '@/spaces/anchors';
@@ -44,6 +52,16 @@ export interface SpaceDeps {
   pins?: PinStore;
   /** The time in Unix seconds, for the records this browser signs. */
   now?: () => number;
+  /**
+   * Told of the items of a space this browser wrote outside the vault's own writes (a key
+   * replacement's), so the space's signed manifest lists them (src/manifest/keeper.ts).
+   */
+  wrote?: (items: ItemDto[]) => Promise<void>;
+}
+
+/** Tells the manifest keeper, when there is one, of items this browser wrote. Never throws. */
+function wrote(deps: SpaceDeps, items: ItemDto[]): void {
+  if (items.length > 0) void deps.wrote?.(items)?.catch(() => undefined);
 }
 
 /**
@@ -136,13 +154,20 @@ async function appendBuilt(
     first = writes.length;
     rest = (built.writes ?? []).slice(writes.length);
     held = built.held ?? [];
+    // What doesn't fit in the request is named held, so the replacement is complete (I3); the
+    // batches that follow write each under the new key version, which releases it (I4).
+    const named = [...held, ...rest.map((write) => write.item.id)];
     await deps.api.appendChain(spaceId, {
       records: built.records,
       seals: built.seals,
       names: built.names,
-      ...(held.length > 0 ? { held } : {}),
+      ...(named.length > 0 ? { held: named } : {}),
       ...(writes.length > 0 ? { writes } : {}),
     });
+    wrote(
+      deps,
+      writes.map((write) => write.item),
+    );
     return true;
   };
   const verified = async (): Promise<ChainView> => {
@@ -920,22 +945,14 @@ export interface Replaced {
   held: number;
 }
 
-/** The live kem1 items of the space's marked collections, as the server serves them. */
-async function readItems(
+/** The live kem1 items of the space that `wanted` takes, as the server serves them. */
+async function scanItems(
   deps: SpaceDeps,
   spaceId: string,
-  collections: Set<string>,
+  wanted: (dto: ServedItemDto & { collectionId: string }) => boolean,
   progress: (p: ReplaceProgress) => void,
-) {
-  const items: Array<{
-    id: string;
-    collection: string;
-    kind: string;
-    revision: number;
-    keyVersion: number;
-    ciphertext: string;
-    itemKey: string;
-  }> = [];
+): Promise<ChainReplacement['items']> {
+  const items: ChainReplacement['items'] = [];
   let since: string | undefined;
   let seen = 0;
   for (;;) {
@@ -945,12 +962,11 @@ async function readItems(
       if (
         dto.owner === `space:${spaceId}` &&
         !dto.deleted &&
-        !dto.held &&
         dto.format === 'kem1' &&
         dto.collectionId &&
-        collections.has(dto.collectionId) &&
         dto.ciphertext &&
-        dto.itemKey
+        dto.itemKey &&
+        wanted({ ...dto, collectionId: dto.collectionId })
       ) {
         items.push({
           id: dto.id,
@@ -986,7 +1002,13 @@ export async function replaceKeys(
   if (trust?.kind !== 'verified') return { rewritten: 0, held: 0 };
   const spaceId = detail.view.space.id;
   const marked = new Set(trust.view.collections.filter((c) => c.marked).map((c) => c.id));
-  const items = await readItems(deps, spaceId, marked, progress);
+  // Items already held stay held: they aren't live, and the replacement doesn't have to name them.
+  const items = await scanItems(
+    deps,
+    spaceId,
+    (dto) => marked.has(dto.collectionId) && !dto.held,
+    progress,
+  );
   // What the server holds of each name, to be sealed again when the space key is replaced.
   const names = [
     { target: 'space', sealed: detail.view.space.name },
@@ -1014,8 +1036,80 @@ export async function replaceKeys(
     await deps.api.putBatch({
       writes: batch.map((write) => ({ expectedRevision: write.expectedRevision, item: write.item })),
     });
+    wrote(
+      deps,
+      batch.map((write) => write.item),
+    );
     done += batch.length;
     progress({ phase: 'sending', done, total });
   }
   return { rewritten: total, held: sent.held.length };
+}
+
+// ---- sealing again what a replacement left under an old key ------------------------------------
+
+/**
+ * The live kem1 items of the space that are still under an older key version than their
+ * collection's current one: what a replacement that stopped halfway left, and what it held. Read
+ * from the server's sync, so it is the same after a reload or on another device. A space whose keys
+ * were never replaced has none, and isn't read.
+ */
+export async function itemsToReseal(
+  deps: SpaceDeps,
+  detail: Pick<SpaceDetail, 'view' | 'trust'>,
+  progress: (p: ReplaceProgress) => void = () => undefined,
+): Promise<ChainReplacement['items']> {
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified' || !trust.view.collections.some((c) => c.keyVersion > 1)) return [];
+  const versions = new Map(trust.view.collections.map((c) => [c.id, c.keyVersion]));
+  return scanItems(
+    deps,
+    detail.view.space.id,
+    (dto) => dto.keyVersion < (versions.get(dto.collectionId) ?? 0),
+    progress,
+  );
+}
+
+export interface Resealed {
+  /** Items sealed again under their collection's current key version. */
+  rewritten: number;
+  /** Items this browser can't seal again: it no longer holds their old key, or can't edit them. */
+  stuck: number;
+}
+
+/**
+ * Seals again the items `itemsToReseal` finds and writes them as the next revision under the
+ * current key version, in batches (a write under the current version also releases a held item).
+ * The worker does it with the old key it still holds from this unlock; an item whose old key it no
+ * longer holds is counted as stuck, and waits for a device that has it. The space's signed manifest
+ * lists what was written. `progress` says how far it is.
+ */
+export async function resealItems(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  progress: (p: ReplaceProgress) => void = () => undefined,
+): Promise<Resealed> {
+  if (!isChained(detail)) return { rewritten: 0, stuck: 0 };
+  const spaceId = detail.view.space.id;
+  const items = await itemsToReseal(deps, detail, progress);
+  if (items.length === 0) return { rewritten: 0, stuck: 0 };
+  progress({ phase: 'sealing', done: 0, total: items.length });
+  const built = await deps.crypto.buildReseal({ spaceId, items });
+  if (!built.ok) throw new ChainRefused(built.reason, built.seq);
+  const writes = built.writes ?? [];
+  let done = 0;
+  progress({ phase: 'sending', done, total: writes.length });
+  for (let at = 0; at < writes.length; at += BATCH_SIZE) {
+    const batch = writes.slice(at, at + BATCH_SIZE);
+    await deps.api.putBatch({
+      writes: batch.map((write) => ({ expectedRevision: write.expectedRevision, item: write.item })),
+    });
+    wrote(
+      deps,
+      batch.map((write) => write.item),
+    );
+    done += batch.length;
+    progress({ phase: 'sending', done, total: writes.length });
+  }
+  return { rewritten: writes.length, stuck: (built.held ?? []).length };
 }

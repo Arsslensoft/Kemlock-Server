@@ -38,6 +38,7 @@ import {
   deleteGroup,
   grantAccess,
   inviteMember,
+  itemsToReseal,
   keysAwaitReplacement,
   loadSpaceDetail,
   loadSpaceList,
@@ -46,6 +47,7 @@ import {
   reachedBy,
   renameCollection,
   replaceKeys,
+  resealItems,
   revokeGrant,
   sealPending,
   setGroupMembers,
@@ -747,8 +749,14 @@ describe('replacing the keys of a space that has a chain', () => {
     const result = await replaceKeys(spaceDeps, loaded, (p) => {
       if (p.phase === 'sending') sent.push([p.done, p.total]);
     });
-    // One item fits beside the record, the other two follow in a batch.
-    expect(api.appendChain.mock.calls[0]?.[1].writes).toHaveLength(1);
+    // One item fits beside the record, the other two follow in a batch, and are named held in the
+    // request so the replacement is complete: their write under the new version releases them.
+    const request = api.appendChain.mock.calls[0]?.[1];
+    expect(request?.writes).toHaveLength(1);
+    expect(request?.held).toEqual([
+      '50000000-0000-4000-8000-000000000102',
+      '50000000-0000-4000-8000-000000000103',
+    ]);
     expect(api.putBatch).toHaveBeenCalledTimes(1);
     expect(api.putBatch.mock.calls[0]?.[0].writes.map((w) => w.expectedRevision)).toEqual([1, 1]);
     expect(sent).toEqual([
@@ -756,6 +764,21 @@ describe('replacing the keys of a space that has a chain', () => {
       [3, 3],
     ]);
     expect(result).toEqual({ rewritten: 3, held: 0 });
+  });
+
+  it('lists what it wrote in the signed manifest, the item in the request and the ones in batches', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(MARKED);
+    const listed: string[][] = [];
+    const withKeeper = { ...spaceDeps, wrote: async (items: Array<{ id: string }>) => void listed.push(items.map((i) => i.id)) };
+    const loaded = detail({ trust: { kind: 'verified', view: MARKED } });
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [served(ITEM, INFRA)] });
+    await replaceKeys(withKeeper, loaded);
+    expect(listed).toEqual([[ITEM]]);
+    expect(crypto.replacements).toHaveLength(1);
+    // A keeper that fails never fails the replacement.
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [served(ITEM, INFRA)] });
+    const broken = { ...spaceDeps, wrote: () => Promise.reject(new Error('no')) };
+    await expect(replaceKeys(broken, loaded)).resolves.toEqual({ rewritten: 1, held: 0 });
   });
 
   it('shows the reason when the chain’s rules refuse the replacement, and sends nothing', async () => {
@@ -775,5 +798,97 @@ describe('replacing the keys of a space that has a chain', () => {
     expect(await replaceKeys(spaceDeps, detail())).toEqual({ rewritten: 0, held: 0 });
     expect(api.sync).not.toHaveBeenCalled();
     expect(crypto.replacements).toEqual([]);
+  });
+});
+
+describe('sealing again what a replacement left under an old key', () => {
+  const REPLACED = chained({
+    collections: [
+      { id: INFRA, keyVersion: 2, marked: false, nameHash: 'h', nameVersion: 1 },
+      { id: FINANCE, keyVersion: 1, marked: false, nameHash: 'h', nameVersion: 1 },
+    ],
+  });
+  const item = (n: number, collection: string, keyVersion: number, over: Partial<ServedItemDto> = {}): ServedItemDto => ({
+    id: `50000000-0000-4000-8000-00000000020${n}`,
+    owner: `space:${SPACE}`,
+    kind: 'login',
+    format: 'kem1',
+    revision: 1,
+    keyVersion,
+    ciphertext: 'Y2lwaGVy',
+    itemKey: 'a2V5',
+    deleted: false,
+    collectionId: collection,
+    ...over,
+  });
+
+  it('finds, from the server, the live items under a version older than their collection\'s', async () => {
+    const { spaceDeps, api, loaded } = chainedDeps(REPLACED);
+    api.sync.mockResolvedValueOnce({
+      cursor: 'c',
+      more: false,
+      items: [
+        item(1, INFRA, 1),
+        // Held ones are found too: a write under the current version releases them.
+        item(2, INFRA, 1, { held: true }),
+        // Current, of a collection never replaced, deleted, another owner's: not found.
+        item(3, INFRA, 2),
+        item(4, FINANCE, 1),
+        item(5, INFRA, 1, { deleted: true, ciphertext: null, itemKey: null }),
+        item(6, INFRA, 1, { owner: `user:${ME}` }),
+      ],
+    });
+    const found = await itemsToReseal(spaceDeps, loaded);
+    expect(found.map((i) => i.id)).toEqual([
+      '50000000-0000-4000-8000-000000000201',
+      '50000000-0000-4000-8000-000000000202',
+    ]);
+    // A space whose keys were never replaced is not read at all.
+    api.sync.mockClear();
+    expect(await itemsToReseal(spaceDeps, detail({ trust: { kind: 'verified', view: chained() } }))).toEqual([]);
+    expect(api.sync).not.toHaveBeenCalled();
+  });
+
+  it('seals them again in the worker and writes them in batches, listing them in the manifest', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(REPLACED);
+    const loaded = detail({ trust: { kind: 'verified', view: REPLACED } });
+    const listed: string[][] = [];
+    const withKeeper = { ...spaceDeps, wrote: async (items: Array<{ id: string }>) => void listed.push(items.map((i) => i.id)) };
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [item(1, INFRA, 1), item(2, INFRA, 1)] });
+    const phases: Array<[string, number, number]> = [];
+    const result = await resealItems(withKeeper, loaded, (p) => phases.push([p.phase, p.done, p.total]));
+    expect(crypto.resealings[0]?.map((i) => i.id)).toEqual([
+      '50000000-0000-4000-8000-000000000201',
+      '50000000-0000-4000-8000-000000000202',
+    ]);
+    expect(api.putBatch).toHaveBeenCalledTimes(1);
+    expect(api.putBatch.mock.calls[0]?.[0].writes.map((w) => [w.expectedRevision, w.item.revision, w.item.keyVersion])).toEqual([
+      [1, 2, 2],
+      [1, 2, 2],
+    ]);
+    expect(api.appendChain).not.toHaveBeenCalled();
+    expect(listed).toEqual([['50000000-0000-4000-8000-000000000201', '50000000-0000-4000-8000-000000000202']]);
+    expect(result).toEqual({ rewritten: 2, stuck: 0 });
+    expect(phases.at(-1)).toEqual(['sending', 2, 2]);
+  });
+
+  it('counts the items this browser can not seal again, and writes the rest', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(REPLACED);
+    const loaded = detail({ trust: { kind: 'verified', view: REPLACED } });
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [item(1, INFRA, 1), item(2, INFRA, 1)] });
+    crypto.resealed = { ok: true, records: [], seals: [], names: [], held: ['50000000-0000-4000-8000-000000000202'], writes: [] };
+    expect(await resealItems(spaceDeps, loaded)).toEqual({ rewritten: 0, stuck: 1 });
+    expect(api.putBatch).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when no item is under an old key, or the space has no chain', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(REPLACED);
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [item(3, INFRA, 2)] });
+    expect(await resealItems(spaceDeps, detail({ trust: { kind: 'verified', view: REPLACED } }))).toEqual({
+      rewritten: 0,
+      stuck: 0,
+    });
+    expect(await resealItems(spaceDeps, detail())).toEqual({ rewritten: 0, stuck: 0 });
+    expect(crypto.resealings).toEqual([]);
   });
 });

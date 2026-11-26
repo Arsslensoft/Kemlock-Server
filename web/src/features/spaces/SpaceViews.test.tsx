@@ -434,3 +434,44 @@ describe('SpaceDetailView, a space with a chain', () => {
     expect(screen.queryByRole('button', { name: 'Replace the keys' })).not.toBeInTheDocument();
   });
 });
+
+describe('SpaceDetailView, items left under an old key', () => {
+  const replaced = () =>
+    detail({
+      trust: {
+        kind: 'verified' as const,
+        view: {
+          ...NO_CHAIN,
+          chained: true,
+          head: { seq: 5, link: 'bGluaw' },
+          space: { keyVersion: 2, marked: false, nameHash: 'h', nameVersion: 2 },
+        },
+      },
+    });
+
+  it('says how many items wait to be sealed again and runs it', async () => {
+    const resealItems = vi.fn();
+    view({ detail: replaced(), toReseal: 3, actions: { ...actions(), resealItems } });
+    expect(screen.getByText(/3 items are still under an old key/)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Seal them again' }));
+    expect(resealItems).toHaveBeenCalledOnce();
+  });
+
+  it('shows the progress and holds the button while it runs', () => {
+    view({
+      detail: replaced(),
+      toReseal: 3,
+      actions: { ...actions(), resealItems: vi.fn() },
+      replacing: { phase: 'sending', done: 1, total: 3 },
+    });
+    expect(screen.getByText(/Sending 1 of 3/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Seal them again' })).toBeDisabled();
+  });
+
+  it('says nothing when none waits, and what a sealing again did, with the items it could not', () => {
+    view({ detail: replaced(), toReseal: 0, resealed: { rewritten: 2, stuck: 1 } });
+    expect(screen.queryByRole('button', { name: 'Seal them again' })).not.toBeInTheDocument();
+    expect(screen.getByText(/2 items sealed again/)).toBeInTheDocument();
+    expect(screen.getByText(/1 item can't be sealed again here/)).toBeInTheDocument();
+  });
+});

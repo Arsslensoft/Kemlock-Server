@@ -1,6 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useEffect, useRef, useState } from 'react';
+// The manifest keeper plugs into the space deps here: what a key replacement writes is listed in
+// the space's signed manifest.
+import '@/manifest/instance';
 import type { MemberViewDto, OffboardedDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
@@ -28,8 +31,11 @@ import {
   pinMember,
   type ReplaceProgress,
   type Replaced,
+  type Resealed,
+  itemsToReseal,
   renameCollection,
   replaceKeys,
+  resealItems,
   revokeGrant,
   sealPending,
   setGroupMembers,
@@ -65,9 +71,31 @@ export default function SpaceDetail() {
   const [confirming, setConfirming] = useState<ConfirmState | null>(null);
   const [replacing, setReplacing] = useState<ReplaceProgress | null>(null);
   const [replaced, setReplaced] = useState<Replaced | null>(null);
+  const [toReseal, setToReseal] = useState(0);
+  const [resealed, setResealed] = useState<Resealed | null>(null);
   const [offboarded, setOffboarded] = useState<{ name: string; outcome: OffboardedDto } | null>(null);
   const detail: Detail | undefined = query.data;
   const { api } = spaceDeps;
+
+  // Items left under an old key version (a replacement that stopped halfway, or held items), found
+  // from the server's sync, so it is the same after a reload or on another device.
+  async function recount(current: Detail | undefined): Promise<void> {
+    try {
+      setToReseal(current ? (await itemsToReseal(spaceDeps, current)).length : 0);
+    } catch {
+      // Not read now: the next load tries again.
+    }
+  }
+  useEffect(() => {
+    let live = true;
+    if (detail?.trust?.kind !== 'verified' || !detail.readable) return undefined;
+    void itemsToReseal(spaceDeps, detail)
+      .then((items) => (live ? setToReseal(items.length) : undefined))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [detail]);
 
   // A member who is awaiting a key this account holds is sealed it now ("Using the state",
   // "Sealing"): once for each state of the chain this browser has loaded, and only by a member
@@ -142,6 +170,8 @@ export default function SpaceDetail() {
       offboarded={offboarded}
       replacing={replacing}
       replaced={replaced}
+      toReseal={toReseal}
+      resealed={resealed}
       cryptoAvailable={spaceDeps.crypto.available}
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
@@ -158,7 +188,24 @@ export default function SpaceDetail() {
             .then((result) => {
               if (result) setReplaced(result);
             })
-            .finally(() => setReplacing(null));
+            .finally(() => {
+              setReplacing(null);
+              // A failure partway leaves items to seal again: show them.
+              void recount(detail);
+            });
+        },
+        resealItems: () => {
+          if (!detail) return;
+          setResealed(null);
+          setReplacing({ phase: 'reading', done: 0, total: 0 });
+          void change(() => resealItems(spaceDeps, detail, setReplacing))
+            .then((result) => {
+              if (result) setResealed(result);
+            })
+            .finally(() => {
+              setReplacing(null);
+              void recount(detail);
+            });
         },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
