@@ -1716,10 +1716,7 @@ live items the record leaves held (I3), and `"writes": [{"collection", "expected
 version (an `item` is written as `PUT /kem/v1/items/{id}` takes it). They are stored in the same transaction as the records. A write is of a live item of a
 collection whose key a `keys` record of the request replaces, by a member with edit on it; an item
 is written once and is not also held; any other write is refused (`400`, or `422`
-`held-not-rotated` for a collection the request does not replace). The replacement is complete: a
-request that replaces a collection's key re-writes or names held every live `kem1` item of it
-(except one an earlier replacement holds already), or is refused (`400`). An item that does not
-fit in the request is named held, and its next write under the new key version releases it (I4). The server refuses a record
+`held-not-rotated` for a collection the request does not replace). The server refuses a record
 unless all of these hold:
 
 - A1. Its bytes are canonical and within "Limits", and its body has its kind's exact shape.
