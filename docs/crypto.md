@@ -1633,6 +1633,10 @@ these hold:
   server holds only as invited (never accepted) is not a member for any policy, key or sync, even
   if the chain says `confirmed`. A later `confirm` of a member who is already confirmed (a new key
   version) needs no new acceptance. Refused as "not allowed" (`422`).
+  A server that ran before this rule may hold members a chain confirmed who never accepted. It can't
+  tell them from the rest: the row's accepted time was written when the confirm landed, so it records
+  no consent. It repairs nothing; an Owner or Admin who finds such a member (a confirmed member they
+  never invited, or one whose invitation was never accepted) removes them with a `remove` record.
 
 **Items**
 
