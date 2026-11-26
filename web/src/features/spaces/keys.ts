@@ -8,7 +8,7 @@
 // only keeps the form from offering what is certain to be refused.
 import type { CollectionPermission, GroupDto, SpaceViewDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
-import { lazyContext, openUnchainedKeys } from './boxes';
+import { lazyContext, openUnchainedKeys, signedInAccount } from './boxes';
 import { checkSpaceChain, openChainedKeys, overlayChain } from './chain';
 import type { SpaceDeps } from './model';
 
@@ -22,7 +22,8 @@ const EDIT: CollectionPermission[] = ['edit', 'edit-hide-passwords', 'manage'];
  */
 export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<SpaceViewDto> {
   const view = await deps.api.get(spaceId);
-  const trust = await checkSpaceChain(deps, spaceId, view.me.user);
+  const me = signedInAccount(deps, view.me.user);
+  const trust = await checkSpaceChain(deps, spaceId, me);
   if (trust.kind === 'unverified' || trust.kind === 'first-contact') {
     throw new Error("the space can't be checked");
   }
@@ -35,7 +36,7 @@ export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<S
   // roster is read from the server only when a box has to be checked.
   await openUnchainedKeys(
     {
-      ...lazyContext(deps, spaceId, view.me.user),
+      ...lazyContext(deps, spaceId, me),
       access: async () => ({ grants: view.grants, groups: view.groups }),
     },
     { me: view.me, spaceKeyVersion: view.space.keyVersion, collectionKeys: view.collectionKeys },

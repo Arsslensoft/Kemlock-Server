@@ -58,6 +58,27 @@ export class KeyBoxRefused extends Error {
   }
 }
 
+/** The server names an account as mine that isn't the one signed in here. */
+export class WrongAccount extends Error {
+  constructor() {
+    super('the server names another account as this one');
+    this.name = 'WrongAccount';
+  }
+}
+
+/**
+ * The id of the account signed in here, which keys what this browser keeps (the accepted key boxes,
+ * the chain anchors, the pins). The server's `me.user` is its word, so it is only checked against
+ * that id and never used in its place: a server that served another id would get an empty record
+ * and have a forged box accepted as the first one. Throws `WrongAccount` when they differ.
+ */
+export function signedInAccount(deps: SpaceDeps, served: string): string {
+  if (!deps.account) return served;
+  const own = deps.account();
+  if (!own || own !== served) throw new WrongAccount();
+  return own;
+}
+
 /** The key a box holds: the space's own key, or one collection's. */
 export type BoxKey = 'space' | { collection: string };
 

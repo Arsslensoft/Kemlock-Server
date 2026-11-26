@@ -11,8 +11,10 @@ import {
   type BoxKey,
   type BoxRefusal,
   KeyBoxRefused,
+  WrongAccount,
   openKeyBox,
   openUnchainedKeys,
+  signedInAccount,
 } from './boxes';
 import {
   FINANCE,
@@ -314,5 +316,30 @@ describe('the keys of a space with no chain', () => {
     crypto.calls.length = 0;
     await expect(openSpaceKeys(deps, SPACE)).rejects.toBeInstanceOf(KeyBoxRefused);
     expect(crypto.calls).not.toContain(`openCollection:${FINANCE}`);
+  });
+});
+
+describe('the account the server names as mine', () => {
+  it('is checked against the one signed in here and never used in its place', async () => {
+    const { deps, crypto, api } = await setup();
+    const signedIn: SpaceDeps = { ...deps, account: () => ME };
+    expect(signedInAccount(signedIn, ME)).toBe(ME);
+    expect(() => signedInAccount(signedIn, THEO)).toThrow(WrongAccount);
+    expect(() => signedInAccount({ ...deps, account: () => null }, ME)).toThrow(WrongAccount);
+    // Without a session (a test) the server's word stands.
+    expect(signedInAccount(deps, THEO)).toBe(THEO);
+
+    // The server can't reach an empty record by serving another id as mine: a box this browser
+    // accepted stays the only one accepted for that key, and the space doesn't open at all.
+    api.get.mockResolvedValue(spaceView());
+    await openSpaceKeys(signedIn, SPACE);
+    crypto.calls.length = 0;
+    api.get.mockResolvedValue(
+      spaceView({
+        me: member(THEO, { role: 'owner', sealedSpaceKey: encodeB64(utf8('the-servers-own-key')) }),
+      }),
+    );
+    await expect(openSpaceKeys(signedIn, SPACE)).rejects.toBeInstanceOf(WrongAccount);
+    expect(crypto.calls.some((call) => call.startsWith('openSpace'))).toBe(false);
   });
 });

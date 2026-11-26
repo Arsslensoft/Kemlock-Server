@@ -30,7 +30,7 @@ import {
   overlayChain,
 } from './chain';
 import type { BoxStore } from '@/spaces/boxstore';
-import { lazyContext, openKeyBox, openUnchainedKeys } from './boxes';
+import { lazyContext, openKeyBox, openUnchainedKeys, signedInAccount } from './boxes';
 import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
@@ -43,6 +43,8 @@ export interface SpaceDeps {
   pins?: PinStore;
   /** Where it keeps the key boxes it accepted, so one sealed before keys were signed is flagged once. */
   boxes?: BoxStore;
+  /** The id of the account signed in here, from the session; the server's word for it is only checked against it. */
+  account?: () => string | null;
 }
 
 /**
@@ -85,7 +87,14 @@ async function openSpaceName(
   summary: SpaceSummaryDto,
 ): Promise<{ name: string | null; trust: SpaceTrust }> {
   const spaceId = summary.space.id;
-  const trust = await checkSpaceChain(deps, spaceId, summary.member.user);
+  let me: string;
+  try {
+    me = signedInAccount(deps, summary.member.user);
+  } catch {
+    // The server names someone else as me: nothing about this space is opened or shown as checked.
+    return { name: null, trust: { kind: 'unverified', reason: 'account', seq: null } };
+  }
+  const trust = await checkSpaceChain(deps, spaceId, me);
   const sealed = summary.member.sealedSpaceKey;
   if (!sealed || trust.kind === 'unverified' || trust.kind === 'first-contact') {
     return { name: null, trust };
@@ -98,7 +107,7 @@ async function openSpaceName(
       await openChainedKey(deps, spaceId, trust.view, null, servedVersion, sealed);
       keyVersion = nameVersionOf(trust.view, 'space', spaceId);
     } else {
-      await openKeyBox(lazyContext(deps, spaceId, summary.member.user), {
+      await openKeyBox(lazyContext(deps, spaceId, me), {
         key: 'space',
         version: servedVersion,
         sealed,
@@ -209,7 +218,8 @@ export interface SpaceDetail {
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
   const [served, servedMembers] = await Promise.all([deps.api.get(spaceId), deps.api.members(spaceId)]);
-  const trust = await checkSpaceChain(deps, spaceId, served.me.user);
+  const me = signedInAccount(deps, served.me.user);
+  const trust = await checkSpaceChain(deps, spaceId, me);
   let view = served;
   let members = servedMembers;
   let readable = false;
@@ -231,7 +241,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     // were signed is accepted once and flagged.
     try {
       const ctx = {
-        ...lazyContext(deps, spaceId, served.me.user),
+        ...lazyContext(deps, spaceId, me),
         members: async () => servedMembers,
         access: async () => ({ grants: served.grants, groups: served.groups }),
       };
@@ -368,7 +378,7 @@ function recipientOf(
         crypto: deps.crypto,
         spaceId: detail.view.space.id,
         members: detail.members,
-        me: detail.view.me.user,
+        me: signedInAccount(deps, detail.view.me.user),
         pins: deps.pins,
       },
       member,
