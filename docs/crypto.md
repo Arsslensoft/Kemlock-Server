@@ -555,6 +555,11 @@ opens the vault with the new keys can finish the spaces: it opens `sealedPreviou
 - Seal every wrap of `R′` before the install, and send no wrap of `R`.
 - On `409 rotation-incomplete`, read the plan again, stage the items it names and any new wrap, and
   install again; give up after five rounds.
+- After the install and before it commits to the new keys, seal again every value it keeps locally for
+  the account under the old user key (the web vault's space anchors and pins, a key-box store, a
+  signed-owner memory): they are sealed under a child of the user key, so none opens after a
+  rotation. A client that did not rotate and finds them unreadable treats them as lost, not as
+  damaged: it asks again (first contact), and does not trust or refuse on what it cannot read.
 - After the install, sign and `PUT` a new manifest, show the new Recovery Kit once, make the
   device's trusted-device copy, delete the key and local data of version `N` it still holds, and
   do the spaces' part before it forgets the old keys.

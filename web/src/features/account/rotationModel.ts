@@ -31,6 +31,7 @@ import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { CredentialsError } from '@/lib/errors';
 import { PasskeyError } from '@/lib/passkey';
+import { resealLocalStores } from '@/local/registry';
 import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 /** The page can't rotate this account. */
@@ -75,6 +76,7 @@ export interface RotationDeps {
     | 'rotationKitMake'
     | 'rotationDeviceCopySeal'
     | 'rotationSealRootKey'
+    | 'rotationResealLocal'
     | 'rotationCommit'
     | 'rotationAbort'
   >;
@@ -393,6 +395,11 @@ export async function rotateKeys(
     }
     if (!rotated) throw new Error('the rotation was not installed');
     installed = true;
+
+    // What this browser keeps sealed under the old keys (space anchors and pins, and whatever else
+    // registers in `local/`) moves to the new ones now, while the worker holds both. A store that
+    // fails keeps values the old keys sealed, which it reads as "ask again".
+    await resealLocalStores(deps.userId, (label, sealed) => deps.crypto.rotationResealLocal(label, sealed));
 
     // The server has the new keys: make them the account's here.
     const committed = await deps.crypto.rotationCommit();

@@ -6,6 +6,7 @@ import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import { makeBundleB64 } from '@/test/bundles';
 import { crypto as fakeCrypto, fakeCalls, resetFakeCrypto } from '@/test/fake-crypto';
 import { PasskeyError } from '@/lib/passkey';
+import { registerLocalStore } from '@/local/registry';
 import {
   RotationBlockedError,
   RotationPasswordError,
@@ -136,6 +137,47 @@ describe('rotateKeys', () => {
     expect(fakeCalls.filter((call) => call === 'rotationResealItem')).toHaveLength(2);
     expect(fakeCalls.indexOf('rotationCommit')).toBeGreaterThan(fakeCalls.indexOf('rotationWrapPassword'));
     expect(fakeCalls).not.toContain('rotationAbort');
+  });
+
+  it('seals again what this browser keeps for the account, after the install and before the new keys are committed', async () => {
+    const order: string[] = [];
+    const moved: string[] = [];
+    const remove = registerLocalStore({
+      name: 'test-store',
+      resealAll: async (account, reseal) => {
+        order.push(`reseal:${account}:${fakeCalls.includes('rotationCommit') ? 'after' : 'before'}`);
+        moved.push(await reseal('anchor/one', 'v1:kept'));
+      },
+    });
+    try {
+      const { api, deps } = setup();
+      api.install.mockImplementation(async () => {
+        order.push('install');
+        return { keyVersion: 2, tokens: null };
+      });
+      await rotateKeys(deps, { email: 'sam@example.org', password: 'pw', makeKit: false });
+      expect(order).toEqual(['install', `reseal:${USER}:before`]);
+      expect(moved).toEqual(['v2:kept']);
+      expect(fakeCalls.indexOf('rotationResealLocal')).toBeLessThan(fakeCalls.indexOf('rotationCommit'));
+    } finally {
+      remove();
+    }
+  });
+
+  it('does not seal again what this browser keeps when the install fails', async () => {
+    const reseal = vi.fn(async () => undefined);
+    const remove = registerLocalStore({ name: 'test-store', resealAll: reseal });
+    try {
+      const { deps } = setup({
+        install: async () => {
+          throw new ApiError(500, { type: 'urn:kemlock:problem:internal', title: 'no' } as never);
+        },
+      });
+      await expect(rotateKeys(deps, { email: 'sam@example.org', password: 'pw', makeKit: false })).rejects.toBeInstanceOf(ApiError);
+      expect(reseal).not.toHaveBeenCalled();
+    } finally {
+      remove();
+    }
   });
 
   it('removes what it cannot re-wrap and says how much', async () => {

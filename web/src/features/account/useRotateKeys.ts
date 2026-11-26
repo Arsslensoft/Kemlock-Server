@@ -8,6 +8,7 @@ import { createSendsApi } from '@/api/sends';
 import { api, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { vaultCrypto } from '@/crypto-port';
+import '@/local/stores';
 import { assertWithPasskeyAndPrf } from '@/lib/passkey';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { manifestKeeper } from '@/manifest/instance';
