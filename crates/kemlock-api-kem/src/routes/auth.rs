@@ -153,6 +153,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
                 setup_grant: request.setup_grant,
             })
             .await?;
+        let invited = invitation.is_some();
         // "Verify the email of a new account": one made on a sign-up is held until the link mailed to
         // its address is opened. Not the first admin (made at setup), and not one that came by an
         // invitation, which was mailed to the address and so proved it. A failure leaves the account
@@ -163,7 +164,6 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         }
         // The account exists: the invitation is spent. A failure here leaves it pending, which
         // can't let anyone register again (the address is taken), so it is only logged.
-        let invited = invitation.is_some();
         if let Some(invitation) = invitation {
             invitation.consume().await;
         }
