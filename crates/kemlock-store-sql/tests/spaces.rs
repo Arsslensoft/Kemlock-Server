@@ -1051,3 +1051,67 @@ async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
         .expect("exists");
     assert!(emptied.members.is_empty());
 }
+
+#[tokio::test]
+async fn two_owners_removing_each_other_together_leave_one_of_them() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let lee = person(&store, 2, "lee@example.org").await;
+    let ana = person(&store, 3, "ana@example.org").await;
+    let (space, _) = make_space(&store, sam.id).await;
+    let sam_row = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists")
+        .members[0]
+        .clone();
+    let mut lee_row = sam_row.clone();
+    lee_row.user = lee.id;
+    let mut ana_row = sam_row.clone();
+    ana_row.user = ana.id;
+    ana_row.role = SpaceRole::Admin;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![lee_row, ana_row],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a second owner and an admin");
+
+    // Each owner's request was valid against the two owners it read; they land together. The store
+    // takes them one at a time, so the second meets the first's result and is refused.
+    let remove = |user: UserId| {
+        let store = store.clone();
+        async move {
+            SpaceRepo::apply(
+                &store,
+                SpaceChanges {
+                    members_removed: vec![user],
+                    ..SpaceChanges::new(space)
+                },
+            )
+            .await
+        }
+    };
+    let (first, second) = tokio::join!(remove(sam.id), remove(lee.id));
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    let after = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists");
+    let owners = after
+        .members
+        .iter()
+        .filter(|m| m.role == SpaceRole::Owner && m.state == MemberState::Confirmed)
+        .count();
+    assert_eq!(owners, 1);
+}

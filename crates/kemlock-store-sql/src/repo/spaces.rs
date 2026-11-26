@@ -393,13 +393,20 @@ impl SqlStore {
     /// leaves a space that had a confirmed owner with members but none of them a confirmed owner.
     /// A change that removes every member (an organization's deletion) leaves no space to manage
     /// and passes. The use cases check the state they read, and two owners removing each other at
-    /// the same moment each pass; this checks the state written, in the same transaction.
+    /// the same moment each pass; this checks the state written, in the same transaction. The owner
+    /// gate makes such changes take turns on PostgreSQL and MySQL, whose writer pool has several
+    /// connections and whose transactions would each still see the other's owner.
     pub(crate) async fn write_changes_keeping_owner(
         &self,
         changes: SpaceChanges,
     ) -> Result<(), StoreError> {
         let space = changes.space_id.0;
         let touches_members = !changes.members.is_empty() || !changes.members_removed.is_empty();
+        let _gate = if touches_members {
+            Some(self.owner_gate().await)
+        } else {
+            None
+        };
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
             let had_owner = touches_members && has_confirmed_owner(&txn, space).await?;
