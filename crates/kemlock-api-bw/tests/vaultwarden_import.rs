@@ -515,8 +515,12 @@ async fn imports_the_sample_and_serves_it_as_vaultwarden_would_then_applies_a_se
     assert_eq!(factors[0].method, TwoFactorMethod::Totp);
     assert!(factors[0].enabled);
     assert_eq!(
+        // Sealed to the account, as every per-account secret is.
         ServerSeal::new(&SERVER_KEY)
-            .open("totp", &factors[0].sealed_secret)
+            .open(
+                &kemlock_app::sealed::bound_purpose("totp", alice),
+                &factors[0].sealed_secret,
+            )
             .expect("opens with the server key")
             .as_slice(),
         TOTP_SECRET
