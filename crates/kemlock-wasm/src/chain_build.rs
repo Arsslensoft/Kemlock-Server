@@ -580,7 +580,7 @@ impl<'a> Build<'a> {
     /// collection, or the item doesn't open) is named as held, which is all the chain allows
     /// ("Using the state", "Items"): a removed member's write under a key they kept is never
     /// re-wrapped into the new key. A key nobody entitled can use is left marked, and one this
-    /// account isn't entitled to is left to someone who is.
+    /// account isn't entitled to, doesn't hold or can't edit is left to someone who does.
     fn replace_marked(&mut self, session: &Session, input: &Replacement) -> Result<(), Fail> {
         let marked: Vec<KeyRef> = sorted(
             self.state
@@ -599,11 +599,25 @@ impl<'a> Build<'a> {
             if entitled.is_empty() || (key != KeyRef::Space && !mine) {
                 continue;
             }
-            let version = self
-                .state
-                .key_version(&key)
-                .and_then(|v| v.checked_add(1))
-                .ok_or(INVALID)?;
+            let current = self.state.key_version(&key).ok_or(INVALID)?;
+            // Once the new version is in the chain nobody can open an item still under the old
+            // one (a client opens a key at the chain's current version only), so a key is replaced
+            // by an account that holds the old one, to seal what it protects again, and, for a
+            // collection, may edit it: otherwise it is left to one that does.
+            let may_replace = match key {
+                KeyRef::Space => self.secret(&key, current).is_some(),
+                KeyRef::Collection(id) => {
+                    self.secret(&key, current).is_some()
+                        && self
+                            .state
+                            .access(&self.me, &id)
+                            .is_some_and(|rights| rights.edit)
+                }
+            };
+            if !may_replace {
+                continue;
+            }
+            let version = current.checked_add(1).ok_or(INVALID)?;
             let secret = SecretKey::generate();
             let bundles = self.bundles_of(&entitled)?;
             rotate.push(self.commit(key, version, &bundles, &secret, true)?);

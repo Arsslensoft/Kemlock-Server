@@ -2910,3 +2910,62 @@ fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
     let (other, _, _) = open_signed_account([0xD8; 16]);
     assert_eq!(other.build_reseal(&space, &reseal).map(|_| ()), Err(Error::Invalid));
 }
+
+#[wasm_bindgen_test]
+fn a_key_is_replaced_only_by_an_unlock_that_holds_it() {
+    let (space, general) = ([0xE5u8; 16], [0xE6u8; 16]);
+    let (me, theo) = ([0xE7u8; 16], [0xE8u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (_member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (theo_text, general_text) = (uuid_text(&theo), uuid_text(&general));
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Space", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&theo_bundle.fingerprint())}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+
+    // This unlock lost the keys (a reload opens them at the chain's version only, and only once
+    // they are opened): replacing them would leave every item under the old version unreadable.
+    owner
+        .unlocked_mut()
+        .expect("unlocked")
+        .spaces
+        .drop_keys(&space);
+    let nothing: Replacement =
+        serde_json::from_value(json!({"items": []})).expect("a replacement");
+    let out = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &nothing)
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true);
+    assert!(out["records"].as_array().expect("records").is_empty());
+}
