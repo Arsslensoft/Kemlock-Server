@@ -1221,6 +1221,13 @@ impl Vault {
         manifests::verify_space_manifest(&bundle, &manifest, &signature).is_ok()
     }
 
+    /// The key version the unlocked account is at, which a signature of its own is checked at; a
+    /// signature at an older version is checked against that version's bundle instead.
+    #[wasm_bindgen(js_name = ownKeyVersion)]
+    pub fn own_key_version(&self) -> Result<u32, JsError> {
+        self.session.own_key_version().map_err(fail)
+    }
+
     /// Signs a write of an item as the unlocked account (docs/crypto.md, "Signed item writes").
     /// `fields` is JSON: `{owner, id, kind, revision, deleted, keyVersion, ciphertext?, itemKey?}`
     /// with the base64url `ciphertext` and `itemKey` the write carries (absent on a tombstone).

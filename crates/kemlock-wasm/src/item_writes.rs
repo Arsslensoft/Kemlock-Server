@@ -114,6 +114,13 @@ impl WriteFields {
 }
 
 impl Session {
+    /// The key version the account is unlocked at: the one its root key was wrapped under, which
+    /// the server can't change without the wrap failing to open. A signature at an older version
+    /// is checked against that version's bundle, never the account's own key.
+    pub(crate) fn own_key_version(&self) -> Result<u32, Error> {
+        Ok(self.unlocked()?.key_version)
+    }
+
     /// Signs the write `fields` as the unlocked account, at its key version. Fails unless the
     /// owner is this account's own vault or a space.
     pub(crate) fn sign_item_write(&self, fields: &WriteFields) -> Result<WriteSigned, Error> {

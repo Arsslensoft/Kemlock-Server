@@ -2232,3 +2232,10 @@ fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle()
         Some(Error::Locked)
     );
 }
+
+#[wasm_bindgen_test]
+fn the_key_version_an_account_is_unlocked_at_is_known() {
+    let (session, _) = open_account([0x95u8; 16]);
+    assert_eq!(session.own_key_version(), Ok(FIRST_KEY_VERSION));
+    assert_eq!(Session::new().own_key_version(), Err(Error::Locked));
+}
