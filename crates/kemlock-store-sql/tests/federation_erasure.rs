@@ -434,3 +434,48 @@ async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
         Ok(MemberApply::Applied)
     );
 }
+
+#[tokio::test]
+async fn a_copied_account_cannot_take_a_device_of_another_account() {
+    let store = memory().await;
+    let home = ServerId::random();
+    // Bob lives on this server, with a device.
+    let (bob, _) = account_with_items(&store, "bob", 0).await;
+    let device = kemlock_domain::Device {
+        id: DeviceId::random(),
+        user: bob.id,
+        name: "Bob's phone".to_owned(),
+        kind: DeviceKind::KemlockAndroid,
+        dpop_jkt: Some("bob-jkt".to_owned()),
+        created_at: MADE_AT,
+        last_seen_at: MADE_AT,
+    };
+    DeviceRepo::upsert(&store, &device).await.expect("a device");
+
+    // A home publishes an account that lists Bob's device id with its own key.
+    let mut copy = copy_of(UserId::random(), &unique_email("eve"));
+    copy.devices = vec![MemberDevice {
+        id: device.id,
+        name: "Mine".to_owned(),
+        kind: DeviceKind::KemlockAndroid,
+        dpop_jkt: Some("eve-jkt".to_owned()),
+        created_at: MADE_AT.unix_timestamp(),
+    }];
+    store
+        .apply_member_account(home, &copy)
+        .await
+        .expect("the account itself is taken");
+
+    let held = DeviceRepo::get(&store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(held.user, bob.id, "the device stays Bob's");
+    assert_eq!(held.dpop_jkt.as_deref(), Some("bob-jkt"));
+    assert!(
+        DeviceRepo::list(&store, copy.id)
+            .await
+            .expect("devices")
+            .is_empty()
+    );
+}

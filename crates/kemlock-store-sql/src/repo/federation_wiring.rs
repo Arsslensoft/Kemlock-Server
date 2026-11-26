@@ -426,6 +426,15 @@ impl MemberStore for SqlStore {
         for registration in &account.devices {
             let created_at = from_secs(registration.created_at, "a copied device's creation time")?;
             let previous = current.iter().find(|d| d.id == registration.id);
+            if previous.is_none()
+                && let Some(other) = DeviceRepo::get(self, registration.id).await?
+                && other.user != account.id
+            {
+                // A device id is global, and the upsert would move that device, with the key it
+                // registered, to this account: a home can't take another account's device.
+                tracing::warn!(user = %account.id, "a copied account listed a device of another account: skipped");
+                continue;
+            }
             let device = Device {
                 id: registration.id,
                 user: account.id,
