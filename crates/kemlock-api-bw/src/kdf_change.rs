@@ -4,17 +4,18 @@
 //! rounds to the minimum (their `MinimumKdfMigration`), so without it such an account can't sign
 //! in from them at all. The password stays the same; its hash and the wrapped user key change.
 //!
-//! Vaultwarden resets the security stamp and lets the calling device refresh its way back in.
-//! Here a refresh token is bound to the stamp, so the stamp stays and every other device's
-//! sign-in is revoked instead: the calling app keeps its session, the others sign in again with
-//! the password, whose old hash no longer matches.
+//! Vaultwarden resets the security stamp and lets the calling device refresh its way back in, and
+//! so does this: the stamp moves, which ends every access token (and every live connection) at
+//! once, the other devices' refresh tokens are revoked so they sign in again with the new hash,
+//! and the calling device's refresh tokens follow the new stamp, so its next refresh works.
 
 use crate::account::{Kdf, check_valid_password};
 use crate::app::{App, Authed, BwStore};
+use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::password::hash_password;
 use kemlock_app::bitwarden::{BwAccountRepo, BwUserKeyIdRepo};
-use kemlock_app::ports::{DeviceRepo, TokenRepo};
+use kemlock_app::ports::{DeviceRepo, TokenRepo, UserRepo};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -107,10 +108,25 @@ pub(crate) async fn change_kdf<S: BwStore>(
     );
     account.akey.clone_from(&unlock.master_key_wrapped_user_key);
     BwAccountRepo::update(&app.store, &account).await?;
+    // As Vaultwarden does, the security stamp moves: every access token the account had, and every
+    // live connection that holds one, is dead at once, not up to two hours from now.
+    // Only the stamp (and the time of the change) is written, on the account as it is now, not on
+    // the copy this request was authenticated with, so nothing changed meanwhile is written back.
+    let mut user = UserRepo::by_id(&app.store, account.user)
+        .await?
+        .ok_or(BwError::Unauthorized)?;
+    user.security_stamp = random_uuid(app.env.as_ref());
+    user.updated_at = app.now();
+    UserRepo::update(&app.store, &user).await?;
     for device in DeviceRepo::list(&app.store, account.user).await? {
         if device.id != authed.device.id {
             TokenRepo::revoke_device(&app.store, device.id).await?;
         }
     }
-    app.touch(account.user).await
+    // The calling device keeps its way back in, as it does in Vaultwarden: its refresh tokens
+    // follow the new stamp, so its next refresh gives it a new access token.
+    TokenRepo::restamp_device(&app.store, authed.device.id, user.security_stamp).await?;
+    app.touch(account.user).await?;
+    app.sessions_ended(authed);
+    Ok(())
 }

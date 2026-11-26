@@ -1532,3 +1532,125 @@ async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["scope"], "api");
 }
+
+#[tokio::test]
+async fn an_account_stops_taking_second_step_codes_after_ten_tries_from_any_address() {
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    let secret = [5u8; 20];
+    enrol_totp(&h, user, &secret).await;
+    let code = |h: &Harness| {
+        kemlock_crypto::totp::code_at(
+            &secret,
+            u64::try_from(h.env.time().unix_timestamp()).expect("a time"),
+        )
+    };
+    let try_code = |token: String| {
+        let h = &h;
+        async move {
+            let mut f = Harness::password_fields("ada@example.com", HASH);
+            f.push(("twoFactorProvider", "0"));
+            f.push(("twoFactorToken", token.as_str()));
+            h.token(&f).await
+        }
+    };
+
+    for _ in 0..10 {
+        let (status, body) = try_code("000000".to_owned()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    // The eleventh is refused, and so is the right code: the account is locked, not the address.
+    let (status, body) = try_code(code(&h)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["message"], "Too many login requests");
+
+    // The window runs out, and the right code works; it clears the count.
+    h.env.advance(Duration::minutes(16));
+    let (status, body) = try_code(code(&h)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for _ in 0..10 {
+        let (status, _) = try_code("000000".to_owned()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
+async fn a_request_for_an_emailed_code_is_limited_by_address_like_a_sign_in() {
+    let h = Harness::with(|s| s.login_ratelimit_max_burst = 2).await;
+    h.account("ada@example.com", HASH).await;
+    let ask = || async {
+        h.json(
+            "POST",
+            "/api/two-factor/send-email-login",
+            None,
+            Some(json!({"email": "ada@example.com", "masterPasswordHash": HASH})),
+        )
+        .await
+    };
+    for _ in 0..2 {
+        let (status, body) = ask().await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["message"], "Email 2FA is disabled");
+    }
+    let (status, body) = ask().await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["message"], "Too many login requests");
+}
+
+/// `POST /api/accounts/api-key`: the key the account is shown.
+async fn shown_api_key(h: &Harness, token: &str) -> String {
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/accounts/api-key",
+            Some(token),
+            Some(json!({"masterPasswordHash": HASH})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["apiKey"].as_str().expect("a key").to_owned()
+}
+
+#[tokio::test]
+async fn the_personal_api_key_is_sealed_at_rest_and_still_signs_in_and_shows() {
+    let h = Harness::new().await;
+    let (token, user) = h.signed_in("ada@example.com").await;
+    let key = shown_api_key(&h, &token).await;
+    assert_eq!(key.len(), 30);
+
+    // What the database holds is not the key.
+    let dir = tempfile::tempdir().expect("a folder");
+    h.store.snapshot_to(dir.path()).await.expect("a snapshot");
+    let rows = std::fs::read_to_string(dir.path().join("bw_accounts.jsonl")).expect("the table");
+    assert!(!rows.contains(&key), "{rows}");
+    assert!(rows.contains("sealed:"));
+
+    // The owner is shown the same key again, and it signs in.
+    assert_eq!(shown_api_key(&h, &token).await, key);
+    let client_id = format!("user.{user}");
+    let (status, body) = h
+        .token(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", key.as_str()),
+            ("scope", "api"),
+            ("deviceType", "8"),
+            ("deviceIdentifier", "cli-1"),
+            ("deviceName", "Amethystora Vault"),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // A key that is not the account's is refused.
+    let (_, body) = h
+        .token(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", client_id.as_str()),
+            ("client_secret", "not-the-key"),
+            ("scope", "api"),
+            ("deviceType", "8"),
+            ("deviceIdentifier", "cli-1"),
+            ("deviceName", "Amethystora Vault"),
+        ])
+        .await;
+    assert_eq!(body["message"], "Incorrect client_secret");
+}

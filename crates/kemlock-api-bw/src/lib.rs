@@ -54,6 +54,7 @@ mod protected;
 mod public;
 mod routes;
 mod send_limit;
+mod signup_hold;
 pub mod sends;
 pub mod settings;
 pub mod tokens;

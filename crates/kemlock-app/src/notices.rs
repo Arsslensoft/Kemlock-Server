@@ -117,6 +117,69 @@ impl fmt::Debug for SignupVerifyNotice {
     }
 }
 
+/// The mail that proves an address before an account is made for it (the Bitwarden API's
+/// registration with `SIGNUPS_VERIFY` on). The token in it is the proof that the person owns the
+/// address, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegisterVerifyNotice {
+    /// The address being registered: the mail goes there.
+    pub to: Email,
+    /// The signed token the registration finishes with.
+    pub token: String,
+}
+
+impl fmt::Debug for RegisterVerifyNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisterVerifyNotice")
+            .field("to", &self.to)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// The invitation of the Bitwarden API to an organization: a link that carries a signed token, which
+/// accepts the invitation on its own (the person need not sign in, since an account made through
+/// the Bitwarden API may have no other way in). The link is a secret, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BwOrgInviteNotice {
+    pub to: Email,
+    pub organization: String,
+    pub inviter: Option<String>,
+    /// `{domain}/#/accept-organization/?...&token=...`.
+    pub link: String,
+}
+
+impl fmt::Debug for BwOrgInviteNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BwOrgInviteNotice")
+            .field("to", &self.to)
+            .field("organization", &self.organization)
+            .field("link", &"<redacted>")
+            .finish()
+    }
+}
+
+/// The invitation of the Bitwarden API to be someone's emergency contact, with the link that
+/// accepts it. The link is a secret, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BwEmergencyInviteNotice {
+    pub to: Email,
+    /// Who named the contact: the grantor's name or address.
+    pub grantor: String,
+    /// `{domain}/#/accept-emergency/?...&token=...`.
+    pub link: String,
+}
+
+impl fmt::Debug for BwEmergencyInviteNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BwEmergencyInviteNotice")
+            .field("to", &self.to)
+            .field("grantor", &self.grantor)
+            .field("link", &"<redacted>")
+            .finish()
+    }
+}
+
 /// A change of the sign-in address was asked for. The mail goes to the old address, so a change
 /// the owner didn't ask for doesn't go unnoticed. It carries no link and no secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +249,13 @@ pub enum Notice {
     PasswordChanged(PasswordChangedNotice),
     /// The link that confirms the address of a new account, mailed to that address.
     SignupVerify(SignupVerifyNotice),
+    /// The link that proves an address before its account is made, mailed to that address.
+    RegisterVerify(RegisterVerifyNotice),
+    /// An invitation to an organization of the Bitwarden API, with the link that accepts it.
+    BwOrgInvite(BwOrgInviteNotice),
+    /// An invitation to be an emergency contact through the Bitwarden API, with the link that
+    /// accepts it.
+    BwEmergencyInvite(BwEmergencyInviteNotice),
 }
 
 impl Notice {
@@ -206,6 +276,9 @@ impl Notice {
             Notice::EmailChanged(_) => "email-changed",
             Notice::PasswordChanged(_) => "password-changed",
             Notice::SignupVerify(_) => "signup-verify",
+            Notice::RegisterVerify(_) => "register-verify",
+            Notice::BwOrgInvite(_) => "bw-org-invite",
+            Notice::BwEmergencyInvite(_) => "bw-emergency-invite",
         }
     }
 }
@@ -401,5 +474,25 @@ mod tests {
         };
         assert!(!format!("{change:?}").contains("s3cr3t"));
         assert!(!format!("{:?}", Notice::EmailChange(change)).contains("s3cr3t"));
+        let verify = RegisterVerifyNotice {
+            to: Email::parse("ada@example.com").expect("email"),
+            token: "v3rify-token".to_owned(),
+        };
+        assert!(!format!("{verify:?}").contains("v3rify"));
+        assert!(!format!("{:?}", Notice::RegisterVerify(verify)).contains("v3rify"));
+        let invite = BwOrgInviteNotice {
+            to: Email::parse("ada@example.com").expect("email"),
+            organization: "Family".to_owned(),
+            inviter: None,
+            link: "https://x/#/accept-organization/?token=l1nk-secret".to_owned(),
+        };
+        assert!(!format!("{invite:?}").contains("l1nk-secret"));
+        assert!(!format!("{:?}", Notice::BwOrgInvite(invite)).contains("l1nk-secret"));
+        let emergency = BwEmergencyInviteNotice {
+            to: Email::parse("ada@example.com").expect("email"),
+            grantor: "Sam".to_owned(),
+            link: "https://x/#/accept-emergency/?token=l1nk-secret".to_owned(),
+        };
+        assert!(!format!("{:?}", Notice::BwEmergencyInvite(emergency)).contains("l1nk-secret"));
     }
 }

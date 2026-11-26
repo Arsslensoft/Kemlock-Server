@@ -52,13 +52,36 @@ async fn post(h: &Harness, token: &str, path: &str, body: Option<Value>) -> (Sta
     .await
 }
 
-/// Ada names Bob, who has an account; the grant is accepted at once, and Ada confirms it.
+/// The contact follows the link of the invitation mail: a token Ada's server would have mailed.
+async fn accept_as(h: &Harness, email: &str, id: &str) {
+    let body = h.login(email, HASH).await;
+    let token = body["access_token"].as_str().expect("a token").to_owned();
+    let now = h.env.time().unix_timestamp();
+    let user = common::claims(&token, now).sub;
+    let link = keys()
+        .encode(&json!({
+            "nbf": now,
+            "exp": now + 3600,
+            "iss": format!("{DOMAIN}|emergencyaccessinvite"),
+            "sub": user,
+            "email": email,
+            "emer_id": id,
+            "grantor_name": "Kemlock test",
+            "grantor_email": "ada@example.com",
+        }))
+        .expect("a token");
+    let (status, body) = post(h, &token, &format!("{id}/accept"), Some(json!({"token": link}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Ada names Bob, who has an account; Bob follows the link to accept, and Ada confirms it.
 async fn confirmed(h: &Harness, ada: &str, kind: i32) -> String {
     assert_eq!(
         invite(h, ada, "bob@example.com", kind, 7).await,
         StatusCode::OK
     );
     let id = id_of(&first_contact(h, ada).await);
+    accept_as(h, "bob@example.com", &id).await;
     let (status, body) = post(
         h,
         ada,
@@ -72,7 +95,7 @@ async fn confirmed(h: &Harness, ada: &str, kind: i32) -> String {
 }
 
 #[tokio::test]
-async fn an_invited_account_is_accepted_at_once_and_listed_with_vaultwardens_keys() {
+async fn an_invited_account_stays_invited_until_it_accepts_and_is_then_listed_with_vaultwardens_keys() {
     let h = Harness::new().await;
     let (ada, ada_id) = h.signed_in("ada@example.com").await;
     let (bob, bob_id) = h.signed_in("bob@example.com").await;
@@ -81,6 +104,29 @@ async fn an_invited_account_is_accepted_at_once_and_listed_with_vaultwardens_key
         invite(&h, &ada, "Bob@Example.com", 0, 7).await,
         StatusCode::OK
     );
+    // Naming someone who has an account does not make them a contact: they accept for themselves.
+    let waiting = first_contact(&h, &ada).await;
+    assert_eq!(waiting["status"], 0, "invited, and it stays so");
+    let (status, list) = h
+        .json("GET", "/api/emergency-access/granted", Some(&bob), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    assert_eq!(list["data"], json!([]));
+    // A resend only mails again: Ada can not accept for Bob.
+    let waiting_id = id_of(&waiting);
+    let (status, body) = post(&h, &ada, &format!("{waiting_id}/reinvite"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(first_contact(&h, &ada).await["status"], 0);
+    // Ada can not confirm a contact who has not accepted.
+    let (status, _) = post(
+        &h,
+        &ada,
+        &format!("{waiting_id}/confirm"),
+        Some(json!({"key": "4.wrapped"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    accept_as(&h, "bob@example.com", &waiting_id).await;
 
     let contact = first_contact(&h, &ada).await;
     assert_eq!(
@@ -98,10 +144,7 @@ async fn an_invited_account_is_accepted_at_once_and_listed_with_vaultwardens_key
         ]
     );
     assert_eq!(contact["object"], "emergencyAccessGranteeDetails");
-    assert_eq!(
-        contact["status"], 1,
-        "accepted, as Vaultwarden does with no mail"
-    );
+    assert_eq!(contact["status"], 1, "accepted by the contact");
     assert_eq!(contact["type"], 0);
     assert_eq!(contact["waitTimeDays"], 7);
     assert_eq!(contact["email"], "bob@example.com");
@@ -492,7 +535,7 @@ async fn either_party_deletes_a_grant_and_a_stranger_can_not() {
 async fn a_grant_is_updated_by_its_grantor() {
     let h = Harness::new().await;
     let (ada, _) = h.signed_in("ada@example.com").await;
-    // Bob must have an account: only then is the invitation accepted at once and ready to confirm.
+    // Bob must have an account to follow the link of the invitation, and then it is ready to confirm.
     let (_bob, _) = h.signed_in("bob@example.com").await;
     let id = confirmed(&h, &ada, 0).await;
 
@@ -555,4 +598,53 @@ async fn the_policies_of_a_takeover_are_a_list() {
     assert_eq!(status, StatusCode::OK, "{list}");
     assert_eq!(list["object"], "list");
     assert_eq!(list["data"], json!([]));
+}
+
+#[tokio::test]
+async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (bob, _) = h.signed_in("bob@example.com").await;
+    assert_eq!(
+        invite(&h, &ada, "bob@example.com", 0, 7).await,
+        StatusCode::OK
+    );
+    let id = id_of(&first_contact(&h, &ada).await);
+
+    // The grantor copies the link; the contact is not given it.
+    let uri = format!("/api/emergency-access/{id}/invite-link");
+    let (status, _) = h.json("GET", &uri, Some(&bob), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "only the grantor's grant");
+    let (status, body) = h.json("GET", &uri, Some(&ada), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let link = body["link"].as_str().expect("a link").to_owned();
+    assert!(
+        link.starts_with(&format!("{DOMAIN}/#/accept-emergency/?id={id}&name=")),
+        "{link}"
+    );
+    let token = body["token"].as_str().expect("a token").to_owned();
+    assert!(link.ends_with(&format!("&token={token}")), "{link}");
+
+    // The token alone accepts, for the address it names, once.
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/emergency-access/{id}/accept"),
+            None,
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(first_contact(&h, &ada).await["status"], 1);
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("/api/emergency-access/{id}/accept"),
+            None,
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = h.json("GET", &uri, Some(&ada), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "nothing left to hand over");
 }

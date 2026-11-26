@@ -69,6 +69,7 @@ async fn add_member(h: &Harness, owner: &str, org: &str, member: UserId, email: 
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, member).await;
     let (status, body) = h
         .json(
             "POST",
@@ -78,6 +79,23 @@ async fn add_member(h: &Harness, owner: &str, org: &str, member: UserId, email: 
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// What Require SSO needs before it can be turned on: the server has a provider, and the
+/// organization has Single organization on.
+async fn sso_prerequisites(h: &Harness, owner: &str, org: &str) {
+    h.configure_sso().await;
+    for ptype in [3] {
+        let (status, body) = h
+            .json(
+                "PUT",
+                &format!("/api/organizations/{org}/policies/{ptype}"),
+                Some(owner),
+                Some(json!({"policy": {"enabled": true, "data": null}})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
 }
 
 #[tokio::test]
@@ -204,8 +222,9 @@ async fn an_invited_member_is_confirmed_and_then_sees_the_organization() {
     assert_eq!(row["object"], "organizationUserUserDetails");
     assert_eq!(row["id"], bob_id.to_string());
     assert_eq!(row["userId"], bob_id.to_string());
-    // No mail goes out, so an account with a password has accepted.
-    assert_eq!(row["status"], 1);
+    // An existing account is invited, and stays so until it accepts: nobody is put into an
+    // organization they have not agreed to join.
+    assert_eq!(row["status"], 0);
     assert_eq!(row["type"], 2);
     assert_eq!(row["name"], "Kemlock test");
     assert_eq!(row["twoFactorEnabled"], false);
@@ -214,8 +233,34 @@ async fn an_invited_member_is_confirmed_and_then_sees_the_organization() {
 
     let before = sync(&h, &bob).await;
     assert_eq!(before["profile"]["organizations"], json!([]));
-    assert_eq!(before["profile"]["organizationsNew"][0]["status"], 1);
+    assert_eq!(before["profile"]["organizationsNew"][0]["status"], 0);
     assert!(before["profile"]["organizationsNew"][0]["key"].is_null());
+
+    // No one can confirm an invitation nobody accepted.
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{bob_id}/confirm"),
+            Some(&ada),
+            Some(json!({"key": "4.bobskey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "User in invalid state");
+
+    // Bob accepts with the link of the invitation.
+    let token = h.invite_token(&org, bob_id, "bob@example.com");
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{bob_id}/accept"),
+            Some(&bob),
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let accepted = sync(&h, &bob).await;
+    assert_eq!(accepted["profile"]["organizationsNew"][0]["status"], 1);
 
     let (status, body) = h
         .json(
@@ -458,6 +503,7 @@ async fn policies_are_set_read_and_served_to_members() {
     let (org, _) = organization(&h, &ada).await;
     add_member(&h, &ada, &org, bob_id, "bob@example.com").await;
 
+    sso_prerequisites(&h, &ada, &org).await;
     let (status, policy) = h
         .json(
             "PUT",
@@ -486,8 +532,8 @@ async fn policies_are_set_read_and_served_to_members() {
 
     let (_, listed) = get(&h, &ada, &format!("/api/organizations/{org}/policies")).await;
     assert_eq!(listed["object"], "list");
-    assert_eq!(listed["data"].as_array().map(Vec::len), Some(2));
-    let (_, blank) = get(&h, &ada, &format!("/api/organizations/{org}/policies/3")).await;
+    assert_eq!(listed["data"].as_array().map(Vec::len), Some(3));
+    let (_, blank) = get(&h, &ada, &format!("/api/organizations/{org}/policies/7")).await;
     assert_eq!(blank["enabled"], false);
     assert!(blank["data"].is_null());
     let (status, body) = get(&h, &ada, &format!("/api/organizations/{org}/policies/9")).await;
@@ -496,8 +542,8 @@ async fn policies_are_set_read_and_served_to_members() {
 
     // Members get the policies in their sync, and read the master password one.
     let synced = sync(&h, &bob).await;
-    assert_eq!(synced["policies"].as_array().map(Vec::len), Some(2));
-    assert_eq!(synced["policiesNew"].as_array().map(Vec::len), Some(2));
+    assert_eq!(synced["policies"].as_array().map(Vec::len), Some(3));
+    assert_eq!(synced["policiesNew"].as_array().map(Vec::len), Some(3));
     let (status, mine) = get(
         &h,
         &bob,
@@ -833,13 +879,14 @@ async fn an_invitation_to_an_unknown_address_waits_for_its_registration() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The new account is a member who accepted, and waits for an admin's confirmation.
+    // The new account is only invited: whoever registers an address is not proven to be the
+    // person the organization invited, so they accept for themselves and an admin then confirms.
     let answer = h.login("new@example.com", HASH).await;
     let new_token = answer["access_token"].as_str().expect("a token").to_owned();
     let synced = sync(&h, &new_token).await;
     assert_eq!(synced["profile"]["organizations"], json!([]));
     assert_eq!(synced["profile"]["organizationsNew"][0]["id"], org.as_str());
-    assert_eq!(synced["profile"]["organizationsNew"][0]["status"], 1);
+    assert_eq!(synced["profile"]["organizationsNew"][0]["status"], 0);
     let (_, members) = get(&h, &ada, &format!("/api/organizations/{org}/users")).await;
     let joined = members["data"]
         .as_array()
@@ -848,8 +895,29 @@ async fn an_invitation_to_an_unknown_address_waits_for_its_registration() {
         .find(|m| m["email"] == "new@example.com")
         .cloned()
         .expect("listed");
-    assert_eq!(joined["status"], 1);
+    assert_eq!(joined["status"], 0);
     let new_id = joined["id"].as_str().expect("an id");
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{new_id}/confirm"),
+            Some(&ada),
+            Some(json!({"key": "4.newkey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "User in invalid state");
+    let new_user: UserId = new_id.parse().expect("an account id");
+    let link = h.invite_token(&org, new_user, "new@example.com");
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{new_id}/accept"),
+            Some(&new_token),
+            Some(json!({"token": link})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, _) = h
         .json(
             "POST",
@@ -873,6 +941,7 @@ async fn require_sso_closes_the_password_to_members_and_not_to_owners() {
     let (org, _) = organization(&h, &ada).await;
     add_member(&h, &ada, &org, bob_id, "bob@example.com").await;
 
+    sso_prerequisites(&h, &ada, &org).await;
     let (status, _) = h
         .json(
             "PUT",
@@ -953,6 +1022,7 @@ async fn require_sso_closes_the_api_key_to_members_and_not_to_owners() {
         }
     };
 
+    sso_prerequisites(&h, &ada, &org).await;
     let (status, _) = h
         .json(
             "PUT",
@@ -975,4 +1045,174 @@ async fn require_sso_closes_the_api_key_to_members_and_not_to_owners() {
     // The owner is exempt.
     let (status, body) = sign_in(ada_id, ada_key).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Invites `email` with `kind` (0 owner, 1 admin, 2 user) and confirms them.
+async fn add_member_as(h: &Harness, owner: &str, org: &str, member: UserId, email: &str, kind: i32) {
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/invite"),
+            Some(owner),
+            Some(json!({"emails": [email], "type": kind, "collections": [], "groups": []})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(org, member).await;
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{member}/confirm"),
+            Some(owner),
+            Some(json!({"key": "4.memberkeywrappedbytheirpublickey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn an_admin_demoted_through_the_space_rows_loses_bitwarden_admin_access() {
+    use kemlock_domain::spaces::SpaceRole as Role;
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (org, _) = organization(&h, &ada).await;
+    add_member_as(&h, &ada, &org, bob_id, "bob@example.com", 1).await;
+    let members = format!("/api/organizations/{org}/users");
+    let (status, _) = get(&h, &bob, &members).await;
+    assert_eq!(status, StatusCode::OK, "an admin lists the members");
+
+    // The Kemlock API's role change touches only the space row.
+    h.change_row(&org, bob_id, |row| row.role = Role::Member).await;
+    let (status, _) = get(&h, &bob, &members).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no longer an admin here");
+    let (status, _) = h
+        .json(
+            "PUT",
+            &format!("/api/organizations/{org}/policies/3"),
+            Some(&bob),
+            Some(json!({"policy": {"enabled": true, "data": null}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, listed) = get(&h, &ada, &members).await;
+    let row = listed["data"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|m| m["email"] == "bob@example.com"))
+        .expect("bob is listed");
+    assert_eq!(row["type"], 2, "the owner sees the new role");
+}
+
+#[tokio::test]
+async fn a_member_revoked_or_removed_through_the_space_rows_is_out_of_the_organization() {
+    use kemlock_domain::spaces::MemberState;
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (cat, cat_id) = h.signed_in("cat@example.com").await;
+    let (org, _) = organization(&h, &ada).await;
+    add_member_as(&h, &ada, &org, bob_id, "bob@example.com", 1).await;
+    add_member_as(&h, &ada, &org, cat_id, "cat@example.com", 1).await;
+    let members = format!("/api/organizations/{org}/users");
+
+    h.change_row(&org, bob_id, |row| row.state = MemberState::Revoked)
+        .await;
+    let (status, _) = get(&h, &bob, &members).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, listed) = get(&h, &ada, &members).await;
+    let bobs = listed["data"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|m| m["email"] == "bob@example.com"))
+        .expect("bob is still listed");
+    assert_eq!(bobs["status"], -1);
+
+    h.drop_row(&org, cat_id).await;
+    let (status, _) = get(&h, &cat, &members).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(sync(&h, &cat).await["profile"]["organizations"], json!([]));
+    let (_, listed) = get(&h, &ada, &members).await;
+    assert_eq!(listed["data"].as_array().map(Vec::len), Some(2));
+}
+
+#[tokio::test]
+async fn a_member_who_may_not_see_passwords_can_not_change_which_collections_a_cipher_is_in() {
+    let h = Harness::new().await;
+    let (ada, ada_id) = h.signed_in("ada@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (org, collection) = organization(&h, &ada).await;
+    // Bob may edit what is in the collection, with its passwords hidden from him.
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/invite"),
+            Some(&ada),
+            Some(json!({
+                "emails": ["bob@example.com"], "type": 2, "groups": [],
+                "collections": [{"id": collection, "readOnly": false, "hidePasswords": true}]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, bob_id).await;
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{bob_id}/confirm"),
+            Some(&ada),
+            Some(json!({"key": "4.bobskey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut cipher = login_request(ada_id, "2.shared login");
+    cipher["organizationId"] = json!(org);
+    let (status, created) = h
+        .json(
+            "POST",
+            "/api/ciphers/create",
+            Some(&ada),
+            Some(json!({"cipher": cipher, "collectionIds": [collection]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().expect("an id").to_owned();
+
+    // Bob can edit the cipher itself, but taking it out of its collection is not his to do.
+    let mut change = login_request(bob_id, "2.bobs edit");
+    change["organizationId"] = json!(org);
+    let (status, body) = h
+        .json("PUT", &format!("/api/ciphers/{id}"), Some(&bob), Some(change))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/ciphers/bulk-collections",
+            Some(&bob),
+            Some(json!({
+                "organizationId": org, "cipherIds": [id],
+                "collectionIds": [collection], "removeCollections": true
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, seen) = get(&h, &ada, &format!("/api/ciphers/{id}/details")).await;
+    assert_eq!(status, StatusCode::OK, "{seen}");
+    assert_eq!(seen["collectionIds"], json!([collection]), "still in it");
+
+    // Ada, who manages it, can.
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/ciphers/bulk-collections",
+            Some(&ada),
+            Some(json!({
+                "organizationId": org, "cipherIds": [id],
+                "collectionIds": [collection], "removeCollections": true
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, seen) = get(&h, &ada, &format!("/api/ciphers/{id}/details")).await;
+    assert_eq!(seen["collectionIds"], json!([]));
 }

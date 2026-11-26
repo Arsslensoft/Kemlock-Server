@@ -525,6 +525,15 @@ impl TokenRepo for FakeStore {
             .cloned()
             .collect())
     }
+
+    async fn restamp_device(&self, device: DeviceId, stamp: Uuid) -> Result<(), StoreError> {
+        for token in self.lock().tokens.values_mut() {
+            if token.device == device {
+                token.security_stamp = stamp;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl TwoFactorRepo for FakeStore {

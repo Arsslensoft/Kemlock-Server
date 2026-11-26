@@ -805,3 +805,108 @@ async fn a_provider_the_account_does_not_have_is_answered_with_the_choices() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["TwoFactorProviders"], json!(["3"]));
 }
+
+#[tokio::test]
+async fn send_email_login_answers_alike_for_no_account_no_hash_and_a_wrong_hash() {
+    let fx = Fx::new().await;
+    let user = fx.h.account(EMAIL, HASH).await;
+    fx.imported(
+        user,
+        TwoFactorMethod::Email,
+        PURPOSE_EMAIL,
+        r#"{"email":"old@example.com","last_token":null,"token_sent":0,"attempts":0}"#,
+    )
+    .await;
+    let ask = |email: &'static str, body: Value| {
+        let fx = &fx;
+        async move {
+            let mut full = json!({"email": email});
+            full.as_object_mut()
+                .expect("an object")
+                .extend(body.as_object().expect("an object").clone());
+            fx.h.json("POST", "/api/two-factor/send-email-login", None, Some(full))
+                .await
+        }
+    };
+    let answers = [
+        ask("nobody@example.com", json!({"masterPasswordHash": HASH})).await,
+        ask(EMAIL, json!({})).await,
+        ask(EMAIL, json!({"masterPasswordHash": "wrong"})).await,
+    ];
+    for (status, body) in &answers {
+        assert_eq!(*status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Username or password is incorrect. Try again"
+        );
+    }
+    assert_eq!(fx.mailbox.count(), 0, "nothing was mailed");
+}
+
+#[tokio::test]
+async fn an_account_may_ask_for_five_emailed_codes_in_a_window() {
+    let fx = Fx::new().await;
+    let user = fx.h.account(EMAIL, HASH).await;
+    fx.imported(
+        user,
+        TwoFactorMethod::Email,
+        PURPOSE_EMAIL,
+        r#"{"email":"old@example.com","last_token":null,"token_sent":0,"attempts":0}"#,
+    )
+    .await;
+    let ask = || async {
+        fx.h.json(
+            "POST",
+            "/api/two-factor/send-email-login",
+            None,
+            Some(json!({"email": EMAIL, "masterPasswordHash": HASH})),
+        )
+        .await
+    };
+    for _ in 0..5 {
+        let (status, body) = ask().await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = ask().await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["message"], "Too many login requests");
+    // The window runs out.
+    fx.h.env.advance(time::Duration::minutes(16));
+    let (status, body) = ask().await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn a_stranger_asking_for_emailed_codes_with_a_wrong_hash_does_not_use_up_the_owners_mails() {
+    let fx = Fx::new().await;
+    let user = fx.h.account(EMAIL, HASH).await;
+    fx.imported(
+        user,
+        TwoFactorMethod::Email,
+        PURPOSE_EMAIL,
+        r#"{"email":"old@example.com","last_token":null,"token_sent":0,"attempts":0}"#,
+    )
+    .await;
+    let ask = |hash: &'static str| {
+        let fx = &fx;
+        async move {
+            fx.h.json(
+                "POST",
+                "/api/two-factor/send-email-login",
+                None,
+                Some(json!({"email": EMAIL, "masterPasswordHash": hash})),
+            )
+            .await
+        }
+    };
+    for _ in 0..8 {
+        let (status, body) = ask("wrong").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Username or password is incorrect. Try again"
+        );
+    }
+    let (status, body) = ask(HASH).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

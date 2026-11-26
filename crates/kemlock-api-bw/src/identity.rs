@@ -18,7 +18,7 @@ use crate::error::{BwError, BwResult};
 use crate::tokens::{LoginClaims, RememberClaims};
 use crate::webauthn::SealRef;
 use kemlock_app::b64url;
-use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwTryRepo};
 use kemlock_app::bw_events::BwDeviceRepo;
 use kemlock_app::devices::{NewDeviceNotice, bitwarden_device_id};
 use kemlock_app::error::AppError;
@@ -623,6 +623,20 @@ impl<S: BwStore> App<S> {
             return Err(self.two_factor_challenge(user, &usable, data).await?);
         };
 
+        // The try is counted before the code is looked at, so tries that arrive together each
+        // count, and a locked account refuses even the right code until its window ends.
+        let tries = BwTryRepo::count_try(
+            &self.store,
+            user.id,
+            SECOND_STEP_KIND,
+            self.now().unix_timestamp(),
+            TRIES_WINDOW_SECS,
+        )
+        .await?;
+        if tries > SECOND_STEP_MAX_TRIES {
+            return Err(too_many_logins());
+        }
+
         let now = self.now();
         match selected {
             0 => {
@@ -706,6 +720,7 @@ impl<S: BwStore> App<S> {
             }
             _ => return Err(BwError::msg("Invalid two factor provider")),
         }
+        BwTryRepo::forget_tries(&self.store, user.id, SECOND_STEP_KIND).await?;
 
         if data.two_factor_remember.unwrap_or(0) == 1 {
             let at = now.unix_timestamp();
@@ -824,17 +839,32 @@ async fn account_of<S: BwStore>(app: &App<S>, user: &User) -> BwResult<Option<Bw
     Ok(BwAccountRepo::get(&app.store, user.id).await?)
 }
 
+/// The second-step codes an account may try in a window (any address): a wrong code, a remember
+/// token and a recovery code each count. Persisted (`bw_tries`), so a restart or many addresses
+/// don't give the tries back; the window is the one the Kemlock API's second step uses.
+const SECOND_STEP_KIND: &str = "second-step";
+const SECOND_STEP_MAX_TRIES: u32 = 10;
+/// The mails with a sign-in code an account may ask for in the window.
+const EMAIL_LOGIN_KIND: &str = "email-login";
+const EMAIL_LOGIN_MAX_TRIES: u32 = 5;
+const TRIES_WINDOW_SECS: i64 = 15 * 60;
+
+/// The 429 of a limit, in the words of Vaultwarden's own.
+fn too_many_logins() -> BwError {
+    BwError::status(
+        axum::http::StatusCode::TOO_MANY_REQUESTS,
+        "Too many login requests",
+    )
+}
+
 /// Vaultwarden's `check_limit_login`, which `password_login` (the second step comes in the same
 /// request) and `api_key_login` call once the scope is known: a client address gets
 /// `LOGIN_RATELIMIT_MAX_BURST` tries at once and one more every `LOGIN_RATELIMIT_SECONDS`. A refusal
 /// is a 429 with `Too many login requests`, in the shape of every `err_code!` answer.
-fn check_login_limit<S: BwStore>(app: &App<S>, ip: IpAddr) -> BwResult<()> {
-    app.login_limit.check(ip, app.now_secs()).map_err(|_| {
-        BwError::status(
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "Too many login requests",
-        )
-    })
+pub(crate) fn check_login_limit<S: BwStore>(app: &App<S>, ip: IpAddr) -> BwResult<()> {
+    app.login_limit
+        .check(ip, app.now_secs())
+        .map_err(|_| too_many_logins())
 }
 
 async fn password_login<S: BwStore>(
@@ -890,6 +920,7 @@ async fn password_login<S: BwStore>(
         return Err(BwError::msg(DISABLED));
     }
     refuse_pending_erasure(app, &user).await?;
+    crate::signup_hold::refuse_if_held(app, &user).await?;
     require_sso(app, &user, SignInMethod::Password).await?;
     kdf_upgrade(app, &mut account, password).await?;
 
@@ -1010,6 +1041,7 @@ async fn refresh_login<S: BwStore>(
         return Err(invalid_grant());
     }
     refuse_pending_erasure(app, &user).await?;
+    crate::signup_hold::refuse_if_held(app, &user).await?;
     if account_of(app, &user).await?.is_none() {
         return Err(invalid_grant());
     }
@@ -1130,6 +1162,7 @@ async fn user_api_key_login<S: BwStore>(
     attempt.proved = true;
     attempt.user = Some(user.id);
     refuse_pending_erasure(app, &user).await?;
+    crate::signup_hold::refuse_if_held(app, &user).await?;
     require_sso(app, &user, SignInMethod::ApiKey).await?;
 
     let device_type = requested_device_type(&data, caller);
@@ -1182,12 +1215,19 @@ async fn user_api_key_login<S: BwStore>(
 }
 
 /// `POST /api/two-factor/send-email-login`: checks who is asking, then has the mailer send the
-/// code. Either a password hash or nothing else identifies the account, as in Vaultwarden.
+/// code. A password hash identifies the account, as in Vaultwarden. Anyone can call it, and it
+/// runs the server's password hash on every call, so it is limited like a sign-in: by the client
+/// address, and by account once the password is right (the mails an account may ask for in a
+/// window, which stops someone who has the password from filling the owner's mailbox). An address with no account,
+/// an account with no hash sent and a wrong hash get one answer, so the route can't be used to
+/// find out who has an account.
 pub(crate) async fn send_email_login<S: BwStore>(
     app: &App<S>,
+    ip: IpAddr,
     email: Option<&str>,
     master_password_hash: Option<&str>,
 ) -> BwResult<()> {
+    check_login_limit(app, ip)?;
     if !app.two_step.settings.email_enabled {
         return Err(BwError::msg("Email 2FA is disabled"));
     }
@@ -1204,13 +1244,25 @@ pub(crate) async fn send_email_login<S: BwStore>(
         Some(user) => account_of(app, user).await?,
         None => None,
     };
-    let (Some(user), Some(account)) = (user, account) else {
+    let (Some(user), Some(account), Some(hash)) = (user, account, password_hash) else {
         return Err(BwError::msg(BAD_LOGIN));
     };
-    match password_hash {
-        Some(hash) if check_valid_password(&account, hash) => {}
-        Some(_) => return Err(BwError::msg(BAD_LOGIN)),
-        None => return Err(BwError::msg("No password hash has been submitted.")),
+    if !check_valid_password(&account, hash) {
+        return Err(BwError::msg(BAD_LOGIN));
+    }
+    // Only a request that knows the password is counted, so a stranger can neither use the count
+    // to tell who has an account nor use up the owner's mails; the client address limit above is
+    // what stops guesses.
+    let tries = BwTryRepo::count_try(
+        &app.store,
+        user.id,
+        EMAIL_LOGIN_KIND,
+        app.now_secs(),
+        TRIES_WINDOW_SECS,
+    )
+    .await?;
+    if tries > EMAIL_LOGIN_MAX_TRIES {
+        return Err(too_many_logins());
     }
     crate::two_step::steps(app)
         .email_send_login_code(&user)

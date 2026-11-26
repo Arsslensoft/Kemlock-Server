@@ -171,6 +171,13 @@ where
     let store = SqlStore::connect(&config.database_url)
         .await
         .map_err(|e| RunError::Store(e.to_string()))?;
+    // The personal API keys of Bitwarden accounts are kept sealed under `server.key`.
+    store.set_secret_seal(ServerSeal::new(&server_key));
+    match store.seal_stored_secrets().await {
+        Ok(0) => {}
+        Ok(sealed) => tracing::info!(sealed, "API keys stored in clear are sealed now"),
+        Err(e) => tracing::warn!(error = %e, "couldn't seal the API keys stored in clear"),
+    }
     let crypto = ServerCrypto::new(seal, opaque);
     // Secrets stored before they were sealed to their accounts are sealed again, bound, and the
     // old form then stops opening: it would let someone who can write the database keep a copy of

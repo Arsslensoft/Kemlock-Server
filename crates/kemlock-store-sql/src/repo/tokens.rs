@@ -12,6 +12,7 @@ use crate::tables::{refresh_tokens, revoked_families};
 use kemlock_app::ports::{RefreshToken, StoreError, TokenRepo};
 use kemlock_domain::DeviceId;
 use sea_orm::ActiveValue::{NotSet, Set};
+use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -136,6 +137,16 @@ impl TokenRepo for SqlStore {
             .into_iter()
             .map(refresh_tokens::Model::into_domain)
             .collect()
+    }
+
+    async fn restamp_device(&self, device: DeviceId, stamp: Uuid) -> Result<(), StoreError> {
+        refresh_tokens::Entity::update_many()
+            .col_expr(refresh_tokens::Column::SecurityStamp, Expr::value(stamp))
+            .filter(refresh_tokens::Column::DeviceId.eq(device.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        Ok(())
     }
 }
 

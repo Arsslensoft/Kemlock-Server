@@ -38,7 +38,7 @@ async fn refresh(h: &Harness, token: &str) -> StatusCode {
 }
 
 #[tokio::test]
-async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_signed_in() {
+async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_refreshes_back_in() {
     let h = Harness::new().await;
     let (cli, _) = h.signed_in(EMAIL).await;
     let cli_refresh = h.login(EMAIL, HASH).await["refresh_token"]
@@ -76,9 +76,16 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_sig
         .await;
     assert_eq!(prelogin["kdf"], 0);
     assert_eq!(prelogin["kdfIterations"], 600_000);
-    let (status, synced) = h.json("GET", "/api/sync", Some(&cli), None).await;
-    assert_eq!(status, StatusCode::OK, "the calling app keeps its session");
-    assert_eq!(synced["profile"]["key"], NEW_KEY);
+    // The security stamp moved, as in Vaultwarden: no access token the account had works any more,
+    // the calling app's included, and the other devices are told their sessions ended.
+    let (status, _) = h.json("GET", "/api/sync", Some(&cli), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let told = h.events.take();
+    assert!(
+        told.iter()
+            .any(|e| matches!(e, kemlock_app::bw_events::BwEvent::LogOut { .. })),
+        "{told:?}"
+    );
     let (status, _) = h.token(&Harness::password_fields(EMAIL, HASH)).await;
     assert_eq!(
         status,
@@ -87,8 +94,19 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_sig
     );
     h.login(EMAIL, NEW_HASH).await;
 
-    // The calling device refreshes; every other one signs in again.
-    assert_eq!(refresh(&h, &cli_refresh).await, StatusCode::OK);
+    // The calling device refreshes its way back in; every other one signs in again.
+    let (status, back) = h
+        .token(&[
+            ("grant_type", "refresh_token"),
+            ("client_id", "mobile"),
+            ("refresh_token", cli_refresh.as_str()),
+        ])
+        .await;
+    assert_eq!(status, StatusCode::OK, "{back}");
+    let fresh = back["access_token"].as_str().expect("a token");
+    let (status, synced) = h.json("GET", "/api/sync", Some(fresh), None).await;
+    assert_eq!(status, StatusCode::OK, "the new access token works");
+    assert_eq!(synced["profile"]["key"], NEW_KEY);
     assert_eq!(refresh(&h, &phone_refresh).await, StatusCode::BAD_REQUEST);
 }
 
@@ -149,4 +167,33 @@ async fn an_unlock_for_another_user_key_is_refused() {
             .contains("Invalid user key sent in master-password unlock data."),
         "{answer}"
     );
+}
+
+#[tokio::test]
+async fn a_kdf_change_moves_the_stamp_and_nothing_else_of_the_account() {
+    use kemlock_app::ports::UserRepo;
+    let h = Harness::new().await;
+    let (cli, user) = h.signed_in(EMAIL).await;
+    let before = UserRepo::by_id(&h.store, user)
+        .await
+        .expect("reads")
+        .expect("the account");
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/accounts/kdf",
+            Some(&cli),
+            Some(change(HASH, EMAIL, 600_000, 600_000)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = UserRepo::by_id(&h.store, user)
+        .await
+        .expect("reads")
+        .expect("the account");
+    assert_ne!(after.security_stamp, before.security_stamp);
+    let mut same = after.clone();
+    same.security_stamp = before.security_stamp;
+    same.updated_at = before.updated_at;
+    assert_eq!(same, before);
 }

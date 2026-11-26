@@ -30,6 +30,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use kemlock_app::Actor;
+use kemlock_app::AppError;
+use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_app::policies::{
     GetPolicies, JoinGuard, MyPolicies, PoliciesError, PolicyRepo, SetPolicies, StoredPolicies,
 };
@@ -330,13 +332,38 @@ where
 {
     let request: PoliciesDto = body.json()?;
     let new = request.domain()?;
+    let space = space_id(&id)?;
+    // Require SSO closes the password to the members, so it can't be turned on where no one could
+    // sign in another way. Only a member who may see the policies is told (`GetPolicies` asks).
+    if new.require_sso {
+        let current = GetPolicies {
+            spaces: env.spaces.clone(),
+            policies: env.policies.clone(),
+        }
+        .execute(&caller.actor(), space)
+        .await?;
+        if !current.policies.require_sso {
+            let configured = SsoSettingsRepo::sso_settings(&env.api.store)
+                .await
+                .map_err(|e| Problem::from(AppError::from(e)))?
+                .is_some_and(|settings| settings.enabled);
+            if !configured {
+                return Err(Problem::new(
+                    StatusCode::CONFLICT,
+                    "sso-not-set-up",
+                    "Single sign-on isn't set up",
+                )
+                .detail("set up single sign-on on this server before turning on Require SSO"));
+            }
+        }
+    }
     let stored = SetPolicies {
         spaces: env.spaces.clone(),
         policies: env.policies.clone(),
         events: env.api.store.clone(),
         clock: env.api.crypto.clone(),
     }
-    .execute(&caller.actor(), space_id(&id)?, new)
+    .execute(&caller.actor(), space, new)
     .await?;
     Ok(Json(SpacePoliciesDto::of(&stored)))
 }

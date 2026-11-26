@@ -1,0 +1,14 @@
+{
+  "invitation.working": "Accepting the invitation",
+  "invitation.incomplete": "This link is incomplete. Open the one in the email exactly as it was sent.",
+  "invitation.refused": "The invitation couldn't be accepted. The link may have expired (they last five days) or been used already; ask whoever invited you for a new one.",
+  "invitation.organization.title": "Invitation to an organization",
+  "invitation.organization.done": "You accepted the invitation. An administrator now confirms you, and then the organization appears in your Bitwarden or Kemlock app.",
+  "invitation.emergency.title": "Invitation as an emergency contact",
+  "invitation.emergency.done": "You accepted. The person who named you now confirms you; nothing opens until you ask for access and the wait they chose has passed.",
+  "invitation.signup.title": "Finish creating your account",
+  "invitation.signup.proven": "{email} is verified. This page can't set your master password: go back to the app where you started and continue creating the account there.",
+  "invitation.signup.next": "If the app asks for the verification code from the email, copy it here and paste it in.",
+  "invitation.signup.copy": "Copy the verification code",
+  "invitation.signup.copied": "Copied"
+}

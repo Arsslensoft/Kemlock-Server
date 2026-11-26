@@ -154,6 +154,10 @@ async fn register_send_verification<S: BwStore>(
     let token =
         account::verification_token(&app, &data.email, data.name, data.invite_token.as_deref())
             .await?;
+    // Where the server verifies sign-ups the token went to the address, and the answer is empty.
+    let Some(token) = token else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
     Ok(if prefers_json(&headers) {
         Json(Value::String(token)).into_response()
     } else {
@@ -363,11 +367,16 @@ struct SendEmailLoginData {
     master_password_hash: Option<String>,
 }
 
-async fn send_email_login<S: BwStore>(State(app): State<App<S>>, body: Bytes) -> EmptyResult {
+async fn send_email_login<S: BwStore>(
+    State(app): State<App<S>>,
+    Peer(ip): Peer,
+    body: Bytes,
+) -> EmptyResult {
     let data: SendEmailLoginData = parse(&body)?;
     empty(
         identity::send_email_login(
             &app,
+            ip,
             data.email.as_deref(),
             data.master_password_hash.as_deref(),
         )

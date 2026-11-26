@@ -195,6 +195,8 @@ pub struct Snapshot {
     pub signups_verify: bool,
     /// The setting is on but no SMTP server is set up, so it does nothing: no link could be sent.
     pub signups_verify_needs_mail: bool,
+    /// `bw_invites_auto_accept`: a Bitwarden invitation to an existing account counts as accepted.
+    pub bw_invites_auto_accept: bool,
     /// Lower-case; empty means no whitelist.
     pub signups_domains: Vec<String>,
     pub invitations_allowed: bool,
@@ -331,6 +333,7 @@ impl Snapshot {
             signups_allowed: flag(view("signups_allowed")?),
             signups_verify: verify_wanted && smtp.is_some(),
             signups_verify_needs_mail: verify_wanted && smtp.is_none(),
+            bw_invites_auto_accept: flag(view("bw_invites_auto_accept")?),
             signups_domains: domains,
             invitations_allowed: flag(view("invitations_allowed")?),
             max_file_size,
@@ -562,6 +565,7 @@ pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchM
             "SIGNUPS_VERIFY is on but no SMTP server is set up (SMTP_HOST), so it does nothing: new accounts are not held back"
         );
     }
+    live.set_bw_invites_auto_accept(snapshot.bw_invites_auto_accept);
     live.set_signup_domains(&snapshot.signups_domains);
     live.set_invitations_allowed(snapshot.invitations_allowed);
     live.set_max_file_size(snapshot.max_file_size.unwrap_or(0));
@@ -857,10 +861,14 @@ mod tests {
                 ("space_attachment_limit_kib", "2048"),
                 ("send_file_limit_kib", "512"),
                 ("invitations_allowed", "false"),
+                ("signups_verify", "true"),
+                ("bw_invites_auto_accept", "true"),
             ],
         )
         .await;
         let snapshot = watching(&store, layered(&[], &[])).await.current();
+        assert!(snapshot.signups_verify);
+        assert!(snapshot.bw_invites_auto_accept);
         assert_eq!(
             snapshot.user_attachment_limit,
             Some(0),
@@ -889,6 +897,8 @@ mod tests {
         let store = new_store().await;
         let snapshot = watching(&store, layered(&[], &[])).await.current();
         assert!(!snapshot.signups_allowed);
+        assert!(!snapshot.signups_verify);
+        assert!(!snapshot.bw_invites_auto_accept);
         assert!(snapshot.invitations_allowed);
         assert!(snapshot.signups_domains.is_empty());
         assert_eq!(snapshot.max_file_size, None);

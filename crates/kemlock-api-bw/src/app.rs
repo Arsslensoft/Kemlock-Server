@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use kemlock_app::api_use::ApiUseRepo;
-use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwOrgStore, BwUserKeyIdRepo};
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwOrgStore, BwTryRepo, BwUserKeyIdRepo};
 use kemlock_app::bw_events::{BwDeviceRepo, BwEvents, BwRelay};
 use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::event_reader::EventReader;
@@ -24,6 +24,7 @@ use kemlock_app::ports::{
 };
 use kemlock_app::privacy::{OwnErasure, PrivacyLog};
 use kemlock_app::spaces::SpaceRepo;
+use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_app::two_step::RecoveryCodeRepo;
 use kemlock_crypto::hash;
 use kemlock_crypto::seal::ServerSeal;
@@ -45,11 +46,13 @@ pub trait BwStore:
     + ItemStore
     + BwAccountRepo
     + BwUserKeyIdRepo
+    + BwTryRepo
     + BwDeviceRepo
     + ApiUseRepo
     + ChallengeRepo
     + BwOrgStore
     + SpaceRepo
+    + SsoSettingsRepo
     + EmergencyRepo
     + RecoveryCodeRepo
     + EventLog
@@ -68,11 +71,13 @@ impl<T> BwStore for T where
         + ItemStore
         + BwAccountRepo
         + BwUserKeyIdRepo
+        + BwTryRepo
         + BwDeviceRepo
         + ApiUseRepo
         + ChallengeRepo
         + BwOrgStore
         + SpaceRepo
+        + SsoSettingsRepo
         + EmergencyRepo
         + RecoveryCodeRepo
         + EventLog
@@ -300,5 +305,25 @@ impl<S: BwStore> FromRequestParts<App<S>> for Authed {
             .get::<ConnectInfo<SocketAddr>>()
             .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
         app.session(&claims, ip).await
+    }
+}
+
+/// A request that may carry an access token: the accept routes of an invitation take the signed
+/// token of the link as proof, and an account made through the Bitwarden API may have no way to
+/// sign in that the web vault offers. With an `Authorization` header it must be a good one, as for
+/// [`Authed`]; with none, there is no caller.
+#[derive(Debug)]
+pub struct MaybeAuthed(pub Option<Authed>);
+
+impl<S: BwStore> FromRequestParts<App<S>> for MaybeAuthed {
+    type Rejection = BwError;
+
+    async fn from_request_parts(parts: &mut Parts, app: &App<S>) -> Result<Self, BwError> {
+        if !parts.headers.contains_key(AUTHORIZATION) {
+            return Ok(MaybeAuthed(None));
+        }
+        Authed::from_request_parts(parts, app)
+            .await
+            .map(|authed| MaybeAuthed(Some(authed)))
     }
 }

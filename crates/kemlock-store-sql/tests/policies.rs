@@ -12,10 +12,13 @@ use kemlock_app::policies::{PolicyRepo, StoredPolicies};
 use kemlock_app::ports::{Clock, UserRepo};
 use kemlock_app::spaces::{
     AcceptInvitation, CreateSpace, CreateSpaceInput, InviteInput, InviteMember, NewCollection,
+    SpaceChanges, SpaceRepo,
 };
 use kemlock_app::sso::{MembershipFacts, SpaceMembership, SpaceRole as SsoRole};
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
-use kemlock_domain::spaces::{CollectionId, CustomPermissions, SEALED_KEY_LEN, SpaceRole};
+use kemlock_domain::spaces::{
+    CollectionId, CustomPermissions, MemberState, SEALED_KEY_LEN, SpaceRole,
+};
 use kemlock_domain::{DeviceId, SpaceId, UserId};
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -236,7 +239,7 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
     expected.sort_by_key(|m| m.space);
     assert_eq!(owners, expected);
 
-    // An invitation is not membership; accepting it is.
+    // An invitation is not membership; a confirmation is.
     InviteMember {
         spaces: store.clone(),
         users: store.clone(),
@@ -267,6 +270,28 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
     .execute(&actor(member), strict)
     .await
     .expect("accepted");
+    // An acceptance no admin has confirmed is no membership either.
+    assert_eq!(
+        MembershipFacts::spaces_of(store, member).await,
+        Ok(Vec::new())
+    );
+    let mut confirmed = SpaceRepo::load(store, strict)
+        .await
+        .expect("loads")
+        .expect("the space")
+        .member(member)
+        .cloned()
+        .expect("the member");
+    confirmed.state = MemberState::Confirmed;
+    SpaceRepo::apply(
+        store,
+        SpaceChanges {
+            members: vec![confirmed],
+            ..SpaceChanges::new(strict)
+        },
+    )
+    .await
+    .expect("confirmed");
     assert_eq!(
         MembershipFacts::spaces_of(store, member).await,
         Ok(vec![SpaceMembership {
@@ -285,7 +310,6 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
 
 /// `SpaceRepo`'s Require SSO calls and `PolicyRepo` are two ways at the one table.
 async fn the_narrow_require_sso_calls_use_the_general_policies(store: &SqlStore) {
-    use kemlock_app::spaces::SpaceRepo;
 
     let (admin, _) = account(store, "narrow-admin").await;
     let space = SpaceId::random();

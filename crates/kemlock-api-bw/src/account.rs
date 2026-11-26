@@ -452,17 +452,20 @@ async fn admit<S: BwStore>(app: &App<S>, email: &str, token: Option<&str>) -> Bw
     Ok(Admission::Refused)
 }
 
-/// `POST /identity/accounts/register/send-verification-email`: with no mail to send, the token
-/// goes straight back and the client uses it to finish.
+/// `POST /identity/accounts/register/send-verification-email`. With no mail to send, the token
+/// goes straight back and the client uses it to finish. With `SIGNUPS_VERIFY` on and a mailer, the
+/// token goes only to the address, as Vaultwarden does, so whoever asks can't use an address that
+/// is not theirs: the answer has no token (`None`) and the registration finishes with the link.
 pub(crate) async fn verification_token<S: BwStore>(
     app: &App<S>,
     email: &str,
     name: Option<String>,
     invite_token: Option<&str>,
-) -> BwResult<String> {
+) -> BwResult<Option<String>> {
     if matches!(admit(app, email, invite_token).await?, Admission::Refused) {
         return Err(BwError::msg(REGISTRATION_REFUSED));
     }
+    let mail = crate::signup_hold::verifies(app);
     let now = app.now_secs();
     let claims = RegisterVerifyClaims {
         nbf: now,
@@ -470,11 +473,17 @@ pub(crate) async fn verification_token<S: BwStore>(
         iss: app.settings.issuer("register_verify"),
         sub: email.to_owned(),
         name,
-        verified: false,
+        verified: mail,
     };
-    app.keys
+    let token = app
+        .keys
         .encode(&claims)
-        .map_err(|e| BwError::Server(e.to_string()))
+        .map_err(|e| BwError::Server(e.to_string()))?;
+    if !mail {
+        return Ok(Some(token));
+    }
+    crate::signup_hold::mail_token(app, email, token).await;
+    Ok(None)
 }
 
 /// Whether `emailVerificationToken` is a verified token for `email` and the account doesn't exist.
@@ -521,6 +530,7 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
             "Email verification token does not match email",
         ));
     }
+    let verified = claims.verified;
     let name = claims.name;
     if name.as_ref().is_some_and(|n| n.len() > 50) {
         return Err(BwError::msg(
@@ -530,6 +540,13 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
     let admission = admit(app, &request.email, request.invite_token.as_deref()).await?;
     if matches!(admission, Admission::Refused) {
         return Err(BwError::msg(REGISTRATION_REFUSED));
+    }
+    // Where the server verifies sign-ups, the token has to be the one mailed to the address: the
+    // asker never sees it. A server invitation was mailed to the address too, so it proves it.
+    if crate::signup_hold::verifies(app) && !verified && !matches!(admission, Admission::Invited(_)) {
+        return Err(BwError::msg(
+            "Email verification is required: open the link mailed to the address to finish registering",
+        ));
     }
     let kdf = request.kdf.checked()?;
     let email = Email::parse(&request.email).map_err(|_| {
@@ -587,6 +604,7 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         revision_ms: epoch_millis(now),
     };
     BwAccountRepo::insert(&app.store, &account).await?;
+    crate::signup_hold::hold(app, &user).await?;
     // Invitations to this address become memberships.
     app.adopt_invitations(&user).await?;
     if let Admission::Invited(invitation) = admission {

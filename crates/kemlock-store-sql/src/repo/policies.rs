@@ -140,17 +140,15 @@ impl SqlStore {
     }
 }
 
-/// The Require SSO check reads, for an account, each space it has accepted or been confirmed in,
-/// the role it holds there and whether the space requires SSO. An invitation or a revoked
-/// membership is not being in a space.
+/// The Require SSO check reads, for an account, each space it has been confirmed in, the role it
+/// holds there and whether the space requires SSO. An invitation, an acceptance no admin has
+/// confirmed and a revoked membership are not being in a space: whoever sent the invitation could
+/// otherwise close the invitee's password sign-in.
 impl MembershipFacts for SqlStore {
     async fn spaces_of(&self, user: UserId) -> Result<Vec<SpaceMembership>, StoreError> {
         let rows = members::Entity::find()
             .filter(members::Column::UserId.eq(user.0))
-            .filter(members::Column::State.is_in([
-                MemberState::Accepted.as_str(),
-                MemberState::Confirmed.as_str(),
-            ]))
+            .filter(members::Column::State.eq(MemberState::Confirmed.as_str()))
             .all(self.reader())
             .await
             .store()?;

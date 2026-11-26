@@ -53,6 +53,7 @@ const LABELS: Record<string, MessageId> = {
   signups_verify: 'admin.settings.key.signups_verify',
   signups_domains_whitelist: 'admin.settings.key.signups_domains_whitelist',
   invitations_allowed: 'admin.settings.key.invitations_allowed',
+  bw_invites_auto_accept: 'admin.settings.key.bw_invites_auto_accept',
   user_attachment_limit_kib: 'admin.settings.key.user_attachment_limit_kib',
   space_attachment_limit_kib: 'admin.settings.key.space_attachment_limit_kib',
   send_file_limit_kib: 'admin.settings.key.send_file_limit_kib',
@@ -76,6 +77,7 @@ export const SWITCH_HINTS: Record<string, MessageId> = {
   signups_allowed: 'admin.settings.hint.signups_allowed',
   signups_verify: 'admin.settings.hint.signups_verify',
   invitations_allowed: 'admin.settings.hint.invitations_allowed',
+  bw_invites_auto_accept: 'admin.settings.hint.bw_invites_auto_accept',
   push_enabled: 'admin.settings.hint.push_enabled',
   kemlock_push_relay: 'admin.settings.hint.kemlock_push_relay',
 };

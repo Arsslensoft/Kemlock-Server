@@ -11,6 +11,7 @@ pub(crate) mod bw_account_extras;
 pub(crate) mod bw_accounts;
 pub(crate) mod bw_attachments;
 pub(crate) mod bw_devices;
+pub(crate) mod bw_tries;
 pub(crate) mod bw_docs;
 pub(crate) mod bw_user_key_ids;
 pub(crate) mod changes;

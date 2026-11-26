@@ -22,7 +22,7 @@ use super::structure::{
     save_group, update_collection,
 };
 use crate::account::check_valid_password;
-use crate::app::{App, Authed, BwStore};
+use crate::app::{App, Authed, BwStore, MaybeAuthed};
 use crate::cipher::{CipherData, lcase_keys};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
@@ -270,13 +270,10 @@ async fn leave_organization<S: BwStore>(
     authed: Authed,
     Path(org_id): Path<String>,
 ) -> EmptyResult {
+    // Any member who is not revoked may leave: that is how an invitation, or a membership still
+    // waiting for its confirmation, is turned down.
     let ctx = app.guard(&authed, &org_id, Need::Member).await?;
-    if !ctx.doc.confirmed() {
-        return Err(BwError::msg(
-            "You need to be a Member of the Organization to call this endpoint",
-        ));
-    }
-    if ctx.doc.atype == OWNER && ctx.org.confirmed_owners() <= 1 {
+    if ctx.doc.confirmed() && ctx.doc.atype == OWNER && ctx.org.confirmed_owners() <= 1 {
         return Err(BwError::msg("The last owner can't leave"));
     }
     app.remove_member(&ctx.org, ctx.me).await?;
@@ -659,13 +656,22 @@ async fn bulk_reinvite<S: BwStore>(
 
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
-    authed: Authed,
+    MaybeAuthed(authed): MaybeAuthed,
     Path((org_id, member_id)): Path<(String, String)>,
     body: Bytes,
 ) -> EmptyResult {
     let data: AcceptData = parse(&body)?;
     let key = data.reset_password_key;
-    empty(members::accept(&app, &authed, &org_id, &member_id, &data.token, key).await)
+    empty(members::accept(&app, authed.as_ref(), &org_id, &member_id, &data.token, key).await)
+}
+
+async fn invite_link_route<S: BwStore>(
+    State(app): State<App<S>>,
+    authed: Authed,
+    Path((org_id, member_id)): Path<(String, String)>,
+) -> JsonResult {
+    let ctx = app.guard(&authed, &org_id, Need::Admin).await?;
+    ok(members::pending_link(&app, &ctx, &member_id).await?)
 }
 
 async fn confirm_member<S: BwStore>(
@@ -1616,6 +1622,10 @@ pub(crate) fn routes<S: BwStore>() -> Router<App<S>> {
         .route(
             "/api/organizations/{org_id}/users/{member_id}/accept",
             post(accept_invite::<S>),
+        )
+        .route(
+            "/api/organizations/{org_id}/users/{member_id}/invite-link",
+            get(invite_link_route::<S>),
         )
         .route(
             "/api/organizations/{org_id}/users/{member_id}/confirm",

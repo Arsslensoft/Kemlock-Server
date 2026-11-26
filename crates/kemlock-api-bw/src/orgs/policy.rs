@@ -173,7 +173,10 @@ impl<S: BwStore> MembershipFacts for OrgMembership<S> {
         use kemlock_app::spaces::SpaceRepo;
         let mut out = Vec::new();
         for member in SpaceRepo::memberships(&self.0, user).await? {
-            if member.state == kemlock_domain::spaces::MemberState::Revoked {
+            // A policy binds the members who joined: an invitation, or an acceptance no admin has
+            // confirmed, is no membership, and whoever sent it could otherwise close the
+            // invitee's password sign-in.
+            if member.state != kemlock_domain::spaces::MemberState::Confirmed {
                 continue;
             }
             let Some(text) = self
