@@ -226,6 +226,10 @@ pub struct Snapshot {
     pub backup_destination: String,
     pub backup_destination_saved: bool,
     pub backup_recipient: String,
+    /// `federation_promotion` as the server follows it: `hold` or `auto`.
+    pub federation_promotion: String,
+    /// `space_chain_external_changes`: `queue`, `refuse` or `unchained`.
+    pub space_chain_external_changes: String,
 }
 
 fn flag(view: &SettingView) -> bool {
@@ -355,6 +359,8 @@ impl Snapshot {
             backup_destination: text("backup_destination")?,
             backup_destination_saved: view("backup_destination")?.source == Source::Saved,
             backup_recipient: text("backup_recipient")?,
+            federation_promotion: text("federation_promotion")?,
+            space_chain_external_changes: text("space_chain_external_changes")?,
         })
     }
 }
@@ -637,6 +643,23 @@ impl SettingsWatch {
         });
     }
 
+    /// Makes the store's own reads of `federation_promotion` and `space_chain_external_changes`
+    /// see the layered values (the environment, then `kemlock.toml`, then what the console saved),
+    /// now and as they change.
+    pub fn overlay_store_settings(&self, store: &SqlStore) {
+        let rx = self.subscribe();
+        store.set_setting_overlay(move |key| {
+            let snapshot = rx.borrow();
+            match key {
+                "federation_promotion" => Some(snapshot.federation_promotion.clone()),
+                "space_chain_external_changes" => {
+                    Some(snapshot.space_chain_external_changes.clone())
+                }
+                _ => None,
+            }
+        });
+    }
+
     /// Starts the task that re-reads the settings when nudged and every [`POLL_EVERY`].
     pub fn spawn_poll(self: &Arc<Self>) -> JoinHandle<()> {
         let watch = Arc::clone(self);
@@ -786,6 +809,32 @@ mod tests {
                 folder: root.join("nas").join("b")
             }
         );
+    }
+
+    #[tokio::test]
+    async fn the_stores_own_settings_follow_the_config_file_too() {
+        use kemlock_federation::extra::{FedAdminRepo, PromotionMode};
+        let store = new_store().await;
+        // Nothing sets it: held, as the default says.
+        let plain = watching(&store, layered(&[], &[])).await;
+        plain.overlay_store_settings(&store);
+        assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+        // `kemlock.toml` says auto, and the store sees it though nothing was saved.
+        let from_file =
+            watching(&store, layered(&[], &[("federation_promotion", "auto")])).await;
+        from_file.overlay_store_settings(&store);
+        assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Auto));
+        // The environment outranks the file.
+        let from_env = watching(
+            &store,
+            layered(
+                &[("KEMLOCK_FEDERATION_PROMOTION", "hold")],
+                &[("federation_promotion", "auto")],
+            ),
+        )
+        .await;
+        from_env.overlay_store_settings(&store);
+        assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
     }
 
     #[test]

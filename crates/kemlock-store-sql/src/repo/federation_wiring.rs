@@ -89,6 +89,10 @@ impl FedAdminRepo for SqlStore {
     }
 
     async fn promotion_mode(&self) -> Result<PromotionMode, StoreError> {
+        // The server's layered value (environment, `kemlock.toml`, saved) when it gave one.
+        if let Some(value) = self.overlaid_setting("federation_promotion") {
+            return Ok(PromotionMode::parse(&value));
+        }
         // The environment, then what the console saved, then `hold`: anything but `auto` holds.
         if let Ok(value) = std::env::var(PROMOTION_ENV)
             && !value.trim().is_empty()

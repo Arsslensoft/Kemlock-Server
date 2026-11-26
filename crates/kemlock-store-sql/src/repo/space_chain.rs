@@ -493,6 +493,10 @@ impl SqlStore {
     /// The setting `space_chain_external_changes`: the environment, then what the console saved,
     /// then `queue`.
     pub(crate) async fn read_external_mode(&self) -> Result<ExternalChangeMode, StoreError> {
+        // The server's layered value (environment, `kemlock.toml`, saved) when it gave one.
+        if let Some(value) = self.overlaid_setting("space_chain_external_changes") {
+            return Ok(ExternalChangeMode::parse(&value));
+        }
         if let Ok(value) = std::env::var(MODE_ENV)
             && !value.trim().is_empty()
         {

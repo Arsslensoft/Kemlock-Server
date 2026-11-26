@@ -212,6 +212,8 @@ where
     );
     notifications.push_follower.follow(&settings.current());
     settings.overlay_retention(&store);
+    // The settings the store reads itself follow the config file too.
+    settings.overlay_store_settings(&store);
     // An invited address registers with its token while sign-ups are closed.
     api.live.set_invites(Arc::new(AcceptInvite {
         repo: store.clone(),
