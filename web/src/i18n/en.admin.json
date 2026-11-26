@@ -242,7 +242,7 @@
   "admin.users.inviteLink.openFor": "Copy a Bitwarden invitation link for space {space}",
   "admin.users.inviteLink.title": "Bitwarden invitation link",
   "admin.users.inviteLink.member": "Invited member of space {space}",
-  "admin.users.inviteLink.hint": "For a Bitwarden organization on a server that can't send mail. The copy is asked for with a fresh check and is recorded in the event log, and the other admins are told.",
+  "admin.users.inviteLink.hint": "For a Bitwarden organization on a server that can't send mail. The copy is asked for with a fresh check and is recorded in the event log.",
   "admin.users.inviteLink.get": "Get the link",
   "admin.users.inviteLink.warning": "Whoever opens this link accepts the invitation for that account. Hand it only to the person invited.",
   "admin.users.inviteLink.copy": "Copy invitation link",
