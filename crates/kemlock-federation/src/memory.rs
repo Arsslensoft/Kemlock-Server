@@ -166,6 +166,8 @@ struct Extras {
     withheld: HashMap<(ServerId, Owner), Withheld>,
     /// The members `member_ids` answers with, by vault.
     members: HashMap<Owner, Vec<UserId>>,
+    /// The members `writer_ids` adds to them: those who left.
+    former_members: HashMap<Owner, Vec<UserId>>,
     /// The account copies applied: the home that signed and the user.
     accounts_applied: Vec<(ServerId, UserId)>,
     /// The accounts that live here, for `member_account`.
@@ -330,6 +332,11 @@ impl MemoryStore {
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
     pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
         self.extras().members.insert(vault, members);
+    }
+
+    /// Sets who `writer_ids` adds to the members of `vault`: accounts that were members.
+    pub fn set_former_members(&self, vault: Owner, members: Vec<UserId>) {
+        self.extras().former_members.insert(vault, members);
     }
 
     /// An account that lives on this store, as `member_account` answers for it.
@@ -904,6 +911,13 @@ impl crate::extra::MemberStore for MemoryStore {
             .get(&vault)
             .cloned()
             .unwrap_or_default())
+    }
+
+    async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        let extras = self.extras();
+        let mut ids = extras.members.get(&vault).cloned().unwrap_or_default();
+        ids.extend(extras.former_members.get(&vault).cloned().unwrap_or_default());
+        Ok(ids)
     }
 
     async fn member_account(

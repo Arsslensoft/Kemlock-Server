@@ -211,6 +211,15 @@ pub trait MemberStore: Send + Sync {
         ready(Ok(Vec::new()))
     }
 
+    /// The accounts that may have written an item of `vault`: its members, and those who were (a
+    /// space keeps the row of a member who was taken out). A write is checked by who signed it, so
+    /// one made before the account left is still good.
+    ///
+    /// The default is the members.
+    fn writer_ids(&self, vault: Owner) -> impl Future<Output = R<Vec<UserId>>> + Send {
+        self.member_ids(vault)
+    }
+
     /// The public part of an account that lives on this server, with its device registrations.
     /// `None` when there is no such account or it is a copy from another server.
     fn member_account(

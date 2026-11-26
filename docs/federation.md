@@ -351,14 +351,17 @@ The origin's signature covers the field, so a relay can't strip or swap it. A re
 record checks, before it applies it:
 
 1. **With a signature.** The writer is allowed for the owner: the vault's own account for a
-   `user:` owner, a confirmed member of the space (from the receiver's replicated member list) for
-   a `space:` owner. The receiver holds the writer's bundle at the signature's key version (the
+   `user:` owner, a member of the space or one who was taken out of it (from the receiver's
+   replicated member list, which keeps the row of a revoked member) for a `space:` owner: a write
+   is checked by who signed it, so one made before the account left is still good. The receiver holds the writer's bundle at the signature's key version (the
    replicated member account), and the signature verifies over the statement rebuilt from the
    record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key.
-   A record that fails is **refused**: counted, left out, the rest of the page applied. A writer or
-   bundle the receiver doesn't hold yet is refused the same way, and the later comparison fetches
-   the record again once the home's records have arrived (a pull that applied a refusal compares
-   at once instead of waiting for the next round).
+   A record that fails is **refused**: counted, left out, the rest of the page applied. A writer who
+   isn't in the member list yet, or a bundle the receiver doesn't hold yet, is left out **for now**
+   (counted as refused, and as one to retry): the later comparison fetches the record again once
+   the home's records have arrived, and a pull that left such a record compares at once instead of
+   waiting for the next round. A record refused for good (the signature doesn't verify, an unsigned
+   change for a signed-only owner) is not retried at once, or each visit would fetch it again.
 2. **Without one.** If the receiver holds the owner as **signed-only** (the owner asked for it at that server) the record is refused. A signed record does not set
    the flag.
 

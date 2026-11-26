@@ -26,8 +26,11 @@ pub const PAST_BUNDLES_CAPABILITY: &str = "x-kemlock-past-bundles1";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Accept,
-    /// Leave it out, for this reason.
+    /// Leave it out, for this reason: it will not do later either.
     Refuse(&'static str),
+    /// Leave it out for now, for this reason: what it needs (the writer's keys, the list of the
+    /// space's members) may arrive, and a later comparison fetches it again.
+    Defer(&'static str),
 }
 
 /// The statement a record's writer signed, rebuilt from the record. `None` when the record carries
@@ -72,22 +75,28 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
             Verdict::Accept
         });
     };
+    // A member who has since left still wrote what they wrote before: the signature says who made
+    // it, and the home checked their right to at the time.
     let allowed = match record.owner {
         Owner::User(user) => user == write.writer,
         Owner::Space(_) => store
-            .member_ids(record.owner)
+            .writer_ids(record.owner)
             .await?
             .contains(&write.writer),
     };
     if !allowed {
-        return Ok(Verdict::Refuse(
-            "a change written by an account that may not write here",
-        ));
+        // The member list of a space may not have arrived yet; a personal vault is never written
+        // by another account.
+        let why = "a change written by an account that may not write here";
+        return Ok(match record.owner {
+            Owner::User(_) => Verdict::Refuse(why),
+            Owner::Space(_) => Verdict::Defer(why),
+        });
     }
     // The bundle of the key version the signature names, which may be one the account has
     // replaced since (docs/crypto.md, "Signed item writes", "Key versions").
     let Some(bundle) = store.writer_bundle(write.writer, write.key_version).await? else {
-        return Ok(Verdict::Refuse(
+        return Ok(Verdict::Defer(
             "a change by a writer whose keys at that version we do not hold",
         ));
     };
@@ -189,7 +198,7 @@ mod tests {
     }
 
     fn verdict_is_refusal(verdict: Result<Verdict>) -> bool {
-        matches!(verdict, Ok(Verdict::Refuse(_)))
+        matches!(verdict, Ok(Verdict::Refuse(_) | Verdict::Defer(_)))
     }
 
     #[tokio::test]
@@ -274,6 +283,30 @@ mod tests {
         assert!(verdict_is_refusal(judge(&store, &record).await));
         store.set_members(space, vec![writer]);
         assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+    }
+
+    #[tokio::test]
+    async fn a_member_who_left_still_wrote_what_they_signed_and_a_stranger_waits_for_the_list() {
+        let writer = UserId::random();
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let store = store_for(writer, &key);
+        let space = Owner::Space(SpaceId::random());
+        let record = signed_record(space, writer, &key);
+        // Not a member now: the list may not have arrived, so the record is left out for now.
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Defer(_))
+        ));
+        // Taken out of the space since: what they signed before is still theirs.
+        store.set_former_members(space, vec![writer]);
+        assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+        // Their signature still has to verify, and then it is refused for good.
+        let mut forged = signed_record(space, writer, &key);
+        forged.revision = Revision(9);
+        assert!(matches!(
+            judge(&store, &forged).await,
+            Ok(Verdict::Refuse(_))
+        ));
     }
 
     #[tokio::test]

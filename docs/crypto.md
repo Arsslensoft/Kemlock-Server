@@ -913,7 +913,8 @@ subject to this.
 **A federation peer, on a record** (`apply`), for a `kem1` record:
 
 1. if it carries a signature, the writer must be allowed for the record's owner (the owner's own
-   account for a vault, a confirmed member for a space, per the peer's replicated member list), the
+   account for a vault, a member of the space or one taken out of it, per the peer's replicated
+   member list), the
    peer must hold the writer's bundle at the signature's key version (the replicated account or
    member copy), and the signature must verify over the statement rebuilt from the record. Else the
    record is refused, as a record from a stranger is;

@@ -185,6 +185,8 @@ async fn a_replica_cannot_delete_what_the_account_wrote_with_a_signature() {
         .expect("B pulls again");
     assert_eq!(report.counts.applied, 0);
     assert_eq!(report.counts.refused, 1);
+    // It will be refused again, so nothing is worth comparing.
+    assert_eq!(report.counts.retry, 0);
     let held = b.store().get(item).expect("the item is still there");
     assert_eq!(held.revision, Revision(1));
     assert!(!held.is_tombstone());
@@ -224,6 +226,7 @@ async fn a_signature_made_by_another_key_is_refused() {
     assert_eq!(report.counts.applied, 0);
     assert_eq!(report.counts.refused, 1);
     assert!(b.store().get(item).is_none());
+    assert_eq!(report.counts.retry, 1);
 }
 
 #[tokio::test]

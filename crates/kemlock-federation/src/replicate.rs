@@ -113,6 +113,11 @@ pub struct Counts {
     /// Records left out: an item id another owner holds, a change from the future, a writer
     /// signature that is missing or doesn't verify, an origin over its quota, and a rollback.
     pub refused: usize,
+    /// Of the refused, the ones a later comparison may apply: a change from the future or past an
+    /// origin's quota, a writer whose keys or space membership haven't arrived. The rest (a bad
+    /// signature, an unsigned change for a signed-only owner, a rollback) will be refused again, so
+    /// a pull that left only those has nothing to compare.
+    pub retry: usize,
 }
 
 impl Counts {
@@ -121,6 +126,7 @@ impl Counts {
         self.siblings += other.siblings;
         self.duplicates += other.duplicates;
         self.refused += other.refused;
+        self.retry += other.retry;
     }
 }
 
@@ -698,6 +704,7 @@ impl<S: FedStore> Replica<S> {
             if change::check_not_future(&record, now_ms).is_err() {
                 tracing::warn!(origin = %record.change.origin, "a change with a time far ahead of this server's clock was refused");
                 counts.refused += 1;
+                counts.retry += 1;
                 continue;
             }
             // A relayed change is accepted from an origin we are paired with or one in the vault's
@@ -726,15 +733,25 @@ impl<S: FedStore> Replica<S> {
                 over => {
                     tracing::warn!(%origin, ?over, "a change past the origin's quota was refused");
                     counts.refused += 1;
+                    counts.retry += 1;
                     continue;
                 }
             }
             // The writing account's signature: the origin's signature says which server accepted
             // the write, this says who made it.
-            if let writes::Verdict::Refuse(why) = writes::judge(&self.store, &record).await? {
-                tracing::warn!(%origin, why, "a change was refused");
-                counts.refused += 1;
-                continue;
+            match writes::judge(&self.store, &record).await? {
+                writes::Verdict::Accept => {}
+                writes::Verdict::Refuse(why) => {
+                    tracing::warn!(%origin, why, "a change was refused");
+                    counts.refused += 1;
+                    continue;
+                }
+                writes::Verdict::Defer(why) => {
+                    tracing::warn!(%origin, why, "a change was left out for now");
+                    counts.refused += 1;
+                    counts.retry += 1;
+                    continue;
+                }
             }
             let signature = Signed::decode(envelope)?.signature;
             match self.store.apply_ranked(&record, &signature, rank).await {

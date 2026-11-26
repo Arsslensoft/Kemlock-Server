@@ -323,6 +323,24 @@ impl MemberStore for SqlStore {
         }
     }
 
+    async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        match vault {
+            Owner::User(_) => MemberStore::member_ids(self, vault).await,
+            // A member who was taken out keeps their row, and what they wrote before is theirs.
+            Owner::Space(space) => Ok(SpaceRepo::load(self, space)
+                .await?
+                .map(|state| {
+                    state
+                        .members
+                        .iter()
+                        .filter(|m| matches!(m.state, MemberState::Confirmed | MemberState::Revoked))
+                        .map(|m| m.user)
+                        .collect()
+                })
+                .unwrap_or_default()),
+        }
+    }
+
     async fn writer_bundle(
         &self,
         user: UserId,
