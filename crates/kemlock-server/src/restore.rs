@@ -217,25 +217,15 @@ fn data_name(path: &str) -> Option<&str> {
     path.strip_prefix("data/").filter(|n| !n.contains('/'))
 }
 
-/// Refuses an archive that names a file a backup never writes and a restore must never install:
-/// the server key or a database file (`database` is the configured SQLite file, when there is
-/// one). Checked before anything is changed, so a refused archive leaves the server as it was.
-fn refuse_planted_files(manifest: &Manifest, database: Option<&Path>) -> Result<(), String> {
-    let database = database.and_then(Path::file_name);
-    for entry in &manifest.files {
-        let Some(name) = data_name(&entry.path) else {
-            continue;
-        };
-        if is_never_restored(name) || database.is_some_and(|file| file == std::ffi::OsStr::new(name))
-        {
-            return Err(format!(
-                "the archive holds {}, which a backup of this server never writes and a restore \
-                 never installs: it was not made by this server. Nothing was changed",
-                entry.path
-            ));
-        }
+/// What a restore says about a file of the archive's `data/` that it doesn't install. A key or a
+/// database file is one a backup of this server never writes now, but older ones (and a data
+/// folder beside a PostgreSQL server with a stray `*.db`) may hold; it is skipped, never copied.
+fn skipped_data_file_note(name: &str) -> String {
+    if is_never_restored(name) {
+        format!("data/{name} is a key or a database file, which a restore never installs: skipped")
+    } else {
+        format!("data/{name} isn't a file a restore installs, so it was skipped")
     }
-    Ok(())
 }
 
 /// Replaces this server's database and files with the archive's. Stop the server first. The
@@ -295,7 +285,6 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
     )
     .await?;
     notes.extend(unauthenticated);
-    refuse_planted_files(&manifest, sqlite_file(&config.database_url).as_deref())?;
     if let Some(wanted) = key_to_install {
         write_server_key(&key_path, &wanted)?;
         server_key_installed = true;
@@ -332,9 +321,7 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
                 copy_file(&from, &config.data_folder.join(name))?;
                 files += 1;
             } else {
-                notes.push(format!(
-                    "data/{name} isn't a file a restore installs, so it was skipped"
-                ));
+                notes.push(skipped_data_file_note(name));
             }
         } else if let Some(relative) = entry.path.strip_prefix("attachments/") {
             match &attachments_folder {
@@ -464,7 +451,6 @@ pub async fn restore_check(
         .map(|key| manifest_mac_key(&key));
     let (manifest, unauthenticated) =
         unpack(archive, identity, &unpacked, mac_key, allow_unauthenticated).await?;
-    refuse_planted_files(&manifest, None)?;
 
     // 2. Lay the files out as a data folder, with the key that was stored apart.
     let data = scratch.path().join("data");
@@ -697,53 +683,17 @@ mod tests {
         .expect("valid")
     }
 
-    fn manifest_with(paths: &[&str]) -> Manifest {
-        Manifest {
-            format: 1,
-            created_at: "2026-11-26T03:00:00Z".to_owned(),
-            kemlock_version: "0.1.4".to_owned(),
-            database: "sqlite".to_owned(),
-            migrations: Vec::new(),
-            tables: Vec::new(),
-            files: paths
-                .iter()
-                .map(|path| kemlock_backup::FileEntry {
-                    path: (*path).to_owned(),
-                    size: 0,
-                    sha256: String::new(),
-                })
-                .collect(),
-            attachments: Attachments::External,
-        }
-    }
-
     #[test]
-    fn an_archive_that_carries_the_server_key_or_a_database_is_refused() {
-        let fine = manifest_with(&[
-            "db/users.jsonl",
-            "data/opaque-setup.sealed",
-            "data/rsa_key.pem",
-            "attachments/ab/abcdef",
-            "config/kemlock.toml",
-        ]);
-        assert!(refuse_planted_files(&fine, None).is_ok());
-        for planted in [
-            "data/server.key",
-            "data/db.sqlite3",
-            "data/db.sqlite3-wal",
-            "data/vault.db",
-        ] {
-            let refused = refuse_planted_files(&manifest_with(&["data/rsa_key.pem", planted]), None)
-                .expect_err(planted);
-            assert!(refused.contains(planted), "{refused}");
-            assert!(refused.contains("Nothing was changed"), "{refused}");
+    fn keys_and_database_files_in_an_archive_are_skipped_with_a_note_not_installed() {
+        for name in ["server.key", "db.sqlite3", "db.sqlite3-wal", "vault.db"] {
+            assert!(!is_restorable_data_file(name), "{name}");
+            let note = skipped_data_file_note(name);
+            assert!(note.contains(name) && note.contains("skipped"), "{note}");
+            assert!(note.contains("never installs"), "{note}");
         }
-        // The configured database file counts whatever it is called.
-        let custom = manifest_with(&["data/vault-store"]);
-        assert!(refuse_planted_files(&custom, None).is_ok());
-        assert!(refuse_planted_files(&custom, Some(Path::new("/data/vault-store"))).is_err());
-        // A name with a folder in it never reaches the data folder at all.
-        assert!(refuse_planted_files(&manifest_with(&["data/x/server.key"]), None).is_ok());
+        let other = skipped_data_file_note("notes.txt");
+        assert!(other.contains("isn't a file a restore installs"), "{other}");
+        assert!(is_restorable_data_file("rsa_key.pem"));
     }
 
     #[test]

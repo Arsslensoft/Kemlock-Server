@@ -199,7 +199,10 @@ fn data_files(spec: &ArchiveSpec<'_>) -> Result<Vec<PathBuf>, BackupError> {
         let name = entry.file_name();
         let skipped = spec.skip.iter().any(|s| s == &path);
         let temporary = name.to_string_lossy().ends_with(".tmp");
-        if is_file && name != SERVER_KEY_FILE && !skipped && !temporary {
+        // A database file (SQLite beside a PostgreSQL server, a stray .db) is never restored, so it is
+        // not written: the database goes in as rows.
+        let database = is_never_restored(&name.to_string_lossy());
+        if is_file && name != SERVER_KEY_FILE && !skipped && !temporary && !database {
             out.push(path);
         }
     }
@@ -597,6 +600,8 @@ mod tests {
         std::fs::write(data.join("db.sqlite3"), b"the database").expect("db");
         std::fs::write(data.join("db.sqlite3-wal"), b"wal").expect("wal");
         std::fs::write(data.join("half.tmp"), b"tmp").expect("tmp");
+        std::fs::write(data.join("legacy.db"), b"a stray database").expect("a db");
+        std::fs::write(data.join("db.sqlite3-shm"), b"shm").expect("shm");
         std::fs::create_dir_all(data.join("backups")).expect("a folder");
         std::fs::write(data.join("backups").join("old.age"), b"old").expect("old");
         let attachments = data.join("attachments");
@@ -676,6 +681,8 @@ mod tests {
             "data/db.sqlite3-wal",
             "data/half.tmp",
             "data/old.age",
+            "data/legacy.db",
+            "data/db.sqlite3-shm",
         ] {
             assert!(!paths.contains(&left_out), "{left_out}");
         }
