@@ -14,10 +14,12 @@
 //   6. on `rotation-incomplete` (another device wrote meanwhile) stage what changed and try again;
 //   7. make the new keys the account's in the worker.
 //
-// What the web vault does not carry over, and the page says so before it starts: a passkey's PRF
-// wrap (it needs the passkey touched), an emergency contact's box (it needs their current bundle)
-// and a space recovery enrolment are removed, so the person sets each up again; and an account that
-// is in a space is refused, because the space keys must move to the new keys too.
+// What the web vault re-wraps: an emergency contact's box, to the bundle the person compared with the
+// contact's own screen (a contact not compared is removed and confirmed again later), and a space
+// recovery enrolment, to the recovery key a verified chain gives (`recoveryKeys`). A passkey's PRF
+// wrap needs the authenticator, so it is removed and the page offers to add it back after the install
+// (`removed.passkeys` says which). An account that is in a space is refused, because the space keys
+// must move to the new keys too.
 import { ApiError } from '@/api/errors';
 import type { Api } from '@/api/client';
 import type { Proof } from '@/api/twoStep';
@@ -27,6 +29,7 @@ import type { ItemDto } from '@/api/types';
 import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { CredentialsError } from '@/lib/errors';
+import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 /** The page can't rotate this account. */
 export class RotationBlockedError extends Error {
@@ -69,12 +72,18 @@ export interface RotationDeps {
     | 'rotationWrapPassword'
     | 'rotationKitMake'
     | 'rotationDeviceCopySeal'
+    | 'rotationSealRootKey'
     | 'rotationCommit'
     | 'rotationAbort'
   >;
   /** The signed-in account and device. */
   userId: string;
   deviceId: string;
+  /**
+   * The recovery key (kx1 public key) a verified chain gives for a space, for the `seq` of the record
+   * that set it; undefined when it can't be said. The enrolment is then removed, not re-sealed.
+   */
+  recoveryKeys?: (space: string, keySeq: number) => Promise<Uint8Array | undefined>;
   randomBytes?: (length: number) => Uint8Array;
 }
 
@@ -85,6 +94,11 @@ export interface RotationInput {
   proof?: Proof;
   /** Makes a new Recovery Kit; one the account has is replaced either way, or dropped without it. */
   makeKit: boolean;
+  /**
+   * The emergency contacts the person compared: grant id to the bundle (base64url) whose fingerprint
+   * they compared. A box is sealed only to exactly that bundle, and only if the server still names it.
+   */
+  emergencyKeep?: Record<string, string>;
 }
 
 /** What a rotation leaves for the person: the new kit to save, and what it removed. */
@@ -95,7 +109,12 @@ export interface RotationResult {
   /** The live items as they are now, re-encrypted: what the next signed manifest lists. */
   rewritten: ItemDto[];
   tokens: Rotated['tokens'];
-  removed: { passkeys: number; emergency: number; recovery: number };
+  /** What was removed and is to be set up again; the passkeys can be added back from here. */
+  removed: {
+    passkeys: Array<{ id: string; credentialId: string }>;
+    emergency: number;
+    recovery: number;
+  };
 }
 
 /** Items per staging request, and the most encoded bytes one request carries (the body limit is 2 MiB). */
@@ -219,6 +238,54 @@ async function stageItems(
   await flush();
 }
 
+/** The 8 bytes of a number, big endian: a `keySeq` in the recovery box's aad. */
+function u64be(value: number): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value));
+  return out;
+}
+
+/**
+ * The new root key sealed to what the person verified: each emergency contact whose bundle they
+ * compared (and the server still serves unchanged), each recovery enrolment whose key a verified
+ * chain gives. What can't be sealed is named as dropped, for the server to remove.
+ */
+async function sealBoxes(deps: RotationDeps, input: RotationInput, plan: RotationPlanDto) {
+  const emergency: NonNullable<InstallRequest['emergency']> = [];
+  const dropEmergency: string[] = [];
+  for (const grant of plan.emergency) {
+    const verified = input.emergencyKeep?.[grant.id];
+    const parsed =
+      verified !== undefined && verified === grant.granteeBundle && grant.granteeId
+        ? parseBundle(decodeB64(verified))
+        : null;
+    const grantee = grant.granteeId ? uuidBytes(grant.granteeId) : null;
+    const same = parsed && grantee && parsed.accountId.every((byte, i) => byte === grantee[i]);
+    if (!parsed || !grantee || !same) {
+      dropEmergency.push(grant.id);
+      continue;
+    }
+    const box = await deps.crypto.rotationSealRootKey(parsed.kx1, 'emergency-access', grantee);
+    emergency.push({ id: grant.id, sealedKey: encodeB64(box) });
+  }
+  const recovery: NonNullable<InstallRequest['recovery']> = [];
+  const dropRecovery: string[] = [];
+  for (const enrolment of plan.recovery) {
+    const key = await deps.recoveryKeys?.(enrolment.space, enrolment.keySeq);
+    if (!key) {
+      dropRecovery.push(enrolment.space);
+      continue;
+    }
+    const aad = new Uint8Array(40);
+    aad.set(uuidBytes(enrolment.space), 0);
+    aad.set(uuidBytes(deps.userId), 16);
+    aad.set(u64be(enrolment.keySeq), 32);
+    const box = await deps.crypto.rotationSealRootKey(key, 'account-recovery', aad);
+    recovery.push({ space: enrolment.space, keySeq: enrolment.keySeq, box: encodeB64(box) });
+  }
+  return { emergency, dropEmergency, recovery, dropRecovery };
+}
+
 /** Whether the server said what changed since the plan was read. */
 function isIncomplete(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.slug === 'rotation-incomplete';
@@ -279,6 +346,7 @@ export async function rotateKeys(
     // The install, again as often as another device's write makes it incomplete.
     onProgress({ phase: 'install', done: 0, total: 1 });
     let rotated: Rotated | undefined;
+    let dropped = { emergency: 0, recovery: 0 };
     for (let round = 0; round < MAX_ROUNDS && !rotated; round++) {
       if (round > 0) {
         plan = await deps.api.plan();
@@ -290,6 +358,7 @@ export async function rotateKeys(
       const proof = plan.hasPassword
         ? await proveAndWrap(deps, input.email, input.password)
         : undefined;
+      const boxes = await sealBoxes(deps, input, plan);
       const request: InstallRequest = {
         rotationId,
         fromVersion: plan.keyVersion,
@@ -303,13 +372,16 @@ export async function rotateKeys(
         ...(kit ? { kit: { kitId: kit.kitId, wrappedKey: encodeB64(kit.wrappedKey) } } : {}),
         dropKit: !kit && plan.kit !== null,
         ...(deviceCopy ? { deviceCopy } : {}),
-        // What the page can't re-wrap now is removed, and the person sets it up again.
+        // A passkey's wrap needs the authenticator: removed now, added back after the install.
         dropPasskeys: plan.passkeys.map((passkey) => passkey.id),
-        dropEmergency: plan.emergency.map((grant) => grant.id),
-        dropRecovery: plan.recovery.map((enrolment) => enrolment.space),
+        emergency: boxes.emergency,
+        dropEmergency: boxes.dropEmergency,
+        recovery: boxes.recovery,
+        dropRecovery: boxes.dropRecovery,
         sends: movedSends,
         spacesHandled: false,
       };
+      dropped = { emergency: boxes.dropEmergency.length, recovery: boxes.dropRecovery.length };
       try {
         rotated = await deps.api.install(request);
       } catch (error) {
@@ -330,9 +402,9 @@ export async function rotateKeys(
       rewritten: items.flatMap((item) => rewritten.get(item.id) ?? []),
       tokens: rotated.tokens,
       removed: {
-        passkeys: plan.passkeys.length,
-        emergency: plan.emergency.length,
-        recovery: plan.recovery.length,
+        passkeys: plan.passkeys.map((passkey) => ({ id: passkey.id, credentialId: passkey.credentialId })),
+        emergency: dropped.emergency,
+        recovery: dropped.recovery,
       },
     };
   } finally {

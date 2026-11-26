@@ -17,7 +17,14 @@ export interface RotationPlanDto {
   passkeys: Array<{ id: string; credentialId: string }>;
   deviceCopies: Array<{ deviceId: string }>;
   /** Grants that hold a box. */
-  emergency: Array<{ id: string; state: string; granteeId: string | null }>;
+  emergency: Array<{
+    id: string;
+    state: string;
+    granteeId: string | null;
+    granteeEmail: string | null;
+    /** The contact's bundle as the server holds it now, base64url: sealed to only once compared. */
+    granteeBundle: string | null;
+  }>;
   recovery: Array<{ space: string; keySeq: number }>;
   sends: Array<{ id: string; kind: 'text' | 'file' }>;
   items: { count: number };

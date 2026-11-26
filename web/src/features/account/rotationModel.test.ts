@@ -3,6 +3,7 @@ import { ApiError } from '@/api/errors';
 import type { InstallRequest, RotationPlanDto } from '@/api/rotation';
 import type { ItemDto } from '@/api/types';
 import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { makeBundleB64 } from '@/test/bundles';
 import { crypto as fakeCrypto, fakeCalls, resetFakeCrypto } from '@/test/fake-crypto';
 import {
   RotationBlockedError,
@@ -139,7 +140,7 @@ describe('rotateKeys', () => {
     const withWraps = plan({
       kit: { kitId: 'OLDKITID' },
       passkeys: [{ id: 'p1', credentialId: 'Y3JlZA' }],
-      emergency: [{ id: 'g1', state: 'confirmed', granteeId: null }],
+      emergency: [{ id: 'g1', state: 'confirmed', granteeId: null, granteeEmail: null, granteeBundle: null }],
       recovery: [{ space: 's1', keySeq: 4 }],
       deviceCopies: [{ deviceId: DEVICE }],
     });
@@ -153,8 +154,62 @@ describe('rotateKeys', () => {
       deviceCopy: { protection: 'web-crypto' },
     });
     expect(installs[0]?.kit).toBeUndefined();
-    expect(result.removed).toEqual({ passkeys: 1, emergency: 1, recovery: 1 });
+    expect(result.removed).toEqual({ passkeys: [{ id: 'p1', credentialId: 'Y3JlZA' }], emergency: 1, recovery: 1 });
     expect(result.kit).toBeNull();
+  });
+
+  it('seals the new root key to a contact whose bundle the person compared, and only to that one', async () => {
+    const GRANTEE = '00000000-0000-4000-8000-0000000000c1';
+    const OTHER = '00000000-0000-4000-8000-0000000000c2';
+    const bundle = makeBundleB64(GRANTEE);
+    const swapped = makeBundleB64(GRANTEE, 1, 0x33);
+    const grant = (id: string, granteeId: string, granteeBundle: string) => ({
+      id,
+      state: 'confirmed',
+      granteeId,
+      granteeEmail: `${id}@example.org`,
+      granteeBundle,
+    });
+    const held = plan({
+      emergency: [grant('kept', GRANTEE, bundle), grant('swapped', GRANTEE, swapped), grant('unseen', OTHER, bundle), grant('wrong-account', OTHER, makeBundleB64(GRANTEE))],
+    });
+    const { deps, installs } = setup({ plans: [held] });
+    const result = await rotateKeys(deps, {
+      email: 'sam@example.org',
+      password: 'pw',
+      makeKit: false,
+      // The person compared `bundle` for the first, the old bundle for the second (the server now
+      // serves another), and nothing for the third; the fourth names a bundle of another account.
+      emergencyKeep: { kept: bundle, swapped: bundle, 'wrong-account': makeBundleB64(GRANTEE) },
+    });
+    const request = installs[0];
+    expect(request?.emergency?.map((box) => box.id)).toEqual(['kept']);
+    expect(request?.dropEmergency?.sort()).toEqual(['swapped', 'unseen', 'wrong-account']);
+    expect(fakeCalls.filter((call) => call === 'rotationSealRootKey')).toHaveLength(1);
+    expect(result.removed.emergency).toBe(3);
+  });
+
+  it('seals a recovery enrolment to the key a verified chain gives, and removes the others', async () => {
+    const held = plan({
+      recovery: [
+        { space: '00000000-0000-4000-8000-0000000000e1', keySeq: 4 },
+        { space: '00000000-0000-4000-8000-0000000000e2', keySeq: 9 },
+      ],
+    });
+    const { deps, installs } = setup({ plans: [held] });
+    const recoveryKeys = vi.fn(async (space: string) =>
+      space.endsWith('e1') ? new Uint8Array(1600).fill(5) : undefined,
+    );
+    const result = await rotateKeys(
+      { ...deps, recoveryKeys },
+      { email: 'sam@example.org', password: 'pw', makeKit: false },
+    );
+    expect(installs[0]?.recovery).toEqual([
+      { space: '00000000-0000-4000-8000-0000000000e1', keySeq: 4, box: expect.any(String) },
+    ]);
+    expect(installs[0]?.dropRecovery).toEqual(['00000000-0000-4000-8000-0000000000e2']);
+    expect(recoveryKeys).toHaveBeenCalledWith('00000000-0000-4000-8000-0000000000e1', 4);
+    expect(result.removed.recovery).toBe(1);
   });
 
   it('asks nothing of a password an account without one does not have', async () => {

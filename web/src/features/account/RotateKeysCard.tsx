@@ -11,7 +11,18 @@ import { type KeyProof, ProofInput, proofBlank, proofValue } from './ProofInput'
 import type { RotationProgress } from './rotationModel';
 
 /** What the page knows of the account before it rotates: what the rotation removes. */
+export interface RotateContact {
+  id: string;
+  email: string;
+  /** The contact's bundle as the server serves it now, base64url. */
+  bundle: string;
+  /** Its fingerprint, worked out here, for the person to compare with the contact's own screen. */
+  fingerprint: string;
+}
+
 export interface RotateImpact {
+  /** Emergency contacts the person may keep by comparing their fingerprint. */
+  contacts: RotateContact[];
   passkeys: number;
   emergency: number;
   recovery: number;
@@ -23,7 +34,7 @@ export interface RotateImpact {
 export interface RotateDone {
   fingerprint: string;
   kit: { kitId: string; pieces: string[] } | null;
-  removed: { passkeys: number; emergency: number; recovery: number };
+  removed: { passkeys: Array<{ id: string; credentialId: string }>; emergency: number; recovery: number };
 }
 
 export interface RotateKeysProps {
@@ -38,7 +49,12 @@ export interface RotateKeysProps {
   done: RotateDone | null;
   actions: {
     /** Rotates; true when it was installed. */
-    start: (input: { password: string; makeKit: boolean; proof?: Proof }) => Promise<boolean>;
+    start: (input: {
+      password: string;
+      makeKit: boolean;
+      emergencyKeep: Record<string, string>;
+      proof?: Proof;
+    }) => Promise<boolean>;
     /** Mails the one-time code that proves the owner. */
     askProof: () => Promise<boolean>;
     dismiss: () => void;
@@ -52,11 +68,17 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
   const [password, setPassword] = useState('');
   const [makeKit, setMakeKit] = useState(true);
   const [proof, setProof] = useState<Proof>('');
+  const [compared, setCompared] = useState<Set<string>>(new Set());
 
   async function submit() {
+    const emergencyKeep: Record<string, string> = {};
+    for (const contact of impact?.contacts ?? []) {
+      if (compared.has(contact.id)) emergencyKeep[contact.id] = contact.bundle;
+    }
     const ok = await actions.start({
       password,
       makeKit,
+      emergencyKeep,
       ...(twoStep && !proofBlank(proof) ? { proof: proofValue(proof) } : {}),
     });
     if (ok) {
@@ -104,6 +126,26 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
             {impact.recovery > 0 ? <li>{t('security.rotate.recovery', { n: impact.recovery })}</li> : null}
             <li>{t('security.rotate.files')}</li>
           </ul>
+          {impact.contacts.map((contact) => (
+            <label className="check" key={contact.id}>
+              <input
+                type="checkbox"
+                checked={compared.has(contact.id)}
+                onChange={(event) =>
+                  setCompared((held) => {
+                    const next = new Set(held);
+                    if (event.target.checked) next.add(contact.id);
+                    else next.delete(contact.id);
+                    return next;
+                  })
+                }
+              />{' '}
+              {t('security.rotate.contact', { email: contact.email })}
+              <code className="mono" data-testid={`contact-fingerprint-`}>
+                {contact.fingerprint}
+              </code>
+            </label>
+          ))}
           <label className="check">
             <input type="checkbox" checked={makeKit} onChange={(event) => setMakeKit(event.target.checked)} />{' '}
             {impact.hasKit ? t('security.rotate.kitReplace') : t('security.rotate.kitMake')}
@@ -141,10 +183,10 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
       {done ? (
         <div className="panel-body kit-sheet" data-testid="rotated">
           <Notice tone="info">{t('security.rotate.done', { fingerprint: done.fingerprint })}</Notice>
-          {done.removed.passkeys + done.removed.emergency + done.removed.recovery > 0 ? (
+          {done.removed.passkeys.length + done.removed.emergency + done.removed.recovery > 0 ? (
             <Notice tone="warn">
               {t('security.rotate.removed', {
-                passkeys: done.removed.passkeys,
+                passkeys: done.removed.passkeys.length,
                 emergency: done.removed.emergency,
                 recovery: done.removed.recovery,
               })}

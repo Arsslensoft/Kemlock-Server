@@ -7,7 +7,7 @@ import { createSendsApi } from '@/api/sends';
 import { api, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { vaultCrypto } from '@/crypto-port';
-import { encodeB64 } from '@/lib/b64url';
+import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { manifestKeeper } from '@/manifest/instance';
 import { describeProfileError } from './profileErrors';
 import type { RotateDone, RotateImpact, RotateKeysProps } from './RotateKeysCard';
@@ -49,6 +49,26 @@ export function useRotateKeys(email: string, twoStep: boolean) {
     retry: false,
     enabled: email !== '',
   });
+  // Each emergency contact's fingerprint, worked out here from the bundle the server serves now.
+  const contacts = useQuery({
+    queryKey: ['security', 'rotation-contacts', plan.dataUpdatedAt],
+    enabled: plan.data !== undefined,
+    queryFn: async () =>
+      Promise.all(
+        (plan.data?.emergency ?? []).flatMap((grant) =>
+          grant.granteeBundle
+            ? [
+                (async () => ({
+                  id: grant.id,
+                  email: grant.granteeEmail ?? '',
+                  bundle: grant.granteeBundle as string,
+                  fingerprint: await vaultCrypto.fingerprint(decodeB64(grant.granteeBundle as string)),
+                }))(),
+              ]
+            : [],
+        ),
+      ),
+  });
   const { run, pending, error } = useRun(describeRotation);
   const keyProof = useKeyProof(run);
   const [progress, setProgress] = useState<RotationProgress | null>(null);
@@ -59,6 +79,7 @@ export function useRotateKeys(email: string, twoStep: boolean) {
     planError?.slug === 'compatible-account' ? 'compatible' : (plan.data?.spaces ?? 0) > 0 ? 'spaces' : null;
   const impact: RotateImpact | undefined = plan.data
     ? {
+        contacts: contacts.data ?? [],
         passkeys: plan.data.passkeys.length,
         emergency: plan.data.emergency.length,
         recovery: plan.data.recovery.length,
@@ -82,7 +103,7 @@ export function useRotateKeys(email: string, twoStep: boolean) {
           .then(() => true)
           .catch(() => false),
       dismiss: () => setDone(null),
-      start: async ({ password, makeKit, proof }) => {
+      start: async ({ password, makeKit, emergencyKeep, proof }) => {
         const { userId, deviceId } = state;
         if (!userId || !deviceId) return false;
         const deps: RotationDeps = {
@@ -99,7 +120,11 @@ export function useRotateKeys(email: string, twoStep: boolean) {
         };
         setProgress({ phase: 'plan', done: 0, total: 1 });
         const result = await run(() =>
-          rotateKeys(deps, { email, password, makeKit, ...(proof !== undefined ? { proof } : {}) }, setProgress),
+          rotateKeys(
+            deps,
+            { email, password, makeKit, emergencyKeep, ...(proof !== undefined ? { proof } : {}) },
+            setProgress,
+          ),
         );
         setProgress(null);
         if (!result) return false;

@@ -8,7 +8,7 @@ const PIECES = [1, 2, 3].map((n) => `BMCKIT1-NEWKIT22-23${n}-${'ABCD'.repeat(13)
 
 function card(over: Partial<RotateKeysProps> = {}) {
   const props: RotateKeysProps = {
-    impact: { passkeys: 0, emergency: 0, recovery: 0, hasKit: false, hasPassword: true },
+    impact: { contacts: [], passkeys: 0, emergency: 0, recovery: 0, hasKit: false, hasPassword: true },
     blocked: null,
     twoStep: false,
     busy: false,
@@ -27,12 +27,12 @@ function card(over: Partial<RotateKeysProps> = {}) {
 
 describe('RotateKeysCard', () => {
   it('explains what happens before it asks for anything', async () => {
-    card({ impact: { passkeys: 2, emergency: 1, recovery: 0, hasKit: true, hasPassword: true } });
+    card({ impact: { contacts: [], passkeys: 2, emergency: 1, recovery: 0, hasKit: true, hasPassword: true } });
     await userEvent.click(screen.getByRole('button', { name: 'Rotate keys' }));
     expect(screen.getByText(/deletes every copy of the old root key/)).toBeTruthy();
     expect(screen.getByText(/Every other device is signed out/)).toBeTruthy();
     expect(screen.getByText(/2 passkeys stop opening the vault/)).toBeTruthy();
-    expect(screen.getByText(/1 emergency contact has to be confirmed again/)).toBeTruthy();
+    expect(screen.getByText(/1 emergency contact is kept only if you compare/)).toBeTruthy();
     expect(screen.getByText(/keep their own keys/)).toBeTruthy();
     expect(screen.getByLabelText(/Replace my Recovery Kit/)).toBeTruthy();
   });
@@ -43,7 +43,7 @@ describe('RotateKeysCard', () => {
     await userEvent.type(screen.getByLabelText('Master password'), 'correct horse');
     await userEvent.click(screen.getByLabelText(/Make a new Recovery Kit/));
     await userEvent.click(screen.getByRole('button', { name: 'Rotate keys now' }));
-    expect(props.actions.start).toHaveBeenCalledWith({ password: 'correct horse', makeKit: false });
+    expect(props.actions.start).toHaveBeenCalledWith({ password: 'correct horse', makeKit: false, emergencyKeep: {} });
     expect(screen.queryByLabelText('Master password')).toBeNull();
   });
 
@@ -56,6 +56,26 @@ describe('RotateKeysCard', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Rotate keys now' }));
     expect(props.actions.start).toHaveBeenCalled();
     expect(screen.getByLabelText('Master password')).toBeTruthy();
+  });
+
+  it('keeps a contact only when their fingerprint was compared, and sends that very bundle', async () => {
+    const contacts = [
+      { id: 'g1', email: 'ann@example.org', bundle: 'QUJD', fingerprint: '11111 22222' },
+      { id: 'g2', email: 'bo@example.org', bundle: 'REVG', fingerprint: '33333 44444' },
+    ];
+    const props = card({
+      impact: { contacts, passkeys: 0, emergency: 2, recovery: 0, hasKit: false, hasPassword: true },
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Rotate keys' }));
+    expect(screen.getByTestId('contact-fingerprint-g1').textContent).toBe('11111 22222');
+    await userEvent.type(screen.getByLabelText('Master password'), 'pw');
+    await userEvent.click(screen.getByLabelText(/Keep ann@example.org/));
+    await userEvent.click(screen.getByRole('button', { name: 'Rotate keys now' }));
+    expect(props.actions.start).toHaveBeenCalledWith({
+      password: 'pw',
+      makeKit: true,
+      emergencyKeep: { g1: 'QUJD' },
+    });
   });
 
   it('cannot start without the password', async () => {
@@ -81,7 +101,7 @@ describe('RotateKeysCard', () => {
       done: {
         fingerprint: '11111 22222',
         kit: { kitId: 'NEWKIT22', pieces: PIECES },
-        removed: { passkeys: 1, emergency: 0, recovery: 0 },
+        removed: { passkeys: [{ id: 'p1', credentialId: 'Y3JlZA' }], emergency: 0, recovery: 0 },
       },
     });
     expect(screen.getByTestId('rotated')).toBeTruthy();
