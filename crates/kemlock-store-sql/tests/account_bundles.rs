@@ -78,17 +78,29 @@ async fn a_key_replacement_keeps_the_bundle_before_it() {
 }
 
 #[tokio::test]
-async fn a_version_kept_is_never_rewritten() {
+async fn the_current_version_is_the_accounts_row_and_a_version_kept_is_never_rewritten() {
     let store = memory().await;
     let ada = user(&unique_email("ada"));
     UserRepo::insert(&store, &ada).await.expect("insert");
     // Writing the account again with another bundle under the same version leaves the history as
-    // it was: a version names one bundle.
-    let forged = rotated(&ada, 1, 90);
-    UserRepo::update(&store, &forged).await.expect("update");
+    // it was, but a write is checked against the account's row, so the current version answers
+    // with that.
+    let other = rotated(&ada, 1, 90);
+    UserRepo::update(&store, &other).await.expect("update");
+    assert_eq!(
+        UserRepo::bundle_at(&store, ada.id, 1).await.expect("read"),
+        Some(stored(&other))
+    );
+    // Once the account moves on, the version before it is what the history kept first.
+    let next = rotated(&other, 2, 50);
+    UserRepo::update(&store, &next).await.expect("rotate");
     assert_eq!(
         UserRepo::bundle_at(&store, ada.id, 1).await.expect("read"),
         Some(stored(&ada))
+    );
+    assert_eq!(
+        UserRepo::bundle_at(&store, ada.id, 2).await.expect("read"),
+        Some(stored(&next))
     );
 }
 

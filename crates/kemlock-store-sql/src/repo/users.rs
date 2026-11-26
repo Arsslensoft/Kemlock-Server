@@ -52,34 +52,33 @@ impl UserRepo for SqlStore {
         id: UserId,
         key_version: u32,
     ) -> Result<Option<StoredBundle>, StoreError> {
-        let kept = account_bundles::Entity::find_by_id((id.0, i64::from(key_version)))
+        // The account's row is what a write is checked against now, so the current version is its
+        // row, whatever the history holds; the history answers for the versions before it.
+        if let Some(user) = self.by_id(id).await?
+            && user.key_version == key_version
+        {
+            return Ok((!user.public_bundle.is_empty()).then(|| StoredBundle {
+                key_version: user.key_version,
+                public_bundle: user.public_bundle,
+                bundle_signature: user.bundle_signature,
+            }));
+        }
+        account_bundles::Entity::find_by_id((id.0, i64::from(key_version)))
             .one(self.reader())
             .await
             .store()?
             .map(account_bundles::Model::into_stored)
-            .transpose()?;
-        if kept.is_some() {
-            return Ok(kept);
-        }
-        // A path that wrote the account's bundle without keeping it still has the current one.
-        Ok(self
-            .by_id(id)
-            .await?
-            .filter(|u| u.key_version == key_version && !u.public_bundle.is_empty())
-            .map(|u| StoredBundle {
-                key_version: u.key_version,
-                public_bundle: u.public_bundle,
-                bundle_signature: u.bundle_signature,
-            }))
+            .transpose()
     }
 
     async fn bundles_of(&self, id: UserId) -> Result<Vec<StoredBundle>, StoreError> {
         let mut all = account_bundles::all_of(self.reader(), id.0).await?;
+        // The current one is the account's row, as in `bundle_at`.
         if let Some(current) = self
             .bundle_at(id, self.by_id(id).await?.map_or(0, |u| u.key_version))
             .await?
-            && !all.iter().any(|b| b.key_version == current.key_version)
         {
+            all.retain(|b| b.key_version != current.key_version);
             all.push(current);
             all.sort_by_key(|b| b.key_version);
         }
