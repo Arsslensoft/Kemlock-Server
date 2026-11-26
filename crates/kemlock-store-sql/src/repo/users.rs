@@ -57,7 +57,7 @@ impl UserRepo for SqlStore {
         if let Some(user) = self.by_id(id).await?
             && user.key_version == key_version
         {
-            return Ok((!user.public_bundle.is_empty()).then(|| StoredBundle {
+            return Ok((!user.public_bundle.is_empty()).then_some(StoredBundle {
                 key_version: user.key_version,
                 public_bundle: user.public_bundle,
                 bundle_signature: user.bundle_signature,

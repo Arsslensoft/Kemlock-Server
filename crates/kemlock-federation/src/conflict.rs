@@ -288,7 +288,7 @@ mod tests {
         let base = v(1, 1, 10, 1, &[]);
         let head = v(1, 9, 20, 5, &[base.key]);
         let replay = v(2, 4, 99, 3, &[base.key]);
-        let m = merge_ranked(&[head.clone()], Some(head.key), &replay, Rank::Revision);
+        let m = merge_ranked(std::slice::from_ref(&head), Some(head.key), &replay, Rank::Revision);
         assert!(m.kept);
         assert!(!m.regressed);
         assert_eq!(m.head, head.key);
@@ -303,7 +303,7 @@ mod tests {
         );
         assert_eq!(m.head, head.key);
         // By clock alone, as servers that don't rank by revision do, the replay takes the head.
-        let m = merge(&[head.clone()], Some(head.key), &replay);
+        let m = merge(std::slice::from_ref(&head), Some(head.key), &replay);
         assert_eq!(m.head, replay.key);
     }
 
@@ -323,7 +323,7 @@ mod tests {
         let base = v(1, 1, 10, 1, &[]);
         let head = v(1, 9, 20, 5, &[base.key]);
         let replay = v(2, 4, 99, 3, &[head.key, base.key]);
-        let m = merge(&[head.clone()], Some(head.key), &replay);
+        let m = merge(std::slice::from_ref(&head), Some(head.key), &replay);
         assert!(!m.kept);
         assert!(m.regressed);
         assert_eq!(m.head, head.key);
@@ -331,7 +331,7 @@ mod tests {
         assert!(!m.head_changed);
         // The same revision doesn't replace it either.
         let same = v(2, 5, 99, 5, &[head.key]);
-        assert!(merge(&[head.clone()], Some(head.key), &same).regressed);
+        assert!(merge(std::slice::from_ref(&head), Some(head.key), &same).regressed);
     }
 
     #[test]
