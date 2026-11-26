@@ -7,12 +7,13 @@
 mod common;
 
 use common::{draft, external, file, memory, put, unique_email, user};
-use kemlock_app::devices::KeyCopyRepo;
+use kemlock_app::devices::{ApprovalRepo, KeyCopyRepo};
 use kemlock_app::passkeys::PasskeyRepo;
 use kemlock_app::ports::{DeviceRepo, ItemStore, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
-use kemlock_domain::unlock::{DeviceKeyCopy, KeyProtection};
+use kemlock_domain::DeviceKind;
+use kemlock_domain::unlock::{ApprovalId, ApprovalState, AuthRequest, DeviceKeyCopy, KeyProtection};
 use kemlock_domain::{
     DeviceId, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
 };
@@ -359,11 +360,49 @@ async fn wraps_written_through_the_repos_are_all_seen_and_replaced(store: &SqlSt
     assert_eq!((wrap.wrapped_key, wrap.key_version), (vec![3; 92], 2));
 }
 
+async fn an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store: &SqlStore) {
+    let sam = account(store).await;
+    let answered = AuthRequest {
+        id: ApprovalId::random(),
+        user: sam.id,
+        device: DeviceId::random(),
+        device_name: "Firefox on Linux".to_owned(),
+        device_kind: DeviceKind::KemlockWeb,
+        public_key: vec![7; 1600],
+        jkt: "jkt".to_owned(),
+        ip: "203.0.113.0/24".to_owned(),
+        state: ApprovalState::Approved,
+        sealed_key: Some(vec![5; 1700]),
+        answered_at: Some(T0),
+        created_at: T0,
+        expires_at: T0 + time::Duration::minutes(15),
+    };
+    let waiting = AuthRequest {
+        id: ApprovalId::random(),
+        state: ApprovalState::Pending,
+        sealed_key: None,
+        answered_at: None,
+        ..answered.clone()
+    };
+    for request in [&answered, &waiting] {
+        ApprovalRepo::insert_request(store, request)
+            .await
+            .expect("insert request");
+    }
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+    assert_eq!(ApprovalRepo::request(store, answered.id).await, Ok(None));
+    // A request that holds nothing is left as it was.
+    assert!(ApprovalRepo::request(store, waiting.id).await.expect("read").is_some());
+}
+
 async fn all(store: &SqlStore) {
     rotation(store).await;
     a_stale_account_row_writes_nothing(store).await;
     staging_is_per_attempt_and_can_be_abandoned(store).await;
     wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
+    an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
 }
 
 #[tokio::test]

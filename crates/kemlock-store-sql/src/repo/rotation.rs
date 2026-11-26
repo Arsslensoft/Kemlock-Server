@@ -14,7 +14,7 @@ use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::items::owner_parts;
 use crate::tables::{
-    device_key_copies, devices, emergency_access, items, passkeys, recovery_kits,
+    auth_requests, device_key_copies, devices, emergency_access, items, passkeys, recovery_kits,
     rotation_previous_keys, rotation_staged_items, sends, space_recovery, space_tables::members,
     users,
 };
@@ -573,6 +573,14 @@ impl SqlStore {
                 Err(err) => return Err(map_db(err).into()),
             }
         }
+
+        // A device approval answered with the old root key sealed to a new device's key, and not
+        // yet taken, is a wrap of it too.
+        db(auth_requests::Entity::delete_many()
+            .filter(auth_requests::Column::UserId.eq(user.0))
+            .filter(auth_requests::Column::SealedKey.is_not_null())
+            .exec(txn)
+            .await)?;
 
         // The old private keys, sealed under the new user key, until the spaces have moved.
         db(rotation_previous_keys::Entity::delete_many()
