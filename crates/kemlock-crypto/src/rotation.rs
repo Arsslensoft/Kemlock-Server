@@ -161,7 +161,12 @@ mod tests {
         Owner::user([0x22; 16])
     }
 
-    fn sealed_item(wrap: &SecretKey, version: u32, revision: u64, json: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    fn sealed_item(
+        wrap: &SecretKey,
+        version: u32,
+        revision: u64,
+        json: &[u8],
+    ) -> (Vec<u8>, Vec<u8>) {
         let key = SecretKey::generate();
         let ciphertext =
             kem1::seal_item(&key, &ID, revision, "login", &owner(), json).expect("seals");
@@ -177,7 +182,16 @@ mod tests {
         let (ciphertext, wrapped) = sealed_item(&old_wrap, 1, 4, json);
 
         let moved = reseal_item(
-            &old_wrap, 1, &new_wrap, 2, &ID, &owner(), "login", 4, &ciphertext, &wrapped,
+            &old_wrap,
+            1,
+            &new_wrap,
+            2,
+            &ID,
+            &owner(),
+            "login",
+            4,
+            &ciphertext,
+            &wrapped,
         )
         .expect("reseals");
         assert_eq!(moved.revision, 5);
@@ -197,7 +211,16 @@ mod tests {
         let (old_wrap, new_wrap) = (wrap_of(&old_root), wrap_of(&new_root));
         let (ciphertext, wrapped) = sealed_item(&old_wrap, 1, 1, b"{}");
         let moved = reseal_item(
-            &old_wrap, 1, &new_wrap, 2, &ID, &owner(), "login", 1, &ciphertext, &wrapped,
+            &old_wrap,
+            1,
+            &new_wrap,
+            2,
+            &ID,
+            &owner(),
+            "login",
+            1,
+            &ciphertext,
+            &wrapped,
         )
         .expect("reseals");
 
@@ -211,8 +234,15 @@ mod tests {
         let old_key = kem1::unwrap_item_key(&old_wrap, &wrapped, &ID, &owner(), 1).expect("opens");
         for revision in [1, 2] {
             assert!(
-                kem1::open_item(&old_key, &ID, revision, "login", &owner(), &moved.ciphertext)
-                    .is_err()
+                kem1::open_item(
+                    &old_key,
+                    &ID,
+                    revision,
+                    "login",
+                    &owner(),
+                    &moved.ciphertext
+                )
+                .is_err()
             );
         }
     }
@@ -224,7 +254,16 @@ mod tests {
         let (ciphertext, wrapped) = sealed_item(&old_wrap, 1, 3, b"{}");
         let try_it = |revision: u64, version: u32, kind: &str, wrapped: &[u8], ct: &[u8]| {
             reseal_item(
-                &old_wrap, version, &new_wrap, 2, &ID, &owner(), kind, revision, ct, wrapped,
+                &old_wrap,
+                version,
+                &new_wrap,
+                2,
+                &ID,
+                &owner(),
+                kind,
+                revision,
+                ct,
+                wrapped,
             )
         };
         assert!(try_it(3, 1, "login", &wrapped, &ciphertext).is_ok());
@@ -237,7 +276,16 @@ mod tests {
         let wrong = wrap_of(&RootKey::generate());
         assert!(
             reseal_item(
-                &wrong, 1, &new_wrap, 2, &ID, &owner(), "login", 3, &ciphertext, &wrapped
+                &wrong,
+                1,
+                &new_wrap,
+                2,
+                &ID,
+                &owner(),
+                "login",
+                3,
+                &ciphertext,
+                &wrapped
             )
             .is_err()
         );
@@ -271,14 +319,21 @@ mod tests {
         let (old_wrap, new_wrap) = (wrap_of(&old_root), wrap_of(&new_root));
         let link = send::generate_link_key();
         let sealed_key = send::wrap_link_key(&old_wrap, &link, &ID, 1).expect("wraps");
-        let meta =
-            send::seal_meta(&old_wrap, &ID, 1, Kind::Text, br#"{"name":"a","notes":"b"}"#)
-                .expect("seals");
+        let meta = send::seal_meta(
+            &old_wrap,
+            &ID,
+            1,
+            Kind::Text,
+            br#"{"name":"a","notes":"b"}"#,
+        )
+        .expect("seals");
 
-        let moved =
-            reseal_send(&old_wrap, &new_wrap, 2, &ID, Kind::Text, &sealed_key, &meta)
-                .expect("reseals");
-        assert_eq!(send::sealed_key_version(&moved.sealed_key).expect("version"), 2);
+        let moved = reseal_send(&old_wrap, &new_wrap, 2, &ID, Kind::Text, &sealed_key, &meta)
+            .expect("reseals");
+        assert_eq!(
+            send::sealed_key_version(&moved.sealed_key).expect("version"),
+            2
+        );
         let (opened, version) =
             send::unwrap_link_key(&new_wrap, &moved.sealed_key, &ID).expect("opens");
         assert_eq!(version, 2);
@@ -299,11 +354,17 @@ mod tests {
         let sealed_key = send::wrap_link_key(&old_wrap, &link, &ID, 1).expect("wraps");
         let meta = send::seal_meta(&old_wrap, &ID, 1, Kind::Text, b"{}").expect("seals");
         assert!(
-            reseal_send(&old_wrap, &new_wrap, 2, &[9; 16], Kind::Text, &sealed_key, &meta)
-                .is_err()
+            reseal_send(
+                &old_wrap,
+                &new_wrap,
+                2,
+                &[9; 16],
+                Kind::Text,
+                &sealed_key,
+                &meta
+            )
+            .is_err()
         );
-        assert!(
-            reseal_send(&old_wrap, &new_wrap, 2, &ID, Kind::File, &sealed_key, &meta).is_err()
-        );
+        assert!(reseal_send(&old_wrap, &new_wrap, 2, &ID, Kind::File, &sealed_key, &meta).is_err());
     }
 }

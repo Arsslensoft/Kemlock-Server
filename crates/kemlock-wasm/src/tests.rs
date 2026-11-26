@@ -2153,8 +2153,14 @@ fn a_rotation_moves_an_item_and_the_account_to_the_new_keys() {
     new_bundle
         .verify_self_signature(&started.bundle_signature)
         .expect("the new bundle is signed by its own key");
-    assert_ne!(new_bundle.kx1_public.as_bytes(), old_bundle.kx1_public.as_bytes());
-    assert_ne!(new_bundle.sig1_public.as_bytes(), old_bundle.sig1_public.as_bytes());
+    assert_ne!(
+        new_bundle.kx1_public.as_bytes(),
+        old_bundle.kx1_public.as_bytes()
+    );
+    assert_ne!(
+        new_bundle.sig1_public.as_bytes(),
+        old_bundle.sig1_public.as_bytes()
+    );
 
     let moved = session
         .rotation_reseal_item(&SealedItemRef {
@@ -2246,17 +2252,32 @@ fn a_rotation_wraps_the_new_root_key_and_the_old_wraps_stay_old() {
     // The password wrap and the PRF wrap are for the new root key and the new version.
     let root = password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, started.key_version)
         .expect("opens at the new version");
-    assert_eq!(&session.export_root().expect("root")[..], root.as_bytes().as_slice());
-    assert!(password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, FIRST_KEY_VERSION).is_err());
-    let from_prf =
-        kemlock_crypto::prf_wrap::open(&[7; 32], b"credential", &prf, &account, started.key_version)
-            .expect("the prf wrap opens");
+    assert_eq!(
+        &session.export_root().expect("root")[..],
+        root.as_bytes().as_slice()
+    );
+    assert!(
+        password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, FIRST_KEY_VERSION).is_err()
+    );
+    let from_prf = kemlock_crypto::prf_wrap::open(
+        &[7; 32],
+        b"credential",
+        &prf,
+        &account,
+        started.key_version,
+    )
+    .expect("the prf wrap opens");
     assert_eq!(from_prf.as_bytes(), root.as_bytes());
 
     // The new private keys open under the new user key; the old ones are kept sealed under it too.
     let user = root.user_key().expect("user key");
-    private_keys::open(&user, &started.sealed_private_keys, &account, started.key_version)
-        .expect("new keys");
+    private_keys::open(
+        &user,
+        &started.sealed_private_keys,
+        &account,
+        started.key_version,
+    )
+    .expect("new keys");
     private_keys::open(
         &user,
         &started.sealed_previous_private_keys,
@@ -2311,8 +2332,12 @@ fn a_rotation_that_was_not_started_does_nothing() {
 #[wasm_bindgen_test]
 fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
     let (mut session, _) = open_account([0xAB; 16]);
-    let anchor = session.seal_local("anchor/one", b"{\"seq\":3}").expect("seals");
-    let pin = session.seal_local("pin/one", b"11111 22222").expect("seals");
+    let anchor = session
+        .seal_local("anchor/one", b"{\"seq\":3}")
+        .expect("seals");
+    let pin = session
+        .seal_local("pin/one", b"11111 22222")
+        .expect("seals");
     // Nothing moves before a rotation is started.
     assert_eq!(
         session.rotation_reseal_local("anchor/one", &anchor),
@@ -2329,7 +2354,9 @@ fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
         session.rotation_reseal_local("anchor/two", &anchor),
         Err(Error::Invalid)
     );
-    let moved_pin = session.rotation_reseal_local("pin/one", &pin).expect("moves");
+    let moved_pin = session
+        .rotation_reseal_local("pin/one", &pin)
+        .expect("moves");
 
     session.rotation_commit().expect("commit");
     // Under the new keys the moved values open, bound to their labels; the old ones do not.
@@ -2346,5 +2373,8 @@ fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
         Err(Error::Invalid),
         "another label"
     );
-    assert_eq!(session.open_local("anchor/one", &anchor), Err(Error::Invalid));
+    assert_eq!(
+        session.open_local("anchor/one", &anchor),
+        Err(Error::Invalid)
+    );
 }

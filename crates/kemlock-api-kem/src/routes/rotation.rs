@@ -189,7 +189,9 @@ impl PlanDto {
             device_copies: holdings
                 .device_copies
                 .iter()
-                .map(|device| DeviceHeld { device_id: device.0 })
+                .map(|device| DeviceHeld {
+                    device_id: device.0,
+                })
                 .collect(),
             emergency: holdings
                 .emergency
@@ -369,7 +371,10 @@ impl InstallRequestDto {
     /// The request as the use case takes it, every value decoded.
     fn decoded(&self) -> Result<InstallRequest, Problem> {
         let kit = match &self.kit {
-            Some(kit) => Some((kit.kit_id.clone(), decode("kit.wrappedKey", &kit.wrapped_key)?)),
+            Some(kit) => Some((
+                kit.kit_id.clone(),
+                decode("kit.wrappedKey", &kit.wrapped_key)?,
+            )),
             None => None,
         };
         let device_copy = match &self.device_copy {
@@ -402,7 +407,12 @@ impl InstallRequestDto {
             passkeys: self
                 .passkeys
                 .iter()
-                .map(|p| Ok((PasskeyId(p.id), decode("passkeys.wrappedKey", &p.wrapped_key)?)))
+                .map(|p| {
+                    Ok((
+                        PasskeyId(p.id),
+                        decode("passkeys.wrappedKey", &p.wrapped_key)?,
+                    ))
+                })
                 .collect::<Result<_, Problem>>()?,
             drop_passkeys: self.drop_passkeys.iter().copied().map(PasskeyId).collect(),
             emergency: self
@@ -414,7 +424,13 @@ impl InstallRequestDto {
             recovery: self
                 .recovery
                 .iter()
-                .map(|r| Ok((SpaceId(r.space), r.key_seq, decode("recovery.box", &r.sealed)?)))
+                .map(|r| {
+                    Ok((
+                        SpaceId(r.space),
+                        r.key_seq,
+                        decode("recovery.box", &r.sealed)?,
+                    ))
+                })
                 .collect::<Result<_, Problem>>()?,
             drop_recovery: self.drop_recovery.iter().copied().map(SpaceId).collect(),
             sends: self

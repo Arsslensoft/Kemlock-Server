@@ -17,8 +17,8 @@
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
-use crate::platform::{Platform, random_uuid};
 use crate::notices::{KeysRotatedNotice, Notice, Notices};
+use crate::platform::{Platform, random_uuid};
 use crate::ports::{ItemStore, Notifier, StoreError, UserRepo};
 use crate::register::{
     BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN, SEALED_PRIVATE_KEYS_RANGE,
@@ -31,8 +31,8 @@ use kemlock_domain::unlock::{
     DeviceKeyCopy, EmergencyState, GrantId, KeyProtection, MAX_WRAPPED_KEY_LEN,
 };
 use kemlock_domain::{
-    AccountMode, ChangeId, DeviceId, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap, Revision, SpaceId, User,
-    UserId,
+    AccountMode, ChangeId, DeviceId, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap, Revision,
+    SpaceId, User, UserId,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -286,25 +286,53 @@ pub fn check_install(
     covers(
         "passkeys",
         &holdings.passkeys.iter().map(|(id, _)| id.0).collect(),
-        &request.passkeys.iter().map(|(id, _)| id.0).collect::<Vec<_>>(),
-        &request.drop_passkeys.iter().map(|id| id.0).collect::<Vec<_>>(),
+        &request
+            .passkeys
+            .iter()
+            .map(|(id, _)| id.0)
+            .collect::<Vec<_>>(),
+        &request
+            .drop_passkeys
+            .iter()
+            .map(|id| id.0)
+            .collect::<Vec<_>>(),
     )?;
     covers(
         "emergency grants",
         &holdings.emergency.iter().map(|(id, _, _)| id.0).collect(),
-        &request.emergency.iter().map(|(id, _)| id.0).collect::<Vec<_>>(),
-        &request.drop_emergency.iter().map(|id| id.0).collect::<Vec<_>>(),
+        &request
+            .emergency
+            .iter()
+            .map(|(id, _)| id.0)
+            .collect::<Vec<_>>(),
+        &request
+            .drop_emergency
+            .iter()
+            .map(|id| id.0)
+            .collect::<Vec<_>>(),
     )?;
     covers(
         "space recovery boxes",
         &holdings.recovery.iter().map(|(space, _)| space.0).collect(),
-        &request.recovery.iter().map(|(space, _, _)| space.0).collect::<Vec<_>>(),
-        &request.drop_recovery.iter().map(|space| space.0).collect::<Vec<_>>(),
+        &request
+            .recovery
+            .iter()
+            .map(|(space, _, _)| space.0)
+            .collect::<Vec<_>>(),
+        &request
+            .drop_recovery
+            .iter()
+            .map(|space| space.0)
+            .collect::<Vec<_>>(),
     )?;
     covers(
         "sends",
         &holdings.sends.iter().map(|(id, _)| id.0).collect(),
-        &request.sends.iter().map(|(id, _, _)| id.0).collect::<Vec<_>>(),
+        &request
+            .sends
+            .iter()
+            .map(|(id, _, _)| id.0)
+            .collect::<Vec<_>>(),
         &[],
     )?;
     // A box is sealed to one recovery key; one sealed to another is no replacement.
@@ -395,7 +423,11 @@ where
 {
     /// The account, if it can be rotated: it has keys and is not shared with the Bitwarden apps.
     async fn account(&self, user: UserId) -> Result<User, RotationError> {
-        let account = self.users.by_id(user).await?.ok_or(AppError::Unauthorized)?;
+        let account = self
+            .users
+            .by_id(user)
+            .await?
+            .ok_or(AppError::Unauthorized)?;
         if account.mode == AccountMode::Compatible {
             return Err(RotationError::CompatibleAccount);
         }
@@ -478,7 +510,11 @@ where
 
     /// What can be known without the account's holdings, before the password is spent: the
     /// account, the versions, and the shape of every value. Returns the account.
-    pub async fn check(&self, user: UserId, request: &InstallRequest) -> Result<User, RotationError> {
+    pub async fn check(
+        &self,
+        user: UserId,
+        request: &InstallRequest,
+    ) -> Result<User, RotationError> {
         let account = self.account(user).await?;
         if request.from_version != account.key_version
             || account.key_version.checked_add(1) != Some(request.to_version)
@@ -551,7 +587,8 @@ fn check_shapes(account: &User, request: &InstallRequest) -> Result<(), Rotation
     }
     check_bundle_signature(bundle, &request.bundle_signature)?;
     let old = &account.public_bundle;
-    if old.len() == BUNDLE_LEN && (old[37..1637] == bundle[37..1637] || old[1637..] == bundle[1637..])
+    if old.len() == BUNDLE_LEN
+        && (old[37..1637] == bundle[37..1637] || old[1637..] == bundle[1637..])
     {
         return Err(invalid("the key pair must be replaced"));
     }
@@ -562,7 +599,10 @@ fn check_shapes(account: &User, request: &InstallRequest) -> Result<(), Rotation
     }
 
     // The password wrap is there exactly when the account has a password wrap.
-    match (&request.wrapped_root_key, account.wrapped_root_key.is_empty()) {
+    match (
+        &request.wrapped_root_key,
+        account.wrapped_root_key.is_empty(),
+    ) {
         (Some(wrap), false) if wrap.len() == WRAPPED_ROOT_KEY_LEN => {}
         (None, true) => {}
         _ => return Err(invalid("the password wrap is missing, extra or malformed")),
@@ -611,9 +651,7 @@ fn check_shapes(account: &User, request: &InstallRequest) -> Result<(), Rotation
 }
 
 /// The calling device's copy as a row, for the store.
-pub fn device_copy_row(
-    install: &Install,
-) -> Option<DeviceKeyCopy> {
+pub fn device_copy_row(install: &Install) -> Option<DeviceKeyCopy> {
     install
         .request
         .device_copy
@@ -695,7 +733,10 @@ mod tests {
 
     #[test]
     fn an_empty_account_needs_nothing() {
-        assert_eq!(check_install(&install(request()), &Holdings::default(), &[]), Ok(()));
+        assert_eq!(
+            check_install(&install(request()), &Holdings::default(), &[]),
+            Ok(())
+        );
     }
 
     #[test]
@@ -782,7 +823,10 @@ mod tests {
             ..Holdings::default()
         };
         let staged = [(a, Revision(3)), (ItemId::random(), Revision(1))];
-        assert_eq!(check_install(&install(request()), &holdings, &staged), Ok(()));
+        assert_eq!(
+            check_install(&install(request()), &holdings, &staged),
+            Ok(())
+        );
     }
 
     #[test]

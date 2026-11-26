@@ -92,8 +92,13 @@ impl Session {
             sig1_public: sig_public,
         };
         let bundle_signature = bundle.sign(&sig_private)?;
-        let sealed_private_keys =
-            private_keys::seal(&user_key, &kx_private, &sig_private, &account_id, new_version)?;
+        let sealed_private_keys = private_keys::seal(
+            &user_key,
+            &kx_private,
+            &sig_private,
+            &account_id,
+            new_version,
+        )?;
         let sealed_previous_private_keys =
             private_keys::seal(&user_key, old_kx, old_sig, &account_id, old_version)?;
         let started = Started {
@@ -296,7 +301,11 @@ impl Session {
 
     /// Moves one value this browser keeps for the account (`seal_local`) from the key it is sealed
     /// under now to the new one, bound to the same label. Fails for a value that does not open now.
-    pub(crate) fn rotation_reseal_local(&self, label: &str, sealed: &[u8]) -> Result<Vec<u8>, Error> {
+    pub(crate) fn rotation_reseal_local(
+        &self,
+        label: &str,
+        sealed: &[u8],
+    ) -> Result<Vec<u8>, Error> {
         let account_id = self.unlocked()?.account_id;
         let pending = self.pending()?;
         let plain = Zeroizing::new(self.open_local(label, sealed)?);
@@ -332,12 +341,7 @@ impl Session {
         let key = if previous {
             &self.previous.as_ref().ok_or(Error::Invalid)?.private.1
         } else {
-            &self
-                .unlocked()?
-                .private
-                .as_ref()
-                .ok_or(Error::Locked)?
-                .1
+            &self.unlocked()?.private.as_ref().ok_or(Error::Locked)?.1
         };
         Ok(key.sign(context, message)?)
     }

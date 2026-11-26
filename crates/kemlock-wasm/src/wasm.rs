@@ -1432,7 +1432,11 @@ impl Vault {
     /// sign-in): base64url of the 92-byte password wrap at the new key version. Consumes both
     /// handles on success.
     #[wasm_bindgen(js_name = rotationWrapPassword)]
-    pub fn rotation_wrap_password(&mut self, master: u32, export_key: u32) -> Result<String, JsError> {
+    pub fn rotation_wrap_password(
+        &mut self,
+        master: u32,
+        export_key: u32,
+    ) -> Result<String, JsError> {
         let wrapped = self
             .session
             .rotation_wrap_password(master, export_key)
@@ -1443,7 +1447,11 @@ impl Vault {
     /// The new root key wrapped under a passkey's PRF output and credential id:
     /// `{wrappedKey, keyVersion}` at the new key version.
     #[wasm_bindgen(js_name = rotationPrfWrap)]
-    pub fn rotation_prf_wrap(&self, prf_output: &str, credential_id: &str) -> Result<String, JsError> {
+    pub fn rotation_prf_wrap(
+        &self,
+        prf_output: &str,
+        credential_id: &str,
+    ) -> Result<String, JsError> {
         let prf = b64::decode(prf_output).map_err(fail)?;
         let credential = b64::decode(credential_id).map_err(fail)?;
         let (wrapped, key_version) = self
@@ -1525,7 +1533,12 @@ impl Vault {
     /// A `sig1` signature over a space-chain signing input, by the key before the last rotation
     /// (`previous`) or the new one: the two signatures of a `rekey` record.
     #[wasm_bindgen(js_name = rotationSign)]
-    pub fn rotation_sign(&self, previous: bool, context: &str, message: &str) -> Result<String, JsError> {
+    pub fn rotation_sign(
+        &self,
+        previous: bool,
+        context: &str,
+        message: &str,
+    ) -> Result<String, JsError> {
         let message = b64::decode(message).map_err(fail)?;
         let signature = self
             .session

@@ -66,7 +66,9 @@ fn install_of(before: &User, request: InstallRequest) -> Install {
 
 async fn account(store: &SqlStore) -> User {
     let account = user(&unique_email("rotation"));
-    UserRepo::insert(store, &account).await.expect("insert user");
+    UserRepo::insert(store, &account)
+        .await
+        .expect("insert user");
     account
 }
 
@@ -97,55 +99,108 @@ async fn rotation(store: &SqlStore) {
         .expect("insert kit");
 
     // The holdings are what the plan shows.
-    let holdings = RotationStore::holdings(store, sam.id).await.expect("holdings");
+    let holdings = RotationStore::holdings(store, sam.id)
+        .await
+        .expect("holdings");
     assert_eq!(holdings.kit.as_deref(), Some("AAAAAAAA"));
     assert_eq!(holdings.live_items.len(), 2);
     assert_eq!(holdings.spaces, 0);
 
     // An install that stages one of two items is refused, and writes nothing at all.
     assert_eq!(
-        RotationStore::stage(store, sam.id, ROTATION, vec![staged(a, 1)], T0, T0 - time::Duration::hours(2))
-            .await,
+        RotationStore::stage(
+            store,
+            sam.id,
+            ROTATION,
+            vec![staged(a, 1)],
+            T0,
+            T0 - time::Duration::hours(2)
+        )
+        .await,
         Ok(1)
     );
     let refused = RotationStore::install(store, install_of(&sam, request())).await;
-    assert!(matches!(refused, Err(RotationError::Incomplete(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(RotationError::Incomplete(_))),
+        "{refused:?}"
+    );
     assert_eq!(
-        UserRepo::by_id(store, sam.id).await.expect("read").expect("account").key_version,
+        UserRepo::by_id(store, sam.id)
+            .await
+            .expect("read")
+            .expect("account")
+            .key_version,
         1
     );
-    assert_eq!(ItemStore::get(store, a).await.expect("read").expect("item").revision, Revision(1));
-    assert_eq!(store.recovery_kit(sam.id).await, Ok(Some(kit.clone())), "the kit is still there");
+    assert_eq!(
+        ItemStore::get(store, a)
+            .await
+            .expect("read")
+            .expect("item")
+            .revision,
+        Revision(1)
+    );
+    assert_eq!(
+        store.recovery_kit(sam.id).await,
+        Ok(Some(kit.clone())),
+        "the kit is still there"
+    );
 
     // Staging the rest and installing writes everything.
     assert_eq!(
-        RotationStore::stage(store, sam.id, ROTATION, vec![staged(a, 1), staged(b, 1)], T0, T0 - time::Duration::hours(2))
-            .await,
+        RotationStore::stage(
+            store,
+            sam.id,
+            ROTATION,
+            vec![staged(a, 1), staged(b, 1)],
+            T0,
+            T0 - time::Duration::hours(2)
+        )
+        .await,
         Ok(2)
     );
     let change = RotationStore::install(store, install_of(&sam, request()))
         .await
         .expect("the install");
-    assert!(change.is_some(), "the last item written names the change to nudge devices with");
-    let after = UserRepo::by_id(store, sam.id).await.expect("read").expect("account");
+    assert!(
+        change.is_some(),
+        "the last item written names the change to nudge devices with"
+    );
+    let after = UserRepo::by_id(store, sam.id)
+        .await
+        .expect("read")
+        .expect("account");
     assert_eq!(after.key_version, 2);
     assert_eq!(after.public_bundle, vec![8; 3621]);
     assert_eq!(after.wrapped_root_key, vec![12; 92]);
     assert_ne!(after.security_stamp, sam.security_stamp);
     for id in [a, b] {
-        let item = ItemStore::get(store, id).await.expect("read").expect("item");
+        let item = ItemStore::get(store, id)
+            .await
+            .expect("read")
+            .expect("item");
         assert_eq!(item.revision, Revision(2));
         assert_eq!(item.key_version, 2);
         assert_eq!(item.ciphertext, Some(vec![0x77; 60]));
     }
-    assert_eq!(store.recovery_kit(sam.id).await, Ok(None), "the old kit is gone");
+    assert_eq!(
+        store.recovery_kit(sam.id).await,
+        Ok(None),
+        "the old kit is gone"
+    );
     let previous = RotationStore::previous_keys(store, sam.id)
         .await
         .expect("read")
         .expect("the previous keys are kept");
     assert_eq!((previous.key_version, previous.sealed), (1, vec![11; 189]));
-    assert_eq!(RotationStore::clear_previous_keys(store, sam.id).await, Ok(true));
-    assert_eq!(RotationStore::clear_previous_keys(store, sam.id).await, Ok(false));
+    assert_eq!(
+        RotationStore::clear_previous_keys(store, sam.id).await,
+        Ok(true)
+    );
+    assert_eq!(
+        RotationStore::clear_previous_keys(store, sam.id).await,
+        Ok(false)
+    );
 
     // The staged rows are gone: installing again finds nothing staged and the items live.
     let again = RotationStore::install(
@@ -160,23 +215,40 @@ async fn rotation(store: &SqlStore) {
         ),
     )
     .await;
-    assert!(matches!(again, Err(RotationError::Incomplete(_))), "{again:?}");
+    assert!(
+        matches!(again, Err(RotationError::Incomplete(_))),
+        "{again:?}"
+    );
 }
 
 async fn a_stale_account_row_writes_nothing(store: &SqlStore) {
     let sam = account(store).await;
     let id = ItemId::random();
     put(store, draft(id, Owner::User(sam.id), None, 1)).await;
-    RotationStore::stage(store, sam.id, ROTATION, vec![staged(id, 1)], T0, T0 - time::Duration::hours(2))
-        .await
-        .expect("stage");
+    RotationStore::stage(
+        store,
+        sam.id,
+        ROTATION,
+        vec![staged(id, 1)],
+        T0,
+        T0 - time::Duration::hours(2),
+    )
+    .await
+    .expect("stage");
     // The account was written since it was read.
     let mut changed = sam.clone();
     changed.updated_at = datetime!(2026-12-01 00:00:00 UTC);
     UserRepo::update(store, &changed).await.expect("write");
     let result = RotationStore::install(store, install_of(&sam, request())).await;
     assert_eq!(result, Err(RotationError::AccountChanged));
-    assert_eq!(ItemStore::get(store, id).await.expect("read").expect("item").revision, Revision(1));
+    assert_eq!(
+        ItemStore::get(store, id)
+            .await
+            .expect("read")
+            .expect("item")
+            .revision,
+        Revision(1)
+    );
 }
 
 async fn staging_is_per_attempt_and_can_be_abandoned(store: &SqlStore) {
@@ -185,17 +257,48 @@ async fn staging_is_per_attempt_and_can_be_abandoned(store: &SqlStore) {
     let id = ItemId::random();
     put(store, draft(id, owner, None, 1)).await;
     let since = T0 - time::Duration::hours(2);
-    assert_eq!(RotationStore::stage(store, sam.id, ROTATION, vec![staged(id, 1)], T0, since).await, Ok(1));
+    assert_eq!(
+        RotationStore::stage(store, sam.id, ROTATION, vec![staged(id, 1)], T0, since).await,
+        Ok(1)
+    );
     // A second attempt discards the first's rows.
-    assert_eq!(RotationStore::stage(store, sam.id, [8; 16], vec![], T0, since).await, Ok(0));
+    assert_eq!(
+        RotationStore::stage(store, sam.id, [8; 16], vec![], T0, since).await,
+        Ok(0)
+    );
     // Staging the same item twice leaves one row.
-    assert_eq!(RotationStore::stage(store, sam.id, [8; 16], vec![staged(id, 1)], T0, since).await, Ok(1));
-    assert_eq!(RotationStore::stage(store, sam.id, [8; 16], vec![staged(id, 1)], T0, since).await, Ok(1));
-    RotationStore::discard(store, sam.id).await.expect("discard");
-    assert_eq!(RotationStore::stage(store, sam.id, [8; 16], vec![], T0, since).await, Ok(0));
+    assert_eq!(
+        RotationStore::stage(store, sam.id, [8; 16], vec![staged(id, 1)], T0, since).await,
+        Ok(1)
+    );
+    assert_eq!(
+        RotationStore::stage(store, sam.id, [8; 16], vec![staged(id, 1)], T0, since).await,
+        Ok(1)
+    );
+    RotationStore::discard(store, sam.id)
+        .await
+        .expect("discard");
+    assert_eq!(
+        RotationStore::stage(store, sam.id, [8; 16], vec![], T0, since).await,
+        Ok(0)
+    );
     // Rows that ran out are ignored and removed.
-    assert_eq!(RotationStore::stage(store, sam.id, [8; 16], vec![staged(id, 1)], T0 - time::Duration::hours(3), since).await, Ok(1));
-    assert_eq!(RotationStore::stage(store, sam.id, [8; 16], vec![], T0, since).await, Ok(0));
+    assert_eq!(
+        RotationStore::stage(
+            store,
+            sam.id,
+            [8; 16],
+            vec![staged(id, 1)],
+            T0 - time::Duration::hours(3),
+            since
+        )
+        .await,
+        Ok(1)
+    );
+    assert_eq!(
+        RotationStore::stage(store, sam.id, [8; 16], vec![], T0, since).await,
+        Ok(0)
+    );
 }
 
 async fn all(store: &SqlStore) {

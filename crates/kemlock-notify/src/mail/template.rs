@@ -12,8 +12,8 @@ use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
     BwEmergencyInviteNotice, BwOrgInviteNotice, EmailChangeNotice, EmailChangeRequestedNotice,
     EmailChangedNotice, EmailTakenNotice, InvitationNotice, KeysRotatedNotice, Notice,
-    PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice, TwoStepChangedNotice,
-    TwoStepCodeNotice, TwoStepRecoveredNotice,
+    PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice,
+    TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -1007,8 +1007,15 @@ mod tests {
             &brand(),
         );
         assert_eq!(rendered.to, "ada@example.com");
-        assert_eq!(rendered.subject, "The keys of your Kemlock account were rotated");
-        assert!(rendered.text.contains("2026-12-02 09:05 UTC"), "{}", rendered.text);
+        assert_eq!(
+            rendered.subject,
+            "The keys of your Kemlock account were rotated"
+        );
+        assert!(
+            rendered.text.contains("2026-12-02 09:05 UTC"),
+            "{}",
+            rendered.text
+        );
         assert!(rendered.text.contains("other devices were signed out"));
         assert!(rendered.text.contains("If it wasn't"));
     }

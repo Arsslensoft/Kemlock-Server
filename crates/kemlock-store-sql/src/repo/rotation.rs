@@ -15,8 +15,8 @@ use crate::store::SqlStore;
 use crate::tables::items::owner_parts;
 use crate::tables::{
     device_key_copies, devices, emergency_access, items, passkeys, recovery_kits,
-    rotation_previous_keys, rotation_staged_items, sends, space_recovery,
-    space_tables::members, users,
+    rotation_previous_keys, rotation_staged_items, sends, space_recovery, space_tables::members,
+    users,
 };
 use kemlock_app::ports::StoreError;
 use kemlock_app::rotation::{
@@ -26,8 +26,8 @@ use kemlock_app::rotation::{
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{
-    ChangeId, DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
-    UserId,
+    ChangeId, DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision,
+    SpaceId, UserId,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::{
@@ -372,9 +372,9 @@ impl SqlStore {
                 continue;
             };
             let base = Revision(u64::try_from(row.base_revision).unwrap_or(0));
-            let next = base
-                .next()
-                .ok_or_else(|| RotationError::Incomplete("items: a revision is spent".to_owned()))?;
+            let next = base.next().ok_or_else(|| {
+                RotationError::Incomplete("items: a revision is spent".to_owned())
+            })?;
             drafts.push(ItemDraft {
                 id: item.id,
                 owner: item.owner,
@@ -430,9 +430,11 @@ impl SqlStore {
                 key_version: request.to_version,
                 created_at: now,
             };
-            db(recovery_kits::Entity::insert(recovery_kits::active(user, &kit))
-                .exec(txn)
-                .await)?;
+            db(
+                recovery_kits::Entity::insert(recovery_kits::active(user, &kit))
+                    .exec(txn)
+                    .await,
+            )?;
         }
 
         // The passkeys' PRF wraps: replaced, or removed (the passkey stays).
@@ -457,9 +459,7 @@ impl SqlStore {
             };
             db(passkeys::Entity::update_many()
                 .set(row)
-                .filter(
-                    passkeys::Column::Id.is_in(request.drop_passkeys.iter().map(|id| id.0)),
-                )
+                .filter(passkeys::Column::Id.is_in(request.drop_passkeys.iter().map(|id| id.0)))
                 .filter(passkeys::Column::UserId.eq(user.0))
                 .exec(txn)
                 .await)?;
@@ -523,7 +523,11 @@ impl SqlStore {
         }
 
         // Every trusted-device copy of the old root key goes; the calling device's is new.
-        let device_ids: Vec<Uuid> = holdings.device_copies.iter().map(|device| device.0).collect();
+        let device_ids: Vec<Uuid> = holdings
+            .device_copies
+            .iter()
+            .map(|device| device.0)
+            .collect();
         if !device_ids.is_empty() {
             db(device_key_copies::Entity::delete_many()
                 .filter(device_key_copies::Column::DeviceId.is_in(device_ids))

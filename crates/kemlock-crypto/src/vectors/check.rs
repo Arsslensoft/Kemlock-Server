@@ -1583,7 +1583,6 @@ fn send_file<B: Backend>(doc: &Value) {
     }
 }
 
-
 fn rotation_wrap_of<B: Backend>(root: &[u8; 64]) -> SecretKey {
     RootKey::from_bytes(root)
         .user_key_in::<B>()
@@ -1674,8 +1673,14 @@ fn rotation_file<B: Backend>(doc: &Value) {
                 // Nothing of the old keys opens the new envelope.
                 for version in [old_version, new_version] {
                     assert!(
-                        kem1::unwrap_item_key_in::<B>(&old_wrap, &new_wrapped, &id, &owner, version)
-                            .is_err(),
+                        kem1::unwrap_item_key_in::<B>(
+                            &old_wrap,
+                            &new_wrapped,
+                            &id,
+                            &owner,
+                            version
+                        )
+                        .is_err(),
                         "{}",
                         B::NAME
                     );
@@ -1740,7 +1745,9 @@ fn rotation_file<B: Backend>(doc: &Value) {
                 .expect("the old sealed key opens");
                 assert_eq!(old_seen, old_version);
                 assert_eq!(old_opened.as_bytes(), link_key.as_bytes());
-                assert!(send::unwrap_link_key_in::<B>(&old_wrap, &new_sealed_key, &send_id).is_err());
+                assert!(
+                    send::unwrap_link_key_in::<B>(&old_wrap, &new_sealed_key, &send_id).is_err()
+                );
                 for version in [old_version, new_version] {
                     assert!(
                         send::open_meta_in::<B>(&old_wrap, &send_id, version, kind, &new_meta)
@@ -1776,17 +1783,33 @@ fn rotation_file<B: Backend>(doc: &Value) {
                         .is_err()
                 );
 
-                let opened =
-                    prf_wrap::open_in::<B>(&prf_output, &credential, &new_prf, &account, new_version)
-                        .expect("the new PRF wrap opens at the new version");
+                let opened = prf_wrap::open_in::<B>(
+                    &prf_output,
+                    &credential,
+                    &new_prf,
+                    &account,
+                    new_version,
+                )
+                .expect("the new PRF wrap opens at the new version");
                 assert_eq!(opened.as_bytes().as_slice(), new_root.as_slice());
-                let opened =
-                    prf_wrap::open_in::<B>(&prf_output, &credential, &old_prf, &account, old_version)
-                        .expect("the old PRF wrap opens at the old version");
+                let opened = prf_wrap::open_in::<B>(
+                    &prf_output,
+                    &credential,
+                    &old_prf,
+                    &account,
+                    old_version,
+                )
+                .expect("the old PRF wrap opens at the old version");
                 assert_eq!(opened.as_bytes().as_slice(), old_root.as_slice());
                 assert!(
-                    prf_wrap::open_in::<B>(&prf_output, &credential, &old_prf, &account, new_version)
-                        .is_err()
+                    prf_wrap::open_in::<B>(
+                        &prf_output,
+                        &credential,
+                        &old_prf,
+                        &account,
+                        new_version
+                    )
+                    .is_err()
                 );
             }
             "keys" => {
@@ -1811,7 +1834,10 @@ fn rotation_file<B: Backend>(doc: &Value) {
                 )
                 .expect("the new keys open under the new user key");
                 assert_eq!(kx.as_bytes().as_slice(), bytes(case, "new_kx1_private_key"));
-                assert_eq!(sig.as_bytes().as_slice(), bytes(case, "new_sig1_private_key"));
+                assert_eq!(
+                    sig.as_bytes().as_slice(),
+                    bytes(case, "new_sig1_private_key")
+                );
 
                 let (old_kx, old_sig) = private_keys::open_in::<B>(
                     &new_user,
@@ -1840,8 +1866,13 @@ fn rotation_file<B: Backend>(doc: &Value) {
                     ("sealed_previous_private_keys", old_version),
                 ] {
                     assert!(
-                        private_keys::open_in::<B>(&old_user, &bytes(case, sealed), &account, version)
-                            .is_err()
+                        private_keys::open_in::<B>(
+                            &old_user,
+                            &bytes(case, sealed),
+                            &account,
+                            version
+                        )
+                        .is_err()
                     );
                 }
             }

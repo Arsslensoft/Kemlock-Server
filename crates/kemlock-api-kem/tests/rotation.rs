@@ -259,7 +259,10 @@ async fn the_plan_says_what_the_account_holds() {
     // A contact is shown with the address and the bundle the server holds for them now.
     rig.repo.holdings.lock().expect("lock").emergency =
         vec![(GrantId::random(), EmergencyState::Confirmed, Some(sam.id))];
-    let plan = sam.call("GET", "/kem/v1/account/rotation", None).await.json();
+    let plan = sam
+        .call("GET", "/kem/v1/account/rotation", None)
+        .await
+        .json();
     assert_eq!(plan["emergency"][0]["granteeEmail"], EMAIL);
     assert!(plan["emergency"][0]["granteeBundle"].is_string(), "{plan}");
     assert!(plan["previousKeys"].is_null());
@@ -274,7 +277,9 @@ async fn an_install_needs_the_password_and_every_wrap_named() {
     let mut body = sam.install_body().await;
     body.as_object_mut().expect("object").remove("loginState");
     body.as_object_mut().expect("object").remove("finalization");
-    let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    let reply = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{:?}", reply.body);
 
     // A passkey wrap the request names nowhere is refused, whole.
@@ -314,7 +319,9 @@ async fn a_stale_version_or_an_unchanged_key_pair_is_refused() {
     let mut body = sam.install_body().await;
     body["fromVersion"] = json!(2);
     body["toVersion"] = json!(3);
-    let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    let reply = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body))
+        .await;
     assert_eq!(reply.problem(), "rotation-stale-version");
 
     // The registered bundle again, at the next version, would keep the old pair.
@@ -324,14 +331,17 @@ async fn a_stale_version_or_an_unchanged_key_pair_is_refused() {
         let old = kemlock_crypto::bundle::Bundle {
             account_id: *sam.id.as_bytes(),
             key_version: 2,
-            kx1_public: kemlock_crypto::kx1::PublicKey::from_bytes(&[0x42; 1600]).expect("a length"),
+            kx1_public: kemlock_crypto::kx1::PublicKey::from_bytes(&[0x42; 1600])
+                .expect("a length"),
             sig1_public: key.public_key().expect("a public key"),
         };
         (old.to_bytes(), old.sign(&key).expect("signs"))
     };
     body["publicBundle"] = json!(b64(&same_pair));
     body["bundleSignature"] = json!(b64(&signature));
-    let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    let reply = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body))
+        .await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{:?}", reply.body);
     assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
 }
@@ -361,7 +371,9 @@ async fn an_install_replaces_the_keys_and_ends_every_other_session() {
     // The account is told, by mail, with no key in it.
     let mails = rig.mailbox.0.lock().expect("the lock");
     assert!(
-        mails.iter().any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
+        mails
+            .iter()
+            .any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
         "{mails:?}"
     );
     drop(mails);
@@ -390,7 +402,12 @@ async fn staging_and_abandoning() {
             Some(json!({"rotationId": b64(&[7u8; 16]), "toVersion": 2, "items": []})),
         )
         .await;
-    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "an empty batch: {:?}", reply.body);
+    assert_eq!(
+        reply.status,
+        StatusCode::BAD_REQUEST,
+        "an empty batch: {:?}",
+        reply.body
+    );
     let reply = sam.call("DELETE", "/kem/v1/account/rotation", None).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let reply = sam
