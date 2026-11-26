@@ -250,7 +250,10 @@ async fn a_sealed_write_must_name_the_accounts_current_key_version() {
         .execute(&who, write(user, id, Some(1), 2))
         .await;
     assert!(matches!(stale, Err(AppError::Invalid(_))), "{stale:?}");
-    assert_eq!(world.store.item(id).map(|item| item.revision), Some(Revision(1)));
+    assert_eq!(
+        world.store.item(id).map(|item| item.revision),
+        Some(Revision(1))
+    );
 
     let current = kemlock_domain::ItemWrite {
         key_version: 2,

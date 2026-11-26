@@ -336,13 +336,18 @@ async fn wraps_written_through_the_repos_are_all_seen_and_replaced(store: &SqlSt
     PasskeyRepo::insert_passkey(store, &passkey)
         .await
         .expect("passkey");
-    let held = RotationStore::holdings(store, sam.id).await.expect("holdings");
+    let held = RotationStore::holdings(store, sam.id)
+        .await
+        .expect("holdings");
     assert_eq!(held.device_copies, vec![phone.id]);
     assert_eq!(held.passkeys.len(), 1);
 
     // Not naming the passkey is refused; naming it replaces its wrap and the device copy goes.
     let refused = RotationStore::install(store, install_of(&sam, request())).await;
-    assert!(matches!(refused, Err(RotationError::Incomplete(_))), "{refused:?}");
+    assert!(
+        matches!(refused, Err(RotationError::Incomplete(_))),
+        "{refused:?}"
+    );
     assert!(store.key_copy(phone.id).await.expect("read").is_some());
     let named = InstallRequest {
         passkeys: vec![(passkey.id, vec![3; 92])],
@@ -391,7 +396,12 @@ async fn an_approval_that_holds_the_old_root_key_does_not_survive_the_install(st
         .expect("the install");
     assert_eq!(ApprovalRepo::request(store, answered.id).await, Ok(None));
     // A request that holds nothing is left as it was.
-    assert!(ApprovalRepo::request(store, waiting.id).await.expect("read").is_some());
+    assert!(
+        ApprovalRepo::request(store, waiting.id)
+            .await
+            .expect("read")
+            .is_some()
+    );
 }
 
 async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &SqlStore) {
@@ -410,11 +420,18 @@ async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &
     grant
         .confirm(vec![3; SEALED_BOX_OVERHEAD + 64], T0)
         .expect("confirmed");
-    EmergencyRepo::insert_grant(store, &grant).await.expect("grant");
+    EmergencyRepo::insert_grant(store, &grant)
+        .await
+        .expect("grant");
 
-    let held = RotationStore::holdings(store, sam.id).await.expect("holdings");
+    let held = RotationStore::holdings(store, sam.id)
+        .await
+        .expect("holdings");
     assert_eq!(held.as_contact, vec![(grant.id, EmergencyState::Confirmed)]);
-    assert!(held.emergency.is_empty(), "the account holds no box of its own for it");
+    assert!(
+        held.emergency.is_empty(),
+        "the account holds no box of its own for it"
+    );
 
     RotationStore::install(store, install_of(&sam, request()))
         .await

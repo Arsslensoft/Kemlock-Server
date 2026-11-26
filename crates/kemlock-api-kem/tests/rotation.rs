@@ -72,7 +72,6 @@ impl RotationStore for FakeRotation {
     }
 
     async fn discard(&self, _user: UserId) -> Result<(), StoreError> {
-
         Ok(())
     }
 
@@ -281,7 +280,10 @@ async fn the_plan_says_what_the_account_holds() {
     // A grant that names the account as the contact is listed: it waits for a new confirmation.
     rig.repo.holdings.lock().expect("lock").as_contact =
         vec![(GrantId::random(), EmergencyState::Approved)];
-    let plan = sam.call("GET", "/kem/v1/account/rotation", None).await.json();
+    let plan = sam
+        .call("GET", "/kem/v1/account/rotation", None)
+        .await
+        .json();
     assert_eq!(plan["asContact"][0]["state"], "approved");
     assert!(plan["previousKeys"].is_null());
 }
@@ -430,7 +432,11 @@ async fn staging_and_abandoning() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     // Deleting the previous keys takes the password again, as the rotation did.
     let bare = sam
-        .call("DELETE", "/kem/v1/account/rotation/previous-keys", Some(json!({})))
+        .call(
+            "DELETE",
+            "/kem/v1/account/rotation/previous-keys",
+            Some(json!({})),
+        )
         .await;
     assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.body);
     let reply = sam
@@ -475,15 +481,14 @@ impl kemlock_app::federation_view::FederationView for FakeFed {
         Result<Option<kemlock_app::federation_view::VaultServers>, StoreError>,
     > {
         Box::pin(async move {
-            Ok(self
-                .shared
-                .load(Ordering::Relaxed)
-                .then(|| kemlock_app::federation_view::VaultServers {
+            Ok(self.shared.load(Ordering::Relaxed).then(|| {
+                kemlock_app::federation_view::VaultServers {
                     vault,
                     epoch: 1,
                     servers: Vec::new(),
                     promotion: None,
-                }))
+                }
+            }))
         })
     }
 
@@ -543,7 +548,11 @@ async fn a_federated_account_is_refused_by_every_rotation_route() {
             let body = (method == "PUT")
                 .then(|| json!({"rotationId": b64(&[7u8; 16]), "toVersion": 2, "items": []}));
             let reply = sam.call(method, uri, body).await;
-            assert_eq!(reply.status, StatusCode::CONFLICT, "{method} {uri} {replica} {shared}");
+            assert_eq!(
+                reply.status,
+                StatusCode::CONFLICT,
+                "{method} {uri} {replica} {shared}"
+            );
             assert_eq!(reply.problem(), "rotation-federated");
         }
         let install = sam
@@ -573,7 +582,9 @@ async fn a_refused_install_does_not_spend_the_password() {
     assert!(*rig.repo.snapshots.lock().expect("lock") >= 1);
 
     *rig.repo.holdings.lock().expect("lock") = Holdings::default();
-    let again = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    let again = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body))
+        .await;
     assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
 }
 
@@ -604,7 +615,9 @@ async fn an_account_with_no_password_needs_a_passkey_answer_not_a_session() {
     }
     // An answer that is no assertion of this account's passkey is refused too, and nothing is written.
     body["proof"] = json!({"webauthn": {"id": "AAAA"}});
-    let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    let reply = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body))
+        .await;
     assert_ne!(reply.status, StatusCode::OK, "{:?}", reply.body);
     assert_eq!(*rig.repo.installs.lock().expect("lock"), 0);
     assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
@@ -622,8 +635,15 @@ async fn the_sealed_private_keys_are_exactly_the_size_the_format_makes() {
     ] {
         let mut body = sam.install_body().await;
         body[field] = json!(b64(&vec![0x22u8; len]));
-        let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
-        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{field} {len}: {:?}", reply.body);
+        let reply = sam
+            .call("POST", "/kem/v1/account/rotation", Some(body))
+            .await;
+        assert_eq!(
+            reply.status,
+            StatusCode::BAD_REQUEST,
+            "{field} {len}: {:?}",
+            reply.body
+        );
     }
     assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
 }

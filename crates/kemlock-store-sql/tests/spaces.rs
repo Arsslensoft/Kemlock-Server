@@ -1245,7 +1245,10 @@ async fn a_rotation_keeps_the_old_keys_for_an_account_in_a_space_and_waits_for_t
     );
 
     // Once the space has moved, the keys are dropped and the next rotation goes through.
-    assert_eq!(Rotations::clear_previous_keys(&store, owner.id).await, Ok(true));
+    assert_eq!(
+        Rotations::clear_previous_keys(&store, owner.id).await,
+        Ok(true)
+    );
     let after = UserRepo::by_id(&store, owner.id)
         .await
         .expect("read")

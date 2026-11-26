@@ -392,7 +392,6 @@ pub(crate) struct FinishSpacesRequest {
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RotatedDto {
-
     /// The account's key version now.
     key_version: u32,
     /// New tokens for the device that asked, bound to its DPoP key: the new security stamp ended
@@ -594,11 +593,7 @@ where
 
 /// Spends the password and the proof. With a second step on, the password alone is not enough: a
 /// stolen session and a guessed password must not replace the account's keys.
-async fn spend<S, P, K>(
-    api: &Api<S, P, K>,
-    authed: &Authed,
-    gate: Gate<'_>,
-) -> Result<(), Problem>
+async fn spend<S, P, K>(api: &Api<S, P, K>, authed: &Authed, gate: Gate<'_>) -> Result<(), Problem>
 where
     S: Store,
     P: Crypto,

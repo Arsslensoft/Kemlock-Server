@@ -6,8 +6,8 @@ use crate::store::SqlStore;
 use crate::tables::{device_key_copies, devices};
 use kemlock_app::devices::KeyCopyRepo;
 use kemlock_app::ports::StoreError;
-use kemlock_domain::{DeviceId, UserId};
 use kemlock_domain::unlock::DeviceKeyCopy;
+use kemlock_domain::{DeviceId, UserId};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 

@@ -2387,5 +2387,8 @@ fn committing_without_the_private_keys_takes_nothing() {
     assert_eq!(session.rotation_commit(), Err(Error::Locked));
     assert_eq!(session.rotation_start().err(), Some(Error::Locked));
     // And the root key it holds is still the one it was opened with.
-    assert_eq!(&session.export_root().expect("root")[..], root.as_bytes().as_slice());
+    assert_eq!(
+        &session.export_root().expect("root")[..],
+        root.as_bytes().as_slice()
+    );
 }

@@ -7,10 +7,10 @@
 //! first to commit.
 
 use crate::error::StoreResult;
+use crate::store::SqlStore;
 use crate::tables::space_tables::spaces;
 use crate::tables::users;
 use kemlock_app::ports::StoreError;
-use crate::store::SqlStore;
 use kemlock_domain::{Owner, UserId};
 use sea_orm::{
     ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait, QuerySelect, TransactionTrait,

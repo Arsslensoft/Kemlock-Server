@@ -21,8 +21,7 @@ use crate::notices::{KeysRotatedNotice, Notice, Notices};
 use crate::platform::{Platform, random_uuid};
 use crate::ports::{ItemStore, Notifier, StoreError, UserRepo};
 use crate::register::{
-    BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN,
-    WRAPPED_ROOT_KEY_LEN, check_bundle_signature,
+    BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN, WRAPPED_ROOT_KEY_LEN, check_bundle_signature,
 };
 use kemlock_crypto::private_keys::SEALED_LEN as SEALED_PRIVATE_KEYS_LEN;
 use kemlock_crypto::recovery_kit::{WRAPPED_LEN as KIT_WRAP_LEN, is_kit_id};
@@ -239,8 +238,7 @@ pub trait RotationStore: Send + Sync {
         since: OffsetDateTime,
     ) -> impl Future<Output = Result<(Holdings, Vec<(ItemId, Revision)>), StoreError>> + Send;
 
-    /// Stages `items` for `rotation`: a row for the same item is replaced;
- rows of another
+    /// Stages `items` for `rotation`: a row for the same item is replaced; rows of another
     /// rotation, or staged before `since`, are deleted first. Returns how many rows the rotation
     /// has staged now.
     fn stage(
@@ -588,8 +586,7 @@ where
         check_install(&install, &holdings, &staged)
     }
 
-    /// Installs the rotation. `actor` is the signed-in device.
- Returns the account as it is now.
+    /// Installs the rotation. `actor` is the signed-in device. Returns the account as it is now.
     pub async fn install(
         &self,
         actor: &Actor,
@@ -885,7 +882,10 @@ mod tests {
         let live: Vec<_> = (0..=MAX_ROTATION_ITEMS)
             .map(|n| item(ItemId::random(), n as u64 + 1))
             .collect();
-        let staged: Vec<_> = live.iter().map(|(id, revision, _)| (*id, *revision)).collect();
+        let staged: Vec<_> = live
+            .iter()
+            .map(|(id, revision, _)| (*id, *revision))
+            .collect();
         let holdings = Holdings {
             live_items: live,
             ..Holdings::default()
