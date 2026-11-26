@@ -10,6 +10,13 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+### Changed
+
+- A member who seals a space key or collection key to someone now signs the box, for spaces with no
+  chain, and the server refuses a key without the signature (docs/crypto.md, "Signed key boxes").
+  Apps that seal keys must send it. Federated spaces carry the signature in new optional fields, so
+  **upgrade every replica before its home**: an older replica refuses those records.
+
 ## [0.1.4] - 2026-11-26
 
 ### Added

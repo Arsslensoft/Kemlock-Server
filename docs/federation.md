@@ -633,7 +633,13 @@ space key and confirmation), `space-group`, `space-collection` (with its grants 
 `space-keys` (the collection keys sealed to one member), `space-policies` and `space-held` (the ids of
 the live items a key replacement left held, the whole set each time: a replica replaces its own set
 with it, so it keeps the same held state and never serves a held item as live; made only for a
-space that has held items or had them). A revoked or removed
+space that has held items or had them). From the release that signs key boxes (docs/crypto.md,
+"Signed key boxes"), a `space-member` record may carry field 12 (who sealed the space key, and their
+signature) and each key copy of a `space-keys` record a fourth part (the same for that copy); both
+are left out when nobody signed the copy. A peer that predates it refuses a record with either as
+malformed, so **upgrade every replica before its home**: a home that signs boxes sends the new fields
+to every peer, and an older replica then refuses those records and stops applying that space. A
+revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
