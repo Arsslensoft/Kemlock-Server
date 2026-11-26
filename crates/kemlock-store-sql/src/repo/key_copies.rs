@@ -1,14 +1,15 @@
 //! `KeyCopyRepo` on `device_key_copies`.
 
 use crate::error::{StoreResult, is_unique_violation, map_db};
+use crate::owner_lock::begin_locked;
 use crate::store::SqlStore;
-use crate::tables::device_key_copies;
+use crate::tables::{device_key_copies, devices};
 use kemlock_app::devices::KeyCopyRepo;
 use kemlock_app::ports::StoreError;
-use kemlock_domain::DeviceId;
+use kemlock_domain::{DeviceId, UserId};
 use kemlock_domain::unlock::DeviceKeyCopy;
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
 
 impl KeyCopyRepo for SqlStore {
     async fn key_copy(&self, device: DeviceId) -> Result<Option<DeviceKeyCopy>, StoreError> {
@@ -30,10 +31,25 @@ impl KeyCopyRepo for SqlStore {
                 device_key_copies::Column::UpdatedAt,
             ])
             .to_owned();
+        // The copy is a wrap of the root key: written under the lock of the device's account. A
+        // device that doesn't exist has none, and the foreign key refuses the row as before.
+        let account = devices::Entity::find_by_id(copy.device.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .map(|device| UserId(device.user_id));
+        let txn = match account {
+            Some(user) => begin_locked(self, user).await?,
+            None => self.writer().begin().await.store()?,
+        };
         let inserted = device_key_copies::Entity::insert(device_key_copies::active(copy))
             .on_conflict(conflict)
-            .exec(self.writer())
+            .exec(&txn)
             .await;
+        let inserted = match inserted {
+            Ok(_) => txn.commit().await,
+            Err(err) => Err(err),
+        };
         match inserted {
             Ok(_) => Ok(()),
             // MySQL counts a replaced row with identical values as zero rows affected.

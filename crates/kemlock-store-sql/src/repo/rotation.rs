@@ -8,7 +8,7 @@
 //! The items go through `items::write_in`, the write every item write goes through, so they get
 //! their change ids, their tags cleared and the same checks as any write.
 
-use super::items::write_in;
+use super::items::{lock_meta, write_in};
 use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
@@ -316,7 +316,14 @@ impl SqlStore {
         let user = install.before.id;
         let now = install.now;
 
-        // The account first: conditional on the row as it was read, and it takes the row's lock.
+        // Item writes queue on the `server_meta` lock, and every write of a wrap of the root key
+        // takes the account's row lock (`owner_lock::begin_locked`). Take the first now, and the
+        // second with the conditional write of the account's row below, before anything is read:
+        // a write that began earlier has committed by then and is seen by what is read; one that
+        // begins later waits for this transaction.
+        lock_meta(txn).await?;
+
+        // The account: conditional on the row as it was read, and it takes the row's lock.
         let row = users::ActiveModel {
             wrapped_root_key: Set(install.after.wrapped_root_key.clone()),
             public_bundle: Set(install.after.public_bundle.clone()),

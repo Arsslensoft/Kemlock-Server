@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::begin_locked;
 use crate::store::SqlStore;
 use crate::tables::emergency_access;
 use kemlock_app::emergency::EmergencyRepo;
@@ -80,13 +81,16 @@ impl EmergencyRepo for SqlStore {
             created_at: NotSet,
             updated_at: Set(utc(grant.updated_at)),
         };
+        // The grant may hold a box of the grantor's root key: written under the grantor's lock.
+        let txn = begin_locked(self, grant.grantor).await?;
         let result = emergency_access::Entity::update_many()
             .set(mutable)
             .filter(emergency_access::Column::Id.eq(grant.id.0))
             .filter(emergency_access::Column::State.eq(from.as_str()))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
+        txn.commit().await.store()?;
         Ok(result.rows_affected == 1)
     }
 

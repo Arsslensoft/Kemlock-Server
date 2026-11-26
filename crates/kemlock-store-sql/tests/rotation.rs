@@ -7,10 +7,15 @@
 mod common;
 
 use common::{draft, external, file, memory, put, unique_email, user};
-use kemlock_app::ports::{ItemStore, UserRepo};
+use kemlock_app::devices::KeyCopyRepo;
+use kemlock_app::passkeys::PasskeyRepo;
+use kemlock_app::ports::{DeviceRepo, ItemStore, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
-use kemlock_domain::{DeviceId, ItemId, Owner, RecoveryKit, Revision, User};
+use kemlock_domain::unlock::{DeviceKeyCopy, KeyProtection};
+use kemlock_domain::{
+    DeviceId, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
+};
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
 use time::macros::datetime;
@@ -301,10 +306,64 @@ async fn staging_is_per_attempt_and_can_be_abandoned(store: &SqlStore) {
     );
 }
 
+async fn wraps_written_through_the_repos_are_all_seen_and_replaced(store: &SqlStore) {
+    let sam = account(store).await;
+    // A device copy, a passkey with a PRF wrap and a kit, each written the way the routes write
+    // them (each under the account's lock), are what the install must find and replace.
+    let phone = common::device(sam.id, "phone", T0);
+    DeviceRepo::upsert(store, &phone).await.expect("device");
+    store
+        .put_key_copy(&DeviceKeyCopy {
+            device: phone.id,
+            wrapped_key: vec![1; 80],
+            protection: KeyProtection::WebCrypto,
+            created_at: T0,
+            updated_at: T0,
+        })
+        .await
+        .expect("copy");
+    let passkey = Passkey {
+        id: PasskeyId::random(),
+        user: sam.id,
+        credential_id: vec![9; 24],
+        name: "key".to_owned(),
+        credential: vec![8; 32],
+        prf_wrap: Some(PrfWrap {
+            wrapped_key: vec![2; 92],
+            key_version: 1,
+        }),
+        created_at: T0,
+        last_used_at: None,
+    };
+    PasskeyRepo::insert_passkey(store, &passkey)
+        .await
+        .expect("passkey");
+    let held = RotationStore::holdings(store, sam.id).await.expect("holdings");
+    assert_eq!(held.device_copies, vec![phone.id]);
+    assert_eq!(held.passkeys.len(), 1);
+
+    // Not naming the passkey is refused; naming it replaces its wrap and the device copy goes.
+    let refused = RotationStore::install(store, install_of(&sam, request())).await;
+    assert!(matches!(refused, Err(RotationError::Incomplete(_))), "{refused:?}");
+    assert!(store.key_copy(phone.id).await.expect("read").is_some());
+    let named = InstallRequest {
+        passkeys: vec![(passkey.id, vec![3; 92])],
+        ..request()
+    };
+    RotationStore::install(store, install_of(&sam, named))
+        .await
+        .expect("the install");
+    assert_eq!(store.key_copy(phone.id).await, Ok(None));
+    let after = PasskeyRepo::passkeys_of(store, sam.id).await.expect("read");
+    let wrap = after[0].prf_wrap.clone().expect("a wrap");
+    assert_eq!((wrap.wrapped_key, wrap.key_version), (vec![3; 92], 2));
+}
+
 async fn all(store: &SqlStore) {
     rotation(store).await;
     a_stale_account_row_writes_nothing(store).await;
     staging_is_per_attempt_and_can_be_abandoned(store).await;
+    wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
 }
 
 #[tokio::test]
