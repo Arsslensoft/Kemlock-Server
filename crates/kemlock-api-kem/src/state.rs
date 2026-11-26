@@ -13,6 +13,7 @@ use kemlock_app::ports::{
     Totp, TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::PrivacyLog;
+use kemlock_app::second_step_guard::SecondStepGuard;
 use kemlock_app::spaces::{PutSpaceBatch, PutSpaceItem};
 use kemlock_app::sso::{
     MembershipFacts, RequireSso, SignInMethods, SsoSettingsRepo, VerifiedDomainRepo,
@@ -48,6 +49,7 @@ pub trait Store:
     + SsoSettingsRepo
     + VerifiedDomainRepo
     + RecoveryCodeRepo
+    + SecondStepGuard
     + Clone
     + 'static
 {
@@ -69,6 +71,7 @@ impl<T> Store for T where
         + SsoSettingsRepo
         + VerifiedDomainRepo
         + RecoveryCodeRepo
+        + SecondStepGuard
         + Clone
         + 'static
 {
@@ -147,6 +150,9 @@ pub struct Limits {
     pub setup: Limiter,
     /// Registration: 10 an hour.
     pub register: Limiter,
+    /// Second-step challenges made per account: 10 in 5 minutes (as long as a challenge lives),
+    /// so someone who holds the password can't pile up open challenges to guess codes on.
+    pub challenges: Limiter,
     /// Asking to change the sign-in address: 3 an hour per account, whether or not the address is
     /// free. Each ask mails someone, and trying addresses is how an account would be probed.
     pub email_change: Limiter,
@@ -165,6 +171,7 @@ impl Default for Limits {
             proof: Limiter::new(120, 60),
             setup: Limiter::new(5, 60),
             register: Limiter::new(10, 3600),
+            challenges: Limiter::new(10, 300),
             email_change: Limiter::new(3, 3600),
             lookup: Limiter::new(30, 600),
         }

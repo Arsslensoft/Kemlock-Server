@@ -199,6 +199,32 @@ impl Limiter {
         }
     }
 
+    /// Reserves one try for `key` before the thing it guards is looked at, in one step under the
+    /// lock: `Err(seconds)` when the key waits (nothing is counted), else the try is counted and
+    /// goes on. The try that reaches the limit goes on and starts the wait for the next one, so
+    /// `limit` tries in a window are let through however many arrive at once, which `blocked`
+    /// then `fail` can't promise: every request that arrives before the first failure is counted
+    /// passes both. Call [`Limiter::clear`] when the try turns out right; a wrong one stays
+    /// counted, as `fail` would have counted it.
+    pub fn reserve(&self, key: &str, now: i64) -> Result<(), u64> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = state.entry(digest(key), now, self.retention_secs);
+        if let Some(wait) = entry.wait(now) {
+            return Err(wait);
+        }
+        entry.roll(now, self.window_secs);
+        entry.count = entry.count.saturating_add(1);
+        if entry.count >= self.limit() {
+            entry.raise(now);
+        }
+        Ok(())
+    }
+
+    /// The length of a window in seconds.
+    pub fn window_secs(&self) -> i64 {
+        self.window_secs
+    }
+
     /// Forgets the count and the delay of `key`, after a success.
     pub fn clear(&self, key: &str) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -405,6 +431,40 @@ mod tests {
         assert_eq!(l.blocked("a", 3), Err(4));
         // Other keys are untouched.
         assert_eq!(l.blocked("b", 3), Ok(()));
+    }
+
+    #[test]
+    fn a_reserved_try_counts_before_it_is_known_to_fail() {
+        let l = Limiter::new(3, 60);
+        assert_eq!(l.reserve("a", 0), Ok(()));
+        assert_eq!(l.reserve("a", 0), Ok(()));
+        // The try that reaches the limit goes on, and the next one waits.
+        assert_eq!(l.reserve("a", 0), Ok(()));
+        assert_eq!(l.reserve("a", 0), Err(1));
+        assert_eq!(l.blocked("a", 0), Err(1));
+        // After the wait one try goes on, and the wait after it doubles.
+        assert_eq!(l.reserve("a", 1), Ok(()));
+        assert_eq!(l.reserve("a", 1), Err(2));
+        // A right answer clears the count.
+        l.clear("a");
+        assert_eq!(l.reserve("a", 1), Ok(()));
+        assert_eq!(l.window_secs(), 60);
+    }
+
+    #[test]
+    fn parallel_tries_cannot_all_pass_before_the_first_failure_is_counted() {
+        let l = Limiter::new(5, 900);
+        let passed = std::sync::atomic::AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..32 {
+                scope.spawn(|| {
+                    if l.reserve("2fa:sam", 0).is_ok() {
+                        passed.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        assert_eq!(passed.load(Ordering::Relaxed), 5);
     }
 
     #[test]

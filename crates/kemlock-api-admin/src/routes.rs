@@ -181,10 +181,11 @@ where
         let request: StepUpFinishRequest = body.json()?;
         let now = env.now();
         let account = format!("stepup:{}", caller.actor.user);
+        // Reserved before the password is looked at, so parallel guesses can't all pass the limit.
         env.api
             .limits
             .account
-            .blocked(&account, now)
+            .reserve(&account, now)
             .map_err(rate_limited)?;
         let login_state = decode("loginState", &request.login_state)?;
         let finalization = decode("finalization", &request.finalization)?;
@@ -192,7 +193,6 @@ where
         // A state belongs to the admin who started it; another admin finishing it burns nothing.
         // A genuine, fresh state finishes once, right or wrong, and only then is it remembered.
         if step_up.login_state_user(&login_state)? != caller.actor.user {
-            env.api.limits.account.fail(&account, now);
             return Err(AdminError::StepUpFailed.into());
         }
         match env.api.used_states.insert(&login_state, now) {
@@ -203,10 +203,8 @@ where
         let finished = step_up
             .password_finish(&caller.actor, &login_state, &finalization)
             .await;
-        match &finished {
-            Err(AdminError::StepUpFailed) => env.api.limits.account.fail(&account, now),
-            Ok(_) => env.api.limits.account.clear(&account),
-            Err(_) => {}
+        if finished.is_ok() {
+            env.api.limits.account.clear(&account);
         }
         let issued = finished?;
         json_ok(StepUpResponse {
@@ -230,16 +228,15 @@ where
             .check(&ip_key(caller.ip), now)
             .map_err(rate_limited)?;
         let account = format!("2fa:{}", caller.actor.user);
+        // Reserved before the code is looked at, so parallel guesses can't all pass the limit.
         env.api
             .limits
             .second_step
-            .blocked(&account, now)
+            .reserve(&account, now)
             .map_err(rate_limited)?;
         let finished = env.step_up().totp(&caller.actor, &request.code).await;
-        match &finished {
-            Err(AdminError::StepUpFailed) => env.api.limits.second_step.fail(&account, now),
-            Ok(_) => env.api.limits.second_step.clear(&account),
-            Err(_) => {}
+        if finished.is_ok() {
+            env.api.limits.second_step.clear(&account);
         }
         let issued = finished?;
         json_ok(StepUpResponse {
@@ -282,10 +279,11 @@ where
             .check(&ip_key(caller.ip), now)
             .map_err(rate_limited)?;
         let account = format!("2fa:{}", caller.actor.user);
+        // Reserved before the answer is looked at, so parallel guesses can't all pass the limit.
         env.api
             .limits
             .second_step
-            .blocked(&account, now)
+            .reserve(&account, now)
             .map_err(rate_limited)?;
         let stepper = env.passkey_stepper()?;
         let challenge = decode("challenge", &request.challenge)?;
@@ -293,22 +291,15 @@ where
             .map_err(|_| bad("the credential can't be read"))?;
         // Only a genuine, fresh challenge for this admin and device is remembered as used, so
         // made-up ones take no room.
-        if let Err(e) = stepper.check_challenge(&caller.actor, &challenge) {
-            if e == AdminError::StepUpFailed {
-                env.api.limits.second_step.fail(&account, now);
-            }
-            return Err(e.into());
-        }
+        stepper.check_challenge(&caller.actor, &challenge)?;
         match env.api.used_states.insert(&challenge, now) {
             Ok(true) => {}
             Ok(false) => return Err(bad("the passkey challenge was already used")),
             Err(Full) => return Err(ApiError(Problem::overloaded())),
         }
         let finished = stepper.finish(&caller.actor, &challenge, &response).await;
-        match &finished {
-            Err(AdminError::StepUpFailed) => env.api.limits.second_step.fail(&account, now),
-            Ok(_) => env.api.limits.second_step.clear(&account),
-            Err(_) => {}
+        if finished.is_ok() {
+            env.api.limits.second_step.clear(&account);
         }
         let issued = finished?;
         json_ok(StepUpResponse {

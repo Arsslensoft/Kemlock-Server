@@ -678,6 +678,57 @@ async fn wrong_second_step_codes_slow_the_account_down_whatever_challenge_or_add
 }
 
 #[tokio::test]
+async fn second_step_attempts_are_counted_in_the_store_so_every_replica_sees_them() {
+    let app = App::new(true);
+    let client = app.client();
+    let secret = two_step_account(&app, &client, "sam@example.org").await;
+    for n in 1..=5u8 {
+        let challenge = challenge_from(&client, "sam@example.org", peer(n)).await;
+        let wrong = wrong_code(&app, &secret);
+        let reply = second_step_from(&client, &challenge, &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Another replica of the same deployment has memory of its own and the same database: it
+    // turns the account away too, even with the right code.
+    let other = app.replica_client();
+    let challenge = challenge_from(&other, "sam@example.org", peer(70)).await;
+    let right = totp_now(&app, &secret);
+    let waiting = second_step_from(&other, &challenge, &right, peer(70)).await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waiting.problem(), "rate-limited");
+    assert_eq!(waiting.header("retry-after"), Some("1"));
+
+    // After the wait the right code works there, and clears the count for both.
+    app.clock.advance(Duration::seconds(1));
+    let challenge = challenge_from(&other, "sam@example.org", peer(71)).await;
+    let right = totp_now(&app, &secret);
+    let ok = second_step_from(&other, &challenge, &right, peer(71)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    let wrong = wrong_code(&app, &secret);
+    let challenge = challenge_from(&client, "sam@example.org", peer(72)).await;
+    let again = second_step_from(&client, &challenge, &wrong, peer(72)).await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED, "the count started again");
+}
+
+#[tokio::test]
+async fn an_account_is_given_only_so_many_second_step_challenges_in_a_while() {
+    let app = App::new(true);
+    let client = app.client();
+    two_step_account(&app, &client, "sam@example.org").await;
+    // Whoever holds the password can ask for challenges, each a place to guess codes on; each
+    // from its own address, so no per-address limit is involved.
+    for n in 1..=10u8 {
+        challenge_from(&client, "sam@example.org", peer(n)).await;
+    }
+    let eleventh = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(11)).await;
+    assert_eq!(eleventh.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(eleventh.problem(), "rate-limited");
+    // A challenge lives five minutes; some time on, the account is given another.
+    app.clock.advance(Duration::seconds(301));
+    challenge_from(&client, "sam@example.org", peer(12)).await;
+}
+
+#[tokio::test]
 async fn a_second_step_code_works_once_and_a_replay_is_unauthorized() {
     let app = App::new(true);
     let client = app.client();

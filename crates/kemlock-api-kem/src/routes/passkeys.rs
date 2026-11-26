@@ -19,6 +19,7 @@
 //! state and a [`PasskeyRuntime`], and merged into the main router by the server: see
 //! [`passkeys_router`].
 
+use super::attempts;
 use super::guard;
 use super::new_device::announce;
 use super::two_step::{
@@ -27,7 +28,7 @@ use super::two_step::{
 use crate::dto::{DeviceDto, FreshProof, KeyAssertion, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
 use crate::openapi::ProblemDoc;
-use crate::problem::{Problem, rate_limited};
+use crate::problem::Problem;
 use crate::ratelimit::ip_key;
 use crate::replay::Full;
 use crate::signlog::token_ids;
@@ -835,19 +836,12 @@ where
     let now = api.now();
     limit_second_step(&api, proof.ip, &challenge, now)?;
     let step = key_step(&api, &runtime);
-    // A genuine, fresh challenge names the account its failures count against.
+    // A genuine, fresh challenge names the account its failures count against; the attempt is
+    // reserved before the answer is looked at.
     let user = step.challenge_user(&challenge)?;
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
+    attempts::reserve_second_step(&api, user, now).await?;
     let finished = step.verify(&challenge, &response, &proof.jkt).await;
-    match &finished {
-        Err(AppError::Unauthorized) => api.limits.second_step.fail(&account, now),
-        Ok(_) => api.limits.second_step.clear(&account),
-        Err(_) => {}
-    }
+    attempts::settle_second_step(&api, user, &finished).await;
     api.log_attempt(api.attempt("two-factor", Some(user), &finished, proof.ip, token_ids))
         .await;
     let tokens = finished?;

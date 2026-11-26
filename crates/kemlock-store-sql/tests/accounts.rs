@@ -13,6 +13,7 @@ use kemlock_app::ports::{
     DeviceRepo, Event, EventLog, RefreshToken, ServerInfo, StoreError, TokenRepo, TwoFactor,
     TwoFactorMethod, TwoFactorRepo, UserRepo,
 };
+use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
 use kemlock_domain::{DeviceId, DeviceKind, Role, UserId};
 use kemlock_store_sql::SqlStore;
 use time::macros::datetime;
@@ -453,6 +454,59 @@ async fn two_step_version_moves_when_a_method_is_turned_on_or_off(store: &SqlSto
     );
 }
 
+async fn second_step_attempts_are_reserved_atomically_and_kept(store: &SqlStore) {
+    let owner = user(&unique_email("2fa-attempts"));
+    UserRepo::insert(store, &owner).await.expect("insert user");
+    let reserve = |now: i64| SecondStepGuard::reserve_second_step(store, owner.id, now, 3, 900);
+
+    // Parallel attempts: exactly three of ten pass, whichever order they land in.
+    let tasks: Vec<_> = (0..10)
+        .map(|_| {
+            let (store, user) = (store.clone(), owner.id);
+            tokio::spawn(async move {
+                SecondStepGuard::reserve_second_step(&store, user, 1000, 3, 900).await
+            })
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for task in tasks {
+        answers.push(task.await.expect("the task ran"));
+    }
+    let granted = answers
+        .iter()
+        .filter(|a| matches!(a, Ok(Reservation::Granted)))
+        .count();
+    assert_eq!(granted, 3, "{answers:?}");
+    assert!(
+        answers
+            .iter()
+            .all(|a| matches!(a, Ok(Reservation::Granted | Reservation::Wait(_)))),
+        "{answers:?}"
+    );
+
+    // The wait is kept: a new handle on the same database sees it, as a restart or another
+    // replica would. A wait counts nothing, and doubles for the attempt after it.
+    assert!(matches!(reserve(1000).await, Ok(Reservation::Wait(_))));
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+    assert_eq!(reserve(1001).await, Ok(Reservation::Wait(2)));
+
+    // A right code clears it.
+    SecondStepGuard::clear_second_step(store, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+
+    // It is the account's own.
+    let other = user(&unique_email("2fa-attempts-other"));
+    UserRepo::insert(store, &other).await.expect("insert user");
+    for _ in 0..3 {
+        SecondStepGuard::reserve_second_step(store, other.id, 1001, 3, 900)
+            .await
+            .expect("reserve");
+    }
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+}
+
 async fn events(store: &SqlStore) {
     let owner = user(&unique_email("events"));
     UserRepo::insert(store, &owner).await.expect("insert user");
@@ -603,6 +657,7 @@ async fn run_all(store: &SqlStore) {
     tokens(store).await;
     two_factor(store).await;
     two_step_version_moves_when_a_method_is_turned_on_or_off(store).await;
+    second_step_attempts_are_reserved_atomically_and_kept(store).await;
     events(store).await;
 }
 

@@ -1,5 +1,6 @@
 //! Accounts and sign-in: prelogin, registration, OPAQUE login, the second step, refresh, TOTP.
 
+use super::attempts;
 use super::guard;
 use super::new_device::announce;
 use crate::dto::{
@@ -240,6 +241,16 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         api.log_attempt(api.attempt("password", None, &finished, proof.ip, signed_in_ids))
             .await;
         let signed_in = finished?;
+        if let SignedIn::SecondStep(step) = &signed_in {
+            // A challenge is sealed, not stored, so nothing counts the open ones: an account is
+            // given only so many in a while, or whoever holds the password could pile them up
+            // to guess codes on.
+            let user = api.sign_in().challenge_user(&step.challenge)?;
+            api.limits
+                .challenges
+                .check(&format!("challenges:{user}"), api.now())
+                .map_err(rate_limited)?;
+        }
         if let SignedIn::Tokens(tokens) = &signed_in {
             announce(&api, tokens, proof.ip).await;
         }
@@ -286,13 +297,10 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             "totp" => TwoFactorMethod::Totp,
             _ => return Err(Problem::bad_request("method must be \"totp\"")),
         };
-        // A genuine, fresh challenge names the account its codes count against.
+        // A genuine, fresh challenge names the account its codes count against. The attempt is
+        // reserved before the code is looked at, so parallel guesses can't all get past the limit.
         let user = api.sign_in().challenge_user(&challenge)?;
-        let account = format!("2fa:{user}");
-        api.limits
-            .second_step
-            .blocked(&account, now)
-            .map_err(rate_limited)?;
+        attempts::reserve_second_step(&api, user, now).await?;
         let finished = api
             .sign_in()
             .second_step(SecondStepInput {
@@ -302,11 +310,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
                 jkt: proof.jkt,
             })
             .await;
-        match &finished {
-            Err(AppError::Unauthorized) => api.limits.second_step.fail(&account, now),
-            Ok(_) => api.limits.second_step.clear(&account),
-            Err(_) => {}
-        }
+        attempts::settle_second_step(&api, user, &finished).await;
         api.log_attempt(api.attempt("two-factor", Some(user), &finished, proof.ip, token_ids))
             .await;
         let tokens = finished?;
