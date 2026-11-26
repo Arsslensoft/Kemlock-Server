@@ -45,15 +45,16 @@ export function forgetEndedSession(): void {
 }
 
 /**
- * Ends this device's session on the server, so its refresh token stops working, not just here.
- * Best effort: a server that is out of reach, slow, or has ended the session already does not hold
- * the sign-out up.
+ * Ends this device's session on the server, so its refresh token stops working, not just here. The
+ * device and its trusted-device key copy stay on the server: for an account with no password that
+ * copy is the only way back into the vault. Best effort: a server that is out of reach, slow, or
+ * has ended the session already does not hold the sign-out up.
  */
-async function endOnServer(deviceId: string): Promise<void> {
+async function endOnServer(): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      devicesApi.signOut(deviceId),
+      devicesApi.endSession(),
       new Promise<void>((resolve) => {
         timer = setTimeout(resolve, SERVER_SIGN_OUT_MS);
       }),
@@ -75,10 +76,9 @@ async function endOnServer(deviceId: string): Promise<void> {
  */
 export async function signOut(options: { server?: boolean } = {}): Promise<void> {
   void clearCopiedSecret();
-  const { deviceId, status } = session.getState();
   // First, while the tokens and the DPoP key still work. Not when the server has just ended it
-  // (this device signed itself out, or the account was erased).
-  if (options.server !== false && deviceId && status !== 'signed-out') await endOnServer(deviceId);
+  // (this device was removed from Devices, or the account was erased).
+  if (options.server !== false && session.getState().status !== 'signed-out') await endOnServer();
   await vaultCrypto.lock();
   clearVault();
   session.end();

@@ -157,3 +157,46 @@ impl<D: DeviceRepo, C: KeyCopyRepo, T: TokenRepo, E: Clock, V: EventLog>
         Ok(signed_out)
     }
 }
+
+/// Ends this device's session and nothing else: its refresh tokens go and its DPoP key stops
+/// vouching for anything, so its access tokens stop too. The device row and its key copy stay.
+///
+/// That is the difference from [`SignOutDevice`]. For an account with no password (single sign-on),
+/// no passkey PRF wrap, no Recovery Kit and no other device, the trusted-device copy is the only
+/// way into the vault, so a person who merely signs out of the browser must not lose it. Removing a
+/// device and its copy is the explicit "remove this device" action.
+#[derive(Debug)]
+pub struct EndSession<D, T, E, V> {
+    pub devices: D,
+    pub tokens: T,
+    pub clock: E,
+    pub events: V,
+}
+
+impl<D: DeviceRepo, T: TokenRepo, E: Clock, V: EventLog> EndSession<D, T, E, V> {
+    pub async fn execute(&self, actor: &Actor) -> Result<(), AppError> {
+        // Tokens first, so the device can't refresh while the key is cleared.
+        self.tokens.revoke_device(actor.device).await?;
+        if let Some(mut device) = self
+            .devices
+            .get(actor.device)
+            .await?
+            .filter(|d| d.user == actor.user)
+        {
+            // The next sign-in on this device binds its key again.
+            device.dpop_jkt = None;
+            self.devices.upsert(&device).await?;
+        }
+        let event = Event {
+            actor: Some(actor.user),
+            device: Some(actor.device),
+            action: "device.session_end",
+            target: Some(actor.device.to_string()),
+            at: self.clock.now(),
+        };
+        if let Err(e) = self.events.record(event).await {
+            tracing::warn!(error = %e, "couldn't record an event");
+        }
+        Ok(())
+    }
+}

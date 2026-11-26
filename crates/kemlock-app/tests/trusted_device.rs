@@ -389,3 +389,71 @@ async fn signing_the_other_devices_out_keeps_the_one_asking() {
     // And with no other device there is nothing to do.
     assert_eq!(sign_out_device(&s.world).execute_others(&s.me).await, Ok(0));
 }
+
+#[tokio::test]
+async fn ending_a_session_keeps_the_device_and_its_key_copy() {
+    let s = scene().await;
+    key_copies(&s.world)
+        .put(&s.me, wrapped(), KeyProtection::Keystore)
+        .await
+        .expect("stores");
+
+    end_session(&s.world)
+        .execute(&s.me)
+        .await
+        .expect("ends the session");
+
+    // The way back in for an account with no password stays.
+    assert!(s.world.store.key_copy_of(s.me.device).is_some());
+    let device = DeviceRepo::get(&s.world.store, s.me.device)
+        .await
+        .expect("reads")
+        .expect("the device is still there");
+    assert_eq!(device.dpop_jkt, None, "its key vouches for nothing now");
+    assert!(
+        s.world
+            .store
+            .refresh_tokens()
+            .iter()
+            .all(|t| t.device != s.me.device),
+        "its refresh tokens are gone"
+    );
+    assert!(
+        s.world
+            .refresh()
+            .execute(&s.my_refresh_token, "jkt-1")
+            .await
+            .is_err(),
+        "the refresh token no longer works"
+    );
+    assert!(
+        s.world
+            .store
+            .events()
+            .iter()
+            .any(|e| e.action == "device.session_end")
+    );
+}
+
+#[tokio::test]
+async fn ending_a_session_leaves_the_other_devices_alone() {
+    let s = scene().await;
+    let SignedIn::Tokens(other) = sign_in_with(&s.world, EMAIL, &PASSWORD, device("iPad"), "jkt-2")
+        .await
+        .expect("signs in")
+    else {
+        panic!("tokens expected");
+    };
+    end_session(&s.world)
+        .execute(&s.me)
+        .await
+        .expect("ends the session");
+    assert!(
+        s.world
+            .refresh()
+            .execute(&other.refresh_token, "jkt-2")
+            .await
+            .is_ok(),
+        "the iPad's session goes on"
+    );
+}

@@ -64,11 +64,10 @@ describe('signing out', () => {
         seen.push({ status: session.getState().status, calls: [...fakeCalls] });
       });
       await signOut();
-      expect(send).toHaveBeenCalledWith({
-        method: 'POST',
-        path: '/kem/v1/devices/sign-out',
-        body: { deviceId: 'device-1' },
-      });
+      // This session only: the device row and its trusted-device key copy stay on the server, which
+      // an account with no password needs to open its vault again.
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith({ method: 'POST', path: '/kem/v1/auth/sign-out' });
       expect(seen).toEqual([{ status: 'locked', calls: [] }]);
       expect(session.getState().status).toBe('signed-out');
       send.mockRestore();

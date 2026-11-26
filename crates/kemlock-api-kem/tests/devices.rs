@@ -497,6 +497,61 @@ async fn signing_a_device_out_deletes_its_tokens_and_its_copy() {
 }
 
 #[tokio::test]
+async fn signing_out_of_this_session_keeps_the_device_and_its_key_copy() {
+    let (app, open, session) = open_device().await;
+    let other = app.client();
+    let other_session = {
+        let signed = sign_in_reply(&other, EMAIL, test_device()).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    let put = other
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(&other_session.access_token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "keystore",
+                })),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+    let other_id: DeviceId = other_session.device_id.parse().expect("a device id");
+
+    let out = other
+        .post_authed("/kem/v1/auth/sign-out", &other_session.access_token, json!({}))
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
+
+    // The way back in for an account with no password stays: the device and its copy are there.
+    assert!(app.store.key_copy_of(other_id).is_some());
+    // The session is over: the refresh token and the access token both stop working.
+    let refreshed = other
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": other_session.refresh_token}),
+        )
+        .await;
+    assert_eq!(refreshed.status, StatusCode::UNAUTHORIZED);
+    let used = other
+        .get_authed("/kem/v1/devices/key-copy", &other_session.access_token)
+        .await;
+    assert_eq!(used.status, StatusCode::UNAUTHORIZED, "{:?}", used.json());
+    // Another device of the account is untouched.
+    let mine = open
+        .get_authed("/kem/v1/devices/key-copy", &session.access_token)
+        .await;
+    assert_ne!(mine.status, StatusCode::UNAUTHORIZED);
+    // And a call with no session is refused.
+    let bare = app.client().post("/kem/v1/auth/sign-out", json!({})).await;
+    assert_eq!(bare.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn one_device_stops_trusting_another_and_the_list_says_since_when() {
     let (app, open, session) = open_device().await;
     let other = app.client();
@@ -664,6 +719,7 @@ async fn the_openapi_document_names_the_new_routes() {
         ("/kem/v1/devices/key-copy", "put"),
         ("/kem/v1/devices/key-copy", "delete"),
         ("/kem/v1/devices/{id}/key-copy", "delete"),
+        ("/kem/v1/auth/sign-out", "post"),
         ("/kem/v1/devices/sign-out", "post"),
         ("/kem/v1/emergency", "get"),
         ("/kem/v1/emergency/grants", "post"),
