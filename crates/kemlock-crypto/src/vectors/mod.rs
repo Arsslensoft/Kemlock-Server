@@ -46,6 +46,7 @@ pub const FILES: &[&str] = &[
     "private-keys",
     "prf-wrap",
     "confirm",
+    "key-box",
     "send",
     "space-names",
     "space-chain",

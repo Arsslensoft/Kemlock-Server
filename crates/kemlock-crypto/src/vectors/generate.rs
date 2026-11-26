@@ -10,6 +10,7 @@ use crate::{
     backend::{Backend, rustcrypto::RustCrypto},
     bundle::{self, Bundle},
     confirm::Statement,
+    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     dedup, kem1,
     keys::{ITEM_WRAP_LABEL, MANIFEST_LABEL, PRIVATE_KEYS_LABEL, RootKey, SecretKey, USER_LABEL},
     kma1, kx1, legacy_id,
@@ -17,7 +18,7 @@ use crate::{
     opaque::{self, OpaqueServer},
     owner::Owner,
     password_wrap, prf_wrap, private_keys, rand, seal, sealed_box, send,
-    sig1::{self, context::BUNDLE, context::CONFIRM, context::MANIFEST},
+    sig1::{self, context::BUNDLE, context::CONFIRM, context::KEY_BOX, context::MANIFEST},
 };
 
 type G = RustCrypto;
@@ -59,6 +60,7 @@ pub(crate) fn all() -> Result<Vec<(&'static str, Value)>, Error> {
         ("private-keys", private_keys_doc()?),
         ("prf-wrap", prf_wrap_doc()?),
         ("confirm", confirm_doc()?),
+        ("key-box", key_box_doc()?),
         ("send", send_doc()?),
         ("space-names", space_names_doc()?),
         ("space-chain", super::space_chain::generate()?),
@@ -1187,6 +1189,146 @@ fn confirm_doc() -> Result<Value, Error> {
              member_bundle) as in bundle.json; signature = sig1 signature of the confirmer's own \
              key under context \"confirm\" over the statement (3373 bytes). The signature must \
              not verify under a wrong context or over any changed statement.",
+            cases,
+        ))
+    })
+}
+
+fn key_box_doc() -> Result<Value, Error> {
+    seeded("key-box", || {
+        let mut cases = Vec::new();
+        for (name, kind) in [
+            ("space-key", KeyBoxKind::Space),
+            ("collection-key", KeyBoxKind::Collection),
+        ] {
+            let space: [u8; 16] = rnd()?;
+            let collection: [u8; 16] = rnd()?;
+            let recipient: [u8; 16] = rnd()?;
+            let sealer: [u8; 16] = rnd()?;
+            let key_version = 2u32;
+            let sealer_key_version = 3u32;
+
+            // A real box of a random key, to a recipient key made for the case.
+            let recipient_private: [u8; 96] = rnd()?;
+            let recipient_public = kx1::public_key_in::<G>(&kx1::PrivateKey::from_bytes(
+                &recipient_private,
+            ))?;
+            let secret: [u8; 32] = rnd()?;
+            let aad = match kind {
+                KeyBoxKind::Space => key_box::space_aad(&space, key_version, &recipient),
+                KeyBoxKind::Collection => {
+                    key_box::collection_aad(&space, &collection, key_version, &recipient)
+                }
+            };
+            let sealed = sealed_box::seal_in::<G>(&recipient_public, kind.context(), &aad, &secret)?;
+
+            let sealer_private: [u8; 64] = rnd()?;
+            let signing = sig1::SigningKey::from_bytes(&sealer_private);
+            let sealer_public = sig1::public_key_in::<G>(&signing)?;
+
+            let statement = KeyBoxStatement {
+                kind,
+                aad: &aad,
+                sealed_box: &sealed,
+                sealer,
+                sealer_key_version,
+            };
+            let bytes = statement.to_bytes()?;
+            let signature = sig1::sign_in::<G>(&signing, KEY_BOX, &bytes)?;
+
+            // Statements that differ from the real one in one field: the signature covers none.
+            let mut other_box = sealed.clone();
+            other_box[700] ^= 1;
+            let mut other_recipient = recipient;
+            other_recipient[0] ^= 1;
+            let other_aad = match kind {
+                KeyBoxKind::Space => key_box::space_aad(&space, key_version, &other_recipient),
+                KeyBoxKind::Collection => {
+                    key_box::collection_aad(&space, &collection, key_version, &other_recipient)
+                }
+            };
+            let later_aad = match kind {
+                KeyBoxKind::Space => key_box::space_aad(&space, key_version + 1, &recipient),
+                KeyBoxKind::Collection => {
+                    key_box::collection_aad(&space, &collection, key_version + 1, &recipient)
+                }
+            };
+            let mut other_sealer = sealer;
+            other_sealer[0] ^= 1;
+            let changed: Vec<Value> = [
+                (
+                    "another-box",
+                    KeyBoxStatement {
+                        sealed_box: &other_box,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-recipient",
+                    KeyBoxStatement {
+                        aad: &other_aad,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-key-version",
+                    KeyBoxStatement {
+                        aad: &later_aad,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-sealer",
+                    KeyBoxStatement {
+                        sealer: other_sealer,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-sealer-key-version",
+                    KeyBoxStatement {
+                        sealer_key_version: sealer_key_version + 1,
+                        ..statement
+                    },
+                ),
+            ]
+            .into_iter()
+            .map(|(what, s)| -> Result<Value, Error> {
+                Ok(json!({ "name": what, "statement": hx(&s.to_bytes()?) }))
+            })
+            .collect::<Result<_, Error>>()?;
+
+            cases.push(json!({
+                "name": name,
+                "context": kind.context(),
+                "space": hx(&space),
+                "collection": (kind == KeyBoxKind::Collection).then(|| hx(&collection)),
+                "key_version": key_version,
+                "recipient": hx(&recipient),
+                "recipient_private_key": hx(&recipient_private),
+                "secret": hx(&secret),
+                "aad": hx(&aad),
+                "box": hx(&sealed),
+                "sealer": hx(&sealer),
+                "sealer_key_version": sealer_key_version,
+                "sealer_private_key": hx(&sealer_private),
+                "sealer_public_key": hx(sealer_public.as_bytes()),
+                "statement": hx(&bytes),
+                "signature": hx(&signature),
+                "wrong_contexts": [BUNDLE, MANIFEST, CONFIRM],
+                "changed_statements": changed,
+            }));
+        }
+        Ok(document(
+            "key-box",
+            "Signed key boxes (docs/crypto.md): statement = \"kemlock/v1/key-box\" || \
+             lp(context) || lp(aad) || lp(box) || sealer id (16) || u32be(sealer key version), \
+             where context is \"space-key\" or \"collection-key\", aad is that box's aad as in \
+             sealed-box.json and box is the 1661-byte sealed box of `secret` to the recipient \
+             key of `recipient_private_key`; signature = sig1 signature of the sealer's own key \
+             under context \"key-box\" over the statement (3373 bytes). The signature must not \
+             verify under a wrong context or over any changed statement. `collection` is null \
+             for a space key.",
             cases,
         ))
     })
