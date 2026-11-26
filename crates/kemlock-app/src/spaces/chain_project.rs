@@ -144,6 +144,8 @@ pub fn project(
         .flat_map(|s| s.members.iter())
         .map(|m| (m.user, m))
         .collect();
+    // The members whose row is confirmed once these changes land: only they are sealed keys.
+    let mut confirmed_rows: BTreeSet<UserId> = BTreeSet::new();
     for (id, member) in &after.members {
         let user = user_of(id);
         if member.status == sc::Status::Removed {
@@ -189,6 +191,9 @@ pub fn project(
                 .and_then(|o| o.confirmation.clone())
                 .filter(|_| confirmed),
         };
+        if state == MemberState::Confirmed {
+            confirmed_rows.insert(user);
+        }
         let row = Member {
             space,
             user,
@@ -314,7 +319,8 @@ pub fn project(
         let present = after
             .members
             .get(member)
-            .is_some_and(|m| m.status != sc::Status::Removed);
+            .is_some_and(|m| m.status != sc::Status::Removed)
+            && confirmed_rows.contains(&user_of(member));
         if current && present {
             desired.insert((collection_of(id), user_of(member)));
         }
