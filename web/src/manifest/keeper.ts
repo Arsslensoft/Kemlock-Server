@@ -36,6 +36,7 @@ import {
   sameEntries,
 } from './compare';
 import { type Manifest, TOMBSTONE_HASH, ciphertextHash, decodeManifest, encodeManifest } from './format';
+import type { WriteVerdict } from './writes';
 import type { ManifestRecord, RecordStore } from './records';
 
 /** What is wrong with a whole manifest. */
@@ -108,15 +109,23 @@ function defaultSchedule(run: () => void, ms: number): () => void {
 const isOwnVault = (owner: string): boolean => owner.startsWith('user:');
 
 /** What the server served of an item, or null for one that is not a kem1 item this can vouch for. */
-async function servedOf(dto: ItemDto, opened: boolean, own: boolean): Promise<Served | null> {
+async function servedOf(
+  dto: ItemDto,
+  opened: boolean,
+  own: boolean,
+  verdict?: WriteVerdict,
+): Promise<Served | null> {
   if (dto.format !== 'kem1') return null;
+  // This browser's own writes are signed by it; what the server served is signed when its write
+  // signature verified (writes.ts).
+  const signed = own || verdict === 'signed';
   if (dto.deleted) {
-    return { revision: dto.revision, hash: TOMBSTONE_HASH, deleted: true, opened: false, own };
+    return { revision: dto.revision, hash: TOMBSTONE_HASH, deleted: true, opened: false, own, signed };
   }
   if (!dto.ciphertext) return null;
   try {
     const hash = await ciphertextHash(decodeB64(dto.ciphertext));
-    return { revision: dto.revision, hash, deleted: false, opened: opened || own, own };
+    return { revision: dto.revision, hash, deleted: false, opened: opened || own, own, signed };
   } catch {
     return null;
   }
@@ -436,9 +445,9 @@ export function createManifestKeeper(deps: KeeperDeps) {
      * order the items were served. Anything served lower than before is flagged. A tombstone is
      * recorded as served, but never signed in for an item this browser did not delete.
      */
-    served(dto: ItemDto, opened: boolean): void {
+    served(dto: ItemDto, opened: boolean, verdict?: WriteVerdict): void {
       const mine = epoch;
-      const hashing = servedOf(dto, opened, false);
+      const hashing = servedOf(dto, opened, false, verdict);
       ledgerTail = ledgerTail.then(async () => {
         const served = await hashing;
         if (!served || mine !== epoch) return;
@@ -462,6 +471,21 @@ export function createManifestKeeper(deps: KeeperDeps) {
         ledger.set(dto.id, served);
         dirty = true;
       });
+    },
+
+    /**
+     * Takes note of a revision the vault served and did not take in because of its write signature
+     * (`invalid`: one came and fails; `unsigned` or `unknown`: the owner's writes are signed and this
+     * one isn't or can't be checked), and shows it.
+     */
+    rejected(dto: ItemDto, verdict: Exclude<WriteVerdict, 'signed'>): void {
+      anomalies.set(`${dto.owner}|${dto.id}`, {
+        owner: dto.owner,
+        id: dto.id,
+        verdict: verdict === 'invalid' ? 'forged' : 'unsigned',
+        revision: dto.revision,
+      });
+      publishWarning();
     },
 
     /** Takes in what this browser just wrote, and plans the manifest that lists it. */

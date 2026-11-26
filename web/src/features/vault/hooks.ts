@@ -7,7 +7,7 @@ import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
 import { duplicatesViewStore } from '@/features/duplicates/viewState';
-import { manifestKeeper } from '@/manifest/instance';
+import { manifestKeeper, writeChecker } from '@/manifest/instance';
 import { signedApi } from '@/api/signedWrites';
 import { trackedApi } from '@/manifest/tracked';
 import { forgetKeyFacts } from './keyFacts';
@@ -36,14 +36,17 @@ import {
 
 // Items of a space open once the worker holds the space's keys: the loader opens them on demand.
 const spaceKeys = createSpaceKeyLoader(spaceDeps);
-// Every write this browser makes is signed by the account (docs/crypto.md, "Signed item writes").
-// The API the vault reads and writes through is also watched by the manifest keeper (src/manifest): what
+// Every write this browser makes is signed by the account (docs/crypto.md, "Signed item writes"),
+// and the signature of every item the server serves is checked before the item is taken in. The API
+// the vault reads and writes through is also watched by the manifest keeper (src/manifest): what
 // the server serves is checked against the signed manifest, and this browser's writes are signed in.
 const deps: VaultDeps = {
   api: trackedApi(signedApi(api, vaultCrypto), manifestKeeper),
   crypto: vaultCrypto,
   ensureSpaceKeys: spaceKeys.ensure,
-  served: (dto, opened) => manifestKeeper.served(dto, opened),
+  writes: writeChecker,
+  served: (dto, opened, verdict) => manifestKeeper.served(dto, opened, verdict),
+  rejected: (dto, verdict) => manifestKeeper.rejected(dto, verdict),
 };
 
 /** The files of items on this server: what a move or a copy sends again under another item, and what a download reads. */

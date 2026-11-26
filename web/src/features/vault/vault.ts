@@ -8,6 +8,7 @@ import type { Api, SyncResult } from '@/api/client';
 import { isApiError } from '@/api/errors';
 import type { ItemDto } from '@/api/types';
 import type { CryptoPort, SealedItem } from '@/crypto-port';
+import type { WriteChecker, WriteVerdict } from '@/manifest/writes';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 
 export type ItemData = {
@@ -63,10 +64,17 @@ export function sealedData(existing: VaultItem | undefined, id: string, fields: 
 
 export class VaultStore {
   readonly items = new Map<string, VaultItem>();
+  /**
+   * The owners this session has seen a valid write signature for. Once an owner is here, an
+   * unsigned or unverifiable newer revision of an item this session holds is not taken in
+   * (docs/crypto.md, "Signed item writes"): a server can't turn signing off by leaving it out.
+   */
+  readonly signedOwners = new Set<string>();
   cursor: string | undefined;
 
   reset(): void {
     this.items.clear();
+    this.signedOwners.clear();
     this.cursor = undefined;
   }
 
@@ -94,7 +102,17 @@ export interface VaultDeps {
    * whether its envelope opened. The manifest keeper (src/manifest) is what listens. It must
    * return at once: it is called for every item of a page.
    */
-  served?: (dto: ItemDto, opened: boolean) => void;
+  served?: (dto: ItemDto, opened: boolean, verdict?: WriteVerdict) => void;
+  /**
+   * Checks the write signature of an item the server serves (src/manifest/writes.ts). Without it
+   * nothing is checked and every revision is taken in as before.
+   */
+  writes?: Pick<WriteChecker, 'verdict'>;
+  /**
+   * Told of a revision that was served and not taken in because of its signature: `invalid` (one
+   * came and fails), or `unsigned` and `unknown` for an item of an owner whose writes are signed.
+   */
+  rejected?: (dto: ItemDto, verdict: Exclude<WriteVerdict, 'signed'>) => void;
   now?: () => Date;
   newId?: () => string;
 }
@@ -216,19 +234,32 @@ export async function openDto(
 
 async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<void> {
   const current = store.items.get(dto.id);
+  const verdict = await deps.writes?.verdict(dto);
+  if (verdict === 'signed') store.signedOwners.add(dto.owner);
   if (current && current.revision >= dto.revision) {
     // Not taken in, but the keeper still wants to know what the server served: an older copy is
     // exactly what it watches for.
-    deps.served?.(dto, false);
+    deps.served?.(dto, false, verdict);
+    return;
+  }
+  // A signature that fails is never taken in. An item without one, or one that can't be checked,
+  // is taken in until this session has seen the owner's writes signed; after that a newer
+  // revision of an item it holds must be signed too, or the server could undo the signing.
+  if (
+    verdict === 'invalid' ||
+    ((verdict === 'unsigned' || verdict === 'unknown') && current && store.signedOwners.has(dto.owner))
+  ) {
+    deps.served?.(dto, false, verdict);
+    deps.rejected?.(dto, verdict);
     return;
   }
   if (dto.deleted) {
     store.items.delete(dto.id);
-    deps.served?.(dto, false);
+    deps.served?.(dto, false, verdict);
     return;
   }
   const item = await openDto(deps.crypto, dto, deps.ensureSpaceKeys);
-  deps.served?.(dto, item?.opened === true);
+  deps.served?.(dto, item?.opened === true, verdict);
   if (item) store.items.set(item.id, item);
 }
 

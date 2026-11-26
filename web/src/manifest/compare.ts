@@ -7,8 +7,11 @@
 //   missing      the entry is live and the server serves the item not at all, not even a tombstone;
 //   resurrected  an id this device saw deleted comes back at or below the tombstone's revision, or
 //                is served live where the manifest lists it deleted;
-//   deleted      a tombstone for an item the manifest lists live, which this browser did not write:
-//                another device deleted it, or the server is hiding it, and nothing here can tell;
+//   deleted      a tombstone for an item the manifest lists live, which this browser did not write
+//                and whose write signature did not verify: an app that can't sign deleted it, or the
+//                server is hiding it, and nothing here can tell. A tombstone signed by the account
+//                itself or by a member allowed to write the collection is a deletion by that writer
+//                and is accepted (docs/crypto.md, "Signed item writes");
 //   implausible  a revision no run of writes could have reached from the entry's.
 //
 // Items at their entry's revision with another hash (a sibling written by two devices at once) and
@@ -28,6 +31,12 @@ export interface Served {
   opened: boolean;
   /** This browser wrote it (a tombstone it wrote is a deletion the person asked for). */
   own: boolean;
+  /**
+   * The write carried a signature that verified (src/manifest/writes.ts): a tombstone so signed is
+   * a deletion by the account itself, or by a member allowed to write the space's collection, not
+   * one the server or an app that can't sign made.
+   */
+  signed?: boolean;
 }
 
 /**
@@ -50,7 +59,16 @@ export type DeletedRecord = Record<string, SeenDeleted>;
 /** How long a device remembers an id it saw deleted: as long as the server keeps tombstones. */
 export const DELETED_RETENTION_MS = 180 * 24 * 3600 * 1000;
 
-export type FlaggedVerdict = 'rolled-back' | 'missing' | 'resurrected' | 'deleted' | 'implausible';
+export type FlaggedVerdict =
+  | 'rolled-back'
+  | 'missing'
+  | 'resurrected'
+  | 'deleted'
+  | 'implausible'
+  /** A revision whose write signature fails: never taken in. */
+  | 'forged'
+  /** A newer revision, without a signature, of an item of an owner whose writes are signed. */
+  | 'unsigned';
 
 export interface Finding {
   id: string;
@@ -76,7 +94,9 @@ function classify(item: Served, entry: ManifestEntry | undefined, seenDeletedAt:
     if (entry?.deleted && item.revision <= entry.revision) return 'resurrected';
   }
   if (!entry) return 'unlisted';
-  if (item.deleted && !item.own && !entry.deleted && item.revision > entry.revision) return 'deleted';
+  if (item.deleted && !item.own && !item.signed && !entry.deleted && item.revision > entry.revision) {
+    return 'deleted';
+  }
   if (item.revision < entry.revision) return 'rolled-back';
   if (item.revision > entry.revision) return 'unlisted';
   return item.deleted === entry.deleted && item.hash === entry.hash ? 'expected' : 'sibling';
@@ -169,7 +189,7 @@ export function mergeEntries(
     if (skip.has(id)) continue;
     const listed = byId.get(id);
     if (item.deleted) {
-      if (!item.own && !listed?.deleted) continue;
+      if (!item.own && !item.signed && !listed?.deleted) continue;
     } else {
       if (!item.opened && !item.own) continue;
       const seen = deleted[id];

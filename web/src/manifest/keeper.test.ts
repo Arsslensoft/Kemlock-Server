@@ -562,6 +562,42 @@ describe('signing the next manifest after this browser writes', () => {
     expect(entries.find((entry) => entry.id === A)).toEqual(await listed(A, 2));
   });
 
+  it('does not flag a deletion whose write signature verified, and signs it into the next manifest', async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 2), await listed(B, 1)] }));
+    // Another device of the account deleted A, signing the write; the server also hid nothing.
+    run.keeper.served(tombstone(A, 3), false, 'signed');
+    run.keeper.served(item(B, 1), true, 'signed');
+    run.keeper.markComplete();
+    await run.keeper.verify(true);
+    expect(run.keeper.getWarning()).toBe(NO_WARNING);
+    await run.keeper.wrote([item(C, 1)]);
+    await run.keeper.flush();
+    const entries = putBody(run.api).manifest?.entries ?? [];
+    expect(entries.find((entry) => entry.id === A)).toEqual(tomb(A, 3));
+  });
+
+  it('still flags a deletion whose signature is missing or not a verified one', async () => {
+    for (const verdict of ['unsigned', 'invalid', 'unknown'] as const) {
+      const run = setup();
+      run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 2)] }));
+      run.keeper.served(tombstone(A, 3), false, verdict);
+      run.keeper.markComplete();
+      await run.keeper.verify(true);
+      expect(run.keeper.getWarning().items.map(({ id, verdict }) => [id, verdict])).toEqual([[A, 'deleted']]);
+    }
+  });
+
+  it('shows a revision the vault refused for its signature, and keeps showing it', async () => {
+    const run = setup();
+    run.keeper.rejected(item(A, 5), 'invalid');
+    run.keeper.rejected(item(B, 5), 'unsigned');
+    expect(run.keeper.getWarning().items.map(({ id, verdict }) => [id, verdict])).toEqual([
+      [A, 'forged'],
+      [B, 'unsigned'],
+    ]);
+  });
+
   it("signs in a deletion this browser wrote, and does not flag it", async () => {
     const run = setup();
     run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 2)] }));

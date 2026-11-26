@@ -17,8 +17,22 @@ const H1 = '01'.repeat(32);
 const H2 = '02'.repeat(32);
 const OWNER = 'user:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
-const live = (revision: number, hash = H1, own = false, opened = true) => ({ revision, hash, deleted: false, opened, own });
-const gone = (revision: number, own = false) => ({ revision, hash: TOMBSTONE_HASH, deleted: true, opened: false, own });
+const live = (revision: number, hash = H1, own = false, opened = true, signed = false) => ({
+  revision,
+  hash,
+  deleted: false,
+  opened,
+  own,
+  signed,
+});
+const gone = (revision: number, own = false, signed = false) => ({
+  revision,
+  hash: TOMBSTONE_HASH,
+  deleted: true,
+  opened: false,
+  own,
+  signed,
+});
 const entry = (id: string, revision: number, hash = H1) => ({ id, revision, hash, deleted: false });
 const tomb = (id: string, revision: number) => ({ id, revision, hash: TOMBSTONE_HASH, deleted: true });
 const manifest = (entries: Manifest['entries']): Manifest => ({ owner: OWNER, counter: 4, entries });
@@ -118,6 +132,31 @@ describe('recordDeleted', () => {
     const before: DeletedRecord = { [A]: { revision: 3, seenAt: 0 }, [B]: { revision: 1, seenAt: 10 } };
     const after = recordDeleted(before, undefined, ledger({}), DELETED_RETENTION_MS + 5);
     expect(Object.keys(after)).toEqual([B]);
+  });
+});
+
+describe('a deletion whose write signature verified', () => {
+  it('is a deletion by its writer, not one the server or an app that cannot sign made', () => {
+    const listed = manifest([entry(A, 2)]);
+    expect(compareLedger(listed, {}, ledger({ [A]: gone(3, false, true) }))).toEqual([]);
+    // Unsigned, the same tombstone is still flagged.
+    expect(compareLedger(listed, {}, ledger({ [A]: gone(3) }))[0]?.verdict).toBe('deleted');
+  });
+
+  it('is signed into the next manifest, and an unsigned one still is not', () => {
+    const merged = mergeEntries(
+      [entry(A, 2), entry(B, 2)],
+      ledger({ [A]: gone(3, false, true), [B]: gone(3) }),
+      {},
+      NONE,
+    );
+    expect(merged).toEqual(expect.arrayContaining([tomb(A, 3), entry(B, 2)]));
+    expect(merged).toHaveLength(2);
+  });
+
+  it('still counts as a deletion for resurrection: a live copy at or below it comes back flagged', () => {
+    const found = compareLedger(manifest([tomb(A, 3)]), {}, ledger({ [A]: live(3) }));
+    expect(found.map((finding) => finding.verdict)).toEqual(['resurrected']);
   });
 });
 
