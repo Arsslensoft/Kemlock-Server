@@ -1701,7 +1701,8 @@ fn a_chain_that_verifies_is_not_trusted_until_first_contact() {
         .space_chain_view(&space)
         .expect("a view")
         .expect("held");
-    assert_eq!(serde_json::to_value(&held).expect("json")["trusted"], true);
+    let held: Value = serde_json::from_str(&held).expect("json");
+    assert_eq!(held["trusted"], true);
     // A box the chain didn't commit to for this account opens no key even now.
     assert_eq!(
         session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
@@ -1744,7 +1745,10 @@ fn a_chain_that_ends_earlier_than_one_already_verified_is_rolled_back() {
     }
     // The state held is still the longer chain.
     let held = session.space_chain_view(&space).expect("view").expect("held");
-    assert_eq!(serde_json::to_value(&held).expect("json")["head"]["seq"], 49);
+    let held: Value = serde_json::from_str(&held).expect("json");
+    assert_eq!(held["head"]["seq"], 49);
+    // The kept view is the one the verdict gave, read again, not made again.
+    assert_eq!(held["ok"], true);
 }
 
 #[wasm_bindgen_test]

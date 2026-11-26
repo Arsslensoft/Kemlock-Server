@@ -1197,10 +1197,7 @@ impl Vault {
     #[wasm_bindgen(js_name = spaceChainView)]
     pub fn space_chain_view(&self, space_id: &str) -> Result<Option<String>, JsError> {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
-        match self.session.space_chain_view(&space).map_err(fail)? {
-            Some(view) => json(&view).map(Some),
-            None => Ok(None),
-        }
+        self.session.space_chain_view(&space).map_err(fail)
     }
 
     /// Says the person compared the fingerprint first contact asked for and it matched: the

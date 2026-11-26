@@ -96,6 +96,17 @@ pub(crate) struct HeldChain {
     pub(crate) trusted: bool,
     contact: ContactOut,
     divergence: Option<u64>,
+    /// The view as JSON, made once when the state changes: the page asks for it on every read of
+    /// the space, and the state doesn't change between them.
+    json: String,
+}
+
+impl HeldChain {
+    /// Makes the JSON of the view again, for the account `me`.
+    fn refresh(&mut self, me: &Id) -> Result<(), Error> {
+        self.json = serde_json::to_string(&view_of(self, me)).map_err(|_| Error::Invalid)?;
+        Ok(())
+    }
 }
 
 // ---- what the page is told ---------------------------------------------------------------------
@@ -652,35 +663,39 @@ impl Session {
         let (last_signed, invited_seq) = signers(&chain, &me);
         let contact = contact_of(&verified.state, &me, &own, &last_signed, invited_seq);
         let trusted = given.is_some() || previously_trusted || contact.kind == "self";
-        let held = HeldChain {
+        let mut held = HeldChain {
             state: verified.state,
             links: verified.links,
             trusted,
             contact,
             divergence: verified.divergence,
+            json: String::new(),
         };
+        held.refresh(&me)?;
         let view = view_of(&held, &me);
         unlocked.spaces.chains.insert(*space, held);
         Ok(Verdict::View(Box::new(view)))
     }
 
-    /// The view of the chain this unlock holds for `space`, when it does.
-    pub(crate) fn space_chain_view(&self, space: &Id) -> Result<Option<ChainView>, Error> {
+    /// The view of the chain this unlock holds for `space`, as JSON, when it does. It is kept
+    /// from when the state last changed, not made again on every read.
+    pub(crate) fn space_chain_view(&self, space: &Id) -> Result<Option<String>, Error> {
         let unlocked = self.unlocked()?;
         Ok(unlocked
             .spaces
             .chains
             .get(space)
-            .map(|held| view_of(held, &unlocked.account_id)))
+            .map(|held| held.json.clone()))
     }
 
     /// The person compared the fingerprint of the anchor person and it matched: the chain is
     /// trusted from now on in this unlock, and keys of the space may be opened and sealed.
     pub(crate) fn accept_first_contact(&mut self, space: &Id) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
+        let me = unlocked.account_id;
         let held = unlocked.spaces.chains.get_mut(space).ok_or(Error::Invalid)?;
         held.trusted = true;
-        Ok(())
+        held.refresh(&me)
     }
 
     /// Opens the space key or a collection key of a chained space at the chain's current version,
