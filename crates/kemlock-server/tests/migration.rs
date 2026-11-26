@@ -17,7 +17,9 @@ use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use kemlock_server::adapters::ServerCrypto;
 use kemlock_server::files::BitwardenBlobs;
-use kemlock_server::migration::{IMPORT_FOLDER, LEASE_TTL, MIGRATION_LEASE, VaultwardenMove};
+use kemlock_server::migration::{
+    IMPORT_FOLDER, LEASE_TTL, MIGRATION_LEASE, VaultwardenMove, WRITE_FAILED,
+};
 use kemlock_store_sql::SqlStore;
 use std::time::Duration;
 use time::macros::datetime;
@@ -439,4 +441,26 @@ async fn a_failed_move_is_in_the_event_log_too() {
             .as_deref()
             .is_some_and(|t| t.starts_with("import/db.sqlite3: "))
     );
+}
+
+#[tokio::test]
+async fn a_write_that_fails_tells_the_console_only_a_fixed_text() {
+    let rig = rig().await;
+    vwfix::create_sample_folder(&rig.vw_folder()).await;
+    // An address Kemlock refuses: the write fails after the source was read and mapped.
+    let mut conn = vwfix::writer(&rig.vw_folder()).await;
+    vwfix::exec(
+        &mut conn,
+        "UPDATE users SET email = 'not an email' WHERE email = 'alice@example.org'",
+    )
+    .await;
+    drop(conn);
+
+    rig.runner
+        .start(rig.request(&rig.vw_path()))
+        .await
+        .expect("started");
+    let failed = rig.finished().await;
+    assert_eq!(failed.state, MigrationState::Failed, "{failed:?}");
+    assert_eq!(failed.error.as_deref(), Some(WRITE_FAILED));
 }

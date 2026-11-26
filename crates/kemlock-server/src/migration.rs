@@ -171,6 +171,16 @@ fn read_failure(error: &ReadError) -> String {
     }
 }
 
+/// What the console is told when writing failed: a store error can quote a constraint, a row or a
+/// path, so the text goes to the server's log and the console gets this.
+pub const WRITE_FAILED: &str =
+    "writing to Kemlock Server failed and nothing was written; the server's log says why";
+
+fn write_failure(error: &dyn std::fmt::Display) -> String {
+    tracing::warn!(%error, "couldn't write the Vaultwarden data into Kemlock Server");
+    WRITE_FAILED.to_owned()
+}
+
 /// How many ids of one kind the text lists before it says how many more there were.
 const SHOWN_IDS: usize = 20;
 
@@ -402,10 +412,10 @@ impl VaultwardenMove {
         let mut sink =
             SqlImportSink::begin(&self.store, ServerSeal::new(&self.server_key), options)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| write_failure(&e))?;
         let report = apply(&mapped, &[], &mut sink)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| write_failure(&e))?;
         Ok(describe(&report))
     }
 
