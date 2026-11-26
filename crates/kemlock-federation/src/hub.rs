@@ -19,7 +19,8 @@ use crate::error::{FedError, Result};
 use crate::extra::Acknowledgement;
 use crate::net::Http;
 use crate::pairing::{
-    CODE_LIFETIME_SECS, Fingerprint, PairingCode, PairingInitiator, PendingPairing, respond,
+    CODE_LIFETIME_SECS, Fingerprint, PairingCode, PairingInitiator, PendingPairing,
+    check_first_message, respond,
 };
 use crate::ports::Peer;
 use crate::replicate::{FedStore, Replica};
@@ -171,6 +172,9 @@ impl<S: FedStore> Pairings<S> {
     /// Message 1 from the typing side: uses up the code (right or wrong, it is good for one
     /// attempt) and answers with message 2.
     pub fn respond(&self, message: &[u8], now: u64) -> Result<Vec<u8>> {
+        // A message that couldn't be an attempt at the code is refused before the code is touched:
+        // anyone can send one, and the code is good for a single attempt.
+        check_first_message(message, self.replica.server_id())?;
         let initiator = initiator_of(message)?;
         let code = {
             let mut state = self.state();
@@ -439,4 +443,38 @@ mod tests {
                 .is_empty()
         );
     }
+    #[tokio::test]
+    async fn a_message_that_could_not_be_an_attempt_leaves_the_code_waiting() {
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (a_id, b_id) = (ia.server, ib.server);
+        let a = Arc::new(Replica::new(MemoryStore::new(a_id), Arc::new(ia)));
+        let b = Arc::new(Replica::new(MemoryStore::new(b_id), Arc::new(ib)));
+        let shower = Arc::new(Pairings::new(b.clone(), Arc::new(Nobody)));
+        let typer = Pairings::new(a.clone(), Arc::new(Loop(shower.clone())));
+        let (code, _) = shower.new_code(NOW);
+
+        // Junk, an empty map, and a message 1 that names this server as the initiator: all
+        // refused, and none of them uses the code up.
+        assert!(shower.respond(b"junk", NOW).is_err());
+        assert!(shower.respond(&[0xa0], NOW).is_err());
+        let own = crate::cbor::Value::map(vec![
+            (0, crate::cbor::Value::Uint(1)),
+            (1, crate::cbor::Value::bytes(&[7; 16])),
+            (2, crate::cbor::Value::bytes(&[8; 32])),
+            (3, crate::cbor::Value::bytes(b_id.as_bytes())),
+        ])
+        .encode();
+        assert!(shower.respond(&own, NOW).is_err());
+        assert!(shower.code_waiting(NOW), "the code is still good");
+
+        // The admin who has the code can still pair with it.
+        let awaiting = typer
+            .start("https://b.example.org", &code, NOW)
+            .await
+            .expect("the code was not used up");
+        assert_eq!(awaiting.server(), b_id);
+        assert!(!shower.code_waiting(NOW), "a real attempt uses it");
+    }
+
 }
