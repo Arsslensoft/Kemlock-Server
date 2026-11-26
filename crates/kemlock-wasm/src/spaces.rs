@@ -29,7 +29,7 @@
 //! So a name opens only under the space, id, kind and key version it was sealed with, and a rename
 //! under the same key version is a fresh nonce, not a new key.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kemlock_crypto::{
     kem1,
@@ -37,10 +37,15 @@ use kemlock_crypto::{
     kx1,
     owner::Owner,
     sealed_box::{self, context},
+    space_chain::{
+        State,
+        client::{ItemRefusal, check_item_revision},
+    },
 };
 use zeroize::Zeroizing;
 
 use crate::{
+    chain::HeldChain,
     error::Error,
     session::{SealedItem, SealedItemRef, Session},
 };
@@ -85,11 +90,70 @@ impl NameKind {
 /// it drops (`SecretKey`), so `lock` wipes them with the rest of the session.
 #[derive(Default)]
 pub(crate) struct SpaceKeys {
-    spaces: HashMap<([u8; 16], u32), SecretKey>,
-    collections: HashMap<([u8; 16], [u8; 16], u32), SecretKey>,
+    pub(crate) spaces: HashMap<([u8; 16], u32), SecretKey>,
+    pub(crate) collections: HashMap<([u8; 16], [u8; 16], u32), SecretKey>,
+    /// The verified chains of the spaces that have one (`chain.rs`). A space in here opens and
+    /// seals keys only through its chain.
+    pub(crate) chains: HashMap<[u8; 16], HeldChain>,
+    /// Spaces whose served chain was refused: they have a chain, so they stay closed too.
+    pub(crate) refused: HashSet<[u8; 16]>,
 }
 
 impl SpaceKeys {
+    /// The verified state of a space that has a chain, when this unlock has verified it.
+    fn chain_state(&self, space: &[u8; 16]) -> Option<&State> {
+        self.chains.get(space).map(|held| &held.state)
+    }
+
+    /// Refuses an operation that opens, seals or names keys outside the chain, for a space that
+    /// has one: the page can't skip the chain by calling the older operations.
+    fn require_unchained(&self, space: &[u8; 16]) -> Result<(), Error> {
+        if self.chains.contains_key(space) || self.refused.contains(space) {
+            Err(Error::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether an item of `collection` may be written under `version`: for a chained space, only
+    /// once first contact is done, under the collection's current key version, and while neither
+    /// it nor the space key is marked ("Using the state", "Items").
+    fn allow_item_write(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        version: u32,
+    ) -> Result<(), Error> {
+        let Some(held) = self.chains.get(space) else {
+            return Ok(());
+        };
+        if !held.trusted {
+            return Err(Error::Invalid);
+        }
+        check_item_revision(&held.state, collection, version).map_err(|_| Error::Invalid)
+    }
+
+    /// Whether an item of `collection` may be opened under `version`: for a chained space, the
+    /// collection is one the chain has, at a key version it has made. A marked key doesn't hide
+    /// what was accepted before it was marked.
+    fn allow_item_open(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        version: u32,
+    ) -> Result<(), Error> {
+        let Some(held) = self.chains.get(space) else {
+            return Ok(());
+        };
+        if !held.trusted {
+            return Err(Error::Invalid);
+        }
+        match check_item_revision(&held.state, collection, version) {
+            Ok(()) | Err(ItemRefusal::KeyMarked) => Ok(()),
+            Err(_) => Err(Error::Invalid),
+        }
+    }
+
     fn space(&self, space: &[u8; 16], version: u32) -> Result<&SecretKey, Error> {
         self.spaces.get(&(*space, version)).ok_or(Error::Invalid)
     }
@@ -219,6 +283,7 @@ impl Session {
         if unlocked.spaces.newest_space(space).is_ok() {
             return Err(Error::Invalid);
         }
+        unlocked.spaces.require_unchained(space)?;
         let own_public = kx_private.public_key()?;
         let own_id = unlocked.account_id;
 
@@ -273,6 +338,8 @@ impl Session {
         sealed: &[u8],
     ) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
+        // A space with a chain opens its keys through the chain (`open_chain_key`) only.
+        unlocked.spaces.require_unchained(space)?;
         let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let plain = sealed_box::open(
             kx_private,
@@ -294,6 +361,7 @@ impl Session {
         sealed: &[u8],
     ) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
+        unlocked.spaces.require_unchained(space)?;
         let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let plain = sealed_box::open(
             kx_private,
@@ -319,6 +387,29 @@ impl Session {
         ciphertext: &[u8],
     ) -> Result<String, Error> {
         let unlocked = self.unlocked()?;
+        // A name of a chained space is shown only when it is the one the chain committed, at the
+        // name version it recorded ("Using the state", "Names").
+        if let Some(state) = unlocked.spaces.chain_state(space) {
+            if !unlocked.spaces.chains.get(space).is_some_and(|held| held.trusted) {
+                return Err(Error::Invalid);
+            }
+            let committed = match kind {
+                NameKind::Space if id == space => {
+                    Some((state.space.name_hash, state.space.name_version))
+                }
+                NameKind::Space => None,
+                NameKind::Collection => state
+                    .collections
+                    .get(id)
+                    .map(|c| (c.name_hash, c.name_version)),
+                NameKind::Group => state.groups.get(id).map(|g| (g.name_hash, g.name_version)),
+            };
+            match committed {
+                Some((hash, version))
+                    if version == key_version && hash == kemlock_crypto::hash::sha256(ciphertext) => {}
+                _ => return Err(Error::Invalid),
+            }
+        }
         let key = unlocked
             .spaces
             .space(space, key_version)?
@@ -344,6 +435,8 @@ impl Session {
         name: &str,
     ) -> Result<Vec<u8>, Error> {
         let unlocked = self.unlocked()?;
+        // A chained space's names change by records, which commit their hashes.
+        unlocked.spaces.require_unchained(space)?;
         let key = unlocked.spaces.space(space, key_version)?;
         seal_name_under(key, space, key_version, kind, id, name)
     }
@@ -363,6 +456,7 @@ impl Session {
     ) -> Result<SealedItem, Error> {
         let unlocked = self.unlocked()?;
         let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
+        unlocked.spaces.allow_item_write(space, collection, version)?;
         let wrap = key.child(ITEM_WRAP_LABEL)?;
         let owner = Owner::space(*space);
         let item_key = SecretKey::generate();
@@ -387,6 +481,7 @@ impl Session {
         }
         let unlocked = self.unlocked()?;
         let version = item.key_version.ok_or(Error::Invalid)?;
+        unlocked.spaces.allow_item_open(space, collection, version)?;
         let wrap = unlocked
             .spaces
             .collection(space, collection, version)?
@@ -412,6 +507,7 @@ impl Session {
     ) -> Result<NewCollection, Error> {
         let unlocked = self.unlocked_mut()?;
         let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        unlocked.spaces.require_unchained(space)?;
         let (version, space_key) = unlocked.spaces.newest_space(space)?;
         if unlocked.spaces.collections.contains_key(&(
             *space,
@@ -459,6 +555,9 @@ impl Session {
         recipient_id: &[u8; 16],
     ) -> Result<Vec<u8>, Error> {
         let unlocked = self.unlocked()?;
+        // A chained space seals to the members its chain gives, in records, not to a key the page
+        // names.
+        unlocked.spaces.require_unchained(space)?;
         let (version, key) = unlocked.spaces.newest_space(space)?;
         let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
         Ok(sealed_box::seal(
@@ -478,6 +577,7 @@ impl Session {
         recipient_id: &[u8; 16],
     ) -> Result<Vec<u8>, Error> {
         let unlocked = self.unlocked()?;
+        unlocked.spaces.require_unchained(space)?;
         let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
         let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
         Ok(sealed_box::seal(

@@ -26,6 +26,8 @@ export interface ConfirmState {
 }
 
 export interface SpaceActions extends StructureActions {
+  /** The person compared the fingerprint first contact asked for and it matched. */
+  acceptFirstContact?: () => void;
   invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
@@ -233,6 +235,80 @@ function ConfirmPanel({
   );
 }
 
+/** What a space that isn't checked says: why, and for a chain waiting for first contact, what to compare. */
+function ChainNotice({
+  detail,
+  busy,
+  onAccept,
+}: {
+  detail: SpaceDetail;
+  busy: boolean;
+  onAccept: (() => void) | undefined;
+}) {
+  const t = useT();
+  const [picked, setPicked] = useState('');
+  const trust = detail.trust;
+  if (!trust || trust.kind === 'unchained' || trust.kind === 'verified') return null;
+  if (trust.kind === 'unverified') {
+    return (
+      <Notice tone="error" live>
+        <b>{t('space.chain.unchecked.title')}</b>
+        <p>
+          {trust.reason === 'unreachable'
+            ? t('space.chain.unreachable.body')
+            : t('space.chain.unchecked.body', { reason: trust.reason })}
+        </p>
+      </Notice>
+    );
+  }
+  const ask = trust.view.firstContact;
+  const owners = ask?.owners ?? [];
+  const chosen = ask?.kind === 'pick' ? owners.find((o) => o.id === picked) : undefined;
+  const person = ask?.kind === 'compare' ? ask.person : chosen?.id;
+  const digits = ask?.kind === 'compare' ? ask.fingerprint : chosen?.fingerprint;
+  const name = person ? memberLabel(detail.members, person) : '';
+  return (
+    <section className="confirm-panel" aria-labelledby="h-first-contact">
+      <h2 id="h-first-contact">{t('space.chain.contact.title')}</h2>
+      {ask?.kind === 'compare' ? (
+        <p>{t('space.chain.contact.compare', { name })}</p>
+      ) : owners.length > 0 ? (
+        <>
+          <p>{t('space.chain.contact.pick')}</p>
+          <SelectInput
+            label={t('space.chain.contact.owner')}
+            value={picked}
+            onChange={setPicked}
+            options={[
+              { value: '', label: '' },
+              ...owners.map((o) => ({ value: o.id, label: memberLabel(detail.members, o.id) })),
+            ]}
+          />
+        </>
+      ) : (
+        <Notice tone="warn">
+          <p>{t('space.chain.contact.none')}</p>
+        </Notice>
+      )}
+      {digits ? (
+        <p className="fp" aria-label={t('space.chain.contact.label', { name })}>
+          {digits}
+        </p>
+      ) : null}
+      <p>{t('space.chain.contact.warning')}</p>
+      <div className="actions">
+        <Button
+          variant="primary"
+          isDisabled={busy || !digits || !onAccept}
+          onPress={() => onAccept?.()}
+        >
+          {t('space.chain.contact.matches')}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 type Offboard = { kind: 'revoke' | 'remove'; member: MemberViewDto } | null;
 
 export function SpaceDetailView({
@@ -313,7 +389,8 @@ export function SpaceDetailView({
           <p>{t(error.id, error.values)}</p>
         </Notice>
       ) : null}
-      {!detail.readable ? (
+      <ChainNotice detail={detail} busy={busy} onAccept={actions.acceptFirstContact} />
+      {!detail.readable && (!detail.trust || detail.trust.kind === 'unchained') ? (
         <Notice tone="warn">
           <p>{me.state === 'confirmed' ? t('sharing.unavailable') : t('space.detail.notConfirmed')}</p>
         </Notice>

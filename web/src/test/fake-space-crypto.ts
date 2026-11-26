@@ -2,6 +2,7 @@
 // the same failure points (a name opens only under the id, kind and key version it was sealed
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
+import type { ChainView } from '@/crypto/types';
 import { fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
@@ -31,8 +32,28 @@ export function fakeSharingCrypto(): FakeSharing {
   };
 }
 
+/** What the worker answers for a space the server serves no chain for. */
+export const NO_CHAIN: ChainView = {
+  ok: true,
+  chained: false,
+  epoch: 0,
+  links: [],
+  trusted: true,
+  members: [],
+  space: { keyVersion: 0, marked: false, nameHash: '', nameVersion: 0 },
+  collections: [],
+  groups: [],
+  grants: [],
+  keys: [],
+};
+
 export interface FakeSpaces extends SpaceCrypto {
   calls: string[];
+  /**
+   * What `verifySpaceChain` answers: a space with no chain unless a test sets it (a refusal, or a
+   * verified view). A view that is chained is then what `spaceChainView` gives, until `lock`.
+   */
+  chain: ChainView | { ok: false; reason: string; seq: number | null };
   /** What `ownFingerprint` answers: set it to the fingerprint of the test's own bundle. */
   ownFingerprintText: string;
 }
@@ -44,9 +65,26 @@ function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string
 export function fakeSpaceCrypto(): FakeSpaces {
   const base = fakeSharingCrypto();
   const calls = base.calls;
+  let held: ChainView | null = null;
   const fake: FakeSpaces = {
     ...base,
     ownFingerprintText: '',
+    chain: NO_CHAIN,
+    async verifySpaceChain({ spaceId }) {
+      calls.push(`verifySpaceChain:${spaceId}`);
+      held = fake.chain.ok && fake.chain.chained ? fake.chain : null;
+      return fake.chain;
+    },
+    async spaceChainView() {
+      return held;
+    },
+    async acceptFirstContact(spaceId) {
+      calls.push(`acceptFirstContact:${spaceId}`);
+      if (held) held = { ...held, trusted: true };
+    },
+    async openChainKey({ key, servedVersion }) {
+      calls.push(`openChainKey:${key}:${servedVersion}`);
+    },
     async newSpace({ spaceId, collectionId, spaceName, collectionName }) {
       calls.push('newSpace');
       return {

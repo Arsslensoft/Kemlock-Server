@@ -148,6 +148,9 @@ export function fakeSpacesApi() {
     list: vi.fn<SpacesApi['list']>(async () => [{ space, member: member(ME, { role: 'owner' }) }]),
     create: vi.fn<SpacesApi['create']>(async () => spaceView()),
     get: vi.fn<SpacesApi['get']>(async () => spaceView()),
+    // No chain by default: a space made before chains.
+    chain: vi.fn<SpacesApi['chain']>(async () => []),
+    chainSeals: vi.fn<SpacesApi['chainSeals']>(async () => []),
     members: vi.fn<SpacesApi['members']>(async () => members()),
     invite: vi.fn<SpacesApi['invite']>(async () => member(THEO, { state: 'invited' })),
     accept: vi.fn<SpacesApi['accept']>(async () => member(ME)),

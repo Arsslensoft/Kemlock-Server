@@ -9,6 +9,8 @@ import {
   CryptoError,
   type CryptoErrorCode,
   type ApprovedKeyHandle,
+  type ChainVerdict,
+  type ChainView,
   type DeviceKey,
   type EmergencyKeyHandle,
   type MasterKeyHandle,
@@ -314,6 +316,31 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
     async sealCollectionKeyTo({ spaceId, collectionId, recipientKx1, recipientId }) {
       return (await current()).sealCollectionKeyTo(spaceId, collectionId, recipientKx1, recipientId);
+    },
+    async verifySpaceChain({ spaceId, records, anchor }) {
+      return parse<ChainVerdict>(
+        (await current()).verifySpaceChain(
+          spaceId,
+          JSON.stringify(records),
+          anchor === undefined ? undefined : JSON.stringify(anchor),
+        ),
+      );
+    },
+    async spaceChainView(spaceId) {
+      const view = (await current()).spaceChainView(spaceId);
+      return view === undefined ? null : parse<ChainView>(view);
+    },
+    async acceptFirstContact(spaceId) {
+      (await current()).acceptFirstContact(spaceId);
+    },
+    async openChainKey({ spaceId, key, servedVersion, sealed, list }) {
+      (await current()).openChainKey(
+        spaceId,
+        key,
+        toKeyVersion(servedVersion),
+        sealed,
+        list === undefined ? undefined : JSON.stringify(list),
+      );
     },
     async newDeviceKey() {
       return parse<DeviceKey>((await current()).newDeviceKey());

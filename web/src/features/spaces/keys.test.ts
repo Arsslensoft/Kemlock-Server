@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CollectionDto, GrantDto, MemberDto, SpaceViewDto } from '@/api/spaces';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import type { SpaceCrypto } from '@/spaces/crypto';
+import { NO_CHAIN } from '@/test/fake-space-crypto';
 import { canEditCollection, createSpaceKeyLoader, loadWritableCollections, openSpaceKeys } from './keys';
 import type { SpaceDeps } from './model';
 
@@ -50,6 +51,9 @@ function view(role: MemberDto['role'], grants: GrantDto[]): SpaceViewDto {
 
 function deps(spaceView: SpaceViewDto) {
   const crypto = {
+    // The server serves no chain for this space.
+    spaceChainView: vi.fn(async () => null),
+    verifySpaceChain: vi.fn(async () => NO_CHAIN),
     openSpace: vi.fn(async () => undefined),
     openCollection: vi.fn(async () => undefined),
     openName: vi.fn(async ({ ciphertext }: { ciphertext: Uint8Array }) =>
@@ -59,6 +63,7 @@ function deps(spaceView: SpaceViewDto) {
   const api = {
     list: vi.fn(async () => [{ space: spaceView.space, member: spaceView.me }]),
     get: vi.fn(async () => spaceView),
+    chain: vi.fn(async () => []),
   } as unknown as SpaceDeps['api'];
   return { api, crypto } satisfies SpaceDeps;
 }

@@ -161,6 +161,17 @@ export interface WasmVault {
     recipientKx1: string,
     recipientId: string,
   ): string;
+  // The space chain: JSON in and out (see crates/kemlock-wasm/src/chain.rs).
+  verifySpaceChain(spaceId: string, records: string, anchor?: string): string;
+  spaceChainView(spaceId: string): string | undefined;
+  acceptFirstContact(spaceId: string): void;
+  openChainKey(
+    spaceId: string,
+    key: string,
+    servedVersion: number,
+    sealed: string,
+    list?: string,
+  ): void;
   lock(): void;
   /** Frees the instance's WebAssembly memory (wasm-bindgen). */
   free?(): void;

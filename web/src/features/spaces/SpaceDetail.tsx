@@ -8,6 +8,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
 import { spaceDeps } from './deps';
+import { acceptFirstContact } from './chain';
 import { refreshSpaces } from './refresh';
 import {
   type SpaceDetail as Detail,
@@ -16,6 +17,7 @@ import {
   createGroup,
   grantAccess,
   inviteMember,
+  SpaceNotChecked,
   loadSpaceDetail,
   renameCollection,
   setGroupMembers,
@@ -30,6 +32,9 @@ function describeSpaceError(error: unknown): Described {
       id: 'space.error.notVerified',
       values: { name: error.member.name || error.member.email },
     };
+  }
+  if (error instanceof SpaceNotChecked) {
+    return { id: error.kind === 'verified' ? 'space.error.chained' : 'space.error.unchecked' };
   }
   return describeAccountError(error);
 }
@@ -103,6 +108,10 @@ export default function SpaceDetail() {
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
         invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input)),
+        acceptFirstContact: () => {
+          if (!detail) return;
+          void change(() => acceptFirstContact(spaceDeps, spaceId, detail.view.me.user));
+        },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
         cancelConfirm: () => setConfirming(null),

@@ -19,13 +19,44 @@ import type {
 } from '@/api/spaces';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
+import type { AnchorStore } from '@/spaces/anchors';
 import type { SpaceCrypto } from '@/spaces/crypto';
+import {
+  type SpaceTrust,
+  checkSpaceChain,
+  nameVersionOf,
+  openChainedKey,
+  openChainedKeys,
+  overlayChain,
+} from './chain';
 import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
   api: SpacesApi;
   crypto: SpaceCrypto;
   newId?: () => string;
+  /** Where this browser keeps the anchors of the chains it verified; its IndexedDB when left out. */
+  anchors?: AnchorStore;
+}
+
+/**
+ * A change that needs the space's keys, asked of a space whose chain can't be used for it: one
+ * that isn't checked (`kind` says how far it got), or one whose chain the web vault can't add
+ * records to yet.
+ */
+export class SpaceNotChecked extends Error {
+  readonly kind: SpaceTrust['kind'];
+
+  constructor(kind: SpaceTrust['kind']) {
+    super(`the space can't be changed here (${kind})`);
+    this.name = 'SpaceNotChecked';
+    this.kind = kind;
+  }
+}
+
+/** Refuses a change to a space that has a chain: its changes are signed records. */
+function requireUnchained(detail: Pick<SpaceDetail, 'trust'>): void {
+  if (detail.trust && detail.trust.kind !== 'unchained') throw new SpaceNotChecked(detail.trust.kind);
 }
 
 const newId = (deps: SpaceDeps) => (deps.newId ?? (() => globalThis.crypto.randomUUID()))();
@@ -39,42 +70,61 @@ export interface SpaceRow {
   role: SpaceRole;
   state: MemberDto['state'];
   keysPending: boolean;
+  /** How far the space's chain can be trusted, when it has one or couldn't be checked. */
+  trust?: Exclude<SpaceTrust['kind'], 'unchained'>;
 }
 
 async function openSpaceName(
-  crypto: SpaceCrypto,
+  deps: SpaceDeps,
   summary: SpaceSummaryDto,
-): Promise<string | null> {
+): Promise<{ name: string | null; trust: SpaceTrust }> {
+  const spaceId = summary.space.id;
+  const trust = await checkSpaceChain(deps, spaceId, summary.member.user);
   const sealed = summary.member.sealedSpaceKey;
-  if (!sealed) return null;
+  if (!sealed || trust.kind === 'unverified' || trust.kind === 'first-contact') {
+    return { name: null, trust };
+  }
   try {
-    await crypto.openSpace({
-      spaceId: summary.space.id,
-      keyVersion: summary.member.keyVersion ?? summary.space.keyVersion,
-      sealed: decodeB64(sealed),
-    });
-    return await crypto.openName({
-      spaceId: summary.space.id,
-      keyVersion: summary.space.keyVersion,
-      kind: 'space',
-      id: summary.space.id,
-      ciphertext: decodeB64(summary.space.name),
-    });
+    const servedVersion = summary.member.keyVersion ?? summary.space.keyVersion;
+    let keyVersion = summary.space.keyVersion;
+    if (trust.kind === 'verified') {
+      // Through the chain, at the version it gives, and the name only as the chain committed it.
+      await openChainedKey(deps, spaceId, trust.view, null, servedVersion, sealed);
+      keyVersion = nameVersionOf(trust.view, 'space', spaceId);
+    } else {
+      await deps.crypto.openSpace({ spaceId, keyVersion: servedVersion, sealed: decodeB64(sealed) });
+    }
+    return {
+      name: await deps.crypto.openName({
+        spaceId,
+        keyVersion,
+        kind: 'space',
+        id: spaceId,
+        ciphertext: decodeB64(summary.space.name),
+      }),
+      trust,
+    };
   } catch {
-    return null;
+    return { name: null, trust };
   }
 }
 
 export async function loadSpaceList(deps: SpaceDeps): Promise<SpaceRow[]> {
   const summaries = await deps.api.list();
   return Promise.all(
-    summaries.map(async (summary) => ({
-      id: summary.space.id,
-      name: await openSpaceName(deps.crypto, summary),
-      role: summary.member.role,
-      state: summary.member.state,
-      keysPending: summary.space.keysPendingSince !== null,
-    })),
+    summaries.map(async (summary) => {
+      const { name, trust } = await openSpaceName(deps, summary);
+      return {
+        id: summary.space.id,
+        name,
+        role: summary.member.role,
+        state: summary.member.state,
+        keysPending: summary.space.keysPendingSince !== null,
+        ...(trust.kind === 'unverified' || trust.kind === 'first-contact'
+          ? { trust: trust.kind }
+          : {}),
+      };
+    }),
   );
 }
 
@@ -123,20 +173,41 @@ export interface SpaceDetail {
   groups: TitledGroup[];
   /** Whether the worker opened the space key: without it nothing can be sealed to anyone. */
   readable: boolean;
+  /**
+   * How far the space's chain can be trusted. For a space with a verified chain the members,
+   * roles, collections, groups and grants above are the chain's; for one that is unverified or
+   * waits for first contact nothing is opened and nothing is shown as checked. Left out, as it
+   * is in a test that doesn't care, the space is taken as one with no chain.
+   */
+  trust?: SpaceTrust;
 }
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
-  const [view, members] = await Promise.all([deps.api.get(spaceId), deps.api.members(spaceId)]);
-  const { space, me } = view;
+  const [served, servedMembers] = await Promise.all([deps.api.get(spaceId), deps.api.members(spaceId)]);
+  const trust = await checkSpaceChain(deps, spaceId, served.me.user);
+  let view = served;
+  let members = servedMembers;
   let readable = false;
-  if (me.sealedSpaceKey) {
+  let nameVersion = (_kind: 'space' | 'collection' | 'group', _id: string) => served.space.keyVersion;
+  if (trust.kind === 'verified') {
+    // The space as its chain gives it; keys open at the chain's version, under its commitments.
+    const chain = trust.view;
+    ({ view, members } = overlayChain(served, servedMembers, chain));
+    nameVersion = (kind, id) => nameVersionOf(chain, kind, id);
+    try {
+      await openChainedKeys(deps, spaceId, chain, served);
+      readable = true;
+    } catch {
+      readable = false;
+    }
+  } else if (trust.kind === 'unchained' && served.me.sealedSpaceKey) {
     try {
       await deps.crypto.openSpace({
         spaceId,
-        keyVersion: me.keyVersion ?? space.keyVersion,
-        sealed: decodeB64(me.sealedSpaceKey),
+        keyVersion: served.me.keyVersion ?? served.space.keyVersion,
+        sealed: decodeB64(served.me.sealedSpaceKey),
       });
-      for (const copy of view.collectionKeys) {
+      for (const copy of served.collectionKeys) {
         await deps.crypto.openCollection({
           spaceId,
           collectionId: copy.collection,
@@ -149,12 +220,13 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
       readable = false;
     }
   }
+  const { space } = view;
   const title = async (kind: 'space' | 'collection' | 'group', id: string, name: string) => {
     if (!readable) return null;
     try {
       return await deps.crypto.openName({
         spaceId,
-        keyVersion: space.keyVersion,
+        keyVersion: nameVersion(kind, id),
         kind,
         id,
         ciphertext: decodeB64(name),
@@ -167,6 +239,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     view,
     members,
     readable,
+    trust,
     name: await title('space', space.id, space.name),
     collections: await Promise.all(
       view.collections.map(async (c) => ({ ...c, title: await title('collection', c.id, c.name) })),
@@ -305,6 +378,7 @@ export async function confirmMember(
   if (!fingerprint.consistent) {
     throw new Error('the fingerprint worked out here differs from the worker’s');
   }
+  requireUnchained(detail);
   const spaceId = detail.view.space.id;
   // The bundle the person compared is the member's own at their current key version, and is what
   // the fingerprint on screen is of; a bundle that is another account's, or has since changed,
@@ -361,6 +435,7 @@ export async function createCollection(
   detail: SpaceDetail,
   input: { name: string; parent?: string },
 ) {
+  requireUnchained(detail);
   const spaceId = detail.view.space.id;
   const id = newId(deps);
   const made = await deps.crypto.newCollection({ spaceId, collectionId: id, name: input.name });
@@ -379,6 +454,7 @@ export async function renameCollection(
   collection: string,
   name: string,
 ) {
+  requireUnchained(detail);
   const spaceId = detail.view.space.id;
   const sealed = await deps.crypto.sealName({
     spaceId,
@@ -395,6 +471,7 @@ export async function createGroup(
   detail: SpaceDetail,
   input: { name: string; members: string[] },
 ) {
+  requireUnchained(detail);
   const spaceId = detail.view.space.id;
   const id = newId(deps);
   const sealed = await deps.crypto.sealName({
@@ -415,6 +492,7 @@ async function keysForNewcomers(
   before: Set<string>,
   after: Set<string>,
 ): Promise<Array<{ collection: string; user: string; sealed: string }>> {
+  requireUnchained(detail);
   const keys: Array<{ collection: string; user: string; sealed: string }> = [];
   for (const user of after) {
     if (before.has(user)) continue;
