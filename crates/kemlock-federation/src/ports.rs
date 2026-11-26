@@ -239,6 +239,8 @@ pub enum ApplyOutcome {
     Sibling,
     /// The version was already held, or a held version replaced it.
     Duplicate,
+    /// The version would have replaced the head at no higher revision: a rollback, left out.
+    Refused,
 }
 
 pub trait ReplicaStore: Send + Sync {
@@ -290,6 +292,18 @@ pub trait ReplicaStore: Send + Sync {
         &self,
         owner: Owner,
     ) -> impl Future<Output = std::result::Result<VersionVector, StoreError>> + Send;
+
+    /// Whether `owner` accepts signed `kem1` writes only on this server (docs/crypto.md, "Signed
+    /// item writes"): a signed write was accepted for it, or applied from a peer. Applying a signed
+    /// record sets it.
+    ///
+    /// The default is false, for a store that keeps no such flag.
+    fn owner_signed_only(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
 
     /// The siblings of an item: the versions held beside its head.
     fn siblings(

@@ -184,6 +184,8 @@ struct Extras {
     local_accounts: HashSet<Owner>,
     /// The attachment rows, for `BlobSync`.
     attachments: Vec<kemlock_domain::Attachment>,
+    /// The owners that accept signed `kem1` writes only: set by a signed write, local or applied.
+    signed_only: HashSet<Owner>,
 }
 
 impl MemoryStore {
@@ -242,6 +244,10 @@ impl MemoryStore {
             item: item.id,
             hlc,
         });
+        drop(st);
+        if item.signature.is_some() {
+            self.extras().signed_only.insert(item.owner);
+        }
         Ok(item)
     }
 
@@ -617,6 +623,9 @@ impl ReplicaStore for MemoryStore {
             .collect();
         let held_head = st.heads.get(&record.item).map(|h| ChangeKey::of(&h.change));
         let m = merge(&held, held_head, &Version::of(record));
+        if m.regressed {
+            return Ok(ApplyOutcome::Refused);
+        }
         if !m.kept {
             return Ok(ApplyOutcome::Duplicate);
         }
@@ -649,11 +658,20 @@ impl ReplicaStore for MemoryStore {
             },
         );
         st.last_hlc = st.last_hlc.max(record.change.hlc);
-        Ok(if m.head == key {
+        let outcome = if m.head == key {
             ApplyOutcome::Applied
         } else {
             ApplyOutcome::Sibling
-        })
+        };
+        drop(st);
+        if record.write.is_some() {
+            self.extras().signed_only.insert(record.owner);
+        }
+        Ok(outcome)
+    }
+
+    async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().signed_only.contains(&owner))
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {
@@ -867,6 +885,14 @@ impl crate::extra::MemberStore for MemoryStore {
         user: UserId,
     ) -> Result<Option<crate::members::MemberAccount>, StoreError> {
         Ok(self.extras().accounts_held.get(&user).cloned())
+    }
+
+    async fn writer_bundle(&self, user: UserId) -> Result<Option<(u32, Vec<u8>)>, StoreError> {
+        Ok(self
+            .extras()
+            .accounts_held
+            .get(&user)
+            .map(|a| (a.key_version, a.public_bundle.clone())))
     }
 
     async fn apply_member_account(

@@ -25,6 +25,7 @@ use crate::identity::LocalIdentity;
 use crate::keyrecs::KeyStore;
 use crate::message::{MAX_LEAVES, MAX_PAGE, Request, Response, code};
 use crate::outbox::Withholding;
+use crate::quota::{Admission, Meter, Quota};
 use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
     VaultRepo,
@@ -34,6 +35,7 @@ use crate::sendsync::SendSync;
 use crate::signed::Signed;
 use crate::spaces::SpaceMirror;
 use crate::tagsync::TagSync;
+use crate::writes::{self, Verdict};
 use kemlock_app::ports::StoreError;
 use kemlock_crypto::sig1;
 use kemlock_domain::{ItemId, Owner, ServerId, VersionVector};
@@ -107,7 +109,8 @@ pub struct Counts {
     pub siblings: usize,
     /// Records already held or replaced.
     pub duplicates: usize,
-    /// Records for an item id another owner holds.
+    /// Records left out: an item id another owner holds, a change from the future, a writer
+    /// signature that is missing or doesn't verify, an origin over its quota, and a rollback.
     pub refused: usize,
 }
 
@@ -164,6 +167,8 @@ pub struct Replica<S> {
     identity: RwLock<Arc<LocalIdentity>>,
     pub(crate) padding: Padding,
     pub(crate) files: Option<Arc<dyn BlobFiles>>,
+    quota: Quota,
+    meter: Meter,
 }
 
 impl<S> std::fmt::Debug for Replica<S> {
@@ -207,12 +212,20 @@ impl<S: FedStore> Replica<S> {
             identity: RwLock::new(identity),
             padding: Padding::Step4096,
             files: None,
+            quota: Quota::default(),
+            meter: Meter::default(),
         }
     }
 
     /// Gives the engine this server's file storage, so it serves and fetches attachments.
     pub fn with_blob_files(mut self, files: Arc<dyn BlobFiles>) -> Replica<S> {
         self.files = Some(files);
+        self
+    }
+
+    /// Sets what one origin may write to this server (docs/federation.md, "Per-origin quotas").
+    pub fn with_quota(mut self, quota: Quota) -> Replica<S> {
+        self.quota = quota;
         self
     }
 
@@ -667,11 +680,31 @@ impl<S: FedStore> Replica<S> {
                     "a change from an origin outside the vault's set",
                 ));
             }
+            // What one origin may write, before the expensive checks: a flood is cut off here.
+            match self
+                .meter
+                .admit(&self.quota, origin, envelope.len(), now_ms / 1000)
+            {
+                Admission::Admitted => {}
+                over => {
+                    tracing::warn!(%origin, ?over, "a change past the origin's quota was refused");
+                    counts.refused += 1;
+                    continue;
+                }
+            }
+            // The writing account's signature: the origin's signature says which server accepted
+            // the write, this says who made it.
+            if let Verdict::Refuse(why) = writes::judge(&self.store, &record).await? {
+                tracing::warn!(%origin, why, "a change was refused");
+                counts.refused += 1;
+                continue;
+            }
             let signature = Signed::decode(envelope)?.signature;
             match self.store.apply(&record, &signature).await {
                 Ok(ApplyOutcome::Applied) => counts.applied += 1,
                 Ok(ApplyOutcome::Sibling) => counts.siblings += 1,
                 Ok(ApplyOutcome::Duplicate) => counts.duplicates += 1,
+                Ok(ApplyOutcome::Refused) => counts.refused += 1,
                 Err(StoreError::Duplicate) => counts.refused += 1,
                 Err(e) => return Err(e.into()),
             }

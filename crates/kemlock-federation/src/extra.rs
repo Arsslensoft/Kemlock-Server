@@ -237,6 +237,17 @@ pub trait MemberStore: Send + Sync {
     fn is_replica_account(&self, _user: UserId) -> impl Future<Output = R<bool>> + Send {
         ready(Ok(false))
     }
+
+    /// The key version and the public-key bundle of `user` as this server holds them, whether the
+    /// account lives here or is the copy a replica keeps of a member: what a writer's signature
+    /// is checked against (docs/crypto.md, "Signed item writes"). `None` when this server holds no
+    /// keys for the account.
+    fn writer_bundle(
+        &self,
+        _user: UserId,
+    ) -> impl Future<Output = R<Option<(u32, Vec<u8>)>>> + Send {
+        ready(Ok(None))
+    }
 }
 
 /// Attachments as federation moves them: the rows here, the bytes in blob storage.

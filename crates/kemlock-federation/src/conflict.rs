@@ -41,9 +41,12 @@ impl Version {
 /// The result of adding a version to what a server holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Merge {
-    /// Whether the new version is held after the merge. False for a duplicate and for a version
-    /// an held version already replaced.
+    /// Whether the new version is held after the merge. False for a duplicate, for a version
+    /// an held version already replaced, and for a rollback.
     pub kept: bool,
+    /// The new version names the head in its lineage but has a revision no higher than the
+    /// head's: a record that would roll the item back. It is not kept.
+    pub regressed: bool,
     /// The head after the merge.
     pub head: ChangeKey,
     /// The siblings after the merge, latest first.
@@ -56,9 +59,18 @@ pub struct Merge {
 
 /// Adds `incoming` to the versions `held` (the head and the siblings; at least the head).
 pub fn merge(held: &[Version], held_head: Option<ChangeKey>, incoming: &Version) -> Merge {
-    let known = held
-        .iter()
-        .any(|v| v.key == incoming.key || v.lineage.contains(&incoming.key));
+    // A version replaces the head only at a higher revision (docs/federation.md, "Rollback"): a
+    // replica that re-signs an old ciphertext as a new change naming the head can't roll it back.
+    let regressed = held_head.is_some_and(|head| {
+        incoming.lineage.contains(&head)
+            && held
+                .iter()
+                .any(|v| v.key == head && v.revision >= incoming.revision)
+    });
+    let known = regressed
+        || held
+            .iter()
+            .any(|v| v.key == incoming.key || v.lineage.contains(&incoming.key));
 
     let mut all: Vec<&Version> = held.iter().collect();
     if !known {
@@ -84,6 +96,7 @@ pub fn merge(held: &[Version], held_head: Option<ChangeKey>, incoming: &Version)
     let siblings: Vec<ChangeKey> = maximal.iter().skip(1).map(|v| v.key).collect();
     Merge {
         kept: !known,
+        regressed,
         head,
         siblings,
         dropped,
@@ -243,5 +256,37 @@ mod tests {
         let b = v(2, 2, 20, 2, &[base.key]);
         let m = merge(std::slice::from_ref(&a), Some(a.key), &b);
         assert_eq!(m.head, b.key);
+    }
+
+    #[test]
+    fn a_version_that_names_the_head_at_a_lower_revision_is_a_rollback() {
+        // The head is revision 5. A replica re-signs an old ciphertext as a new change at
+        // revision 3, with a late clock and a lineage that names the head.
+        let base = v(1, 1, 10, 1, &[]);
+        let head = v(1, 9, 20, 5, &[base.key]);
+        let replay = v(2, 4, 99, 3, &[head.key, base.key]);
+        let m = merge(&[head.clone()], Some(head.key), &replay);
+        assert!(!m.kept);
+        assert!(m.regressed);
+        assert_eq!(m.head, head.key);
+        assert!(m.dropped.is_empty());
+        assert!(!m.head_changed);
+        // The same revision doesn't replace it either.
+        let same = v(2, 5, 99, 5, &[head.key]);
+        assert!(merge(&[head.clone()], Some(head.key), &same).regressed);
+    }
+
+    #[test]
+    fn a_resolution_may_name_a_sibling_of_a_higher_revision() {
+        // A device merged the head (revision 3) with a sibling that is further along (4): the
+        // server makes the merge revision 4, the head's plus one. Only the head's revision counts.
+        let base = v(1, 1, 10, 1, &[]);
+        let head = v(1, 2, 30, 3, &[base.key]);
+        let sibling = v(2, 5, 20, 4, &[base.key]);
+        let merged = v(1, 3, 40, 4, &[head.key, sibling.key, base.key]);
+        let m = merge(&[head.clone(), sibling], Some(head.key), &merged);
+        assert!(m.kept);
+        assert!(!m.regressed);
+        assert_eq!(m.head, merged.key);
     }
 }

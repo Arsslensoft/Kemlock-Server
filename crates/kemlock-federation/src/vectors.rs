@@ -24,7 +24,9 @@ use crate::suite::Suite;
 use crate::testing::directory;
 use crate::wire::{ChangeKey, item_id, owner, server_id};
 use kemlock_crypto::{kx1, sig1};
-use kemlock_domain::{ChangeId, Hlc, ItemFormat, ItemKind, Owner, Revision, ServerId};
+use kemlock_domain::{
+    ChangeId, Hlc, ItemFormat, ItemKind, Owner, Revision, ServerId, WriteSignature,
+};
 use serde_json::{Value as Json, json};
 use std::collections::HashMap;
 
@@ -1202,6 +1204,7 @@ fn record_json(r: &ChangeRecord) -> Json {
         "deleted": r.deleted,
         "updated_at_ms": r.updated_at_ms,
         "lineage": r.lineage.iter().map(|k| hx(&k.to_bytes())).collect::<Vec<Json>>(),
+        "writer_signature": r.write.as_ref().map(|w| hx(&w.to_stored())),
     })
 }
 
@@ -1220,6 +1223,13 @@ fn record_from_json(v: &Json) -> Result<ChangeRecord> {
         "kem1" => ItemFormat::Kem1,
         "bw" => ItemFormat::Bw,
         _ => return Err(FedError::Malformed("an item format")),
+    };
+    let write = match v.get("writer_signature") {
+        None | Some(Json::Null) => None,
+        Some(other) => Some(
+            WriteSignature::from_stored(&unhex(other)?)
+                .ok_or(FedError::Malformed("a writer signature"))?,
+        ),
     };
     Ok(ChangeRecord {
         change: ChangeId {
@@ -1240,6 +1250,7 @@ fn record_from_json(v: &Json) -> Result<ChangeRecord> {
         deleted: flag_of(v, "deleted")?,
         updated_at_ms: uint_of(v, "updated_at_ms")?,
         lineage,
+        write,
     })
 }
 
@@ -1272,6 +1283,7 @@ fn change_doc() -> Result<Json> {
                     seq: 3,
                 },
             ],
+            write: None,
         };
         let tombstone = ChangeRecord {
             change: ChangeId {
@@ -1298,11 +1310,43 @@ fn change_doc() -> Result<Json> {
             lineage: Vec::new(),
             ..live.clone()
         };
+        // A write that carries its writing account's signature too: the origin's signature covers
+        // the field, and the writer's covers the statement of docs/crypto.md, "Signed item writes".
+        let writer_seed: [u8; 64] = counting(0xe0);
+        let writer_key = sig1::SigningKey::from_bytes(&writer_seed);
+        let writer = kemlock_domain::UserId(uuid::Uuid::from_bytes([0x31; 16]));
+        let mut written = ChangeRecord {
+            change: ChangeId {
+                origin,
+                seq: 11,
+                hlc: Hlc::from_parts(1_800_000_000_900, 0),
+            },
+            write: Some(WriteSignature {
+                writer,
+                key_version: 2,
+                signature: vec![0; WriteSignature::SIGNATURE_LEN],
+            }),
+            ..live.clone()
+        };
+        let writer_statement = crate::writes::statement_of(&written)
+            .ok_or(FedError::Crypto)?
+            .to_bytes()
+            .map_err(|_| FedError::Crypto)?;
+        let writer_signature = writer_key
+            .sign("item-write", &writer_statement)
+            .map_err(|_| FedError::Crypto)?;
+        written.write = Some(WriteSignature {
+            writer,
+            key_version: 2,
+            signature: writer_signature,
+        });
+        let writer_public = crypto::sign_public(&writer_key)?;
         let mut cases = Vec::new();
         for (name, record) in [
             ("live-item-with-lineage", &live),
             ("tombstone", &tombstone),
             ("bitwarden-item-in-a-space-without-lineage", &bitwarden),
+            ("live-item-signed-by-its-writer", &written),
         ] {
             let signed = record.sign(&signing)?;
             let mut case = record_json(record);
@@ -1312,6 +1356,14 @@ fn change_doc() -> Result<Json> {
                 map.insert("body".to_owned(), hx(&signed.body));
                 map.insert("signature".to_owned(), hx(&signed.signature));
                 map.insert("envelope".to_owned(), hx(&signed.encode()));
+                if record.write.is_some() {
+                    map.insert("writer_signing_seed".to_owned(), hx(&writer_seed));
+                    map.insert(
+                        "writer_public_key".to_owned(),
+                        hx(writer_public.as_bytes()),
+                    );
+                    map.insert("writer_statement".to_owned(), hx(&writer_statement));
+                }
             }
             cases.push(case);
         }
@@ -1441,6 +1493,36 @@ fn check_change(doc: &Json) -> Result<()> {
             change::open(&bytes_of(case, "envelope")?, &keys)? == record,
             "record opens",
         )?;
+        // A writer's signature verifies over the statement rebuilt from the record, and over no
+        // other.
+        if record.write.is_some() {
+            let statement = crate::writes::statement_of(&record)
+                .ok_or(FedError::Malformed("a writer statement"))?;
+            ensure(
+                statement.to_bytes().map_err(|_| FedError::Crypto)?
+                    == bytes_of(case, "writer_statement")?,
+                "writer statement",
+            )?;
+            let writer_public = sig1::PublicKey::from_bytes(&bytes_of(case, "writer_public_key")?)
+                .map_err(|_| FedError::Crypto)?;
+            let signature = record
+                .write
+                .as_ref()
+                .map(|w| w.signature.clone())
+                .unwrap_or_default();
+            ensure(
+                statement.verify(&writer_public, &signature).is_ok(),
+                "writer signature",
+            )?;
+            let mut changed = record.clone();
+            changed.revision = Revision(record.revision.0 + 1);
+            let other = crate::writes::statement_of(&changed)
+                .ok_or(FedError::Malformed("a writer statement"))?;
+            ensure(
+                other.verify(&writer_public, &signature).is_err(),
+                "a writer signature over another revision",
+            )?;
+        }
         // The tombstone's item survives the round trip through a stored item.
         let item = record.to_item()?;
         ensure(

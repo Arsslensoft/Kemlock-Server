@@ -13,7 +13,7 @@ use crate::signed::Signed;
 use crate::wire::{ChangeKey, item_id, owner, pack_keys, server_id, unpack_keys};
 use kemlock_crypto::sig1;
 use kemlock_domain::{
-    ChangeId, Hlc, Item, ItemFormat, ItemId, ItemKind, Owner, Revision, ServerId,
+    ChangeId, Hlc, Item, ItemFormat, ItemId, ItemKind, Owner, Revision, ServerId, WriteSignature,
 };
 use time::OffsetDateTime;
 
@@ -44,6 +44,9 @@ pub struct ChangeRecord {
     pub updated_at_ms: u64,
     /// The versions this one replaced, nearest first, at most [`MAX_LINEAGE`].
     pub lineage: Vec<ChangeKey>,
+    /// The writing account's signature of a `kem1` write (docs/crypto.md, "Signed item writes").
+    /// Absent on a `bw` record and on a `kem1` record written without one.
+    pub write: Option<WriteSignature>,
 }
 
 /// Milliseconds since the epoch; times before 1970 count as 0.
@@ -85,6 +88,7 @@ impl ChangeRecord {
             deleted: item.is_tombstone(),
             updated_at_ms: time_to_ms(item.updated_at),
             lineage,
+            write: item.signature.clone(),
         }
     }
 
@@ -103,7 +107,7 @@ impl ChangeRecord {
             deleted_at: self.deleted.then_some(updated_at),
             updated_at,
             change: self.change,
-            signature: None,
+            signature: self.write.clone(),
         })
     }
 
@@ -130,6 +134,9 @@ impl ChangeRecord {
         if let Some(item_key) = &self.item_key {
             entries.push((11, Value::bytes(item_key)));
         }
+        if let Some(write) = &self.write {
+            entries.push((15, Value::bytes(&write.to_stored())));
+        }
         Value::map(entries).encode()
     }
 
@@ -139,7 +146,7 @@ impl ChangeRecord {
     pub fn from_body(body: &[u8]) -> Result<ChangeRecord> {
         let value = Value::decode(body)?;
         let f = value.as_fields()?;
-        f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])?;
+        f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])?;
         if f.uint(0)? != VERSION {
             return Err(FedError::Malformed("unknown record version"));
         }
@@ -164,6 +171,15 @@ impl ChangeRecord {
                 "a live item needs ciphertext and a key",
             ));
         }
+        let write = f
+            .get(15)
+            .map(|v| {
+                v.as_bytes().and_then(|bytes| {
+                    WriteSignature::from_stored(bytes)
+                        .ok_or(FedError::Malformed("the writer signature is not valid"))
+                })
+            })
+            .transpose()?;
         let record = ChangeRecord {
             change: ChangeId {
                 origin: server_id(f.fixed::<16>(1)?),
@@ -182,9 +198,13 @@ impl ChangeRecord {
             deleted,
             updated_at_ms: f.uint(13)?,
             lineage: unpack_keys(f.bytes(14)?)?,
+            write,
         };
         if record.change.seq == 0 || record.revision.0 == 0 {
             return Err(FedError::Malformed("sequence and revision start at 1"));
+        }
+        if record.write.is_some() && record.format != ItemFormat::Kem1 {
+            return Err(FedError::Malformed("only a kem1 record carries a writer signature"));
         }
         if record.lineage.len() > MAX_LINEAGE || record.lineage.contains(&record.key()) {
             return Err(FedError::Malformed("the lineage is not valid"));
@@ -263,6 +283,7 @@ mod tests {
                 origin,
                 seq: seq.saturating_sub(1).max(1),
             }],
+            write: None,
         }
     }
 
@@ -403,5 +424,69 @@ mod tests {
             time_to_ms(OffsetDateTime::UNIX_EPOCH - time::Duration::seconds(5)),
             0
         );
+    }
+
+    fn with_writer(mut r: ChangeRecord) -> ChangeRecord {
+        r.write = Some(WriteSignature {
+            writer: UserId::random(),
+            key_version: 2,
+            signature: vec![3; WriteSignature::SIGNATURE_LEN],
+        });
+        r
+    }
+
+    #[test]
+    fn a_writer_signature_travels_in_field_15_and_the_origin_signs_it() {
+        let origin = ServerId::random();
+        let key = sig1::SigningKey::from_bytes(&[1; 64]);
+        let keys = keys_for(origin, &key);
+        let r = with_writer(record(origin, 5, 3));
+        // The body round trips, and so does the item the record stores.
+        assert_eq!(ChangeRecord::from_body(&r.to_body()), Ok(r.clone()));
+        let item = r.to_item().expect("item");
+        assert_eq!(item.signature, r.write);
+        assert_eq!(ChangeRecord::from_item(&item, r.lineage.clone()), r);
+        let signed = r.sign(&key).expect("sign");
+        assert_eq!(open(&signed.encode(), &keys), Ok(r.clone()));
+
+        // A relay that strips the signature, or swaps in another, breaks the origin's signature.
+        let mut stripped = r.clone();
+        stripped.write = None;
+        let forged = Signed {
+            body: stripped.to_body(),
+            signature: signed.signature.clone(),
+        };
+        assert!(open(&forged.encode(), &keys).is_err());
+        let swapped = with_writer(r.clone());
+        let forged = Signed {
+            body: swapped.to_body(),
+            signature: signed.signature,
+        };
+        assert!(open(&forged.encode(), &keys).is_err());
+    }
+
+    #[test]
+    fn a_record_without_a_writer_signature_is_byte_for_byte_what_it_was() {
+        let origin = ServerId::random();
+        let r = record(origin, 5, 3);
+        let value = Value::decode(&r.to_body()).expect("decode");
+        let Value::Map(entries) = value else {
+            panic!("a record body is a map");
+        };
+        assert!(entries.iter().all(|(key, _)| *key != 15));
+    }
+
+    #[test]
+    fn a_bitwarden_record_or_a_short_signature_is_refused() {
+        let origin = ServerId::random();
+        let mut bw = with_writer(record(origin, 5, 3));
+        bw.format = ItemFormat::Bw;
+        assert!(ChangeRecord::from_body(&bw.to_body()).is_err());
+
+        let mut short = with_writer(record(origin, 5, 3));
+        if let Some(write) = &mut short.write {
+            write.signature.pop();
+        }
+        assert!(ChangeRecord::from_body(&short.to_body()).is_err());
     }
 }

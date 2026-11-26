@@ -58,6 +58,7 @@ pub mod message;
 pub mod net;
 pub mod outbox;
 pub mod pairing;
+pub mod quota;
 pub mod ports;
 mod publish;
 pub mod relay;
@@ -74,6 +75,7 @@ pub mod testing;
 #[doc(hidden)]
 pub mod vectors;
 pub mod wire;
+pub mod writes;
 
 pub use admin::{
     DescriptorSource, Federation, KeyChange, MismatchView, PausedVault, PeerActivity, PeerCheck,

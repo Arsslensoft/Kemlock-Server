@@ -751,7 +751,11 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         let due = {
             let state = self.state();
             let last = state.reconciled.get(&(peer.id, owner)).copied();
-            returned || last.is_none_or(|t| now >= t.saturating_add(RECONCILE_EVERY_SECS))
+            // A pull that left records out (a writer's keys not here yet, an origin over its quota)
+            // compares at once: the comparison fetches them again.
+            returned
+                || report.counts.refused > 0
+                || last.is_none_or(|t| now >= t.saturating_add(RECONCILE_EVERY_SECS))
         };
         let mut push = false;
         if due {
