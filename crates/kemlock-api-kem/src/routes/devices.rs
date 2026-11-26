@@ -346,6 +346,10 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
     ) -> Result<(StatusCode, Json<ApprovalRequestResponse>), Problem> {
         guard(&limits.requests, &ip_key(proof.ip), api.now())?;
         let request: ApprovalRequestBody = body.json()?;
+        // A malformed request is refused before it counts against the address's requests for an
+        // email: only a request that could be stored spends any of that.
+        let device = request.device.into_info()?;
+        let public_key = decode("publicKey", &request.public_key)?;
         // An email too long to be one is refused by the use case; it isn't counted here.
         if request.email.len() <= Email::MAX_LEN {
             let email = request.email.trim().to_lowercase();
@@ -359,8 +363,8 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
             .request_approval()
             .execute(ApprovalRequestInput {
                 email: request.email,
-                device: request.device.into_info()?,
-                public_key: decode("publicKey", &request.public_key)?,
+                device,
+                public_key,
                 jkt: proof.jkt,
                 ip: proof.ip,
             })
