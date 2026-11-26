@@ -1504,6 +1504,18 @@ impl Vault {
         })
     }
 
+    /// Moves a value this browser keeps for the account (`sealLocal`, base64url) to the new keys, for
+    /// the same label: base64url.
+    #[wasm_bindgen(js_name = rotationResealLocal)]
+    pub fn rotation_reseal_local(&self, label: &str, sealed: &str) -> Result<String, JsError> {
+        let sealed = b64::decode(sealed).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_local(label, &sealed)
+            .map_err(fail)?;
+        Ok(b64::encode(&moved))
+    }
+
     /// Forgets a rotation that was started and not committed.
     #[wasm_bindgen(js_name = rotationAbort)]
     pub fn rotation_abort(&mut self) {

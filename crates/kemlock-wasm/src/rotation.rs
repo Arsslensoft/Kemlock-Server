@@ -9,8 +9,11 @@
 
 use kemlock_crypto::{
     bundle::Bundle,
+    kem1,
     keys::{ITEM_WRAP_LABEL, RootKey, SecretKey},
-    kx1, password_wrap, private_keys, recovery_kit,
+    kx1,
+    owner::Owner,
+    password_wrap, private_keys, recovery_kit,
     rotation::{self, ResealedItem, ResealedSend},
     sealed_box::{self, context},
     send::Kind,
@@ -19,6 +22,7 @@ use kemlock_crypto::{
 use zeroize::Zeroizing;
 
 use crate::{
+    chain::{LOCAL_KIND, LOCAL_STORE_LABEL, local_id},
     error::Error,
     kit::{MadeKit, PIECES, THRESHOLD},
     session::{SealedItemRef, Session},
@@ -288,6 +292,23 @@ impl Session {
         unlocked.key_version = pending.key_version;
         self.previous = Some(previous);
         Ok((unlocked.key_version, bundle.fingerprint_text()))
+    }
+
+    /// Moves one value this browser keeps for the account (`seal_local`) from the key it is sealed
+    /// under now to the new one, bound to the same label. Fails for a value that does not open now.
+    pub(crate) fn rotation_reseal_local(&self, label: &str, sealed: &[u8]) -> Result<Vec<u8>, Error> {
+        let account_id = self.unlocked()?.account_id;
+        let pending = self.pending()?;
+        let plain = Zeroizing::new(self.open_local(label, sealed)?);
+        let key = pending.root.user_key()?.child(LOCAL_STORE_LABEL)?;
+        Ok(kem1::seal_item(
+            &key,
+            &local_id(label),
+            1,
+            LOCAL_KIND,
+            &Owner::user(account_id),
+            &plain,
+        )?)
     }
 
     /// Forgets a pending rotation.

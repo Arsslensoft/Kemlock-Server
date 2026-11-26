@@ -2307,3 +2307,44 @@ fn a_rotation_that_was_not_started_does_nothing() {
     session.lock();
     assert_eq!(session.rotation_start().err(), Some(Error::Locked));
 }
+
+#[wasm_bindgen_test]
+fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
+    let (mut session, _) = open_account([0xAB; 16]);
+    let anchor = session.seal_local("anchor/one", b"{\"seq\":3}").expect("seals");
+    let pin = session.seal_local("pin/one", b"11111 22222").expect("seals");
+    // Nothing moves before a rotation is started.
+    assert_eq!(
+        session.rotation_reseal_local("anchor/one", &anchor),
+        Err(Error::Invalid)
+    );
+    session.rotation_start().expect("start");
+
+    let moved = session
+        .rotation_reseal_local("anchor/one", &anchor)
+        .expect("moves");
+    assert_ne!(moved, anchor);
+    // A value that does not open now, or is moved under another label, is not moved.
+    assert_eq!(
+        session.rotation_reseal_local("anchor/two", &anchor),
+        Err(Error::Invalid)
+    );
+    let moved_pin = session.rotation_reseal_local("pin/one", &pin).expect("moves");
+
+    session.rotation_commit().expect("commit");
+    // Under the new keys the moved values open, bound to their labels; the old ones do not.
+    assert_eq!(
+        session.open_local("anchor/one", &moved).expect("opens"),
+        b"{\"seq\":3}".to_vec()
+    );
+    assert_eq!(
+        session.open_local("pin/one", &moved_pin).expect("opens"),
+        b"11111 22222".to_vec()
+    );
+    assert_eq!(
+        session.open_local("pin/one", &moved),
+        Err(Error::Invalid),
+        "another label"
+    );
+    assert_eq!(session.open_local("anchor/one", &anchor), Err(Error::Invalid));
+}
