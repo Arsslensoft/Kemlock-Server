@@ -324,6 +324,39 @@ describe('keeping the vault open across a reload', () => {
     expect(storage.keys()).toEqual([]);
   });
 
+  it('claims the tab as open before the network call that follows the restore', async () => {
+    const storage = tabStore();
+    await signInAndUnlock(storage);
+    await fake.lock();
+    leave(storage);
+    const next = setup(storage);
+    const order: string[] = [];
+    const claimTab = vi.fn(async (id: string) => void order.push(`claim:${id}`));
+    next.api.accountKeys.mockImplementation(async () => {
+      order.push('accountKeys');
+      return { keyVersion: 1, sealedPrivateKeys: 'c2s' } as never;
+    });
+    await restoreSession({ ...next.deps, claimTab });
+    expect(order).toEqual([`claim:${next.session.currentTab()}`, 'accountKeys']);
+    expect(next.session.getState().status).toBe('unlocked');
+  });
+
+  it('does not take back what an earlier version kept in the clear, and clears it', async () => {
+    const storage = tabStore();
+    // The old format: the tokens as they were, and a root key sealed under the trusted-device key.
+    storage.setItem(
+      'kemlock.session.info',
+      JSON.stringify({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false }),
+    );
+    storage.setItem('kemlock.session.tokens', JSON.stringify(tokens));
+    storage.setItem('kemlock.session.root', JSON.stringify({ sealed: 'AAAA', keyVersion: 1 }));
+    const back = await reload(storage);
+    expect(back.session.getState().status).toBe('signed-out');
+    expect(back.session.tokenStore.get()).toBeUndefined();
+    expect(storage.keys()).toEqual([]);
+    expect(fakeCalls).toEqual([]);
+  });
+
   it('is signed out when the refresh token has run out', async () => {
     const storage = tabStore();
     await signInAndUnlock(storage, { ...tokens, refreshExpiresAt: NOW });

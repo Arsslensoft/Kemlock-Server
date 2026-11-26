@@ -10,7 +10,7 @@ import { createPoliciesApi } from '@/api/policies';
 import { hasUnsavedItemForm } from '@/features/vault/forms/unsaved';
 import { sessionEndedTarget } from '@/app/sessionEnded';
 import { api, onSessionEndedPage, queryClient, session } from '@/app/services';
-import { keepTabKeyAlive, purgeClosedTabKeys } from '@/app/tabKey';
+import { claimTabKey, keepTabKeyAlive, purgeClosedTabKeys } from '@/app/tabKey';
 import { vaultCrypto } from '@/crypto-port';
 import { I18nProvider } from '@/i18n';
 import { installImportWorker } from '@/import/install';
@@ -35,12 +35,16 @@ const router = createAppRouter({ queryClient, session });
 const root = document.getElementById('root');
 if (!root) throw new Error('index.html has no #root');
 
-const persistence = { session, api, crypto: vaultCrypto };
+const persistence = { session, api, crypto: vaultCrypto, claimTab: claimTabKey };
 keepRootSealed(persistence);
 // A reload keeps the person signed in and the vault open. The route guards read the session
 // synchronously, so the router waits for this (a spinner shows meanwhile, and a server that does not
 // answer is given up on after a few seconds); on any failure the vault is just shut.
-const restored = purged.then(() => restoreSession(persistence)).catch(() => undefined);
+// A purge that did not finish (IndexedDB hung) leaves a closed tab's key possibly in place, so nothing is
+// restored: the person signs in. The page does not wait on it for ever.
+const restored = purged
+  .then((finished) => (finished ? restoreSession(persistence) : session.end()))
+  .catch(() => undefined);
 
 // Only once the restore has settled does this page say its tab is open: before that the tab id in
 // the storage may be a closed tab's, which must not look alive.

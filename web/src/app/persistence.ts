@@ -24,6 +24,12 @@ export interface PersistenceDeps {
   /** Where the key version and the sealed private keys come from. */
   api: Pick<Api, 'accountKeys'>;
   crypto: Pick<CryptoPort, 'deviceCopySeal' | 'deviceCopyOpen' | 'unlockWithRoot' | 'release' | 'lock'>;
+  /**
+   * Marks the restored tab as open (its key stamped, its lock held), called as soon as the restore has
+   * opened its tokens and before the network call that follows, so a slow server does not leave the
+   * tab's key to another page's cleanup.
+   */
+  claimTab?: ((tabId: string) => Promise<void>) | undefined;
 }
 
 /** Seals the open vault's root key for this tab, unless it already is. Never throws. */
@@ -95,6 +101,8 @@ async function restore(deps: PersistenceDeps, isLate: () => boolean): Promise<vo
     session.end();
     return;
   }
+  const claimed = session.currentTab();
+  if (claimed && deps.claimTab) await deps.claimTab(claimed).catch(() => undefined);
   const held = session.sealedRoot.get();
   if (!held) return;
   const { userId, deviceId } = session.getState();
