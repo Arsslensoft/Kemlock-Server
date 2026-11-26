@@ -219,7 +219,7 @@ describe('Link an item', () => {
     const search = within(dialog).getByRole('searchbox', { name: 'Search the vault' });
     expect(search).toHaveFocus();
     // Everything that can be linked, by name: not the login itself and not what is in the Trash.
-    expect(within(dialog).getAllByRole('button', { name: /^Link / }).map((b) => b.getAttribute('aria-label'))).toEqual([
+    expect(within(dialog).getAllByRole('button', { name: /^Link / }).map((b) => b.querySelector('.sr')?.textContent)).toEqual([
       'Link GitHub code',
       'Link GitHub passkey',
       'Link GitHub recovery codes',

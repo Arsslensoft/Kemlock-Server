@@ -27,8 +27,11 @@ export function AccountMenu({
   return (
     <Popup
       trigger={(props) => (
-        <button type="button" className="avatar" aria-label={t('shell.account', { name })} {...props}>
-          {initials}
+        <button type="button" className="avatar" {...props}>
+          {/* The initials are a picture of the person, as a photo would be; the hidden text names
+              the button, so no aria-label hides what it shows. */}
+          <span aria-hidden="true">{initials}</span>
+          <span className="sr">{t('shell.account', { name })}</span>
         </button>
       )}
     >

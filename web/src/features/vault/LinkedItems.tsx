@@ -171,10 +171,13 @@ function Picker({
                 type="button"
                 className="linked-row picker-item"
                 disabled={pending}
-                aria-label={t('detail.links.pick', { name: itemName(candidate) })}
                 onClick={() => void pick(candidate)}
               >
-                <Entry item={candidate} all={all} />
+                {/* The hidden text names the button ("Link GitHub"); the row shows the same item. */}
+                <span className="sr">{t('detail.links.pick', { name: itemName(candidate) })}</span>
+                <span className="picker-entry" aria-hidden="true">
+                  <Entry item={candidate} all={all} />
+                </span>
               </button>
             </li>
           ))}

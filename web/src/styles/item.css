@@ -208,6 +208,10 @@ ul.picker {
   text-align: left;
   cursor: pointer;
 }
+/* Lays the row out as if the hidden wrapper weren't there. */
+.picker-entry {
+  display: contents;
+}
 .picker-item:hover:not(:disabled) {
   background: var(--hover-wash);
 }
