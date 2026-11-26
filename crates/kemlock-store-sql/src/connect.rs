@@ -107,6 +107,19 @@ fn sqlite_file(url: &str) -> Option<PathBuf> {
     (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
+/// Whether the URL lets SQLite make the database file: `mode=rwc` or no `mode` at all. With
+/// `mode=rw` the file must exist already, and a missing one is the operator's mistake to hear
+/// about, not for the server to paper over with an empty database.
+fn may_create(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return true;
+    };
+    query
+        .split('&')
+        .filter_map(|pair| pair.strip_prefix("mode="))
+        .all(|mode| mode == "rwc")
+}
+
 /// `path` with `suffix` added to its file name.
 fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
@@ -141,7 +154,7 @@ fn keep_database_private(url: &str) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        if !file.exists() {
+        if may_create(url) && !file.exists() {
             // An empty file is a new database to SQLite. If the folder isn't there, SQLite says
             // so when it connects.
             let _ = std::fs::OpenOptions::new()
@@ -279,6 +292,29 @@ mod tests {
         .expect("opens");
         assert_eq!(pragma(&pools.writer, "secure_delete").await, 1);
         assert_eq!(pragma(&pools.reader, "secure_delete").await, 1);
+    }
+
+    #[test]
+    fn the_file_is_made_only_when_the_url_lets_sqlite_make_it() {
+        assert!(may_create("sqlite://data/db.sqlite3?mode=rwc"));
+        assert!(may_create("sqlite://data/db.sqlite3"));
+        assert!(may_create("sqlite://data/db.sqlite3?cache=shared&mode=rwc"));
+        assert!(!may_create("sqlite://data/db.sqlite3?mode=rw"));
+        assert!(!may_create("sqlite://data/db.sqlite3?mode=ro"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_missing_database_is_not_made_when_the_url_says_rw() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let file = dir.path().join("absent.sqlite3");
+        let url = format!(
+            "sqlite://{}?mode=rw",
+            file.to_string_lossy().replace('\\', "/")
+        );
+        // SQLite refuses, and the server did not make an empty file first.
+        assert!(open(&url, &StoreOptions::default()).await.is_err());
+        assert!(!file.exists());
     }
 
     #[test]
