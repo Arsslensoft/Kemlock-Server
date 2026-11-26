@@ -14,8 +14,9 @@ pub const PURPOSE_CHALLENGE: &str = "two-factor-challenge";
 pub const PURPOSE_TOTP: &str = "totp";
 
 /// The `settings` key that says the stored per-account secrets were sealed again, bound
-/// ([`bound_purpose`]), by the start-up pass; the restore of a backup clears it, since the archive
-/// may bring back secrets sealed the old way.
+/// ([`bound_purpose`]), by the start-up pass. It is a record only: the pass runs at every start, so
+/// secrets a restored backup brings back sealed the old way are sealed again before the server
+/// serves.
 pub const SECRETS_BOUND_KEY: &str = "secrets_bound";
 
 /// Whether [`open_bound`] still falls back to the bare purpose. On until the server has sealed every
