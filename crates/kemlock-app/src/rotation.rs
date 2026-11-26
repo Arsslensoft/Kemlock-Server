@@ -18,7 +18,8 @@ use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
 use crate::platform::{Platform, random_uuid};
-use crate::ports::{ItemStore, StoreError, UserRepo};
+use crate::notices::{KeysRotatedNotice, Notice, Notices};
+use crate::ports::{ItemStore, Notifier, StoreError, UserRepo};
 use crate::register::{
     BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN, SEALED_PRIVATE_KEYS_RANGE,
     WRAPPED_ROOT_KEY_LEN, check_bundle_signature,
@@ -30,7 +31,7 @@ use kemlock_domain::unlock::{
     DeviceKeyCopy, EmergencyState, GrantId, KeyProtection, MAX_WRAPPED_KEY_LEN,
 };
 use kemlock_domain::{
-    AccountMode, DeviceId, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap, Revision, SpaceId, User,
+    AccountMode, ChangeId, DeviceId, ItemFormat, ItemId, Owner, PasskeyId, PrfWrap, Revision, SpaceId, User,
     UserId,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -229,7 +230,10 @@ pub trait RotationStore: Send + Sync {
     /// Installs the rotation in one transaction: reads the account's holdings and staged rows
     /// there, runs [`check_install`], and either writes everything or nothing. See the module
     /// docs for what is written.
-    fn install(&self, install: Install) -> impl Future<Output = Result<(), RotationError>> + Send;
+    fn install(
+        &self,
+        install: Install,
+    ) -> impl Future<Output = Result<Option<ChangeId>, RotationError>> + Send;
 
     /// The previous private keys, while they are kept.
     fn previous_keys(
@@ -369,20 +373,25 @@ pub fn check_install(
 
 /// Rotating the account's root key.
 #[derive(Debug)]
-pub struct Rotation<U, I, R, E> {
+pub struct Rotation<U, I, R, E, N> {
     pub users: U,
     pub items: I,
     pub store: R,
     pub env: E,
+    /// Tells the account's open devices to sync (they find their sessions ended).
+    pub push: N,
+    /// Mails the account's address.
+    pub notices: Notices,
     pub config: AuthConfig,
 }
 
-impl<U, I, R, E> Rotation<U, I, R, E>
+impl<U, I, R, E, N> Rotation<U, I, R, E, N>
 where
     U: UserRepo,
     I: ItemStore,
     R: RotationStore,
     E: Platform,
+    N: Notifier,
 {
     /// The account, if it can be rotated: it has keys and is not shared with the Bitwarden apps.
     async fn account(&self, user: UserId) -> Result<User, RotationError> {
@@ -498,16 +507,28 @@ where
             updated_at: now,
             ..before.clone()
         };
-        self.store
+        let change = self
+            .store
             .install(Install {
                 request,
-                before,
+                before: before.clone(),
                 after: after.clone(),
                 device: actor.device,
                 now,
                 staged_since: now - STAGING_TTL,
             })
             .await?;
+        // The keys are rotated: nothing from here on can say they were not. The mail is best
+        // effort, and the nudge makes every open device sync and find its session ended.
+        self.notices
+            .send(Notice::KeysRotated(KeysRotatedNotice {
+                to: after.email.clone(),
+                at: now,
+            }))
+            .await;
+        if let Some(change) = change {
+            self.push.sync_now(Owner::User(before.id), change).await;
+        }
         Ok(after)
     }
 }

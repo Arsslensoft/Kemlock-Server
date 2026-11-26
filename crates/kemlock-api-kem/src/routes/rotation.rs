@@ -428,7 +428,10 @@ impl InstallRequestDto {
 
 // ---- wiring ----
 
-fn rotation<S, P, K, R>(api: &Api<S, P, K>, repos: &Repos<R>) -> Rotation<S, S, R, P>
+fn rotation<S, P, K, R>(
+    api: &Api<S, P, K>,
+    repos: &Repos<R>,
+) -> Rotation<S, S, R, P, crate::LiveHub>
 where
     S: Store,
     P: Crypto,
@@ -440,6 +443,8 @@ where
         items: api.store.clone(),
         store: repos.0.clone(),
         env: api.crypto.clone(),
+        push: api.hub.clone(),
+        notices: api.hub.notices(),
         config: api.auth_config(),
     }
 }

@@ -11,11 +11,12 @@ use axum::http::StatusCode;
 use common::{App, Client, PASSWORD, Req, Session, b64, register_and_sign_in, unb64};
 use kemlock_api_kem::testing::DpopSigner;
 use kemlock_api_kem::{RotationApiDoc, rotation_router};
+use kemlock_app::notices::{BoxFuture, Notice, Outbox};
 use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::rotation::{
     Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
 };
-use kemlock_domain::{PasskeyId, UserId};
+use kemlock_domain::{ChangeId, PasskeyId, UserId};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -62,12 +63,12 @@ impl RotationStore for FakeRotation {
         Ok(())
     }
 
-    async fn install(&self, install: Install) -> Result<(), RotationError> {
+    async fn install(&self, install: Install) -> Result<Option<ChangeId>, RotationError> {
         let holdings = self.holdings.lock().expect("lock").clone();
         check_install(&install, &holdings, &[])?;
         UserRepo::update(&self.users, &install.after).await?;
         *self.installs.lock().expect("lock") += 1;
-        Ok(())
+        Ok(None)
     }
 
     async fn previous_keys(&self, _user: UserId) -> Result<Option<PreviousKeys>, StoreError> {
@@ -79,14 +80,28 @@ impl RotationStore for FakeRotation {
     }
 }
 
+/// The mail the server sent.
+#[derive(Clone, Default)]
+struct Mailbox(Arc<Mutex<Vec<Notice>>>);
+
+impl Outbox for Mailbox {
+    fn deliver(&self, notice: Notice) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            self.0.lock().expect("the lock").push(notice);
+        })
+    }
+}
+
 struct Rig {
     app: App,
     router: Router,
     repo: FakeRotation,
+    mailbox: Mailbox,
 }
 
 fn rig() -> Rig {
-    let app = App::new(true);
+    let mailbox = Mailbox::default();
+    let app = App::mailing(true, Arc::new(mailbox.clone()));
     let repo = FakeRotation {
         users: app.store.clone(),
         holdings: Arc::new(Mutex::new(Holdings::default())),
@@ -96,7 +111,12 @@ fn rig() -> Rig {
         .router
         .clone()
         .merge(rotation_router(app.api.clone(), repo.clone()));
-    Rig { app, router, repo }
+    Rig {
+        app,
+        router,
+        repo,
+        mailbox,
+    }
 }
 
 struct Person {
@@ -330,6 +350,14 @@ async fn an_install_replaces_the_keys_and_ends_every_other_session() {
     assert_eq!(account.wrapped_root_key, vec![0x44u8; 92]);
     assert_eq!(account.sealed_private_keys, vec![0x22u8; 189]);
     assert_eq!(*rig.repo.installs.lock().expect("lock"), 1);
+
+    // The account is told, by mail, with no key in it.
+    let mails = rig.mailbox.0.lock().expect("the lock");
+    assert!(
+        mails.iter().any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
+        "{mails:?}"
+    );
+    drop(mails);
 
     // The token the device held ended with the old security stamp.
     let old = sam.call("GET", "/kem/v1/account/rotation", None).await;

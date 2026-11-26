@@ -26,7 +26,7 @@ use kemlock_app::rotation::{
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{
-    DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
+    ChangeId, DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision, SpaceId,
     UserId,
 };
 use sea_orm::ActiveValue::Set;
@@ -274,7 +274,7 @@ impl RotationStore for SqlStore {
         Ok(())
     }
 
-    async fn install(&self, install: Install) -> Result<(), RotationError> {
+    async fn install(&self, install: Install) -> Result<Option<ChangeId>, RotationError> {
         let txn = db(self.writer().begin().await)?;
         let outcome = self.install_in(&txn, &install).await;
         finish(txn, outcome).await
@@ -311,7 +311,7 @@ impl SqlStore {
         &self,
         txn: &DatabaseTransaction,
         install: &Install,
-    ) -> Result<(), RotationError> {
+    ) -> Result<Option<ChangeId>, RotationError> {
         let request = &install.request;
         let user = install.before.id;
         let now = install.now;
@@ -389,9 +389,10 @@ impl SqlStore {
                 updated_at: now,
             });
         }
+        let mut change = None;
         if !drafts.is_empty() {
             match write_in(txn, self.origin(), drafts).await {
-                Ok(_) => {}
+                Ok(written) => change = written.last().map(|item| item.change),
                 Err(StoreError::Conflict { .. }) => {
                     return Err(RotationError::Incomplete(
                         "items: one changed while the rotation was installed".to_owned(),
@@ -565,6 +566,6 @@ impl SqlStore {
             .filter(rotation_staged_items::Column::UserId.eq(user.0))
             .exec(txn)
             .await)?;
-        Ok(())
+        Ok(change)
     }
 }

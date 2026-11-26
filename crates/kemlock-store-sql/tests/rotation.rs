@@ -123,9 +123,10 @@ async fn rotation(store: &SqlStore) {
             .await,
         Ok(2)
     );
-    RotationStore::install(store, install_of(&sam, request()))
+    let change = RotationStore::install(store, install_of(&sam, request()))
         .await
         .expect("the install");
+    assert!(change.is_some(), "the last item written names the change to nudge devices with");
     let after = UserRepo::by_id(store, sam.id).await.expect("read").expect("account");
     assert_eq!(after.key_version, 2);
     assert_eq!(after.public_bundle, vec![8; 3621]);
