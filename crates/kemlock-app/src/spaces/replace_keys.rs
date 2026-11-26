@@ -265,9 +265,6 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
         let mut drafts = Vec::with_capacity(input.writes.len());
         for (collection, write) in input.writes {
             let id = write.id;
-            if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
-                return Err(SpacesError::from_item(id, ItemError::SignatureRequired));
-            }
             if write.owner != Owner::Space(space) {
                 return Err(invalid("a replacement writes items of this space only"));
             }
@@ -301,6 +298,9 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
                 now,
             )
             .map_err(|e| SpacesError::from_item(id, e))?;
+            if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+                return Err(SpacesError::from_item(id, ItemError::SignatureRequired));
+            }
             drafts.push((draft, collection));
         }
         let held: BTreeSet<ItemId> = held.into_iter().collect();

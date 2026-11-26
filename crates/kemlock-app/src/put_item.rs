@@ -23,13 +23,15 @@ impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutItem<I, V, N, C> {
     pub async fn execute(&self, actor: &Actor, write: ItemWrite) -> Result<Item, AppError> {
         let id = write.id;
         let now = self.clock.now();
-        if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
-            return Err(AppError::from_item(id, ItemError::SignatureRequired));
-        }
         let stored = self.items.get(id).await?;
         let draft = write
             .apply(stored.as_ref(), actor.user, self.config.item_limits, now)
             .map_err(|e| AppError::from_item(id, e))?;
+        // After the owner, the revision and the sizes, so a caller who may not write the owner
+        // learns nothing of whether it takes only signed writes.
+        if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+            return Err(AppError::from_item(id, ItemError::SignatureRequired));
+        }
         let deleted = draft.deleted_at.is_some();
         let item = self.items.put(draft).await?;
 

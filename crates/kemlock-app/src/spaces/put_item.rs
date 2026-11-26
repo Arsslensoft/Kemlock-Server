@@ -45,9 +45,6 @@ impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceIte
             return Err(SpacesError::from_item(id, ItemError::Forbidden));
         };
         let now = self.clock.now();
-        if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
-            return Err(SpacesError::from_item(id, ItemError::SignatureRequired));
-        }
         // A delete seals nothing, so it has no key version to hold against the collection's.
         let key_version = write.sealed.as_ref().map(|_| write.key_version);
         let state = SpaceAccess::load_and_authorize(
@@ -82,6 +79,10 @@ impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceIte
             now,
         )
         .map_err(|e| SpacesError::from_item(id, e))?;
+        // After the access and revision checks: see `PutItem`.
+        if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+            return Err(SpacesError::from_item(id, ItemError::SignatureRequired));
+        }
         let deleted = draft.deleted_at.is_some();
         let item = self.spaces.put_item(draft, collection).await?;
 

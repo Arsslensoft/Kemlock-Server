@@ -10,18 +10,22 @@
 use crate::authenticate::Actor;
 use crate::error::AppError;
 use crate::ports::{Clock, ItemStore, StoreError};
-use kemlock_domain::{ItemFormat, ItemWrite, Owner};
+use kemlock_domain::{ItemDraft, ItemFormat, Owner};
 
-/// Whether `write` must be refused for lacking a signature: it is a `kem1` write with none, and
-/// the owner accepts signed writes only. A `bw` write is never signed and never refused.
+/// Whether the write `draft` came from must be refused for lacking a signature: it is a `kem1`
+/// write with none, and the owner accepts signed writes only. A `bw` write is never signed and never
+/// refused.
+///
+/// It is asked of the draft, after the use case has checked the caller's right to write the owner,
+/// the revision and the sizes, so a caller who may not write the owner learns nothing about it.
 pub async fn refuses_unsigned<I: ItemStore>(
     items: &I,
-    write: &ItemWrite,
+    draft: &ItemDraft,
 ) -> Result<bool, StoreError> {
-    if write.format != ItemFormat::Kem1 || write.signature.is_some() {
+    if draft.format != ItemFormat::Kem1 || draft.signature.is_some() {
         return Ok(false);
     }
-    items.signed_writes_required(write.owner).await
+    items.signed_writes_required(draft.owner).await
 }
 
 /// Makes the account's own vault accept signed writes only, before any signed write has been

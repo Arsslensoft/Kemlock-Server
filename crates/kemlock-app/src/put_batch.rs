@@ -42,13 +42,13 @@ impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutBatch<I, V, N, C> {
         let mut drafts = Vec::with_capacity(writes.len());
         for write in writes {
             let id = write.id;
-            if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
-                return Err(AppError::from_item(id, ItemError::SignatureRequired));
-            }
             let stored = self.items.get(id).await?;
             let draft = write
                 .apply(stored.as_ref(), actor.user, self.config.item_limits, now)
                 .map_err(|e| AppError::from_item(id, e))?;
+            if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+                return Err(AppError::from_item(id, ItemError::SignatureRequired));
+            }
             drafts.push(draft);
         }
         let stored = self.items.put_batch(drafts).await?;

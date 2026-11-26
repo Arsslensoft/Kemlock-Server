@@ -129,3 +129,45 @@ async fn an_owner_may_ask_for_signed_writes_before_the_first() {
         Err(AppError::Forbidden)
     );
 }
+
+#[tokio::test]
+async fn a_caller_who_may_not_write_the_owner_learns_nothing_of_the_flag() {
+    let world = World::new().with_signups();
+    let sam = make_user(&world, "sam@example.org").await;
+    let alex = make_user(&world, "alex@example.org").await;
+    // Sam's vault takes signed writes only.
+    world
+        .put_item()
+        .execute(&actor(sam), signed(sam, write(sam, ItemId::random(), None, 1)))
+        .await
+        .expect("a signed write");
+
+    // Alex writing Sam's vault is refused as a stranger is, signed or not, not for the missing
+    // signature.
+    let result = world
+        .put_item()
+        .execute(&actor(alex), write(sam, ItemId::random(), None, 1))
+        .await;
+    assert_eq!(result, Err(AppError::Item(ItemError::Forbidden)));
+}
+
+#[tokio::test]
+async fn a_stale_write_to_a_signed_only_owner_is_a_conflict_before_it_is_a_missing_signature() {
+    let world = World::new().with_signups();
+    let user = make_user(&world, "sam@example.org").await;
+    let who = actor(user);
+    let id = ItemId::random();
+    world
+        .put_item()
+        .execute(&who, signed(user, write(user, id, None, 1)))
+        .await
+        .expect("a signed write");
+    let result = world
+        .put_item()
+        .execute(&who, write(user, id, Some(7), 8))
+        .await;
+    assert!(
+        matches!(result, Err(AppError::Conflict { .. })),
+        "{result:?}"
+    );
+}
