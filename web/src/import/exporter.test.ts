@@ -62,6 +62,13 @@ describe('formula injection', () => {
     expect(row(csv)).toBe(',,login,X,,,0,x.example,u,=1+1,+JBSWY3DP');
   });
 
+  it('writes every field as saved when protection is off, and by default protects', () => {
+    const hostile = login('=cmd', '+u', '=pw', ['x.example']);
+    expect(row(toCsv([hostile], { protectFormulas: false }).csv)).toBe(',,login,=cmd,,,0,x.example,+u,=pw,');
+    expect(row(toCsv([hostile], {}).csv)).toBe(",,login,'=cmd,,,0,x.example,'+u,=pw,");
+    expect(row(toCsv([hostile]).csv)).toBe(row(toCsv([hostile], { protectFormulas: true }).csv));
+  });
+
   it('leaves a dash or an at sign in the middle of text alone', () => {
     expect(neutralise('Wi-Fi')).toBe('Wi-Fi');
     expect(neutralise('sam@example.co')).toBe('sam@example.co');

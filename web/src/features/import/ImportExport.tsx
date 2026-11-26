@@ -120,7 +120,12 @@ export function ImportExportView({
   onFile: (file: File, source: SourceId) => void;
   onRead: (options: { source: SourceId; password: string }) => void;
   onImport: (scopeId: string) => void;
-  onExport: (options: { format: ExportFormat; scopeIds: string[]; password: string }) => void;
+  onExport: (options: {
+    format: ExportFormat;
+    scopeIds: string[];
+    password: string;
+    protectFormulas: boolean;
+  }) => void;
 }) {
   const t = useT();
   const [source, setSource] = useState<SourceId>('auto');
@@ -129,6 +134,8 @@ export function ImportExportView({
   const [format, setFormat] = useState<ExportFormat>('kemlock-json');
   const [included, setIncluded] = useState<string[]>(scopes.filter((s) => !s.exportsOff).map((s) => s.id));
   const [exportPassword, setExportPassword] = useState('');
+  // On unless the person turns it off: a CSV that is opened in a spreadsheet should not run formulas.
+  const [protectFormulas, setProtectFormulas] = useState(true);
   const exportReady =
     included.length > 0 && (format === 'csv' || exportPassword.length >= 8) && !exportState.busy;
   const preview = state.preview;
@@ -317,10 +324,22 @@ export function ImportExportView({
                 <span className="hint">{t('ie.newPasswordHint')}</span>
               </div>
             ) : (
-              <Notice tone="warn">
-                <p>{t('ie.csvWarning')}</p>
-                <p>{t('ie.csvFormulas')}</p>
-              </Notice>
+              <>
+                <div className="check-row">
+                  <input
+                    id="e-protect"
+                    type="checkbox"
+                    checked={protectFormulas}
+                    onChange={(e) => setProtectFormulas(e.target.checked)}
+                  />
+                  <label htmlFor="e-protect">{t('ie.csvProtect')}</label>
+                </div>
+                <span className="hint">{t('ie.csvProtectHint')}</span>
+                <Notice tone="warn">
+                  <p>{t('ie.csvWarning')}</p>
+                  <p>{t('ie.csvFormulas')}</p>
+                </Notice>
+              </>
             )}
             {exportState.error ? (
               <Notice tone="error" live>
@@ -336,7 +355,9 @@ export function ImportExportView({
               <Button
                 variant="primary"
                 isDisabled={!exportReady}
-                onPress={() => onExport({ format, scopeIds: included, password: exportPassword })}
+                onPress={() =>
+                  onExport({ format, scopeIds: included, password: exportPassword, protectFormulas })
+                }
               >
                 {t('ie.exportButton')}
               </Button>
@@ -409,7 +430,12 @@ export function ImportExportScreen({ deps }: { deps: ImportFlowDeps }) {
     }
   }
 
-  async function onExport(options: { format: ExportFormat; scopeIds: string[]; password: string }): Promise<void> {
+  async function onExport(options: {
+    format: ExportFormat;
+    scopeIds: string[];
+    password: string;
+    protectFormulas: boolean;
+  }): Promise<void> {
     setExportState({ busy: true });
     try {
       const owners = new Set(
@@ -418,7 +444,7 @@ export function ImportExportScreen({ deps }: { deps: ImportFlowDeps }) {
       const now = (deps.now ?? (() => new Date()))();
       const items = deps.items().filter((item) => owners.has(item.owner));
       if (options.format === 'csv') {
-        const { csv } = toCsv(items);
+        const { csv } = toCsv(items, { protectFormulas: options.protectFormulas });
         const name = exportFilename('kemlock-export', 'csv', now);
         (deps.save ?? download)(csv, name, 'text/csv');
         setExportState({ done: name });
