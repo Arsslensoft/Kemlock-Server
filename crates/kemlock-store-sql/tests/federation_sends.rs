@@ -11,6 +11,7 @@ use kemlock_app::ports::UserRepo;
 use kemlock_app::sends::SendRepo;
 use kemlock_domain::sends::{SendFile, SendFileFormat, SendId, SendKind, SendRecord};
 use kemlock_domain::{BlobId, Owner, ServerId, UserId};
+use kemlock_federation::ports::VaultRepo;
 use kemlock_federation::sendsync::{SendApply, SendSync};
 use kemlock_store_sql::SqlStore;
 use time::macros::datetime;
@@ -235,31 +236,70 @@ async fn only_the_server_a_copy_came_from_can_change_it(store: &SqlStore) {
     SendRepo::add_send(store, &local).await.expect("local send");
 
     // Another server in the vault's set, with a newer revision that clears the password, turns
-    // the Send off and sets its deletion date to now, changes neither of them.
+    // the Send off and sets its deletion date to now, changes none of that: its revision is not
+    // taken, and only a larger view count is.
     for target in [&copied, &local] {
         let mut hostile = target.clone();
         hostile.revised_at = MADE + Duration::days(1);
         hostile.password = None;
         hostile.disabled = true;
         hostile.deletion_at = MADE;
-        hostile.access_count = 9;
         assert_eq!(
             store.apply_replicated_send(other, &hostile).await,
             Ok(SendApply::Unchanged)
         );
+        hostile.access_count = 9;
+        assert_eq!(
+            store.apply_replicated_send(other, &hostile).await,
+            Ok(SendApply::Updated)
+        );
     }
-    assert_eq!(store.send_row(copied.id).await, Ok(Some(copied.clone())));
-    assert_eq!(store.send_row(local.id).await, Ok(Some(local.clone())));
+    for target in [&copied, &local] {
+        let held = store.send_row(target.id).await.expect("row").expect("held");
+        assert_eq!(held.access_count, 9, "the larger view count counts");
+        assert_eq!(
+            SendRecord { access_count: target.access_count, ..held },
+            *target,
+            "and nothing else changed"
+        );
+    }
+
+    // After a promotion the new home is another server than the one the copy came from, and
+    // its revision is taken.
+    store
+        .put_vault(&kemlock_federation::home::VaultFederation::federated(
+            Owner::User(user),
+            other,
+            vec![home],
+        ))
+        .await
+        .expect("settings");
+    let mut revised = copied.clone();
+    revised.revised_at = MADE + Duration::days(2);
+    revised.disabled = true;
+    assert_eq!(
+        store.apply_replicated_send(other, &revised).await,
+        Ok(SendApply::Updated)
+    );
+    assert!(store.send_row(copied.id).await.expect("row").expect("held").disabled);
+    store
+        .put_vault(&kemlock_federation::home::VaultFederation::federated(
+            Owner::User(user),
+            home,
+            vec![other],
+        ))
+        .await
+        .expect("settings");
 
     // The server it came from still can.
     let mut update = copied.clone();
-    update.revised_at = MADE + Duration::days(1);
-    update.disabled = true;
+    update.revised_at = MADE + Duration::days(3);
+    update.disabled = false;
     assert_eq!(
         store.apply_replicated_send(home, &update).await,
         Ok(SendApply::Updated)
     );
-    assert!(store.send_row(copied.id).await.expect("row").expect("held").disabled);
+    assert!(!store.send_row(copied.id).await.expect("row").expect("held").disabled);
 }
 
 async fn run_all(store: &SqlStore) {

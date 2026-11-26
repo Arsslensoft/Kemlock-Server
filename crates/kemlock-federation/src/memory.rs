@@ -1362,6 +1362,12 @@ impl SendSync for MemoryStore {
         from: ServerId,
         send: &SendRecord,
     ) -> Result<SendApply, StoreError> {
+        // See the SQL store: the revision follows the copy's server or the vault's home.
+        let from_home = self
+            .lock()
+            .vaults
+            .get(&Owner::User(send.owner))
+            .is_some_and(|v| v.policy == crate::home::Policy::Federated && v.home == from);
         let mut extras = self.extras();
         let copied_from = extras.send_marks.get(&send.id).copied();
         let Some(held) = extras.sends.get_mut(&send.id) else {
@@ -1372,11 +1378,8 @@ impl SendSync for MemoryStore {
         if held.owner != send.owner {
             return Ok(SendApply::Unchanged);
         }
-        // Only the server a copy came from may change it (see the SQL store).
-        if copied_from != Some(from) {
-            return Ok(SendApply::Unchanged);
-        }
-        let newer = send.revised_at > held.revised_at;
+        let may_revise = copied_from == Some(from) || from_home;
+        let newer = may_revise && send.revised_at > held.revised_at;
         let more_views = send.access_count > held.access_count;
         if newer {
             let (file, count) = (held.file, held.access_count);
