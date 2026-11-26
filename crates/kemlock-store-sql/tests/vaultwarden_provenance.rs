@@ -645,3 +645,39 @@ async fn an_account_and_a_space_never_share_an_id() {
             .is_none()
     );
 }
+
+#[tokio::test]
+async fn an_address_another_account_holds_leaves_that_account_out_and_not_the_pass_failed() {
+    let store = memory().await;
+    let holder = user(&unique_email("holder"));
+    UserRepo::insert(&store, &holder).await.expect("stored");
+
+    let fine = UserId::random();
+    let clash = UserId::random();
+    let twin = UserId::random();
+    let shared = unique_email("shared");
+    let mut mapped = MappedImport::default();
+    mapped
+        .accounts
+        .push(account(clash, holder.email.as_str(), "Clash"));
+    mapped.accounts.push(account(fine, &unique_email("fine"), "Fine"));
+    // Two accounts of the snapshot with one address: the first is written, the second is left out.
+    let mut first = account(twin, &shared, "Twin");
+    first.id = UserId(Uuid::from_u128(1));
+    mapped.accounts.push(first);
+    mapped.accounts.push(account(twin, &shared, "Other twin"));
+    let report = pass(&store, &mapped, false).await;
+
+    assert!(refused(&report, "user").contains(&clash.0.to_string()), "{:?}", report.refused);
+    assert!(UserRepo::by_id(&store, fine).await.expect("a read").is_some());
+    assert!(UserRepo::by_id(&store, clash).await.expect("a read").is_none());
+    assert_eq!(
+        UserRepo::by_id(&store, holder.id)
+            .await
+            .expect("a read")
+            .expect("the holder")
+            .email,
+        holder.email
+    );
+    assert_eq!(refused(&report, "user").len(), 2);
+}
