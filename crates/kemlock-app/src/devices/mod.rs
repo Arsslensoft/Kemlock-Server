@@ -21,4 +21,5 @@ pub use device_sign_in::{DeviceSignIn, PURPOSE_DEVICE_CHALLENGE};
 pub use key_copy::{KeyCopies, SignOutDevice, UntrustDevice};
 pub use ports::{
     ApprovalRepo, DeviceNotices, DevicesStore, KeyCopyRepo, LogNotices, NewDeviceNotice,
+    RecentRequest,
 };

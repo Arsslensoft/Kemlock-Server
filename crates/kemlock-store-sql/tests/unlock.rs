@@ -148,16 +148,22 @@ async fn approvals(store: &SqlStore) {
     assert_eq!(stored.sealed_key, None);
 
     // The hourly count: strictly after `since`, oldest first, per account.
+    let since = |since| ApprovalRepo::requests_since(store, owner, since);
+    let recent = since(T0 - Duration::hours(1)).await.expect("count");
     assert_eq!(
-        ApprovalRepo::requests_since(store, owner, T0 - Duration::hours(1))
-            .await
-            .expect("count"),
+        recent.iter().map(|r| r.created_at).collect::<Vec<_>>(),
         vec![T0, T0 + Duration::minutes(2)]
     );
+    // Each comes with where it was made from and how it stands.
+    assert!(recent.iter().all(|r| r.ip == first.ip));
+    assert_eq!(recent[0].state, ApprovalState::Consumed);
     assert_eq!(
-        ApprovalRepo::requests_since(store, owner, T0)
+        since(T0)
             .await
-            .expect("count"),
+            .expect("count")
+            .iter()
+            .map(|r| r.created_at)
+            .collect::<Vec<_>>(),
         vec![T0 + Duration::minutes(2)]
     );
 

@@ -4,11 +4,14 @@ mod fakes;
 
 use fakes::unlock::*;
 use fakes::*;
-use kemlock_app::devices::{Answer, ApprovalRequestInput, NOTICES_PER_HOUR, Poll, phrase_for};
+use kemlock_app::devices::{
+    Answer, ApprovalRepo, ApprovalRequestInput, NOTICES_PER_HOUR, Poll, phrase_for,
+};
 use kemlock_app::ports::Clock;
 use kemlock_app::{Actor, AppError, DeviceInfo, SignedIn};
 use kemlock_domain::unlock::{
     ApprovalState, HOURLY_REQUEST_LIMIT, KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SEALED_BOX_OVERHEAD,
+    SOURCE_HOURLY_REQUEST_LIMIT,
 };
 use kemlock_domain::{DeviceId, DeviceKind, UserId};
 use std::net::{IpAddr, Ipv4Addr};
@@ -153,28 +156,36 @@ async fn malformed_requests_are_refused() {
     assert_eq!(world.store.auth_request_count(), 0);
 }
 
+/// A request from the address `203.0.<n>.7`: one source per `n`.
+fn input_from(email: &str, key: Vec<u8>, n: u8) -> ApprovalRequestInput {
+    ApprovalRequestInput {
+        ip: IpAddr::V4(Ipv4Addr::new(203, 0, n, 7)),
+        ..input(email, key)
+    }
+}
+
 #[tokio::test]
-async fn past_ten_requests_an_hour_the_answer_is_the_same_and_nothing_is_stored_or_sent() {
+async fn an_address_takes_three_requests_an_hour_and_the_rest_are_answered_like_any_other() {
     let (world, _, _) = account().await;
     let notices = FakeNotices::default();
     let use_case = request_approval(&world, &notices);
 
-    for i in 0..HOURLY_REQUEST_LIMIT {
+    for i in 0..SOURCE_HOURLY_REQUEST_LIMIT {
         world.env.clock.advance(Duration::seconds(1));
         use_case
             .execute(input(EMAIL, public_key(i as u8)))
             .await
             .expect("inside the limit");
     }
-    assert_eq!(world.store.auth_request_count(), HOURLY_REQUEST_LIMIT);
-    // The owner is mailed about the first few only.
+    assert_eq!(world.store.auth_request_count(), SOURCE_HOURLY_REQUEST_LIMIT);
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
 
-    // The eleventh is answered like a request for an email with no account: no refusal tells a
-    // stranger the account exists or that its hour is spent, and nothing is stored or mailed.
+    // The next from the same address is answered like a request for an email with no account: no
+    // refusal tells a stranger the account exists or that its hour is spent, and nothing is
+    // stored or mailed.
     world.env.clock.advance(Duration::seconds(1));
     let key = public_key(99);
-    let eleventh = use_case
+    let fourth = use_case
         .execute(input(EMAIL, key.clone()))
         .await
         .expect("answered like any other");
@@ -182,20 +193,112 @@ async fn past_ten_requests_an_hour_the_answer_is_the_same_and_nothing_is_stored_
         .execute(input("nobody@example.org", key.clone()))
         .await
         .expect("answered");
-    assert_eq!(eleventh.phrase, phrase_for(&world.env, &key));
-    assert_eq!(eleventh.phrase, stranger.phrase);
-    assert_eq!(eleventh.expires_at, stranger.expires_at);
-    assert_eq!(world.store.auth_request_count(), HOURLY_REQUEST_LIMIT);
-    assert!(world.store.auth_request(eleventh.id).is_none());
+    assert_eq!(fourth.phrase, phrase_for(&world.env, &key));
+    assert_eq!(fourth.phrase, stranger.phrase);
+    assert_eq!(fourth.expires_at, stranger.expires_at);
+    assert_eq!(world.store.auth_request_count(), SOURCE_HOURLY_REQUEST_LIMIT);
+    assert!(world.store.auth_request(fourth.id).is_none());
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
 
-    // The first of the ten was made 10 seconds ago, so its slot opens in 3590 seconds.
-    world.env.clock.advance(Duration::seconds(3590));
+    // Another address is not held back by it: it has an hour of its own with the account.
+    let other = use_case
+        .execute(input_from(EMAIL, public_key(100), 1))
+        .await
+        .expect("answered");
+    assert!(world.store.auth_request(other.id).is_some());
+
+    // The first of the three was made 3 seconds ago, so its slot opens in 3597 seconds.
+    world.env.clock.advance(Duration::seconds(3597));
     let later = use_case
-        .execute(input(EMAIL, public_key(100)))
+        .execute(input(EMAIL, public_key(101)))
         .await
         .expect("the first slot has opened");
     assert!(world.store.auth_request(later.id).is_some());
+}
+
+#[tokio::test]
+async fn all_addresses_take_thirty_an_hour_and_the_owner_is_told_once_when_one_is_held_back() {
+    let (world, _, open) = account().await;
+    let notices = FakeNotices::default();
+    let use_case = request_approval(&world, &notices);
+
+    for i in 0..HOURLY_REQUEST_LIMIT {
+        use_case
+            .execute(input_from(EMAIL, public_key(i as u8), i as u8))
+            .await
+            .expect("inside the limit");
+    }
+    assert_eq!(world.store.auth_request_count(), HOURLY_REQUEST_LIMIT);
+    // The owner is mailed about the first few only.
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
+
+    // The next, from an address nobody has heard from, is answered like any other but held back:
+    // no open device is shown it, and the owner is told approvals are being throttled.
+    let key = public_key(99);
+    let held = use_case
+        .execute(input_from(EMAIL, key.clone(), 200))
+        .await
+        .expect("answered like any other");
+    assert_eq!(held.phrase, phrase_for(&world.env, &key));
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR + 1);
+    assert!(
+        notices.new_devices()[NOTICES_PER_HOUR]
+            .device_name
+            .contains("held back")
+    );
+    // Only once: the ones after it cost the owner no more mail.
+    use_case
+        .execute(input_from(EMAIL, public_key(98), 201))
+        .await
+        .expect("answered like any other");
+    assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR + 1);
+    let listed = list_approvals(&world).execute(&open).await.expect("lists");
+    assert_eq!(listed.len(), HOURLY_REQUEST_LIMIT, "held back ones are not shown");
+    assert!(world.store.auth_request(held.id).is_none());
+}
+
+#[tokio::test]
+async fn an_address_the_owner_was_answered_from_is_not_held_back_with_the_rest() {
+    let (world, _, open) = account().await;
+    let notices = FakeNotices::default();
+    let use_case = request_approval(&world, &notices);
+
+    // The owner's own device asked from this address and was approved.
+    let mine = use_case
+        .execute(input_from(EMAIL, public_key(1), 150))
+        .await
+        .expect("accepted");
+    let mut stored = world.store.auth_request(mine.id).expect("stored");
+    stored
+        .approve(sealed_box(), world.env.now())
+        .expect("pending");
+    assert!(
+        ApprovalRepo::save_request(&world.store, &stored, ApprovalState::Pending)
+            .await
+            .expect("saved")
+    );
+    // Strangers use up the rest of the account's hour.
+    for i in 1..HOURLY_REQUEST_LIMIT {
+        use_case
+            .execute(input_from(EMAIL, public_key(i as u8), i as u8))
+            .await
+            .expect("inside the limit");
+    }
+    // The owner asks again from the same address: a real request, shown on the open devices.
+    let again = use_case
+        .execute(input_from(EMAIL, public_key(77), 150))
+        .await
+        .expect("answered");
+    let stored = world.store.auth_request(again.id).expect("stored for real");
+    assert_eq!(stored.state, ApprovalState::Pending);
+    let listed = list_approvals(&world).execute(&open).await.expect("lists");
+    assert!(listed.iter().any(|p| p.id == again.id));
+    // A stranger's is held back.
+    let stranger = use_case
+        .execute(input_from(EMAIL, public_key(78), 220))
+        .await
+        .expect("answered");
+    assert!(world.store.auth_request(stranger.id).is_none());
 }
 
 #[tokio::test]
@@ -206,7 +309,7 @@ async fn the_owner_is_mailed_about_three_requests_an_hour_however_many_come() {
     for i in 0..NOTICES_PER_HOUR + 2 {
         world.env.clock.advance(Duration::seconds(1));
         use_case
-            .execute(input(EMAIL, public_key(i as u8)))
+            .execute(input_from(EMAIL, public_key(i as u8), i as u8))
             .await
             .expect("accepted");
     }

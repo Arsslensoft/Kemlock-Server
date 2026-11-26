@@ -51,7 +51,8 @@ mod phrase;
 
 pub use approval::{
     ApprovalError, ApprovalId, ApprovalState, AuthRequest, HOURLY_REQUEST_LIMIT,
-    KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SEALED_BOX_OVERHEAD, sealed_key_len_ok, truncate_ip,
+    KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SEALED_BOX_OVERHEAD, SOURCE_HOURLY_REQUEST_LIMIT,
+    sealed_key_len_ok, truncate_ip,
 };
 pub use emergency::{
     EmergencyError, EmergencyGrant, EmergencyKind, EmergencyState, GrantId, MAX_GRANTS_PER_GRANTOR,
