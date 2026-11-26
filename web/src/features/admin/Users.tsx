@@ -120,6 +120,70 @@ function OwnerPanel({
   );
 }
 
+/**
+ * The link that accepts an invited member's invitation to a Bitwarden organization, for a server
+ * that can't mail it. The server admin names the account; the link is a secret that accepts for
+ * it, so it is asked for with a step-up, recorded in the event log, and shown only once here.
+ */
+function InviteLinkPanel({
+  space,
+  candidates,
+  onGet,
+  onCancel,
+}: {
+  space: AdminSpace;
+  candidates: AdminUser[];
+  /** The link, or undefined when the request failed (its error is shown by the page). */
+  onGet: (userId: string) => Promise<string | undefined>;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const [pick, setPick] = useState(candidates[0]?.id ?? '');
+  const [link, setLink] = useState<string | undefined>();
+  const [pending, setPending] = useState(false);
+
+  async function get(): Promise<void> {
+    setPending(true);
+    try {
+      setLink(await onGet(pick));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="adm-pad" role="group" aria-label={t('admin.users.inviteLink.title')}>
+      <SelectBox
+        label={t('admin.users.inviteLink.member', { space: space.id.slice(0, 8) })}
+        value={pick}
+        onChange={(value) => {
+          setPick(value);
+          setLink(undefined);
+        }}
+        hint={t('admin.users.inviteLink.hint')}
+        options={candidates.map((user) => ({ value: user.id, label: user.name ?? user.email }))}
+      />
+      {link ? (
+        <Notice tone="warn" live>
+          <p>{t('admin.users.inviteLink.warning')}</p>
+          <div className="with-action">
+            <span className="mono">{link}</span>
+            <CopyButton value={link} label={t('admin.users.inviteLink.copy')} secret />
+          </div>
+        </Notice>
+      ) : null}
+      <div className="actions">
+        <Button size="small" onPress={onCancel}>
+          {t('admin.users.inviteLink.close')}
+        </Button>
+        <Button size="small" variant="primary" isDisabled={pick === '' || pending} onPress={() => void get()}>
+          {t('admin.users.inviteLink.get')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** What the server did with a new invitation, and the link it will not show again. */
 function Issued({ issued }: { issued: InviteIssued }) {
   const t = useT();
@@ -156,6 +220,11 @@ export interface UsersViewProps {
   onInviteAction: (action: InviteAction, invite: AdminInvite) => void;
   onAction: (action: UserAction, user: AdminUser) => Promise<boolean> | void;
   onChangeOwner: (space: AdminSpace, userId: string) => Promise<boolean> | void;
+  /**
+   * The link that accepts a member's invitation to a Bitwarden organization: the link, or undefined
+   * when the request failed. Left out where the console has no such route, and it isn't offered.
+   */
+  onInviteLink?: (space: AdminSpace, userId: string) => Promise<string | undefined>;
   hasMore?: boolean;
   onMore?: () => void;
   busy?: boolean;
@@ -177,10 +246,12 @@ export function isEmail(value: string): boolean {
 /** Users, invitations and spaces. Takes data and callbacks, no router and no network. */
 export function UsersView(props: UsersViewProps) {
   const { users, spaces, now } = props;
+  const getLink = props.onInviteLink;
   const t = useT();
   const [email, setEmail] = useState('');
   const [erase, setErase] = useState<AdminUser | null>(null);
   const [ownerOf, setOwnerOf] = useState<AdminSpace | null>(null);
+  const [linkOf, setLinkOf] = useState<AdminSpace | null>(null);
   const candidates = useMemo(() => users.filter((user) => user.disabledAt === null), [users]);
 
   // Checked as it is typed: an address that is not one shows its error and blocks Invite.
@@ -381,6 +452,15 @@ export function UsersView(props: UsersViewProps) {
                           >
                             {t('admin.users.owner.changeShort')}
                           </Button>
+                          {getLink ? (
+                            <Button
+                              size="small"
+                              aria-label={t('admin.users.inviteLink.openFor', { space: name })}
+                              onPress={() => setLinkOf(space)}
+                            >
+                              {t('admin.users.inviteLink.open')}
+                            </Button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -401,6 +481,15 @@ export function UsersView(props: UsersViewProps) {
               if (done === false) return;
               setOwnerOf(null);
             }}
+          />
+        ) : null}
+        {linkOf && getLink ? (
+          <InviteLinkPanel
+            key={linkOf.id}
+            space={linkOf}
+            candidates={users}
+            onCancel={() => setLinkOf(null)}
+            onGet={(userId) => getLink(linkOf, userId)}
           />
         ) : null}
       </section>
@@ -498,6 +587,10 @@ export default function Users() {
       guard((token) => admin.changeOwner(space.id, { newOwner: userId }, token)),
     onSuccess: refresh,
   });
+  const inviteLink = useMutation({
+    mutationFn: ({ space, userId }: { space: AdminSpace; userId: string }) =>
+      guard((token) => admin.spaceInviteLink(space.id, userId, token)),
+  });
 
   const pages = users.data?.pages ?? [];
   const list = pages.flatMap((page) => page.users);
@@ -516,10 +609,13 @@ export default function Users() {
         onInviteAction={(action, target) => inviteAct.mutate({ action, target })}
         onAction={(action, user) => act.mutateAsync({ action, user }).then(ok, failed)}
         onChangeOwner={(space, userId) => owner.mutateAsync({ space, userId }).then(ok, failed)}
+        onInviteLink={(space, userId) =>
+          inviteLink.mutateAsync({ space, userId }).then((result) => result.link, () => undefined)
+        }
         hasMore={users.hasNextPage}
         onMore={() => void users.fetchNextPage()}
-        busy={act.isPending || invite.isPending || inviteAct.isPending || owner.isPending}
-        error={users.error ?? spaces.error ?? invites.error ?? act.error ?? invite.error ?? inviteAct.error ?? owner.error}
+        busy={act.isPending || invite.isPending || inviteAct.isPending || owner.isPending || inviteLink.isPending}
+        error={users.error ?? spaces.error ?? invites.error ?? act.error ?? invite.error ?? inviteAct.error ?? owner.error ?? inviteLink.error}
       />
       {dialog}
     </>

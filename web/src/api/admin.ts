@@ -241,6 +241,16 @@ export interface AdminSpace {
   keysPendingSince: number | null;
 }
 
+/**
+ * The link that accepts a member's invitation to a Bitwarden organization, for a server that can't
+ * mail it. Whoever opens it accepts for that account.
+ */
+export interface InviteLink {
+  link: string;
+  /** When it stops working, in Unix seconds. */
+  expiresAt: number;
+}
+
 export interface SpacesPage {
   spaces: AdminSpace[];
   total: number;
@@ -842,6 +852,17 @@ export function createAdminApi(api: AdminTransport) {
     /** `PUT /admin/v1/spaces/{id}/owner { newOwner, demotePrevious }` */
     changeOwner: (spaceId: string, request: ChangeOwnerRequest, token?: string) =>
       put<AdminSpace>(`/spaces/${spaceId}/owner`, request, token),
+    /**
+     * `GET /admin/v1/spaces/{id}/members/{user}/invite-link`: the link that accepts a member's
+     * invitation to a Bitwarden organization. Takes a step-up token like a write, because whoever
+     * opens the link accepts for that account; it is recorded in the event log.
+     */
+    spaceInviteLink: (spaceId: string, userId: string, token?: string) =>
+      api.request<InviteLink>({
+        method: 'GET',
+        path: `${BASE}/spaces/${spaceId}/members/${userId}/invite-link`,
+        headers: withToken(token),
+      }),
 
     /** `GET /admin/v1/events?actor&action&target&from&to&limit&cursor` */
     events: (q: EventsQuery = {}) =>
