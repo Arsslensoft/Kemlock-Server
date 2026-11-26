@@ -364,7 +364,8 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
 - No proxy. Set `KEMLOCK_ACME_DOMAIN` and Kemlock gets and renews its own Let's Encrypt
   certificate, kept in `/data/acme`.
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
-  /48, so a host that rotates through the /64s of its site shares one count.
+  /56 (the failed-password limit per account counts by /64), so a host that rotates through the
+  /64s of its site shares one count.
 
 ## Operations
 

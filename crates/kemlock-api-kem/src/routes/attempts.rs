@@ -7,7 +7,7 @@
 //! it holds across restarts and between replicas.
 
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::ip_key;
+use crate::ratelimit::ip_key_64;
 use crate::state::{Api, Crypto, Store};
 use kemlock_app::AppError;
 use kemlock_app::ports::TokenSigner;
@@ -114,7 +114,7 @@ where
 {
     let now = api.now();
     let account = format!("{scope}:{credential}");
-    let source = format!("{account}|{}", ip_key(ip));
+    let source = format!("{account}|{}", ip_key_64(ip));
     api.limits
         .account
         .reserve(&source, now)
