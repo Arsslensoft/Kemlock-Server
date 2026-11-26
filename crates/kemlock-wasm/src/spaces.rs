@@ -286,7 +286,7 @@ fn sign_key_box(
     .sign(sig_private)?)
 }
 
-fn seal_name_under(
+pub(crate) fn seal_name_under(
     space_key: &SecretKey,
     space: &[u8; 16],
     version: u32,

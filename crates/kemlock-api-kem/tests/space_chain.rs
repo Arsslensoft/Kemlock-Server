@@ -941,3 +941,198 @@ async fn a_key_replacement_cannot_hold_an_item_of_a_collection_it_does_not_rotat
     let ok = sam.post(&uri(space), request(&[&keys])).await;
     assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
 }
+
+// ---- a key replacement carries its re-written items ----
+
+/// The body of a re-written item, as the key-replacement route takes it.
+fn rewrite(space: Uuid, collection: Uuid, id: Uuid, expected: u64, key_version: u32) -> Value {
+    json!({
+        "collection": collection.to_string(),
+        "expectedRevision": expected,
+        "item": {
+            "id": id.to_string(),
+            "owner": format!("space:{space}"),
+            "kind": "login",
+            "format": "kem1",
+            "revision": expected + 1,
+            "keyVersion": key_version,
+            "ciphertext": b64(&kemlock_crypto::rand::bytes::<64>()),
+            "itemKey": b64(&kemlock_crypto::rand::bytes::<60>()),
+            "deleted": false,
+            "collectionId": collection.to_string(),
+        },
+    })
+}
+
+async fn made_item(sam: &Who, space: Uuid, collection: Uuid) -> Uuid {
+    let made = sam.put_item(space, collection, 1).await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
+    made.json()["id"]
+        .as_str()
+        .and_then(|id| id.parse().ok())
+        .expect("an item id")
+}
+
+#[tokio::test]
+async fn a_keys_record_is_appended_with_the_items_it_rewrites_in_one_transaction() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let id = made_item(&sam, space, collection).await;
+
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, id, 1, 2)]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // The item is the next revision, under the new key version, live and in its collection.
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (2, 2));
+    assert!(!stored.is_tombstone());
+    assert!(held_ids(&rig, space).await.is_empty());
+    // And the collection's writes continue under version 2.
+    let next = sam.put_item(space, collection, 2).await;
+    assert_eq!(next.status, StatusCode::CREATED, "{:?}", next.json());
+}
+
+#[tokio::test]
+async fn a_rewrite_under_another_key_version_than_the_new_one_appends_nothing() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let id = made_item(&sam, space, collection).await;
+
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, id, 1, 1)]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (1, 1));
+
+    // Nothing was appended: the same record, without the writes, is still the next one.
+    let ok = sam.post(&uri(space), request(&[&keys])).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn only_items_of_a_replaced_collection_are_rewritten_and_none_that_is_also_held() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, general, mut chain, _) = make(&rig, &sam).await;
+    let finance = Uuid::new_v4();
+    let added = chain.collection(&sam.person, *finance.as_bytes());
+    let reply = sam.post(&uri(space), request(&[&added])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let of_finance = made_item(&sam, space, finance).await;
+    let of_general = made_item(&sam, space, general).await;
+
+    // The record replaces General's key: it can't re-write an item of Finance.
+    let keys = chain.rotate_collection(&sam.person, *general.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, finance, of_finance, 1, 2)]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        refused.json()
+    );
+    assert!(problem_type(&refused).ends_with("held-not-rotated"));
+
+    // Nor one it also holds, nor one twice, nor an item that isn't there.
+    for writes in [
+        json!([rewrite(space, general, of_general, 1, 2)]),
+        json!([
+            rewrite(space, general, of_general, 1, 2),
+            rewrite(space, general, of_general, 1, 2)
+        ]),
+        json!([rewrite(space, general, Uuid::new_v4(), 1, 2)]),
+    ] {
+        let mut body = request(&[&keys]);
+        body["writes"] = writes.clone();
+        if writes.as_array().is_some_and(|w| w.len() == 1) {
+            body["held"] = json!([of_general.to_string()]);
+        }
+        let refused = sam.post(&uri(space), body).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    }
+
+    // Nothing of any of it landed: the record goes in alone.
+    let ok = sam.post(&uri(space), request(&[&keys])).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn a_chain_write_releases_an_item_an_earlier_replacement_held() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let id = made_item(&sam, space, collection).await;
+
+    // The first replacement holds the item, under version 1.
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["held"] = json!([id.to_string()]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(held_ids(&rig, space).await, vec![ItemId(id)]);
+
+    // The next one re-writes it under version 3: it is live again.
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 3, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, id, 1, 3)]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert!(held_ids(&rig, space).await.is_empty());
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (2, 3));
+}
+
+#[tokio::test]
+async fn no_item_is_written_while_the_space_key_waits_to_be_replaced() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 2).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let invite = chain.invite(&sam.person, ana.person.id, Role::Member);
+    let confirm = chain.confirm(&sam.person, &ana.person);
+    let seal = chain.seal_space_key(&sam.person, &ana.person);
+    let remove = chain.remove(&sam.person, ana.person.id, vec![KeyRef::Space]);
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let id = made_item(&sam, space, collection).await;
+    let reply = sam.post(&uri(space), request(&[&remove])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // The space key is marked: a collection's key may be replaced, but no item is written (I1).
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, id, 1, 2)]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (1, 1));
+
+    // Nothing was appended: the record, naming the item held, is still the next one.
+    let mut body = request(&[&keys]);
+    body["held"] = json!([id.to_string()]);
+    let ok = sam.post(&uri(space), body).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
+}

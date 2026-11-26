@@ -296,6 +296,106 @@ export interface ChainView {
 
 export type ChainVerdict = ChainView | ChainRefusal;
 
+/** A grant of a collection to a member, in an invitation. */
+export interface ChainCollectionGrant {
+  collection: string;
+  permission: string;
+}
+
+/**
+ * One change to a chained space that the worker makes as signed records (docs/crypto.md, "Space
+ * chain", "Kinds"): it builds them from the verified state it holds, signs them with the unlocked
+ * account's key and checks them with the verifier before returning them.
+ */
+export type ChainChange =
+  | {
+      action: 'invite';
+      member: string;
+      role: ChainMember['role'];
+      custom: string[];
+      grants: ChainCollectionGrant[];
+    }
+  | {
+      action: 'confirm';
+      member: string;
+      /** The member's bundle and its own signature, as the server registered them. */
+      bundle: string;
+      bundleSignature: string;
+      /** The 64 fingerprint bytes the person compared. */
+      fingerprint: string;
+    }
+  | { action: 'role'; member: string; role: ChainMember['role']; custom: string[] }
+  | { action: 'remove'; member: string }
+  | { action: 'grant'; collection: string; grantee: string; permission: string }
+  | { action: 'ungrant'; collection: string; grantee: string }
+  | {
+      action: 'collection';
+      collection: string;
+      name: string;
+      parent?: string;
+      /** Granted to the maker with `manage` when left out. */
+      grants?: Array<{ grantee: string; permission: string }>;
+    }
+  | { action: 'collection-delete'; collection: string }
+  | { action: 'rename'; target: string; name: string }
+  | { action: 'group'; group: string; name: string; members?: string[] }
+  | { action: 'group-members'; group: string; add: string[]; remove: string[] }
+  | { action: 'group-delete'; group: string }
+  /** Shares the keys this account holds with the members awaiting them. */
+  | { action: 'seal' };
+
+/** An item a `keys` record re-writes under its collection's new key version. */
+export interface ChainWrite {
+  collection: string;
+  /** The revision being replaced; the item is written as the next one. */
+  expectedRevision: number;
+  item: {
+    id: string;
+    owner: string;
+    kind: string;
+    format: 'kem1';
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+    deleted: false;
+    collectionId: string;
+  };
+}
+
+/** What POST /kem/v1/spaces/{id}/chain takes: records, and the boxes and names they commit. */
+export interface ChainAppend {
+  ok: true;
+  records: ChainRecord[];
+  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
+  names: Array<{ name: string; seq: number; target: string }>;
+  /** Live items of the replaced collections this account can't re-write (key replacement). */
+  held?: string[];
+  /** Items of the replaced collections, sealed again under their new key versions. */
+  writes?: ChainWrite[];
+  /** The keys (`space`, `collection:<uuid>`) a key replacement replaces: only items of these can be held. */
+  rotated?: string[];
+}
+
+/** The server's copy of what a key replacement seals again. */
+export interface ChainReplacement {
+  /** The live items of the space, as the server serves them. */
+  items: Array<{
+    id: string;
+    collection: string;
+    kind: string;
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+  }>;
+  /** Every sealed name of the space (`space`, `collection:<uuid>`, `group:<uuid>`), base64url. */
+  names: Array<{ target: string; sealed: string }>;
+}
+
+/** Records ready to append, or the verifier's reason for refusing the change. */
+export type ChainBuilt = ChainAppend | ChainRefusal;
+
 /** An entry of the server's seal hash list for a record (GET /chain/{seq}/seals). */
 export interface SealHashEntry {
   bundleVersion: number;
@@ -694,6 +794,41 @@ export interface CryptoApi {
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
   /**
+   * A new space as a chain: the body of POST /kem/v1/spaces/{id}/chain, with a `create` record
+   * signed by the unlocked account, both keys sealed to it and both names under the space key.
+   * `at` is the time in Unix seconds. No key is kept: the space opens through its chain once the
+   * record is appended and verified.
+   */
+  newChainedSpace(input: NewSpaceInput & { at: number }): Promise<ChainAppend>;
+  /**
+   * The records of one change to a chained space, from the verified state the worker holds for it
+   * (first contact done), signed by the unlocked account. Resolves with `{ok: false, reason}` when
+   * the chain's rules refuse the change, and with no records when there is nothing to do.
+   */
+  buildChainRecords(input: {
+    spaceId: string;
+    /** The time in Unix seconds. */
+    at: number;
+    change: ChainChange;
+  }): Promise<ChainBuilt>;
+  /**
+   * Replaces the keys the chain marks (a removal or an ungrant marked them): a `keys` record, and
+   * the items of the replaced collections sealed again under their new key versions (`writes`),
+   * with those the account can't re-write named `held`. No records when nothing can be replaced.
+   */
+  buildKeyReplacement(input: {
+    spaceId: string;
+    at: number;
+    replacement: ChainReplacement;
+  }): Promise<ChainBuilt>;
+  /**
+   * Seals again the items still under an older key version than their collection's current one
+   * (a replacement that stopped halfway, or items it held), as the next revision under the
+   * current version. `held` names those this unlock can't seal again (it no longer holds their
+   * old key, or can't edit them). No record is made.
+   */
+  buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
+  /**
    * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
    * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
    */
@@ -863,6 +998,19 @@ export interface Ops {
   verifySpaceChain: {
     args: [input: { spaceId: string; records: ChainRecord[]; anchor?: ChainAnchor }];
     result: ChainVerdict;
+  };
+  newChainedSpace: { args: [input: NewSpaceInput & { at: number }]; result: ChainAppend };
+  buildChainRecords: {
+    args: [input: { spaceId: string; at: number; change: ChainChange }];
+    result: ChainBuilt;
+  };
+  buildKeyReplacement: {
+    args: [input: { spaceId: string; at: number; replacement: ChainReplacement }];
+    result: ChainBuilt;
+  };
+  buildReseal: {
+    args: [input: { spaceId: string; items: ChainReplacement['items'] }];
+    result: ChainBuilt;
   };
   sealLocal: { args: [label: string, text: string]; result: string };
   openLocal: { args: [label: string, sealed: string]; result: string };

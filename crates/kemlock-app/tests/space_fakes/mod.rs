@@ -964,6 +964,18 @@ impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
         }
         g.held.extend(append.held);
         apply_in(&mut g, append.changes);
+        // The items a key replacement re-wrote, stored with the records.
+        let (drafts, collections): (Vec<ItemDraft>, Vec<CollectionId>) =
+            append.writes.into_iter().unzip();
+        drop(g);
+        if !drafts.is_empty() {
+            let stored = self.items.put_batch(drafts).await?;
+            let mut g = self.lock();
+            for (item, collection) in stored.iter().zip(collections) {
+                g.item_collections.insert(item.id, collection);
+                release_written(&mut g, item, Some(collection));
+            }
+        }
         Ok(AppendOutcome::Appended(
             last.expect("an append has records"),
         ))

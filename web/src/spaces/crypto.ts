@@ -6,7 +6,11 @@
 import { crypto as worker } from '@/crypto';
 import {
   type ChainAnchor,
+  type ChainAppend,
+  type ChainBuilt,
+  type ChainChange,
   type ChainRecord,
+  type ChainReplacement,
   type ChainVerdict,
   type ChainView,
   type CryptoApi,
@@ -17,7 +21,18 @@ import {
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { createSharingCrypto, type SharingCrypto, unavailableSharingCrypto } from '@/sharing/crypto';
 
-export type { ChainAnchor, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
+export type {
+  ChainAnchor,
+  ChainAppend,
+  ChainBuilt,
+  ChainChange,
+  ChainRecord,
+  ChainReplacement,
+  ChainVerdict,
+  ChainView,
+  NameKind,
+  SealHashEntry,
+};
 
 /** A key sealed to a member, and the signature of the account that sealed it. */
 export interface SignedBox {
@@ -123,6 +138,36 @@ export interface SpaceCrypto extends SharingCrypto {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
+  /**
+   * A new space as a chain: the body of the append route, with the `create` record signed here,
+   * both keys sealed to the maker and both names under the space key. `at` is Unix seconds.
+   */
+  newChainedSpace(input: {
+    spaceId: string;
+    collectionId: string;
+    spaceName: string;
+    collectionName: string;
+    at: number;
+  }): Promise<ChainAppend>;
+  /**
+   * The records of one change to a chained space, built and signed in the worker from the state it
+   * verified, or the verifier's reason for refusing the change. No records: nothing to do.
+   */
+  buildChainRecords(input: { spaceId: string; at: number; change: ChainChange }): Promise<ChainBuilt>;
+  /**
+   * Replaces the keys a removal or an ungrant marked: the `keys` record and the items of the
+   * replaced collections sealed again, built in the worker from the state it verified.
+   */
+  buildKeyReplacement(input: {
+    spaceId: string;
+    at: number;
+    replacement: ChainReplacement;
+  }): Promise<ChainBuilt>;
+  /**
+   * Seals again items still under an older key version than their collection's: the writes for
+   * the batch route, and the ids this unlock can't seal again (it no longer holds their old key).
+   */
+  buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
   /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
   sealLocal(label: string, text: string): Promise<string>;
   /** Opens what `sealLocal` sealed under the same label and account. */
@@ -173,6 +218,10 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   ownFingerprint: () => unavailable(),
   verifyConfirmation: () => unavailable(),
   verifySpaceChain: () => unavailable(),
+  newChainedSpace: () => unavailable(),
+  buildChainRecords: () => unavailable(),
+  buildKeyReplacement: () => unavailable(),
+  buildReseal: () => unavailable(),
   spaceChainView: () => unavailable(),
   sealLocal: () => unavailable(),
   openLocal: () => unavailable(),
@@ -198,6 +247,10 @@ type SpaceWorker = Pick<
   | 'ownFingerprint'
   | 'verifyConfirmation'
   | 'verifySpaceChain'
+  | 'newChainedSpace'
+  | 'buildChainRecords'
+  | 'buildKeyReplacement'
+  | 'buildReseal'
   | 'spaceChainView'
   | 'sealLocal'
   | 'openLocal'
@@ -277,6 +330,10 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
       );
     },
     verifySpaceChain: (input) => api.verifySpaceChain(input),
+    newChainedSpace: (input) => api.newChainedSpace(input),
+    buildChainRecords: (input) => api.buildChainRecords(input),
+    buildKeyReplacement: (input) => api.buildKeyReplacement(input),
+    buildReseal: (input) => api.buildReseal(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
     sealLocal: (label, text) => api.sealLocal(label, text),
     openLocal: (label, sealed) => api.openLocal(label, sealed),

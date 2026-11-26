@@ -485,6 +485,19 @@ export function createManifestKeeper(deps: KeeperDeps) {
       return ledgerTail;
     },
 
+    /**
+     * The last manifest of `owner` that is good: the server's, fetched and checked as a sync's is
+     * (its signature, its signer, its counter against the highest seen), or null when there is
+     * none or something is wrong with it. What an item has to match to be taken as accepted.
+     * Throws when the server or the member list can't be reached.
+     */
+    async acceptedManifest(owner: string): Promise<Manifest | null> {
+      const account = deps.accountId();
+      if (!account) return null;
+      const checked = await check(owner, account);
+      return checked.problem ? null : (checked.accepted ?? null);
+    },
+
     /** Resolves once every item told to `served` and `wrote` so far is in the ledger. */
     settled: (): Promise<void> => ledgerTail,
 

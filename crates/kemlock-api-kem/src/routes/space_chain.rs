@@ -42,7 +42,8 @@ use kemlock_app::spaces::{
 use kemlock_app::{AppError, b64url};
 use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
 use kemlock_domain::spaces::CustomPermissions;
-use kemlock_domain::{ItemId, SpaceId, UserId};
+use kemlock_domain::spaces::CollectionId;
+use kemlock_domain::{ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use utoipa::{OpenApi, ToSchema};
@@ -140,6 +141,9 @@ pub(crate) struct AppendRequestDto {
     /// Live items a `keys` record in the request leaves held.
     #[serde(default)]
     held: Vec<Uuid>,
+    /// Items a `keys` record in the request re-writes under the collection's new key version.
+    #[serde(default)]
+    writes: Vec<super::spaces::ReplacementWriteDto>,
 }
 
 /// The head of a chain.
@@ -373,7 +377,7 @@ impl From<ChainReadError> for Problem {
 
 // ---- the use cases of one request ----
 
-fn append_use_case<S, P, K, R>(env: &Env<S, P, K, R>) -> AppendChain<R, S, S, P>
+fn append_use_case<S, P, K, R>(env: &Env<S, P, K, R>) -> AppendChain<R, S, S, P, S, S, crate::LiveHub>
 where
     S: Store,
     P: Crypto,
@@ -385,6 +389,10 @@ where
         users: env.api.store.clone(),
         events: env.api.store.clone(),
         clock: env.api.crypto.clone(),
+        items: env.api.store.clone(),
+        tags: env.api.store.clone(),
+        limits: env.api.auth_config().item_limits,
+        push: env.api.hub.clone(),
     }
 }
 
@@ -432,11 +440,19 @@ fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
             sealed: decode("name", &name.name)?,
         });
     }
+    let mut writes = Vec::with_capacity(request.writes.len());
+    for write in request.writes {
+        let item = write
+            .item
+            .into_write(Some(Revision(write.expected_revision)))?;
+        writes.push((CollectionId(write.collection), item));
+    }
     Ok(AppendRequest {
         records,
         seals,
         names,
         held: request.held.iter().map(|id| ItemId(*id)).collect(),
+        writes,
     })
 }
 

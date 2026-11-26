@@ -15,7 +15,17 @@ import { Notice } from '@/ui/Notice';
 import '@/styles/account.css';
 import { CheckList, SelectInput, TextInput } from '../account/controls';
 import type { Described } from '../account/errors';
-import { type SpaceDetail, type InviteInput, canManageUsers, memberLabel } from './model';
+import {
+  type InviteInput,
+  type ReplaceProgress,
+  type Replaced,
+  type Resealed,
+  type SpaceDetail,
+  canManageUsers,
+  canReplaceKeys,
+  keysAwaitReplacement,
+  memberLabel,
+} from './model';
 import { type Done, succeeded, useAsk } from './outcome';
 import { InviteLinkAction } from './InviteLinkAction';
 import { SpaceStructure, type StructureActions } from './SpaceStructure';
@@ -31,6 +41,10 @@ export interface ConfirmState {
 export interface SpaceActions extends StructureActions {
   /** The person compared the fingerprint first contact asked for and it matched. */
   acceptFirstContact?: () => void;
+  /** Replaces the keys that wait for it, for a space with a verified chain. */
+  replaceKeys?: () => void;
+  /** Seals again the items still under an old key version. */
+  resealItems?: () => void;
   invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
@@ -60,6 +74,14 @@ export interface SpaceDetailViewProps {
   error?: Described | undefined;
   /** What the last revoke or removal left exposed. */
   offboarded: { name: string; outcome: OffboardedDto } | null;
+  /** How far a key replacement is, while one runs. */
+  replacing?: ReplaceProgress | null;
+  /** What the last key replacement did. */
+  replaced?: Replaced | null;
+  /** How many items are still under an old key version of their collection. */
+  toReseal?: number;
+  /** What the last sealing again did. */
+  resealed?: Resealed | null;
   cryptoAvailable: boolean;
   actions: SpaceActions;
   onBack: () => void;
@@ -366,6 +388,24 @@ function CompareNotice({
   );
 }
 
+/** How far a key replacement or a sealing again is. */
+function Progress({ progress }: { progress: ReplaceProgress | null }) {
+  const t = useT();
+  if (!progress) return null;
+  return (
+    <p role="status">
+      {progress.phase === 'reading'
+        ? t('space.keys.reading', { done: progress.done })
+        : progress.phase === 'sealing'
+          ? t('space.keys.sealing', { total: progress.total })
+          : t('space.keys.sending', { done: progress.done, total: progress.total })}
+      {progress.phase === 'sending' && progress.total > 0 ? (
+        <progress value={progress.done} max={progress.total} aria-label={t('space.keys.progress')} />
+      ) : null}
+    </p>
+  );
+}
+
 type Offboard = { kind: 'revoke' | 'remove'; member: MemberViewDto } | null;
 
 export function SpaceDetailView({
@@ -377,6 +417,10 @@ export function SpaceDetailView({
   error,
   offboarded,
   cryptoAvailable,
+  replacing = null,
+  replaced = null,
+  toReseal = 0,
+  resealed = null,
   actions,
   onBack,
 }: SpaceDetailViewProps) {
@@ -474,10 +518,51 @@ export function SpaceDetailView({
           <p>{me.state === 'confirmed' ? t('sharing.unavailable') : t('space.detail.notConfirmed')}</p>
         </Notice>
       ) : null}
-      {pendingKeys ? (
+      {keysAwaitReplacement(detail) ? (
+        <Notice tone="warn" live>
+          <b>{t('space.keysPending.title')}</b>
+          <p>{t('space.keysPending.chained')}</p>
+          <Progress progress={replacing} />
+          {actions.replaceKeys && canReplaceKeys(detail) ? (
+            <div className="actions">
+              <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.replaceKeys}>
+                {t('space.keys.replace')}
+              </Button>
+            </div>
+          ) : (
+            <p>{t('space.keysPending.elsewhere')}</p>
+          )}
+        </Notice>
+      ) : pendingKeys ? (
         <Notice tone="warn" live>
           <b>{t('space.keysPending.title')}</b>
           <p>{t('space.keysPending.body')}</p>
+        </Notice>
+      ) : null}
+      {toReseal > 0 && !keysAwaitReplacement(detail) ? (
+        <Notice tone="warn" live>
+          <b>{t('space.reseal.title', { count: toReseal })}</b>
+          <p>{t('space.reseal.body')}</p>
+          <Progress progress={replacing} />
+          {actions.resealItems ? (
+            <div className="actions">
+              <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.resealItems}>
+                {t('space.reseal.run')}
+              </Button>
+            </div>
+          ) : null}
+        </Notice>
+      ) : null}
+      {resealed ? (
+        <Notice tone="info" live>
+          <b>{t('space.reseal.done', { rewritten: resealed.rewritten })}</b>
+          {resealed.stuck > 0 ? <p>{t('space.reseal.stuck', { stuck: resealed.stuck })}</p> : null}
+        </Notice>
+      ) : null}
+      {replaced ? (
+        <Notice tone="info" live>
+          <b>{t('space.keys.done', { rewritten: replaced.rewritten })}</b>
+          {replaced.held > 0 ? <p>{t('space.keys.held', { held: replaced.held })}</p> : null}
         </Notice>
       ) : null}
       {offboarded ? (
@@ -656,6 +741,9 @@ export function SpaceDetailView({
               ) : null;
             })()
           : null}
+        {detail.trust?.kind === 'verified' ? (
+          <p className="hint">{t('space.chain.unsupported')}</p>
+        ) : null}
         {inviting && manage && !waiting ? (
           <InviteForm
             detail={detail}

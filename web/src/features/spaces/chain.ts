@@ -219,7 +219,9 @@ function unlisted(member: ChainMember): MemberViewDto {
  * The space as the verified chain says it is: who is in it and in what role, the collections and
  * their key versions, the groups and who is in them, and the grants. The server's lists give
  * names, emails and times and nothing else; a member the chain doesn't have, a collection or
- * group it doesn't have, and a grant it doesn't have are dropped.
+ * group it doesn't have, and a grant it doesn't have are dropped. The one thing taken from the
+ * server beside names and times is a newer bundle of a confirmed member than the chain's, which
+ * is what asks for a new confirmation.
  */
 export function overlayChain(
   view: SpaceViewDto,
@@ -237,15 +239,24 @@ export function overlayChain(
         : server.state === 'accepted'
           ? 'accepted'
           : 'invited';
+    // A confirmed member's keys are the chain's. When the server lists keys of a newer version
+    // (the member replaced them since), those are shown instead, and the member is to be confirmed
+    // again: a person compares the new fingerprint, and a `confirm` record makes the chain's
+    // bundle the new one. Until then keys are sealed to the chain's bundle only.
+    const newer =
+      serverMember.has(chained.id) &&
+      chained.bundleVersion !== undefined &&
+      server.userKeyVersion > chained.bundleVersion;
     merged.push({
       ...server,
       role: chained.role,
       custom: chained.custom as CustomPermission[],
       state,
       invitedBy: chained.invitedBy,
-      ...(chained.bundle
+      ...(chained.bundle && !newer
         ? { publicBundle: chained.bundle, userKeyVersion: chained.bundleVersion ?? server.userKeyVersion }
         : {}),
+      ...(newer && chained.status === 'confirmed' ? { needsReconfirmation: true } : {}),
     });
   }
   const me = merged.find((m) => m.user === view.me.user);

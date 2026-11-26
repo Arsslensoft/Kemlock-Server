@@ -2,6 +2,7 @@
 // ids are UUIDs, times are Unix seconds, every binary value is base64url without padding. Names
 // are encrypted under the space key, so the server only ever holds them as base64url ciphertext.
 import type { Api } from './client';
+import type { BatchRequest, BatchResponse, ItemDto } from './types';
 
 export type SpaceRole = 'owner' | 'admin' | 'custom' | 'member';
 export type MemberState = 'invited' | 'accepted' | 'confirmed' | 'revoked';
@@ -231,6 +232,41 @@ export interface ChainRecordDto {
   cosignature?: string;
 }
 
+/** What POST /chain takes: records, and the boxes and sealed names their commitments cover. */
+export interface AppendChainRequest {
+  records: ChainRecordDto[];
+  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
+  names: Array<{ name: string; seq: number; target: string }>;
+  /** Live items a `keys` record in the request leaves held. */
+  held?: string[];
+  /** Items a `keys` record in the request re-writes under the collection's new key version. */
+  writes?: Array<{ collection: string; expectedRevision: number; item: ItemDto }>;
+}
+
+/** An item as `GET /sync` serves it: a space's item that a key replacement left held says so. */
+export type ServedItemDto = ItemDto & { held?: boolean };
+
+/** One page of `GET /sync`. */
+export interface ServedPageDto {
+  items: ServedItemDto[];
+  cursor: string;
+  more: boolean;
+}
+
+/** The head of a chain after an append. */
+export interface ChainHeadDto {
+  link: string;
+  seq: number;
+}
+
+/** The account an inviter may invite, by email (GET /lookup). */
+export interface AccountLookupDto {
+  account: string;
+  bundle: string;
+  bundleSignature: string;
+  keyVersion: number;
+}
+
 /** The hash of a box a record committed (GET /chain/{seq}/seals). */
 export interface SealHashDto {
   bundleVersion: number;
@@ -258,6 +294,26 @@ export function createSpacesApi(http: Http) {
         path: `${base(space)}/chain`,
         ...(from === undefined ? {} : { query: { from } }),
       }),
+    /** Appends records to a space's chain; the first one, a `create`, makes the space. */
+    appendChain: (space: string, body: AppendChainRequest) =>
+      http.request<ChainHeadDto>({ method: 'POST', path: `${base(space)}/chain`, body }),
+    /** The account behind an email, for an `invite` record; the caller must manage users. */
+    lookup: (space: string, email: string) =>
+      http.request<AccountLookupDto>({
+        method: 'GET',
+        path: `${base(space)}/lookup`,
+        query: { email },
+      }),
+    /** What changed since `since` (everything when left out), as `GET /kem/v1/sync` serves it. */
+    sync: (since?: string, limit?: number) =>
+      http.request<ServedPageDto>({
+        method: 'GET',
+        path: '/kem/v1/sync',
+        query: { since, limit },
+      }),
+    /** Up to 500 item writes, all or none. */
+    putBatch: (body: BatchRequest) =>
+      http.request<BatchResponse>({ method: 'POST', path: '/kem/v1/items:batch', body }),
     /** The seal hashes record `seq` committed. */
     chainSeals: (space: string, seq: number) =>
       http.request<SealHashDto[]>({ method: 'GET', path: `${base(space)}/chain/${seq}/seals` }),

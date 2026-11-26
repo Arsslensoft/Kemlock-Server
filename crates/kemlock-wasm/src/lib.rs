@@ -21,6 +21,7 @@
 //! - `sharing`: sealing the root key, the member confirmation and a released emergency key;
 //! - `spaces`: a space's keys and their encrypted names;
 //! - `chain`: a space's signed chain, verified, and the keys opened only through it;
+//! - `chain_build`: the records of a space's chain made here, signed, and checked before they leave;
 //! - `b64`, `ids`, `totp`, `error`: small pieces of both.
 //!
 //! The formats are `docs/crypto.md`'s, and `kemlock_crypto::private_keys` adds the layout of the
@@ -30,6 +31,7 @@
 mod approval;
 mod b64;
 mod chain;
+mod chain_build;
 mod error;
 mod ids;
 mod kit;

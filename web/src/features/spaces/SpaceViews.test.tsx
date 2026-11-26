@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { NO_CHAIN } from '@/test/fake-space-crypto';
-import { detail, LEE, ME, THEO } from './fixtures';
+import { detail, LEE, ME, THEO, member, spaceView } from './fixtures';
 import { type SpaceActions, type SpaceDetailViewProps, SpaceDetailView } from './SpaceDetailView';
 import { SpaceListView } from './SpaceListView';
 
@@ -391,5 +391,100 @@ describe('SpaceDetailView', () => {
     expect(screen.getByText('55555 44444')).toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
     expect(accept).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SpaceDetailView, a space with a chain', () => {
+  const marked = {
+    ...NO_CHAIN,
+    chained: true,
+    head: { seq: 3, link: 'bGluaw' },
+    space: { keyVersion: 1, marked: true, nameHash: 'h', nameVersion: 1 },
+  };
+  const waiting = () => detail({ trust: { kind: 'verified' as const, view: marked } });
+
+  it('offers to replace the keys that wait, runs it, and shows how far it is', async () => {
+    const replaceKeys = vi.fn();
+    view({ detail: waiting(), actions: { ...actions(), replaceKeys } });
+    expect(screen.getByText(/Replacing them here seals every item/)).toBeInTheDocument();
+    expect(screen.queryByText(/Only a member who can edit/)).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Replace the keys' }));
+    expect(replaceKeys).toHaveBeenCalledOnce();
+  });
+
+  it('offers no button to a member who can’t edit what waits, and says who can', () => {
+    const plain = detail({
+      view: spaceView({ me: member(ME, { role: 'member' }) }),
+      trust: { kind: 'verified' as const, view: marked },
+    });
+    view({ detail: plain, actions: { ...actions(), replaceKeys: vi.fn() } });
+    expect(screen.queryByRole('button', { name: 'Replace the keys' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Only a member who can edit the affected collections/)).toBeInTheDocument();
+  });
+
+  it('shows the progress and holds the button while it runs, and what it did when done', () => {
+    view({
+      detail: waiting(),
+      actions: { ...actions(), replaceKeys: vi.fn() },
+      replacing: { phase: 'sending', done: 2, total: 5 },
+    });
+    expect(screen.getByText(/Sending 2 of 5/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replace the keys' })).toBeDisabled();
+  });
+
+  it('says what a finished replacement did, and how many items stay held', () => {
+    view({ replaced: { rewritten: 4, held: 2 } });
+    expect(screen.getByText(/4 items sealed again/)).toBeInTheDocument();
+    expect(screen.getByText(/2 items stay held/)).toBeInTheDocument();
+  });
+
+  it('says what the web vault does not do for a space with a chain', () => {
+    view({ detail: detail({ trust: { kind: 'verified' as const, view: { ...NO_CHAIN, chained: true } } }) });
+    expect(screen.getByText(/Moving a collection and restoring a removed member/)).toBeInTheDocument();
+    // Nothing waits for replacement, so there is nothing to replace.
+    expect(screen.queryByRole('button', { name: 'Replace the keys' })).not.toBeInTheDocument();
+  });
+});
+
+describe('SpaceDetailView, items left under an old key', () => {
+  const replaced = () =>
+    detail({
+      trust: {
+        kind: 'verified' as const,
+        view: {
+          ...NO_CHAIN,
+          chained: true,
+          head: { seq: 5, link: 'bGluaw' },
+          space: { keyVersion: 2, marked: false, nameHash: 'h', nameVersion: 2 },
+        },
+      },
+    });
+
+  it('says how many items wait to be sealed again and runs it', async () => {
+    const resealItems = vi.fn();
+    view({ detail: replaced(), toReseal: 3, actions: { ...actions(), resealItems } });
+    expect(screen.getByText(/3 items are still under an old key/)).toBeInTheDocument();
+    // It doesn't promise the web can fix them after a reload.
+    expect(screen.getByText(/After a reload this page can't/)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Try to seal them again' }));
+    expect(resealItems).toHaveBeenCalledOnce();
+  });
+
+  it('shows the progress and holds the button while it runs', () => {
+    view({
+      detail: replaced(),
+      toReseal: 3,
+      actions: { ...actions(), resealItems: vi.fn() },
+      replacing: { phase: 'sending', done: 1, total: 3 },
+    });
+    expect(screen.getByText(/Sending 1 of 3/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try to seal them again' })).toBeDisabled();
+  });
+
+  it('says nothing when none waits, and what a sealing again did, with the items it could not', () => {
+    view({ detail: replaced(), toReseal: 0, resealed: { rewritten: 2, stuck: 1 } });
+    expect(screen.queryByRole('button', { name: 'Try to seal them again' })).not.toBeInTheDocument();
+    expect(screen.getByText(/2 items sealed again/)).toBeInTheDocument();
+    expect(screen.getByText(/1 item can't be sealed again here/)).toBeInTheDocument();
   });
 });
