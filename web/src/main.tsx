@@ -6,7 +6,7 @@ import { keepRootSealed, restoreSession } from '@/app/persistence';
 import { createAppRouter } from '@/app/router';
 import { forgetEndedSession, lockVault, signOut } from '@/app/actions';
 import { startAutoLock } from '@/app/autoLock';
-import { startDeviceKeyCleanup } from '@/app/deviceKeyCleanup';
+import { startOtherSessionsCleanup } from '@/app/otherSessionsCleanup';
 import { createDevicesApi } from '@/api/devices';
 import { getDeviceId } from '@/lib/device';
 import { createPoliciesApi } from '@/api/policies';
@@ -53,12 +53,12 @@ const restored = purged
 // the storage may be a closed tab's, which must not look alive.
 void restored.then(() => keepTabKeyAlive(session));
 
-// A browser that used an earlier version drops its old trusted-device key once, if it holds no copy.
+// A browser that used an earlier version has its device's other sessions ended once, so tokens an old
+// closed tab still holds stop working. This session, the device and its key copy stay.
 void restored.then(() =>
-  startDeviceKeyCleanup({
+  startOtherSessionsCleanup({
     session,
     devices: createDevicesApi(api),
-    crypto: vaultCrypto,
     usedBefore: getDeviceId() !== null,
   }),
 );

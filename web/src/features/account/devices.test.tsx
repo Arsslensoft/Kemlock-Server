@@ -198,6 +198,12 @@ describe('the devices client', () => {
     const api = createDevicesApi({ request: vi.fn(), send } as never);
     await api.endSession();
     expect(send).toHaveBeenLastCalledWith({ method: 'POST', path: '/kem/v1/auth/sign-out' });
+    await api.endOtherSessions();
+    expect(send).toHaveBeenLastCalledWith({
+      method: 'POST',
+      path: '/kem/v1/auth/sign-out',
+      body: { others: true },
+    });
     await api.signOut('d1');
     expect(send).toHaveBeenLastCalledWith({
       method: 'POST',
