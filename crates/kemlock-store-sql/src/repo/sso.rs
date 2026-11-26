@@ -106,6 +106,7 @@ impl SsoIdentityRepo for SqlStore {
             email: Set(email.to_owned()),
             linked_at: NotSet,
             last_login_at: Set(utc(at)),
+            confirmed: NotSet,
         };
         let result = identities::Entity::update_many()
             .set(row)
