@@ -114,9 +114,13 @@ so no address can reach a different URL than the one asked for). A descriptor's 
 by the peer, and this server connects to them (a probe every minute, a visit, the peer's page in the
 console, key records, the session), so they are checked before each connection:
 
-- The addresses the admin chose, which are the one typed at pairing, the ones the descriptor listed
-  when the admin confirmed the pairing, and any approved later (`peer_trusted_addresses`), may be `http`
-  and may name a private network. Peers paired before this rule keep the addresses they have.
+- The addresses the admin chose, which are the one typed at pairing and any approved later
+  (`peer_trusted_addresses`), may be `http` and may name a private network. The addresses a peer's
+  descriptor lists are the peer's say, even at pairing and on the side that only showed the code.
+- Any address of a peer that is refused by these rules puts the peer's addresses in the admin's list
+  of address changes (the one a rotation's new addresses wait in), and approving it there trusts
+  them. Peers paired before this rule start with none trusted, so a peer on a private network is
+  listed the first time it is dialled.
 - Any other address, one a later descriptor lists or a rotation brings, must be `https` and must resolve
   to public addresses only: loopback, private, link-local (the cloud metadata address included),
   carrier-grade NAT, documentation, multicast, reserved ranges and IPv6 addresses that carry one of

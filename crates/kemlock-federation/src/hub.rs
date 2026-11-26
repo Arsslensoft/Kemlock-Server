@@ -319,13 +319,15 @@ impl<S: FedStore> Pairings<S> {
                 )
                 .await?;
         }
-        // What the admin typed, and what the descriptor listed when the admin confirmed the pairing
-        // (the exchange was authenticated by the code), may be dialled as the admin chose: over
-        // `http`, on a private network. Addresses a later descriptor adds may not.
-        self.replica
-            .store()
-            .trust_addresses(pinned.id, &pinned.addresses)
-            .await?;
+        // Only what the admin typed may be dialled as the admin chose: over `http`, on a private
+        // network. The addresses the peer's descriptor lists are the peer's say; one that isn't
+        // public https waits in the admin's list of address changes, the first time it is refused.
+        if let Some(address) = &awaiting.address {
+            self.replica
+                .store()
+                .trust_addresses(pinned.id, std::slice::from_ref(address))
+                .await?;
+        }
         if let Some(ack) = &confirmation.acknowledgement {
             self.replica.store().put_acknowledgement(peer, ack).await?;
         }
@@ -422,18 +424,19 @@ mod tests {
             .expect("confirmed");
         let trusted = a.store().trusted_addresses(b_id).await.expect("trusted");
         assert!(trusted.iter().any(|t| t == typed), "{trusted:?}");
-        assert!(
-            trusted.iter().any(|t| t == "https://s2.example.org"),
-            "what the descriptor listed when the admin confirmed: {trusted:?}"
+        assert_eq!(
+            trusted.len(),
+            1,
+            "only the typed one, not what the descriptor listed: {trusted:?}"
         );
 
-        // B only showed the code: what A's descriptor lists is what its admin confirmed.
+        // B only showed the code: it typed no address, so nothing is trusted for A.
         shower
             .confirm(a_id, confirmation(), NOW)
             .await
             .expect("confirmed");
         let trusted = b.store().trusted_addresses(a_id).await.expect("trusted");
-        assert_eq!(trusted, vec!["https://s1.example.org".to_owned()]);
+        assert!(trusted.is_empty(), "{trusted:?}");
         // A server nobody paired has nothing trusted.
         assert!(
             a.store()

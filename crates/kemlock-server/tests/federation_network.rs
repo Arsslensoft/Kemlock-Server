@@ -19,7 +19,7 @@ use kemlock_app::ports::{ItemStore, UserRepo};
 use kemlock_domain::{
     AccountMode, Email, ItemId, KdfParams, Owner, Role, ServerId, User, UserId, VersionVector,
 };
-use kemlock_federation::extra::Acknowledgement;
+use kemlock_federation::extra::{Acknowledgement, FedAdminRepo};
 use kemlock_federation::home::Policy;
 use kemlock_federation::hub::Confirmation;
 use kemlock_federation::job::RunOutcome;
@@ -212,7 +212,8 @@ async fn two_servers_on_loopback_pair_over_http_and_replicate_an_item_over_a_web
 
     // The descriptor is served over HTTP and verifies against the key the server holds.
     let http = Http::new().expect("an HTTP client");
-    let descriptor = http.descriptor(&a.domain).await.expect("A's descriptor");
+    let descriptor = http
+        .descriptor(&a.domain, kemlock_federation::addr::Trust::Admin).await.expect("A's descriptor");
     descriptor
         .verify(unix_now(), Some(&a.built.replica.identity().public))
         .expect("signed by A's identity key");
@@ -241,6 +242,14 @@ async fn two_servers_on_loopback_pair_over_http_and_replicate_an_item_over_a_web
             )
             .await
             .expect("the pairing is confirmed");
+    }
+    // The addresses the other server's descriptor lists are not trusted for private or `http`
+    // dialling by themselves; each admin approves them (the console's list of address changes).
+    for (node, other) in [(&a, &b), (&b, &a)] {
+        node.store()
+            .trust_addresses(other.id, &[other.domain.clone()])
+            .await
+            .expect("the admin approves the listed address");
     }
     let peers = a.facade.peers().await.expect("peers");
     assert_eq!(peers.len(), 1);

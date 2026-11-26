@@ -12,6 +12,7 @@ use crate::addr::{self, Trust};
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
 use crate::job::Connector;
+use crate::keyrecs::PendingAddresses;
 use crate::ports::Peer;
 use crate::replicate::{FedStore, Replica};
 use crate::session::{SecureChannel, Transport, unix_now};
@@ -289,6 +290,30 @@ impl<S: FedStore> WsConnector<S> {
             _ => Trust::Descriptor,
         }
     }
+
+    /// An address of `peer` was refused by the rules of [`crate::addr`]: put its addresses in the
+    /// admin's list of address changes, unless something already waits there, so the admin can
+    /// approve what it lists (a private network, `http`). Nothing else changes: the address stays
+    /// refused until then.
+    async fn note_refused(&self, peer: &Peer, error: &FedError) {
+        if !matches!(error, FedError::Refused(_)) {
+            return;
+        }
+        let store = self.replica.store();
+        if !matches!(store.pending_addresses(peer.id).await, Ok(None)) {
+            return;
+        }
+        let pending = PendingAddresses {
+            peer: peer.id,
+            operator: peer.operator.clone(),
+            addresses: peer.addresses.clone(),
+            suites: peer.suites.clone(),
+            received_at: unix_now(),
+        };
+        if store.put_pending_addresses(&pending).await.is_ok() {
+            tracing::warn!(peer = %peer.id, "a peer's address was refused: waiting for the admin to approve it");
+        }
+    }
 }
 
 impl<S: FedStore> Connector for WsConnector<S> {
@@ -303,6 +328,7 @@ impl<S: FedStore> Connector for WsConnector<S> {
             let descriptor = match self.http.descriptor(address, trust).await {
                 Ok(descriptor) => descriptor,
                 Err(e) => {
+                    self.note_refused(peer, &e).await;
                     last = e;
                     continue;
                 }
@@ -321,6 +347,7 @@ impl<S: FedStore> Connector for WsConnector<S> {
             let transport = match connect_ws(address, trust).await {
                 Ok(transport) => transport,
                 Err(e) => {
+                    self.note_refused(peer, &e).await;
                     last = e;
                     continue;
                 }
@@ -349,7 +376,10 @@ impl<S: FedStore> Connector for WsConnector<S> {
                     descriptor.verify(unix_now(), Some(&pinned))?;
                     return Ok(());
                 }
-                Err(e) => last = e,
+                Err(e) => {
+                    self.note_refused(peer, &e).await;
+                    last = e;
+                }
             }
         }
         Err(last)
@@ -365,7 +395,10 @@ impl<S: FedStore> Connector for WsConnector<S> {
                 .await
             {
                 Ok(_) => return Ok(()),
-                Err(e) => last = e,
+                Err(e) => {
+                    self.note_refused(peer, &e).await;
+                    last = e;
+                }
             }
         }
         Err(last)
@@ -496,6 +529,52 @@ mod tests {
             "{answer:?}"
         );
         let _ = server.join();
+    }
+
+    #[tokio::test]
+    async fn a_refused_address_waits_in_the_admins_list_and_approving_it_trusts_it() {
+        use crate::memory::MemoryStore;
+        use crate::ports::{PeerRepo, PeerState};
+        use crate::suite::Suite;
+        use crate::testing::identity;
+
+        const NOW: u64 = 1_800_000_000;
+        let me = identity(1, NOW, &Suite::IMPLEMENTED);
+        let other = identity(2, NOW, &Suite::IMPLEMENTED);
+        let replica = Arc::new(Replica::new(MemoryStore::new(me.server), Arc::new(me)));
+        // A peer that lists an address on a private network, which nobody typed.
+        let peer = Peer {
+            id: other.server,
+            operator: "Operator 2".to_owned(),
+            identity_key: other.public.as_bytes().to_vec(),
+            addresses: vec!["https://127.0.0.1:9".to_owned()],
+            suites: Vec::new(),
+            state: PeerState::Paired,
+            paired_at: NOW,
+            last_seen: None,
+        };
+        replica.store().insert_peer(&peer).await.expect("peer");
+        let connector = WsConnector::new(replica.clone()).expect("a connector");
+
+        assert!(matches!(
+            connector.probe(&peer).await,
+            Err(FedError::Refused(_))
+        ));
+        let waiting = replica.pending_address_changes().await.expect("list");
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].addresses, peer.addresses);
+
+        // The admin approves it: it is trusted, and the probe is now a real attempt that fails
+        // for another reason (nothing listens there).
+        replica
+            .approve_address_change(peer.id)
+            .await
+            .expect("approved");
+        assert!(replica.pending_address_changes().await.expect("list").is_empty());
+        assert!(!matches!(
+            connector.probe(&peer).await,
+            Err(FedError::Refused(_))
+        ));
     }
 
 }
