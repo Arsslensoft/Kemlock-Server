@@ -1788,3 +1788,42 @@ fn the_page_s_anchor_makes_first_contact_done_and_refuses_a_fork() {
         Err(Error::Invalid)
     );
 }
+
+#[wasm_bindgen_test]
+fn keys_opened_outside_the_chain_do_not_outlive_a_chain_or_a_refusal() {
+    let held_for = |session: &Session, space: &[u8; 16]| {
+        let unlocked = session.unlocked().expect("unlocked");
+        unlocked.spaces.spaces.keys().any(|(s, _)| s == space)
+            || unlocked.spaces.collections.keys().any(|(s, _, _)| s == space)
+    };
+
+    // Keys made for a space before the server serves a chain for it are dropped once it does.
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF1; 16]);
+    session
+        .new_space(&space, &[3; 16], "Before", "Also before")
+        .expect("keys made outside the chain");
+    assert!(held_for(&session, &space));
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    assert!(!held_for(&session, &space));
+
+    // A chain that is refused drops them too, and nothing opens for the space after it.
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF2; 16]);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    session.accept_first_contact(&space).expect("accepted");
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], false);
+    assert!(!held_for(&session, &space));
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.seal_space_item(&space, &[3; 16], &[7; 16], "login", 1, b"{}").map(|_| ()),
+        Err(Error::Invalid)
+    );
+}

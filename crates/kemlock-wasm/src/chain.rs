@@ -504,6 +504,7 @@ impl Session {
         wire: &[WireIn],
         anchor: Option<&AnchorIn>,
     ) -> Result<Verdict, Error> {
+        let had_chain = self.unlocked()?.spaces.chains.contains_key(space);
         let verdict = self.verify_inner(space, wire, anchor)?;
         // A chain the server served and the verifier refused is still a chain: the space stays
         // closed to the unchained operations, so a page can't fall back on keys the server names.
@@ -511,9 +512,16 @@ impl Session {
         match &verdict {
             Verdict::Refused(_) => {
                 unlocked.spaces.refused.insert(*space);
+                // Whatever was opened for it is no longer vouched for.
+                unlocked.spaces.drop_keys(space);
             }
             Verdict::View(_) => {
                 unlocked.spaces.refused.remove(space);
+                // Keys opened before the space had a chain were opened outside it: the chain's
+                // own come back through `open_chain_key`.
+                if !had_chain && unlocked.spaces.chains.contains_key(space) {
+                    unlocked.spaces.drop_keys(space);
+                }
             }
         }
         Ok(verdict)
@@ -631,6 +639,9 @@ impl Session {
         list: Option<&[SealListEntry]>,
     ) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
+        if unlocked.spaces.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
         let held = unlocked.spaces.chains.get(space).ok_or(Error::Invalid)?;
         if !held.trusted {
             return Err(Error::Invalid);

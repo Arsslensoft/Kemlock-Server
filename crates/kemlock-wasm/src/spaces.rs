@@ -100,6 +100,12 @@ pub(crate) struct SpaceKeys {
 }
 
 impl SpaceKeys {
+    /// Forgets every key held for a space.
+    pub(crate) fn drop_keys(&mut self, space: &[u8; 16]) {
+        self.spaces.retain(|(held, _), _| held != space);
+        self.collections.retain(|(held, _, _), _| held != space);
+    }
+
     /// The verified state of a space that has a chain, when this unlock has verified it.
     fn chain_state(&self, space: &[u8; 16]) -> Option<&State> {
         self.chains.get(space).map(|held| &held.state)
@@ -124,6 +130,9 @@ impl SpaceKeys {
         collection: &[u8; 16],
         version: u32,
     ) -> Result<(), Error> {
+        if self.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
         let Some(held) = self.chains.get(space) else {
             return Ok(());
         };
@@ -142,6 +151,9 @@ impl SpaceKeys {
         collection: &[u8; 16],
         version: u32,
     ) -> Result<(), Error> {
+        if self.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
         let Some(held) = self.chains.get(space) else {
             return Ok(());
         };
@@ -387,6 +399,9 @@ impl Session {
         ciphertext: &[u8],
     ) -> Result<String, Error> {
         let unlocked = self.unlocked()?;
+        if unlocked.spaces.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
         // A name of a chained space is shown only when it is the one the chain committed, at the
         // name version it recorded ("Using the state", "Names").
         if let Some(state) = unlocked.spaces.chain_state(space) {
