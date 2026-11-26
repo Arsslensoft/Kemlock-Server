@@ -4,7 +4,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{App, register, register_and_sign_in, sign_in_reply, test_device};
+use common::{App, Client, Reply, Req, register, register_and_sign_in, sign_in_reply, test_device};
 use kemlock_app::notices::{BoxFuture, Notice, Outbox};
 use kemlock_app::ports::{Clock, UserRepo};
 use kemlock_domain::UserId;
@@ -52,6 +52,24 @@ fn link(token: &str) -> String {
     format!("/kem/v1/accounts/confirm-email?token={token}")
 }
 
+/// Presses the button of the page the link opens: the token, as the form posts it.
+async fn confirm(client: &Client, token: &str) -> Reply {
+    client
+        .send(
+            "POST",
+            "/kem/v1/accounts/confirm-email",
+            Req {
+                raw_body: Some(format!("token={token}").into_bytes()),
+                headers: vec![(
+                    "content-type",
+                    "application/x-www-form-urlencoded".to_owned(),
+                )],
+                ..Req::default()
+            },
+        )
+        .await
+}
+
 #[tokio::test]
 async fn an_account_made_while_verifying_signs_in_only_after_its_link_is_opened() {
     let (app, mailbox) = app(true);
@@ -69,7 +87,7 @@ async fn an_account_made_while_verifying_signs_in_only_after_its_link_is_opened(
     assert_eq!(refused.problem(), "email-not-confirmed");
 
     // A link that isn't ours opens nothing.
-    let bad = client.get(&link("not-a-token")).await;
+    let bad = confirm(&client, "not-a-token").await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
     assert_eq!(
         sign_in_reply(&client, EMAIL, test_device()).await.status,
@@ -77,7 +95,7 @@ async fn an_account_made_while_verifying_signs_in_only_after_its_link_is_opened(
     );
 
     // The link confirms the address, once.
-    let opened = client.get(&link(&tokens[0])).await;
+    let opened = confirm(&client, &tokens[0]).await;
     assert_eq!(opened.status, StatusCode::OK);
     assert_eq!(opened.header("referrer-policy"), Some("no-referrer"));
     assert!(
@@ -85,7 +103,7 @@ async fn an_account_made_while_verifying_signs_in_only_after_its_link_is_opened(
             .header("content-type")
             .is_some_and(|t| t.starts_with("text/html"))
     );
-    let again = client.get(&link(&tokens[0])).await;
+    let again = confirm(&client, &tokens[0]).await;
     assert_eq!(again.status, StatusCode::BAD_REQUEST);
 
     let signed = sign_in_reply(&client, EMAIL, test_device()).await;
@@ -164,7 +182,7 @@ async fn a_new_link_is_mailed_on_asking_and_only_when_one_is_due() {
 
     // The new link replaced the old one.
     assert_eq!(
-        client.get(&link(&tokens[0])).await.status,
+        confirm(&client, &tokens[0]).await.status,
         StatusCode::BAD_REQUEST
     );
 
@@ -174,7 +192,7 @@ async fn a_new_link_is_mailed_on_asking_and_only_when_one_is_due() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.json());
     let tokens = mailbox.tokens(EMAIL);
     assert_eq!(tokens.len(), 3);
-    assert_eq!(client.get(&link(&tokens[2])).await.status, StatusCode::OK);
+    assert_eq!(confirm(&client, &tokens[2]).await.status, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -185,5 +203,53 @@ async fn a_link_runs_out_after_a_day() {
     assert_eq!(made.status, StatusCode::CREATED);
     let token = mailbox.tokens(EMAIL).remove(0);
     app.clock.advance(Duration::hours(25));
-    assert_eq!(client.get(&link(&token)).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(confirm(&client, &token).await.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn opening_the_link_changes_nothing_until_the_button_is_pressed() {
+    let (app, mailbox) = app(true);
+    let client = app.client();
+    let (made, _user) = register(&client, EMAIL, None).await;
+    assert_eq!(made.status, StatusCode::CREATED);
+    let token = mailbox.tokens(EMAIL).remove(0);
+
+    // A mail scanner or a link preview fetches the link, more than once: it gets the page and
+    // spends nothing.
+    for _ in 0..3 {
+        let page = client.get(&link(&token)).await;
+        assert_eq!(page.status, StatusCode::OK);
+        let text = String::from_utf8_lossy(&page.body).into_owned();
+        assert!(text.contains("method=\"post\""), "{text}");
+        assert!(text.contains(&token), "the button carries the token");
+        assert!(
+            page.header("content-security-policy")
+                .is_some_and(|csp| csp.contains("form-action 'self'"))
+        );
+    }
+    assert_eq!(
+        sign_in_reply(&client, EMAIL, test_device()).await.status,
+        StatusCode::FORBIDDEN,
+        "still held"
+    );
+
+    // Pressing the button confirms it, once.
+    let pressed = confirm(&client, &token).await;
+    assert_eq!(pressed.status, StatusCode::OK);
+    assert!(
+        pressed
+            .header("content-security-policy")
+            .is_some_and(|csp| csp.contains("form-action 'none'"))
+    );
+    assert_eq!(confirm(&client, &token).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        sign_in_reply(&client, EMAIL, test_device()).await.status,
+        StatusCode::OK
+    );
+
+    // A token that is no token never reaches the page's markup.
+    let odd = client
+        .get("/kem/v1/accounts/confirm-email?token=%22%3E%3Cscript%3E")
+        .await;
+    assert_eq!(odd.status, StatusCode::BAD_REQUEST);
 }

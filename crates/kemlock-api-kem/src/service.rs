@@ -88,7 +88,8 @@ where
         )
         .route(
             "/kem/v1/accounts/confirm-email",
-            get(A::<S, P, K>::handle_confirm_signup_email),
+            get(A::<S, P, K>::handle_confirm_signup_page)
+                .post(A::<S, P, K>::handle_confirm_signup_email),
         )
         .route(
             "/kem/v1/accounts/confirm-email/resend",

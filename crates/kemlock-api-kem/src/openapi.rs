@@ -270,6 +270,18 @@ fn doc_register_finish() {}
     get, path = "/kem/v1/accounts/confirm-email", tag = "accounts",
     params(("token" = String, Query, description = "The token in the link of the mail, base64url")),
     responses(
+        (status = 200, description = "A small HTML page with a Confirm button that posts the token back. Nothing changes until it is pressed, so a mail scanner that opens the link spends nothing", body = String, content_type = "text/html"),
+        (status = 400, description = "A small HTML page: the link isn't valid", body = String, content_type = "text/html"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_confirm_email_page() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/accounts/confirm-email", tag = "accounts",
+    request_body(content = String, content_type = "application/x-www-form-urlencoded", description = "`token=` and the token of the link"),
+    responses(
         (status = 200, description = "A small HTML page: the address is confirmed and the account can sign in", body = String, content_type = "text/html"),
         (status = 400, description = "A small HTML page: the link is unknown, opened already or out of time", body = String, content_type = "text/html"),
         (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
@@ -459,7 +471,7 @@ fn doc_live() {}
     ),
     paths(
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
-        doc_register_start, doc_register_finish, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
+        doc_register_start, doc_register_finish, doc_confirm_email_page, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
         doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live
     ),
