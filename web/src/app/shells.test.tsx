@@ -241,6 +241,14 @@ describe('the avatar menu', () => {
     expect(avatar).toHaveTextContent('SE');
   });
 
+  it('learns the name from the profile when sign-in gave only the address', async () => {
+    queryClient.setQueryData(['profile'], { userId: 'u1', email: 'sam@example.org', name: 'Sam Rivera' });
+    open('/vault', { name: null });
+    const avatar = await screen.findByRole('button', { name: 'Account menu for Sam Rivera' });
+    expect(avatar).toHaveTextContent('SR');
+    expect(session.getState().name).toBe('Sam Rivera');
+  });
+
   it('follows a rename', async () => {
     open('/vault');
     expect(await screen.findByRole('button', { name: 'Account menu for Sam Rivera' })).toBeInTheDocument();

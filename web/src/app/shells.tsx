@@ -20,6 +20,7 @@ import { lockVault, signOut } from './actions';
 import { session } from './services';
 import { initials, isKindActive, withQuery } from './shellNav';
 import { useSessionState } from './session';
+import { useAccountName } from './useAccountName';
 
 /** The icon, label and optional count inside a nav link. */
 function Item({ icon, count, children }: { icon: IconName; count?: number; children: string }) {
@@ -61,6 +62,7 @@ export function VaultShell() {
   const navigate = useNavigate();
   const router = useRouter();
   const state = useSessionState(session);
+  useAccountName(state);
   const search = useSearch({ strict: false }) as { q?: string };
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { total, byKind, trashed } = useKindCounts();
@@ -205,6 +207,7 @@ export function AdminShell() {
   const t = useT();
   const navigate = useNavigate();
   const state = useSessionState(session);
+  useAccountName(state);
   const name = state.name?.trim() || state.email || '';
   return (
     <div className="shell">
