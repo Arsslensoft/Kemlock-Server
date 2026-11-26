@@ -3,7 +3,7 @@
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
 import type { ChainView } from '@/crypto/types';
-import { fromUtf8, utf8 } from '@/lib/b64url';
+import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
 
@@ -30,6 +30,10 @@ export function fakeSharingCrypto(): FakeSharing {
     },
     canWrapForThisDevice: true,
   };
+}
+
+function utf8Text(text: string): string {
+  return encodeB64(utf8(text));
 }
 
 /** What the worker answers for a space the server serves no chain for. */
@@ -70,6 +74,20 @@ export function fakeSpaceCrypto(): FakeSpaces {
     ...base,
     ownFingerprintText: '',
     chain: NO_CHAIN,
+    async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {
+      calls.push(`newChainedSpace:${at}`);
+      return {
+        records: [{ entry: utf8Text('create-record'), signature: utf8Text('create-signature') }],
+        seals: [
+          { box: utf8Text(`collection-key:${collectionId}`), key: `collection:${collectionId}`, member: 'me', seq: 0, version: 1 },
+          { box: utf8Text(`space-key:${spaceId}`), key: 'space', member: 'me', seq: 0, version: 1 },
+        ],
+        names: [
+          { name: encodeB64(nameBytes(spaceId, 1, 'collection', collectionId, collectionName)), seq: 0, target: `collection:${collectionId}` },
+          { name: encodeB64(nameBytes(spaceId, 1, 'space', spaceId, spaceName)), seq: 0, target: 'space' },
+        ],
+      };
+    },
     async verifySpaceChain({ spaceId }) {
       calls.push(`verifySpaceChain:${spaceId}`);
       held = fake.chain.ok && fake.chain.chained ? fake.chain : null;

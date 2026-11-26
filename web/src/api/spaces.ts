@@ -195,6 +195,19 @@ export interface ChainRecordDto {
   cosignature?: string;
 }
 
+/** What POST /chain takes: records, and the boxes and sealed names their commitments cover. */
+export interface AppendChainRequest {
+  records: ChainRecordDto[];
+  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
+  names: Array<{ name: string; seq: number; target: string }>;
+}
+
+/** The head of a chain after an append. */
+export interface ChainHeadDto {
+  link: string;
+  seq: number;
+}
+
 /** The hash of a box a record committed (GET /chain/{seq}/seals). */
 export interface SealHashDto {
   bundleVersion: number;
@@ -222,6 +235,9 @@ export function createSpacesApi(http: Http) {
         path: `${base(space)}/chain`,
         ...(from === undefined ? {} : { query: { from } }),
       }),
+    /** Appends records to a space's chain; the first one, a `create`, makes the space. */
+    appendChain: (space: string, body: AppendChainRequest) =>
+      http.request<ChainHeadDto>({ method: 'POST', path: `${base(space)}/chain`, body }),
     /** The seal hashes record `seq` committed. */
     chainSeals: (space: string, seq: number) =>
       http.request<SealHashDto[]>({ method: 'GET', path: `${base(space)}/chain/${seq}/seals` }),

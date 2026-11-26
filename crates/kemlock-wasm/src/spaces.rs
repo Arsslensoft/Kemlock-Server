@@ -240,7 +240,7 @@ const FIRST_COLLECTION_KEY_VERSION: u32 = 1;
 /// The first key version of a space.
 const FIRST_SPACE_KEY_VERSION: u32 = 1;
 
-fn seal_name_under(
+pub(crate) fn seal_name_under(
     space_key: &SecretKey,
     space: &[u8; 16],
     version: u32,

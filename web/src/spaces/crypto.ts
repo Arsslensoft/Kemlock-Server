@@ -6,6 +6,7 @@
 import { crypto as worker } from '@/crypto';
 import {
   type ChainAnchor,
+  type ChainAppend,
   type ChainRecord,
   type ChainVerdict,
   type ChainView,
@@ -17,7 +18,7 @@ import {
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { createSharingCrypto, type SharingCrypto, unavailableSharingCrypto } from '@/sharing/crypto';
 
-export type { ChainAnchor, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
+export type { ChainAnchor, ChainAppend, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
 
 export interface NewSpaceKeys {
   /** The space's name under the new space key. */
@@ -98,6 +99,17 @@ export interface SpaceCrypto extends SharingCrypto {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
+  /**
+   * A new space as a chain: the body of the append route, with the `create` record signed here,
+   * both keys sealed to the maker and both names under the space key. `at` is Unix seconds.
+   */
+  newChainedSpace(input: {
+    spaceId: string;
+    collectionId: string;
+    spaceName: string;
+    collectionName: string;
+    at: number;
+  }): Promise<ChainAppend>;
   /** The view of the chain this unlock verified for a space, or null. */
   spaceChainView(spaceId: string): Promise<ChainView | null>;
   /** The person compared the fingerprint first contact asked for and it matched. */
@@ -143,6 +155,7 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   ownFingerprint: () => unavailable(),
   verifyConfirmation: () => unavailable(),
   verifySpaceChain: () => unavailable(),
+  newChainedSpace: () => unavailable(),
   spaceChainView: () => unavailable(),
   acceptFirstContact: () => unavailable(),
   openChainKey: () => unavailable(),
@@ -165,6 +178,7 @@ type SpaceWorker = Pick<
   | 'ownFingerprint'
   | 'verifyConfirmation'
   | 'verifySpaceChain'
+  | 'newChainedSpace'
   | 'spaceChainView'
   | 'acceptFirstContact'
   | 'openChainKey'
@@ -228,6 +242,7 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
       );
     },
     verifySpaceChain: (input) => api.verifySpaceChain(input),
+    newChainedSpace: (input) => api.newChainedSpace(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
     acceptFirstContact: (spaceId) => api.acceptFirstContact(spaceId),
     openChainKey: ({ sealed, ...rest }) => api.openChainKey({ ...rest, sealed: encodeB64(sealed) }),

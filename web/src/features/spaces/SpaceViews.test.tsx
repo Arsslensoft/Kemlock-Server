@@ -308,6 +308,13 @@ describe('SpaceDetailView', () => {
     expect(screen.queryByText(/can't seal or sign keys yet/)).not.toBeInTheDocument();
   });
 
+  it('says the changes to a space with a chain are made from an app', () => {
+    view({
+      detail: detail({ trust: { kind: 'verified', view: { ...NO_CHAIN, chained: true } } }),
+    });
+    expect(screen.getByText(/changes are signed records/)).toBeInTheDocument();
+  });
+
   it('asks to compare the confirmer’s fingerprint on first contact, and goes on only when it matches', async () => {
     const accept = vi.fn();
     const props = view({

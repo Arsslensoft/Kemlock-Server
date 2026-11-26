@@ -1165,6 +1165,29 @@ impl Vault {
 
     // ---- the space chain (src/chain.rs) -----------------------------------------------------
 
+    /// A new space as a chain: JSON `{records, seals, names}`, the body of
+    /// `POST /kem/v1/spaces/{id}/chain`. The `create` record is signed with this account's
+    /// `sig1` key, the space key and the first collection's key are sealed to this account, both
+    /// names are under the space key, and the keys are kept so the space opens once the record is
+    /// appended. `at` is the time in Unix seconds.
+    #[wasm_bindgen(js_name = newChainedSpace)]
+    pub fn new_chained_space(
+        &mut self,
+        space_id: &str,
+        collection_id: &str,
+        space_name: &str,
+        collection_name: &str,
+        at: u32,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let collection = ids::parse_uuid(collection_id).map_err(fail)?;
+        let made = self
+            .session
+            .create_chained_space(&space, &collection, space_name, collection_name, u64::from(at))
+            .map_err(fail)?;
+        json(&made)
+    }
+
     /// Verifies the chain the server served for a space and keeps its state. `records` is the
     /// JSON array of wire-form records (`entry`, `signature`, `cosignature` on a `rekey`), and
     /// `anchor` the JSON `{seq, epoch, links}` the page kept for the space, when it did. Answers
