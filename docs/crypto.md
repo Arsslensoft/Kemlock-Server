@@ -936,12 +936,14 @@ vault, never a bundle the server served; for a space, the bundle of a writer the
 A revision at or below the revision the client already holds is never a change. Otherwise the
 client takes a revision in as the item's current one when it is `signed`; it **never takes in an
 `invalid` one**; and for an `unsigned` or `unknown` one it follows its own record, never what the
-server says: once the client has seen a valid signature for the owner (in this session, which for
-the web vault is as long as its copy of the vault), it takes in no `unsigned` or `unknown` revision
-of an item it holds, tombstones included, and shows it to the person, who still has the revision it
-held. Until then it takes the revision in as it always did. So a server can't turn signing off by
-leaving it out, except for an item the client has never held, which is why the signed manifest
-stays: it lists revisions the owner's devices signed.
+server says. It keeps, per owner, the highest revision of each item it has seen with a valid
+signature (the **floor**), sealed in its local store so a reload or a fresh full sync still has it.
+It takes in no `unsigned` or `unknown` revision above an item's floor, tombstones included, and
+once it has seen the owner signed it takes in none of an item it holds at all, and it shows the
+refusal to the person, who still has the revision they held. An item it never saw signed, and an
+item on a client that has never seen the owner signed, is taken in as it always was. So a server
+can't turn signing off by leaving it out for what the client has seen, which is why the signed
+manifest stays: it lists revisions the owner's devices signed, for the rest.
 
 The manifest keeper uses the verdict for deletions ("How a client uses it"): a tombstone whose
 signature verifies, by the account itself or by a member allowed to write the collection, is a
@@ -971,10 +973,35 @@ control of the account's keys can still write. For a space, the check at a feder
 membership, not of the collection ("What the signature does not cover"): the home server checked the
 collection at write time.
 
-**Key versions.** A signature is checked under the bundle of its own key version. The server checks only
-under the account's current bundle at write time, and keeps one bundle for an account today. A verifier that no longer holds the version a signature names (after a key replacement)
-treats it as `unknown` on a client and refuses it on a peer; when key replacement is built, replaced
-bundles must be kept for as long as items signed under them exist.
+### Key versions
+
+A write names the key version of the bundle that signed it (`writerKeyVersion`), and is checked
+under **that** version's bundle. An account that replaces its keys (a new bundle at the next key
+version) therefore keeps every bundle it had, and what it signed before stays verifiable.
+
+- **The server** keeps every bundle of an account by key version: written wherever the account's
+  bundle is written, and whichever path replaces it keeps the one it replaces first, so a key
+  replacement can't lose the version before it. It accepts a **new** write only under the
+  account's **current** key version, so a replaced key can't sign again.
+- **Reading one.** `GET /kem/v1/accounts/{id}/bundles/{version}` answers
+  `{keyVersion, publicBundle, bundleSignature}` (base64url) to the account itself and to a
+  confirmed member of a space the account is a confirmed member of. An unknown account, a version it
+  never had and a caller who may not read it are the same `404`.
+- **Federation.** A `member-account` record carries the account's past bundles (payload key 14, in
+  ascending key version, at most 64). A receiver keeps the record only when each past bundle is the
+  account's own, at the version it says, below the current one, and carries a valid signature of
+  its own key, as the current bundle must. A peer then checks a record's writer signature against
+  the bundle of the key version the signature names, and refuses it when it holds none.
+- **A client** checks at the writer's current version as before. At an older version it takes a
+  bundle from the server's history only when all of these hold: it parses as that account's bundle
+  at that version; it carries a valid signature of its own key; and its fingerprint is the one the
+  client **pinned** while that bundle was the account's current one: its own keys vouched for the
+  account's own bundle, and the member list the space vouches for ("Using the state") for a
+  member's. The pins are kept sealed in the browser's local store, one per version, never replaced.
+  A version the client never saw vouched has no verdict (`unknown`), and so does one above the
+  writer's current version, because a bundle the server serves for an old version is otherwise a
+  bundle the server can make up. A client that first sees an account after it replaced its keys
+  therefore cannot vouch for writes signed under the keys before.
 
 ### Limits that go with it
 

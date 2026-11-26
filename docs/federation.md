@@ -650,7 +650,10 @@ vault (for a personal vault, its account; for a space, its confirmed members) wh
 changes. The payload is deterministic CBOR (`kemlock-federation`, `members.rs`): the user id, email,
 name, mode, KDF settings, the root key wrapped by the password, the public-key bundle and its
 signature, the private keys sealed under the user key, the key version, the creation and update
-times and the device registrations (id, name, kind, the thumbprint of the DPoP key, creation time).
+times, the device registrations (id, name, kind, the thumbprint of the DPoP key, creation time)
+and the bundles the account had before its current key version, so a write it signed under one
+is checked against it (`docs/crypto.md`, "Signed item writes", "Key versions"); each is held to what
+the current bundle is held to.
 There is no OPAQUE record, security stamp, role, two-step method or token in it, so no password
 secret is shared, and a copy signs in only with a registered device key
 (`POST /kem/v1/auth/device-key/challenge` and `/verify`). A replica applies a record only when it is
