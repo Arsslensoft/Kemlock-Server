@@ -188,6 +188,24 @@ impl ProfileRepo for SqlStore {
             .transpose()
     }
 
+    async fn set_name(&self, user: UserId, name: Option<&str>) -> Result<bool, StoreError> {
+        let written = users::Entity::update_many()
+            .col_expr(users::Column::Name, Expr::value(name.map(str::to_owned)))
+            .filter(users::Column::Id.eq(user.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        if written.rows_affected == 1 {
+            return Ok(true);
+        }
+        // MySQL counts a row written with the value it had as not affected.
+        Ok(users::Entity::find_by_id(user.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some())
+    }
+
     async fn remove_email_change(&self, user: UserId) -> Result<(), StoreError> {
         email_changes::Entity::delete_many()
             .filter(email_changes::Column::UserId.eq(user.0))

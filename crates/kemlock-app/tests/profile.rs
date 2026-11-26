@@ -399,6 +399,26 @@ async fn a_person_changes_their_name_and_a_blank_one_clears_it() {
 }
 
 #[tokio::test]
+async fn a_new_name_keeps_what_another_request_wrote_in_between() {
+    let s = scene().await;
+    let before = s.world.store.user(s.user).expect("the account");
+
+    // Another request writes the account after the rename read it.
+    s.repo.interfere_once();
+    s.profile()
+        .rename(s.user, "Sam Rivera")
+        .await
+        .expect("renamed");
+
+    // The rename wrote only the name: the other request's write stays, nothing is put back.
+    let now = s.world.store.user(s.user).expect("the account");
+    assert_eq!(now.name.as_deref(), Some("Sam Rivera"));
+    assert_ne!(now.updated_at, before.updated_at);
+    assert_eq!(now.opaque_record, before.opaque_record);
+    assert_eq!(now.security_stamp, before.security_stamp);
+}
+
+#[tokio::test]
 async fn a_name_that_is_too_long_or_holds_control_characters_is_refused() {
     let s = scene().await;
 

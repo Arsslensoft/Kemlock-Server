@@ -106,6 +106,11 @@ impl ProfileRepo for FakeProfile {
             .cloned())
     }
 
+    async fn set_name(&self, user: UserId, name: Option<&str>) -> Result<bool, StoreError> {
+        self.race(user);
+        Ok(self.store.set_user_name(user, name))
+    }
+
     async fn remove_email_change(&self, user: UserId) -> Result<(), StoreError> {
         self.inner.lock().expect("the lock").changes.remove(&user);
         Ok(())

@@ -181,6 +181,18 @@ impl FakeStore {
         Ok(true)
     }
 
+    /// The name write of the profile port: only the name changes. `false` when there is no such
+    /// account.
+    pub(crate) fn set_user_name(&self, id: UserId, name: Option<&str>) -> bool {
+        match self.lock().users.get_mut(&id) {
+            Some(row) => {
+                row.name = name.map(str::to_owned);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Another request writes the account: its `updated_at` moves on, as any write of the row does.
     pub(crate) fn touch_user(&self, id: UserId) {
         if let Some(row) = self.lock().users.get_mut(&id) {

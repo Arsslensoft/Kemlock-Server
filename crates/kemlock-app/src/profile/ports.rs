@@ -35,6 +35,15 @@ pub trait ProfileRepo: Send + Sync {
         token_hash: [u8; 32],
     ) -> impl Future<Output = Result<Option<EmailChange>, StoreError>> + Send;
 
+    /// Writes the account's name, and nothing else on its row, so a password, stamp or address
+    /// written by another request since the account was read stays as that request left it.
+    /// `None` clears the name. `false` says there is no such account.
+    fn set_name(
+        &self,
+        user: UserId,
+        name: Option<&str>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
     /// Removes the account's pending change, if it has one.
     fn remove_email_change(
         &self,

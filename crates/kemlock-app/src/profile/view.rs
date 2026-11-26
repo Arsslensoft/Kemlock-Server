@@ -50,13 +50,13 @@ impl<U: UserRepo, R: ProfileRepo, C: Clock> Profile<U, R, C> {
         if name.chars().any(char::is_control) {
             return Err(AppError::Invalid("the name can't hold control characters").into());
         }
-        let renamed = User {
-            name: (!name.is_empty()).then(|| name.to_owned()),
-            updated_at: self.clock.now(),
-            ..account
-        };
-        self.users.update(&renamed).await?;
-        self.view_of(&renamed).await
+        let name = (!name.is_empty()).then(|| name.to_owned());
+        // Only the name column is written: a full-row write of the copy read above could put back
+        // a password or stamp that another request changed in between.
+        if !self.repo.set_name(user, name.as_deref()).await? {
+            return Err(AppError::Unauthorized.into());
+        }
+        self.view_of(&User { name, ..account }).await
     }
 
     async fn view_of(&self, account: &User) -> Result<ProfileView, ProfileError> {
