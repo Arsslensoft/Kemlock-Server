@@ -188,7 +188,8 @@ export default function Item() {
             entries={{
               websites: item.kind === 'login' && canChange,
               move: canChange,
-              copy: canCopy(item) && isEditable(item.kind),
+              // A person who may only read an item can copy it; an item in the Trash is restored first.
+              copy: !trashed && canCopy(item) && isEditable(item.kind),
               trash: canChange,
             }}
             onAction={onAction}

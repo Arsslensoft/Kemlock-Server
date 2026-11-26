@@ -21,7 +21,7 @@ export interface ItemMenuEntries {
   /** Logins only. */
   websites: boolean;
   move: boolean;
-  /** Not for a passkey or a file, which can't be copied, nor an item that can't be read. */
+  /** Not for a passkey or a file, which can't be copied, nor an item that can't be read or is in the Trash. */
   copy: boolean;
   trash: boolean;
 }
