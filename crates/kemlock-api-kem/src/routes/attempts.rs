@@ -17,7 +17,7 @@ use kemlock_domain::UserId;
 /// Reserves one second-step attempt for `user` under the limit the console sets (5 in 15 minutes
 /// by default, then doubling waits, whichever challenge or address the attempt comes from). A 429
 /// when the account waits; nothing is counted then.
-pub(crate) async fn reserve_second_step<S, P, K>(
+pub async fn reserve_second_step<S, P, K>(
     api: &Api<S, P, K>,
     user: UserId,
     now: i64,
@@ -61,7 +61,7 @@ pub(crate) async fn settle_second_step<S, P, K, T>(
 
 /// Clears the account's count; a failure is logged, not returned, as the answer it follows was
 /// right.
-pub(crate) async fn forget_second_step<S, P, K>(api: &Api<S, P, K>, user: UserId)
+pub async fn forget_second_step<S, P, K>(api: &Api<S, P, K>, user: UserId)
 where
     S: Store,
     P: Crypto,

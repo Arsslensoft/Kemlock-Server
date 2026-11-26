@@ -19,7 +19,10 @@ use kemlock_api_kem::extract::{Body, DPOP_NONCE};
 use kemlock_api_kem::problem::rate_limited;
 use kemlock_api_kem::ratelimit::ip_key;
 use kemlock_api_kem::replay::Full;
-use kemlock_api_kem::{Api, Crypto, CustomFieldDto, CustomFieldsDto, Problem, Store};
+use kemlock_api_kem::{
+    Api, Crypto, CustomFieldDto, CustomFieldsDto, Problem, Store, forget_second_step,
+    reserve_second_step,
+};
 use kemlock_app::admin::events::{cursor_text, filter as event_filter, parse_cursor};
 use kemlock_app::admin::{
     AdminError, AdminRepos, Change, FieldInput, Mailer, MigrationRequest, NewRequest,
@@ -227,16 +230,12 @@ where
             .sign_in
             .check(&ip_key(caller.ip), now)
             .map_err(rate_limited)?;
-        let account = format!("2fa:{}", caller.actor.user);
-        // Reserved before the code is looked at, so parallel guesses can't all pass the limit.
-        env.api
-            .limits
-            .second_step
-            .reserve(&account, now)
-            .map_err(rate_limited)?;
+        // Reserved before the code is looked at, so parallel guesses can't all pass the limit,
+        // and in the store, from the budget the account's sign-in second step spends too.
+        reserve_second_step(&env.api, caller.actor.user, now).await?;
         let finished = env.step_up().totp(&caller.actor, &request.code).await;
         if finished.is_ok() {
-            env.api.limits.second_step.clear(&account);
+            forget_second_step(&env.api, caller.actor.user).await;
         }
         let issued = finished?;
         json_ok(StepUpResponse {
@@ -278,13 +277,9 @@ where
             .sign_in
             .check(&ip_key(caller.ip), now)
             .map_err(rate_limited)?;
-        let account = format!("2fa:{}", caller.actor.user);
-        // Reserved before the answer is looked at, so parallel guesses can't all pass the limit.
-        env.api
-            .limits
-            .second_step
-            .reserve(&account, now)
-            .map_err(rate_limited)?;
+        // Reserved before the answer is looked at, so parallel guesses can't all pass the limit,
+        // and in the store, from the budget the account's sign-in second step spends too.
+        reserve_second_step(&env.api, caller.actor.user, now).await?;
         let stepper = env.passkey_stepper()?;
         let challenge = decode("challenge", &request.challenge)?;
         let response = serde_json::to_vec(&request.credential)
@@ -299,7 +294,7 @@ where
         }
         let finished = stepper.finish(&caller.actor, &challenge, &response).await;
         if finished.is_ok() {
-            env.api.limits.second_step.clear(&account);
+            forget_second_step(&env.api, caller.actor.user).await;
         }
         let issued = finished?;
         json_ok(StepUpResponse {
