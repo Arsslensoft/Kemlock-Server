@@ -465,6 +465,18 @@ fn contact_of(
     }
 }
 
+/// Whether the chain's bundle for this account (`listed`) is someone else's key in its place: it
+/// is at this account's key version or a newer one, and isn't the bundle this browser holds. One
+/// at an older version is a bundle this account has since replaced, which a `rekey` moves on from.
+fn takes_my_place(
+    listed_version: u32,
+    listed: &[u8],
+    own_version: u32,
+    own: &[u8],
+) -> bool {
+    listed_version >= own_version && listed != own
+}
+
 fn own_bundle_bytes(session: &Session) -> Result<Vec<u8>, Error> {
     let unlocked = session.unlocked()?;
     let (kx_private, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
@@ -567,8 +579,7 @@ impl Session {
         // The chain's bundle for this account, at the key version this account is at, is this
         // account's own key: another one means someone else's key is in the account's place.
         if let Some(listed) = verified.state.confirmed(&me).and_then(|m| m.bundle.as_ref())
-            && listed.key_version == unlocked.key_version
-            && listed.to_bytes() != own
+            && takes_my_place(listed.key_version, &listed.to_bytes(), unlocked.key_version, &own)
         {
             return Ok(Verdict::Refused(Refused::new("own keys", None)));
         }
@@ -727,6 +738,19 @@ mod tests {
         assert_eq!(list[0].2, [1u8; 32]);
         let bad = [entry("not-a-uuid", "space", 2, 1)];
         assert_eq!(seal_list(&bad, &KeyRef::Space, 2), Err(Error::Invalid));
+    }
+
+    #[test]
+    fn a_bundle_at_my_version_or_a_newer_one_that_isn_t_mine_takes_my_place() {
+        let mine = [1u8, 2, 3];
+        let other = [9u8, 9, 9];
+        assert!(!takes_my_place(2, &mine, 2, &mine));
+        assert!(takes_my_place(2, &other, 2, &mine));
+        // A newer version can't be the bundle I hold, so it is refused whatever its bytes.
+        assert!(takes_my_place(3, &other, 2, &mine));
+        assert!(takes_my_place(3, &mine, 2, &mine) == false);
+        // An older one is one I replaced since.
+        assert!(!takes_my_place(1, &other, 2, &mine));
     }
 
     #[test]
