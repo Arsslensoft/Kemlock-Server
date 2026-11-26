@@ -540,7 +540,9 @@ adds a row for each it lacks and, for a file of at most 50 MiB, fetches it with 
 at most 2 MiB each and stores it (the blob store checks it is a `KMA1` file as it does for an
 upload). A larger file gets its row only, and its bytes are fetched from a peer the first time it
 is downloaded. A peer serves a blob only of a vault it may read, and the file's owner must be that
-vault.
+vault. A replica leaves out an entry whose item it doesn't hold in that vault, or whose file
+another row (an attachment, or a Send's file) already holds, and never deletes a file another row
+holds when an erasure or an unpairing removes the rows of a vault.
 
 **Sends.** A Send of a personal vault (a space has none) travels with the vault, as ciphertext,
 so a Send link keeps working when the vault fails over to a replica. `Sends` pages through the

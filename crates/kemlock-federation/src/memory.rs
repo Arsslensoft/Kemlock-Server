@@ -178,6 +178,8 @@ struct Extras {
     trusted_addresses: HashMap<ServerId, Vec<String>>,
     /// Vaults whose account or space does not live here, for `owns_vault`; everything else does.
     unowned: HashSet<Owner>,
+    /// The attachment rows, for `BlobSync`.
+    attachments: Vec<kemlock_domain::Attachment>,
 }
 
 impl MemoryStore {
@@ -290,6 +292,16 @@ impl MemoryStore {
         } else {
             extras.unowned.insert(vault);
         }
+    }
+
+    /// Adds an attachment row, as an upload would have left it.
+    pub fn put_attachment(&self, attachment: kemlock_domain::Attachment) {
+        self.extras().attachments.push(attachment);
+    }
+
+    /// The attachment rows held.
+    pub fn attachments(&self) -> Vec<kemlock_domain::Attachment> {
+        self.extras().attachments.clone()
     }
 
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
@@ -840,7 +852,65 @@ impl crate::extra::MemberStore for MemoryStore {
         Ok(crate::extra::MemberApply::Applied)
     }
 }
-impl crate::extra::BlobSync for MemoryStore {}
+impl crate::extra::BlobSync for MemoryStore {
+    async fn attachments_after(
+        &self,
+        owner: Owner,
+        after: kemlock_domain::AttachmentId,
+        limit: u32,
+    ) -> Result<Vec<kemlock_domain::Attachment>, StoreError> {
+        let mut found: Vec<_> = self
+            .extras()
+            .attachments
+            .iter()
+            .filter(|a| a.owner == owner && a.id > after)
+            .cloned()
+            .collect();
+        found.sort_by_key(|a| a.id);
+        found.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok(found)
+    }
+
+    async fn attachment_of_blob(
+        &self,
+        blob: BlobId,
+    ) -> Result<Option<kemlock_domain::Attachment>, StoreError> {
+        Ok(self
+            .extras()
+            .attachments
+            .iter()
+            .find(|a| a.blob == blob)
+            .cloned())
+    }
+
+    async fn attachment(
+        &self,
+        id: kemlock_domain::AttachmentId,
+    ) -> Result<Option<kemlock_domain::Attachment>, StoreError> {
+        Ok(self
+            .extras()
+            .attachments
+            .iter()
+            .find(|a| a.id == id)
+            .cloned())
+    }
+
+    async fn add_replicated_attachment(
+        &self,
+        attachment: &kemlock_domain::Attachment,
+    ) -> Result<bool, StoreError> {
+        let mut extras = self.extras();
+        if extras
+            .attachments
+            .iter()
+            .any(|a| a.id == attachment.id || a.blob == attachment.blob)
+        {
+            return Ok(false);
+        }
+        extras.attachments.push(attachment.clone());
+        Ok(true)
+    }
+}
 
 impl ErasureOutbox for MemoryStore {
     async fn pending_erasures(&self, peer: ServerId) -> Result<Vec<PendingErasure>, StoreError> {

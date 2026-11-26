@@ -53,6 +53,10 @@ impl<S: FedStore> Replica<S> {
         let mut files_failed = 0usize;
         if let Some(files) = &self.files {
             for blob in &erased.blobs {
+                // A file another row holds (a Send's) is not this vault's to delete.
+                if self.blob_in_use(*blob).await? {
+                    continue;
+                }
                 if let Err(e) = files.delete(*blob).await {
                     files_failed += 1;
                     tracing::warn!(error = %e, "couldn't delete a file of an erased vault");
