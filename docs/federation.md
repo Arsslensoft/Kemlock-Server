@@ -555,8 +555,11 @@ There is no OPAQUE record, security stamp, role, two-step method or token in it,
 secret is shared, and a copy signs in only with a registered device key
 (`POST /kem/v1/auth/device-key/challenge` and `/verify`). A replica applies a record only when it is
 of the vault's current epoch and signed by its home; a copy never replaces an account that lives on
-the replica (same id or email: refused and logged). A stale-epoch record is quarantined like any
-home-only write.
+the replica (same id or email: refused and logged). A record is applied only for an account that
+belongs to its vault: the owner of a personal vault, or a confirmed member of a space as the
+replica already knows it (so the home publishes a space's own records before its members'
+accounts), and a copy follows the one server it came from: another home's record for it is
+refused. A stale-epoch record is quarantined like any home-only write.
 
 **Space roles, policies and keys.** The home of a space also publishes the rest of what only it may
 change, one home record per entity whenever the entity changes, and a record saying it is gone when
