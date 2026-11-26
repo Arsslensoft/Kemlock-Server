@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import type { FedVault, FederationOverview, Peer, PeerState } from '@/api/admin';
+import type { AddressChange, FedVault, FederationOverview, Peer, PeerState } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
@@ -39,6 +39,12 @@ export interface FederationViewProps {
   onAcceptDemotion?: (vault: FedVault) => void;
   /** Drops the promotion held for a vault without applying it. */
   onRefuseDemotion?: (vault: FedVault) => void;
+  /** The address changes that came with peers' key rotations and wait for the admin. */
+  addressChanges?: AddressChange[] | undefined;
+  /** Follows the peer to the addresses its rotation brought. */
+  onApproveAddresses?: (change: AddressChange) => void;
+  /** Keeps the addresses this server knew. */
+  onRefuseAddresses?: (change: AddressChange) => void;
   labelsOf?: LabelsOf;
   busy?: boolean;
   error?: unknown;
@@ -56,6 +62,9 @@ export function FederationView({
   onDecline,
   onAcceptDemotion,
   onRefuseDemotion,
+  addressChanges,
+  onApproveAddresses,
+  onRefuseAddresses,
   labelsOf,
   busy,
   error,
@@ -457,6 +466,50 @@ export function FederationView({
         ) : null}
       </section>
 
+      {addressChanges && addressChanges.length > 0 ? (
+        <section className="card" aria-labelledby="h-addresses">
+          <div className="adm-head">
+            <h2 id="h-addresses">{t('admin.fed.addresses.title')}</h2>
+          </div>
+          <p className="hint adm-pad">{t('admin.fed.addresses.hint')}</p>
+          <ul className="adm-list">
+            {addressChanges.map((change) => (
+              <li key={change.peerId}>
+                <div>
+                  <b>{nameOf(change.peerId)}</b>
+                  <div className="adm-cell-sub">
+                    {t('admin.fed.addresses.now', { addresses: change.addresses.join(', ') })} ·{' '}
+                    {relative(change.receivedAt, now)}
+                  </div>
+                </div>
+                <div className="adm-row-actions">
+                  {onApproveAddresses ? (
+                    <Button
+                      size="small"
+                      isDisabled={busy}
+                      aria-label={t('admin.fed.addresses.approve.of', { peer: nameOf(change.peerId) })}
+                      onPress={() => onApproveAddresses(change)}
+                    >
+                      {t('admin.fed.addresses.approve')}
+                    </Button>
+                  ) : null}
+                  {onRefuseAddresses ? (
+                    <Button
+                      size="small"
+                      isDisabled={busy}
+                      aria-label={t('admin.fed.addresses.refuse.of', { peer: nameOf(change.peerId) })}
+                      onPress={() => onRefuseAddresses(change)}
+                    >
+                      {t('admin.fed.addresses.refuse')}
+                    </Button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <div className="adm-split">
         <section className="card" aria-labelledby="h-check">
           <div className="adm-head">
@@ -526,6 +579,19 @@ export default function Federation() {
     mutationFn: (vault: FedVault) => guard((grant) => admin.declineFederation(vault.id, grant)),
     onSuccess: refresh,
   });
+  const addressChanges = useQuery({
+    queryKey: ['admin', 'federation', 'address-changes'],
+    queryFn: () => admin.addressChanges(),
+    refetchInterval: 15_000,
+  });
+  const approveAddresses = useMutation({
+    mutationFn: (change: AddressChange) => guard((grant) => admin.approveAddressChange(change.peerId, grant)),
+    onSuccess: refresh,
+  });
+  const refuseAddresses = useMutation({
+    mutationFn: (change: AddressChange) => guard((grant) => admin.refuseAddressChange(change.peerId, grant)),
+    onSuccess: refresh,
+  });
   const demotion = useMutation({
     mutationFn: (vault: FedVault) => guard((grant) => admin.acceptDemotion(vault.id, grant)),
     onSuccess: refresh,
@@ -549,6 +615,9 @@ export default function Federation() {
         onDecline={(vault) => decline.mutate(vault)}
         onAcceptDemotion={(vault) => demotion.mutate(vault)}
         onRefuseDemotion={(vault) => refuseDemotion.mutate(vault)}
+        addressChanges={addressChanges.data}
+        onApproveAddresses={(change) => approveAddresses.mutate(change)}
+        onRefuseAddresses={(change) => refuseAddresses.mutate(change)}
         busy={
           logs.isPending ||
           check.isPending ||
@@ -556,7 +625,9 @@ export default function Federation() {
           promote.isPending ||
           accept.isPending ||
           demotion.isPending ||
-          refuseDemotion.isPending
+          refuseDemotion.isPending ||
+          approveAddresses.isPending ||
+          refuseAddresses.isPending
         }
         error={
           logs.error ??
@@ -566,7 +637,9 @@ export default function Federation() {
           accept.error ??
           decline.error ??
           demotion.error ??
-          refuseDemotion.error
+          refuseDemotion.error ??
+          approveAddresses.error ??
+          refuseAddresses.error
         }
       />
       {dialog}

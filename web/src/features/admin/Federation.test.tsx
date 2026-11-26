@@ -177,6 +177,49 @@ describe('FederationView', () => {
     expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }));
   });
 
+  it('lists the address changes a rotation brought and follows or refuses them only on request', async () => {
+    const office = '02020202020202020202020202020202';
+    const change = {
+      peerId: office,
+      operator: 'Example Co IT',
+      addresses: ['https://moved.example.co'],
+      suites: [],
+      receivedAt: NOW - 120,
+    };
+    const onApproveAddresses = vi.fn();
+    const onRefuseAddresses = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={OVERVIEW}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        addressChanges={[change]}
+        onApproveAddresses={onApproveAddresses}
+        onRefuseAddresses={onRefuseAddresses}
+      />,
+    );
+    const card = within(screen.getByRole('region', { name: 'Address changes waiting' }));
+    expect(card.getByText(/Now says: https:\/\/moved\.example\.co/)).toBeInTheDocument();
+    expect(onApproveAddresses).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(card.getByRole('button', { name: 'Keep the old addresses of Office server' }));
+    expect(onRefuseAddresses).toHaveBeenCalledWith(change);
+    await user.click(card.getByRole('button', { name: 'Follow Office server to its new addresses' }));
+    expect(onApproveAddresses).toHaveBeenCalledWith(change);
+  });
+
+  it('shows no address-change card when nothing waits', () => {
+    view();
+    expect(screen.queryByRole('region', { name: 'Address changes waiting' })).not.toBeInTheDocument();
+  });
+
   it('leads to a peer with a key mismatch', async () => {
     const { onNavigate } = view({ ...OVERVIEW, peers: [peer({ mismatch: true })] });
     await userEvent.setup().click(screen.getByRole('button', { name: 'Possible man in the middle with Office server' }));

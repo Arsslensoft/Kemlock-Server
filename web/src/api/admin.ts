@@ -648,6 +648,20 @@ export interface SelfSecurity {
   suites: SuiteSetting[];
 }
 
+/**
+ * The addresses a peer's key rotation brought, held for this server's admin (`GET
+ * /federation/address-changes`). This server keeps using the addresses it knew until the admin
+ * decides.
+ */
+export interface AddressChange {
+  peerId: string;
+  operator: string;
+  addresses: string[];
+  suites: string[];
+  /** Unix seconds the rotation was applied. */
+  receivedAt: number;
+}
+
 /** How a visit to one peer went (`POST /federation/check`). */
 export interface PeerCheck {
   peerId: string;
@@ -940,6 +954,17 @@ export function createAdminApi(api: AdminTransport) {
      */
     refuseDemotion: (owner: string, grant?: string) =>
       act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    /** `GET /admin/v1/federation/address-changes`: what key rotations said about where a peer lives, held for the admin. */
+    addressChanges: () =>
+      get<Array<Omit<AddressChange, 'peerId'> & { peer: string }>>('/federation/address-changes').then((all) =>
+        all.map(({ peer, ...rest }): AddressChange => ({ peerId: peer, ...rest })),
+      ),
+    /** `POST /admin/v1/federation/peers/{id}/address-change`: follow the peer to its new addresses. Needs a step-up token. */
+    approveAddressChange: (peerId: string, grant?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/address-change`, undefined, grant),
+    /** `DELETE /admin/v1/federation/peers/{id}/address-change`: keep the addresses this server knew. Needs a step-up token. */
+    refuseAddressChange: (peerId: string, grant?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/address-change`, undefined, grant),
     /** `PUT /admin/v1/federation/vaults/{owner} { policy, replicas }`: a vault's policy at its home. */
     setVaultPolicy: (
       owner: string,
