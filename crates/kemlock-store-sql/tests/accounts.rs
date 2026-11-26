@@ -311,6 +311,17 @@ async fn tokens(store: &SqlStore) {
             .expect("take")
             .is_some()
     );
+
+    // Restamping a device rebinds its tokens to the new stamp and leaves the others alone.
+    let stamp = Uuid::new_v4();
+    TokenRepo::restamp_device(store, phone.id, stamp)
+        .await
+        .expect("restamp_device");
+    let bound = TokenRepo::take(store, on_phone.hash, used_at)
+        .await
+        .expect("take")
+        .expect("the phone's token is there");
+    assert_eq!(bound.security_stamp, stamp);
 }
 
 async fn two_factor(store: &SqlStore) {

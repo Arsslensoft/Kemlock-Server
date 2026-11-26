@@ -415,16 +415,7 @@ impl DeviceRepo for FakeStore {
     async fn remove(&self, id: DeviceId) -> Result<(), StoreError> {
         let mut g = self.lock();
         g.devices.remove(&id);
-        g.tokens.retain(|_, t
-    async fn restamp_device(&self, device: DeviceId, stamp: Uuid) -> Result<(), StoreError> {
-        for token in self.lock().tokens.values_mut() {
-            if token.device == device {
-                token.security_stamp = stamp;
-            }
-        }
-        Ok(())
-    }
-| t.device != id);
+        g.tokens.retain(|_, t| t.device != id);
         Ok(())
     }
 }
@@ -470,6 +461,15 @@ impl TokenRepo for FakeStore {
 
     async fn revoke_device(&self, device: DeviceId) -> Result<(), StoreError> {
         self.lock().tokens.retain(|_, t| t.device != device);
+        Ok(())
+    }
+
+    async fn restamp_device(&self, device: DeviceId, stamp: Uuid) -> Result<(), StoreError> {
+        for token in self.lock().tokens.values_mut() {
+            if token.device == device {
+                token.security_stamp = stamp;
+            }
+        }
         Ok(())
     }
 }
