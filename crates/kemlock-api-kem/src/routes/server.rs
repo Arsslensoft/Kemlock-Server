@@ -120,6 +120,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .merge_from(super::spaces::openapi())
             .merge_from(super::space_chain::openapi())
             .merge_from(super::space_recovery::openapi())
+            .merge_from(super::invite_link::openapi())
             .merge_from(super::account::document())
             .merge_from(super::profile::ProfileApiDoc::openapi())
             .merge_from(super::push::document())

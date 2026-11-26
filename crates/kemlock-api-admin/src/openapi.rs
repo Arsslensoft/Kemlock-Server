@@ -492,6 +492,42 @@ doc!(
 );
 
 doc!(
+    doc_space_invite_link,
+    get,
+    path = "/admin/v1/spaces/{id}/members/{user}/invite-link",
+    tag = "spaces",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The space's UUID: a Bitwarden organization"),
+        ("user" = String, Path, description = "The invited member: an account id"),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A fresh step-up token"
+        ),
+    ),
+    responses(
+        (
+            status = 200,
+            description = "The link that accepts the member's invitation, for a server that can't mail it. Whoever opens it accepts for that account, so it is recorded in the event log and is `Cache-Control: no-store`",
+            body = InviteLinkDto
+        ),
+        (
+            status = 404,
+            description = "No such space or member",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+        (
+            status = 409,
+            description = "The space isn't a Bitwarden organization, the member has accepted already, or the Bitwarden API isn't running",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
     doc_custom_fields_list,
     get,
     path = "/admin/v1/custom-fields",
@@ -998,7 +1034,7 @@ doc!(
         doc_users_list, doc_user_delete, doc_user_sign_out, doc_user_disable, doc_user_enable,
         doc_user_cancel_erasure, doc_user_reset_two_step, doc_invites_list,
         doc_invite_create, doc_invite_resend, doc_invite_revoke, doc_spaces_list, doc_space_get,
-        doc_space_change_owner, doc_custom_fields_list, doc_custom_field_create,
+        doc_space_change_owner, doc_space_invite_link, doc_custom_fields_list, doc_custom_field_create,
         doc_custom_field_update, doc_custom_field_delete, doc_custom_fields_allow_own,
         doc_events_list, doc_events_csv, doc_settings_get,
         doc_settings_put, doc_sso_get, doc_sso_put, doc_sso_domains, doc_sso_domain_add,
@@ -1011,7 +1047,7 @@ doc!(
         StepUpTotpRequest, StepUpResponse, StepUpPasskeyOptionsResponse, StepUpPasskeyRequest,
         OverviewDto, AdminUserDto, UsersPageDto, InviteRequest,
         InviteDto, InviteIssuedDto, SpaceOwnerDto, AdminSpaceDto, SpacesPageDto,
-        ChangeOwnerRequest, EventDto, EventsPageDto, SettingDto, SettingsResponse,
+        ChangeOwnerRequest, InviteLinkDto, EventDto, EventsPageDto, SettingDto, SettingsResponse,
         SettingsRequest, GroupRuleDto, SsoDto, SsoRequest, DomainDto, DomainRequest, MigrationDto,
         MigrationStartRequest, ServerAddressDto, PushRelayDto, ComplianceRequestDto, ComplianceListDto,
         LogRequestRequest, UpdateRequestRequest, CustomFieldRequest, AllowOwnRequest, AllowOwnDto,

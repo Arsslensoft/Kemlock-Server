@@ -264,6 +264,8 @@ async fn a_space_is_made_listed_and_viewed() {
     assert_eq!(view["grants"][0]["grantee"], format!("user:{}", sam.id));
     assert_eq!(view["grants"][0]["permission"], "manage");
     assert_eq!(view["collectionKeys"][0]["sealed"], sealed(4));
+    // No Bitwarden API on this server: no organization.
+    assert_eq!(view["bitwardenOrganization"], false);
 
     // Someone outside the space sees nothing of it, and a missing space looks the same.
     assert!(
@@ -1529,4 +1531,106 @@ async fn a_refused_resend_does_not_use_the_members_turn() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     let sent = sam.post(&resend_uri(space, ana.id), json!({})).await;
     assert_eq!(sent.status, StatusCode::NO_CONTENT);
+}
+
+/// Stands in for the Bitwarden API's invitation links: it says whether a space is one of its
+/// organizations and, in one, who is invited with a Bitwarden invitation (a test fills that in
+/// once the accounts exist).
+#[derive(Clone)]
+struct Organizations {
+    organization: bool,
+    invited: std::sync::Arc<std::sync::Mutex<Vec<UserId>>>,
+}
+
+impl Organizations {
+    fn new(organization: bool) -> Self {
+        Organizations {
+            organization,
+            invited: Default::default(),
+        }
+    }
+
+    /// Layers these links on the rig's router, before anyone signs in over it.
+    fn on(&self, rig: &mut Rig) {
+        let links: kemlock_app::bitwarden::SharedInviteLinks = std::sync::Arc::new(self.clone());
+        rig.router = rig.router.clone().layer(axum::Extension(links));
+    }
+}
+
+impl kemlock_app::bitwarden::BwInviteLinks for Organizations {
+    fn member_link(
+        &self,
+        _space: kemlock_domain::SpaceId,
+        _member: UserId,
+        _asker: kemlock_app::bitwarden::Asker,
+    ) -> BoxFuture<'_, Result<kemlock_app::bitwarden::MemberInviteLink, kemlock_app::bitwarden::InviteLinkError>>
+    {
+        Box::pin(async { Err(kemlock_app::bitwarden::InviteLinkError::NotFound) })
+    }
+
+    fn is_organization(&self, _space: kemlock_domain::SpaceId) -> BoxFuture<'_, bool> {
+        Box::pin(async move { self.organization })
+    }
+
+    fn pending_invitations(&self, _space: kemlock_domain::SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
+        Box::pin(async move {
+            self.organization
+                .then(|| self.invited.lock().expect("the lock isn't poisoned").clone())
+        })
+    }
+}
+
+#[tokio::test]
+async fn the_space_view_says_whether_the_space_is_a_bitwarden_organization() {
+    for organization in [true, false] {
+        let mut rig = Rig::new();
+        Organizations::new(organization).on(&mut rig);
+        let sam = rig.person("sam@example.org").await;
+        let (space, _collection) = make_space(&sam).await;
+        let view = sam.get(&format!("/kem/v1/spaces/{space}")).await;
+        assert_eq!(view.status, StatusCode::OK, "{:?}", view.json());
+        assert_eq!(view.json()["bitwardenOrganization"], organization);
+    }
+}
+
+#[tokio::test]
+async fn the_member_list_marks_who_has_a_bitwarden_invitation() {
+    // An organization that knows zed's invitation, one where zed was invited through the Kemlock
+    // API alone (a space row and no Bitwarden member document), and a space that is no organization.
+    for (organization, knows_zed, expected) in [(true, true, true), (true, false, false), (false, true, false)] {
+        let mut rig = Rig::new();
+        let links = Organizations::new(organization);
+        links.on(&mut rig);
+        let sam = rig.person("sam@example.org").await;
+        let zed = rig.person("zed@example.org").await;
+        if knows_zed {
+            links.invited.lock().expect("the lock isn't poisoned").push(zed.id);
+        }
+        let (space, collection) = make_space(&sam).await;
+        let invite = sam
+            .post(
+                &format!("/kem/v1/spaces/{space}/members"),
+                json!({
+                    "email": "zed@example.org",
+                    "role": "member",
+                    "grants": [{"collection": collection.to_string(), "permission": "edit"}],
+                }),
+            )
+            .await;
+        assert_eq!(invite.status, StatusCode::CREATED, "{:?}", invite.json());
+
+        let members = sam.get(&format!("/kem/v1/spaces/{space}/members")).await;
+        assert_eq!(members.status, StatusCode::OK, "{:?}", members.json());
+        let members = members.json();
+        let flag = |email: &str| {
+            members
+                .as_array()
+                .expect("a list")
+                .iter()
+                .find(|m| m["email"] == email)
+                .map(|m| m["bitwardenInvitation"].clone())
+        };
+        assert_eq!(flag("zed@example.org"), Some(json!(expected)));
+        assert_eq!(flag("sam@example.org"), Some(json!(false)));
+    }
 }

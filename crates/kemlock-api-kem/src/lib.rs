@@ -38,6 +38,9 @@ pub use routes::duplicates::{
 pub use routes::files::{
     DownloadLinkDto, FileDto, FilesApi, FilesDoc, StartFileRequest, StartFileResponse, files_router,
 };
+pub use routes::invite_link::{
+    MaybeInviteLinks, openapi as invite_link_openapi, router as invite_link_router,
+};
 pub use routes::passkeys::{PasskeyRuntime, PasskeysApiDoc, passkeys_router};
 pub use routes::policies::{
     MasterPasswordDto, PoliciesDoc, PoliciesDto, SpacePoliciesDto, policies_router, with_join_guard,

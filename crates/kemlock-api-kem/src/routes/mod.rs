@@ -14,6 +14,7 @@ pub(crate) mod duplicates;
 pub(crate) mod emergency;
 pub(crate) mod failover;
 pub(crate) mod files;
+pub(crate) mod invite_link;
 pub(crate) mod items;
 pub(crate) mod manifests;
 pub(crate) mod new_device;

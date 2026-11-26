@@ -15,6 +15,7 @@ use crate::dto::{BatchResponse, ItemDto, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE};
 use crate::problem::{Problem, rate_limited};
 use crate::routes::guard;
+use crate::routes::invite_link::MaybeInviteLinks;
 use crate::state::{Api, Crypto, RESEND_WINDOW_SECS, Store};
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{FromRequestParts, Path, Query, Request, State};
@@ -390,6 +391,9 @@ pub(crate) struct MemberViewDto {
     user_key_version: u32,
     /// A confirmed member whose account changed key version since: confirm them again.
     needs_reconfirmation: bool,
+    /// An invited member of a Bitwarden organization who has a Bitwarden invitation, so an owner or
+    /// admin can copy its link. False for a member invited through the Kemlock API alone.
+    bitwarden_invitation: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -489,6 +493,9 @@ pub(crate) struct SpaceViewDto {
     grants: Vec<GrantDto>,
     /// The collection keys sealed to the caller.
     collection_keys: Vec<KeyCopyDto>,
+    /// Whether the space is a Bitwarden organization, so the page offers an invited member's
+    /// invitation link only where it applies. Always false in the answer to a create.
+    bitwarden_organization: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -890,6 +897,7 @@ where
             groups: Vec::new(),
             grants: state.grants.iter().map(GrantDto::of).collect(),
             collection_keys: keys.iter().map(KeyCopyDto::of).collect(),
+            bitwarden_organization: false,
         }),
     ))
 }
@@ -917,7 +925,31 @@ where
         groups: view.groups.iter().map(GroupDto::of).collect(),
         grants: view.grants.iter().map(GrantDto::of).collect(),
         collection_keys: view.collection_keys.iter().map(KeyCopyDto::of).collect(),
+        bitwarden_organization: false,
     }))
+}
+
+/// `GET /kem/v1/spaces/{id}`: the space as its member sees it, and whether it is a Bitwarden
+/// organization (the Bitwarden API's side of the space, read through the request extension; a
+/// server without it says no).
+async fn get_space_view<S, P, K, R>(
+    state: State<Env<S, P, K, R>>,
+    caller: Caller,
+    links: MaybeInviteLinks,
+    Path(id): Path<String>,
+) -> Result<Json<SpaceViewDto>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let space = space_id(&id)?;
+    let Json(mut view) = get_space(state, caller, Path(id)).await?;
+    if let Some(links) = links.0 {
+        view.bitwarden_organization = links.is_organization(space).await;
+    }
+    Ok(Json(view))
 }
 
 async fn list_collections<S, P, K, R>(
@@ -968,6 +1000,7 @@ where
 async fn list_members<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
+    links: MaybeInviteLinks,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<MemberViewDto>>, Problem>
 where
@@ -976,12 +1009,19 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + Clone + 'static,
 {
+    let space = space_id(&id)?;
     let views = ListMembers {
         spaces: env.spaces.clone(),
         users: env.api.store.clone(),
     }
-    .execute(&caller.actor(), space_id(&id)?)
+    .execute(&caller.actor(), space)
     .await?;
+    // Who has a Bitwarden invitation to copy the link of: none on a server without the
+    // Bitwarden API, and none in a space that is not one of its organizations.
+    let pending = match links.0 {
+        Some(links) => links.pending_invitations(space).await.unwrap_or_default(),
+        None => Vec::new(),
+    };
     Ok(Json(
         views
             .iter()
@@ -993,6 +1033,7 @@ where
                 bundle_signature: b64url::encode(&v.bundle_signature),
                 user_key_version: v.user_key_version,
                 needs_reconfirmation: v.needs_reconfirmation,
+                bitwarden_invitation: pending.contains(&v.member.user),
             })
             .collect(),
     ))
@@ -1672,7 +1713,7 @@ where
             "/kem/v1/spaces",
             get(list_spaces::<S, P, K, R>).post(create_space::<S, P, K, R>),
         )
-        .route("/kem/v1/spaces/{id}", get(get_space::<S, P, K, R>))
+        .route("/kem/v1/spaces/{id}", get(get_space_view::<S, P, K, R>))
         .route(
             "/kem/v1/spaces/{id}/members",
             get(list_members::<S, P, K, R>).post(invite_member::<S, P, K, R>),
@@ -1773,7 +1814,7 @@ fn doc_create_space() {}
         ("id" = String, Path, description = "A UUID, or `me` for the caller where a member is meant"),
     ),
     responses(
-        (status = 200, description = "The space as its member sees it", body = SpaceViewDto),
+        (status = 200, description = "The space as its member sees it. `bitwardenOrganization` says whether it is a Bitwarden organization, so the page offers an invited member's invitation link (`.../members/{user}/invite-link`) only there", body = SpaceViewDto),
         (status = 404, description = "No such space, or the caller isn't in it"),
     )
 )]
@@ -1786,7 +1827,7 @@ fn doc_get_space() {}
     params(
         ("id" = String, Path, description = "A UUID, or `me` for the caller where a member is meant"),
     ),
-    responses((status = 200, description = "The members the caller's role may see", body = Vec<MemberViewDto>))
+    responses((status = 200, description = "The members the caller's role may see. `bitwardenInvitation` is true for an invited member of a Bitwarden organization who has a Bitwarden invitation, whose link `.../members/{user}/invite-link` can be copied", body = Vec<MemberViewDto>))
 )]
 #[allow(dead_code)]
 fn doc_list_members() {}

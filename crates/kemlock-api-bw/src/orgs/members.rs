@@ -140,6 +140,8 @@ const INVITE_DAYS: i64 = 5;
 pub(crate) struct InviteLink {
     pub token: String,
     pub link: String,
+    /// When the token stops working, in seconds since the epoch.
+    pub expires_at: i64,
 }
 
 pub(crate) fn invite_link<S: BwStore>(
@@ -150,9 +152,10 @@ pub(crate) fn invite_link<S: BwStore>(
     invited_by_email: Option<&str>,
 ) -> BwResult<InviteLink> {
     let now = app.now_secs();
+    let expires_at = now + INVITE_DAYS * 24 * 3600;
     let claims = InviteClaims {
         nbf: now,
-        exp: now + INVITE_DAYS * 24 * 3600,
+        exp: expires_at,
         iss: app.settings.issuer("invite"),
         sub: user.to_string(),
         email: email.to_owned(),
@@ -175,7 +178,11 @@ pub(crate) fn invite_link<S: BwStore>(
         encoded(&org.name),
         token
     );
-    Ok(InviteLink { token, link })
+    Ok(InviteLink {
+        token,
+        link,
+        expires_at,
+    })
 }
 
 /// Mails an account its invitation to an organization, when the server mails. An account that can
@@ -364,6 +371,48 @@ pub(crate) async fn reinvite<S: BwStore>(app: &App<S>, ctx: &Ctx, member_id: &st
     ))
 }
 
+/// Why an invitation has no link to give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LinkRefusal {
+    /// The account isn't a member of the organization.
+    Unknown,
+    /// The member has accepted already (or is confirmed or revoked).
+    Settled,
+    /// The member is a manager, admin or owner, and only an owner invites those.
+    OwnerOnly,
+}
+
+/// The link of the pending invitation of `user`, which `asker_owns` (the asker is an owner of the
+/// organization, or the server admin) may hand over for any role and another administrator only for
+/// a plain user. The outer error is the store or the signing failing; the inner is a refusal.
+pub(crate) async fn pending_link_of<S: BwStore>(
+    app: &App<S>,
+    org: &Org,
+    user: UserId,
+    asker_owns: bool,
+) -> BwResult<Result<InviteLink, LinkRefusal>> {
+    let Some(doc) = org.member(user) else {
+        return Ok(Err(LinkRefusal::Unknown));
+    };
+    if doc.status != INVITED {
+        return Ok(Err(LinkRefusal::Settled));
+    }
+    if doc.atype != USER && !asker_owns {
+        return Ok(Err(LinkRefusal::OwnerOnly));
+    }
+    let Some(account) = UserRepo::by_id(&app.store, user).await? else {
+        return Ok(Err(LinkRefusal::Unknown));
+    };
+    let link = invite_link(
+        app,
+        org,
+        user,
+        account.email.as_str(),
+        doc.invited_by_email.as_deref(),
+    )?;
+    Ok(Ok(link))
+}
+
 /// `GET /api/organizations/{id}/users/{member}/invite-link` (not Vaultwarden's): the link of a
 /// pending invitation of an existing account, for an administrator of a server that doesn't mail to
 /// hand over themselves. Whoever opens it accepts for that account, so it is the invitation's
@@ -373,39 +422,23 @@ pub(crate) async fn pending_link<S: BwStore>(
     ctx: &Ctx,
     member_id: &str,
 ) -> BwResult<Value> {
-    let Some(user) = parse_member(member_id).filter(|u| ctx.org.member(*u).is_some()) else {
+    let Some(user) = parse_member(member_id) else {
         return Err(BwError::msg(
             "The user hasn't been invited to the organization.",
         ));
     };
-    let Some(doc) = ctx.org.member(user) else {
-        return Err(BwError::msg(
+    match pending_link_of(app, &ctx.org, user, ctx.doc.atype == OWNER).await? {
+        Ok(link) => Ok(json!({"object": "inviteLink", "link": link.link, "token": link.token})),
+        Err(LinkRefusal::Unknown) => Err(BwError::msg(
             "The user hasn't been invited to the organization.",
-        ));
-    };
-    if doc.status != INVITED {
-        return Err(BwError::msg(
+        )),
+        Err(LinkRefusal::Settled) => Err(BwError::msg(
             "The user is already accepted or confirmed to the organization",
-        ));
-    }
-    if doc.atype != USER && ctx.doc.atype != OWNER {
-        return Err(BwError::msg(
+        )),
+        Err(LinkRefusal::OwnerOnly) => Err(BwError::msg(
             "Only Owners can invite Managers, Admins or Owners",
-        ));
+        )),
     }
-    let Some(account) = UserRepo::by_id(&app.store, user).await? else {
-        return Err(BwError::msg(
-            "The user hasn't been invited to the organization.",
-        ));
-    };
-    let link = invite_link(
-        app,
-        &ctx.org,
-        user,
-        account.email.as_str(),
-        doc.invited_by_email.as_deref(),
-    )?;
-    Ok(json!({"object": "inviteLink", "link": link.link, "token": link.token}))
 }
 
 /// `POST /api/organizations/{id}/users/{member}/accept`. The token of the link is the proof: a

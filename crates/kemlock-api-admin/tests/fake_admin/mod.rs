@@ -37,6 +37,8 @@ struct Inner {
     /// Accounts whose owner deleted them and whose grace period is running.
     pending_erasures: Vec<UserId>,
     seq: u128,
+    /// Set by a test: the event log refuses every write, as a full disk does.
+    events_fail: bool,
 }
 
 #[derive(Clone)]
@@ -57,6 +59,11 @@ impl FakeAdmin {
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("the admin lock isn't poisoned")
+    }
+
+    /// From now on the event log refuses every write.
+    pub(crate) fn fail_events(&self) {
+        self.lock().events_fail = true;
     }
 
     pub(crate) fn track_user(&self, id: UserId) {
@@ -379,6 +386,9 @@ fn matches(event: &EventRecord, filter: &EventFilter) -> bool {
 
 impl AdminEventRepo for FakeAdmin {
     async fn record_admin_event(&self, event: AdminEvent) -> Result<(), StoreError> {
+        if self.lock().events_fail {
+            return Err(StoreError::Backend("the event log is full".to_owned()));
+        }
         let actor_email = event
             .actor
             .and_then(|a| self.store.user(a))
