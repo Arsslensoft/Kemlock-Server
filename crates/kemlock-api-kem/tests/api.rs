@@ -604,6 +604,65 @@ async fn wrong_passwords_from_many_addresses_only_slow_the_account_and_the_right
     assert!(started.elapsed() < std::time::Duration::from_millis(500));
 }
 
+#[tokio::test]
+async fn wrong_passwords_spread_over_many_addresses_are_capped_for_the_account() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account_cap.set_limit(5);
+    let wrong = [9u8; 32];
+    // Five wrong passwords, each from its own address, so no per-address limit is involved.
+    for n in 1..=5u8 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Past the cap the account's password checks are refused for everyone, a right password
+    // included, until the wait is over.
+    let refused = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.problem(), "rate-limited");
+    // Another account is not affected.
+    register(&client, "alex@example.org", None).await;
+    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(51)).await;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
+    app.clock.advance(Duration::seconds(1));
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(52)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn made_up_login_states_spend_no_one_s_attempts() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account.set_limit(3);
+    app.api.limits.account_cap.set_limit(3);
+    // Twenty finishes with login states nobody made, from one address: refused as bad requests
+    // before anything is counted.
+    for n in 0..20 {
+        let reply = client
+            .send(
+                "POST",
+                "/kem/v1/auth/opaque/finish",
+                Req {
+                    body: Some(json!({
+                        "email": "sam@example.org",
+                        "loginState": b64(&[n as u8; 64]),
+                        "finalization": b64(&[7u8; 64]),
+                        "device": test_device(),
+                    })),
+                    peer: Some(peer(1)),
+                    ..Req::default()
+                },
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "try {n}");
+    }
+    // Neither that address nor the account is the worse for it.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
 /// Registers `email` (signups on), enrols and confirms a TOTP method, and returns its secret.
 async fn two_step_account(app: &App, client: &Client, email: &str) -> String {
     let session = register_and_sign_in(client, email).await;

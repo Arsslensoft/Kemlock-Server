@@ -209,6 +209,10 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     ) -> Result<Json<SignInResponse>, Problem> {
         let request: OpaqueFinishRequest = body.json()?;
         check_email_len(&request.email)?;
+        let login_state = decode("loginState", &request.login_state)?;
+        // Only a genuine, fresh login state gets as far as being counted or remembered, so
+        // made-up ones spend nobody's attempts and take no room.
+        api.sign_in().check_login_state(&login_state)?;
         // Wrong passwords count per account and source address, reserved before the password is
         // looked at: the name comes from the request, so a count on the name alone would let
         // anyone lock the owner out.
@@ -220,10 +224,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         )
         .await?;
         let device = request.device.into_info()?;
-        let login_state = decode("loginState", &request.login_state)?;
-        // A login state finishes once, whether the password was right or not. Only a genuine,
-        // fresh state is remembered, so made-up ones take no room.
-        api.sign_in().check_login_state(&login_state)?;
+        // A login state finishes once, whether the password was right or not.
         match api.spend_open_state(proof.ip, &login_state, api.now()) {
             Ok(true) => {}
             Ok(false) => {

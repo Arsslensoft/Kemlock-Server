@@ -220,6 +220,15 @@ impl Limiter {
         Ok(())
     }
 
+    /// Gives back one try [`Limiter::reserve`] counted for `key`, for a try that turned out not
+    /// to be what the limit is for (a right password where only wrong ones count). A wait the
+    /// reservation armed stays.
+    pub fn refund(&self, key: &str, now: i64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = state.entry(digest(key), now, self.retention_secs);
+        entry.count = entry.count.saturating_sub(1);
+    }
+
     /// The length of a window in seconds.
     pub fn window_secs(&self) -> i64 {
         self.window_secs
@@ -449,6 +458,22 @@ mod tests {
         l.clear("a");
         assert_eq!(l.reserve("a", 1), Ok(()));
         assert_eq!(l.window_secs(), 60);
+    }
+
+    #[test]
+    fn a_refunded_try_is_not_counted() {
+        let l = Limiter::new(3, 60);
+        for _ in 0..10 {
+            assert_eq!(l.reserve("a", 0), Ok(()));
+            l.refund("a", 0);
+        }
+        assert_eq!(l.blocked("a", 0), Ok(()));
+        // Refunding more than was reserved never goes below nothing.
+        l.refund("b", 0);
+        assert_eq!(l.reserve("b", 0), Ok(()));
+        assert_eq!(l.reserve("b", 0), Ok(()));
+        assert_eq!(l.reserve("b", 0), Ok(()));
+        assert_eq!(l.reserve("b", 0), Err(1));
     }
 
     #[test]

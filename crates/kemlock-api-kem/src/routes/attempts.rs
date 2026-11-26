@@ -81,7 +81,7 @@ const MAX_SLOWDOWN_SECS: u64 = 3;
 pub(crate) struct PasswordAttempt {
     /// The account as seen from one source: `scope:account|address`. The hard limit.
     source: String,
-    /// The account from every source: `scope:account`. Only slows.
+    /// The account from every source: `scope:account`. Slows it, and caps it far higher.
     account: String,
 }
 
@@ -93,10 +93,14 @@ pub(crate) struct PasswordAttempt {
 /// and source, and the attempt is reserved before the password is looked at, so parallel guesses
 /// can't all pass it. The account's name comes from the request, and anyone can send wrong
 /// passwords for any name, so a limit on the name alone would let anyone lock the real owner out;
-/// per source, each stranger can only lock themselves out. What every source adds up to only
-/// slows: once an account has seen many wrong passwords, every request for it, right or wrong,
-/// is held back a few seconds, which a right password rides out and a distributed guesser pays
-/// for on every guess (OPAQUE already makes each guess cost a key stretch on the client).
+/// per source, each stranger can only lock themselves out. What every source adds up to slows
+/// the account: once it has seen many wrong passwords, every request for it, right or wrong, is
+/// held back a few seconds, which a right password rides out and a distributed guesser pays for
+/// on every guess (OPAQUE already makes each guess cost a key stretch on the client). And it is
+/// capped far above what anyone honest reaches: 100 wrong passwords in an hour from all sources
+/// together (an address's own 10 can't add up to more than that unnoticed) refuse every further
+/// password check for the account, a right password included, until the waits that follow have
+/// run out. That cap is in this replica's memory.
 pub(crate) async fn begin_password_attempt<S, P, K>(
     api: &Api<S, P, K>,
     scope: &str,
@@ -115,14 +119,20 @@ where
         .account
         .reserve(&source, now)
         .map_err(rate_limited)?;
+    // However many addresses the guesses come from, an account takes only so many wrong ones.
+    api.limits
+        .account_cap
+        .reserve(&account, now)
+        .map_err(rate_limited)?;
     if let Err(wait) = api.limits.account_slow.blocked(&account, now) {
         tokio::time::sleep(std::time::Duration::from_secs(wait.min(MAX_SLOWDOWN_SECS))).await;
     }
     Ok(PasswordAttempt { source, account })
 }
 
-/// Ends a password attempt: a right password clears both counts; a wrong one stays counted
-/// against its source (it was reserved) and adds to the account's slowdown.
+/// Ends a password attempt: a right password clears the source's count and the account's
+/// slowdown and is given back to the account's cap; a wrong one stays counted against its source
+/// (it was reserved) and the cap, and adds to the account's slowdown.
 pub(crate) fn end_password_attempt<S, P, K, T>(
     api: &Api<S, P, K>,
     attempt: &PasswordAttempt,
@@ -136,8 +146,10 @@ pub(crate) fn end_password_attempt<S, P, K, T>(
         Ok(_) => {
             api.limits.account.clear(&attempt.source);
             api.limits.account_slow.clear(&attempt.account);
+            api.limits.account_cap.refund(&attempt.account, api.now());
         }
         Err(AppError::Unauthorized) => api.limits.account_slow.fail(&attempt.account, api.now()),
-        Err(_) => {}
+        // Not a wrong password: it doesn't add up toward the account's cap.
+        Err(_) => api.limits.account_cap.refund(&attempt.account, api.now()),
     }
 }

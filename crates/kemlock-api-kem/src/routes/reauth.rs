@@ -35,6 +35,10 @@ where
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
 
+    let login_state = decode("loginState", login_state)?;
+    let finalization = decode("finalization", finalization)?;
+    // Only a genuine, fresh login state gets as far as being counted or remembered.
+    api.sign_in().check_login_state(&login_state)?;
     // A wrong password counts against the account like a wrong sign-in does, from this address,
     // and is reserved before the password is looked at.
     let attempt = attempts::begin_password_attempt(
@@ -44,11 +48,7 @@ where
         authed.ip,
     )
     .await?;
-    let login_state = decode("loginState", login_state)?;
-    let finalization = decode("finalization", finalization)?;
-    // A login state finishes once, whether the password was right or not. Only a genuine, fresh
-    // state is remembered.
-    api.sign_in().check_login_state(&login_state)?;
+    // A login state finishes once, whether the password was right or not.
     match api.used_states.insert(&login_state, api.now()) {
         Ok(true) => {}
         Ok(false) => return Err(Problem::bad_request("the login state was already used")),
