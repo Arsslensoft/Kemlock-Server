@@ -24,7 +24,7 @@ use crate::{
     ids, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
     sharing::{self, Facts},
-    spaces::{NameKind, NewCollection},
+    spaces::{self, NameKind, NewCollection, SignedBox},
     totp,
 };
 
@@ -132,6 +132,7 @@ struct TotpOut {
 struct CollectionOut {
     name: String,
     sealed_key: String,
+    sealed_key_signature: String,
 }
 
 impl From<NewCollection> for CollectionOut {
@@ -139,6 +140,7 @@ impl From<NewCollection> for CollectionOut {
         CollectionOut {
             name: b64::encode(&made.name),
             sealed_key: b64::encode(&made.sealed_key),
+            sealed_key_signature: b64::encode(&made.sealed_key_signature),
         }
     }
 }
@@ -148,7 +150,25 @@ impl From<NewCollection> for CollectionOut {
 struct NewSpaceOut {
     name: String,
     sealed_space_key: String,
+    sealed_space_key_signature: String,
     collection: CollectionOut,
+}
+
+/// A key sealed to a member and the signature of the account that sealed it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedBoxOut {
+    sealed: String,
+    signature: String,
+}
+
+impl From<SignedBox> for SignedBoxOut {
+    fn from(made: SignedBox) -> SignedBoxOut {
+        SignedBoxOut {
+            sealed: b64::encode(&made.sealed),
+            signature: b64::encode(&made.signature),
+        }
+    }
 }
 
 /// An account id given as base64url of its 16 bytes.
@@ -1033,6 +1053,7 @@ impl Vault {
         json(&NewSpaceOut {
             name: b64::encode(&made.name),
             sealed_space_key: b64::encode(&made.sealed_space_key),
+            sealed_space_key_signature: b64::encode(&made.sealed_space_key_signature),
             collection: made.collection.into(),
         })
     }
@@ -1137,9 +1158,10 @@ impl Vault {
         json(&CollectionOut::from(made))
     }
 
-    /// The space key sealed to a member's `kx1` key (base64url), context `space-key`, bound
-    /// to the space, the key version and the member (`recipient_id`: base64url of their 16-byte
-    /// account id), so it opens only as that space's key.
+    /// The space key sealed to a member's `kx1` key, context `space-key`, bound to the space, the
+    /// key version and the member (`recipient_id`: base64url of their 16-byte account id), so it
+    /// opens only as that space's key, and the unlocked account's `sig1` signature over the box
+    /// (docs/crypto.md, "Signed key boxes"). Returns `{sealed, signature}`.
     #[wasm_bindgen(js_name = sealSpaceKeyTo)]
     pub fn seal_space_key_to(
         &self,
@@ -1154,11 +1176,12 @@ impl Vault {
             .session
             .seal_space_key_to(&space, &recipient, &recipient_id)
             .map_err(fail)?;
-        Ok(b64::encode(&sealed))
+        json(&SignedBoxOut::from(sealed))
     }
 
-    /// A collection key sealed to a member's `kx1` key, context `collection-key`, bound
-    /// to the space, the collection, the key version and the member.
+    /// A collection key sealed to a member's `kx1` key, context `collection-key`, bound to the
+    /// space, the collection, the key version and the member, and the unlocked account's signature
+    /// over the box. Returns `{sealed, signature}`.
     #[wasm_bindgen(js_name = sealCollectionKeyTo)]
     pub fn seal_collection_key_to(
         &self,
@@ -1175,7 +1198,51 @@ impl Vault {
             .session
             .seal_collection_key_to(&space, &collection, &recipient, &recipient_id)
             .map_err(fail)?;
-        Ok(b64::encode(&sealed))
+        json(&SignedBoxOut::from(sealed))
+    }
+
+    /// Whether `signature` is the sealer's `sig1` signature over a key box: the space key's box
+    /// (`collection_id` empty) or a collection key's, sealed to `recipient_id` at `key_version`,
+    /// under the key in the sealer's bundle (base64url); the sealer's account id and key version are
+    /// the bundle's own. Anything malformed is simply `false`.
+    #[wasm_bindgen(js_name = verifyKeyBox)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_key_box(
+        &self,
+        sealer_bundle: &str,
+        space_id: &str,
+        collection_id: &str,
+        key_version: u32,
+        recipient_id: &str,
+        sealed: &str,
+        signature: &str,
+    ) -> bool {
+        let (Ok(bundle), Ok(space), Ok(recipient), Ok(sealed), Ok(signature)) = (
+            b64::decode(sealer_bundle),
+            ids::parse_uuid(space_id),
+            b64_id(recipient_id),
+            b64::decode(sealed),
+            b64::decode(signature),
+        ) else {
+            return false;
+        };
+        let collection = if collection_id.is_empty() {
+            None
+        } else {
+            match ids::parse_uuid(collection_id) {
+                Ok(collection) => Some(collection),
+                Err(_) => return false,
+            }
+        };
+        spaces::verify_key_box(
+            &bundle,
+            &space,
+            collection.as_ref(),
+            key_version,
+            &recipient,
+            &sealed,
+            &signature,
+        )
     }
 
     /// A `sig1` signature (base64url, 3,373 bytes) of the unlocked account over a manifest
@@ -1355,15 +1422,17 @@ mod tests {
         let text = serde_json::to_string(&NewSpaceOut {
             name: "n".into(),
             sealed_space_key: "s".into(),
+            sealed_space_key_signature: "t".into(),
             collection: CollectionOut {
                 name: "c".into(),
                 sealed_key: "k".into(),
+                sealed_key_signature: "u".into(),
             },
         })
         .expect("json");
         assert_eq!(
             text,
-            r#"{"name":"n","sealedSpaceKey":"s","collection":{"name":"c","sealedKey":"k"}}"#
+            r#"{"name":"n","sealedSpaceKey":"s","sealedSpaceKeySignature":"t","collection":{"name":"c","sealedKey":"k","sealedKeySignature":"u"}}"#
         );
         let text = serde_json::to_string(&LoginFinished {
             finalization: "f".into(),
