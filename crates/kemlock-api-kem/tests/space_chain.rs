@@ -23,6 +23,7 @@ use kemlock_app::ports::Clock as _;
 use kemlock_app::ports::ItemStore;
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_crypto::space_chain::{KeyRef, Role, b64 as chain_b64, link};
+use kemlock_domain::spaces::MemberState;
 use kemlock_domain::{ItemId, SpaceId, UserId};
 use serde_json::{Value, json};
 use space_fakes::FakeSpaces;
@@ -33,6 +34,20 @@ struct Who {
     session: Session,
     id: UserId,
     person: Person,
+}
+
+impl Who {
+    /// Accepts the invitation to `space`: the invitee's own step, which isn't in the chain and
+    /// comes before a confirm.
+    async fn accept(&self, space: Uuid) {
+        let reply = self
+            .post(
+                &format!("/kem/v1/spaces/{space}/members/me/accept"),
+                json!({}),
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    }
 }
 
 impl Who {
@@ -172,7 +187,7 @@ async fn a_create_record_makes_the_space_and_the_chain_serves_it_back() {
 }
 
 #[tokio::test]
-async fn invite_confirm_and_seal_in_one_request_make_a_member_with_a_key() {
+async fn confirm_and_seal_after_the_invitee_accepted_make_a_member_with_a_key() {
     let rig = Rig::new();
     let sam = rig.person("sam@example.org", 1).await;
     let ana = rig.person("ana@example.org", 2).await;
@@ -180,9 +195,10 @@ async fn invite_confirm_and_seal_in_one_request_make_a_member_with_a_key() {
     let invite = chain.invite(&sam.person, ana.person.id, Role::Member);
     let confirm = chain.confirm(&sam.person, &ana.person);
     let seal = chain.seal_space_key(&sam.person, &ana.person);
-    let reply = sam
-        .post(&uri(space), request(&[&invite, &confirm, &seal]))
-        .await;
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     assert_eq!(reply.json()["seq"], 3);
 
@@ -235,6 +251,56 @@ async fn a_second_append_at_the_same_seq_is_a_conflict_with_the_head() {
         sam.post(&uri(space), request(&[&other])).await.status,
         StatusCode::CONFLICT
     );
+}
+
+#[tokio::test]
+async fn a_confirm_before_the_invitee_accepted_is_refused() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let zoe = rig.person("zoe@example.org", 3).await;
+    let (space, _, mut chain, create) = make(&rig, &sam).await;
+
+    // Invite and confirm in one request: she never had the chance to accept.
+    let invite = chain.invite(&sam.person, zoe.person.id, Role::Member);
+    let confirm = chain.confirm(&sam.person, &zoe.person);
+    let seal = chain.seal_space_key(&sam.person, &zoe.person);
+    let reply = sam
+        .post(&uri(space), request(&[&invite, &confirm, &seal]))
+        .await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        reply.json()
+    );
+    assert_eq!(reply.json()["reason"], "not allowed");
+    assert!(rig.spaces.member(SpaceId(space), zoe.id).is_none());
+
+    // Invited but not accepted: the same.
+    let mut chain = rig.chain(space);
+    chain.head = Some((0, link(&create.record.entry)));
+    let invite = chain.invite(&sam.person, zoe.person.id, Role::Member);
+    let confirm = chain.confirm(&sam.person, &zoe.person);
+    let seal = chain.seal_space_key(&sam.person, &zoe.person);
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        reply.json()
+    );
+    assert_eq!(reply.json()["reason"], "not allowed");
+    let state = rig.spaces.member(SpaceId(space), zoe.id).map(|m| m.state);
+    assert_eq!(state, Some(MemberState::Invited));
+
+    // Once she accepts, the same records go in and she is confirmed.
+    zoe.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let state = rig.spaces.member(SpaceId(space), zoe.id).map(|m| m.state);
+    assert_eq!(state, Some(MemberState::Confirmed));
 }
 
 #[tokio::test]
@@ -291,13 +357,15 @@ async fn refusals_name_their_reason_and_seq() {
     let head = sam.get(&format!("{}?from=1", uri(space))).await;
     assert_eq!(head.json(), json!([]));
 
+    // Ana is invited and accepts, as a confirm needs.
+    let reply = sam.post(&uri(space), request(&[&good])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+
     // A box missing for a commitment's recipient, and one nobody committed.
-    let invite_and_confirm = {
-        let confirm = chain.confirm(&sam.person, &ana.person);
-        (good.clone(), confirm)
-    };
+    let confirm = chain.confirm(&sam.person, &ana.person);
     let seal = chain.seal_space_key(&sam.person, &ana.person);
-    let mut without = request(&[&invite_and_confirm.0, &invite_and_confirm.1, &seal]);
+    let mut without = request(&[&confirm, &seal]);
     without["seals"] = json!([]);
     let reply = sam.post(&uri(space), without).await;
     assert_eq!(
@@ -307,18 +375,13 @@ async fn refusals_name_their_reason_and_seq() {
         reply.json()
     );
     assert_eq!(reply.json()["reason"], "invalid");
-    let mut extra = request(&[&invite_and_confirm.0, &invite_and_confirm.1, &seal]);
+    let mut extra = request(&[&confirm, &seal]);
     let first = extra["seals"][0].clone();
     extra["seals"].as_array_mut().expect("seals").push(first);
     let reply = sam.post(&uri(space), extra).await;
     assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{:?}", reply.json());
     // The same request, whole, is accepted.
-    let reply = sam
-        .post(
-            &uri(space),
-            request(&[&invite_and_confirm.0, &invite_and_confirm.1, &seal]),
-        )
-        .await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
 
     // A create for a space that already exists is refused.
@@ -549,9 +612,10 @@ async fn an_item_between_a_removal_and_the_keys_record_is_refused() {
     let invite = chain.invite(&sam.person, ana.person.id, Role::Member);
     let confirm = chain.confirm(&sam.person, &ana.person);
     let seal = chain.seal_space_key(&sam.person, &ana.person);
-    let reply = sam
-        .post(&uri(space), request(&[&invite, &confirm, &seal]))
-        .await;
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
 
     // Ana held the space key, so removing her marks it, and writes wait for the replacement.
@@ -620,9 +684,10 @@ async fn a_held_item_with(rig: &Rig, sam: &Who, member: Option<&Who>) -> (Uuid, 
         let invite = chain.invite(&sam.person, member.person.id, Role::Member);
         let confirm = chain.confirm(&sam.person, &member.person);
         let seal = chain.seal_space_key(&sam.person, &member.person);
-        let reply = sam
-            .post(&uri(space), request(&[&invite, &confirm, &seal]))
-            .await;
+        let reply = sam.post(&uri(space), request(&[&invite])).await;
+        assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+        member.accept(space).await;
+        let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
         assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     }
     let made = sam.put_item(space, collection, 1).await;

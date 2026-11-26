@@ -153,7 +153,11 @@ pub fn project(
             continue;
         }
         let old = old_members.get(&user).copied();
-        let confirmed = member.status == sc::Status::Confirmed;
+        // The invitee's own step, "accepted", is the server's and isn't in the chain: a member the
+        // chain holds as confirmed but whose row is still `invited` hasn't consented, so they
+        // stay invited. No policy binds them and no key is sealed to them until they accept.
+        let consented = old.is_none_or(|o| o.state != MemberState::Invited);
+        let confirmed = member.status == sc::Status::Confirmed && consented;
         let state = match (confirmed, old.map(|o| o.state)) {
             (true, _) => MemberState::Confirmed,
             (false, Some(MemberState::Accepted)) => MemberState::Accepted,
@@ -170,7 +174,7 @@ pub fn project(
             _ => (None, None),
         };
         let confirmation = match (&member.confirmation, &member.bundle) {
-            (Some(c), Some(bundle)) => Some(Confirmation {
+            (Some(c), Some(bundle)) if confirmed => Some(Confirmation {
                 by: user_of(&c.by),
                 at: old
                     .and_then(|o| o.confirmation.as_ref())

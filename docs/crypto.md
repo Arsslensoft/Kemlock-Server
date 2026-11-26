@@ -1622,6 +1622,12 @@ these hold:
 - A11. For each seal commitment, the request carries exactly one box per recipient the chain derives,
   each 1661 bytes starting with `u8(1)`, and `count` and the digest recomputed from them match. For
   each name hash, it carries the sealed name, 28 to 4096 bytes, whose `SHA-256` matches.
+- A12. A `confirm` is for a member who has accepted the invitation: the server's own "accepted" step
+  (S2), which comes after the `invite` record in an earlier request and before the `confirm`, and a
+  `confirm` that follows an `invite` of the same member in its own request is refused. A member the
+  server holds only as invited (never accepted) is not a member for any policy, key or sync, even
+  if the chain says `confirmed`. A later `confirm` of a member who is already confirmed (a new key
+  version) needs no new acceptance. Refused as "not allowed" (`422`).
 
 **Items**
 

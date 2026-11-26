@@ -216,6 +216,8 @@ where
         let me = id_of(actor.user);
 
         let mut accepted: Vec<(Record, sc::Applied, &SignedRecord)> = Vec::new();
+        // The members this request invites: they accept again before a confirm.
+        let mut invited_here: BTreeSet<sc::Id> = BTreeSet::new();
         for signed in &request.records {
             let rec = Record::parse(&signed.entry).map_err(|reason| AppendError::Refused {
                 error: ChainError {
@@ -270,6 +272,28 @@ where
                         error,
                         detail: None,
                     })?;
+            // A12: the invitee consents, by the server's own accept step, before a confirm.
+            match &rec.body {
+                Body::Invite { member, .. } => {
+                    invited_here.insert(*member);
+                }
+                Body::Confirm { member, .. } => {
+                    let accepted_row = existing
+                        .as_ref()
+                        .and_then(|s| s.member(user_of(member)))
+                        .is_some_and(|m| {
+                            matches!(m.state, MemberState::Accepted | MemberState::Confirmed)
+                        });
+                    if invited_here.contains(member) || !accepted_row {
+                        return Err(refuse(
+                            at,
+                            Reason::NotAllowed,
+                            "a member is confirmed only after they accepted the invitation",
+                        ));
+                    }
+                }
+                _ => {}
+            }
             state = applied.state.clone();
             accepted.push((rec, applied, signed));
         }
