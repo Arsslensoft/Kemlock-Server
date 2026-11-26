@@ -51,6 +51,7 @@ mod m20261129_030001_replicated_sends;
 mod m20261129_040001_withheld_changes;
 mod m20261130_010001_email_changes;
 mod m20261130_020001_custom_fields;
+mod m20261201_010001_vault_home_history;
 
 use sea_orm_migration::prelude::*;
 
@@ -107,6 +108,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261129_040001_withheld_changes::Migration),
             Box::new(m20261130_010001_email_changes::Migration),
             Box::new(m20261130_020001_custom_fields::Migration),
+            Box::new(m20261201_010001_vault_home_history::Migration),
         ]
     }
 }

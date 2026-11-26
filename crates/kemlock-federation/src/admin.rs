@@ -719,6 +719,10 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
         }
         let epoch = existing.as_ref().map_or(1, |v| v.epoch);
         let promotion = existing.as_ref().and_then(|v| v.promotion.clone());
+        let home_history = existing
+            .as_ref()
+            .map(|v| v.home_history.clone())
+            .unwrap_or_default();
         let vault = match policy {
             Policy::Local => VaultFederation {
                 owner,
@@ -729,6 +733,7 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                 promotion,
                 // A changed set no longer fits a held demotion's record, so it goes.
                 held_demotion: None,
+                home_history,
             },
             Policy::Federated => {
                 if replicas.is_empty() || replicas.len() > MAX_REPLICAS {
@@ -762,6 +767,7 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                     promotion,
                     // A changed set no longer fits a held demotion's record, so it goes.
                     held_demotion: None,
+                    home_history,
                 }
             }
         };

@@ -140,12 +140,47 @@ pub(crate) mod vault_federation {
         pub promotion: Option<Vec<u8>>,
         /// A promotion another server signed that waits for this server's admin.
         pub held_demotion: Option<Vec<u8>>,
+        /// The home of each earlier epoch: 24 bytes each, `u64be(epoch) || server id`, oldest first.
+        pub home_history: Option<Vec<u8>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
+
+    fn unpack_history(bytes: Option<&[u8]>) -> Result<Vec<(u64, ServerId)>, StoreError> {
+        let Some(bytes) = bytes else {
+            return Ok(Vec::new());
+        };
+        if !bytes.len().is_multiple_of(24) {
+            return Err(corrupt("home history"));
+        }
+        Ok(bytes
+            .as_chunks::<24>()
+            .0
+            .iter()
+            .map(|c| {
+                let mut epoch = [0u8; 8];
+                epoch.copy_from_slice(&c[..8]);
+                let mut id = [0u8; 16];
+                id.copy_from_slice(&c[8..]);
+                (u64::from_be_bytes(epoch), ServerId(Uuid::from_bytes(id)))
+            })
+            .collect())
+    }
+
+    fn pack_history(history: &[(u64, ServerId)]) -> Option<Vec<u8>> {
+        if history.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(history.len() * 24);
+        for (epoch, home) in history {
+            out.extend_from_slice(&epoch.to_be_bytes());
+            out.extend_from_slice(home.as_bytes());
+        }
+        Some(out)
+    }
 
     impl Model {
         pub(crate) fn into_domain(self) -> Result<VaultFederation, StoreError> {
@@ -171,6 +206,7 @@ pub(crate) mod vault_federation {
                 replicas,
                 promotion: self.promotion,
                 held_demotion: self.held_demotion,
+                home_history: unpack_history(self.home_history.as_deref())?,
             })
         }
     }
@@ -190,6 +226,7 @@ pub(crate) mod vault_federation {
             replicas: Set(replicas),
             promotion: Set(vault.promotion.clone()),
             held_demotion: Set(vault.held_demotion.clone()),
+            home_history: Set(pack_history(&vault.home_history)),
         })
     }
 

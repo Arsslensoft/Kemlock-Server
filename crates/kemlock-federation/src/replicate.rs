@@ -84,6 +84,8 @@ impl<
 const PAGE_BYTES: usize = 1_500_000;
 /// How many items one fetch asks for.
 const FETCH_CHUNK: usize = 256;
+/// The most quarantined home records one vault keeps; a stale-epoch record past it is dropped.
+const MAX_QUARANTINED: usize = 256;
 
 /// Sends a request to a peer and returns its response.
 pub trait Channel: Send {
@@ -135,6 +137,10 @@ pub struct ReconcileReport {
 pub struct HomeSync {
     pub applied: usize,
     pub quarantined: usize,
+    /// Records left out: an index that doesn't belong to its epoch, a stale-epoch record from a
+    /// server that wasn't the home of that epoch, one that collides with another server's record
+    /// at the same index, and ones past the quarantine cap.
+    pub refused: usize,
     /// A record came from a newer epoch than ours: a promotion was missed.
     pub behind: bool,
 }
@@ -781,6 +787,7 @@ impl<S: FedStore> Replica<S> {
         let mut sync = HomeSync {
             applied: 0,
             quarantined: 0,
+            refused: 0,
             behind: false,
         };
         let mut after = self
@@ -821,6 +828,14 @@ impl<S: FedStore> Replica<S> {
                     return Err(FedError::Invalid("a home record for another vault"));
                 }
                 after = after.max(record.index);
+                // An index carries the epoch it was made under. A record whose index lies in
+                // another epoch's range would sit where a later home's record belongs and keep
+                // that one from being stored.
+                if home::index_epoch(record.index) != record.epoch {
+                    tracing::warn!(%peer, index = record.index, epoch = record.epoch, "a home record whose index is not of its epoch was refused");
+                    sync.refused += 1;
+                    continue;
+                }
                 let current = self
                     .store
                     .get_vault(vault)
@@ -828,12 +843,43 @@ impl<S: FedStore> Replica<S> {
                     .ok_or(FedError::UnknownVault)?;
                 let status = match home::judge(&current, &record)? {
                     Verdict::Apply => HomeStatus::Applied,
-                    Verdict::Quarantine => HomeStatus::Quarantined,
+                    Verdict::Quarantine => {
+                        // Only the server that was the home of that epoch could have made it.
+                        if current
+                            .epoch_home(record.epoch)
+                            .is_some_and(|home| home != record.signer)
+                        {
+                            tracing::warn!(%peer, epoch = record.epoch, "a stale home record from a server that was not the home of its epoch was refused");
+                            sync.refused += 1;
+                            continue;
+                        }
+                        if self.store.quarantined(vault).await?.len() >= MAX_QUARANTINED {
+                            tracing::warn!(%peer, "the vault's quarantine is full: a stale home record was dropped");
+                            sync.refused += 1;
+                            continue;
+                        }
+                        HomeStatus::Quarantined
+                    }
                     Verdict::Behind => {
                         sync.behind = true;
                         return Ok(sync);
                     }
                 };
+                // Two servers' records at one index can't both be kept: the first stays, and the
+                // second is refused out loud instead of being dropped without a word.
+                if let Some(held) = self
+                    .store
+                    .home_records(vault, record.index - 1, 1)
+                    .await?
+                    .first()
+                    .filter(|held| held.record.index == record.index)
+                {
+                    if held.record.signer != record.signer {
+                        tracing::warn!(%peer, index = record.index, "a home record collides with another server's record at its index: refused");
+                        sync.refused += 1;
+                    }
+                    continue;
+                }
                 let stored = StoredHomeRecord {
                     signed: envelope,
                     record,
@@ -1175,7 +1221,7 @@ mod tests {
         // The home (A) writes a home record under epoch 1.
         let record = HomeRecord {
             vault: t.vault,
-            index: 1,
+            index: home::home_index(1, 1),
             epoch: 1,
             kind: "member-added".to_owned(),
             payload: vec![1],
@@ -1223,7 +1269,7 @@ mod tests {
         assert_eq!(at_a.epoch, 2);
         // A late epoch-1 write by the old home, arriving at B, is quarantined, not applied.
         let late = HomeRecord {
-            index: 2,
+            index: home::home_index(1, 2),
             payload: vec![2],
             ..record
         };
@@ -1250,7 +1296,7 @@ mod tests {
         assert_eq!((sync.applied, sync.quarantined), (0, 1));
         let held = t.b.store.quarantined(t.vault).await.expect("quarantined");
         assert_eq!(held.len(), 1);
-        assert_eq!(held[0].record.index, 2);
+        assert_eq!(held[0].record.index, home::home_index(1, 2));
     }
 
     #[tokio::test]
@@ -1427,6 +1473,180 @@ mod tests {
             at_a.iter()
                 .any(|r| r.record.epoch == 2 && r.status == HomeStatus::Applied),
             "A holds the new home's record"
+        );
+    }
+
+    /// A home `a` and a replica `b` that both hold a vault at epoch 2 (who was the home of epoch 1
+    /// is not known), with a third server `ic` in its set.
+    async fn stale_world() -> (Replica<MemoryStore>, Replica<MemoryStore>, LocalIdentity, Owner) {
+        let ia = identity(1, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ic = identity(3, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let a = Replica::new(MemoryStore::new(ia.server), Arc::new(ia.clone()));
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        a.pin_peer(&ib.descriptor, NOW).await.expect("pin");
+        b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        let settings = VaultFederation {
+            epoch: 2,
+            ..VaultFederation::federated(vault, ia.server, vec![ib.server, ic.server])
+        };
+        a.store.put_vault(&settings).await.expect("put");
+        b.store.put_vault(&settings).await.expect("put");
+        (a, b, ic, vault)
+    }
+
+    async fn keep(
+        replica: &Replica<MemoryStore>,
+        key: &LocalIdentity,
+        record: &HomeRecord,
+        status: HomeStatus,
+    ) {
+        let signed = record.sign(&key.signing).expect("sign").encode();
+        replica
+            .store
+            .put_home_record(&StoredHomeRecord {
+                signed,
+                record: record.clone(),
+                status,
+            })
+            .await
+            .expect("put");
+    }
+
+    fn stale(vault: Owner, signer: ServerId, index: u64, epoch: u64) -> HomeRecord {
+        HomeRecord {
+            vault,
+            index,
+            epoch,
+            kind: "k".to_owned(),
+            payload: vec![index as u8],
+            signer,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_squatting_a_future_index_or_colliding_with_another_servers_is_refused() {
+        let (a, b, ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // A stale-epoch record that claims an index in epoch 7's range would sit where the home
+        // of epoch 7 will put its first record.
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, home::home_index(7, 1), 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.applied, sync.quarantined, sync.refused), (0, 0, 1));
+        assert!(
+            b.store.home_records(vault, 0, 10).await.expect("held").is_empty(),
+            "the squatted index stays free"
+        );
+
+        // Another server's record already holds an index (epoch 1's history isn't known here):
+        // a second one at that index is refused, not dropped without a word.
+        let at = home::home_index(1, 1);
+        keep(
+            &b,
+            &ic,
+            &stale(vault, ic.server, at, 1),
+            HomeStatus::Quarantined,
+        )
+        .await;
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, at, 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.applied, sync.quarantined, sync.refused), (0, 0, 2));
+        let held = b.store.home_records(vault, 0, 10).await.expect("held");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].record.signer, ic.server, "the first one stays");
+    }
+
+    #[tokio::test]
+    async fn a_stale_record_must_come_from_the_server_that_was_the_home_of_its_epoch() {
+        let (a, b, ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // B now knows that A was the home of epoch 1.
+        let mut settings = b.store.get_vault(vault).await.expect("get").expect("vault");
+        settings.home_history = vec![(1, a_id)];
+        b.store.put_vault(&settings).await.expect("put");
+        a.store.put_vault(&settings).await.expect("put");
+        // A relays a stale record that C signed: C was never the home of epoch 1.
+        let forged = stale(vault, ic.server, home::home_index(1, 1), 1);
+        let signed = forged.sign(&ic.signing).expect("sign").encode();
+        a.store
+            .put_home_record(&StoredHomeRecord {
+                signed,
+                record: forged,
+                status: HomeStatus::Applied,
+            })
+            .await
+            .expect("put");
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        // C's key isn't in B's directory, so the relayed record can't even be opened; give B the
+        // key the way a pairing would.
+        b.pin_peer(&ic.descriptor, NOW).await.expect("pin");
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.quarantined, sync.refused), (0, 1));
+        assert!(b.store.quarantined(vault).await.expect("held").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_vault_keeps_a_bounded_quarantine() {
+        let (a, b, _ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        for n in 1..=MAX_QUARANTINED as u64 {
+            keep(
+                &b,
+                &a.identity(),
+                &stale(vault, a_id, home::home_index(1, n), 1),
+                HomeStatus::Quarantined,
+            )
+            .await;
+        }
+        let over = MAX_QUARANTINED as u64 + 1;
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, home::home_index(1, over), 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.quarantined, sync.refused), (0, 1));
+        assert_eq!(
+            b.store.quarantined(vault).await.expect("held").len(),
+            MAX_QUARANTINED
         );
     }
 

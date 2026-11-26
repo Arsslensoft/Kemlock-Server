@@ -27,6 +27,8 @@ pub const HOME_RECORD_CONTEXT: &str = "federation-home-record";
 pub const MAX_REPLICAS: usize = 32;
 /// The largest home-record payload.
 pub const MAX_PAYLOAD: usize = 256 * 1024;
+/// The most earlier epochs whose home a vault remembers.
+pub const MAX_HOME_HISTORY: usize = 256;
 
 /// The admin's choice per vault. Local is the default and means the vault never leaves its server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,6 +71,9 @@ pub struct VaultFederation {
     /// the home of. It is held, not applied, until this server's own admin accepts it: otherwise
     /// any replica could take a vault over, and as its home erase this server's copy.
     pub held_demotion: Option<Vec<u8>>,
+    /// The home of each earlier epoch, oldest first: every promotion adds the home it replaced.
+    /// A server that learned of the vault at a later epoch has none for the epochs before.
+    pub home_history: Vec<(u64, ServerId)>,
 }
 
 impl VaultFederation {
@@ -82,6 +87,7 @@ impl VaultFederation {
             replicas: Vec::new(),
             promotion: None,
             held_demotion: None,
+            home_history: Vec::new(),
         }
     }
 
@@ -95,12 +101,26 @@ impl VaultFederation {
             replicas,
             promotion: None,
             held_demotion: None,
+            home_history: Vec::new(),
         }
     }
 
     /// Whether `server` is the home or a replica.
     pub fn holds(&self, server: ServerId) -> bool {
         self.home == server || self.replicas.contains(&server)
+    }
+
+    /// The server that was the home in `epoch`, when this server knows: the current home for the
+    /// current epoch, the recorded one for an earlier epoch, and `None` for an epoch it never
+    /// saw (or a later one).
+    pub fn epoch_home(&self, epoch: u64) -> Option<ServerId> {
+        if epoch == self.epoch {
+            return Some(self.home);
+        }
+        self.home_history
+            .iter()
+            .find(|(e, _)| *e == epoch)
+            .map(|(_, home)| *home)
     }
 
     /// The servers in failover order: the home first, then each replica.
@@ -277,6 +297,11 @@ pub fn apply_promotion(
             "the promotion changes the set of servers",
         ));
     }
+    let mut home_history = current.home_history.clone();
+    home_history.push((current.epoch, current.home));
+    if home_history.len() > MAX_HOME_HISTORY {
+        home_history.remove(0);
+    }
     Ok(VaultFederation {
         owner: current.owner,
         policy: Policy::Federated,
@@ -285,6 +310,7 @@ pub fn apply_promotion(
         replicas: record.replicas.clone(),
         promotion: None,
         held_demotion: None,
+        home_history,
     })
 }
 
@@ -510,6 +536,12 @@ mod tests {
         assert_eq!(next.home, w.ids[2]);
         assert_eq!(next.epoch, 2);
         assert_eq!(next.order(), vec![w.ids[2], w.ids[1], w.ids[0]]);
+        // The new home's record of who held each epoch.
+        assert_eq!(next.epoch_home(1), Some(w.ids[0]));
+        assert_eq!(next.epoch_home(2), Some(w.ids[2]));
+        assert_eq!(next.epoch_home(3), None);
+        assert_eq!(w.vault.epoch_home(1), Some(w.ids[0]));
+        assert_eq!(w.vault.epoch_home(2), None);
     }
 
     #[test]

@@ -100,6 +100,7 @@ async fn vault_settings_cursors_and_home_records_round_trip() {
     // A promotion replaces the row.
     settings.epoch = 2;
     settings.promotion = Some(vec![9, 9]);
+    settings.home_history = vec![(1, ServerId::random())];
     settings.replicas.reverse();
     store.put_vault(&settings).await.expect("put again");
     assert_eq!(

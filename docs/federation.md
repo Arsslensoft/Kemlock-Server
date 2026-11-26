@@ -355,6 +355,14 @@ epoch, from the home, is applied; an older epoch is **quarantined** for the vaul
 drop and applies nothing; a newer epoch means a promotion was missed and stops the sync; a record
 from outside the set, or of the current epoch from a server that isn't the home, is refused.
 
+A home record's index must belong to its epoch (`index >> 32 == epoch`): a record whose index lies in
+another epoch's range is refused, so a server can't claim the indexes a later home will use. A
+stale-epoch record is kept for the admins only when its signer was the home of that epoch, as far as
+the receiver knows (each promotion adds the home it replaced to the vault's history, and an epoch the
+receiver never saw is not checked), and a vault keeps at most 256 quarantined records; a later one is
+dropped and logged. Two records by different servers at one index are not both kept: the first
+stays and the second is refused and logged.
+
 **Promotion record**, an envelope signed with `sig1("federation-promotion", body)` by the *new*
 home:
 
