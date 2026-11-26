@@ -530,7 +530,9 @@ These are additions to version 1: no byte of an earlier type or field changes.
 replicas, and a replica holds it only after its own admin accepts. The home sends each replica an
 `Offer` at every session until the answer is `accepted` (a replica's admin may also decline). Only
 the vault's home may offer it, the offer must name the receiver as a replica, and a server that
-already holds the vault under another home or epoch refuses. An accepted vault takes a new replica
+already holds the vault under another home or epoch, or whose account or space it is, answers
+`pending` like any other offer and keeps nothing, so an offer can't tell a peer which ids exist
+here. An accepted vault takes a new replica
 order the home sends under the same epoch; nothing is copied to a replica that hasn't accepted.
 
 **Files.** `Blobs` pages through the ready attachments of a vault in attachment id order; a replica

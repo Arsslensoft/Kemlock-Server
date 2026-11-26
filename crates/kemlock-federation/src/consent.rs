@@ -62,12 +62,17 @@ impl<S: FedStore> Replica<S> {
                 }
                 return Ok(OfferState::Accepted);
             }
-            return Err(FedError::Refused(
-                "this server holds that vault under another home",
-            ));
+            // Held under another home or epoch. Said apart from "nobody asked about this", an
+            // answer would tell a paired server that this vault is federated here.
+            tracing::info!(%peer, "ignored an offer of a vault this server holds under another home");
+            return Ok(OfferState::Pending);
         }
         if self.store.owns_vault(vault).await? {
-            return Err(FedError::Refused("this server already holds that vault"));
+            // The vault's account or space lives here. Said apart from an offer that waits for the
+            // admin, "refused" would tell a paired server that this id exists here; the answer is
+            // the same, and nothing is kept.
+            tracing::info!(%peer, "ignored an offer of a vault that lives on this server");
+            return Ok(OfferState::Pending);
         }
         match self.store.offer(vault).await? {
             Some(mut existing) if existing.home == home => {
@@ -386,6 +391,47 @@ mod tests {
         keyless.bundle_signature = Vec::new();
         r.apply_home_record(&record(vault, home, &keyless)).await;
         assert_eq!(r.store.applied_accounts().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_offer_gets_the_same_answer_whether_or_not_the_vault_lives_here() {
+        use crate::extra::FedAdminRepo as _;
+        use crate::ports::VaultRepo as _;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (home, me) = (ia.server, ib.server);
+        let replica = Replica::new(MemoryStore::new(me), Arc::new(ib));
+        replica.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let ours = Owner::User(UserId::random());
+        let theirs = Owner::User(UserId::random());
+        replica.store.set_owned(ours, true);
+        replica.store.set_owned(theirs, false);
+
+        // A paired server offers an id that is an account of this server, and one that isn't.
+        let about_ours = replica
+            .receive_offer(home, ours, home, 1, &[me], NOW)
+            .await;
+        let about_theirs = replica
+            .receive_offer(home, theirs, home, 1, &[me], NOW)
+            .await;
+        assert_eq!(about_ours, Ok(OfferState::Pending));
+        assert_eq!(about_ours, about_theirs, "it can't tell which id exists here");
+        // Only the one that doesn't live here waits for the admin; nothing is kept for the other.
+        assert_eq!(replica.store.offer(ours).await, Ok(None));
+        assert!(replica.store.offer(theirs).await.expect("read").is_some());
+        // A vault held here under another home is answered the same way.
+        let mut held = VaultFederation::federated(
+            Owner::User(UserId::random()),
+            ServerId::random(),
+            vec![me],
+        );
+        held.epoch = 3;
+        replica.store.put_vault(&held).await.expect("put");
+        let about_held = replica
+            .receive_offer(home, held.owner, home, 1, &[me], NOW)
+            .await;
+        assert_eq!(about_held, Ok(OfferState::Pending));
+        assert_eq!(replica.store.offer(held.owner).await, Ok(None));
     }
 
 }

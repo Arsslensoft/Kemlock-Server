@@ -176,6 +176,8 @@ struct Extras {
     pending_addresses: Vec<crate::keyrecs::PendingAddresses>,
     /// The addresses of each peer the admin chose.
     trusted_addresses: HashMap<ServerId, Vec<String>>,
+    /// Vaults whose account or space does not live here, for `owns_vault`; everything else does.
+    unowned: HashSet<Owner>,
 }
 
 impl MemoryStore {
@@ -277,6 +279,17 @@ impl MemoryStore {
     /// Sets what this store answers for the `federation_promotion` setting.
     pub fn set_promotion_mode(&self, mode: crate::extra::PromotionMode) {
         self.extras().promotion_mode = mode;
+    }
+
+    /// Says whether the account or space of `vault` lives on this store (it does unless told it
+    /// doesn't), for `owns_vault`.
+    pub fn set_owned(&self, vault: Owner, owned: bool) {
+        let mut extras = self.extras();
+        if owned {
+            extras.unowned.remove(&vault);
+        } else {
+            extras.unowned.insert(vault);
+        }
     }
 
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
@@ -720,6 +733,10 @@ impl MemoryStore {
 }
 
 impl crate::extra::FedAdminRepo for MemoryStore {
+    async fn owns_vault(&self, vault: Owner) -> Result<bool, StoreError> {
+        Ok(!self.extras().unowned.contains(&vault))
+    }
+
     async fn trusted_addresses(&self, peer: ServerId) -> Result<Vec<String>, StoreError> {
         Ok(self
             .extras()
