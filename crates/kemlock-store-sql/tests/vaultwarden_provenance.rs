@@ -388,14 +388,16 @@ async fn a_collection_of_another_space_is_not_moved_into_an_imported_one() {
     // An organization the import makes, listing the id of a collection the other space holds.
     let imported_space = SpaceId::random();
     let own_collection = CollectionId::random();
-    let mut mapped = MappedImport::default();
-    mapped.carried = vec![
+    let mapped = MappedImport {
+        carried: vec![
         organizations(&[(imported_space, "Imported")]),
         collections(&[
             (native_collection, imported_space),
             (own_collection, imported_space),
         ]),
-    ];
+    ],
+        ..Default::default()
+    };
     let report = pass(&store, &mapped, false).await;
     assert_eq!(
         refused(&report, "collections"),
@@ -422,8 +424,10 @@ async fn a_collection_of_another_space_is_not_moved_into_an_imported_one() {
     assert!(imported.collections.iter().any(|c| c.id == own_collection));
 
     // Listing a collection under the other space itself is refused as well, space and all.
-    let mut under_native = MappedImport::default();
-    under_native.carried = vec![collections(&[(CollectionId::random(), native_space)])];
+    let under_native = MappedImport {
+        carried: vec![collections(&[(CollectionId::random(), native_space)])],
+        ..Default::default()
+    };
     let report = pass(&store, &under_native, false).await;
     assert_eq!(refused(&report, "collections").len(), 1);
 }
@@ -483,8 +487,10 @@ async fn a_move_may_run_again_over_its_own_earlier_copy() {
 
     // A pass that carries only a device and a two-step setup for the account, as a second pass
     // of a two-pass copy does, is still the import's.
-    let mut delta = MappedImport::default();
-    delta.carried = vec![devices(&[(Uuid::new_v4(), user)]), twofactor(&[user])];
+    let delta = MappedImport {
+        carried: vec![devices(&[(Uuid::new_v4(), user)]), twofactor(&[user])],
+        ..Default::default()
+    };
     let third = pass(&store, &delta, false).await;
     assert!(third.refused.is_empty(), "{:?}", third.refused);
     assert_eq!(
@@ -685,11 +691,13 @@ async fn an_id_a_pass_only_names_is_not_marked_as_the_imports() {
     let (made, _) = native_space_with_id(&store, owner, space).await;
     assert_eq!(made, space);
     // ... and a later move can't rename it or add members.
-    let mut later = MappedImport::default();
-    later.carried = vec![
+    let later = MappedImport {
+        carried: vec![
         organizations(&[(space, "Hijacked")]),
         memberships(&[(space, user)]),
-    ];
+    ],
+        ..Default::default()
+    };
     let report = pass(&store, &later, false).await;
     assert_eq!(refused(&report, "space"), vec![space.0.to_string()]);
     let state = SpaceRepo::load(&store, space)
