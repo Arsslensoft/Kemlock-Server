@@ -113,3 +113,40 @@ async fn an_unknown_account_has_no_history() {
     assert_eq!(UserRepo::bundle_at(&store, nobody.id, 1).await.expect("read"), None);
     assert!(UserRepo::bundles_of(&store, nobody.id).await.expect("read").is_empty());
 }
+
+#[tokio::test]
+async fn a_copy_of_a_rotated_account_carries_its_past_bundles_to_a_replica() {
+    use kemlock_federation::extra::MemberStore;
+    let home = memory().await;
+    let replica = memory().await;
+    let ada = user(&unique_email("ada"));
+    UserRepo::insert(&home, &ada).await.expect("insert");
+    let second = rotated(&ada, 2, 20);
+    UserRepo::update(&home, &second).await.expect("rotate");
+
+    // The home's copy of the account names the bundle before its current one.
+    let copy = MemberStore::member_account(&home, ada.id)
+        .await
+        .expect("read")
+        .expect("an account of the home");
+    assert_eq!(copy.key_version, 2);
+    assert_eq!(copy.past_bundles.len(), 1);
+    assert_eq!(copy.past_bundles[0].key_version, 1);
+    assert_eq!(copy.past_bundles[0].public_bundle, ada.public_bundle);
+
+    // A replica that applies it can answer for either version.
+    let vault = kemlock_domain::Owner::User(ada.id);
+    let home_id = kemlock_domain::ServerId::random();
+    MemberStore::apply_member_account(&replica, vault, home_id, &copy)
+        .await
+        .expect("applied");
+    assert_eq!(
+        MemberStore::writer_bundle(&replica, ada.id, 2).await.expect("read"),
+        Some(second.public_bundle.clone())
+    );
+    assert_eq!(
+        MemberStore::writer_bundle(&replica, ada.id, 1).await.expect("read"),
+        Some(ada.public_bundle.clone())
+    );
+    assert_eq!(MemberStore::writer_bundle(&replica, ada.id, 3).await.expect("read"), None);
+}

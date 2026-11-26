@@ -323,11 +323,14 @@ impl MemberStore for SqlStore {
         }
     }
 
-    async fn writer_bundle(&self, user: UserId) -> Result<Option<(u32, Vec<u8>)>, StoreError> {
-        Ok(UserRepo::by_id(self, user)
+    async fn writer_bundle(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(UserRepo::bundle_at(self, user, key_version)
             .await?
-            .filter(|u| !u.public_bundle.is_empty())
-            .map(|u| (u.key_version, u.public_bundle)))
+            .map(|b| b.public_bundle))
     }
 
     async fn member_account(&self, user: UserId) -> Result<Option<MemberAccount>, StoreError> {
@@ -348,6 +351,18 @@ impl MemberStore for SqlStore {
                 created_at: d.created_at.unix_timestamp(),
             })
             .collect();
+        // The bundles before the current one go with the copy, so a replica can check a write the
+        // account signed before it replaced its keys.
+        let past_bundles = UserRepo::bundles_of(self, user)
+            .await?
+            .into_iter()
+            .filter(|b| b.key_version < account.key_version)
+            .map(|b| kemlock_federation::members::PastBundle {
+                key_version: b.key_version,
+                public_bundle: b.public_bundle,
+                bundle_signature: b.bundle_signature,
+            })
+            .collect();
         Ok(Some(MemberAccount {
             id: account.id,
             email: account.email.as_str().to_owned(),
@@ -362,6 +377,7 @@ impl MemberStore for SqlStore {
             created_at: account.created_at.unix_timestamp(),
             updated_at: account.updated_at.unix_timestamp(),
             devices,
+            past_bundles,
         }))
     }
 
@@ -415,6 +431,18 @@ impl MemberStore for SqlStore {
                 changed = true;
             }
             Some(_) => {}
+        }
+        // What the account signed under its earlier keys is checked against these.
+        for past in &account.past_bundles {
+            crate::tables::account_bundles::record(
+                self.writer(),
+                account.id.0,
+                i64::from(past.key_version),
+                &past.public_bundle,
+                &past.bundle_signature,
+                user.updated_at,
+            )
+            .await?;
         }
         if !replicated {
             replicated_accounts::Entity::insert(replicated_accounts::ActiveModel {
