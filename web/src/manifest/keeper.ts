@@ -81,9 +81,10 @@ export interface SpaceSigner {
     options?: { former?: boolean },
   ): Promise<Uint8Array | null>;
   /**
-   * Whether the bundle it answers for a member other than this account is vouched by the verified
-   * space chain. Until the web vault verifies the chain it is the server's word, and nothing is
-   * pinned from it (`writes.ts`): a pin would hold the server to a bundle it made up.
+   * Whether the bundle it answers for a member other than this account is vouched: by the verified
+   * space chain, or by keys this browser can trace to a confirmation. A signer that is only the
+   * server's member list is not, and nothing is pinned from it (`writes.ts`): a pin would hold the
+   * server to a bundle it made up.
    */
   vouched?: boolean;
 }
