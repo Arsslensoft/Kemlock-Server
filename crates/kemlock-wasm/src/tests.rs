@@ -2792,3 +2792,121 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     assert_eq!(again["ok"], true);
     assert!(again["records"].as_array().expect("records").is_empty());
 }
+
+#[wasm_bindgen_test]
+fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
+    let (space, general) = ([0xD1u8; 16], [0xD2u8; 16]);
+    let (me, theo) = ([0xD3u8; 16], [0xD4u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (_member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (theo_text, general_text) = (uuid_text(&theo), uuid_text(&general));
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Space", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+    let item = [0xD5u8; 16];
+    let sealed = owner
+        .seal_space_item(&space, &general, &item, "login", 1, br#"{"name":"vpn"}"#)
+        .expect("seals");
+
+    // Theo is let in and removed, and the keys are replaced with the item left out, as a
+    // replacement that stopped halfway would: it stays under version 1.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&theo_bundle.fingerprint())}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+    let served = |target: &str| {
+        find(&created["names"], "target", target)["name"]
+            .as_str()
+            .expect("name")
+            .to_owned()
+    };
+    let replacement: Replacement = serde_json::from_value(json!({"items": [], "names": [
+        {"target": "space", "sealed": served("space")},
+        {"target": format!("collection:{general_text}"),
+         "sealed": served(&format!("collection:{general_text}"))},
+    ]}))
+    .expect("a replacement");
+    let out = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &replacement)
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true, "{out}");
+    append(&mut chain, &out);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["collections"][0]["keyVersion"], 2);
+    open_own(&mut owner, &space, &me, &out);
+
+    // The item still under version 1 and one that doesn't open: the first is sealed again as the
+    // next revision under version 2, the other is named, and one already current is left out.
+    let junk = [0xD6u8; 16];
+    let current = [0xD7u8; 16];
+    let served_item = |id: &[u8; 16], key_version: u32, ciphertext: &[u8], item_key: &[u8]| {
+        json!({"id": uuid_text(id), "collection": general_text, "kind": "login", "revision": 1,
+               "keyVersion": key_version, "ciphertext": b64::encode(ciphertext),
+               "itemKey": b64::encode(item_key)})
+    };
+    let reseal: crate::chain_build::Reseal = serde_json::from_value(json!({"items": [
+        served_item(&item, 1, &sealed.ciphertext, &sealed.item_key),
+        served_item(&junk, 1, &[9u8; 60], &[8u8; 60]),
+        served_item(&current, 2, &[9u8; 60], &[8u8; 60]),
+    ]}))
+    .expect("a reseal");
+    let again = serde_json::to_value(owner.build_reseal(&space, &reseal).expect("a build"))
+        .expect("json");
+    assert_eq!(again["ok"], true, "{again}");
+    assert!(again["records"].as_array().expect("records").is_empty());
+    assert_eq!(again["held"], json!([uuid_text(&junk)]));
+    let writes = again["writes"].as_array().expect("writes");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["expectedRevision"], 1);
+    assert_eq!(writes[0]["item"]["revision"], 2);
+    assert_eq!(writes[0]["item"]["keyVersion"], 2);
+    let owner_ref = Owner::space(space);
+    let item_out = &writes[0]["item"];
+    let opened = owner
+        .open_space_item(
+            &space,
+            &general,
+            &SealedItemRef {
+                id: &item,
+                owner: &owner_ref,
+                kind: "login",
+                revision: 2,
+                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct")).expect("b64"),
+                item_key: &b64::decode(item_out["itemKey"].as_str().expect("key")).expect("b64"),
+                key_version: Some(2),
+            },
+        )
+        .expect("the item opens under the current key");
+    assert_eq!(opened.as_slice(), br#"{"name":"vpn"}"#);
+
+    // An account that holds no chain of the space builds nothing.
+    let (other, _, _) = open_signed_account([0xD8; 16]);
+    assert_eq!(other.build_reseal(&space, &reseal).map(|_| ()), Err(Error::Invalid));
+}

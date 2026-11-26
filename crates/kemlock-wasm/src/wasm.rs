@@ -1326,6 +1326,22 @@ impl Vault {
         json(&built)
     }
 
+    /// Seals again the items still under an older key version than their collection's current
+    /// one. `reseal` is the JSON `{items: [{id, collection, kind, revision, keyVersion,
+    /// ciphertext, itemKey}]}`. Answers `{ok: true, records: [], seals: [], names: [], writes,
+    /// held}`: the writes for the batch route, and the ids this unlock can't seal again.
+    #[wasm_bindgen(js_name = buildReseal)]
+    pub fn build_reseal(&self, space_id: &str, reseal: &str) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let reseal: chain_build::Reseal =
+            serde_json::from_str(reseal).map_err(|_| fail(Error::Invalid))?;
+        let built = self
+            .session
+            .build_reseal(&space, &reseal)
+            .map_err(fail)?;
+        json(&built)
+    }
+
     /// The view of the chain this unlock verified for a space, as `verifySpaceChain` answers it,
     /// or nothing when it hasn't verified one.
     #[wasm_bindgen(js_name = spaceChainView)]

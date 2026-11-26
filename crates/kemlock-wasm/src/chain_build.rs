@@ -206,6 +206,42 @@ pub(crate) struct AppendOut {
     writes: Vec<WriteOut>,
 }
 
+/// An item sealed again as the next revision under a fresh item key, wrapped under the collection
+/// key `secret` at `version`. A fresh item key, so whoever kept the old collection key learns
+/// nothing of the new copy.
+fn sealed_again(
+    space: &Id,
+    item: &ItemIn,
+    id: &Id,
+    collection: &Id,
+    version: u32,
+    secret: &SecretKey,
+    plain: &[u8],
+) -> Option<WriteOut> {
+    let owner = Owner::space(*space);
+    let revision = item.revision.checked_add(1)?;
+    let item_key = SecretKey::generate();
+    let sealed = kem1::seal_item(&item_key, id, revision, &item.kind, &owner, plain).ok()?;
+    let wrap = secret.child(ITEM_WRAP_LABEL).ok()?;
+    let wrapped = kem1::wrap_item_key(&wrap, &item_key, id, &owner, version).ok()?;
+    Some(WriteOut {
+        collection: sc::uuid_text(collection),
+        expected_revision: item.revision,
+        item: ItemOut {
+            id: sc::uuid_text(id),
+            owner: format!("space:{}", sc::uuid_text(space)),
+            kind: item.kind.clone(),
+            format: "kem1",
+            revision,
+            key_version: version,
+            ciphertext: b64::encode(&sealed),
+            item_key: b64::encode(&wrapped),
+            deleted: false,
+            collection_id: sc::uuid_text(collection),
+        },
+    })
+}
+
 /// An item as the server serves it, of a collection whose key is marked.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -225,6 +261,13 @@ pub(crate) struct ItemIn {
 pub(crate) struct NameIn {
     target: String,
     sealed: String,
+}
+
+/// Items still under an older key version than their collection's current one.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Reseal {
+    items: Vec<ItemIn>,
 }
 
 /// What a key replacement needs of the server's copy: the live items of the space, and, when the
@@ -629,27 +672,7 @@ impl<'a> Build<'a> {
                 },
             )
             .ok()?;
-        let revision = item.revision.checked_add(1)?;
-        let item_key = SecretKey::generate();
-        let sealed = kem1::seal_item(&item_key, id, revision, &item.kind, owner, &plain).ok()?;
-        let wrap = secret.child(ITEM_WRAP_LABEL).ok()?;
-        let wrapped = kem1::wrap_item_key(&wrap, &item_key, id, owner, version).ok()?;
-        Some(WriteOut {
-            collection: sc::uuid_text(collection),
-            expected_revision: item.revision,
-            item: ItemOut {
-                id: sc::uuid_text(id),
-                owner: format!("space:{}", sc::uuid_text(&self.space)),
-                kind: item.kind.clone(),
-                format: "kem1",
-                revision,
-                key_version: version,
-                ciphertext: b64::encode(&sealed),
-                item_key: b64::encode(&wrapped),
-                deleted: false,
-                collection_id: sc::uuid_text(collection),
-            },
-        })
+        sealed_again(&self.space, item, id, collection, version, secret, &plain)
     }
 
     /// Every name of the space sealed again under the new space key: opened as the chain committed
@@ -1050,6 +1073,75 @@ impl Session {
         );
         let result = build.replace_marked(self, input);
         finish(result.map(|()| build))
+    }
+
+    /// Seals again the items that are still under an older key version than their collection's
+    /// current one (a replacement that stopped halfway, or items it held), as the next revision
+    /// under the current version, for the append route's batch writes to release. Each is opened
+    /// under the key of its own version, which this unlock holds only if it opened it before the key
+    /// was replaced: an item whose old key, or the new one, isn't held, or this account can't
+    /// edit, comes back named held instead. No record is made and no state changes.
+    pub(crate) fn build_reseal(&self, space: &Id, input: &Reseal) -> Result<Built, Error> {
+        let unlocked = self.unlocked()?;
+        if unlocked.spaces.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
+        let held = unlocked.spaces.chains.get(space).ok_or(Error::Invalid)?;
+        if !held.trusted {
+            return Err(Error::Invalid);
+        }
+        let owner = Owner::space(*space);
+        let (mut writes, mut left) = (Vec::new(), Vec::new());
+        for item in &input.items {
+            let collection = ids::parse_uuid(&item.collection)?;
+            let id = ids::parse_uuid(&item.id)?;
+            // An item already under its collection's current version, or of a collection the
+            // chain doesn't have, has nothing to seal again.
+            let Some(current) = held
+                .state
+                .collections
+                .get(&collection)
+                .map(|info| info.key_version)
+                .filter(|current| item.key_version < *current)
+            else {
+                continue;
+            };
+            let again = (|| {
+                let may_edit = held
+                    .state
+                    .access(&unlocked.account_id, &collection)
+                    .is_some_and(|rights| rights.edit);
+                if !may_edit {
+                    return None;
+                }
+                let old = unlocked
+                    .spaces
+                    .collections
+                    .get(&(*space, collection, item.key_version))?;
+                let new = unlocked.spaces.collections.get(&(*space, collection, current))?;
+                let ciphertext = b64::decode(&item.ciphertext).ok()?;
+                let wrapped = b64::decode(&item.item_key).ok()?;
+                let wrap = old.child(ITEM_WRAP_LABEL).ok()?;
+                let item_key =
+                    kem1::unwrap_item_key(&wrap, &wrapped, &id, &owner, item.key_version).ok()?;
+                let plain =
+                    kem1::open_item(&item_key, &id, item.revision, &item.kind, &owner, &ciphertext)
+                        .ok()?;
+                sealed_again(space, item, &id, &collection, current, new, &plain)
+            })();
+            match again {
+                Some(write) => writes.push(write),
+                None => left.push(sc::uuid_text(&id)),
+            }
+        }
+        Ok(Built::Ready(AppendOut {
+            ok: true,
+            records: Vec::new(),
+            seals: Vec::new(),
+            names: Vec::new(),
+            held: left,
+            writes,
+        }))
     }
 
     /// Makes the records of one change to a chained space, from the verified state this unlock
