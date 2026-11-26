@@ -8,7 +8,8 @@ use kemlock_app::ports::{ServerInfo, StoreError};
 use kemlock_domain::ServerId;
 use kemlock_domain::privacy::Retention;
 use sea_orm::DatabaseConnection;
-use std::sync::{Arc, PoisonError, RwLock};
+use kemlock_crypto::seal::ServerSeal;
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 /// SQL storage for accounts, devices, tokens and the vault's items, on SQLite, PostgreSQL or
 /// MySQL. Cloning is cheap: clones share the pools.
@@ -44,6 +45,10 @@ struct Inner {
     retention_overlay: Overlay,
     /// The verified state of the space chains in use, each under the link of its head.
     chain_states: crate::repo::ChainStates,
+    /// Seals the secrets the store keeps that the server must show again (a personal API key),
+    /// under `server.key`. Set once, at start; a store without one (a tool that reads the
+    /// database, a test) keeps them as they come.
+    secret_seal: OnceLock<ServerSeal>,
     /// Held while a storage quota is summed and the row it covers is inserted. One server owns a
     /// database, so this serializes the check and the insert on PostgreSQL and MySQL, where a
     /// transaction alone lets two announces each read the sum before either has inserted; on SQLite
@@ -72,6 +77,7 @@ impl SqlStore {
                 server_id,
                 retention_overlay: Overlay::default(),
                 chain_states: crate::repo::ChainStates::default(),
+                secret_seal: OnceLock::new(),
                 quota_gate: tokio::sync::Mutex::new(()),
             }),
         })
@@ -107,6 +113,18 @@ impl SqlStore {
             .write()
             .unwrap_or_else(PoisonError::into_inner);
         *slot = Some(Arc::new(overlay));
+    }
+
+    /// Gives the store the seal it keeps the personal API keys of Bitwarden accounts under (the
+    /// server's `server.key`, purpose `bw-api-key`). A key stored plain, by an earlier version or
+    /// by the move from Vaultwarden, is sealed when it is next read. Set once; a second call is
+    /// ignored.
+    pub fn set_secret_seal(&self, seal: ServerSeal) {
+        let _ = self.inner.secret_seal.set(seal);
+    }
+
+    pub(crate) fn secret_seal(&self) -> Option<&ServerSeal> {
+        self.inner.secret_seal.get()
     }
 
     /// Applies the overlay, if one is set, to `retention`.

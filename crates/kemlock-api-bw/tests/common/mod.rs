@@ -269,6 +269,8 @@ impl Harness {
         live: Live,
         tweak: impl FnOnce(&mut BwSettings),
     ) -> Self {
+        // As the server does: the personal API keys are kept sealed.
+        store.set_secret_seal(ServerSeal::new(&SERVER_KEY));
         let env = Arc::new(TestEnv {
             now: Mutex::new(datetime!(2026-11-21 12:00:00 UTC)),
         });

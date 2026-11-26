@@ -3,28 +3,91 @@
 use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::bw_accounts;
+use kemlock_app::b64url;
 use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::UserId;
-use sea_orm::ActiveValue::NotSet;
+use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::Expr;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 
 /// How many times `touch` retries after losing a race for the revision date.
 const TOUCH_TRIES: usize = 8;
 
+/// The `ServerSeal` purpose of a personal API key at rest.
+const API_KEY_PURPOSE: &str = "bw-api-key";
+/// What a sealed key starts with in `bw_accounts.api_key`; a key without it is a plain one, from
+/// before keys were sealed or from the move from Vaultwarden.
+const SEALED_PREFIX: &str = "sealed:";
+
+impl SqlStore {
+    /// The text kept for an API key: sealed under `server.key` once the store has the seal.
+    fn kept_api_key(&self, key: &str) -> String {
+        match self.secret_seal() {
+            Some(seal) => format!(
+                "{SEALED_PREFIX}{}",
+                b64url::encode(&seal.seal(API_KEY_PURPOSE, key.as_bytes()))
+            ),
+            None => key.to_owned(),
+        }
+    }
+
+    /// The key a stored value holds. A plain one is returned as it is and sealed in the row, so
+    /// the keys of an older database are sealed as they are read. A sealed one that doesn't open
+    /// (the database came back with another `server.key`) is no key: its owner makes a new one,
+    /// and the account stays signed in to everything else.
+    async fn shown_api_key(&self, user: UserId, stored: String) -> Option<String> {
+        let Some(sealed) = stored.strip_prefix(SEALED_PREFIX) else {
+            if self.secret_seal().is_some() {
+                let moved = bw_accounts::Entity::update_many()
+                    .col_expr(
+                        bw_accounts::Column::ApiKey,
+                        Expr::value(self.kept_api_key(&stored)),
+                    )
+                    .filter(bw_accounts::Column::UserId.eq(user.0))
+                    .filter(bw_accounts::Column::ApiKey.eq(stored.as_str()))
+                    .exec(self.writer())
+                    .await;
+                if let Err(error) = moved {
+                    tracing::warn!(%error, "couldn't seal a stored API key");
+                }
+            }
+            return Some(stored);
+        };
+        let opened = self.secret_seal().and_then(|seal| {
+            let bytes = b64url::decode(sealed)?;
+            seal.open(API_KEY_PURPOSE, &bytes).ok()
+        });
+        let key = opened.and_then(|bytes| String::from_utf8(bytes.to_vec()).ok());
+        if key.is_none() {
+            tracing::warn!(%user, "a stored API key doesn't open; it is treated as none");
+        }
+        key
+    }
+}
+
 impl BwAccountRepo for SqlStore {
     async fn get(&self, user: UserId) -> Result<Option<BwAccount>, StoreError> {
-        bw_accounts::Entity::find_by_id(user.0)
+        let Some(row) = bw_accounts::Entity::find_by_id(user.0)
             .one(self.reader())
             .await
             .store()?
-            .map(bw_accounts::Model::into_domain)
-            .transpose()
+        else {
+            return Ok(None);
+        };
+        let mut account = row.into_domain()?;
+        if let Some(stored) = account.api_key.take() {
+            account.api_key = self.shown_api_key(user, stored).await;
+        }
+        Ok(Some(account))
     }
 
     async fn insert(&self, account: &BwAccount) -> Result<(), StoreError> {
-        bw_accounts::Entity::insert(bw_accounts::active(account))
+        let row = bw_accounts::ActiveModel {
+            api_key: Set(account.api_key.as_deref().map(|k| self.kept_api_key(k))),
+            ..bw_accounts::active(account)
+        };
+        bw_accounts::Entity::insert(row)
             .exec(self.writer())
             .await
             .store()?;
@@ -35,6 +98,7 @@ impl BwAccountRepo for SqlStore {
         let row = bw_accounts::ActiveModel {
             user_id: NotSet,
             revision_ms: NotSet,
+            api_key: Set(account.api_key.as_deref().map(|k| self.kept_api_key(k))),
             ..bw_accounts::active(account)
         };
         let result = bw_accounts::Entity::update_many()

@@ -154,6 +154,8 @@ where
     let store = SqlStore::connect(&config.database_url)
         .await
         .map_err(|e| RunError::Store(e.to_string()))?;
+    // The personal API keys of Bitwarden accounts are kept sealed under `server.key`.
+    store.set_secret_seal(ServerSeal::new(&server_key));
     let crypto = ServerCrypto::new(seal, opaque);
     // SSO settings from `SSO_*` fill an empty table; a bad value turns SSO off and says why.
     match sso::seed_from_env(&store, &crypto, &|name| std::env::var(name).ok()).await {
