@@ -389,14 +389,15 @@ async fn an_install_replaces_the_keys_and_ends_every_other_session() {
     assert_eq!(*rig.repo.installs.lock().expect("lock"), 1);
 
     // The account is told, by mail, with no key in it.
-    let mails = rig.mailbox.0.lock().expect("the lock");
-    assert!(
-        mails
-            .iter()
-            .any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
-        "{mails:?}"
-    );
-    drop(mails);
+    {
+        let mails = rig.mailbox.0.lock().expect("the lock");
+        assert!(
+            mails
+                .iter()
+                .any(|notice| matches!(notice, Notice::KeysRotated(n) if n.to.as_str() == EMAIL)),
+            "{mails:?}"
+        );
+    }
 
     // The token the device held ended with the old security stamp.
     let old = sam.call("GET", "/kem/v1/account/rotation", None).await;
