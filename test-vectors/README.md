@@ -42,6 +42,7 @@ carries the bytes, and the check is to open them and to re-seal with the nonce t
 | `space-chain.json` | The space chain: the labelled hash link of the spec's two examples, records that must be refused as malformed, the record signing input and signature, seal commitments with real boxes (digest, key check, aad), and the chains of the spec's test cases, each with the verdict a verifier must give |
 
 | `space-names.json` | Names of a space, a collection and a group sealed as `kem1` envelopes under the space key's `kemlock/v1/space-name` child: the name key, the aad, the ciphertext, a rename under one key version and a second key version |
+| `rotation.json` | Rotating the root key: an item opened under the old item-wrap key and sealed again under a fresh item key at revision + 1 (old and new envelopes, wraps and aads), a Send moved to the new item-wrap key, the password and PRF wraps of the new root key at the new key version, and the new key pair, its bundle and the old pair sealed under the new user key |
 
 `SHA256SUMS` lists the files in `sha256sum -c` format.
 

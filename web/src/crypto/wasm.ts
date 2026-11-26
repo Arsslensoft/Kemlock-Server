@@ -85,6 +85,16 @@ export interface WasmVault {
     statement: string,
     signature: string,
   ): boolean;
+  /** Whether a key box signature is the sealer's (`collectionId` empty for a space key). */
+  verifyKeyBox(
+    sealerBundle: string,
+    spaceId: string,
+    collectionId: string,
+    keyVersion: number,
+    recipientId: string,
+    sealed: string,
+    signature: string,
+  ): boolean;
   openEmergencyKey(sealed: string): number;
   openEmergencyItem(
     handle: number,
@@ -157,6 +167,7 @@ export interface WasmVault {
   openName(spaceId: string, keyVersion: number, kind: string, id: string, ciphertext: string): string;
   sealName(spaceId: string, keyVersion: number, kind: string, id: string, name: string): string;
   newCollection(spaceId: string, collectionId: string, name: string): string;
+  /** `{sealed, signature}` as JSON (base64url). */
   sealSpaceKeyTo(spaceId: string, recipientKx1: string, recipientId: string): string;
   sealCollectionKeyTo(
     spaceId: string,
@@ -178,6 +189,16 @@ export interface WasmVault {
   itemWriteVerify(signerBundle: string, fields: string, signature: string): boolean;
   // The space chain: JSON in and out (see crates/kemlock-wasm/src/chain.rs).
   verifySpaceChain(spaceId: string, records: string, anchor?: string): string;
+  newChainedSpace(
+    spaceId: string,
+    collectionId: string,
+    spaceName: string,
+    collectionName: string,
+    at: number,
+  ): string;
+  buildChainRecords(spaceId: string, at: number, change: string): string;
+  buildKeyReplacement(spaceId: string, at: number, replacement: string): string;
+  buildReseal(spaceId: string, reseal: string): string;
   spaceChainView(spaceId: string): string | undefined;
   sealLocal(label: string, text: string): string;
   openLocal(label: string, sealed: string): string;
@@ -189,6 +210,34 @@ export interface WasmVault {
     sealed: string,
     list?: string,
   ): void;
+  /** `{keyVersion, publicBundle, bundleSignature, sealedPrivateKeys, sealedPreviousPrivateKeys, fingerprint}`. */
+  rotationStart(): string;
+  /** `{ciphertext, itemKey, revision, keyVersion}`: the item under a fresh key, at revision + 1. */
+  rotationResealItem(
+    id: string,
+    owner: string,
+    kind: string,
+    revision: bigint,
+    ciphertext: string,
+    itemKey: string,
+    keyVersion?: number,
+  ): string;
+  /** `{sealedKey, meta}` under the new keys. */
+  rotationResealSend(id: string, kind: string, sealedKey: string, meta: string): string;
+  /** The new root key's password wrap, base64url, 92 bytes; consumes both handles. */
+  rotationWrapPassword(master: number, exportKey: number): string;
+  /** `{wrappedKey, keyVersion}` for the new root key. */
+  rotationPrfWrap(prfOutput: string, credentialId: string): string;
+  /** `{kitId, pieces, wrappedKey, keyVersion}` for the new root key. */
+  rotationKitMake(): string;
+  /** The new root key, base64url: for the worker to seal under the device's key. */
+  rotationExportRoot(): string;
+  rotationSealRootKey(recipientKx1: string, context: string, aad: string): string;
+  /** `{keyVersion, fingerprint}`. */
+  rotationCommit(): string;
+  rotationResealLocal(label: string, sealed: string): string;
+  rotationAbort(): void;
+  rotationSign(previous: boolean, context: string, message: string): string;
   lock(): void;
   /** Frees the instance's WebAssembly memory (wasm-bindgen). */
   free?(): void;

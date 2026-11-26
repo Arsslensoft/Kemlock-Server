@@ -69,6 +69,8 @@ export const SPACES: AdminSpace[] = [
     owners: [{ userId: 'u0', email: 'sam@example.co' }],
     liveItems: 100,
     keysPendingSince: null,
+    bitwardenOrganization: true,
+    bitwardenInvitations: [{ userId: 'u1', email: 'jordan@example.co' }],
   },
   {
     id: 's2bbbbbbbb',
@@ -78,6 +80,8 @@ export const SPACES: AdminSpace[] = [
     owners: [{ userId: 'u2', email: 'riley@example.net' }],
     liveItems: 17,
     keysPendingSince: NOW - 3_600,
+    bitwardenOrganization: false,
+    bitwardenInvitations: [],
   },
 ];
 

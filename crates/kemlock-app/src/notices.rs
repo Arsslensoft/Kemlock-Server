@@ -222,6 +222,14 @@ pub struct PasswordChangedNotice {
     pub others_signed_out: bool,
 }
 
+/// The root key of the account was rotated. The mail goes to the account's address, so a rotation
+/// the owner didn't make doesn't go unnoticed. It carries no key and no secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeysRotatedNotice {
+    pub to: Email,
+    pub at: OffsetDateTime,
+}
+
 /// Everything the server emails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
@@ -247,6 +255,8 @@ pub enum Notice {
     EmailChanged(EmailChangedNotice),
     /// The master password changed, mailed to the account's address.
     PasswordChanged(PasswordChangedNotice),
+    /// The account's root key was rotated, mailed to the account's address.
+    KeysRotated(KeysRotatedNotice),
     /// The link that confirms the address of a new account, mailed to that address.
     SignupVerify(SignupVerifyNotice),
     /// The link that proves an address before its account is made, mailed to that address.
@@ -275,6 +285,7 @@ impl Notice {
             Notice::EmailTaken(_) => "email-taken",
             Notice::EmailChanged(_) => "email-changed",
             Notice::PasswordChanged(_) => "password-changed",
+            Notice::KeysRotated(_) => "keys-rotated",
             Notice::SignupVerify(_) => "signup-verify",
             Notice::RegisterVerify(_) => "register-verify",
             Notice::BwOrgInvite(_) => "bw-org-invite",

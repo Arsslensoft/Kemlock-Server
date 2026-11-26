@@ -107,7 +107,7 @@ describe('checking a space’s chain', () => {
       trusted: false,
       firstContact: { kind: 'compare', person: ME, fingerprint: '12345 67890', owners: [] },
     });
-    const { deps, anchors } = setup(waiting);
+    const { deps, anchors, crypto } = setup(waiting);
     const trust = await checkSpaceChain(deps, SPACE, ME);
     expect(trust.kind).toBe('first-contact');
     expect(await anchors.load(ME, SPACE)).toBeUndefined();
@@ -130,7 +130,7 @@ describe('checking a space’s chain', () => {
       trusted: false,
       firstContact: { kind: 'pick', owners: [] },
     });
-    const { deps, anchors, crypto } = setup(waiting);
+    const { deps, anchors } = setup(waiting);
     expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('first-contact');
     expect(await anchors.load(ME, SPACE)).toBeUndefined();
     expect(await anchors.seen(ME, SPACE)).toBe(true);
@@ -217,6 +217,25 @@ describe('the space as its chain says', () => {
     const lee = out.members.find((m) => m.user === LEE);
     expect(lee?.publicBundle).toBe('Y2hhaW4');
     expect(lee?.userKeyVersion).toBe(3);
+    expect(lee?.needsReconfirmation).toBe(false);
+  });
+
+  it('shows the server’s keys of a confirmed member when they are newer than the chain’s, to be confirmed again', () => {
+    const chained = view({
+      members: [{ ...chainMember(LEE, 'member'), bundle: 'Y2hhaW4', bundleVersion: 1 }, chainMember(ME, 'owner')],
+    });
+    const listed = members().map((m) =>
+      m.user === LEE ? { ...m, publicBundle: 'bmV3ZXI', bundleSignature: 'c2ln', userKeyVersion: 2 } : m,
+    );
+    const out = overlayChain(spaceView(), listed, chained);
+    const lee = out.members.find((m) => m.user === LEE);
+    expect(lee).toMatchObject({ publicBundle: 'bmV3ZXI', userKeyVersion: 2, needsReconfirmation: true });
+    // Never for a version the chain already has, nor an older one the server still lists.
+    const same = members().map((m) => (m.user === LEE ? { ...m, userKeyVersion: 1 } : m));
+    expect(overlayChain(spaceView(), same, chained).members.find((m) => m.user === LEE)).toMatchObject({
+      publicBundle: 'Y2hhaW4',
+      needsReconfirmation: false,
+    });
   });
 });
 
@@ -284,9 +303,9 @@ describe('a space with a chain, loaded', () => {
     expect(rows[0]).toMatchObject({ id: SPACE, name: null, trust: 'unverified' });
   });
 
-  it('seals nothing for a space it can not use the chain to change', async () => {
+  it('seals nothing for a space whose chain waits for first contact', async () => {
     const { deps, api, crypto } = setup(view());
-    const loaded = { ...detail(), trust: { kind: 'verified' as const, view: view() } };
+    const loaded = { ...detail(), trust: { kind: 'first-contact' as const, view: view({ trusted: false }) } };
     const theo = members().find((m) => m.user === THEO);
     if (!theo) throw new Error('fixture');
     const bytes = new Uint8Array(64);

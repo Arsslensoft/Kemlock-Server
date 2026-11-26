@@ -36,6 +36,7 @@ mod privacy;
 mod push;
 mod recovery;
 mod recovery_kits;
+mod rotation;
 mod second_step_attempts;
 mod sends;
 mod space_chain;

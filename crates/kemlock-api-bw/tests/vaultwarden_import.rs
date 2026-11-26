@@ -237,8 +237,28 @@ async fn pass(
     mapped: &MappedImport,
     deletions: &[Deletion],
 ) -> ApplyReport {
+    pass_with(
+        store, files, blobs, now, retention, mapped, deletions, false,
+    )
+    .await
+}
+
+/// [`pass`], with the operator's `--adopt-existing`: rows the API changed since the last pass
+/// are written over too.
+#[allow(clippy::too_many_arguments)]
+async fn pass_with(
+    store: &SqlStore,
+    files: &Path,
+    blobs: &Arc<MemoryBlobStore>,
+    now: OffsetDateTime,
+    retention: Option<i64>,
+    mapped: &MappedImport,
+    deletions: &[Deletion],
+    adopt_existing: bool,
+) -> ApplyReport {
     let mut options = ImportOptions::new(files, Arc::new(IntoBlobs(blobs.clone())), now);
     options.events_retention_days = retention;
+    options.adopt_existing = adopt_existing;
     let mut sink = SqlImportSink::begin(store, ServerSeal::new(&SERVER_KEY), options)
         .await
         .expect("a pass opens");
@@ -515,8 +535,12 @@ async fn imports_the_sample_and_serves_it_as_vaultwarden_would_then_applies_a_se
     assert_eq!(factors[0].method, TwoFactorMethod::Totp);
     assert!(factors[0].enabled);
     assert_eq!(
+        // Sealed to the account, as every per-account secret is.
         ServerSeal::new(&SERVER_KEY)
-            .open("totp", &factors[0].sealed_secret)
+            .open(
+                &kemlock_app::sealed::bound_purpose("totp", alice),
+                &factors[0].sealed_secret,
+            )
             .expect("opens with the server key")
             .as_slice(),
         TOTP_SECRET
@@ -698,6 +722,8 @@ DELETE FROM emergency_access;
     }
     let delta = second_mapped.delta_since(&first_mapped);
     assert_eq!(delta.items.len(), 2, "the renamed login and the new note");
+    // Alice changed a cipher through the API since the first pass, so a plain second pass leaves her
+    // alone rather than roll her change back.
     pass(
         &store,
         dest.path(),
@@ -706,6 +732,26 @@ DELETE FROM emergency_access;
         Some(90),
         &delta,
         &deletions,
+    )
+    .await;
+    assert_eq!(
+        sync(&h, &token).await["folders"],
+        json!([folder_json(
+            "2.folder|iv|mac",
+            "2024-03-02T00:00:00.000000Z"
+        )]),
+        "a user the API changed is not written over"
+    );
+    // The operator takes the changes in on purpose.
+    pass_with(
+        &store,
+        dest.path(),
+        &h.blobs,
+        now,
+        Some(90),
+        &delta,
+        &deletions,
+        true,
     )
     .await;
 

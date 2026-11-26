@@ -105,6 +105,7 @@ async fn chained(store: &SqlStore) -> (SpaceId, UserId, ChainHead) {
                 changes,
                 creating: true,
                 held: Vec::new(),
+                writes: Vec::new(),
                 answers: None,
                 state: None,
             },
@@ -124,6 +125,7 @@ fn append(expected: Option<ChainHead>, records: Vec<StoredRecord>) -> ChainAppen
         changes: SpaceChanges::new(SpaceId(Uuid::nil())),
         creating: false,
         held: Vec::new(),
+        writes: Vec::new(),
         answers: None,
         state: None,
     }
@@ -633,6 +635,7 @@ impl Real {
                     changes,
                     creating: self.head.is_none(),
                     held: Vec::new(),
+                    writes: Vec::new(),
                     answers: None,
                     state: Some(Arc::new(self.state.clone())),
                 },

@@ -2,7 +2,7 @@
 // the same failure points (a name opens only under the id, kind and key version it was sealed
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
-import type { ChainView } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
@@ -56,6 +56,52 @@ export interface FakeSpaces extends SpaceCrypto {
   chain: ChainView | { ok: false; reason: string; seq: number | null };
   /** What `ownFingerprint` answers: set it to the fingerprint of the test's own bundle. */
   ownFingerprintText: string;
+  /** The bundle of the account this fake seals as: what its key box signatures name. */
+  ownBundle: Uint8Array;
+  /** The key version the fake seals every key at (the real worker seals at the newest it holds). */
+  keyVersion: number;
+  /** What `buildChainRecords` answers instead of the default one record per change, when set. */
+  built: ChainBuilt | null;
+  /** The changes `buildChainRecords` was asked for, in order. */
+  changes: ChainChange[];
+  /** What `buildKeyReplacement` answers instead of a keys record and every item sealed again. */
+  replaced: ChainBuilt | null;
+  /** What `buildKeyReplacement` was given, in order. */
+  replacements: ChainReplacement[];
+  /** What `buildReseal` answers instead of every item sealed again. */
+  resealed: ChainBuilt | null;
+  /** The items `buildReseal` was given, a list for each call. */
+  resealings: ChainReplacement['items'][];
+}
+
+/**
+ * The signature this fake gives a key box: it names the sealer's bundle, the key and version and the
+ * recipient and box, so it verifies only for exactly them (the real one is the sealer's sig1
+ * signature over the same things).
+ */
+export function fakeBoxSignature(facts: {
+  sealerBundle: Uint8Array;
+  spaceId: string;
+  collectionId?: string;
+  keyVersion: number;
+  recipientId: Uint8Array;
+  sealed: Uint8Array;
+}): Uint8Array {
+  return utf8(
+    JSON.stringify([
+      'key-box',
+      encodeB64(facts.sealerBundle),
+      facts.spaceId,
+      facts.collectionId ?? '',
+      facts.keyVersion,
+      encodeB64(facts.recipientId),
+      encodeB64(facts.sealed),
+    ]),
+  );
+}
+
+function utf8Text(text: string): string {
+  return encodeB64(utf8(text));
 }
 
 function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string, name: string) {
@@ -69,7 +115,101 @@ export function fakeSpaceCrypto(): FakeSpaces {
   const fake: FakeSpaces = {
     ...base,
     ownFingerprintText: '',
+    ownBundle: utf8('own-bundle'),
+    keyVersion: 1,
     chain: NO_CHAIN,
+    built: null,
+    changes: [],
+    replaced: null,
+    replacements: [],
+    resealed: null,
+    resealings: [],
+    async buildReseal({ spaceId, items }) {
+      fake.resealings.push(items);
+      calls.push('buildReseal');
+      if (fake.resealed) return fake.resealed;
+      return {
+        ok: true,
+        records: [],
+        seals: [],
+        names: [],
+        writes: items.map((item) => ({
+          collection: item.collection,
+          expectedRevision: item.revision,
+          item: {
+            id: item.id,
+            owner: `space:${spaceId}`,
+            kind: item.kind,
+            format: 'kem1' as const,
+            revision: item.revision + 1,
+            keyVersion: item.keyVersion + 1,
+            ciphertext: utf8Text(`again:${item.id}`),
+            itemKey: utf8Text(`wrapped:${item.id}`),
+            deleted: false as const,
+            collectionId: item.collection,
+          },
+        })),
+      };
+    },
+    async buildKeyReplacement({ spaceId, replacement }) {
+      fake.replacements.push(replacement);
+      calls.push('buildKeyReplacement');
+      if (fake.replaced) return fake.replaced;
+      // A keys record, and every item given sealed again as the next revision, one version up.
+      return {
+        ok: true,
+        records: [{ entry: utf8Text('keys-record'), signature: utf8Text('signature') }],
+        seals: [],
+        names: [],
+        rotated: [...new Set(replacement.items.map((item) => `collection:${item.collection}`))],
+        writes: replacement.items.map((item) => ({
+          collection: item.collection,
+          expectedRevision: item.revision,
+          item: {
+            id: item.id,
+            owner: `space:${spaceId}`,
+            kind: item.kind,
+            format: 'kem1' as const,
+            revision: item.revision + 1,
+            keyVersion: item.keyVersion + 1,
+            ciphertext: utf8Text(`again:${item.id}`),
+            itemKey: utf8Text(`wrapped:${item.id}`),
+            deleted: false as const,
+            collectionId: item.collection,
+          },
+        })),
+      };
+    },
+    async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {
+      calls.push(`newChainedSpace:${at}`);
+      return {
+        ok: true,
+        records: [{ entry: utf8Text('create-record'), signature: utf8Text('create-signature') }],
+        seals: [
+          { box: utf8Text(`collection-key:${collectionId}`), key: `collection:${collectionId}`, member: 'me', seq: 0, version: 1 },
+          { box: utf8Text(`space-key:${spaceId}`), key: 'space', member: 'me', seq: 0, version: 1 },
+        ],
+        names: [
+          { name: encodeB64(nameBytes(spaceId, 1, 'collection', collectionId, collectionName)), seq: 0, target: `collection:${collectionId}` },
+          { name: encodeB64(nameBytes(spaceId, 1, 'space', spaceId, spaceName)), seq: 0, target: 'space' },
+        ],
+      };
+    },
+    async buildChainRecords({ change }) {
+      fake.changes.push(change);
+      calls.push(`buildChainRecords:${change.action}`);
+      if (fake.built) return fake.built;
+      // One record for the change; a seal with nothing to share makes none.
+      return {
+        ok: true,
+        records:
+          change.action === 'seal'
+            ? []
+            : [{ entry: utf8Text(JSON.stringify(change)), signature: utf8Text('signature') }],
+        seals: [],
+        names: [],
+      };
+    },
     async verifySpaceChain({ spaceId }) {
       calls.push(`verifySpaceChain:${spaceId}`);
       held = fake.chain.ok && fake.chain.chained ? fake.chain : null;
@@ -98,9 +238,11 @@ export function fakeSpaceCrypto(): FakeSpaces {
       return {
         name: nameBytes(spaceId, 1, 'space', spaceId, spaceName),
         sealedSpaceKey: utf8(`space-key:${spaceId}`),
+        sealedSpaceKeySignature: utf8(`space-key-signature:${spaceId}`),
         collection: {
           name: nameBytes(spaceId, 1, 'collection', collectionId, collectionName),
           sealedKey: utf8(`collection-key:${collectionId}`),
+          sealedKeySignature: utf8(`collection-key-signature:${collectionId}`),
         },
       };
     },
@@ -131,15 +273,37 @@ export function fakeSpaceCrypto(): FakeSpaces {
       return {
         name: nameBytes(spaceId, 1, 'collection', collectionId, name),
         sealedKey: utf8(`collection-key:${collectionId}`),
+        sealedKeySignature: utf8(`collection-key-signature:${collectionId}`),
       };
     },
     async sealSpaceKeyTo({ spaceId, recipientId }) {
       calls.push(`sealSpaceKeyTo:${recipientId.length}`);
-      return utf8(`space-key-for:${spaceId}`);
+      const sealed = utf8(`space-key-for:${spaceId}`);
+      const signature = fakeBoxSignature({
+        sealerBundle: fake.ownBundle,
+        spaceId,
+        keyVersion: fake.keyVersion,
+        recipientId,
+        sealed,
+      });
+      return { sealed, signature };
     },
-    async sealCollectionKeyTo({ collectionId }) {
+    async sealCollectionKeyTo({ spaceId, collectionId, recipientId }) {
       calls.push(`sealCollectionKeyTo:${collectionId}`);
-      return utf8(`collection-key-for:${collectionId}`);
+      const sealed = utf8(`collection-key-for:${collectionId}`);
+      const signature = fakeBoxSignature({
+        sealerBundle: fake.ownBundle,
+        spaceId,
+        collectionId,
+        keyVersion: fake.keyVersion,
+        recipientId,
+        sealed,
+      });
+      return { sealed, signature };
+    },
+    async verifyKeyBox({ signature, ...facts }) {
+      calls.push(`verifyKeyBox:${facts.collectionId ?? 'space'}`);
+      return fromUtf8(signature) === fromUtf8(fakeBoxSignature({ ...facts }));
     },
     async confirmationStatement({ space, member, memberKeyVersion }) {
       calls.push('confirmationStatement');

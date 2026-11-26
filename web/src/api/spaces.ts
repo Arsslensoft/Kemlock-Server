@@ -2,6 +2,7 @@
 // ids are UUIDs, times are Unix seconds, every binary value is base64url without padding. Names
 // are encrypted under the space key, so the server only ever holds them as base64url ciphertext.
 import type { Api } from './client';
+import type { BatchRequest, BatchResponse, ItemDto } from './types';
 
 export type SpaceRole = 'owner' | 'admin' | 'custom' | 'member';
 export type MemberState = 'invited' | 'accepted' | 'confirmed' | 'revoked';
@@ -46,6 +47,13 @@ export interface ConfirmationDto {
   signature: string;
 }
 
+/** Who sealed a key copy, at which key version of theirs, and their sig1 signature over the box. */
+export interface SealedByDto {
+  account: string;
+  keyVersion: number;
+  signature: string;
+}
+
 export interface MemberDto {
   user: string;
   role: SpaceRole;
@@ -56,6 +64,8 @@ export interface MemberDto {
   acceptedAt: number | null;
   /** The space key sealed to this member; present only while confirmed. */
   sealedSpaceKey: string | null;
+  /** Who sealed that box and their signature over it; null before keys were signed, and for a chained space. */
+  sealedBy?: SealedByDto | null;
   keyVersion: number | null;
   confirmation: ConfirmationDto | null;
   revokedAt: number | null;
@@ -69,6 +79,11 @@ export interface MemberViewDto extends MemberDto {
   bundleSignature: string;
   userKeyVersion: number;
   needsReconfirmation: boolean;
+  /**
+   * An invited member of a Bitwarden organization who has a Bitwarden invitation, so an owner or
+   * admin can copy its link. Left out by a server that doesn't say, which counts as no.
+   */
+  bitwardenInvitation?: boolean;
 }
 
 export interface CollectionDto {
@@ -96,6 +111,8 @@ export interface KeyCopyDto {
   collection: string;
   keyVersion: number;
   sealed: string;
+  /** Who sealed this copy and their signature over it; null before keys were signed. */
+  sealedBy?: SealedByDto | null;
 }
 
 export interface SpaceSummaryDto {
@@ -111,6 +128,11 @@ export interface SpaceViewDto {
   grants: GrantDto[];
   /** The collection keys sealed to the caller. */
   collectionKeys: KeyCopyDto[];
+  /**
+   * Whether the space is a Bitwarden organization, so the page offers an invited member's invitation
+   * link only there. Left out by a server that doesn't say, which counts as no.
+   */
+  bitwardenOrganization?: boolean;
 }
 
 export interface OffboardedDto {
@@ -121,18 +143,22 @@ export interface OffboardedDto {
 export interface UserKeyDto {
   user: string;
   sealed: string;
+  /** The sealer's sig1 signature over the box (docs/crypto.md, "Signed key boxes"). */
+  signature: string;
 }
 export interface CollectionKeyDto {
   collection: string;
   user: string;
   sealed: string;
+  signature: string;
 }
 
 export interface CreateSpaceRequest {
   id: string;
   name: string;
   sealedSpaceKey: string;
-  collection: { id: string; name: string; sealedKey: string };
+  sealedSpaceKeySignature: string;
+  collection: { id: string; name: string; sealedKey: string; sealedKeySignature: string };
 }
 
 export interface InviteRequest {
@@ -149,7 +175,18 @@ export interface ConfirmRequest {
   /** The confirmer's sig1 signature over the statement. */
   signature: string;
   sealedSpaceKey: string;
-  collectionKeys: Array<{ collection: string; sealed: string }>;
+  sealedSpaceKeySignature: string;
+  collectionKeys: Array<{ collection: string; sealed: string; signature: string }>;
+}
+
+/** `POST .../reseal`: the current keys sealed again, each box signed by the caller. */
+export interface ResealRequest {
+  members: Array<{
+    user: string;
+    sealedSpaceKey: string;
+    sealedSpaceKeySignature: string;
+    collectionKeys: Array<{ collection: string; sealed: string; signature: string }>;
+  }>;
 }
 
 export interface CreateCollectionRequest {
@@ -195,6 +232,41 @@ export interface ChainRecordDto {
   cosignature?: string;
 }
 
+/** What POST /chain takes: records, and the boxes and sealed names their commitments cover. */
+export interface AppendChainRequest {
+  records: ChainRecordDto[];
+  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
+  names: Array<{ name: string; seq: number; target: string }>;
+  /** Live items a `keys` record in the request leaves held. */
+  held?: string[];
+  /** Items a `keys` record in the request re-writes under the collection's new key version. */
+  writes?: Array<{ collection: string; expectedRevision: number; item: ItemDto }>;
+}
+
+/** An item as `GET /sync` serves it: a space's item that a key replacement left held says so. */
+export type ServedItemDto = ItemDto & { held?: boolean };
+
+/** One page of `GET /sync`. */
+export interface ServedPageDto {
+  items: ServedItemDto[];
+  cursor: string;
+  more: boolean;
+}
+
+/** The head of a chain after an append. */
+export interface ChainHeadDto {
+  link: string;
+  seq: number;
+}
+
+/** The account an inviter may invite, by email (GET /lookup). */
+export interface AccountLookupDto {
+  account: string;
+  bundle: string;
+  bundleSignature: string;
+  keyVersion: number;
+}
+
 /** The hash of a box a record committed (GET /chain/{seq}/seals). */
 export interface SealHashDto {
   bundleVersion: number;
@@ -222,6 +294,26 @@ export function createSpacesApi(http: Http) {
         path: `${base(space)}/chain`,
         ...(from === undefined ? {} : { query: { from } }),
       }),
+    /** Appends records to a space's chain; the first one, a `create`, makes the space. */
+    appendChain: (space: string, body: AppendChainRequest) =>
+      http.request<ChainHeadDto>({ method: 'POST', path: `${base(space)}/chain`, body }),
+    /** The account behind an email, for an `invite` record; the caller must manage users. */
+    lookup: (space: string, email: string) =>
+      http.request<AccountLookupDto>({
+        method: 'GET',
+        path: `${base(space)}/lookup`,
+        query: { email },
+      }),
+    /** What changed since `since` (everything when left out), as `GET /kem/v1/sync` serves it. */
+    sync: (since?: string, limit?: number) =>
+      http.request<ServedPageDto>({
+        method: 'GET',
+        path: '/kem/v1/sync',
+        query: { since, limit },
+      }),
+    /** Up to 500 item writes, all or none. */
+    putBatch: (body: BatchRequest) =>
+      http.request<BatchResponse>({ method: 'POST', path: '/kem/v1/items:batch', body }),
     /** The seal hashes record `seq` committed. */
     chainSeals: (space: string, seq: number) =>
       http.request<SealHashDto[]>({ method: 'GET', path: `${base(space)}/chain/${seq}/seals` }),
@@ -238,6 +330,9 @@ export function createSpacesApi(http: Http) {
         path: `${base(space)}/members/${user}/confirm`,
         body,
       }),
+    /** An owner or admin seals the current keys again, signed (docs/crypto.md, "Signed key boxes"). */
+    reseal: (space: string, body: ResealRequest) =>
+      http.request<{ resealed: number }>({ method: 'POST', path: `${base(space)}/reseal`, body }),
     changeRole: (space: string, user: string, role: SpaceRole, custom: CustomPermission[]) =>
       http.request<MemberDto>({
         method: 'PUT',

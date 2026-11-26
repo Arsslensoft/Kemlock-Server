@@ -631,6 +631,21 @@ async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
     );
     let token = body["token"].as_str().expect("a token").to_owned();
     assert!(link.ends_with(&format!("&token={token}")), "{link}");
+    // It is a secret that accepts for the contact: no cache keeps it.
+    let bearer = format!("Bearer {ada}");
+    let (status, headers, _) = h
+        .send(
+            "GET",
+            &uri,
+            &[("authorization", bearer.as_str())],
+            axum::body::Body::empty(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
 
     // The token alone accepts, for the address it names, once.
     let (status, body) = h

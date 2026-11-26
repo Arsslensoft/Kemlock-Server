@@ -50,14 +50,13 @@ use crate::tables::{
     dedup_owners, device_api_use, device_key_copies, devices, duplicate_dismissals, email_changes,
     email_confirmations, emergency_access, events, federation, federation_insight, federation_keys,
     federation_logs, federation_wiring, item_tags, items, passkeys, pending_erasures, policies,
-    push_tokens, recovery_kits, refresh_tokens, revoked_families, second_step_attempts, sends,
-    server_meta, settings, sign_in_log, signed_manifests, signed_writes, sync_horizon, two_factor,
-    two_factor_recovery, two_step_versions, users, vw_import_ids, vw_rows, webauthn_challenges,
+    push_tokens, recovery_kits, refresh_tokens, revoked_families, rotation_previous_keys,
+    rotation_staged_items, second_step_attempts, sends, server_meta, settings, sign_in_log,
+    signed_manifests, signed_writes, sync_horizon, two_factor, two_factor_recovery,
+    two_step_versions, users, vw_import_ids, vw_rows, webauthn_challenges,
 };
-use kemlock_app::admin::SettingsRepo;
 use kemlock_app::b64url;
 use kemlock_app::ports::StoreError;
-use kemlock_app::sealed::SECRETS_BOUND_KEY;
 use sea_orm::sea_query::{Alias, Expr, Order, Query};
 use sea_orm::{
     AccessMode, ColumnTrait, ColumnType, ConnectionTrait, DatabaseConnection, DbBackend,
@@ -193,6 +192,8 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         second_step_attempts::Entity,
         passkeys::Entity,
         recovery_kits::Entity,
+        rotation_staged_items::Entity,
+        rotation_previous_keys::Entity,
         email_changes::Entity,
         email_confirmations::Entity,
         webauthn_challenges::Entity,
@@ -659,12 +660,9 @@ impl SqlStore {
         }
         let txn = self.writer().begin().await.store()?;
         match restore_in(&txn, dir, tables, &registry).await {
-            Ok(()) => {
-                txn.commit().await.store()?;
-                // What came back may hold secrets sealed the old way: the start-up pass seals
-                // them to their accounts again, and until it has run nothing may say it has.
-                SettingsRepo::delete_setting(self, SECRETS_BOUND_KEY).await
-            }
+            // What came back may hold secrets sealed the old way: the server is stopped for a
+            // restore, and the start-up pass seals them to their accounts again before it serves.
+            Ok(()) => txn.commit().await.store(),
             Err(err) => {
                 if let Err(rollback) = txn.rollback().await {
                     tracing::warn!(%rollback, "rollback after a failed restore failed");

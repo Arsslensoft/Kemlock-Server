@@ -170,10 +170,15 @@ pub fn project(
         } else {
             None
         };
-        let (sealed_space_key, key_version) = match (new_box, old) {
-            (Some(sealed), _) => (Some(sealed), Some(after.space.key_version)),
-            (None, Some(o)) if confirmed => (o.sealed_space_key.clone(), o.key_version),
-            _ => (None, None),
+        // A box the chain commits is authenticated by the chain and carries no key box signature.
+        let (sealed_space_key, sealed_by, key_version) = match (new_box, old) {
+            (Some(sealed), _) => (Some(sealed), None, Some(after.space.key_version)),
+            (None, Some(o)) if confirmed => (
+                o.sealed_space_key.clone(),
+                o.sealed_by.clone(),
+                o.key_version,
+            ),
+            _ => (None, None, None),
         };
         let confirmation = match (&member.confirmation, &member.bundle) {
             (Some(c), Some(bundle)) if confirmed => Some(Confirmation {
@@ -208,6 +213,7 @@ pub fn project(
                 old.and_then(|o| o.accepted_at).or(Some(now))
             },
             sealed_space_key,
+            sealed_by,
             key_version,
             confirmation,
             revoked_at: None,
@@ -343,6 +349,7 @@ pub fn project(
                     user: pair.1,
                     key_version: seal.version,
                     sealed: seal.sealed.clone(),
+                    sealed_by: None,
                 },
             );
         }

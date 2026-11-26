@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::begin_locked;
 use crate::store::SqlStore;
 use crate::tables::auth_requests::{self, state_str};
 use kemlock_app::devices::{ApprovalRepo, RecentRequest};
@@ -71,13 +72,16 @@ impl ApprovalRepo for SqlStore {
             created_at: NotSet,
             expires_at: NotSet,
         };
+        // An approval holds the root key sealed to the new device: written under the lock.
+        let txn = begin_locked(self, request.user).await?;
         let result = auth_requests::Entity::update_many()
             .set(answer)
             .filter(auth_requests::Column::Id.eq(request.id.0))
             .filter(auth_requests::Column::State.eq(state_str(from)))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
+        txn.commit().await.store()?;
         Ok(result.rows_affected == 1)
     }
 

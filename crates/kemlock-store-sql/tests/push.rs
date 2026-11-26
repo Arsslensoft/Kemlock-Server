@@ -134,9 +134,9 @@ async fn racing_registrations_cannot_exceed_the_cap(store: &SqlStore) {
     }
     let mut stored = 0;
     while let Some(done) = tasks.join_next().await {
-        match done.expect("the task ran").expect("the store answered") {
-            Ok(()) => stored += 1,
-            Err(PushCapReached) => {}
+        // A refusal is PushCapReached, the only error the cap gives.
+        if let Ok(()) = done.expect("the task ran").expect("the store answered") {
+            stored += 1;
         }
     }
     assert_eq!(stored, 3, "a cap of three holds three endpoints");

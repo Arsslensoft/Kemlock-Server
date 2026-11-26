@@ -48,6 +48,7 @@ pub mod recovery_kit;
 pub mod refresh;
 pub mod register;
 pub mod reset_admin;
+pub mod rotation;
 pub mod sealed;
 pub mod second_step_guard;
 pub mod sends;

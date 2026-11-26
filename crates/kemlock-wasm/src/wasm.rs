@@ -19,12 +19,12 @@ use zeroize::Zeroize;
 use kemlock_crypto::space_chain::KeyRef;
 
 use crate::{
-    b64, chain,
+    b64, chain, chain_build,
     error::Error,
     ids, item_writes, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
     sharing::{self, Facts},
-    spaces::{NameKind, NewCollection},
+    spaces::{self, NameKind, NewCollection, SignedBox},
     totp,
 };
 
@@ -132,6 +132,7 @@ struct TotpOut {
 struct CollectionOut {
     name: String,
     sealed_key: String,
+    sealed_key_signature: String,
 }
 
 impl From<NewCollection> for CollectionOut {
@@ -139,6 +140,7 @@ impl From<NewCollection> for CollectionOut {
         CollectionOut {
             name: b64::encode(&made.name),
             sealed_key: b64::encode(&made.sealed_key),
+            sealed_key_signature: b64::encode(&made.sealed_key_signature),
         }
     }
 }
@@ -148,7 +150,59 @@ impl From<NewCollection> for CollectionOut {
 struct NewSpaceOut {
     name: String,
     sealed_space_key: String,
+    sealed_space_key_signature: String,
     collection: CollectionOut,
+}
+
+/// A key sealed to a member and the signature of the account that sealed it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SignedBoxOut {
+    sealed: String,
+    signature: String,
+}
+
+impl From<SignedBox> for SignedBoxOut {
+    fn from(made: SignedBox) -> SignedBoxOut {
+        SignedBoxOut {
+            sealed: b64::encode(&made.sealed),
+            signature: b64::encode(&made.signature),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotationStartOut {
+    key_version: u32,
+    public_bundle: String,
+    bundle_signature: String,
+    sealed_private_keys: String,
+    sealed_previous_private_keys: String,
+    fingerprint: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResealedItemOut {
+    ciphertext: String,
+    item_key: String,
+    revision: u64,
+    key_version: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResealedSendOut {
+    sealed_key: String,
+    meta: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotationCommitOut {
+    key_version: u32,
+    fingerprint: String,
 }
 
 /// An account id given as base64url of its 16 bytes.
@@ -1033,6 +1087,7 @@ impl Vault {
         json(&NewSpaceOut {
             name: b64::encode(&made.name),
             sealed_space_key: b64::encode(&made.sealed_space_key),
+            sealed_space_key_signature: b64::encode(&made.sealed_space_key_signature),
             collection: made.collection.into(),
         })
     }
@@ -1137,9 +1192,10 @@ impl Vault {
         json(&CollectionOut::from(made))
     }
 
-    /// The space key sealed to a member's `kx1` key (base64url), context `space-key`, bound
-    /// to the space, the key version and the member (`recipient_id`: base64url of their 16-byte
-    /// account id), so it opens only as that space's key.
+    /// The space key sealed to a member's `kx1` key, context `space-key`, bound to the space, the
+    /// key version and the member (`recipient_id`: base64url of their 16-byte account id), so it
+    /// opens only as that space's key, and the unlocked account's `sig1` signature over the box
+    /// (docs/crypto.md, "Signed key boxes"). Returns `{sealed, signature}`.
     #[wasm_bindgen(js_name = sealSpaceKeyTo)]
     pub fn seal_space_key_to(
         &self,
@@ -1154,11 +1210,12 @@ impl Vault {
             .session
             .seal_space_key_to(&space, &recipient, &recipient_id)
             .map_err(fail)?;
-        Ok(b64::encode(&sealed))
+        json(&SignedBoxOut::from(sealed))
     }
 
-    /// A collection key sealed to a member's `kx1` key, context `collection-key`, bound
-    /// to the space, the collection, the key version and the member.
+    /// A collection key sealed to a member's `kx1` key, context `collection-key`, bound to the
+    /// space, the collection, the key version and the member, and the unlocked account's signature
+    /// over the box. Returns `{sealed, signature}`.
     #[wasm_bindgen(js_name = sealCollectionKeyTo)]
     pub fn seal_collection_key_to(
         &self,
@@ -1175,7 +1232,51 @@ impl Vault {
             .session
             .seal_collection_key_to(&space, &collection, &recipient, &recipient_id)
             .map_err(fail)?;
-        Ok(b64::encode(&sealed))
+        json(&SignedBoxOut::from(sealed))
+    }
+
+    /// Whether `signature` is the sealer's `sig1` signature over a key box: the space key's box
+    /// (`collection_id` empty) or a collection key's, sealed to `recipient_id` at `key_version`,
+    /// under the key in the sealer's bundle (base64url); the sealer's account id and key version are
+    /// the bundle's own. Anything malformed is simply `false`.
+    #[wasm_bindgen(js_name = verifyKeyBox)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn verify_key_box(
+        &self,
+        sealer_bundle: &str,
+        space_id: &str,
+        collection_id: &str,
+        key_version: u32,
+        recipient_id: &str,
+        sealed: &str,
+        signature: &str,
+    ) -> bool {
+        let (Ok(bundle), Ok(space), Ok(recipient), Ok(sealed), Ok(signature)) = (
+            b64::decode(sealer_bundle),
+            ids::parse_uuid(space_id),
+            b64_id(recipient_id),
+            b64::decode(sealed),
+            b64::decode(signature),
+        ) else {
+            return false;
+        };
+        let collection = if collection_id.is_empty() {
+            None
+        } else {
+            match ids::parse_uuid(collection_id) {
+                Ok(collection) => Some(collection),
+                Err(_) => return false,
+            }
+        };
+        spaces::verify_key_box(
+            &bundle,
+            &space,
+            collection.as_ref(),
+            key_version,
+            &recipient,
+            &sealed,
+            &signature,
+        )
     }
 
     /// A `sig1` signature (base64url, 3,373 bytes) of the unlocked account over a manifest
@@ -1303,6 +1404,98 @@ impl Vault {
         json(&verdict)
     }
 
+    /// A new space as a chain: JSON `{ok: true, records, seals, names}`, the body of
+    /// `POST /kem/v1/spaces/{id}/chain`. The `create` record is signed with this account's
+    /// `sig1` key, the space key and the first collection's key are sealed to this account, and
+    /// both names are under the space key. No key is kept: the space opens through its chain once
+    /// the record is appended. `at` is the time in Unix seconds.
+    #[wasm_bindgen(js_name = newChainedSpace)]
+    pub fn new_chained_space(
+        &self,
+        space_id: &str,
+        collection_id: &str,
+        space_name: &str,
+        collection_name: &str,
+        at: u32,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let collection = ids::parse_uuid(collection_id).map_err(fail)?;
+        let built = self
+            .session
+            .create_chained_space(
+                &space,
+                &collection,
+                space_name,
+                collection_name,
+                u64::from(at),
+            )
+            .map_err(fail)?;
+        json(&built)
+    }
+
+    /// The records of one change to a chained space, made from the verified state this unlock
+    /// holds for it (first contact done) and signed with this account's `sig1` key. `change` is
+    /// the JSON of one change (`{action: "invite" | "confirm" | ..., ...}`, see
+    /// src/chain_build.rs). Answers JSON: `{ok: true, records, seals, names}`, the body of
+    /// `POST /kem/v1/spaces/{id}/chain` (no records when there is nothing to do), or `{ok: false,
+    /// reason, seq}` with the verifier's reason when the chain's rules refuse the change.
+    #[wasm_bindgen(js_name = buildChainRecords)]
+    pub fn build_chain_records(
+        &self,
+        space_id: &str,
+        at: u32,
+        change: &str,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let change: chain_build::Change =
+            serde_json::from_str(change).map_err(|_| fail(Error::Invalid))?;
+        let built = self
+            .session
+            .build_chain_records(&space, u64::from(at), &change)
+            .map_err(fail)?;
+        json(&built)
+    }
+
+    /// Replaces the keys a removal or an ungrant marked: a `keys` record, and the items of the
+    /// replaced collections sealed again under their new key versions. `replacement` is the JSON
+    /// `{items: [{id, collection, kind, revision, keyVersion, ciphertext, itemKey}], names:
+    /// [{target, sealed}]}`: the space's live items as the server serves them, and, when the space
+    /// key is replaced, its sealed names. Answers as `buildChainRecords` does, with `held` (the ids
+    /// of the items this account can't re-write) and `writes` beside the records, or no records
+    /// when there is nothing this account can replace.
+    #[wasm_bindgen(js_name = buildKeyReplacement)]
+    pub fn build_key_replacement(
+        &self,
+        space_id: &str,
+        at: u32,
+        replacement: &str,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let replacement: chain_build::Replacement =
+            serde_json::from_str(replacement).map_err(|_| fail(Error::Invalid))?;
+        let built = self
+            .session
+            .build_key_replacement(&space, u64::from(at), &replacement)
+            .map_err(fail)?;
+        json(&built)
+    }
+
+    /// Seals again the items still under an older key version than their collection's current
+    /// one. `reseal` is the JSON `{items: [{id, collection, kind, revision, keyVersion,
+    /// ciphertext, itemKey}]}`. Answers `{ok: true, records: [], seals: [], names: [], writes,
+    /// held}`: the writes for the batch route, and the ids this unlock can't seal again.
+    #[wasm_bindgen(js_name = buildReseal)]
+    pub fn build_reseal(&self, space_id: &str, reseal: &str) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let reseal: chain_build::Reseal =
+            serde_json::from_str(reseal).map_err(|_| fail(Error::Invalid))?;
+        let built = self
+            .session
+            .build_reseal(&space, &reseal)
+            .map_err(fail)?;
+        json(&built)
+    }
+
     /// The view of the chain this unlock verified for a space, as `verifySpaceChain` answers it,
     /// or nothing when it hasn't verified one.
     #[wasm_bindgen(js_name = spaceChainView)]
@@ -1367,6 +1560,205 @@ impl Vault {
         String::from_utf8(plain).map_err(|_| fail(Error::Invalid))
     }
 
+    // ---- rotating the root key (docs/crypto.md, "Rotating the root key"; rotation.rs) ----
+
+    /// Starts a rotation of the open account: a new root key and key pair held in the worker, and
+    /// what the server stores of them: `{keyVersion, publicBundle, bundleSignature,
+    /// sealedPrivateKeys, sealedPreviousPrivateKeys, fingerprint}`. The account must have been
+    /// unlocked with its sealed private keys. A rotation already started is replaced.
+    #[wasm_bindgen(js_name = rotationStart)]
+    pub fn rotation_start(&mut self) -> Result<String, JsError> {
+        let started = self.session.rotation_start().map_err(fail)?;
+        json(&RotationStartOut {
+            key_version: started.key_version,
+            public_bundle: b64::encode(&started.public_bundle),
+            bundle_signature: b64::encode(&started.bundle_signature),
+            sealed_private_keys: b64::encode(&started.sealed_private_keys),
+            sealed_previous_private_keys: b64::encode(&started.sealed_previous_private_keys),
+            fingerprint: started.fingerprint,
+        })
+    }
+
+    /// Moves one item of the account's own vault to the new keys: `{ciphertext, itemKey, revision,
+    /// keyVersion}`, at `revision + 1` under a fresh item key.
+    #[wasm_bindgen(js_name = rotationResealItem)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn rotation_reseal_item(
+        &self,
+        id: &str,
+        owner: &str,
+        kind: &str,
+        revision: u64,
+        ciphertext: &str,
+        item_key: &str,
+        key_version: Option<u32>,
+    ) -> Result<String, JsError> {
+        let id = ids::parse_uuid(id).map_err(fail)?;
+        let owner = ids::parse_owner(owner).map_err(fail)?;
+        let ciphertext = b64::decode(ciphertext).map_err(fail)?;
+        let item_key = b64::decode(item_key).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_item(&SealedItemRef {
+                id: &id,
+                owner: &owner,
+                kind,
+                revision,
+                ciphertext: &ciphertext,
+                item_key: &item_key,
+                key_version,
+            })
+            .map_err(fail)?;
+        json(&ResealedItemOut {
+            ciphertext: b64::encode(&moved.moved.ciphertext),
+            item_key: b64::encode(&moved.moved.item_key),
+            revision: moved.moved.revision,
+            key_version: moved.key_version,
+        })
+    }
+
+    /// Moves one Send's sealed key and meta to the new keys: `{sealedKey, meta}`.
+    #[wasm_bindgen(js_name = rotationResealSend)]
+    pub fn rotation_reseal_send(
+        &self,
+        id: &str,
+        kind: &str,
+        sealed_key: &str,
+        meta: &str,
+    ) -> Result<String, JsError> {
+        let id = sends::send_id(id).map_err(fail)?;
+        let kind = sends::kind(kind).map_err(fail)?;
+        let sealed_key = b64::decode(sealed_key).map_err(fail)?;
+        let meta = b64::decode(meta).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_send(&id, kind, &sealed_key, &meta)
+            .map_err(fail)?;
+        json(&ResealedSendOut {
+            sealed_key: b64::encode(&moved.sealed_key),
+            meta: b64::encode(&moved.meta),
+        })
+    }
+
+    /// The new root key wrapped under a master key and OPAQUE export key (handles of a fresh
+    /// sign-in): base64url of the 92-byte password wrap at the new key version. Consumes both
+    /// handles on success.
+    #[wasm_bindgen(js_name = rotationWrapPassword)]
+    pub fn rotation_wrap_password(
+        &mut self,
+        master: u32,
+        export_key: u32,
+    ) -> Result<String, JsError> {
+        let wrapped = self
+            .session
+            .rotation_wrap_password(master, export_key)
+            .map_err(fail)?;
+        Ok(b64::encode(&wrapped))
+    }
+
+    /// The new root key wrapped under a passkey's PRF output and credential id:
+    /// `{wrappedKey, keyVersion}` at the new key version.
+    #[wasm_bindgen(js_name = rotationPrfWrap)]
+    pub fn rotation_prf_wrap(
+        &self,
+        prf_output: &str,
+        credential_id: &str,
+    ) -> Result<String, JsError> {
+        let prf = b64::decode(prf_output).map_err(fail)?;
+        let credential = b64::decode(credential_id).map_err(fail)?;
+        let (wrapped, key_version) = self
+            .session
+            .rotation_prf_wrap(&prf, &credential)
+            .map_err(fail)?;
+        json(&PrfWrapOut {
+            wrapped_key: b64::encode(&wrapped),
+            key_version,
+        })
+    }
+
+    /// A new Recovery Kit for the new root key: `{kitId, pieces, wrappedKey, keyVersion}`.
+    #[wasm_bindgen(js_name = rotationKitMake)]
+    pub fn rotation_kit_make(&self) -> Result<String, JsError> {
+        let made = self.session.rotation_kit_make().map_err(fail)?;
+        json(&KitOut {
+            kit_id: made.kit_id,
+            pieces: made.pieces,
+            wrapped_key: b64::encode(&made.wrapped),
+            key_version: made.key_version,
+        })
+    }
+
+    /// The new root key (base64url, 64 bytes), for the worker to seal under this device's own key.
+    /// It is never sent to the page.
+    #[wasm_bindgen(js_name = rotationExportRoot)]
+    pub fn rotation_export_root(&self) -> Result<String, JsError> {
+        let root = self.session.rotation_export_root().map_err(fail)?;
+        Ok(b64::encode(&*root))
+    }
+
+    /// Seals the new root key to a `kx1` public key under `emergency-access` (`aad`: the contact's
+    /// account id, 16 bytes) or `account-recovery` (`aad`: space id, account id, `u64be(keySeq)`).
+    #[wasm_bindgen(js_name = rotationSealRootKey)]
+    pub fn rotation_seal_root_key(
+        &self,
+        recipient_kx1: &str,
+        context: &str,
+        aad: &str,
+    ) -> Result<String, JsError> {
+        let recipient = b64::decode(recipient_kx1).map_err(fail)?;
+        let aad = b64::decode(aad).map_err(fail)?;
+        let sealed = self
+            .session
+            .rotation_seal_root_key(&recipient, context, &aad)
+            .map_err(fail)?;
+        Ok(b64::encode(&sealed))
+    }
+
+    /// Makes the new keys the account's. Returns `{keyVersion, fingerprint}`.
+    #[wasm_bindgen(js_name = rotationCommit)]
+    pub fn rotation_commit(&mut self) -> Result<String, JsError> {
+        let (key_version, fingerprint) = self.session.rotation_commit().map_err(fail)?;
+        json(&RotationCommitOut {
+            key_version,
+            fingerprint,
+        })
+    }
+
+    /// Moves a value this browser keeps for the account (`sealLocal`, base64url) to the new keys, for
+    /// the same label: base64url.
+    #[wasm_bindgen(js_name = rotationResealLocal)]
+    pub fn rotation_reseal_local(&self, label: &str, sealed: &str) -> Result<String, JsError> {
+        let sealed = b64::decode(sealed).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_local(label, &sealed)
+            .map_err(fail)?;
+        Ok(b64::encode(&moved))
+    }
+
+    /// Forgets a rotation that was started and not committed.
+    #[wasm_bindgen(js_name = rotationAbort)]
+    pub fn rotation_abort(&mut self) {
+        self.session.rotation_abort();
+    }
+
+    /// A `sig1` signature over a space-chain signing input, by the key before the last rotation
+    /// (`previous`) or the new one: the two signatures of a `rekey` record.
+    #[wasm_bindgen(js_name = rotationSign)]
+    pub fn rotation_sign(
+        &self,
+        previous: bool,
+        context: &str,
+        message: &str,
+    ) -> Result<String, JsError> {
+        let message = b64::decode(message).map_err(fail)?;
+        let signature = self
+            .session
+            .rotation_sign(previous, context, &message)
+            .map_err(fail)?;
+        Ok(b64::encode(&signature))
+    }
+
     /// Wipes every secret: all handles and the unlocked account.
     pub fn lock(&mut self) {
         self.session.lock();
@@ -1408,15 +1800,17 @@ mod tests {
         let text = serde_json::to_string(&NewSpaceOut {
             name: "n".into(),
             sealed_space_key: "s".into(),
+            sealed_space_key_signature: "t".into(),
             collection: CollectionOut {
                 name: "c".into(),
                 sealed_key: "k".into(),
+                sealed_key_signature: "u".into(),
             },
         })
         .expect("json");
         assert_eq!(
             text,
-            r#"{"name":"n","sealedSpaceKey":"s","collection":{"name":"c","sealedKey":"k"}}"#
+            r#"{"name":"n","sealedSpaceKey":"s","sealedSpaceKeySignature":"t","collection":{"name":"c","sealedKey":"k","sealedKeySignature":"u"}}"#
         );
         let text = serde_json::to_string(&LoginFinished {
             finalization: "f".into(),

@@ -33,7 +33,7 @@ use crate::error::BwResult;
 use axum::Router;
 use json::{collection_details_json, policy_json, profile_org_json};
 use kemlock_domain::UserId;
-use model::{ACCEPTED, CONFIRMED};
+use model::{ACCEPTED, CONFIRMED, INVITED};
 use serde_json::Value;
 
 pub(crate) fn routes<S: BwStore>() -> Router<App<S>> {
@@ -51,8 +51,9 @@ pub(crate) struct SyncParts {
     pub ciphers: Vec<Value>,
 }
 
-/// The organizations of an account for its profile: confirmed memberships, and accepted ones
-/// too for `organizationsNew`.
+/// The organizations of an account for its profile: confirmed memberships, and for
+/// `organizationsNew` the accepted and invited ones too, so the invitee sees an invitation that waits
+/// for them to accept it (an invited member sees no keys or items of it).
 pub(crate) async fn profile_orgs<S: BwStore>(
     app: &App<S>,
     user: UserId,
@@ -67,7 +68,7 @@ pub(crate) async fn profile_orgs<S: BwStore>(
         if doc.status == CONFIRMED {
             confirmed.push(shown.clone());
         }
-        if doc.status == CONFIRMED || doc.status == ACCEPTED {
+        if doc.status == CONFIRMED || doc.status == ACCEPTED || doc.status == INVITED {
             open.push(shown);
         }
     }

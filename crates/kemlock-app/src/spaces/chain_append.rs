@@ -16,15 +16,18 @@ use super::chain::{
 };
 use super::chain_project::{Batch, custom_of, id_of, permission_of, project, role_of, user_of};
 use super::error::SpacesError;
-use super::ports::SpaceRepo;
+use super::ports::{SpaceItemInfo, SpaceRepo};
 use super::support::record;
 use crate::authenticate::Actor;
-use crate::ports::{Clock, EventLog, StoreError, UserRepo};
+use crate::dedup::TagStore;
+use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, UserRepo};
 use kemlock_crypto::space_chain::{
     self as sc, Body, ChainError, KeyRef, Limits, NameTarget, Reason, Record, SignedRecord,
 };
-use kemlock_domain::spaces::{CollectionId, MemberState, SpaceRole};
-use kemlock_domain::{ItemId, SpaceId, UserId};
+use kemlock_domain::spaces::{CollectionId, MemberState, SpaceRole, apply_space_write};
+use kemlock_domain::{
+    ItemDraft, ItemFormat, ItemId, ItemLimits, ItemWrite, Owner, SpaceId, UserId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -57,6 +60,12 @@ pub struct AppendRequest {
     /// Live items a `keys` record in this request leaves **held**: kept, but not served as live,
     /// and counted as covered by the key replacement (I3).
     pub held: Vec<ItemId>,
+    /// Live items re-written under the new key version of a collection a `keys` record of this
+    /// request replaces, each with its collection and written as the next revision, so a key
+    /// replacement is one transaction with its items (docs/crypto.md, "Accepting records": "the
+    /// route that replaces keys carries its `keys` record the same way, beside its re-written
+    /// items"). Only a member with edit on the collection makes them.
+    pub writes: Vec<(CollectionId, ItemWrite)>,
 }
 
 /// Why records weren't appended.
@@ -109,19 +118,29 @@ const CLOCK_SLACK: u64 = 600;
 
 /// Appends records to a space's chain.
 #[derive(Debug)]
-pub struct AppendChain<R, U, V, C> {
+pub struct AppendChain<R, U, V, C, I, T, N> {
     pub spaces: R,
     pub users: U,
     pub events: V,
     pub clock: C,
+    /// The items a key replacement re-writes.
+    pub items: I,
+    /// The duplicate cleaner's tags, which move to a new version with the space key.
+    pub tags: T,
+    pub limits: ItemLimits,
+    /// Tells devices that a replacement wrote items.
+    pub push: N,
 }
 
-impl<R, U, V, C> AppendChain<R, U, V, C>
+impl<R, U, V, C, I, T, N> AppendChain<R, U, V, C, I, T, N>
 where
     R: SpaceRepo + SpaceChainRepo,
     U: UserRepo,
     V: EventLog,
     C: Clock,
+    I: ItemStore,
+    T: TagStore,
+    N: Notifier,
 {
     /// Appends `request`'s records, all or none, and returns the new head. A request is 1 to 16
     /// records, in order, all signed and sent by `actor`.
@@ -321,6 +340,11 @@ where
         // A11: exactly the boxes and names the commitments cover.
         let (seals, names) = self.cover(&space_bytes, &accepted, &request)?;
         let held = self.held(space, &accepted, &request).await?;
+        let writes = self
+            .writes(space, &accepted, &request, &state, actor.user, now)
+            .await?;
+        // The items are written in order, so the last carries the newest change.
+        let newest = writes.last().map(|(draft, _)| draft.id);
 
         let holders = self.spaces.holders(space).await?;
         let changes = project(
@@ -353,6 +377,18 @@ where
             .iter()
             .map(|(rec, _, _)| rec.kind().as_str())
             .collect();
+        // Replacing the space key moves the dedup key version, as `ReplaceKeys` does: before the
+        // records land, so a failure costs a needless re-tag, never tags of two keys under one
+        // version.
+        let rotates_space_key = accepted.iter().any(|(rec, _, _)| {
+            matches!(&rec.body, Body::Keys { rotate, .. } if rotate.iter().any(|c| c.key == KeyRef::Space))
+        });
+        if rotates_space_key {
+            self.tags
+                .bump_version(Owner::Space(space), now)
+                .await
+                .map_err(AppendError::from)?;
+        }
         let outcome = self
             .spaces
             .chain_append(
@@ -365,6 +401,7 @@ where
                     changes,
                     creating,
                     held,
+                    writes,
                     answers: answering.map(|p| p.id),
                     state: Some(state_after),
                 },
@@ -387,6 +424,11 @@ where
                     now,
                 )
                 .await;
+                if let Some(id) = newest
+                    && let Ok(Some(item)) = self.items.get(id).await
+                {
+                    self.push.sync_now(Owner::Space(space), item.change).await;
+                }
                 Ok(new_head)
             }
             AppendOutcome::Stale(current) => Err(AppendError::Conflict(current)),
@@ -512,6 +554,102 @@ where
             ));
         }
         Ok((seals, names))
+    }
+
+    /// The items a `keys` record's request re-writes (I3, I4): live items of collections whose key
+    /// a `keys` record of the request replaces, each under that collection's new key version, each
+    /// once, by a member with edit on the collection in the state the records lead to; none is also
+    /// held. Each is checked as any item write is (`apply_space_write`), against the revision the
+    /// request names.
+    async fn writes(
+        &self,
+        space: SpaceId,
+        accepted: &[(Record, sc::Applied, &SignedRecord)],
+        request: &AppendRequest,
+        state: &sc::State,
+        actor: UserId,
+        now: time::OffsetDateTime,
+    ) -> Result<Vec<(ItemDraft, CollectionId)>, AppendError> {
+        if request.writes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if state.space.marked {
+            // I1: while the space key is marked, no item is written.
+            return Err(AppendError::Invalid(
+                "the space key waits to be replaced: no item is written until a keys record does",
+            ));
+        }
+        let mut new_versions: BTreeMap<CollectionId, u32> = BTreeMap::new();
+        for (rec, _, _) in accepted {
+            if let Body::Keys { rotate, .. } = &rec.body {
+                for commitment in rotate {
+                    if let KeyRef::Collection(id) = commitment.key {
+                        new_versions
+                            .insert(CollectionId(Uuid::from_bytes(id)), commitment.version);
+                    }
+                }
+            }
+        }
+        if new_versions.is_empty() {
+            return Err(AppendError::Invalid(
+                "only a keys record that replaces a collection key is followed by re-written items",
+            ));
+        }
+        let infos = self.spaces.space_items(space).await?;
+        let by_id: BTreeMap<ItemId, &SpaceItemInfo> = infos.iter().map(|i| (i.id, i)).collect();
+        let held: BTreeSet<ItemId> = request.held.iter().copied().collect();
+        let me = id_of(actor);
+        let mut written: BTreeSet<ItemId> = BTreeSet::new();
+        let mut drafts = Vec::with_capacity(request.writes.len());
+        for (collection, write) in &request.writes {
+            let id = write.id;
+            if write.owner != Owner::Space(space) || !written.insert(id) || held.contains(&id) {
+                return Err(AppendError::Invalid(
+                    "re-write items of this space, each once, and not the ones held",
+                ));
+            }
+            let info = by_id.get(&id).ok_or(AppendError::Invalid(
+                "a replacement re-writes existing items only",
+            ))?;
+            if info.collection != Some(*collection) || info.deleted || write.sealed.is_none() {
+                return Err(AppendError::Invalid(
+                    "a replacement re-writes live items, each in the collection it is in",
+                ));
+            }
+            let Some(version) = new_versions.get(collection) else {
+                return Err(AppendError::HeldNotRotated(
+                    "re-write only items of a collection whose key a keys record of the request replaces",
+                ));
+            };
+            if write.format == ItemFormat::Kem1 && write.key_version != *version {
+                return Err(AppendError::Invalid(
+                    "re-write kem1 items under the collection's new key version",
+                ));
+            }
+            let may_edit = state
+                .access(&me, collection.0.as_bytes())
+                .is_some_and(|rights| rights.edit);
+            if !may_edit {
+                return Err(refuse(
+                    None,
+                    Reason::NotAllowed,
+                    "only a member with edit on a collection re-writes its items",
+                ));
+            }
+            let stored = self
+                .items
+                .get(id)
+                .await?
+                .ok_or(AppendError::Invalid("a replacement re-writes existing items only"))?;
+            let draft = apply_space_write(write.clone(), Some(&stored), actor, self.limits, now)
+                .map_err(|_| {
+                    AppendError::Invalid(
+                        "an item can't be re-written as asked: its revision or its sealed parts are wrong",
+                    )
+                })?;
+            drafts.push((draft, *collection));
+        }
+        Ok(drafts)
     }
 
     /// I3: items a `keys` record leaves held are live items of collections whose key a `keys`

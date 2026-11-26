@@ -6,7 +6,11 @@
 import { crypto as worker } from '@/crypto';
 import {
   type ChainAnchor,
+  type ChainAppend,
+  type ChainBuilt,
+  type ChainChange,
   type ChainRecord,
+  type ChainReplacement,
   type ChainVerdict,
   type ChainView,
   type CryptoApi,
@@ -17,15 +21,49 @@ import {
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { createSharingCrypto, type SharingCrypto, unavailableSharingCrypto } from '@/sharing/crypto';
 
-export type { ChainAnchor, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
+export type {
+  ChainAnchor,
+  ChainAppend,
+  ChainBuilt,
+  ChainChange,
+  ChainRecord,
+  ChainReplacement,
+  ChainVerdict,
+  ChainView,
+  NameKind,
+  SealHashEntry,
+};
+
+/** A key sealed to a member, and the signature of the account that sealed it. */
+export interface SignedBox {
+  sealed: Uint8Array;
+  signature: Uint8Array;
+}
+
+/** What a key box signature is checked against (docs/crypto.md, "Signed key boxes"). */
+export interface KeyBoxFacts {
+  /** The sealer's public-key bundle: their account id and key version are its own. */
+  sealerBundle: Uint8Array;
+  spaceId: string;
+  /** The collection of a collection key's box; left out for the space key's. */
+  collectionId?: string;
+  /** The version of the key the box holds. */
+  keyVersion: number;
+  /** The 16 bytes of the account id the box is sealed to. */
+  recipientId: Uint8Array;
+  sealed: Uint8Array;
+  signature: Uint8Array;
+}
 
 export interface NewSpaceKeys {
   /** The space's name under the new space key. */
   name: Uint8Array;
   /** The space key sealed to the maker's own kx1 key. */
   sealedSpaceKey: Uint8Array;
+  /** The maker's signature over that box (docs/crypto.md, "Signed key boxes"). */
+  sealedSpaceKeySignature: Uint8Array;
   /** The first collection. */
-  collection: { name: Uint8Array; sealedKey: Uint8Array };
+  collection: { name: Uint8Array; sealedKey: Uint8Array; sealedKeySignature: Uint8Array };
 }
 
 /** What a member confirmation says (docs/crypto.md, "Member confirmation"). */
@@ -73,20 +111,22 @@ export interface SpaceCrypto extends SharingCrypto {
     spaceId: string;
     collectionId: string;
     name: string;
-  }): Promise<{ name: Uint8Array; sealedKey: Uint8Array }>;
+  }): Promise<{ name: Uint8Array; sealedKey: Uint8Array; sealedKeySignature: Uint8Array }>;
   /** The space key sealed to a member's kx1 key (context `space-key`, bound to the space, key version and member). */
   sealSpaceKeyTo(input: {
     spaceId: string;
     recipientKx1: Uint8Array;
     recipientId: Uint8Array;
-  }): Promise<Uint8Array>;
+  }): Promise<SignedBox>;
   /** A collection key sealed to a member (context `collection-key`, bound to the space, collection, key version and member). */
   sealCollectionKeyTo(input: {
     spaceId: string;
     collectionId: string;
     recipientKx1: Uint8Array;
     recipientId: Uint8Array;
-  }): Promise<Uint8Array>;
+  }): Promise<SignedBox>;
+  /** Whether a key box signature is the sealer's over exactly this box, for this key and recipient. */
+  verifyKeyBox(facts: KeyBoxFacts): Promise<boolean>;
   /** The 134-byte statement the unlocked account signs to confirm a member (it is the confirmer). */
   confirmationStatement(input: ConfirmationFacts): Promise<Uint8Array>;
   /**
@@ -98,6 +138,36 @@ export interface SpaceCrypto extends SharingCrypto {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
+  /**
+   * A new space as a chain: the body of the append route, with the `create` record signed here,
+   * both keys sealed to the maker and both names under the space key. `at` is Unix seconds.
+   */
+  newChainedSpace(input: {
+    spaceId: string;
+    collectionId: string;
+    spaceName: string;
+    collectionName: string;
+    at: number;
+  }): Promise<ChainAppend>;
+  /**
+   * The records of one change to a chained space, built and signed in the worker from the state it
+   * verified, or the verifier's reason for refusing the change. No records: nothing to do.
+   */
+  buildChainRecords(input: { spaceId: string; at: number; change: ChainChange }): Promise<ChainBuilt>;
+  /**
+   * Replaces the keys a removal or an ungrant marked: the `keys` record and the items of the
+   * replaced collections sealed again, built in the worker from the state it verified.
+   */
+  buildKeyReplacement(input: {
+    spaceId: string;
+    at: number;
+    replacement: ChainReplacement;
+  }): Promise<ChainBuilt>;
+  /**
+   * Seals again items still under an older key version than their collection's: the writes for
+   * the batch route, and the ids this unlock can't seal again (it no longer holds their old key).
+   */
+  buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
   /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
   sealLocal(label: string, text: string): Promise<string>;
   /** Opens what `sealLocal` sealed under the same label and account. */
@@ -142,11 +212,16 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   newCollection: () => unavailable(),
   sealSpaceKeyTo: () => unavailable(),
   sealCollectionKeyTo: () => unavailable(),
+  verifyKeyBox: () => unavailable(),
   confirmationStatement: () => unavailable(),
   verifyBundle: () => unavailable(),
   ownFingerprint: () => unavailable(),
   verifyConfirmation: () => unavailable(),
   verifySpaceChain: () => unavailable(),
+  newChainedSpace: () => unavailable(),
+  buildChainRecords: () => unavailable(),
+  buildKeyReplacement: () => unavailable(),
+  buildReseal: () => unavailable(),
   spaceChainView: () => unavailable(),
   sealLocal: () => unavailable(),
   openLocal: () => unavailable(),
@@ -166,11 +241,16 @@ type SpaceWorker = Pick<
   | 'newCollection'
   | 'sealSpaceKeyTo'
   | 'sealCollectionKeyTo'
+  | 'verifyKeyBox'
   | 'confirmationStatement'
   | 'verifyBundle'
   | 'ownFingerprint'
   | 'verifyConfirmation'
   | 'verifySpaceChain'
+  | 'newChainedSpace'
+  | 'buildChainRecords'
+  | 'buildKeyReplacement'
+  | 'buildReseal'
   | 'spaceChainView'
   | 'sealLocal'
   | 'openLocal'
@@ -187,9 +267,11 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
       return {
         name: decodeB64(made.name),
         sealedSpaceKey: decodeB64(made.sealedSpaceKey),
+        sealedSpaceKeySignature: decodeB64(made.sealedSpaceKeySignature),
         collection: {
           name: decodeB64(made.collection.name),
           sealedKey: decodeB64(made.collection.sealedKey),
+          sealedKeySignature: decodeB64(made.collection.sealedKeySignature),
         },
       };
     },
@@ -204,27 +286,39 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
     },
     async newCollection(input) {
       const made = await api.newCollection(input);
-      return { name: decodeB64(made.name), sealedKey: decodeB64(made.sealedKey) };
+      return {
+        name: decodeB64(made.name),
+        sealedKey: decodeB64(made.sealedKey),
+        sealedKeySignature: decodeB64(made.sealedKeySignature),
+      };
     },
     async sealSpaceKeyTo({ spaceId, recipientKx1, recipientId }) {
-      return decodeB64(
-        await api.sealSpaceKeyTo({
-          spaceId,
-          recipientKx1: encodeB64(recipientKx1),
-          recipientId: encodeB64(recipientId),
-        }),
-      );
+      const made = await api.sealSpaceKeyTo({
+        spaceId,
+        recipientKx1: encodeB64(recipientKx1),
+        recipientId: encodeB64(recipientId),
+      });
+      return { sealed: decodeB64(made.sealed), signature: decodeB64(made.signature) };
     },
     async sealCollectionKeyTo({ spaceId, collectionId, recipientKx1, recipientId }) {
-      return decodeB64(
-        await api.sealCollectionKeyTo({
-          spaceId,
-          collectionId,
-          recipientKx1: encodeB64(recipientKx1),
-          recipientId: encodeB64(recipientId),
-        }),
-      );
+      const made = await api.sealCollectionKeyTo({
+        spaceId,
+        collectionId,
+        recipientKx1: encodeB64(recipientKx1),
+        recipientId: encodeB64(recipientId),
+      });
+      return { sealed: decodeB64(made.sealed), signature: decodeB64(made.signature) };
     },
+    verifyKeyBox: ({ sealerBundle, spaceId, collectionId, keyVersion, recipientId, sealed, signature }) =>
+      api.verifyKeyBox({
+        sealerBundle: encodeB64(sealerBundle),
+        spaceId,
+        ...(collectionId === undefined ? {} : { collectionId }),
+        keyVersion,
+        recipientId: encodeB64(recipientId),
+        sealed: encodeB64(sealed),
+        signature: encodeB64(signature),
+      }),
     async confirmationStatement({ space, member, memberKeyVersion, fingerprint }) {
       return decodeB64(
         await api.confirmationStatement({
@@ -236,6 +330,10 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
       );
     },
     verifySpaceChain: (input) => api.verifySpaceChain(input),
+    newChainedSpace: (input) => api.newChainedSpace(input),
+    buildChainRecords: (input) => api.buildChainRecords(input),
+    buildKeyReplacement: (input) => api.buildKeyReplacement(input),
+    buildReseal: (input) => api.buildReseal(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
     sealLocal: (label, text) => api.sealLocal(label, text),
     openLocal: (label, sealed) => api.openLocal(label, sealed),

@@ -3,7 +3,7 @@
 //! Members, roles, policies, groups, collections, grants and key replacement are home-only writes
 //! (`docs/federation.md`, "Home epochs, promotion and the fence"). [`home_gate`] is a middleware for
 //! the merged router. For a write to `/kem/v1/spaces/{id}/{members, collections, groups, grants,
-//! key-replacement, policies}` of a space this server federates:
+//! key-replacement, reseal, policies}` of a space this server federates:
 //!
 //! - at a server that is **not** the home (a replica, or an old home that was promoted over) the
 //!   write is refused with `409` and the home's address, in the problem body and in the
@@ -28,12 +28,13 @@ use std::sync::Arc;
 pub const HOME_HEADER: &str = "x-kemlock-home";
 
 /// The parts of `/kem/v1/spaces/{id}/…` only the home may write.
-const HOME_ONLY: [&str; 6] = [
+const HOME_ONLY: [&str; 7] = [
     "members",
     "collections",
     "groups",
     "grants",
     "key-replacement",
+    "reseal",
     "policies",
 ];
 

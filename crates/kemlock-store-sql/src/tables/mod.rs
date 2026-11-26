@@ -42,6 +42,8 @@ pub(crate) mod push_tokens;
 pub(crate) mod recovery_kits;
 pub(crate) mod refresh_tokens;
 pub(crate) mod revoked_families;
+pub(crate) mod rotation_previous_keys;
+pub(crate) mod rotation_staged_items;
 pub(crate) mod second_step_attempts;
 pub(crate) mod sends;
 pub(crate) mod server_meta;

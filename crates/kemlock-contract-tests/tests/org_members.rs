@@ -399,15 +399,21 @@ async fn require_sso_is_a_policy_type_of_this_server() {
     }
     let owner = fresh_session().await;
     let (org, _) = organization(&owner).await;
-    let set = owner
+    // It is a policy the server knows, and it refuses to turn it on until single sign-on is set up
+    // (the suite's server has none): otherwise anyone could lock an organization's members out of
+    // every sign-in (Require SSO needs SSO configured and Single Org on).
+    let refused = owner
         .put(
             &format!("/api/organizations/{org}/policies/4"),
             &json!({"policy": {"enabled": true, "data": null}}),
         )
-        .await
-        .ok_json("PUT Require SSO");
-    assert_eq!(set["type"], json!(4));
-    assert_eq!(set["enabled"], json!(true));
+        .await;
+    assert_eq!(refused.status, 400, "{}", refused.text());
+    assert!(
+        refused.text().contains("single sign-on"),
+        "{}",
+        refused.text()
+    );
 }
 
 #[tokio::test]

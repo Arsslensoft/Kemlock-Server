@@ -506,7 +506,7 @@ pub(super) async fn mark_signed_only(
 }
 
 /// Takes the `server_meta` row's lock by rewriting a column with its own value.
-async fn lock_meta(txn: &DatabaseTransaction) -> Result<(), StoreError> {
+pub(super) async fn lock_meta(txn: &DatabaseTransaction) -> Result<(), StoreError> {
     server_meta::Entity::update_many()
         .col_expr(
             server_meta::Column::LastHlc,

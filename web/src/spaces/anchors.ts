@@ -14,9 +14,17 @@
 // worker opens. A value that doesn't open, or isn't what it should be, is an error, never "none":
 // a space whose anchor was damaged is "can't be checked", not a space met for the first time.
 //
+// A rotation of the account's root key (docs/crypto.md, "Rotating the root key") changes the key they
+// are sealed under. The rotating browser seals them again (`resealAll`, registered in `local/`); one
+// that did not rotate finds them unreadable. Each account has a canary value beside them, sealed
+// the same way: when the canary does not open either, the keys changed, and the account's values
+// are dropped, so every space is met again (first contact), which is the safe way to lose them.
+// A value that does not open while the canary does is damaged, and is still an error.
+//
 // Where IndexedDB isn't available (private windows in some browsers) they last until the page
 // closes, and first contact and comparisons are asked again next time: safe, only more asking.
 import type { ChainAnchor } from '@/crypto/types';
+import { type Reseal, registerLocalStore } from '@/local/registry';
 
 /** What seals and opens a value for the unlocked account: the crypto worker. */
 export interface LocalSeal {
@@ -79,6 +87,7 @@ const ANCHORS = 'anchors';
 const PINS = 'pins';
 
 const anchorKey = (account: string, space: string) => `anchor/${account}/${space}`;
+const canaryKey = (account: string) => `canary/${account}`;
 const seenKey = (account: string, space: string) => `seen/${account}/${space}`;
 const pinKey = (account: string, member: string) => `pin/${account}/${member}`;
 const floorKey = (account: string, owner: string) => `floor/${account}/${owner}`;
@@ -192,6 +201,11 @@ export function memoryFloorStore(): FloorStore {
   return memoryStores().floors;
 }
 
+/** The account a key was made for: its second segment. */
+function accountOf(key: string): string | undefined {
+  return key.split('/')[1];
+}
+
 function request<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => resolve(req.result);
@@ -232,16 +246,63 @@ export function indexedDbStores(
       db.close();
     }
   }
-  /** The text kept under a key, opened; undefined only when nothing is kept. */
+  async function put(store: string, key: string, text: string): Promise<void> {
+    const sealed = await seal.sealLocal(key, text);
+    await withStore(store, 'readwrite', (s) => s.put(sealed, key));
+  }
+  /** Drops every value kept for the account, the canary included. */
+  async function forget(account: string): Promise<void> {
+    for (const store of [ANCHORS, PINS]) {
+      const keys: IDBValidKey[] = await withStore(store, 'readonly', (s) => s.getAllKeys());
+      for (const key of keys) {
+        if (typeof key === 'string' && accountOf(key) === account) {
+          await withStore(store, 'readwrite', (s) => s.delete(key));
+        }
+      }
+    }
+  }
+  /**
+   * Checks the account's canary against the keys the worker holds now. Missing: it is made (a store
+   * from before canaries). Opens: `ok`. Does not open: the keys changed, so the account's values
+   * are dropped, a new canary is made, and the answer is `stale`.
+   */
+  async function checkCanary(account: string): Promise<'ok' | 'stale'> {
+    const key = canaryKey(account);
+    const held: unknown = await withStore(ANCHORS, 'readonly', (s) => s.get(key));
+    if (typeof held === 'string') {
+      try {
+        await seal.openLocal(key, held);
+        return 'ok';
+      } catch {
+        await forget(account);
+        await put(ANCHORS, key, '1');
+        return 'stale';
+      }
+    }
+    await put(ANCHORS, key, '1');
+    return 'ok';
+  }
+  /** The text kept under a key, opened; undefined when nothing is kept, or the keys changed. */
   async function read(store: string, key: string): Promise<string | undefined> {
     const value: unknown = await withStore(store, 'readonly', (s) => s.get(key));
     if (value === undefined) return undefined;
     if (typeof value !== 'string') throw new Error('a kept value is damaged');
-    return seal.openLocal(key, value);
+    const account = accountOf(key);
+    let text: string;
+    try {
+      text = await seal.openLocal(key, value);
+    } catch (error) {
+      // After a rotation on another device nothing opens, and the canary doesn't either: ask again.
+      if (account !== undefined && (await checkCanary(account)) === 'stale') return undefined;
+      throw error;
+    }
+    if (account !== undefined && (await checkCanary(account)) === 'stale') return undefined;
+    return text;
   }
   async function write(store: string, key: string, text: string): Promise<void> {
-    const sealed = await seal.sealLocal(key, text);
-    await withStore(store, 'readwrite', (s) => s.put(sealed, key));
+    const account = accountOf(key);
+    if (account !== undefined) await checkCanary(account);
+    await put(store, key, text);
   }
   const anchors: AnchorStore = {
     async load(account, space) {
@@ -279,6 +340,50 @@ export function indexedDbStores(
   };
   return { anchors, pins, floors, bundles };
 }
+
+/**
+ * Seals again, through `reseal`, every value kept for `account` in `factory`'s database (the canary
+ * too). A value that doesn't open is left as it is. Used by a rotation, while the worker holds both
+ * the old and the new keys.
+ */
+export async function resealIndexedDb(factory: IDBFactory, account: string, reseal: Reseal): Promise<void> {
+  const db = await open(factory);
+  try {
+    for (const name of [ANCHORS, PINS]) {
+      const keys = await request<IDBValidKey[]>(db.transaction(name, 'readonly').objectStore(name).getAllKeys());
+      const values = await request<unknown[]>(db.transaction(name, 'readonly').objectStore(name).getAll());
+      const moved: Array<[string, string]> = [];
+      for (const [i, key] of keys.entries()) {
+        const value = values[i];
+        if (typeof key !== 'string' || accountOf(key) !== account || typeof value !== 'string') continue;
+        try {
+          moved.push([key, await reseal(key, value)]);
+        } catch {
+          // Does not open now: not this account's, or damaged. Left as it is.
+        }
+      }
+      if (moved.length === 0) continue;
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(name, 'readwrite');
+        const objects = tx.objectStore(name);
+        for (const [key, value] of moved) objects.put(value, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error ?? new Error('indexeddb'));
+        tx.onabort = () => reject(tx.error ?? new Error('indexeddb'));
+      });
+    }
+  } finally {
+    db.close();
+  }
+}
+
+registerLocalStore({
+  name: 'space-anchors',
+  async resealAll(account, reseal) {
+    if (typeof indexedDB === 'undefined') return;
+    await resealIndexedDb(indexedDB, account, reseal);
+  },
+});
 
 /** The stores the app uses: IndexedDB where there is one, memory otherwise. */
 export function defaultStores(seal: LocalSeal): {

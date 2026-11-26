@@ -47,9 +47,11 @@ pub const FILES: &[&str] = &[
     "prf-wrap",
     "confirm",
     "item-write",
+    "key-box",
     "send",
     "space-names",
     "space-chain",
+    "rotation",
 ];
 
 /// The version every file carries; bumping a format means a new label, not a new number here.

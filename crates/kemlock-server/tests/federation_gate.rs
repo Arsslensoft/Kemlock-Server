@@ -1065,6 +1065,7 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
                 invited_at: now,
                 accepted_at: Some(now),
                 sealed_space_key: Some(vec![5; 64]),
+                sealed_by: None,
                 key_version: Some(1),
                 confirmation: None,
                 revoked_at: None,
@@ -1080,6 +1081,7 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
                 user: owner_account.id,
                 key_version: 1,
                 sealed: vec![9; 80],
+                sealed_by: None,
             }],
             ..SpaceChanges::new(space)
         },

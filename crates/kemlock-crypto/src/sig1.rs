@@ -36,6 +36,8 @@ pub mod context {
     pub const MANIFEST: &str = "manifest";
     /// A member confirmation, signed by the confirmer.
     pub const CONFIRM: &str = "confirm";
+    /// A space key or collection key box, signed by the member who sealed it.
+    pub const KEY_BOX: &str = "key-box";
     /// A record of a space chain, signed by the member who made it.
     pub const SPACE_CHAIN: &str = "space-chain";
     /// A signed item write, signed by the writing account.

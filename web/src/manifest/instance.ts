@@ -3,20 +3,28 @@ import { createBundlesApi } from '@/api/bundles';
 import { createManifestsApi } from '@/api/manifests';
 import { createSpacesApi } from '@/api/spaces';
 import { api, session } from '@/app/services';
-import { bundlePinStore } from '@/features/spaces/deps';
 import { vaultCrypto } from '@/crypto-port';
+import { checkSpaceChain } from '@/features/spaces/chain';
+import { bundlePinStore, manifestHooks, spaceDeps } from '@/features/spaces/deps';
 import { createBundleHistory } from './bundleHistory';
-import { createManifestKeeper } from './keeper';
-import { createWriteChecker } from './writes';
+import { type ManifestKeeper, createManifestKeeper } from './keeper';
 import { browserRecordStore } from './records';
 import { createSpaceSigner } from './spaceSigner';
+import { createWriteChecker } from './writes';
 
 const accountId = () => session.getState().userId;
 
 const spacesApi = createSpacesApi(api);
-const spaceSigner = createSpaceSigner({ spaces: spacesApi, crypto: vaultCrypto, accountId });
+const spaceSigner = createSpaceSigner({
+  spaces: spacesApi,
+  crypto: vaultCrypto,
+  accountId,
+  // A space with a chain is read from the chain the worker verified, as the space page does.
+  chain: (space, me) => checkSpaceChain(spaceDeps, space, me),
+  trace: { crypto: spaceDeps.crypto, pins: spaceDeps.pins },
+});
 
-export const manifestKeeper = createManifestKeeper({
+export const manifestKeeper: ManifestKeeper = createManifestKeeper({
   api: createManifestsApi(api),
   crypto: vaultCrypto,
   records: browserRecordStore(typeof indexedDB === 'undefined' ? undefined : indexedDB),
@@ -45,3 +53,7 @@ export const writeChecker = createWriteChecker({
   spaceSigner,
   history: bundleHistory,
 });
+
+// The items a key replacement writes into a space are listed in its manifest like any other write.
+manifestHooks.wrote = (items) => manifestKeeper.wrote(items);
+manifestHooks.accepted = (spaceId) => manifestKeeper.acceptedManifest(`space:${spaceId}`);

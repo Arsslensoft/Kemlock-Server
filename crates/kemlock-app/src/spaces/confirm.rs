@@ -10,6 +10,7 @@
 
 use super::authority;
 use super::error::SpacesError;
+use super::key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, check_box};
 use super::ports::{BundleFingerprints, ConfirmationFacts, SpaceChanges, SpaceRepo};
 use super::support::{SealedCollectionKey, key_changes, load_open, record};
 use crate::authenticate::Actor;
@@ -21,12 +22,13 @@ use kemlock_domain::spaces::{
 use kemlock_domain::{SpaceId, UserId};
 
 #[derive(Debug)]
-pub struct ConfirmMember<R, U, F, V, C> {
+pub struct ConfirmMember<R, U, F, V, C, K> {
     pub spaces: R,
     pub users: U,
     pub fingerprints: F,
     pub events: V,
     pub clock: C,
+    pub boxes: K,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,12 +43,14 @@ pub struct ConfirmInput {
     pub signature: Vec<u8>,
     /// The space key, sealed to the member's exchange key.
     pub sealed_space_key: Vec<u8>,
+    /// The confirmer's signature over that box (docs/crypto.md, "Signed key boxes").
+    pub space_key_signature: Vec<u8>,
     /// The key of every collection the member is granted, sealed to them.
     pub collection_keys: Vec<SealedCollectionKey>,
 }
 
-impl<R: SpaceRepo, U: UserRepo, F: BundleFingerprints, V: EventLog, C: Clock>
-    ConfirmMember<R, U, F, V, C>
+impl<R: SpaceRepo, U: UserRepo, F: BundleFingerprints, V: EventLog, C: Clock, K: KeyBoxVerifier>
+    ConfirmMember<R, U, F, V, C, K>
 {
     /// Confirms an accepted member, or a confirmed one again: that replaces the stored confirmation
     /// and seals the keys anew, for a member whose confirmer left or lost their role, whom nobody
@@ -116,11 +120,33 @@ impl<R: SpaceRepo, U: UserRepo, F: BundleFingerprints, V: EventLog, C: Clock>
             ..KeyDelta::default()
         };
         let now = self.clock.now();
-        let keys = key_changes(&state, &delta, input.collection_keys, now)?;
+        let space_key_by = check_box(
+            &self.boxes,
+            KeyBoxFacts {
+                space,
+                key: KeyBoxKey::Space,
+                key_version: state.space.key_version,
+                recipient: member,
+                sealed_box: &input.sealed_space_key,
+                sealer: actor.user,
+            },
+            &input.space_key_signature,
+        )
+        .await?;
+        let keys = key_changes(
+            &state,
+            &delta,
+            input.collection_keys,
+            now,
+            &self.boxes,
+            actor.user,
+        )
+        .await?;
 
         let mut confirmed = target.clone();
         confirmed.state = MemberState::Confirmed;
         confirmed.sealed_space_key = Some(input.sealed_space_key);
+        confirmed.sealed_by = Some(space_key_by);
         confirmed.key_version = Some(state.space.key_version);
         confirmed.confirmation = Some(Confirmation {
             by: actor.user,

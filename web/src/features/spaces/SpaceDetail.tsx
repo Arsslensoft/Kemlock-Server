@@ -1,30 +1,54 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { createInviteLinkApi } from '@/api/inviteLink';
+// The manifest keeper plugs into the space deps here: what a key replacement writes is listed in
+// the space's signed manifest.
+import '@/manifest/instance';
 import type { MemberViewDto, OffboardedDto } from '@/api/spaces';
+import { api as http } from '@/app/services';
 import { decodeB64 } from '@/lib/b64url';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
 import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
+import { signedInAccount } from './boxes';
+import { resealKeys } from './reseal';
 import { spaceDeps } from './deps';
 import { acceptFirstContact } from './chain';
 import { refreshSpaces } from './refresh';
 import {
   type SpaceDetail as Detail,
+  ChainConflict,
+  ChainRefused,
+  ReplaceBlocked,
+  SpaceNotChecked,
+  changeRole,
   confirmMember,
   createCollection,
   createGroup,
+  deleteCollection,
+  deleteGroup,
   grantAccess,
   inviteMember,
-  SpaceNotChecked,
   loadSpaceDetail,
+  offboardMember,
   pinMember,
+  type ReplaceProgress,
+  type Replaced,
+  type Resealed,
+  itemsToReseal,
   renameCollection,
+  replaceKeys,
+  resealItems,
+  revokeGrant,
+  sealPending,
   setGroupMembers,
 } from './model';
 import { type ConfirmState, SpaceDetailView } from './SpaceDetailView';
 import { MemberNotVerified } from './verify';
+
+const inviteLinks = createInviteLinkApi(http);
 
 /** A member whose keys weren't sealed to gets words of their own; everything else the account screens'. */
 function describeSpaceError(error: unknown): Described {
@@ -37,6 +61,17 @@ function describeSpaceError(error: unknown): Described {
   if (error instanceof SpaceNotChecked) {
     return { id: error.kind === 'verified' ? 'space.error.chained' : 'space.error.unchecked' };
   }
+  if (error instanceof ChainRefused) {
+    return { id: 'space.error.chainRefused', values: { reason: error.reason } };
+  }
+  if (error instanceof ChainConflict) return { id: 'space.error.chainConflict' };
+  if (error instanceof ReplaceBlocked) {
+    return error.reason === 'too-large'
+      ? { id: 'space.error.replaceTooLarge' }
+      : error.reason === 'no-manifest'
+        ? { id: 'space.error.replaceNoManifest' }
+        : { id: 'space.error.replaceUnreadable', values: { count: error.count } };
+  }
   return describeAccountError(error);
 }
 
@@ -48,9 +83,48 @@ export default function SpaceDetail() {
   const query = useQuery({ queryKey: key, queryFn: () => loadSpaceDetail(spaceDeps, spaceId) });
   const { run, pending, error } = useRun(describeSpaceError);
   const [confirming, setConfirming] = useState<ConfirmState | null>(null);
+  const [replacing, setReplacing] = useState<ReplaceProgress | null>(null);
+  const [replaced, setReplaced] = useState<Replaced | null>(null);
+  const [toReseal, setToReseal] = useState(0);
+  const [resealed, setResealed] = useState<Resealed | null>(null);
   const [offboarded, setOffboarded] = useState<{ name: string; outcome: OffboardedDto } | null>(null);
   const detail: Detail | undefined = query.data;
   const { api } = spaceDeps;
+
+  // Items left under an old key version (a replacement that stopped halfway, or held items), found
+  // from the server's sync, so it is the same after a reload or on another device.
+  async function recount(current: Detail | undefined): Promise<void> {
+    try {
+      setToReseal(current ? (await itemsToReseal(spaceDeps, current)).length : 0);
+    } catch {
+      // Not read now: the next load tries again.
+    }
+  }
+  useEffect(() => {
+    let live = true;
+    if (detail?.trust?.kind !== 'verified' || !detail.readable) return undefined;
+    void itemsToReseal(spaceDeps, detail)
+      .then((items) => (live ? setToReseal(items.length) : undefined))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [detail]);
+
+  // A member who is awaiting a key this account holds is sealed it now ("Using the state",
+  // "Sealing"): once for each state of the chain this browser has loaded, and only by a member
+  // who holds keys, so a reader of a space is never asked anything.
+  const sealedAt = useRef('');
+  useEffect(() => {
+    if (!detail || detail.trust?.kind !== 'verified' || !detail.readable) return;
+    const head = detail.trust.view.head;
+    const at = `${spaceId}:${head?.seq ?? ''}:${head?.link ?? ''}`;
+    if (sealedAt.current === at) return;
+    sealedAt.current = at;
+    void sealPending(spaceDeps, detail)
+      .then((sealed) => (sealed ? refreshSpaces(queryClient) : undefined))
+      .catch(() => undefined);
+  }, [detail, spaceId, queryClient]);
 
   /**
    * Runs a change, then reads the space again. A member the browser wouldn't seal to is asked to
@@ -108,17 +182,49 @@ export default function SpaceDetail() {
       busy={pending}
       error={error}
       offboarded={offboarded}
+      replacing={replacing}
+      replaced={replaced}
+      toReseal={toReseal}
+      resealed={resealed}
       cryptoAvailable={spaceDeps.crypto.available}
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
-        invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input)),
+        invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input, detail)),
         acceptFirstContact: () => {
           if (!detail) return;
-          void change(() => acceptFirstContact(spaceDeps, spaceId, detail.view.me.user));
+          void change(() => acceptFirstContact(spaceDeps, spaceId, signedInAccount(spaceDeps, detail.view.me.user)));
+        },
+        replaceKeys: () => {
+          if (!detail) return;
+          setReplaced(null);
+          setReplacing({ phase: 'reading', done: 0, total: 0 });
+          void change(() => replaceKeys(spaceDeps, detail, setReplacing))
+            .then((result) => {
+              if (result) setReplaced(result);
+            })
+            .finally(() => {
+              setReplacing(null);
+              // A failure partway leaves items to seal again: show them.
+              void recount(detail);
+            });
+        },
+        resealItems: () => {
+          if (!detail) return;
+          setResealed(null);
+          setReplacing({ phase: 'reading', done: 0, total: 0 });
+          void change(() => resealItems(spaceDeps, detail, setReplacing))
+            .then((result) => {
+              if (result) setResealed(result);
+            })
+            .finally(() => {
+              setReplacing(null);
+              void recount(detail);
+            });
         },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
         startPin: (member) => void startConfirm(member, 'pin'),
+        reseal: async () => !!detail && (await worked(() => resealKeys(spaceDeps, detail))),
         cancelConfirm: () => setConfirming(null),
         confirm: () => {
           const current = confirming;
@@ -127,40 +233,51 @@ export default function SpaceDetail() {
           const fingerprint = current.fingerprint;
           const act = (): Promise<unknown> =>
             current.mode === 'pin'
-              ? pinMember(spaceDeps, detail.view.me.user, member, fingerprint).then(() => true)
+              ? pinMember(spaceDeps, signedInAccount(spaceDeps, detail.view.me.user), member, fingerprint).then(() => true)
               : confirmMember(spaceDeps, detail, member, fingerprint);
           void change(act).then((done) => {
             if (done) setConfirming(null);
           });
         },
-        changeRole: (user, role, custom) => worked(() => api.changeRole(spaceId, user, role, custom)),
+        changeRole: async (user, role, custom) =>
+          !!detail && (await worked(() => changeRole(spaceDeps, detail, user, role, custom))),
         revoke: (user) =>
-          change(() => api.revoke(spaceId, user)).then((outcome) => {
-            if (outcome) setOffboarded({ name: nameOf(user), outcome });
-            return outcome !== undefined;
-          }),
+          detail
+            ? change(() => offboardMember(spaceDeps, detail, user, 'revoke')).then((outcome) => {
+                if (outcome) setOffboarded({ name: nameOf(user), outcome });
+                return outcome !== undefined;
+              })
+            : Promise.resolve(false),
         restore: (user) => void change(() => api.restore(spaceId, user)),
+        // The link of an invitation to a Bitwarden organization; the server refuses any other space.
+        inviteLink: async (user) => (await inviteLinks.get(spaceId, user)).link,
         remove: (user) =>
-          change(() => api.remove(spaceId, user)).then((outcome) => {
-            if (outcome) setOffboarded({ name: nameOf(user), outcome });
-            return outcome !== undefined;
-          }),
+          detail
+            ? change(() => offboardMember(spaceDeps, detail, user, 'remove')).then((outcome) => {
+                if (outcome) setOffboarded({ name: nameOf(user), outcome });
+                return outcome !== undefined;
+              })
+            : Promise.resolve(false),
         createCollection: async (name, parent) =>
           !!detail && (await worked(() => createCollection(spaceDeps, detail, parent ? { name, parent } : { name }))),
         renameCollection: async (id, name) =>
           !!detail && (await worked(() => renameCollection(spaceDeps, detail, id, name))),
-        deleteCollection: (id) => worked(() => api.deleteCollection(spaceId, id).then(() => true)),
+        deleteCollection: async (id) =>
+          !!detail && (await worked(() => deleteCollection(spaceDeps, detail, id))),
         createGroup: async (name, members) =>
           !!detail && (await worked(() => createGroup(spaceDeps, detail, { name, members }))),
         setGroupMembers: async (id, members) =>
           !!detail && (await worked(() => setGroupMembers(spaceDeps, detail, id, members))),
-        deleteGroup: (id) => worked(() => api.deleteGroup(spaceId, id).then(() => true)),
+        deleteGroup: async (id) =>
+          !!detail && (await worked(() => deleteGroup(spaceDeps, detail, id))),
         grant: (collection, grantee, permission) => {
           if (!detail) return;
           void change(() => grantAccess(spaceDeps, detail, { collection, grantee, permission }));
         },
-        revokeGrant: (collection, grantee) =>
-          void change(() => api.revokeGrant(spaceId, collection, grantee).then(() => true)),
+        revokeGrant: (collection, grantee) => {
+          if (!detail) return;
+          void change(() => revokeGrant(spaceDeps, detail, collection, grantee));
+        },
       }}
     />
   );

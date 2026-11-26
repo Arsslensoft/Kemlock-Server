@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::begin_locked;
 use crate::store::SqlStore;
 use crate::tables::sends::{self, untouched};
 use kemlock_app::ports::StoreError;
@@ -11,7 +12,7 @@ use kemlock_domain::UserId;
 use kemlock_domain::sends::{SendId, SendRecord};
 use sea_orm::ActiveValue::Set;
 use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 use time::OffsetDateTime;
 
@@ -21,10 +22,13 @@ const VIEW_RETRIES: u32 = 8;
 
 impl SendRepo for SqlStore {
     async fn add_send(&self, send: &SendRecord) -> Result<(), StoreError> {
+        // A Send's sealed key is a wrap of the owner's root key: written under the owner's lock.
+        let txn = begin_locked(self, send.owner).await?;
         sends::Entity::insert(sends::active(send)?)
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
+        txn.commit().await.store()?;
         Ok(())
     }
 
@@ -35,7 +39,7 @@ impl SendRepo for SqlStore {
         quota: Option<u64>,
     ) -> Result<Result<(), QuotaRefusal>, StoreError> {
         let _gate = self.quota_gate().await;
-        let txn = self.writer().begin().await.store()?;
+        let txn = begin_locked(self, send.owner).await?;
         let outcome = async {
             if let (Some(_), Some(file)) = (quota, send.file) {
                 let owned = sends::Entity::find()

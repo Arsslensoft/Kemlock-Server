@@ -35,7 +35,11 @@ use kemlock_crypto::{
 };
 use zeroize::Zeroizing;
 
-use crate::{error::Error, spaces::SpaceKeys};
+use crate::{
+    error::Error,
+    rotation::{Pending, Previous},
+    spaces::SpaceKeys,
+};
 
 /// The key version of a new account.
 pub(crate) const FIRST_KEY_VERSION: u32 = 1;
@@ -68,7 +72,7 @@ pub(crate) struct Unlocked {
     /// WebAssembly memory except inside such a box.
     pub(crate) root: RootKey,
     /// The user key's `"kemlock/v1/item-wrap"` child: wraps and unwraps item keys.
-    item_wrap: SecretKey,
+    pub(crate) item_wrap: SecretKey,
     /// The `kx1` and `sig1` private keys, when the caller handed over the sealed blob.
     pub(crate) private: Option<(kx1::PrivateKey, sig1::SigningKey)>,
     /// The space and collection keys opened or made in this unlock.
@@ -111,7 +115,11 @@ pub(crate) struct SealedItemRef<'a> {
 pub(crate) struct Session {
     next: u32,
     slots: HashMap<u32, Slot>,
-    unlocked: Option<Unlocked>,
+    pub(crate) unlocked: Option<Unlocked>,
+    /// A rotation of the root key that was started and not yet committed (`rotation.rs`).
+    pub(crate) pending: Option<Pending>,
+    /// The private keys before the last rotation (`rotation.rs`).
+    pub(crate) previous: Option<Previous>,
 }
 
 impl fmt::Debug for Session {
@@ -129,6 +137,8 @@ impl Session {
             next: 1,
             slots: HashMap::new(),
             unlocked: None,
+            pending: None,
+            previous: None,
         }
     }
 
@@ -147,14 +157,14 @@ impl Session {
         self.insert(Slot::Export(Zeroizing::new(key)))
     }
 
-    fn master(&self, handle: u32) -> Result<Zeroizing<[u8; 32]>, Error> {
+    pub(crate) fn master(&self, handle: u32) -> Result<Zeroizing<[u8; 32]>, Error> {
         match self.slots.get(&handle) {
             Some(Slot::Master(key)) => Ok(Zeroizing::new(**key)),
             _ => Err(Error::Invalid),
         }
     }
 
-    fn export(&self, handle: u32) -> Result<Zeroizing<[u8; 64]>, Error> {
+    pub(crate) fn export(&self, handle: u32) -> Result<Zeroizing<[u8; 64]>, Error> {
         match self.slots.get(&handle) {
             Some(Slot::Export(key)) => Ok(Zeroizing::new(**key)),
             _ => Err(Error::Invalid),
@@ -199,6 +209,8 @@ impl Session {
         // counter is not reset, so a handle from before the lock can never name a new secret.
         self.slots.clear();
         self.unlocked = None;
+        self.pending = None;
+        self.previous = None;
     }
 
     /// The master key: `Argon2id(password, salt, m, t, p, L = 32)`. The password is the UTF-8 of

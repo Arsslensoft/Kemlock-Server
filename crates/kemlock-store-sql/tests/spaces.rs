@@ -10,7 +10,7 @@ use kemlock_app::spaces::{
     AcceptInvitation, BundleFingerprints, CollectionRekey, ConfirmInput, ConfirmMember,
     ConfirmationFacts, CreateSpace, CreateSpaceInput, GetSpace, InviteInput, InviteMember,
     KeyReplacement, NewCollection, OWNER_REQUIRED, Offboard, PutSpaceItem, ReplaceKeys,
-    ReplacementInput, SealedCollectionKey, SpaceChanges, SpaceRepo, SyncOwners,
+    ReplacementInput, SealedCollectionKey, SealedSpaceKey, SpaceChanges, SpaceRepo, SyncOwners,
 };
 use kemlock_app::{Actor, AuthConfig};
 use kemlock_domain::spaces::{
@@ -63,6 +63,20 @@ impl BundleFingerprints for FirstBytes {
     }
 }
 
+/// Any key box signature of the right length: these tests are of the store, not of `sig1`.
+#[derive(Clone, Copy)]
+struct AnySignature;
+
+impl kemlock_app::spaces::KeyBoxVerifier for AnySignature {
+    async fn verify(
+        &self,
+        _facts: &kemlock_app::spaces::KeyBoxFacts<'_>,
+        _signature: &[u8],
+    ) -> Result<u32, kemlock_app::spaces::SpacesError> {
+        Ok(1)
+    }
+}
+
 fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
     key[0] = 1;
@@ -107,6 +121,7 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
         spaces: store.clone(),
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner),
@@ -114,10 +129,12 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
             id: space,
             name: name(1),
             sealed_space_key: sealed_key(2),
+            space_key_signature: vec![0x55; 3373],
             collection: NewCollection {
                 id: collection,
                 name: name(3),
                 sealed_key: sealed_key(4),
+                key_signature: vec![0x55; 3373],
             },
         },
     )
@@ -166,6 +183,7 @@ async fn join(
         fingerprints: FirstBytes,
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner.id),
@@ -176,10 +194,12 @@ async fn join(
             statement: b"compared".to_vec(),
             signature: vec![0x55; 3373],
             sealed_space_key: sealed_key(5),
+            space_key_signature: vec![0x55; 3373],
             collection_keys: vec![SealedCollectionKey {
                 collection,
                 user: member.id,
                 sealed: sealed_key(6),
+                signature: vec![0x55; 3373],
             }],
         },
     )
@@ -480,6 +500,7 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
+        boxes: AnySignature,
     }
     .execute(
         &actor(sam.id),
@@ -487,7 +508,11 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
         ReplacementInput {
             space_key_version: 2,
             space_name: Some(name(40)),
-            sealed_space_keys: vec![(sam.id, sealed_key(20))],
+            sealed_space_keys: vec![SealedSpaceKey {
+                user: sam.id,
+                sealed: sealed_key(20),
+                signature: vec![0x55; 3373],
+            }],
             collection_names: vec![(everyone, name(41))],
             group_names: Vec::new(),
             collections: vec![CollectionRekey {
@@ -497,6 +522,7 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
                     collection: everyone,
                     user: sam.id,
                     sealed: sealed_key(21),
+                    signature: vec![0x55; 3373],
                 }],
             }],
             writes: vec![(everyone, write(space, id, Some(1), 2, 2))],
@@ -1119,4 +1145,142 @@ async fn two_owners_removing_each_other_together_leave_one_of_them() {
         .filter(|m| m.role == SpaceRole::Owner && m.state == MemberState::Confirmed)
         .count();
     assert_eq!(owners, 1);
+}
+
+#[tokio::test]
+async fn a_rotation_counts_only_accepted_and_confirmed_memberships() {
+    use kemlock_app::rotation::RotationStore;
+    let store = memory().await;
+    let owner = person(&store, 1, "owner-rot@example.org").await;
+    let guest = person(&store, 2, "guest-rot@example.org").await;
+    let (space, collection) = make_space(&store, owner.id).await;
+    let spaces_of = |user: UserId| {
+        let store = store.clone();
+        async move {
+            RotationStore::holdings(&store, user)
+                .await
+                .expect("holdings")
+                .spaces
+        }
+    };
+    assert_eq!(spaces_of(owner.id).await, 1);
+
+    // Invited and not accepted: no membership, so a rotation need not move any space's keys.
+    InviteMember {
+        spaces: store.clone(),
+        users: store.clone(),
+        events: store.clone(),
+        clock: FixedClock,
+    }
+    .execute(
+        &actor(owner.id),
+        space,
+        InviteInput {
+            email: guest.email.clone(),
+            role: SpaceRole::Member,
+            custom: CustomPermissions::NONE,
+            grants: vec![(collection, CollectionPermission::Edit)],
+        },
+    )
+    .await
+    .expect("invited");
+    assert_eq!(spaces_of(guest.id).await, 0);
+
+    // Accepted: a member now.
+    AcceptInvitation {
+        spaces: store.clone(),
+        events: store.clone(),
+        clock: FixedClock,
+    }
+    .execute(&actor(guest.id), space)
+    .await
+    .expect("accepted");
+    assert_eq!(spaces_of(guest.id).await, 1);
+}
+
+#[tokio::test]
+async fn a_rotation_keeps_the_old_keys_for_an_account_in_a_space_and_waits_for_them_to_be_used() {
+    use kemlock_app::rotation::{
+        Install, InstallRequest, RotationError, RotationStore as Rotations,
+    };
+    let store = memory().await;
+    let owner = person(&store, 1, "owner-keys@example.org").await;
+    make_space(&store, owner.id).await;
+    let account = UserRepo::by_id(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("account");
+    let request = |from: u32| InstallRequest {
+        rotation: [7; 16],
+        from_version: from,
+        to_version: from + 1,
+        public_bundle: vec![8; 3621],
+        bundle_signature: vec![9; 3373],
+        sealed_private_keys: vec![10; 189],
+        sealed_previous_private_keys: vec![11; 189],
+        wrapped_root_key: Some(vec![12; 92]),
+        kit: None,
+        drop_kit: false,
+        device_copy: None,
+        passkeys: Vec::new(),
+        drop_passkeys: Vec::new(),
+        emergency: Vec::new(),
+        drop_emergency: Vec::new(),
+        recovery: Vec::new(),
+        drop_recovery: Vec::new(),
+        sends: Vec::new(),
+        spaces_handled: true,
+    };
+    let install = |before: &kemlock_domain::User, request: InstallRequest| {
+        let mut after = before.clone();
+        after.key_version = request.to_version;
+        after.security_stamp = uuid::Uuid::new_v4();
+        after.updated_at = datetime!(2026-12-02 10:00:00 UTC);
+        Install {
+            request,
+            before: before.clone(),
+            after,
+            device: DeviceId::random(),
+            now: datetime!(2026-12-02 10:00:00 UTC),
+            staged_since: datetime!(2026-12-02 08:00:00 UTC),
+        }
+    };
+
+    Rotations::install(&store, install(&account, request(1)))
+        .await
+        .expect("the first rotation");
+    let kept = Rotations::previous_keys(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("the old keys are kept for the space's rekey");
+    assert_eq!((kept.key_version, kept.sealed), (1, vec![11; 189]));
+
+    // A second rotation would replace them before the space has moved: refused, nothing written.
+    let after = UserRepo::by_id(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("account");
+    let second = Rotations::install(&store, install(&after, request(2))).await;
+    assert_eq!(second, Err(RotationError::SpacesPending));
+    assert_eq!(
+        UserRepo::by_id(&store, owner.id)
+            .await
+            .expect("read")
+            .expect("account")
+            .key_version,
+        2
+    );
+
+    // Once the space has moved, the keys are dropped and the next rotation goes through.
+    assert_eq!(
+        Rotations::clear_previous_keys(&store, owner.id).await,
+        Ok(true)
+    );
+    let after = UserRepo::by_id(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("account");
+    Rotations::install(&store, install(&after, request(2)))
+        .await
+        .expect("the second rotation");
 }

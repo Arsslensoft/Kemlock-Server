@@ -19,8 +19,16 @@ const ORG_NAME: &str = "Evil organization";
 struct Mailbox(Mutex<Vec<Notice>>);
 
 impl Mailbox {
+    /// What was mailed, leaving out the new-device notices of the sign-ins: they are not what
+    /// these tests are about.
     fn notices(&self) -> Vec<Notice> {
-        self.0.lock().expect("lock").clone()
+        self.0
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|n| !matches!(n, Notice::NewDevice(_)))
+            .cloned()
+            .collect()
     }
 }
 

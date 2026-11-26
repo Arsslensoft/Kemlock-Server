@@ -316,6 +316,28 @@ where
     )?;
     let (files_router, files) =
         files::wire(&api, &store, blobs, &blob_settings, federated.fetcher())?;
+    // The Bitwarden API, and the invitation links it gives the Kemlock API and the admin console
+    // (a space page and the console copy the link of an invitation a server can't mail).
+    let (bitwarden_router, invite_links) = kemlock_api_bw::mount_live_linked(
+        store.clone(),
+        &server_key,
+        &config.domain,
+        &config.data_folder,
+        files.bitwarden_blobs(),
+        api.live.clone(),
+        Some(relying_party.clone() as Arc<dyn WebAuthn>),
+        two_step.bitwarden(),
+        // The Bitwarden API's account deletion is the web vault's: the same erasure.
+        kemlock_api_bw::BwLive {
+            erasure: Some(Arc::new(own_erasure)),
+            ..notifications.bw_live.clone()
+        },
+        // Bitwarden Sends live in the database, not in memory.
+        Some(Arc::new(crate::bw_sends::SqlSends::new(store.clone())) as Arc<dyn SendStore>),
+        // Read through the server's own lookup, as the settings are (see Config).
+        &|name| config.bitwarden_env.get(name).cloned(),
+    )
+    .map_err(RunError::Config)?;
     let router = Router::new()
         .merge(health::router(HealthState {
             store: store.clone(),
@@ -330,28 +352,7 @@ where
             store.clone(),
         ))
         .merge(notifications.bitwarden)
-        .merge(
-            kemlock_api_bw::mount_live(
-                store.clone(),
-                &server_key,
-                &config.domain,
-                &config.data_folder,
-                files.bitwarden_blobs(),
-                api.live.clone(),
-                Some(relying_party.clone() as Arc<dyn WebAuthn>),
-                two_step.bitwarden(),
-                // The Bitwarden API's account deletion is the web vault's: the same erasure.
-                kemlock_api_bw::BwLive {
-                    erasure: Some(Arc::new(own_erasure)),
-                    ..notifications.bw_live.clone()
-                },
-                // Bitwarden Sends live in the database, not in memory.
-                Some(Arc::new(crate::bw_sends::SqlSends::new(store.clone())) as Arc<dyn SendStore>),
-                // Read through the server's own lookup, as the settings are (see Config).
-                &|name| config.bitwarden_env.get(name).cloned(),
-            )
-            .map_err(RunError::Config)?,
-        );
+        .merge(bitwarden_router);
     // The web vault takes the GET addresses the API and the health routes don't.
     #[cfg(feature = "web")]
     let router = router.merge(crate::web::router());
@@ -370,6 +371,8 @@ where
             api.clone(),
             store.clone(),
         ))
+        // The invitation link of a Bitwarden organization, for its owners and admins.
+        .merge(kemlock_api_kem::invite_link_router(api.clone()))
         .merge(kemlock_api_kem::sso_router(api.clone(), sso_runtime))
         .merge(kemlock_api_kem::passkeys_router(
             api.clone(),
@@ -387,6 +390,7 @@ where
         .merge(account_routes)
         // The profile: name, master password and sign-in address.
         .merge(kemlock_api_kem::profile_router(api.clone(), store.clone()))
+        .merge(kemlock_api_kem::rotation_router(api.clone(), store.clone()))
         // /.well-known/security.txt, from the admin settings.
         .merge(crate::security_txt::router(
             kemlock_app::admin::Settings {
@@ -443,6 +447,13 @@ where
             client_addr::ClientAddrSettings::from_config(config),
             client_addr::settle_client_address,
         ));
+    // What the Kemlock API and the admin console read of the Bitwarden API: the link that accepts
+    // an invitation. A server with the Bitwarden API off has none, and they answer as for a space
+    // that isn't an organization.
+    let router = match invite_links {
+        Some(links) => router.layer(axum::Extension(links)),
+        None => router,
+    };
     Ok(Built {
         api,
         store,

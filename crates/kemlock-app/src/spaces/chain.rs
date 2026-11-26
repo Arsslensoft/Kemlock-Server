@@ -15,7 +15,7 @@ use kemlock_domain::spaces::{
     CollectionId, CollectionPermission, CustomPermissions, Grantee, MemberState, SpaceError,
     SpaceRole, SpaceState,
 };
-use kemlock_domain::{ItemId, SpaceId, UserId};
+use kemlock_domain::{ItemDraft, ItemId, SpaceId, UserId};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -223,6 +223,9 @@ pub struct ChainAppend {
     pub creating: bool,
     /// Live items a `keys` record leaves held (I3): kept, but not served as live.
     pub held: Vec<ItemId>,
+    /// The items a `keys` record's request re-writes under the new collection key, each with its
+    /// collection: stored in the same transaction as the records, as a key replacement's are.
+    pub writes: Vec<(ItemDraft, CollectionId)>,
     /// The queued outside change these records answer: marked done in the same transaction.
     pub answers: Option<Uuid>,
     /// The verified state the records lead to, which is the state at the new head. A store may

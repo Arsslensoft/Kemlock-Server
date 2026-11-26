@@ -9,8 +9,8 @@ use kemlock_crypto::sig1;
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
-    CustomPermissions, Grantee, Group, GroupId, KeyCopy, Member, MemberState, Space, SpaceRole,
-    SpaceState,
+    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState,
+    Space, SpaceRole, SpaceState,
 };
 use kemlock_domain::{
     ItemDraft, ItemFormat, ItemId, ItemKind, Owner, Revision, ServerId, SpaceId, UserId,
@@ -103,6 +103,11 @@ pub fn space_member(space: SpaceId, role: SpaceRole) -> Member {
         invited_at: space_time(1),
         accepted_at: Some(space_time(2)),
         sealed_space_key: Some(vec![5; 64]),
+        sealed_by: Some(KeyBoxSignature {
+            by: UserId::random(),
+            key_version: 1,
+            signature: vec![11; 3373],
+        }),
         key_version: Some(1),
         confirmation: Some(Confirmation {
             by: UserId::random(),
@@ -162,12 +167,18 @@ pub fn space_snapshot(space: SpaceId) -> SpaceSnapshot {
             user: owner.user,
             key_version: 1,
             sealed: vec![9; 80],
+            sealed_by: Some(KeyBoxSignature {
+                by: owner.user,
+                key_version: 2,
+                signature: vec![12; 3373],
+            }),
         },
         KeyCopy {
             collection: child.id,
             user: owner.user,
             key_version: 2,
             sealed: vec![10; 80],
+            sealed_by: None,
         },
     ];
     SpaceSnapshot {

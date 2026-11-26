@@ -219,3 +219,68 @@ async fn an_id_taken_by_another_account_answers_the_same_whatever_revision_is_gu
     }
     assert_eq!(world.store.item(id).map(|i| i.revision), Some(Revision(3)));
 }
+
+/// Moves the account to key version 2, as a rotation of its root key does.
+async fn rotate(world: &World, user: kemlock_domain::UserId) {
+    use kemlock_app::ports::UserRepo;
+    let mut account = world.store.user(user).expect("the account");
+    account.key_version = 2;
+    UserRepo::update(&world.store, &account)
+        .await
+        .expect("the account is updated");
+}
+
+#[tokio::test]
+async fn a_sealed_write_must_name_the_accounts_current_key_version() {
+    let world = World::new().with_signups();
+    let user = make_user(&world, "sam@example.org").await;
+    let who = actor(user);
+    let id = ItemId::random();
+    world
+        .put_item()
+        .execute(&who, write(user, id, None, 1))
+        .await
+        .expect("at key version 1 the account's version is 1");
+
+    rotate(&world, user).await;
+    // A device that did not learn of the rotation still seals at version 1: refused, and the
+    // stored item stays as it was.
+    let stale = world
+        .put_item()
+        .execute(&who, write(user, id, Some(1), 2))
+        .await;
+    assert!(matches!(stale, Err(AppError::Invalid(_))), "{stale:?}");
+    assert_eq!(
+        world.store.item(id).map(|item| item.revision),
+        Some(Revision(1))
+    );
+
+    let current = kemlock_domain::ItemWrite {
+        key_version: 2,
+        ..write(user, id, Some(1), 2)
+    };
+    world
+        .put_item()
+        .execute(&who, current)
+        .await
+        .expect("at the current version");
+}
+
+#[tokio::test]
+async fn a_deletion_names_no_key_version_and_is_not_refused_for_it() {
+    let world = World::new().with_signups();
+    let user = make_user(&world, "sam@example.org").await;
+    let who = actor(user);
+    let id = ItemId::random();
+    world
+        .put_item()
+        .execute(&who, write(user, id, None, 1))
+        .await
+        .expect("create");
+    rotate(&world, user).await;
+    world
+        .put_item()
+        .execute(&who, delete(user, id, 1, 2))
+        .await
+        .expect("a tombstone from a device that missed the rotation");
+}

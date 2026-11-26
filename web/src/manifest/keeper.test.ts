@@ -364,7 +364,7 @@ describe('a space’s manifest', () => {
     ]);
   });
 
-  it('is checked for a space whose items the server withheld altogether, from the account's space list', async () => {
+  it("is checked for a space whose items the server withheld altogether, from the account's space list", async () => {
     const run = setup({ spaceSigner: async () => utf8(MEMBER), spaces: async () => [SPACE_ID] });
     run.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [await listed(A, 2, 'one')] }, MEMBER));
     await run.sync([]);
@@ -703,5 +703,69 @@ describe('signing the next manifest after this browser writes', () => {
     run.keeper.reset();
     await run.keeper.flush();
     expect(run.api.put).not.toHaveBeenCalled();
+  });
+});
+
+describe('the last manifest that is good', () => {
+  it('is the one the server serves when it verifies', async () => {
+    const run = setup({ spaceSigner: async () => utf8(MEMBER) });
+    const manifest = { owner: SPACE, counter: 4, entries: [await listed(A, 2)] };
+    run.stored.set(SPACE, served(manifest, MEMBER));
+    expect(await run.keeper.acceptedManifest(SPACE)).toEqual(manifest);
+  });
+
+  it('is none when the server serves none, a forged one or a lower counter than this browser has seen', async () => {
+    const run = setup({ spaceSigner: async () => utf8(MEMBER) });
+    expect(await run.keeper.acceptedManifest(SPACE)).toBeNull();
+    run.stored.set(SPACE, served({ owner: SPACE, counter: 4, entries: [] }, MEMBER, true));
+    expect(await run.keeper.acceptedManifest(SPACE)).toBeNull();
+    run.stored.set(SPACE, served({ owner: SPACE, counter: 4, entries: [] }, MEMBER));
+    expect(await run.keeper.acceptedManifest(SPACE)).not.toBeNull();
+    // Seen at 4, now served at 3: rolled back.
+    await run.records.put(`${ACCOUNT}|${SPACE}`, {
+      manifest: encodeB64(encodeManifest({ owner: SPACE, counter: 4, entries: [] })),
+      counter: 4,
+      deleted: {},
+    });
+    run.stored.set(SPACE, served({ owner: SPACE, counter: 3, entries: [] }, MEMBER));
+    expect(await run.keeper.acceptedManifest(SPACE)).toBeNull();
+  });
+
+  it('is none for a signer the space does not vouch for', async () => {
+    const run = setup({ spaceSigner: async () => null });
+    run.stored.set(SPACE, served({ owner: SPACE, counter: 4, entries: [] }, MEMBER));
+    expect(await run.keeper.acceptedManifest(SPACE)).toBeNull();
+  });
+});
+
+describe('after the account rotated its keys', () => {
+  it('signs the next manifest with the new key, listing the re-encrypted items, and the check then passes', async () => {
+    const run = setup();
+    // The manifest the server holds was signed by the key the account had before the rotation: this
+    // browser accepted it then, but the new key does not verify it.
+    const old = { owner: OWN, counter: 3, entries: [await listed(A, 1, 'old-a'), await listed(B, 3, 'old-b')] };
+    run.stored.set(OWN, served(old, 'the-old-key'));
+    await run.records.put(`${ACCOUNT}|${OWN}`, {
+      manifest: encodeB64(encodeManifest(old)),
+      counter: 3,
+      deleted: {},
+    });
+
+    // The rotation re-encrypted both items at the next revision; the page tells the keeper.
+    const moved = [item(A, 2, 'new-a'), item(B, 4, 'new-b')];
+    await run.keeper.wrote(moved);
+    await run.keeper.flush();
+
+    expect(run.api.put).toHaveBeenCalledTimes(1);
+    const { manifest } = putBody(run.api);
+    expect(manifest?.counter).toBe(4);
+    expect(manifest?.entries).toEqual([
+      { id: A, revision: 2, hash: await hash('new-a'), deleted: false },
+      { id: B, revision: 4, hash: await hash('new-b'), deleted: false },
+    ]);
+
+    // The next sync serves the re-encrypted items, and the manifest the new key signed matches.
+    await run.sync(moved);
+    expect(run.keeper.getWarning()).toEqual(NO_WARNING);
   });
 });

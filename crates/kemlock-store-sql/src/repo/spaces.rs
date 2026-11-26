@@ -511,7 +511,7 @@ async fn group_ids<C: ConnectionTrait>(db: &C, space: Uuid) -> Result<Vec<Uuid>,
 }
 
 /// Records that `item` is in `collection`, replacing an earlier record.
-async fn link_item(
+pub(super) async fn link_item(
     txn: &DatabaseTransaction,
     item: ItemId,
     space: SpaceId,

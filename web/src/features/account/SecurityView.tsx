@@ -15,6 +15,7 @@ import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
 import { SignedWritesCard, type SignedWritesProps } from './SignedWritesCard';
 import { RecoveryKitCard, type RecoveryKitProps } from './RecoveryKitCard';
+import { RotateKeysCard, type RotateKeysProps } from './RotateKeysCard';
 import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
 import { ProofInput, proofBlank, proofValue } from './ProofInput';
 import type { Described } from './errors';
@@ -46,6 +47,8 @@ export interface SecurityViewProps {
   secondSteps?: SecondStepsProps | undefined;
   /** The Recovery Kit: make, make again, remove. */
   recoveryKit?: RecoveryKitProps | undefined;
+  /** Rotating the root key: a new one, and everything it protects moved under it. */
+  rotateKeys?: RotateKeysProps | undefined;
   /** The personal API key for the Bitwarden CLI: show, copy, replace. */
   apiKey?: ApiKeyProps | undefined;
   /** Signed writes only for the account's own vault: turn on, turn off with the password. */
@@ -72,6 +75,7 @@ export function SecurityView({
   passkeys,
   secondSteps,
   recoveryKit,
+  rotateKeys,
   apiKey,
   signedWrites,
   deleteAccount,
@@ -200,6 +204,7 @@ export function SecurityView({
             {passkeys ? <PasskeysCard {...passkeys} /> : null}
             {secondSteps ? <SecondStepsCard {...secondSteps} /> : null}
             {recoveryKit ? <RecoveryKitCard {...recoveryKit} /> : null}
+            {rotateKeys ? <RotateKeysCard {...rotateKeys} /> : null}
             {later.map((method) => (
               <div className="row" key={method}>
                 <div className="grow">

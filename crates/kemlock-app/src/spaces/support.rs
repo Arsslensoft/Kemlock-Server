@@ -2,6 +2,7 @@
 //! copies a change needs and the keys it exposes.
 
 use super::error::SpacesError;
+use super::key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, check_box};
 use super::ports::SpaceRepo;
 use crate::authenticate::Actor;
 use crate::ports::{Event, EventLog};
@@ -19,6 +20,17 @@ pub struct SealedCollectionKey {
     pub collection: CollectionId,
     pub user: UserId,
     pub sealed: Vec<u8>,
+    /// The sealer's `sig1` signature over the box (docs/crypto.md, "Signed key boxes"). The
+    /// sealer is the signed-in account.
+    pub signature: Vec<u8>,
+}
+
+/// The space key sealed to one member, with the sealer's signature over it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SealedSpaceKey {
+    pub user: UserId,
+    pub sealed: Vec<u8>,
+    pub signature: Vec<u8>,
 }
 
 /// The key copies to store and remove, and the collections newly marked for key replacement, that
@@ -71,12 +83,14 @@ pub(crate) async fn record<V: EventLog>(
 /// Checks that `provided` seals exactly the copies `delta.needed` asks for (each well formed, none
 /// twice), that no collection needing a copy awaits a key replacement, and turns them into the
 /// copies to store. Copies held by someone who lost access are removed, and their collections
-/// marked stale at `now`.
-pub(crate) fn key_changes(
+/// marked stale at `now`. Each box must carry `sealer`'s signature (`boxes` checks it).
+pub(crate) async fn key_changes<K: KeyBoxVerifier>(
     after: &SpaceState,
     delta: &KeyDelta,
     provided: Vec<SealedCollectionKey>,
     now: OffsetDateTime,
+    boxes: &K,
+    sealer: UserId,
 ) -> Result<KeyChanges, SpacesError> {
     let mut seen: BTreeSet<(CollectionId, UserId)> = BTreeSet::new();
     for key in &provided {
@@ -102,14 +116,53 @@ pub(crate) fn key_changes(
         if collection.stale_since.is_some() {
             return Err(SpaceError::KeysPending.into());
         }
+        let sealed_by = check_box(
+            boxes,
+            KeyBoxFacts {
+                space: after.space.id,
+                key: KeyBoxKey::Collection(key.collection),
+                key_version: collection.key_version,
+                recipient: key.user,
+                sealed_box: &key.sealed,
+                sealer,
+            },
+            &key.signature,
+        )
+        .await?;
         key_copies.push(KeyCopy {
             collection: key.collection,
             user: key.user,
             key_version: collection.key_version,
             sealed: key.sealed,
+            sealed_by: Some(sealed_by),
         });
     }
 
+    Ok(with_removals(after, delta, key_copies, now))
+}
+
+/// The changes of a change that adds no key copy: the copies held by someone who lost access are
+/// removed and their collections marked stale at `now`. Refused when the change needs a copy.
+pub(crate) fn key_removals(
+    after: &SpaceState,
+    delta: &KeyDelta,
+    now: OffsetDateTime,
+) -> Result<KeyChanges, SpacesError> {
+    if !delta.needed.is_empty() {
+        return Err(SpaceError::Invalid(
+            "seal each collection key to exactly the members who gain access to it",
+        )
+        .into());
+    }
+    Ok(with_removals(after, delta, Vec::new(), now))
+}
+
+fn with_removals(
+    after: &SpaceState,
+    delta: &KeyDelta,
+    key_copies: Vec<KeyCopy>,
+    now: OffsetDateTime,
+) -> KeyChanges {
     let mut collections = Vec::new();
     for id in delta.stale_collections() {
         if let Some(collection) = after.collection(id)
@@ -120,9 +173,9 @@ pub(crate) fn key_changes(
             collections.push(stale);
         }
     }
-    Ok(KeyChanges {
+    KeyChanges {
         key_copies,
         key_copies_removed: delta.lost.iter().copied().collect(),
         collections,
-    })
+    }
 }

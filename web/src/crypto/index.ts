@@ -139,6 +139,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     confirmationStatement: (facts) => call('confirmationStatement', [facts]),
     signStatement: (statement, context) => call('signStatement', [statement, context]),
     verifyConfirmation: (check) => call('verifyConfirmation', [check]),
+    verifyKeyBox: (check) => call('verifyKeyBox', [check]),
     openEmergencyKey: (sealed) => call('openEmergencyKey', [sealed]),
     openEmergencyItem: (handle, input) => call('openEmergencyItem', [handle, input]),
     newSpace: (input) => call('newSpace', [input]),
@@ -156,6 +157,21 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     prfOpenRoot: (prfOutput, credentialId, accountId, keyVersion, wrapped) =>
       call('prfOpenRoot', [prfOutput, credentialId, accountId, keyVersion, wrapped]),
     kitMake: () => call('kitMake', []),
+    rotationStart: () => call('rotationStart', []),
+    rotationResealItem: (input) => call('rotationResealItem', [input]),
+    rotationResealSend: (input) => call('rotationResealSend', [input]),
+    rotationWrapPassword: (masterKey, exportKey) =>
+      call('rotationWrapPassword', [masterKey, exportKey]),
+    rotationPrfWrap: (prfOutput, credentialId) => call('rotationPrfWrap', [prfOutput, credentialId]),
+    rotationKitMake: () => call('rotationKitMake', []),
+    rotationDeviceCopySeal: (accountId, deviceId, keyVersion, tabId) =>
+      call('rotationDeviceCopySeal', [accountId, deviceId, keyVersion, tabId]),
+    rotationSealRootKey: (recipientKx1, context, aad) =>
+      call('rotationSealRootKey', [recipientKx1, context, aad]),
+    rotationCommit: () => call('rotationCommit', []),
+    rotationResealLocal: (label, sealed) => call('rotationResealLocal', [label, sealed]),
+    rotationAbort: () => call('rotationAbort', []),
+    rotationSign: (previous, context, message) => call('rotationSign', [previous, context, message]),
     kitReadPiece: (text) => call('kitReadPiece', [text]),
     kitCheckPieces: (pieces) => call('kitCheckPieces', [pieces]),
     kitOpenRoot: (pieces, kitId, accountId, keyVersion, wrapped) =>
@@ -172,6 +188,10 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     itemWriteVerify: (signerBundle, fields, signature) =>
       call('itemWriteVerify', [signerBundle, fields, signature]),
     verifySpaceChain: (input) => call('verifySpaceChain', [input]),
+    newChainedSpace: (input) => call('newChainedSpace', [input]),
+    buildChainRecords: (input) => call('buildChainRecords', [input]),
+    buildKeyReplacement: (input) => call('buildKeyReplacement', [input]),
+    buildReseal: (input) => call('buildReseal', [input]),
     sealLocal: (label, text) => call('sealLocal', [label, text]),
     openLocal: (label, sealed) => call('openLocal', [label, sealed]),
     spaceChainView: (spaceId) => call('spaceChainView', [spaceId]),

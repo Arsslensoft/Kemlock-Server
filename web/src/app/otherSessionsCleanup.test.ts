@@ -13,7 +13,7 @@ function memory(): CleanupStorage & { items: Map<string, string> } {
   };
 }
 
-function setup(options: { usedBefore?: boolean; storage?: CleanupStorage; fails?: number } = {}) {
+function setup(options: { usedBefore?: boolean; storage?: ReturnType<typeof memory>; fails?: number } = {}) {
   const session = createSession();
   const storage = options.storage ?? memory();
   const endOtherSessions = vi.fn(async () => undefined);

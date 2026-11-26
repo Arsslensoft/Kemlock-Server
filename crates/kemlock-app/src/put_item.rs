@@ -5,23 +5,53 @@
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
-use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier};
-use kemlock_domain::{Item, ItemError, ItemWrite};
+use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier, UserRepo};
+use kemlock_domain::{Item, ItemError, ItemFormat, ItemWrite, Owner, UserId};
+
+/// A sealed write to the account's own vault must name the account's current key version.
+///
+/// The item key is wrapped under the account's `item-wrap` key at that version, so a write that
+/// names another one was sealed under keys the account no longer has: a device that did not learn
+/// of a rotation of the root key (docs/crypto.md, "Rotating the root key"), or a replica still
+/// serving an older state. Storing it would leave an item nobody can open. A deletion carries no
+/// sealed value and is not checked; neither are items of another format or owner.
+pub(crate) async fn check_key_version<U: UserRepo>(
+    users: &U,
+    actor: UserId,
+    write: &ItemWrite,
+) -> Result<(), AppError> {
+    if write.sealed.is_none()
+        || write.format != ItemFormat::Kem1
+        || write.owner != Owner::User(actor)
+    {
+        return Ok(());
+    }
+    let account = users.by_id(actor).await?.ok_or(AppError::Unauthorized)?;
+    // An account with no keys yet (key version 0) has nothing to be stale against.
+    if account.key_version != 0 && write.key_version != account.key_version {
+        return Err(AppError::Invalid(
+            "the item is sealed under another key version than the account's current one",
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
-pub struct PutItem<I, V, N, C> {
+pub struct PutItem<I, V, N, C, U> {
     pub items: I,
     pub events: V,
     pub push: N,
     pub clock: C,
+    pub users: U,
     pub config: AuthConfig,
 }
 
-impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutItem<I, V, N, C> {
+impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock, U: UserRepo> PutItem<I, V, N, C, U> {
     /// Stores the write and returns the item as stored, with its change id. A write over a
     /// revision other than `write.expected` is `Conflict`, naming the current revision.
     pub async fn execute(&self, actor: &Actor, write: ItemWrite) -> Result<Item, AppError> {
         let id = write.id;
+        check_key_version(&self.users, actor.user, &write).await?;
         let now = self.clock.now();
         let stored = self.items.get(id).await?;
         let draft = write

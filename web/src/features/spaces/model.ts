@@ -12,12 +12,18 @@ import type {
   GroupDto,
   MemberDto,
   MemberViewDto,
+  OffboardedDto,
+  ServedItemDto,
   SpaceRole,
   SpaceSummaryDto,
   SpaceViewDto,
   SpacesApi,
 } from '@/api/spaces';
+import { isApiError } from '@/api/errors';
+import type { ItemDto } from '@/api/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
+import { type Manifest, ciphertextHash } from '@/manifest/format';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
 import type { AnchorStore, PinStore } from '@/spaces/anchors';
 import type { SpaceCrypto } from '@/spaces/crypto';
@@ -29,6 +35,8 @@ import {
   openChainedKeys,
   overlayChain,
 } from './chain';
+import type { BoxStore } from '@/spaces/boxstore';
+import { KeyBoxRefused, lazyContext, openKeyBox, openUnchainedKeys, signedInAccount } from './boxes';
 import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
@@ -39,12 +47,32 @@ export interface SpaceDeps {
   anchors?: AnchorStore;
   /** Where it keeps the members whose fingerprint a person compared here. */
   pins?: PinStore;
+  /** Where it keeps the key boxes it accepted, so one sealed before keys were signed is flagged once. */
+  boxes?: BoxStore;
+  /** The id of the account signed in here, from the session; the server's word for it is only checked against it. */
+  account?: () => string | null;
+  /** The time in Unix seconds, for the records this browser signs. */
+  now?: () => number;
+  /**
+   * Told of the items of a space this browser wrote outside the vault's own writes (a key
+   * replacement's), so the space's signed manifest lists them (src/manifest/keeper.ts).
+   */
+  wrote?: (items: ItemDto[]) => Promise<void>;
+  /**
+   * The last verified manifest of a space (src/manifest/keeper.ts): what an item has to match to be
+   * re-written by a key replacement. Null when there is none; left out, it is none.
+   */
+  acceptedManifest?: (spaceId: string) => Promise<Manifest | null>;
+}
+
+/** Tells the manifest keeper, when there is one, of items this browser wrote. Never throws. */
+function wrote(deps: SpaceDeps, items: ItemDto[]): void {
+  if (items.length > 0) void deps.wrote?.(items)?.catch(() => undefined);
 }
 
 /**
- * A change that needs the space's keys, asked of a space whose chain can't be used for it: one
- * that isn't checked (`kind` says how far it got), or one whose chain the web vault can't add
- * records to yet.
+ * A change asked of a space whose chain can't be used for it: one that isn't checked (`kind` says
+ * how far it got), or one whose keys this browser couldn't open, so nothing can be signed.
  */
 export class SpaceNotChecked extends Error {
   readonly kind: SpaceTrust['kind'];
@@ -56,12 +84,153 @@ export class SpaceNotChecked extends Error {
   }
 }
 
-/** Refuses a change to a space that has a chain: its changes are signed records. */
-function requireUnchained(detail: Pick<SpaceDetail, 'trust'>): void {
-  if (detail.trust && detail.trust.kind !== 'unchained') throw new SpaceNotChecked(detail.trust.kind);
+/** The chain's rules refuse a change (docs/crypto.md, "Verification": the reason names which). */
+export class ChainRefused extends Error {
+  readonly reason: string;
+  readonly seq: number | null;
+
+  constructor(reason: string, seq: number | null) {
+    super(`the space's chain refuses the change (${reason})`);
+    this.name = 'ChainRefused';
+    this.reason = reason;
+    this.seq = seq;
+  }
+}
+
+/**
+ * A key replacement that can't be made from here, and nothing was sent: the space is too large for
+ * one request (the replaced keys and every item sealed again must land together, or the items
+ * stay under keys nobody can open), or items the signed manifest lists can't be opened here, or
+ * the space has no manifest to say which items to re-write.
+ */
+export class ReplaceBlocked extends Error {
+  readonly reason: 'too-large' | 'unreadable' | 'no-manifest';
+  readonly count: number;
+
+  constructor(reason: ReplaceBlocked['reason'], count = 0) {
+    super(`the keys can't be replaced from the web vault (${reason})`);
+    this.name = 'ReplaceBlocked';
+    this.reason = reason;
+    this.count = count;
+  }
+}
+
+/** Someone else added records to the space's chain at the same time, twice running. */
+export class ChainConflict extends Error {
+  constructor() {
+    super('the space changed while the change was being made');
+    this.name = 'ChainConflict';
+  }
+}
+
+/**
+ * Whether a change to this space is made as signed records (a space with a verified chain), or the
+ * old way (a space with no chain). A space whose chain isn't checked is refused: nothing may be
+ * sealed or signed for it. A change that makes a name or a key (`needsKeys`, the default) also
+ * needs the space's keys open here; one that doesn't (an invitation, a role, a removal, a grant, a
+ * confirmation) is made by an Admin who is still waiting for the space key, as the chain allows.
+ */
+function isChained(detail: Pick<SpaceDetail, 'trust' | 'readable'>, needsKeys = true): boolean {
+  const trust = detail.trust;
+  if (!trust || trust.kind === 'unchained') return false;
+  if (trust.kind !== 'verified' || (needsKeys && !detail.readable)) {
+    throw new SpaceNotChecked(trust.kind);
+  }
+  return true;
 }
 
 const newId = (deps: SpaceDeps) => (deps.newId ?? (() => globalThis.crypto.randomUUID()))();
+
+const unixNow = (deps: SpaceDeps) => (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
+
+/** What an append gave: whether any record went in, and the chain as it verifies now. */
+interface Appended {
+  appended: boolean;
+  chain: ChainView;
+}
+
+/** What `make` hands `appendBuilt`: the worker's answer, and the items to name held beside it. */
+interface Made {
+  built: ChainBuilt;
+  held?: string[];
+}
+
+/**
+ * The most one append request may weigh: the route reads 8 MiB (routes/space_chain.rs), less a
+ * margin for what the transport adds.
+ */
+const MAX_REQUEST_BYTES = 8 * 1024 * 1024 - 256 * 1024;
+
+/**
+ * Makes records in the worker (`make`), appends them to the space's chain, and verifies the chain
+ * again, which keeps this browser's anchor and the worker's state up to date. When the head moved
+ * meanwhile (409), the chain is read and verified again and `make` runs again, on the new head
+ * (it reads whatever it depends on again); a second conflict is shown. Resolves with the verified
+ * chain, and whether any record was appended (a `seal` with nothing to share makes none).
+ *
+ * A key replacement's re-written items go up with its `keys` record, in one request and so one
+ * transaction: once the new version is in the chain nobody can open an item left under the old one.
+ * A request over the route's limit is never sent (`ReplaceBlocked`, `too-large`).
+ */
+async function appendBuilt(
+  deps: SpaceDeps,
+  detail: Pick<SpaceDetail, 'view'>,
+  make: () => Promise<Made>,
+): Promise<Appended> {
+  const spaceId = detail.view.space.id;
+  const me = detail.view.me.user;
+  const attempt = async (): Promise<boolean> => {
+    const { built, held = [] } = await make();
+    if (!built.ok) throw new ChainRefused(built.reason, built.seq);
+    if (built.records.length === 0) return false;
+    const writes = built.writes ?? [];
+    const request = {
+      records: built.records,
+      seals: built.seals,
+      names: built.names,
+      ...(held.length > 0 ? { held } : {}),
+      ...(writes.length > 0 ? { writes } : {}),
+    };
+    if (JSON.stringify(request).length > MAX_REQUEST_BYTES) throw new ReplaceBlocked('too-large');
+    await deps.api.appendChain(spaceId, request);
+    wrote(
+      deps,
+      writes.map((write) => write.item),
+    );
+    return true;
+  };
+  const verified = async (): Promise<ChainView> => {
+    const trust = await checkSpaceChain(deps, spaceId, me);
+    if (trust.kind !== 'verified') throw new SpaceNotChecked(trust.kind);
+    return trust.view;
+  };
+  let appended: boolean;
+  try {
+    appended = await attempt();
+  } catch (error) {
+    if (!isApiError(error, 'space-chain-conflict')) throw error;
+    await verified();
+    try {
+      appended = await attempt();
+    } catch (again) {
+      if (isApiError(again, 'space-chain-conflict')) throw new ChainConflict();
+      throw again;
+    }
+  }
+  return { appended, chain: await verified() };
+}
+
+/** Makes the records of one change in the worker and appends them (see `appendBuilt`). */
+function appendChange(
+  deps: SpaceDeps,
+  detail: Pick<SpaceDetail, 'view'>,
+  change: ChainChange,
+): Promise<Appended> {
+  const spaceId = detail.view.space.id;
+  return appendBuilt(deps, detail, async () => ({
+    built: await deps.crypto.buildChainRecords({ spaceId, at: unixNow(deps), change }),
+  }));
+}
 
 // ---- the list ---------------------------------------------------------------------------
 
@@ -81,7 +250,14 @@ async function openSpaceName(
   summary: SpaceSummaryDto,
 ): Promise<{ name: string | null; trust: SpaceTrust }> {
   const spaceId = summary.space.id;
-  const trust = await checkSpaceChain(deps, spaceId, summary.member.user);
+  let me: string;
+  try {
+    me = signedInAccount(deps, summary.member.user);
+  } catch {
+    // The server names someone else as me: nothing about this space is opened or shown as checked.
+    return { name: null, trust: { kind: 'unverified', reason: 'account', seq: null } };
+  }
+  const trust = await checkSpaceChain(deps, spaceId, me);
   const sealed = summary.member.sealedSpaceKey;
   if (!sealed || trust.kind === 'unverified' || trust.kind === 'first-contact') {
     return { name: null, trust };
@@ -94,7 +270,12 @@ async function openSpaceName(
       await openChainedKey(deps, spaceId, trust.view, null, servedVersion, sealed);
       keyVersion = nameVersionOf(trust.view, 'space', spaceId);
     } else {
-      await deps.crypto.openSpace({ spaceId, keyVersion: servedVersion, sealed: decodeB64(sealed) });
+      await openKeyBox(lazyContext(deps, spaceId, me), {
+        key: 'space',
+        version: servedVersion,
+        sealed,
+        sealedBy: summary.member.sealedBy,
+      });
     }
     return {
       name: await deps.crypto.openName({
@@ -135,26 +316,35 @@ export interface NewSpaceInput {
   firstCollection: string;
 }
 
-/** Makes a space: the space key and first collection key are made and sealed to me here. */
+/**
+ * Makes a space as a chain (docs/crypto.md, "Space chain"): the worker signs the `create` record
+ * with my own key and seals the space key and the first collection's key to me, and the server
+ * appends it and stores the boxes and names the record commits. Nothing the server can make up is
+ * in it, so the space is mine from its first record. The chain is verified at once, which keeps
+ * its anchor: this account's own key made it, so there is nothing to compare.
+ */
 export async function createSpace(deps: SpaceDeps, input: NewSpaceInput): Promise<SpaceViewDto> {
   const spaceId = newId(deps);
   const collectionId = newId(deps);
-  const keys = await deps.crypto.newSpace({
+  const made = await deps.crypto.newChainedSpace({
     spaceId,
     collectionId,
     spaceName: input.name,
     collectionName: input.firstCollection,
+    at: unixNow(deps),
   });
-  return deps.api.create({
-    id: spaceId,
-    name: encodeB64(keys.name),
-    sealedSpaceKey: encodeB64(keys.sealedSpaceKey),
-    collection: {
-      id: collectionId,
-      name: encodeB64(keys.collection.name),
-      sealedKey: encodeB64(keys.collection.sealedKey),
-    },
+  await deps.api.appendChain(spaceId, {
+    records: made.records,
+    seals: made.seals,
+    names: made.names,
   });
+  const view = await deps.api.get(spaceId);
+  const trust = await checkSpaceChain(deps, spaceId, view.me.user);
+  if (trust.kind !== 'verified') {
+    // The server took the record but what it serves back doesn't verify as this account's own.
+    throw new SpaceNotChecked(trust.kind);
+  }
+  return view;
 }
 
 // ---- one space ----------------------------------------------------------------------------
@@ -188,14 +378,29 @@ export interface SpaceDetail {
    * fingerprint a person could compare to put that right. Confirming them again does too.
    */
   unverified?: Array<{ user: string; compare?: string }>;
+  /**
+   * The keys of a space with no chain that were sealed before keys were signed (`space`, or
+   * `collection:<id>`): this browser accepted them once, and they are replaced when the keys are or
+   * when an owner confirms this account again (docs/crypto.md, "Signed key boxes").
+   */
+  legacyKeys?: string[];
+  /**
+   * The member whose fingerprint a person should compare so the keys of a space with no chain open:
+   * the member who sealed one of them, or the root of the confirmations that lead to them, whom this
+   * browser can't trace yet (`startPin` asks for it).
+   */
+  compare?: string;
 }
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
   const [served, servedMembers] = await Promise.all([deps.api.get(spaceId), deps.api.members(spaceId)]);
-  const trust = await checkSpaceChain(deps, spaceId, served.me.user);
+  const me = signedInAccount(deps, served.me.user);
+  const trust = await checkSpaceChain(deps, spaceId, me);
   let view = served;
   let members = servedMembers;
   let readable = false;
+  let legacyKeys: string[] = [];
+  let compare: string | undefined;
   let nameVersion = (_kind: 'space' | 'collection' | 'group', _id: string) => served.space.keyVersion;
   if (trust.kind === 'verified') {
     // The space as its chain gives it; keys open at the chain's version, under its commitments.
@@ -209,23 +414,25 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
       readable = false;
     }
   } else if (trust.kind === 'unchained' && served.me.sealedSpaceKey) {
+    // Each key opens only after its sealer's signature is checked (boxes.ts); one sealed before keys
+    // were signed is accepted once and flagged.
     try {
-      await deps.crypto.openSpace({
-        spaceId,
-        keyVersion: served.me.keyVersion ?? served.space.keyVersion,
-        sealed: decodeB64(served.me.sealedSpaceKey),
+      const ctx = {
+        ...lazyContext(deps, spaceId, me),
+        members: async () => servedMembers,
+        access: async () => ({ grants: served.grants, groups: served.groups }),
+      };
+      legacyKeys = await openUnchainedKeys(ctx, {
+        me: served.me,
+        spaceKeyVersion: served.space.keyVersion,
+        collectionKeys: served.collectionKeys,
       });
-      for (const copy of served.collectionKeys) {
-        await deps.crypto.openCollection({
-          spaceId,
-          collectionId: copy.collection,
-          keyVersion: copy.keyVersion,
-          sealed: decodeB64(copy.sealed),
-        });
-      }
       readable = true;
-    } catch {
+    } catch (error) {
       readable = false;
+      // A sealer nobody here has compared: what would put it right is a person comparing their
+      // fingerprint, as for first contact with a chain.
+      if (error instanceof KeyBoxRefused && error.compare) compare = error.compare.user;
     }
   }
   const unverified: NonNullable<SpaceDetail['unverified']> = [];
@@ -263,6 +470,8 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     members,
     readable,
     trust,
+    ...(legacyKeys.length > 0 ? { legacyKeys } : {}),
+    ...(compare ? { compare } : {}),
     ...(unverified.length > 0 ? { unverified } : {}),
     name: await title('space', space.id, space.name),
     collections: await Promise.all(
@@ -350,7 +559,7 @@ function recipientOf(
         crypto: deps.crypto,
         spaceId: detail.view.space.id,
         members: detail.members,
-        me: detail.view.me.user,
+        me: signedInAccount(deps, detail.view.me.user),
         pins: deps.pins,
       },
       member,
@@ -360,20 +569,20 @@ function recipientOf(
   return checked;
 }
 
+/** A collection key sealed to a member, and the signature of this account over the box. */
 async function collectionKeyFor(
   deps: SpaceDeps,
   spaceId: string,
   collectionId: string,
   recipient: Recipient,
-): Promise<string> {
-  return encodeB64(
-    await deps.crypto.sealCollectionKeyTo({
-      spaceId,
-      collectionId,
-      recipientKx1: recipient.kx1,
-      recipientId: recipient.id,
-    }),
-  );
+): Promise<{ sealed: string; signature: string }> {
+  const box = await deps.crypto.sealCollectionKeyTo({
+    spaceId,
+    collectionId,
+    recipientKx1: recipient.kx1,
+    recipientId: recipient.id,
+  });
+  return { sealed: encodeB64(box.sealed), signature: encodeB64(box.signature) };
 }
 
 // ---- membership ----------------------------------------------------------------------------
@@ -385,11 +594,32 @@ export interface InviteInput {
   grants: Array<{ collection: string; permission: CollectionPermission }>;
 }
 
-export function inviteMember(deps: SpaceDeps, spaceId: string, input: InviteInput) {
+/**
+ * Invites an account. For a space with a chain, the account is looked up by its email (the inviter
+ * needs its id) and the invitation is an `invite` record; the server mails the invitee when the
+ * record lands. `detail` says which kind of space this is: left out, the space has no chain.
+ */
+export async function inviteMember(
+  deps: SpaceDeps,
+  spaceId: string,
+  input: InviteInput,
+  detail?: Pick<SpaceDetail, 'view' | 'trust' | 'readable'>,
+): Promise<unknown> {
+  const custom = input.role === 'custom' ? input.custom : [];
+  if (detail && isChained(detail, false)) {
+    const found = await deps.api.lookup(spaceId, input.email.trim());
+    return appendChange(deps, detail, {
+      action: 'invite',
+      member: found.account,
+      role: input.role,
+      custom,
+      grants: input.grants,
+    });
+  }
   return deps.api.invite(spaceId, {
     email: input.email.trim(),
     role: input.role,
-    custom: input.role === 'custom' ? input.custom : [],
+    custom,
     grants: input.grants,
   });
 }
@@ -399,11 +629,11 @@ export async function confirmMember(
   detail: SpaceDetail,
   member: MemberViewDto,
   fingerprint: Fingerprint,
-): Promise<MemberDto> {
+): Promise<unknown> {
   if (!fingerprint.consistent) {
     throw new Error('the fingerprint worked out here differs from the worker’s');
   }
-  requireUnchained(detail);
+  const chained = isChained(detail, false);
   const spaceId = detail.view.space.id;
   // The bundle the person compared is the member's own at their current key version, and is what
   // the fingerprint on screen is of; a bundle that is another account's, or has since changed,
@@ -416,13 +646,24 @@ export async function confirmMember(
   ) {
     throw new MemberNotVerified(member, 'confirmation-differs');
   }
+  if (chained) {
+    // A record: the worker rebuilds the statement and signs it, seals the keys it holds to the
+    // member (to the bundle the chain will record) and checks the fingerprint is this bundle's.
+    return appendChange(deps, detail, {
+      action: 'confirm',
+      member: member.user,
+      bundle: member.publicBundle,
+      bundleSignature: member.bundleSignature,
+      fingerprint: encodeB64(fingerprint.bytes),
+    });
+  }
   const recipient: Recipient = { kx1: parsed.kx1, id: parsed.accountId };
   const sealedSpaceKey = await deps.crypto.sealSpaceKeyTo({
     spaceId,
     recipientKx1: recipient.kx1,
     recipientId: recipient.id,
   });
-  const collectionKeys: Array<{ collection: string; sealed: string }> = [];
+  const collectionKeys: Array<{ collection: string; sealed: string; signature: string }> = [];
   for (const collection of collectionsOfMember(
     member.user,
     detail.view.collections,
@@ -431,7 +672,7 @@ export async function confirmMember(
   )) {
     collectionKeys.push({
       collection,
-      sealed: await collectionKeyFor(deps, spaceId, collection, recipient),
+      ...(await collectionKeyFor(deps, spaceId, collection, recipient)),
     });
   }
   // What the confirmer signs (docs/crypto.md, "Member confirmation"): that they compared this
@@ -448,7 +689,8 @@ export async function confirmMember(
     fingerprint: encodeB64(fingerprint.bytes),
     statement: encodeB64(statement),
     signature: encodeB64(signature),
-    sealedSpaceKey: encodeB64(sealedSpaceKey),
+    sealedSpaceKey: encodeB64(sealedSpaceKey.sealed),
+    sealedSpaceKeySignature: encodeB64(sealedSpaceKey.signature),
     collectionKeys,
   });
 }
@@ -477,22 +719,40 @@ export async function pinMember(
 }
 
 // ---- collections, groups, grants -------------------------------------------------------------
+//
+// A space with a chain changes by records the worker signs, checked against the chain's own rules
+// (who may do what is the verifier's call, and a refusal is a `ChainRefused` with its reason). A
+// space with none changes through the server's own routes, as it always did.
 
 export async function createCollection(
   deps: SpaceDeps,
   detail: SpaceDetail,
   input: { name: string; parent?: string },
-) {
-  requireUnchained(detail);
+): Promise<unknown> {
   const spaceId = detail.view.space.id;
   const id = newId(deps);
+  if (isChained(detail)) {
+    // The maker is granted Manage, and the key is sealed to everyone the grants reach.
+    return appendChange(deps, detail, {
+      action: 'collection',
+      collection: id,
+      name: input.name,
+      ...(input.parent ? { parent: input.parent } : {}),
+    });
+  }
   const made = await deps.crypto.newCollection({ spaceId, collectionId: id, name: input.name });
   return deps.api.createCollection(spaceId, {
     id,
     parent: input.parent ?? null,
     name: encodeB64(made.name),
     // The maker gets Manage, and the key sealed to them is all anyone else's grant adds to.
-    keys: [{ user: detail.view.me.user, sealed: encodeB64(made.sealedKey) }],
+    keys: [
+      {
+        user: detail.view.me.user,
+        sealed: encodeB64(made.sealedKey),
+        signature: encodeB64(made.sealedKeySignature),
+      },
+    ],
   });
 }
 
@@ -501,8 +761,10 @@ export async function renameCollection(
   detail: SpaceDetail,
   collection: string,
   name: string,
-) {
-  requireUnchained(detail);
+): Promise<unknown> {
+  if (isChained(detail)) {
+    return appendChange(deps, detail, { action: 'rename', target: `collection:${collection}`, name });
+  }
   const spaceId = detail.view.space.id;
   const sealed = await deps.crypto.sealName({
     spaceId,
@@ -514,14 +776,33 @@ export async function renameCollection(
   return deps.api.editCollection(spaceId, collection, { name: encodeB64(sealed) });
 }
 
+export async function deleteCollection(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  collection: string,
+): Promise<unknown> {
+  if (isChained(detail, false)) {
+    return appendChange(deps, detail, { action: 'collection-delete', collection });
+  }
+  await deps.api.deleteCollection(detail.view.space.id, collection);
+  return true;
+}
+
 export async function createGroup(
   deps: SpaceDeps,
   detail: SpaceDetail,
   input: { name: string; members: string[] },
-) {
-  requireUnchained(detail);
+): Promise<unknown> {
   const spaceId = detail.view.space.id;
   const id = newId(deps);
+  if (isChained(detail)) {
+    return appendChange(deps, detail, {
+      action: 'group',
+      group: id,
+      name: input.name,
+      members: input.members,
+    });
+  }
   const sealed = await deps.crypto.sealName({
     spaceId,
     keyVersion: detail.view.space.keyVersion,
@@ -532,6 +813,16 @@ export async function createGroup(
   return deps.api.createGroup(spaceId, { id, name: encodeB64(sealed), members: input.members });
 }
 
+export async function deleteGroup(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  group: string,
+): Promise<unknown> {
+  if (isChained(detail, false)) return appendChange(deps, detail, { action: 'group-delete', group });
+  await deps.api.deleteGroup(detail.view.space.id, group);
+  return true;
+}
+
 /** Keys for the confirmed members a change newly lets into a collection. */
 async function keysForNewcomers(
   deps: SpaceDeps,
@@ -539,9 +830,8 @@ async function keysForNewcomers(
   collection: string,
   before: Set<string>,
   after: Set<string>,
-): Promise<Array<{ collection: string; user: string; sealed: string }>> {
-  requireUnchained(detail);
-  const keys: Array<{ collection: string; user: string; sealed: string }> = [];
+): Promise<Array<{ collection: string; user: string; sealed: string; signature: string }>> {
+  const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const user of after) {
     if (before.has(user)) continue;
     const member = detail.members.find((m) => m.user === user);
@@ -552,7 +842,7 @@ async function keysForNewcomers(
     keys.push({
       collection,
       user,
-      sealed: await collectionKeyFor(deps, detail.view.space.id, collection, recipient),
+      ...(await collectionKeyFor(deps, detail.view.space.id, collection, recipient)),
     });
   }
   return keys;
@@ -564,10 +854,17 @@ export async function setGroupMembers(
   detail: SpaceDetail,
   group: string,
   members: string[],
-) {
+): Promise<unknown> {
   const { grants, groups, collections } = detail.view;
+  if (isChained(detail, false)) {
+    const current = groups.find((g) => g.id === group)?.members ?? [];
+    const add = members.filter((m) => !current.includes(m));
+    const remove = current.filter((m) => !members.includes(m));
+    if (add.length === 0 && remove.length === 0) return false;
+    return appendChange(deps, detail, { action: 'group-members', group, add, remove });
+  }
   const changed = groups.map((g) => (g.id === group ? { ...g, members } : g));
-  const keys: Array<{ collection: string; user: string; sealed: string }> = [];
+  const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const collection of collections) {
     if (!grants.some((g) => g.collection === collection.id && g.grantee === `group:${group}`)) continue;
     keys.push(
@@ -587,7 +884,8 @@ export async function grantAccess(
   deps: SpaceDeps,
   detail: SpaceDetail,
   input: { collection: string; grantee: string; permission: CollectionPermission },
-) {
+): Promise<unknown> {
+  if (isChained(detail, false)) return appendChange(deps, detail, { action: 'grant', ...input });
   const { grants, groups } = detail.view;
   const after = [
     ...grants.filter((g) => !(g.collection === input.collection && g.grantee === input.grantee)),
@@ -602,6 +900,327 @@ export async function grantAccess(
   );
   return deps.api.grant(detail.view.space.id, {
     ...input,
-    keys: keys.map((k) => ({ user: k.user, sealed: k.sealed })),
+    keys: keys.map((k) => ({ user: k.user, sealed: k.sealed, signature: k.signature })),
   });
+}
+
+export async function revokeGrant(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  collection: string,
+  grantee: string,
+): Promise<unknown> {
+  if (isChained(detail, false)) return appendChange(deps, detail, { action: 'ungrant', collection, grantee });
+  await deps.api.revokeGrant(detail.view.space.id, collection, grantee);
+  return true;
+}
+
+// ---- roles and offboarding -----------------------------------------------------------------
+
+export async function changeRole(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  user: string,
+  role: SpaceRole,
+  custom: CustomPermission[],
+): Promise<unknown> {
+  if (isChained(detail, false)) {
+    return appendChange(deps, detail, {
+      action: 'role',
+      member: user,
+      role,
+      custom: role === 'custom' ? custom : [],
+    });
+  }
+  return deps.api.changeRole(detail.view.space.id, user, role, custom);
+}
+
+/**
+ * Revokes or removes a member. In a space with a chain both are the same record, `remove`: the
+ * member ends up in no group and with no grant, and every key they held is marked for replacement.
+ * What the chain says of the keys is the outcome, since the chain, not the server, is what marks
+ * them.
+ */
+export async function offboardMember(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  user: string,
+  kind: 'revoke' | 'remove',
+): Promise<OffboardedDto> {
+  const spaceId = detail.view.space.id;
+  if (isChained(detail, false)) {
+    const { chain } = await appendChange(deps, detail, { action: 'remove', member: user });
+    return {
+      exposed: [],
+      keysPending: chain.space.marked || chain.collections.some((c) => c.marked),
+    };
+  }
+  return kind === 'remove' ? deps.api.remove(spaceId, user) : deps.api.revoke(spaceId, user);
+}
+
+/**
+ * Shares the keys this account holds with the members who are awaiting them ("Using the state",
+ * "Sealing"): a member confirmed by someone who didn't hold a key waits for the next holder to
+ * open the space. Makes no record when no one awaits a key this browser holds. Says whether it did.
+ */
+export async function sealPending(deps: SpaceDeps, detail: SpaceDetail): Promise<boolean> {
+  if (detail.trust?.kind !== 'verified' || !detail.readable) return false;
+  const { appended } = await appendChange(deps, detail, { action: 'seal' });
+  return appended;
+}
+
+// ---- replacing the keys a removal marked -------------------------------------------------------
+
+/** Items a batch write takes at most. */
+const BATCH_SIZE = 500;
+
+/** Whether the verified chain of this space has keys that wait to be replaced. */
+export function keysAwaitReplacement(detail: Pick<SpaceDetail, 'trust'>): boolean {
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified') return false;
+  const { space, collections } = trust.view;
+  return space.marked || collections.some((c) => c.marked);
+}
+
+/** Whether a grant, directly or through a group, lets `user` edit `collection`, as the chain has it. */
+function editsByChain(user: string, collection: string, chain: ChainView): boolean {
+  return chain.grants.some((grant) => {
+    if (grant.collection !== collection) return false;
+    if (!['edit', 'edit-hide-passwords', 'manage'].includes(grant.permission)) return false;
+    const [kind, id] = grant.grantee.split(':');
+    if (kind === 'user') return id === user;
+    if (kind === 'group') return chain.groups.find((g) => g.id === id)?.members.includes(user) ?? false;
+    return false;
+  });
+}
+
+/**
+ * Whether this account may replace the keys that wait, from here: the space's keys are open, and it
+ * can edit a collection whose key is marked, or is an owner or admin and the space key is. The
+ * worker leaves any other key alone, since an account that can't seal a collection's items again
+ * would leave them under a key nobody can open.
+ */
+export function canReplaceKeys(detail: SpaceDetail): boolean {
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified' || !detail.readable) return false;
+  const { role, user } = detail.view.me;
+  if (trust.view.space.marked && (role === 'owner' || role === 'admin')) return true;
+  return trust.view.collections.some((c) => c.marked && editsByChain(user, c.id, trust.view));
+}
+
+export interface ReplaceProgress {
+  /** `reading` the space's items, `sealing` them again in the worker, `sending` them. */
+  phase: 'reading' | 'sealing' | 'sending';
+  done: number;
+  /** 0 while it isn't known yet. */
+  total: number;
+}
+
+export interface Replaced {
+  /** Items sealed again under their new key versions. */
+  rewritten: number;
+  /** Items named held: not in the signed manifest, so not taken as accepted. */
+  held: number;
+}
+
+/** The live kem1 items of the space that `wanted` takes, as the server serves them. */
+async function scanItems(
+  deps: SpaceDeps,
+  spaceId: string,
+  wanted: (dto: ServedItemDto & { collectionId: string }) => boolean,
+  progress: (p: ReplaceProgress) => void,
+): Promise<ChainReplacement['items']> {
+  const items: ChainReplacement['items'] = [];
+  let since: string | undefined;
+  let seen = 0;
+  for (;;) {
+    const page = await deps.api.sync(since, 500);
+    for (const dto of page.items) {
+      seen += 1;
+      if (
+        dto.owner === `space:${spaceId}` &&
+        !dto.deleted &&
+        dto.format === 'kem1' &&
+        dto.collectionId &&
+        dto.ciphertext &&
+        dto.itemKey &&
+        wanted({ ...dto, collectionId: dto.collectionId })
+      ) {
+        items.push({
+          id: dto.id,
+          collection: dto.collectionId,
+          kind: dto.kind,
+          revision: dto.revision,
+          keyVersion: dto.keyVersion,
+          ciphertext: dto.ciphertext,
+          itemKey: dto.itemKey,
+        });
+      }
+    }
+    progress({ phase: 'reading', done: seen, total: 0 });
+    if (!page.more) return items;
+    since = page.cursor;
+  }
+}
+
+/**
+ * Splits items into those the last verified manifest of the space lists as they are (same id,
+ * revision and ciphertext hash, not deleted), which are the ones accepted, and the rest. A removed
+ * member's write under a key they kept, or anything newer than the manifest, is in the rest
+ * ("Using the state", "Items": only what was accepted and listed is written again).
+ */
+async function acceptedOf(
+  manifest: Manifest,
+  items: ChainReplacement['items'],
+): Promise<{ accepted: ChainReplacement['items']; rest: ChainReplacement['items'] }> {
+  const entries = new Map(manifest.entries.map((entry) => [entry.id, entry]));
+  const accepted: ChainReplacement['items'] = [];
+  const rest: ChainReplacement['items'] = [];
+  for (const item of items) {
+    const entry = entries.get(item.id);
+    const listed =
+      entry !== undefined &&
+      !entry.deleted &&
+      entry.revision === item.revision &&
+      entry.hash === (await ciphertextHash(decodeB64(item.ciphertext)));
+    (listed ? accepted : rest).push(item);
+  }
+  return { accepted, rest };
+}
+
+/**
+ * Replaces the keys that wait for it ("Removal and replacement"), all or nothing. The worker makes
+ * the `keys` record and seals again every item of the replaced collections that the space's last
+ * verified manifest lists as it is served; those it doesn't list are named held, which is all the
+ * chain allows for an item nobody vouches for. Both go in one request, so the new versions and the
+ * items under them land together: once they are in the chain nobody can open an item left under an
+ * old version. When that can't be (the request is too large, an item the manifest lists doesn't
+ * open here, the space has no manifest) nothing is sent and `ReplaceBlocked` says why. The items
+ * and the names are read again if the head moved and the records are made again. `progress` says
+ * how far it is.
+ */
+export async function replaceKeys(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  progress: (p: ReplaceProgress) => void = () => undefined,
+): Promise<Replaced> {
+  if (!isChained(detail) || !keysAwaitReplacement(detail)) return { rewritten: 0, held: 0 };
+  const spaceId = detail.view.space.id;
+  let counts: Replaced = { rewritten: 0, held: 0 };
+  const sent = await appendBuilt(deps, detail, async () => {
+    // Everything this depends on is read now, so a retry after a conflict builds on the new state.
+    const trust = await checkSpaceChain(deps, spaceId, detail.view.me.user);
+    if (trust.kind !== 'verified') throw new SpaceNotChecked(trust.kind);
+    const marked = new Set(trust.view.collections.filter((c) => c.marked).map((c) => c.id));
+    const served = await deps.api.get(spaceId);
+    const live = await scanItems(
+      deps,
+      spaceId,
+      // Items already held stay held: they aren't live, and the replacement doesn't name them.
+      (dto) => marked.has(dto.collectionId) && !dto.held,
+      progress,
+    );
+    const manifest = await deps.acceptedManifest?.(spaceId);
+    if (!manifest && live.length > 0) throw new ReplaceBlocked('no-manifest', live.length);
+    const { accepted, rest } = manifest ? await acceptedOf(manifest, live) : { accepted: [], rest: [] };
+    // What the server holds of each name, to be sealed again when the space key is replaced.
+    const names = [
+      { target: 'space', sealed: served.space.name },
+      ...served.collections.map((c) => ({ target: `collection:${c.id}`, sealed: c.name })),
+      ...served.groups.map((g) => ({ target: `group:${g.id}`, sealed: g.name })),
+    ];
+    progress({ phase: 'sealing', done: 0, total: accepted.length });
+    const built = await deps.crypto.buildKeyReplacement({
+      spaceId,
+      at: unixNow(deps),
+      replacement: { items: accepted, names },
+    });
+    // An item the manifest lists that this unlock can't open can't be named held: it is the
+    // member's own, and held it would be lost.
+    if (built.ok && (built.held?.length ?? 0) > 0) {
+      throw new ReplaceBlocked('unreadable', built.held?.length ?? 0);
+    }
+    // Only items of a collection the record replaces can be named held; the worker leaves a key
+    // alone that it doesn't hold or can't edit, and the items of it stay as they are.
+    const replaced = new Set(built.ok ? (built.rotated ?? []) : []);
+    const unlisted = rest.filter((item) => replaced.has(`collection:${item.collection}`));
+    counts = { rewritten: built.ok ? (built.writes?.length ?? 0) : 0, held: unlisted.length };
+    return { built, held: unlisted.map((item) => item.id) };
+  });
+  if (!sent.appended) return { rewritten: 0, held: 0 };
+  progress({ phase: 'sending', done: counts.rewritten, total: counts.rewritten });
+  return counts;
+}
+
+// ---- sealing again what a replacement left under an old key ------------------------------------
+
+/**
+ * The live kem1 items of the space that are still under an older key version than their
+ * collection's current one, and not held: what a replacement that stopped halfway left. (A held
+ * item is a hold made on purpose, by this vault or an app, and isn't released from here.) Read from
+ * the server's sync, so it is the same after a reload or on another device. A space whose keys were
+ * never replaced has none, and isn't read.
+ */
+export async function itemsToReseal(
+  deps: SpaceDeps,
+  detail: Pick<SpaceDetail, 'view' | 'trust'>,
+  progress: (p: ReplaceProgress) => void = () => undefined,
+): Promise<ChainReplacement['items']> {
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified' || !trust.view.collections.some((c) => c.keyVersion > 1)) return [];
+  const versions = new Map(trust.view.collections.map((c) => [c.id, c.keyVersion]));
+  return scanItems(
+    deps,
+    detail.view.space.id,
+    (dto) => !dto.held && dto.keyVersion < (versions.get(dto.collectionId) ?? 0),
+    progress,
+  );
+}
+
+export interface Resealed {
+  /** Items sealed again under their collection's current key version. */
+  rewritten: number;
+  /** Items this browser can't seal again: not in the signed manifest, or it holds no old key. */
+  stuck: number;
+}
+
+/**
+ * Seals again the items `itemsToReseal` finds that the last verified manifest lists as they are,
+ * and writes them as the next revision under the current key version, in batches. The worker does
+ * it with the old key it still holds from this unlock, so it works only in the session that
+ * replaced the keys: after a reload the old key is gone and these items wait for the device that
+ * replaced the keys, or an app that holds it. What it can't is counted as stuck. The space's signed
+ * manifest lists what was written. `progress` says how far it is.
+ */
+export async function resealItems(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  progress: (p: ReplaceProgress) => void = () => undefined,
+): Promise<Resealed> {
+  if (!isChained(detail)) return { rewritten: 0, stuck: 0 };
+  const spaceId = detail.view.space.id;
+  const found = await itemsToReseal(deps, detail, progress);
+  if (found.length === 0) return { rewritten: 0, stuck: 0 };
+  const manifest = await deps.acceptedManifest?.(spaceId);
+  const { accepted, rest } = manifest ? await acceptedOf(manifest, found) : { accepted: [], rest: found };
+  if (accepted.length === 0) return { rewritten: 0, stuck: rest.length };
+  progress({ phase: 'sealing', done: 0, total: accepted.length });
+  const built = await deps.crypto.buildReseal({ spaceId, items: accepted });
+  if (!built.ok) throw new ChainRefused(built.reason, built.seq);
+  const writes = built.writes ?? [];
+  let done = 0;
+  progress({ phase: 'sending', done, total: writes.length });
+  for (let at = 0; at < writes.length; at += BATCH_SIZE) {
+    const batch = writes.slice(at, at + BATCH_SIZE);
+    await deps.api.putBatch({
+      writes: batch.map((write) => ({ expectedRevision: write.expectedRevision, item: write.item })),
+    });
+    wrote(
+      deps,
+      batch.map((write) => write.item),
+    );
+    done += batch.length;
+    progress({ phase: 'sending', done, total: writes.length });
+  }
+  return { rewritten: writes.length, stuck: (built.held ?? []).length + rest.length };
 }
