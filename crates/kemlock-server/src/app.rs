@@ -33,7 +33,24 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{MakeSpan, TraceLayer};
+
+/// The span of a request: the method and the path, never the query. Several routes carry a secret
+/// in the query (`/notifications/hub?access_token=<JWT>`, `?token=` on attachments and invites,
+/// `?t=` on Sends), and tower-http's default span records the whole URI at DEBUG.
+#[derive(Debug, Clone, Copy, Default)]
+struct PathOnlySpan;
+
+impl<B> MakeSpan<B> for PathOnlySpan {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> tracing::Span {
+        tracing::debug_span!(
+            "request",
+            method = %request.method(),
+            path = %request.uri().path(),
+            version = ?request.version(),
+        )
+    }
+}
 
 /// How long a request may take before it is answered 408. WebSockets are upgraded long before.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -390,7 +407,7 @@ where
         // After the timeout above: the file routes have a longer one of their own.
         .merge(files_router)
         .merge(sends_router)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(PathOnlySpan))
         // Outermost, so every route (both APIs, the admin console, federation) has its client
         // address settled and every event a request writes carries it.
         .layer(axum::middleware::from_fn_with_state(
@@ -555,6 +572,47 @@ pub async fn run(config: Config) -> Result<(), RunError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_request_span_has_the_path_and_never_the_query() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NEW)
+            .with_writer({
+                let captured = captured.clone();
+                move || captured.clone()
+            })
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let request = axum::http::Request::builder()
+                .uri("/notifications/hub?access_token=eyJsecret.jwt.value&token=abc&t=xyz")
+                .body(())
+                .expect("request");
+            let _span = PathOnlySpan.make_span(&request);
+        });
+        let log = String::from_utf8(captured.0.lock().expect("buffer").clone()).expect("utf-8");
+        assert!(log.contains("/notifications/hub"), "the path is logged: {log}");
+        assert!(!log.contains("secret"), "the access token leaked: {log}");
+        assert!(!log.contains("token"), "the query leaked: {log}");
+        assert!(!log.contains("xyz"), "the query leaked: {log}");
+    }
 
     #[test]
     fn a_failed_fips_check_stops_the_server_and_says_why() {
