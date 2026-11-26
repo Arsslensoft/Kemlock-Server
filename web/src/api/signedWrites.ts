@@ -28,15 +28,20 @@ export function writeFields(item: ItemDto): ItemWriteFields {
   };
 }
 
-/** `item` with its write signature: signed as the unlocked account, once. */
+/**
+ * `item` with its write signature, made now by the unlocked account. Whatever signature the item
+ * came with (an item read from the server and sent back, say) is dropped: a write is signed for the
+ * revision and the envelope it is, by this account, and a served signature is never re-sent.
+ */
 export async function signedItem(
   crypto: Pick<CryptoPort, 'itemWriteSign'>,
   item: ItemDto,
 ): Promise<ItemDto> {
-  if (item.format !== 'kem1' || item.writeSignature) return item;
-  const signed = await crypto.itemWriteSign(writeFields(item));
+  if (item.format !== 'kem1') return item;
+  const { writer: _writer, writerKeyVersion: _version, writeSignature: _signature, ...bare } = item;
+  const signed = await crypto.itemWriteSign(writeFields(bare));
   return {
-    ...item,
+    ...bare,
     writer: signed.writer,
     writerKeyVersion: signed.writerKeyVersion,
     writeSignature: signed.writeSignature,

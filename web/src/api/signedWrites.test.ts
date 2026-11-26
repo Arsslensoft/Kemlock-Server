@@ -6,6 +6,7 @@ import { decodeB64, fromUtf8 } from '@/lib/b64url';
 import { type SignedApi, signedApi, signedItem, writeFields } from './signedWrites';
 
 const ACCOUNT = '99999999-9999-4999-8999-999999999999';
+const MEMBER = '55555555-5555-4555-8555-555555555555';
 const OWN = `user:${ACCOUNT}`;
 
 const live = (id: string, revision: number): ItemDto => ({
@@ -84,9 +85,19 @@ describe('signedItem', () => {
     );
   });
 
-  it('leaves an item that is signed already, and one that is not kem1, as it is', async () => {
-    const done = { ...live('a', 2), writer: ACCOUNT, writerKeyVersion: 1, writeSignature: 'c2ln' };
-    expect(await signedItem(crypto, done)).toBe(done);
+  it('drops a signature the item came with and signs it afresh', async () => {
+    // An item read from the server and sent back carries what the server served: another
+    // writer's signature, or an older revision's. It is never re-sent.
+    const served = { ...live('a', 2), writer: MEMBER, writerKeyVersion: 7, writeSignature: 'c2ln' };
+    const signed = await signedItem(crypto, served);
+    expect(signed.writer).toBe(ACCOUNT);
+    expect(signed.writerKeyVersion).toBe(1);
+    expect(fromUtf8(decodeB64(signed.writeSignature ?? ''))).toBe(
+      writeSignatureText(ACCOUNT, 1, writeFields(live('a', 2))),
+    );
+  });
+
+  it('leaves an item that is not kem1 as it is', async () => {
     const bw: ItemDto = { ...live('b', 1), format: 'bw' };
     expect(await signedItem(crypto, bw)).toBe(bw);
   });
