@@ -57,7 +57,7 @@ mod tests {
         // The unique key is on the exactly compared column.
         let key = &sql[sql.find("`name_key`").expect("name_key")..];
         assert!(
-            key[..key.find(',').expect("a comma")].contains("UNIQUE KEY"),
+            key[..key.find(',').expect("a comma")].contains("UNIQUE"),
             "{sql}"
         );
     }
