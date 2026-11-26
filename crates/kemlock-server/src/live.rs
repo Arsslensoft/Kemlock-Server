@@ -190,6 +190,8 @@ impl RetentionOverrides {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub signups_allowed: bool,
+    /// `signups_verify`: an address is proven by a mailed link before its account is made.
+    pub signups_verify: bool,
     /// Lower-case; empty means no whitelist.
     pub signups_domains: Vec<String>,
     pub invitations_allowed: bool,
@@ -323,6 +325,7 @@ impl Snapshot {
 
         Ok(Snapshot {
             signups_allowed: flag(view("signups_allowed")?),
+            signups_verify: flag(view("signups_verify")?),
             signups_domains: domains,
             invitations_allowed: flag(view("invitations_allowed")?),
             max_file_size,
@@ -548,6 +551,7 @@ impl Mailer for SwitchMailer {
 /// Puts `snapshot` into the running parts.
 pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchMailer) {
     live.set_signups_allowed(snapshot.signups_allowed);
+    live.set_signups_verify(snapshot.signups_verify);
     live.set_signup_domains(&snapshot.signups_domains);
     live.set_invitations_allowed(snapshot.invitations_allowed);
     live.set_max_file_size(snapshot.max_file_size.unwrap_or(0));
@@ -843,10 +847,12 @@ mod tests {
                 ("space_attachment_limit_kib", "2048"),
                 ("send_file_limit_kib", "512"),
                 ("invitations_allowed", "false"),
+                ("signups_verify", "true"),
             ],
         )
         .await;
         let snapshot = watching(&store, layered(&[], &[])).await.current();
+        assert!(snapshot.signups_verify);
         assert_eq!(
             snapshot.user_attachment_limit,
             Some(0),
@@ -875,6 +881,7 @@ mod tests {
         let store = new_store().await;
         let snapshot = watching(&store, layered(&[], &[])).await.current();
         assert!(!snapshot.signups_allowed);
+        assert!(!snapshot.signups_verify);
         assert!(snapshot.invitations_allowed);
         assert!(snapshot.signups_domains.is_empty());
         assert_eq!(snapshot.max_file_size, None);

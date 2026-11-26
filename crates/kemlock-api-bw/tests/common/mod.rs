@@ -247,6 +247,21 @@ impl Harness {
         Self::on_live(store, None, TwoStepParts::default(), live, |_| {}).await
     }
 
+    /// [`Harness::with_mail`] with a tweak to the settings.
+    pub(crate) async fn with_mail_set(
+        outbox: Arc<dyn Outbox>,
+        tweak: impl FnOnce(&mut BwSettings),
+    ) -> Self {
+        let store = SqlStore::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory store");
+        let live = Live {
+            notices: Notices::with_outbox(outbox),
+            ..Live::default()
+        };
+        Self::on_live(store, None, TwoStepParts::default(), live, tweak).await
+    }
+
     async fn on_live(
         store: SqlStore,
         webauthn: Option<Arc<dyn kemlock_app::passkeys::WebAuthn>>,

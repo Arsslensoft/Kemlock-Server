@@ -879,13 +879,14 @@ async fn an_invitation_to_an_unknown_address_waits_for_its_registration() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The new account is a member who accepted, and waits for an admin's confirmation.
+    // The new account is only invited: whoever registers an address is not proven to be the
+    // person the organization invited, so they accept for themselves and an admin then confirms.
     let answer = h.login("new@example.com", HASH).await;
     let new_token = answer["access_token"].as_str().expect("a token").to_owned();
     let synced = sync(&h, &new_token).await;
     assert_eq!(synced["profile"]["organizations"], json!([]));
     assert_eq!(synced["profile"]["organizationsNew"][0]["id"], org.as_str());
-    assert_eq!(synced["profile"]["organizationsNew"][0]["status"], 1);
+    assert_eq!(synced["profile"]["organizationsNew"][0]["status"], 0);
     let (_, members) = get(&h, &ada, &format!("/api/organizations/{org}/users")).await;
     let joined = members["data"]
         .as_array()
@@ -894,8 +895,29 @@ async fn an_invitation_to_an_unknown_address_waits_for_its_registration() {
         .find(|m| m["email"] == "new@example.com")
         .cloned()
         .expect("listed");
-    assert_eq!(joined["status"], 1);
+    assert_eq!(joined["status"], 0);
     let new_id = joined["id"].as_str().expect("an id");
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{new_id}/confirm"),
+            Some(&ada),
+            Some(json!({"key": "4.newkey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "User in invalid state");
+    let new_user: UserId = new_id.parse().expect("an account id");
+    let link = h.invite_token(&org, new_user, "new@example.com");
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{new_id}/accept"),
+            Some(&new_token),
+            Some(json!({"token": link})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
     let (status, _) = h
         .json(
             "POST",

@@ -25,6 +25,8 @@ fn quota(value: &AtomicU64) -> Option<u64> {
 
 struct Shared {
     signups_allowed: AtomicBool,
+    /// `SIGNUPS_VERIFY`: an address is proven by a mailed link before its account is made.
+    signups_verify: AtomicBool,
     invitations_allowed: AtomicBool,
     /// Lower-case domains; empty means no whitelist.
     signup_domains: RwLock<Vec<String>>,
@@ -66,6 +68,7 @@ impl Live {
     pub fn new(signups_allowed: bool) -> Live {
         Live(Arc::new(Shared {
             signups_allowed: AtomicBool::new(signups_allowed),
+            signups_verify: AtomicBool::new(false),
             invitations_allowed: AtomicBool::new(true),
             signup_domains: RwLock::new(Vec::new()),
             max_file_size: AtomicU64::new(0),
@@ -82,6 +85,15 @@ impl Live {
 
     pub fn set_signups_allowed(&self, allowed: bool) {
         self.0.signups_allowed.store(allowed, Ordering::Relaxed);
+    }
+
+    /// Whether registration has to prove the address with a mailed link first.
+    pub fn signups_verify(&self) -> bool {
+        self.0.signups_verify.load(Ordering::Relaxed)
+    }
+
+    pub fn set_signups_verify(&self, verify: bool) {
+        self.0.signups_verify.store(verify, Ordering::Relaxed);
     }
 
     pub fn invitations_allowed(&self) -> bool {
@@ -207,6 +219,17 @@ mod tests {
         assert!(other.signups_allowed());
         assert_eq!(live, other);
         assert_ne!(live, Live::new(true));
+    }
+
+    #[test]
+    fn verifying_sign_ups_is_off_until_set_and_every_clone_sees_it() {
+        let live = Live::new(true);
+        let other = live.clone();
+        assert!(!other.signups_verify());
+        live.set_signups_verify(true);
+        assert!(other.signups_verify());
+        live.set_signups_verify(false);
+        assert!(!other.signups_verify());
     }
 
     #[test]

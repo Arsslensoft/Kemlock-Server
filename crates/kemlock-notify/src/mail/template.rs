@@ -1,8 +1,9 @@
 //! The words of every mail. Each notice becomes a subject, a plain-text body and an HTML body.
 //!
 //! A mail says enough for the account's owner to recognise their own activity and nothing that
-//! could open the vault: no keys, no item names, no links that carry a secret. The one link that
-//! does is the one that confirms a new sign-in address: its token proves the mailbox is the
+//! could open the vault: no keys, no item names, no links that carry a secret. The links that
+//! do are the one that confirms a new sign-in address and the one that verifies an address before
+//! its account is made: each token proves the mailbox is the
 //! person's, opens nothing by itself, and works once. Text from outside (a device name) is
 //! escaped in the HTML and kept out of subjects.
 
@@ -10,8 +11,8 @@ use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
     EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice,
-    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, TwoStepChangedNotice,
-    TwoStepCodeNotice, TwoStepRecoveredNotice,
+    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice,
+    TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -471,6 +472,29 @@ fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendere
     )
 }
 
+/// The mail of a registration that has to prove its address first. The link is the Bitwarden web
+/// vault's `finish-signup`; its token proves the mailbox is the person's, and works for 30 minutes.
+fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered {
+    let email: String = url::form_urlencoded::byte_serialize(notice.to.as_str().as_bytes()).collect();
+    let link = format!(
+        "{}/#/finish-signup/?token={}&email={}",
+        brand.domain.trim_end_matches('/'),
+        notice.token,
+        email
+    );
+    let body = Body::new(&[
+        "Open this link to verify this address and finish creating your account:",
+        &link,
+        "It runs out in 30 minutes. If you didn't ask for an account, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("Verify your email for {}", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
 /// Writes a notice out as a mail.
 pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
     match notice {
@@ -487,6 +511,7 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::EmailTaken(n) => email_taken(n, brand),
         Notice::EmailChanged(n) => email_changed(n, brand),
         Notice::PasswordChanged(n) => password_changed(n, brand),
+        Notice::RegisterVerify(n) => register_verify(n, brand),
     }
 }
 
@@ -748,6 +773,23 @@ mod tests {
         let link = "https://vault.example.com/confirm-email?token=tok_en-123";
         assert!(r.text.contains(link), "{}", r.text);
         assert!(r.html.contains(link), "{}", r.html);
+        assert!(!r.subject.contains("tok_en"));
+        assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_verification_mail_carries_the_link_with_the_address_encoded() {
+        let r = render(
+            &Notice::RegisterVerify(RegisterVerifyNotice {
+                to: Email::parse("new.tag@example.com").expect("email"),
+                token: "tok_en-123.sig".to_owned(),
+            }),
+            &Branding::new("https://vault.example.com/"),
+        );
+        assert_eq!(r.to, "new.tag@example.com");
+        assert_eq!(r.subject, "Verify your email for Kemlock");
+        let link = "https://vault.example.com/#/finish-signup/?token=tok_en-123.sig&email=new.tag%40example.com";
+        assert!(r.text.contains(link), "{}", r.text);
         assert!(!r.subject.contains("tok_en"));
         assert!(!format!("{r:?}").contains("tok_en"));
     }

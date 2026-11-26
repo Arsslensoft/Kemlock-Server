@@ -98,6 +98,26 @@ impl fmt::Debug for EmailChangeNotice {
     }
 }
 
+/// The mail that proves an address before an account is made for it (the Bitwarden API's
+/// registration with `SIGNUPS_VERIFY` on). The token in it is the proof that the person owns the
+/// address, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegisterVerifyNotice {
+    /// The address being registered: the mail goes there.
+    pub to: Email,
+    /// The signed token the registration finishes with.
+    pub token: String,
+}
+
+impl fmt::Debug for RegisterVerifyNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisterVerifyNotice")
+            .field("to", &self.to)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
 /// A change of the sign-in address was asked for. The mail goes to the old address, so a change
 /// the owner didn't ask for doesn't go unnoticed. It carries no link and no secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,6 +185,8 @@ pub enum Notice {
     EmailChanged(EmailChangedNotice),
     /// The master password changed, mailed to the account's address.
     PasswordChanged(PasswordChangedNotice),
+    /// The link that proves an address before its account is made, mailed to that address.
+    RegisterVerify(RegisterVerifyNotice),
 }
 
 impl Notice {
@@ -184,6 +206,7 @@ impl Notice {
             Notice::EmailTaken(_) => "email-taken",
             Notice::EmailChanged(_) => "email-changed",
             Notice::PasswordChanged(_) => "password-changed",
+            Notice::RegisterVerify(_) => "register-verify",
         }
     }
 }
@@ -379,5 +402,11 @@ mod tests {
         };
         assert!(!format!("{change:?}").contains("s3cr3t"));
         assert!(!format!("{:?}", Notice::EmailChange(change)).contains("s3cr3t"));
+        let verify = RegisterVerifyNotice {
+            to: Email::parse("ada@example.com").expect("email"),
+            token: "v3rify-token".to_owned(),
+        };
+        assert!(!format!("{verify:?}").contains("v3rify"));
+        assert!(!format!("{:?}", Notice::RegisterVerify(verify)).contains("v3rify"));
     }
 }

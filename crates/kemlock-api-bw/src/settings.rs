@@ -28,6 +28,9 @@ pub struct BwSettings {
     pub origin: String,
     /// `SIGNUPS_ALLOWED`.
     pub signups_allowed: bool,
+    /// `SIGNUPS_VERIFY`: an address is proven by a mailed link before its account is made. Only
+    /// when the server mails; the start value, which `live` replaces while the server runs.
+    pub signups_verify: bool,
     /// `KEMLOCK_BITWARDEN_COMPAT`: with it off, every Bitwarden route answers 404.
     pub compat: bool,
     /// Rounds for new password hashes; an account hashed with fewer is upgraded at its next sign-in.
@@ -65,6 +68,7 @@ impl BwSettings {
             domain,
             origin,
             signups_allowed,
+            signups_verify: false,
             compat: true,
             password_iterations: PASSWORD_ITERATIONS,
             login_ratelimit_seconds: 60,
@@ -119,6 +123,13 @@ impl BwSettings {
         self.live
             .as_ref()
             .map_or(self.signups_allowed, Live::signups_allowed)
+    }
+
+    /// Whether registration has to prove the address with a mailed link first.
+    pub fn signups_verify(&self) -> bool {
+        self.live
+            .as_ref()
+            .map_or(self.signups_verify, Live::signups_verify)
     }
 
     /// Whether `email` may register without an invitation: sign-ups are on, or (with a domain
