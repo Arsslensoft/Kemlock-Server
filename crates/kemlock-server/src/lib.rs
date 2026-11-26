@@ -18,6 +18,7 @@ pub mod health;
 pub mod healthcheck;
 pub mod jobs;
 pub mod keys;
+pub mod listener;
 pub mod live;
 pub mod logging;
 pub mod migration;

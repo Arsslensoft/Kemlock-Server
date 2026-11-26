@@ -38,8 +38,14 @@ pub const IGNORED_VAULTWARDEN_VARS: &[&str] = &[
     "LOG_FILE",
 ];
 
-/// How many connections the server serves at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise.
-pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+/// How many connections the server holds at once unless `KEMLOCK_MAX_CONNECTIONS` says otherwise:
+/// no limit. A cap on all clients lets one of them fill it, so the limit that is on by default is
+/// the one for each address.
+pub const DEFAULT_MAX_CONNECTIONS: usize = 0;
+
+/// How many connections one client address may hold at once unless
+/// `KEMLOCK_MAX_CONNECTIONS_PER_IP` says otherwise.
+pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConfigError {
@@ -97,9 +103,14 @@ pub struct Config {
     /// `KEMLOCK_FEDERATION_PROBE_SECONDS`: how often this server probes each paired peer's health, in
     /// seconds; 0 turns the probes off. Default 60. Failed probes back off up to ten minutes.
     pub federation_probe_seconds: u64,
-    /// `KEMLOCK_MAX_CONNECTIONS`: how many connections the server serves at once; further ones wait
-    /// in the operating system's queue until one ends. 0 turns the limit off. Default 1024.
+    /// `KEMLOCK_MAX_CONNECTIONS`: how many connections the server holds at once, WebSockets
+    /// included; further ones wait in the operating system's queue until one ends. 0 (the default)
+    /// is no limit.
     pub max_connections: usize,
+    /// `KEMLOCK_MAX_CONNECTIONS_PER_IP`: how many connections one client address (an IPv6 one by
+    /// its /64) may hold at once; the addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt. 0 is no
+    /// limit. Default 64.
+    pub max_connections_per_ip: usize,
     /// Vaultwarden settings that were set and are not used.
     pub ignored: Vec<String>,
     /// The TOML file that was read, if any.
@@ -134,6 +145,7 @@ struct FileConfig {
     source_url: Option<String>,
     federation_probe_seconds: Option<u64>,
     max_connections: Option<usize>,
+    max_connections_per_ip: Option<usize>,
 }
 
 fn parse_bool(name: &'static str, value: &str) -> Result<bool, ConfigError> {
@@ -368,6 +380,16 @@ impl Config {
             })?,
             None => file.max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS),
         };
+        let max_connections_per_ip = match lookup(env, "KEMLOCK_MAX_CONNECTIONS_PER_IP") {
+            Some(value) => value.trim().parse().map_err(|_| ConfigError::Bad {
+                name: "KEMLOCK_MAX_CONNECTIONS_PER_IP",
+                expected: "a number of connections, 0 for no limit",
+                value: value.clone(),
+            })?,
+            None => file
+                .max_connections_per_ip
+                .unwrap_or(DEFAULT_MAX_CONNECTIONS_PER_IP),
+        };
         let ignored = IGNORED_VAULTWARDEN_VARS
             .iter()
             .filter(|name| lookup(env, name).is_some())
@@ -395,6 +417,7 @@ impl Config {
             source_url,
             federation_probe_seconds,
             max_connections,
+            max_connections_per_ip,
             ignored,
             config_file: None,
             settings_env,
@@ -665,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn connections_are_limited_unless_the_operator_says_otherwise() {
+    fn the_total_of_connections_is_limited_only_when_the_operator_says_so() {
         let c = config(&[], None).expect("valid");
         assert_eq!(c.max_connections, DEFAULT_MAX_CONNECTIONS);
         let c = config(&[("KEMLOCK_MAX_CONNECTIONS", " 200 ")], None).expect("valid");
@@ -683,6 +706,30 @@ mod tests {
             config(&[("KEMLOCK_MAX_CONNECTIONS", "many")], None),
             Err(ConfigError::Bad {
                 name: "KEMLOCK_MAX_CONNECTIONS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn each_address_is_limited_but_the_total_is_not_by_default() {
+        let c = config(&[], None).expect("valid");
+        assert_eq!(c.max_connections, 0);
+        assert_eq!(c.max_connections_per_ip, 64);
+        let c = config(&[("KEMLOCK_MAX_CONNECTIONS_PER_IP", " 8 ")], None).expect("valid");
+        assert_eq!(c.max_connections_per_ip, 8);
+        let c = config(&[], Some("max_connections_per_ip = 16\n")).expect("valid");
+        assert_eq!(c.max_connections_per_ip, 16);
+        let c = config(
+            &[("KEMLOCK_MAX_CONNECTIONS_PER_IP", "0")],
+            Some("max_connections_per_ip = 16\n"),
+        )
+        .expect("valid");
+        assert_eq!(c.max_connections_per_ip, 0);
+        assert!(matches!(
+            config(&[("KEMLOCK_MAX_CONNECTIONS_PER_IP", "lots")], None),
+            Err(ConfigError::Bad {
+                name: "KEMLOCK_MAX_CONNECTIONS_PER_IP",
                 ..
             })
         ));

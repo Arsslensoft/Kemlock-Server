@@ -344,12 +344,22 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   of the proxies above, or a tunnel, in front of any address that isn't on a network you trust.
   A `DOMAIN` that starts with `http://` and isn't `localhost` or a loopback address makes the
   server log a warning at start-up.
-- Slow clients and floods. The server drops a client that takes more than 10 seconds to send the
-  head of a request, and serves at most `KEMLOCK_MAX_CONNECTIONS` connections at once (default
-  1024, `max_connections` in `kemlock.toml`, 0 for no limit); further clients wait in the
-  operating system's queue until one ends. Every client counts, WebSockets included, and behind a
-  proxy the proxy's connections are the ones counted. Raise the limit together with the
-  process's open-file limit (`LimitNOFILE` in systemd, `--ulimit nofile` in Docker).
+- Slow clients and floods. A connection that hasn't delivered the head of its first request
+  within 10 seconds is dropped, even if it sent nothing at all, and so is one whose write makes no
+  progress for 60 seconds (a client that never reads its response). The head of a later request on
+  a kept-alive connection may take 125 seconds, which is also how long such a connection may sit
+  idle: set above what a proxy keeps an idle upstream connection for, so the proxy closes it
+  first (Caddy's `reverse_proxy` keeps one for 2 minutes, nginx's `keepalive_timeout` in an
+  `upstream` block defaults to 60 seconds; if you raise those past 125 seconds, a request can be
+  sent down a connection that is closing and fail with a 502). One client address may hold
+  `KEMLOCK_MAX_CONNECTIONS_PER_IP` connections at once (default 64, `max_connections_per_ip` in
+  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /64), and further connections from
+  it are closed. The addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt, because behind a proxy
+  every connection comes from the proxy. `KEMLOCK_MAX_CONNECTIONS` caps all connections together
+  (default 0, no limit): further clients wait in the operating system's queue until one ends, so
+  one client can fill it, which is why the per-address limit is the one on by default. Both count
+  WebSockets for as long as their socket is open. Raise the open-file limit with them
+  (`LimitNOFILE` in systemd, `--ulimit nofile` in Docker).
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
   /64.
 
