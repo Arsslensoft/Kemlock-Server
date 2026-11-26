@@ -98,8 +98,16 @@ export function createAutoLock(options: {
     },
     hidden(isHidden) {
       if (!running) return;
-      if (isHidden) hiddenSince ??= now();
-      else hiddenSince = undefined;
+      if (isHidden) {
+        hiddenSince ??= now();
+        check();
+        return;
+      }
+      // Back in view. A page that was frozen in the background ran no timer, so the hidden limit may
+      // have run out unseen: judge it while the time hidden still counts, then forget it.
+      check();
+      if (!running) return;
+      hiddenSince = undefined;
       check();
     },
     setLimits(next) {

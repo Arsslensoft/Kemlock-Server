@@ -83,6 +83,26 @@ describe('the clock', () => {
     expect(expire).toHaveBeenCalledTimes(1);
   });
 
+  it('expires a tab that comes back from the background after the hidden limit ran out unseen', () => {
+    const { expire, clock } = make();
+    clock.start(limitsFor(), false);
+    clock.hidden(true);
+    // The page was frozen: the clock moved on and no timer fired.
+    vi.setSystemTime(Date.now() + 6 * MIN);
+    clock.hidden(false);
+    expect(expire).toHaveBeenCalledTimes(1);
+    expect(expire).toHaveBeenCalledWith('lock');
+  });
+
+  it('does not expire a tab that comes back inside the hidden limit', () => {
+    const { expire, clock } = make();
+    clock.start(limitsFor(), false);
+    clock.hidden(true);
+    vi.setSystemTime(Date.now() + 4 * MIN);
+    clock.hidden(false);
+    expect(expire).not.toHaveBeenCalled();
+  });
+
   it('expires at once when the time ran out unseen, as on a computer that slept', () => {
     const { expire, clock } = make();
     clock.start(limitsFor(), false);
