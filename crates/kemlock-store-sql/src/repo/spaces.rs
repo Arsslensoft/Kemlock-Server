@@ -29,8 +29,8 @@ use kemlock_domain::{Item, ItemDraft, ItemId, Owner, SpaceId, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::{Expr, Query};
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -409,6 +409,16 @@ impl SqlStore {
         };
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
+            // The gate orders the changes of this process; several servers on one PostgreSQL or
+            // MySQL order them on the space row, which each transaction locks before it counts the
+            // owners. SQLite has the one writer connection and no row locks.
+            if touches_members && self.writer().get_database_backend() != DbBackend::Sqlite {
+                spaces::Entity::find_by_id(space)
+                    .lock_exclusive()
+                    .one(&txn)
+                    .await
+                    .store()?;
+            }
             let had_owner = touches_members && has_confirmed_owner(&txn, space).await?;
             apply_in(&txn, changes, false).await?;
             if had_owner
