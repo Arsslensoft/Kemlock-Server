@@ -238,16 +238,22 @@ export function incomingLinks(selfId: string, all: readonly VaultItem[]): string
 }
 
 /**
- * The fields a form writes for the links it holds: `links` (left out when none, and any entry it
- * can't read kept), and `linkedLoginId` dropped when the person unlinked that login. The login of
- * a code stays in `linkedLoginId` and is not copied into `links`, unless `links` held it already.
+ * The fields a form writes for the links it holds: `links` (any entry it can't read kept), and
+ * `linkedLoginId` dropped when the person unlinked that login. The login of a code stays in
+ * `linkedLoginId` and is not copied into `links`, unless `links` held it already.
+ *
+ * With no links to write the member is cleared (set to undefined, which saving removes) only when
+ * the body held one. A body that held none, a new item or a copy of one with no links included, gets
+ * no `links` member at all, so it stays byte for byte.
  */
 export function linksFields(existing: ItemData | null | undefined, ids: readonly string[]): ItemData {
   const kept = new Set(ids.map((id) => id.toLowerCase()));
   const legacy = legacyLink(existing);
   const own = new Set(readLinks(existing));
   const written = [...kept].filter((id) => id !== legacy || own.has(id));
-  const fields: ItemData = { links: writeLinks(existing, written) };
+  const fields: ItemData = {};
+  const links = writeLinks(existing, written);
+  if (links !== undefined || existing?.['links'] !== undefined) fields['links'] = links;
   if (legacy !== undefined && !kept.has(legacy)) fields['linkedLoginId'] = undefined;
   return fields;
 }

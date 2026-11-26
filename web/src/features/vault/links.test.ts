@@ -138,6 +138,19 @@ describe('what a form holds and writes', () => {
     expect(fields['links']).toBeUndefined();
     expect('linkedLoginId' in fields).toBe(false);
   });
+
+  it('writes no links member at all for a body that held none, so a new item or a copy carries none', () => {
+    expect('links' in linksFields(undefined, [])).toBe(false);
+    expect('links' in linksFields({ name: 'GitHub' }, [])).toBe(false);
+    expect(linksFields(undefined, [A])).toEqual({ links: [{ id: A }] });
+  });
+
+  it('still clears the member of a body that held one when the last link goes', () => {
+    const cleared = linksFields({ links: [{ id: B }] }, []);
+    expect('links' in cleared && cleared['links'] === undefined).toBe(true);
+    const emptied = linksFields({ links: [] }, []);
+    expect('links' in emptied && emptied['links'] === undefined).toBe(true);
+  });
 });
 
 describe('linkedLoginId as a link', () => {
