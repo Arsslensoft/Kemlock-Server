@@ -9,7 +9,7 @@ use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::{RecoveryBox, SpaceRecoveryRepo};
 use kemlock_domain::{SpaceId, UserId};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, TransactionTrait};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use time::OffsetDateTime;
 
 fn to_i64(value: u64) -> Result<i64, StoreError> {

@@ -115,7 +115,7 @@ pub(crate) struct SealedItemRef<'a> {
 pub(crate) struct Session {
     next: u32,
     slots: HashMap<u32, Slot>,
-    unlocked: Option<Unlocked>,
+    pub(crate) unlocked: Option<Unlocked>,
     /// A rotation of the root key that was started and not yet committed (`rotation.rs`).
     pub(crate) pending: Option<Pending>,
     /// The private keys before the last rotation (`rotation.rs`).

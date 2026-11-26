@@ -12,7 +12,7 @@ use kemlock_domain::UserId;
 use kemlock_domain::sends::{SendId, SendRecord};
 use sea_orm::ActiveValue::Set;
 use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
+    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
 };
 use time::OffsetDateTime;
 
