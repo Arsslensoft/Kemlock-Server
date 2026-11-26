@@ -687,7 +687,10 @@ impl SpaceState {
         Ok(t)
     }
 
-    /// Whether `actor` may confirm `target`, who must have accepted. `submitted` is the
+    /// Whether `actor` may confirm `target`, who must have accepted, or be confirmed already: a
+    /// confirmed member may be confirmed again, which replaces their confirmation (the confirmer
+    /// left or lost their role, nobody confirmed them, or their keys changed). Who may do it is
+    /// judged as of now. `submitted` is the
     /// fingerprint the confirmer says they compared and `actual` the one of the member's bundle.
     /// Confirming waits while the space's keys await replacement, because a key sealed now would
     /// be sealed under one that is about to be replaced.
@@ -705,7 +708,7 @@ impl SpaceState {
         if actor == target {
             return Err(SpaceError::Forbidden("you can't confirm yourself"));
         }
-        if t.state != MemberState::Accepted {
+        if !matches!(t.state, MemberState::Accepted | MemberState::Confirmed) {
             return Err(SpaceError::State(
                 "only a member who accepted the invitation can be confirmed",
             ));
@@ -1362,9 +1365,21 @@ mod tests {
     fn confirming_is_for_accepted_members_by_someone_who_manages_them() {
         let f = Fixture::new();
         let fp = [5u8; FINGERPRINT_LEN];
-        // A member who is already confirmed isn't confirmed again; a member can't confirm.
+        // A member who is already confirmed may be confirmed again, by someone who manages them
+        // as of now; a member who is only invited or revoked can't be, and a member can't confirm.
+        assert!(f.state.authorize_confirm(f.owner, f.member, &fp, &fp).is_ok());
         assert!(matches!(
-            f.state.authorize_confirm(f.owner, f.member, &fp, &fp).err(),
+            f.state.authorize_confirm(f.member, f.admin, &fp, &fp).err(),
+            Some(SpaceError::Forbidden(_))
+        ));
+        assert!(matches!(
+            f.state.authorize_confirm(f.admin, f.owner, &fp, &fp).err(),
+            Some(SpaceError::Forbidden(_))
+        ));
+        let mut revoked = Fixture::new();
+        revoked.set_state(revoked.member, MemberState::Revoked);
+        assert!(matches!(
+            revoked.state.authorize_confirm(revoked.owner, revoked.member, &fp, &fp).err(),
             Some(SpaceError::State(_))
         ));
         assert!(matches!(

@@ -48,7 +48,11 @@ pub struct ConfirmInput {
 impl<R: SpaceRepo, U: UserRepo, F: BundleFingerprints, V: EventLog, C: Clock>
     ConfirmMember<R, U, F, V, C>
 {
-    /// Confirms an accepted member. Refused when the fingerprint isn't the one of the member's
+    /// Confirms an accepted member, or a confirmed one again: that replaces the stored confirmation
+    /// and seals the keys anew, for a member whose confirmer left or lost their role, whom nobody
+    /// confirmed, or whose keys changed. The confirmer's authority is judged as of now, and the
+    /// same statement and signature checks apply. Only for a space with no chain (`load_open`).
+    /// Refused when the fingerprint isn't the one of the member's
     /// current bundle, when the confirmer's role can't manage the member, when the confirmer is the
     /// member, when the confirmation's signature doesn't verify, or while the space awaits a key
     /// replacement.
