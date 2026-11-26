@@ -909,6 +909,9 @@ mod tests {
                 ("space_attachment_limit_kib", "2048"),
                 ("send_file_limit_kib", "512"),
                 ("invitations_allowed", "false"),
+                // Verifying a new account's address needs a mail server to send the link.
+                ("smtp_host", "mail.example.org"),
+                ("smtp_from", "ops@example.org"),
                 ("signups_verify", "true"),
                 ("bw_invites_auto_accept", "true"),
             ],
