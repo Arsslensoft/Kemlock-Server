@@ -552,6 +552,83 @@ async fn signing_out_of_this_session_keeps_the_device_and_its_key_copy() {
 }
 
 #[tokio::test]
+async fn ending_the_other_sessions_of_a_device_keeps_this_one_and_the_key_copy() {
+    let (app, _open, _session) = open_device().await;
+    let browser = app.client();
+    let first = {
+        let signed = sign_in_reply(&browser, EMAIL, test_device()).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    let put = browser
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(&first.access_token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "keystore",
+                })),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+    // The same browser signs in again later, as the device it already is: a second session.
+    app.clock.advance(time::Duration::seconds(5));
+    let second = {
+        let device = json!({"id": first.device_id, "name": "Test device", "kind": "kemlock-cli"});
+        let signed = sign_in_reply(&browser, EMAIL, device).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    assert_eq!(second.device_id, first.device_id);
+
+    let out = browser
+        .post_authed(
+            "/kem/v1/auth/sign-out",
+            &second.access_token,
+            json!({"others": true}),
+        )
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
+
+    // The earlier session's refresh token, as an old closed tab holds it, is dead.
+    let old = browser
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": first.refresh_token}),
+        )
+        .await;
+    assert_eq!(old.status, StatusCode::UNAUTHORIZED);
+    // This session, its device and its key copy are not.
+    let mine = browser
+        .get_authed("/kem/v1/devices/key-copy", &second.access_token)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{:?}", mine.json());
+    let kept = browser
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": second.refresh_token}),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.json());
+    let device_id: DeviceId = second.device_id.parse().expect("a device id");
+    assert!(app.store.key_copy_of(device_id).is_some());
+
+    // A body that isn't the request is refused.
+    let bad = browser
+        .post_authed(
+            "/kem/v1/auth/sign-out",
+            &second.access_token,
+            json!({"others": "yes"}),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn one_device_stops_trusting_another_and_the_list_says_since_when() {
     let (app, open, session) = open_device().await;
     let other = app.client();

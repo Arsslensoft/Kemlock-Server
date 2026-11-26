@@ -463,6 +463,16 @@ impl TokenRepo for FakeStore {
         self.lock().tokens.retain(|_, t| t.device != device);
         Ok(())
     }
+
+    async fn device_tokens(&self, device: DeviceId) -> Result<Vec<RefreshToken>, StoreError> {
+        Ok(self
+            .lock()
+            .tokens
+            .values()
+            .filter(|t| t.device == device)
+            .cloned()
+            .collect())
+    }
 }
 
 impl TwoFactorRepo for FakeStore {

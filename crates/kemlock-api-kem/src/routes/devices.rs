@@ -214,6 +214,16 @@ impl KeyCopyResponse {
     }
 }
 
+/// `POST /kem/v1/auth/sign-out`: an empty body ends this session; `{"others": true}` keeps it and ends
+/// the device's other sessions.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EndSessionRequest {
+    /// End the device's other sessions and keep this one.
+    #[serde(default)]
+    pub(crate) others: bool,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SignOutRequest {
@@ -507,12 +517,25 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         Ok(StatusCode::NO_CONTENT)
     }
 
-    /// `POST /kem/v1/auth/sign-out`: ends this device's session only. Its key copy stays.
+    /// `POST /kem/v1/auth/sign-out`: ends this device's session only, or, with `{"others": true}`, its
+    /// other sessions and not this one. The key copy stays either way.
     pub(crate) async fn handle_auth_sign_out(
         State(api): State<Self>,
         authed: Authed,
+        body: Body,
     ) -> Result<StatusCode, Problem> {
-        api.end_session().execute(&authed.actor).await?;
+        let others = if body.is_empty() {
+            false
+        } else {
+            body.json::<EndSessionRequest>()?.others
+        };
+        if others {
+            api.end_session()
+                .execute_others(&authed.actor, authed.auth_time)
+                .await?;
+        } else {
+            api.end_session().execute(&authed.actor).await?;
+        }
         Ok(StatusCode::NO_CONTENT)
     }
 
@@ -700,8 +723,9 @@ fn doc_device_untrust() {}
 #[utoipa::path(
     post, path = "/kem/v1/auth/sign-out", tag = "trusted-device",
     security(("dpop" = [])),
+    request_body = Option<EndSessionRequest>,
     responses(
-        (status = 204, description = "This device's refresh tokens are revoked and its DPoP key unbound; the device and its key copy stay"),
+        (status = 204, description = "With no body: this device's refresh tokens are revoked and its DPoP key unbound. With {\"others\": true}: its other sessions end and this one goes on. The device and its key copy stay either way"),
         (status = 401, description = "Not signed in", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
@@ -749,6 +773,7 @@ fn doc_device_sign_out() {}
         ApprovalAnswerRequest,
         KeyCopyRequest,
         KeyCopyResponse,
+        EndSessionRequest,
         SignOutRequest
     ))
 )]

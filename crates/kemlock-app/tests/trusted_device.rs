@@ -457,3 +457,110 @@ async fn ending_a_session_leaves_the_other_devices_alone() {
         "the iPad's session goes on"
     );
 }
+
+/// A second sign-in on the same device, a few seconds after `scene()`'s: a new session of it.
+async fn sign_in_again(s: &Scene) -> kemlock_app::TokenPair {
+    s.world.env.clock.advance(Duration::seconds(5));
+    let again = kemlock_app::DeviceInfo {
+        id: Some(s.me.device),
+        ..device("Pixel")
+    };
+    let SignedIn::Tokens(second) = sign_in_with(&s.world, EMAIL, &PASSWORD, again, "jkt-1")
+        .await
+        .expect("signs in")
+    else {
+        panic!("tokens expected");
+    };
+    assert_eq!(second.device, s.me.device, "the same device");
+    second
+}
+
+#[tokio::test]
+async fn ending_the_other_sessions_keeps_this_one_the_device_and_its_key_copy() {
+    let s = scene().await;
+    key_copies(&s.world)
+        .put(&s.me, wrapped(), KeyProtection::Keystore)
+        .await
+        .expect("stores");
+    let second = sign_in_again(&s).await;
+    let signed_in_at = s.world.env.clock.now().unix_timestamp();
+
+    let ended = end_session(&s.world)
+        .execute_others(&s.me, signed_in_at)
+        .await
+        .expect("ends the others");
+
+    assert_eq!(ended, 1);
+    assert!(
+        s.world
+            .refresh()
+            .execute(&s.my_refresh_token, "jkt-1")
+            .await
+            .is_err(),
+        "the earlier session's refresh token, as an old closed tab holds it, no longer works"
+    );
+    assert!(
+        s.world
+            .refresh()
+            .execute(&second.refresh_token, "jkt-1")
+            .await
+            .is_ok(),
+        "this session goes on"
+    );
+    assert!(s.world.store.key_copy_of(s.me.device).is_some());
+    let device = DeviceRepo::get(&s.world.store, s.me.device)
+        .await
+        .expect("reads")
+        .expect("the device is still there");
+    assert_eq!(device.dpop_jkt.as_deref(), Some("jkt-1"), "its key stays bound");
+    assert!(
+        s.world
+            .store
+            .events()
+            .iter()
+            .any(|e| e.action == "device.other_sessions_end")
+    );
+}
+
+#[tokio::test]
+async fn ending_the_other_sessions_with_none_is_a_no_op() {
+    let s = scene().await;
+    let signed_in_at = s.world.env.clock.now().unix_timestamp();
+    assert_eq!(
+        end_session(&s.world)
+            .execute_others(&s.me, signed_in_at)
+            .await,
+        Ok(0)
+    );
+    assert!(
+        s.world
+            .refresh()
+            .execute(&s.my_refresh_token, "jkt-1")
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn ending_the_other_sessions_leaves_other_devices_alone() {
+    let s = scene().await;
+    let SignedIn::Tokens(other) = sign_in_with(&s.world, EMAIL, &PASSWORD, device("iPad"), "jkt-2")
+        .await
+        .expect("signs in")
+    else {
+        panic!("tokens expected");
+    };
+    let signed_in_at = s.world.env.clock.now().unix_timestamp();
+    end_session(&s.world)
+        .execute_others(&s.me, signed_in_at)
+        .await
+        .expect("ends the others");
+    assert!(
+        s.world
+            .refresh()
+            .execute(&other.refresh_token, "jkt-2")
+            .await
+            .is_ok(),
+        "the iPad's session goes on"
+    );
+}

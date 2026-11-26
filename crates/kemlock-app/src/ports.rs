@@ -158,6 +158,11 @@ pub trait TokenRepo: Send + Sync {
         &self,
         device: DeviceId,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// The device's refresh tokens, used or not, so a caller can tell its families apart.
+    fn device_tokens(
+        &self,
+        device: DeviceId,
+    ) -> impl Future<Output = Result<Vec<RefreshToken>, StoreError>> + Send;
 }
 
 /// One page of a delta sync.

@@ -27,6 +27,11 @@ pub const DPOP_NONCE: HeaderName = HeaderName::from_static("dpop-nonce");
 pub struct Body(pub Bytes);
 
 impl Body {
+    /// Whether the request had no body at all.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Parses the body as JSON, with problem+json errors.
     pub fn json<T: DeserializeOwned>(&self) -> Result<T, Problem> {
         serde_json::from_slice(&self.0)
