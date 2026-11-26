@@ -1,7 +1,13 @@
+import { createDevicesApi } from '@/api/devices';
 import { clearVault } from '@/features/vault/hooks';
 import { vaultCrypto } from '@/crypto-port';
 import { forgetGrant } from '@/features/admin/reauth';
-import { queryClient, session } from './services';
+import { api, queryClient, session } from './services';
+
+const devicesApi = createDevicesApi(api);
+
+/** How long signing out waits for the server before it ends the session here regardless. */
+export const SERVER_SIGN_OUT_MS = 3000;
 
 /** Cached answers that hold no secret and that routing needs before anyone is signed in. */
 const KEPT_QUERIES = new Set(['config', 'placement']);
@@ -35,12 +41,39 @@ export function forgetEndedSession(): void {
 }
 
 /**
- * Forgets the keys and the tokens, and this browser's own keys with them: the DPoP key the tokens
- * were bound to, and the trusted-device key (the server drops this device's copy of the root key
- * when it signs the device out, so that key only opens what is already dead). The next sign-in
- * makes new ones.
+ * Ends this device's session on the server, so its refresh token stops working, not just here.
+ * Best effort: a server that is out of reach, slow, or has ended the session already does not hold
+ * the sign-out up.
  */
-export async function signOut(): Promise<void> {
+async function endOnServer(deviceId: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      devicesApi.signOut(deviceId),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, SERVER_SIGN_OUT_MS);
+      }),
+    ]);
+  } catch {
+    // The tokens are forgotten here either way.
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Ends the session on the server, then forgets the keys and the tokens, and this browser's own keys
+ * with them: the DPoP key the tokens were bound to, and the trusted-device key (the server drops
+ * this device's copy of the root key when it signs the device out, so that key only opens what is
+ * already dead). The next sign-in makes new ones. With `server: false` the server is not asked, for
+ * callers that have just had the server end this session (leaving a browser from Devices, an
+ * account erased).
+ */
+export async function signOut(options: { server?: boolean } = {}): Promise<void> {
+  const { deviceId, status } = session.getState();
+  // First, while the tokens and the DPoP key still work. Not when the server has just ended it
+  // (this device signed itself out, or the account was erased).
+  if (options.server !== false && deviceId && status !== 'signed-out') await endOnServer(deviceId);
   await vaultCrypto.lock();
   clearVault();
   session.end();
