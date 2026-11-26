@@ -174,6 +174,8 @@ struct Extras {
     past_keys: HashMap<ServerId, Vec<crate::keyrecs::PastKey>>,
     /// Address changes that came with rotations, for the admin.
     pending_addresses: Vec<crate::keyrecs::PendingAddresses>,
+    /// The addresses of each peer the admin chose.
+    trusted_addresses: HashMap<ServerId, Vec<String>>,
 }
 
 impl MemoryStore {
@@ -366,6 +368,7 @@ impl PeerRepo for MemoryStore {
             let mut extras = self.extras();
             extras.past_keys.remove(&id);
             extras.pending_addresses.retain(|p| p.peer != id);
+            extras.trusted_addresses.remove(&id);
         }
         let mut st = self.lock();
         st.switches.remove(&id);
@@ -717,6 +720,30 @@ impl MemoryStore {
 }
 
 impl crate::extra::FedAdminRepo for MemoryStore {
+    async fn trusted_addresses(&self, peer: ServerId) -> Result<Vec<String>, StoreError> {
+        Ok(self
+            .extras()
+            .trusted_addresses
+            .get(&peer)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn trust_addresses(
+        &self,
+        peer: ServerId,
+        addresses: &[String],
+    ) -> Result<(), StoreError> {
+        let mut extras = self.extras();
+        let held = extras.trusted_addresses.entry(peer).or_default();
+        for address in addresses {
+            if !held.contains(address) {
+                held.push(address.clone());
+            }
+        }
+        Ok(())
+    }
+
     async fn update_peer_descriptor(
         &self,
         peer: ServerId,

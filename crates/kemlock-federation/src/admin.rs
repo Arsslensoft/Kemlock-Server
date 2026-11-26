@@ -8,6 +8,7 @@
 //! `kemlock-api-fed` puts HTTP routes (`/admin/v1/federation`) over it; the console and the CLI
 //! are its other users. Pairing is in [`crate::hub`].
 
+use crate::addr::{self, Trust};
 use crate::descriptor::{Descriptor, KEM_ROTATION_SECS, SignedDescriptor, kem_key_id};
 use crate::error::{FedError, Result};
 use crate::eventsync::PeerEvent;
@@ -38,8 +39,12 @@ const EVENTS_LOOKED_AT: u32 = 200;
 /// Where the console reads a peer's published descriptor from. The network in production; the
 /// tests give it fixed ones.
 pub trait DescriptorSource: Send + Sync {
-    /// The descriptor published at `address`, parsed but not checked.
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor>>;
+    /// The descriptor published at `address`, parsed but not checked, reached as `trust` allows.
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        trust: Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor>>;
 }
 
 /// [`DescriptorSource`] over `GET /fed/v1/descriptor`.
@@ -47,8 +52,12 @@ pub trait DescriptorSource: Send + Sync {
 struct HttpDescriptors;
 
 impl DescriptorSource for HttpDescriptors {
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor>> {
-        Box::pin(async move { Http::new()?.descriptor(address).await })
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        trust: Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor>> {
+        Box::pin(async move { Http::new()?.descriptor(address, trust).await })
     }
 }
 
@@ -985,8 +994,19 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// The descriptor published by `peer`, read from the first of its addresses that answers.
     async fn fetch_descriptor(&self, peer: &Peer) -> Result<SignedDescriptor> {
         let mut last = FedError::Remote("the peer has no address".to_owned());
+        let trusted = self
+            .replica
+            .store()
+            .trusted_addresses(peer.id)
+            .await
+            .unwrap_or_default();
         for address in &peer.addresses {
-            match self.descriptors.fetch(address).await {
+            let trust = if trusted.iter().any(|t| addr::same_address(t, address)) {
+                Trust::Admin
+            } else {
+                Trust::Descriptor
+            };
+            match self.descriptors.fetch(address, trust).await {
                 Ok(descriptor) => return Ok(descriptor),
                 Err(e) => last = e,
             }

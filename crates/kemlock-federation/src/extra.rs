@@ -90,6 +90,22 @@ pub trait FedAdminRepo: Send + Sync {
         ready(Ok(()))
     }
 
+    /// The addresses of `peer` the admin chose: typed at pairing, listed by its descriptor when the
+    /// pairing was confirmed, or approved since. Only these may be `http` or on a private network
+    /// (see [`crate::addr`]).
+    fn trusted_addresses(&self, _peer: ServerId) -> impl Future<Output = R<Vec<String>>> + Send {
+        ready(Ok(Vec::new()))
+    }
+
+    /// Adds addresses the admin chose to `peer`'s trusted ones.
+    fn trust_addresses(
+        &self,
+        _peer: ServerId,
+        _addresses: &[String],
+    ) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
+    }
+
     /// Records (or replaces) the admin's acknowledgements for a peer.
     fn put_acknowledgement(
         &self,

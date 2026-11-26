@@ -89,7 +89,11 @@ impl Served {
 }
 
 impl DescriptorSource for Served {
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor, FedError>> {
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        _trust: kemlock_federation::addr::Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor, FedError>> {
         Box::pin(async move {
             self.0
                 .lock()

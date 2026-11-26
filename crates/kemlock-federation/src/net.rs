@@ -4,8 +4,11 @@
 //! TLS is the transport, not the security boundary: a session is sealed again inside it with keys
 //! from the two servers' own identities (`docs/federation.md`), so a proxy that ends TLS, or a
 //! certificate someone forged, sees only sealed frames. Addresses are base URLs
-//! (`https://vault.example.org`); `http` and `ws` are accepted for a peer on a private network.
+//! (`https://vault.example.org`); `http` is accepted, and a private network reached, only for an
+//! address the admin chose ([`crate::addr`]): every other address is dialled over `https` to the
+//! public addresses its name resolves to, and to no others.
 
+use crate::addr::{self, Trust};
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
 use crate::job::Connector;
@@ -13,15 +16,20 @@ use crate::ports::Peer;
 use crate::replicate::{FedStore, Replica};
 use crate::session::{SecureChannel, Transport, unix_now};
 use futures_util::{SinkExt, StreamExt};
+use kemlock_domain::ServerId;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::{Connector as TlsConnector, MaybeTlsStream, WebSocketStream};
+use url::Host;
 
 /// How long a request, or the wait for one answer, may take.
 pub const TIMEOUT: Duration = Duration::from_secs(30);
+/// How long opening a connection may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The largest descriptor or pairing message read over HTTP.
 const MAX_HTTP_BODY: usize = 128 * 1024;
 /// The largest WebSocket message read: a frame carries at most 4 MiB, plus its header, tag and
@@ -40,44 +48,56 @@ fn unreachable_peer(what: &'static str) -> FedError {
 }
 
 /// `address` and `path` joined: `https://a.example.org/` and `/fed/v1/x` give
-/// `https://a.example.org/fed/v1/x`. Only `http` and `https` addresses are accepted.
+/// `https://a.example.org/fed/v1/x`. The address is a plain `http` or `https` base URL with no
+/// user name, query or fragment, and the path is joined as a path.
 pub fn http_url(address: &str, path: &str) -> Result<String> {
-    let url = url::Url::parse(address).map_err(|_| FedError::Invalid("an address is not a URL"))?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err(FedError::Invalid("an address must be an http or https URL"));
-    }
-    let base = url.as_str().trim_end_matches('/');
-    Ok(format!("{base}{path}"))
+    let base = addr::base_url(address, Trust::Admin)?;
+    Ok(addr::join(&base, path).to_string())
 }
 
 /// The WebSocket URL of the peer session at `address`: `https` becomes `wss`, `http` becomes `ws`.
 pub fn ws_url(address: &str) -> Result<String> {
-    let http = http_url(address, SESSION_PATH)?;
-    Ok(if let Some(rest) = http.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else {
-        format!("ws://{}", http.trim_start_matches("http://"))
-    })
+    let base = addr::base_url(address, Trust::Admin)?;
+    Ok(ws_of(&addr::join(&base, SESSION_PATH)))
+}
+
+fn ws_of(http: &url::Url) -> String {
+    let mut url = http.clone();
+    // `http` and `https` are special schemes, as `ws` and `wss` are, so the change is allowed.
+    let _ = url.set_scheme(if http.scheme() == "https" { "wss" } else { "ws" });
+    url.to_string()
 }
 
 /// The HTTP calls of federation: the descriptor and the pairing messages.
+///
+/// Each call resolves the name of the address itself, refuses what its [`Trust`] doesn't allow, and
+/// connects to exactly the addresses it checked.
 #[derive(Clone, Debug)]
 pub struct Http {
-    client: reqwest::Client,
+    _private: (),
 }
 
 impl Http {
     pub fn new() -> Result<Http> {
-        let client = reqwest::Client::builder()
-            .timeout(TIMEOUT)
-            .connect_timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent("kemlock-server")
-            .build()
-            .map_err(|_| FedError::Invalid("the HTTP client could not be built"))?;
-        Ok(Http { client })
+        Ok(Http { _private: () })
     }
 
+    /// A client that reaches `url` only at `addresses`.
+    fn client(url: &url::Url, addresses: &[SocketAddr]) -> Result<reqwest::Client> {
+        let mut builder = reqwest::Client::builder()
+            .timeout(TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("kemlock-server");
+        if let Some(Host::Domain(name)) = url.host() {
+            builder = builder.resolve_to_addrs(name, addresses);
+        }
+        builder
+            .build()
+            .map_err(|_| FedError::Invalid("the HTTP client could not be built"))
+    }
+
+    /// The body of a successful answer, at most [`MAX_HTTP_BODY`] bytes.
     async fn read(response: reqwest::Response) -> Result<Vec<u8>> {
         if !response.status().is_success() {
             return Err(unreachable_peer("the peer answered with an error status"));
@@ -98,9 +118,12 @@ impl Http {
         Ok(bytes.to_vec())
     }
 
-    pub async fn get(&self, url: &str) -> Result<Vec<u8>> {
-        let response = self
-            .client
+    /// `GET` `path` below `address`.
+    pub async fn get(&self, address: &str, path: &str, trust: Trust) -> Result<Vec<u8>> {
+        let base = addr::base_url(address, trust)?;
+        let url = addr::join(&base, path);
+        let client = Self::client(&url, &addr::resolve(&url, trust).await?)?;
+        let response = client
             .get(url)
             .send()
             .await
@@ -108,9 +131,18 @@ impl Http {
         Self::read(response).await
     }
 
-    pub async fn post(&self, url: &str, body: Vec<u8>) -> Result<Vec<u8>> {
-        let response = self
-            .client
+    /// `POST` `body` to `path` below `address`.
+    pub async fn post(
+        &self,
+        address: &str,
+        path: &str,
+        body: Vec<u8>,
+        trust: Trust,
+    ) -> Result<Vec<u8>> {
+        let base = addr::base_url(address, trust)?;
+        let url = addr::join(&base, path);
+        let client = Self::client(&url, &addr::resolve(&url, trust).await?)?;
+        let response = client
             .post(url)
             .header(
                 "content-type",
@@ -124,8 +156,8 @@ impl Http {
     }
 
     /// The descriptor published at `address`, parsed but not yet checked.
-    pub async fn descriptor(&self, address: &str) -> Result<SignedDescriptor> {
-        let bytes = self.get(&http_url(address, DESCRIPTOR_PATH)?).await?;
+    pub async fn descriptor(&self, address: &str, trust: Trust) -> Result<SignedDescriptor> {
+        let bytes = self.get(address, DESCRIPTOR_PATH, trust).await?;
         SignedDescriptor::parse(&bytes)
     }
 }
@@ -158,9 +190,25 @@ fn tls() -> Result<TlsConnector> {
     Ok(TlsConnector::Rustls(Arc::new(config)))
 }
 
-/// Opens the session WebSocket at `address`.
-pub async fn connect_ws(address: &str) -> Result<WsTransport> {
-    let url = ws_url(address)?;
+/// A TCP connection to the first of `addresses` that answers.
+async fn connect_tcp(addresses: &[SocketAddr]) -> Result<TcpStream> {
+    for address in addresses {
+        if let Ok(Ok(stream)) =
+            tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address)).await
+        {
+            let _ = stream.set_nodelay(true);
+            return Ok(stream);
+        }
+    }
+    Err(unreachable_peer("the peer's session could not be opened"))
+}
+
+/// Opens the session WebSocket at `address`, over a connection to the addresses its name resolved
+/// to at this `trust` and to no others.
+pub async fn connect_ws(address: &str, trust: Trust) -> Result<WsTransport> {
+    let base = addr::base_url(address, trust)?;
+    let url = ws_of(&addr::join(&base, SESSION_PATH));
+    let addresses = addr::resolve(&base, trust).await?;
     let connector = if url.starts_with("wss://") {
         Some(tls()?)
     } else {
@@ -169,12 +217,20 @@ pub async fn connect_ws(address: &str) -> Result<WsTransport> {
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_WS_MESSAGE))
         .max_frame_size(Some(MAX_WS_MESSAGE));
-    let connecting =
-        tokio_tungstenite::connect_async_tls_with_config(url, Some(config), true, connector);
-    let (socket, _response) = tokio::time::timeout(TIMEOUT, connecting)
+    let opening = async {
+        let stream = connect_tcp(&addresses).await?;
+        tokio_tungstenite::client_async_tls_with_config(
+            url.as_str(),
+            stream,
+            Some(config),
+            connector,
+        )
         .await
-        .map_err(|_| unreachable_peer("the peer did not answer in time"))?
-        .map_err(|_| unreachable_peer("the peer's session could not be opened"))?;
+        .map_err(|_| unreachable_peer("the peer's session could not be opened"))
+    };
+    let (socket, _response) = tokio::time::timeout(TIMEOUT, opening)
+        .await
+        .map_err(|_| unreachable_peer("the peer did not answer in time"))??;
     Ok(WsTransport { socket })
 }
 
@@ -219,6 +275,15 @@ impl<S: FedStore> WsConnector<S> {
             http: Http::new()?,
         })
     }
+
+    /// How far `address` of `peer` is trusted: the admin's own when it is one the admin typed or
+    /// confirmed, a descriptor's otherwise.
+    async fn trust_of(&self, peer: ServerId, address: &str) -> Trust {
+        match self.replica.store().trusted_addresses(peer).await {
+            Ok(trusted) if trusted.iter().any(|t| addr::same_address(t, address)) => Trust::Admin,
+            _ => Trust::Descriptor,
+        }
+    }
 }
 
 impl<S: FedStore> Connector for WsConnector<S> {
@@ -229,7 +294,8 @@ impl<S: FedStore> Connector for WsConnector<S> {
         let mut last = FedError::Remote("the peer has no address".to_owned());
         for address in &peer.addresses {
             let now = unix_now();
-            let descriptor = match self.http.descriptor(address).await {
+            let trust = self.trust_of(peer.id, address).await;
+            let descriptor = match self.http.descriptor(address, trust).await {
                 Ok(descriptor) => descriptor,
                 Err(e) => {
                     last = e;
@@ -247,7 +313,7 @@ impl<S: FedStore> Connector for WsConnector<S> {
             {
                 tracing::debug!(error = %e, "couldn't refresh what a peer's descriptor says");
             }
-            let transport = match connect_ws(address).await {
+            let transport = match connect_ws(address, trust).await {
                 Ok(transport) => transport,
                 Err(e) => {
                     last = e;
@@ -272,7 +338,8 @@ impl<S: FedStore> Connector for WsConnector<S> {
         let pinned = peer.key()?;
         let mut last = FedError::Remote("the peer has no address".to_owned());
         for address in &peer.addresses {
-            match self.http.descriptor(address).await {
+            let trust = self.trust_of(peer.id, address).await;
+            match self.http.descriptor(address, trust).await {
                 Ok(descriptor) => {
                     descriptor.verify(unix_now(), Some(&pinned))?;
                     return Ok(());
@@ -286,14 +353,12 @@ impl<S: FedStore> Connector for WsConnector<S> {
     async fn send_key_record(&self, peer: &Peer, record: Vec<u8>) -> Result<()> {
         let mut last = FedError::Remote("the peer has no address".to_owned());
         for address in &peer.addresses {
-            let url = match http_url(address, KEYS_PATH) {
-                Ok(url) => url,
-                Err(e) => {
-                    last = e;
-                    continue;
-                }
-            };
-            match self.http.post(&url, record.clone()).await {
+            let trust = self.trust_of(peer.id, address).await;
+            match self
+                .http
+                .post(address, KEYS_PATH, record.clone(), trust)
+                .await
+            {
                 Ok(_) => return Ok(()),
                 Err(e) => last = e,
             }
@@ -316,8 +381,28 @@ mod tests {
             http_url("http://10.0.0.5:8080", "/x").expect("a url"),
             "http://10.0.0.5:8080/x"
         );
+        assert_eq!(
+            http_url("https://a.example.org", "/fed/v1/pair/finish?initiator=abc").expect("a url"),
+            "https://a.example.org/fed/v1/pair/finish?initiator=abc"
+        );
         assert!(http_url("ftp://a.example.org", "/x").is_err());
         assert!(http_url("not a url", "/x").is_err());
+    }
+
+    #[test]
+    fn an_address_that_would_swallow_the_path_is_refused() {
+        // A base URL ending in a query or a fragment used to turn the path into part of it, so a
+        // request for the descriptor went to whatever the peer wrote.
+        for address in [
+            "https://a.example.org/?x=",
+            "https://a.example.org?x=",
+            "https://a.example.org/#",
+            "https://a.example.org#",
+            "https://user:pass@a.example.org/",
+        ] {
+            assert!(http_url(address, DESCRIPTOR_PATH).is_err(), "{address}");
+            assert!(ws_url(address).is_err(), "{address}");
+        }
     }
 
     #[test]
@@ -330,5 +415,39 @@ mod tests {
             ws_url("http://10.0.0.5:8080/").expect("a url"),
             "ws://10.0.0.5:8080/fed/v1/session"
         );
+    }
+
+    #[tokio::test]
+    async fn a_descriptors_address_on_a_private_network_is_never_dialled() {
+        let http = Http::new().expect("a client");
+        for address in [
+            "http://a.example.org",
+            "https://127.0.0.1:9",
+            "https://169.254.169.254",
+            "https://10.0.0.5",
+            "https://[::1]:9",
+        ] {
+            assert!(
+                matches!(
+                    http.get(address, DESCRIPTOR_PATH, Trust::Descriptor).await,
+                    Err(FedError::Refused(_))
+                ),
+                "{address}"
+            );
+            assert!(
+                matches!(
+                    http.post(address, KEYS_PATH, vec![1], Trust::Descriptor).await,
+                    Err(FedError::Refused(_))
+                ),
+                "{address}"
+            );
+            assert!(
+                matches!(
+                    connect_ws(address, Trust::Descriptor).await,
+                    Err(FedError::Refused(_))
+                ),
+                "{address}"
+            );
+        }
     }
 }

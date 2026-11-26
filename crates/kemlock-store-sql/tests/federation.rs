@@ -491,3 +491,37 @@ async fn past_keys_and_pending_addresses_are_kept_per_peer_and_go_with_the_peer(
     assert!(store.past_keys(p.id).await.expect("keys").is_empty());
     assert_eq!(store.list_pending_addresses().await, Ok(Vec::new()));
 }
+
+#[tokio::test]
+async fn the_addresses_the_admin_chose_are_kept_per_peer_and_go_with_the_peer() {
+    use kemlock_federation::extra::FedAdminRepo;
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    assert!(store.trusted_addresses(p.id).await.expect("read").is_empty());
+    let lan = "http://192.168.1.5:8080".to_owned();
+    let public = "https://s1.example.org".to_owned();
+    store
+        .trust_addresses(p.id, &[lan.clone(), public.clone()])
+        .await
+        .expect("trust");
+    // Again, and with a blank: no duplicates, nothing empty.
+    store
+        .trust_addresses(p.id, &[lan.clone(), String::new()])
+        .await
+        .expect("trust again");
+    assert_eq!(
+        store.trusted_addresses(p.id).await,
+        Ok(vec![lan.clone(), public.clone()]),
+        "sorted, once each"
+    );
+    assert!(
+        store
+            .trusted_addresses(ServerId::random())
+            .await
+            .expect("read")
+            .is_empty()
+    );
+    assert!(store.remove_peer(p.id).await.expect("remove"));
+    assert!(store.trusted_addresses(p.id).await.expect("read").is_empty());
+}

@@ -88,3 +88,23 @@ pub(crate) mod peer_pending_addresses {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+/// `peer_trusted_addresses`: the addresses of a peer the admin chose, which may be `http` or on a
+/// private network.
+pub(crate) mod peer_trusted_addresses {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "peer_trusted_addresses")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub peer: Uuid,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub address: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}

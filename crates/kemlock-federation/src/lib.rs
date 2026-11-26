@@ -27,6 +27,7 @@
 //! Everything but [`session`]'s transports is sans-IO: bytes and the time go in, bytes and values
 //! come out.
 
+pub mod addr;
 pub mod admin;
 pub mod blobs;
 pub mod cbor;

@@ -13,10 +13,11 @@
 //! The state is in memory: a restart forgets a code and a pairing in progress, and the admins
 //! start again, which costs a minute and can't leave a half-paired peer.
 
+use crate::addr::Trust;
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
 use crate::extra::Acknowledgement;
-use crate::net::{Http, http_url};
+use crate::net::Http;
 use crate::pairing::{
     CODE_LIFETIME_SECS, Fingerprint, PairingCode, PairingInitiator, PendingPairing, respond,
 };
@@ -50,8 +51,13 @@ pub struct HttpLink(pub Http);
 
 impl PairingLink for HttpLink {
     fn start(&self, address: &str, message: Vec<u8>) -> BoxFut<'_, Result<Vec<u8>>> {
-        let url = http_url(address, "/fed/v1/pair/start");
-        Box::pin(async move { self.0.post(&url?, message).await })
+        // The admin typed this address: it may be `http` and on a private network.
+        let address = address.to_owned();
+        Box::pin(async move {
+            self.0
+                .post(&address, "/fed/v1/pair/start", message, Trust::Admin)
+                .await
+        })
     }
 
     fn finish(
@@ -60,11 +66,14 @@ impl PairingLink for HttpLink {
         initiator: ServerId,
         message: Vec<u8>,
     ) -> BoxFut<'_, Result<()>> {
-        let url = http_url(
-            address,
-            &format!("/fed/v1/pair/finish?initiator={initiator}"),
-        );
-        Box::pin(async move { self.0.post(&url?, message).await.map(|_| ()) })
+        let address = address.to_owned();
+        let path = format!("/fed/v1/pair/finish?initiator={initiator}");
+        Box::pin(async move {
+            self.0
+                .post(&address, &path, message, Trust::Admin)
+                .await
+                .map(|_| ())
+        })
     }
 }
 
@@ -306,6 +315,13 @@ impl<S: FedStore> Pairings<S> {
                 )
                 .await?;
         }
+        // What the admin typed, and what the descriptor listed when the admin confirmed the pairing
+        // (the exchange was authenticated by the code), may be dialled as the admin chose: over
+        // `http`, on a private network. Addresses a later descriptor adds may not.
+        self.replica
+            .store()
+            .trust_addresses(pinned.id, &pinned.addresses)
+            .await?;
         if let Some(ack) = &confirmation.acknowledgement {
             self.replica.store().put_acknowledgement(peer, ack).await?;
         }
@@ -320,4 +336,107 @@ fn initiator_of(message: &[u8]) -> Result<ServerId> {
     let fields = value.as_fields().map_err(|_| FedError::Pairing)?;
     let id = fields.fixed::<16>(3).map_err(|_| FedError::Pairing)?;
     Ok(crate::wire::server_id(id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extra::FedAdminRepo as _;
+    use crate::memory::MemoryStore;
+    use crate::suite::Suite;
+    use crate::testing::identity;
+
+    const NOW: u64 = 1_800_000_000;
+
+    /// A link that hands the messages straight to the other server's hub.
+    struct Loop(Arc<Pairings<MemoryStore>>);
+
+    impl PairingLink for Loop {
+        fn start(&self, _address: &str, message: Vec<u8>) -> BoxFut<'_, Result<Vec<u8>>> {
+            Box::pin(async move { self.0.respond(&message, NOW) })
+        }
+
+        fn finish(
+            &self,
+            _address: &str,
+            initiator: ServerId,
+            message: Vec<u8>,
+        ) -> BoxFut<'_, Result<()>> {
+            Box::pin(async move { self.0.finish(initiator, &message, NOW) })
+        }
+    }
+
+    /// A link with nobody at the other end, for the side that only shows the code.
+    struct Nobody;
+
+    impl PairingLink for Nobody {
+        fn start(&self, _address: &str, _message: Vec<u8>) -> BoxFut<'_, Result<Vec<u8>>> {
+            Box::pin(async { Err(FedError::Pairing) })
+        }
+
+        fn finish(
+            &self,
+            _address: &str,
+            _initiator: ServerId,
+            _message: Vec<u8>,
+        ) -> BoxFut<'_, Result<()>> {
+            Box::pin(async { Err(FedError::Pairing) })
+        }
+    }
+
+    fn confirmation() -> Confirmation {
+        Confirmation {
+            fingerprint_matches: true,
+            acknowledgement: Some(Acknowledgement {
+                metadata: true,
+                deletion: true,
+                cross_border: true,
+                by: "an admin".to_owned(),
+                at: NOW,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_addresses_the_admin_typed_and_confirmed_are_the_ones_that_may_be_private() {
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (a_id, b_id) = (ia.server, ib.server);
+        let a = Arc::new(Replica::new(MemoryStore::new(a_id), Arc::new(ia)));
+        let b = Arc::new(Replica::new(MemoryStore::new(b_id), Arc::new(ib)));
+        let shower = Arc::new(Pairings::new(b.clone(), Arc::new(Nobody)));
+        let typer = Pairings::new(a.clone(), Arc::new(Loop(shower.clone())));
+
+        let (code, _) = shower.new_code(NOW);
+        // The admin of A types a private address that B's descriptor doesn't list.
+        let typed = "http://192.168.1.5:8080";
+        let awaiting = typer.start(typed, &code, NOW).await.expect("paired");
+        assert_eq!(awaiting.server(), b_id);
+        typer
+            .confirm(b_id, confirmation(), NOW)
+            .await
+            .expect("confirmed");
+        let trusted = a.store().trusted_addresses(b_id).await.expect("trusted");
+        assert!(trusted.iter().any(|t| t == typed), "{trusted:?}");
+        assert!(
+            trusted.iter().any(|t| t == "https://s2.example.org"),
+            "what the descriptor listed when the admin confirmed: {trusted:?}"
+        );
+
+        // B only showed the code: what A's descriptor lists is what its admin confirmed.
+        shower
+            .confirm(a_id, confirmation(), NOW)
+            .await
+            .expect("confirmed");
+        let trusted = b.store().trusted_addresses(a_id).await.expect("trusted");
+        assert_eq!(trusted, vec!["https://s1.example.org".to_owned()]);
+        // A server nobody paired has nothing trusted.
+        assert!(
+            a.store()
+                .trusted_addresses(ServerId::random())
+                .await
+                .expect("trusted")
+                .is_empty()
+        );
+    }
 }

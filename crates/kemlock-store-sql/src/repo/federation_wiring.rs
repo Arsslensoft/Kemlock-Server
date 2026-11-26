@@ -13,6 +13,7 @@ use crate::tables::federation::{item_siblings, peers};
 use crate::tables::federation_wiring::{
     federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
 };
+use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::items::{owner_from, owner_parts};
 use crate::tables::settings;
 use kemlock_app::ports::{DeviceRepo, Event, StoreError, UserRepo};
@@ -48,6 +49,45 @@ fn from_secs(secs: i64, what: &str) -> Result<OffsetDateTime, StoreError> {
 }
 
 impl FedAdminRepo for SqlStore {
+    async fn trusted_addresses(&self, peer: ServerId) -> Result<Vec<String>, StoreError> {
+        Ok(peer_trusted_addresses::Entity::find()
+            .filter(peer_trusted_addresses::Column::Peer.eq(peer.0))
+            .order_by_asc(peer_trusted_addresses::Column::Address)
+            .all(self.reader())
+            .await
+            .store()?
+            .into_iter()
+            .map(|row| row.address)
+            .collect())
+    }
+
+    async fn trust_addresses(&self, peer: ServerId, addresses: &[String]) -> Result<(), StoreError> {
+        let held = self.trusted_addresses(peer).await?;
+        for address in addresses {
+            let address = address.trim();
+            // The column is a key, so it has a length; a longer address is never trusted.
+            if address.is_empty()
+                || address.len() > 512
+                || held.iter().any(|h| h == address)
+            {
+                continue;
+            }
+            let inserted = peer_trusted_addresses::Entity::insert(peer_trusted_addresses::ActiveModel {
+                peer: Set(peer.0),
+                address: Set(address.to_owned()),
+            })
+            .exec(self.writer())
+            .await;
+            match inserted {
+                Ok(_) => {}
+                // Another write put it there between the read and this one.
+                Err(err) if is_unique_violation(&err) => {}
+                Err(err) => return Err(map_db(err)),
+            }
+        }
+        Ok(())
+    }
+
     async fn promotion_mode(&self) -> Result<PromotionMode, StoreError> {
         // The environment, then what the console saved, then `hold`: anything but `auto` holds.
         if let Ok(value) = std::env::var(PROMOTION_ENV)

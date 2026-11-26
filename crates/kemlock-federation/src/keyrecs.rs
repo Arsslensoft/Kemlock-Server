@@ -525,6 +525,8 @@ impl<S: FedStore> Replica<S> {
                 &pending.suites,
             )
             .await?;
+        // The admin looked at the new addresses and approved them.
+        self.store.trust_addresses(peer, &pending.addresses).await?;
         self.store.clear_pending_addresses(peer).await?;
         Ok(())
     }

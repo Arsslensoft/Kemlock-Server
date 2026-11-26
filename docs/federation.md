@@ -108,6 +108,24 @@ Published at `GET /fed/v1/descriptor` and `GET /.well-known/kemlock-federation` 
   which to use.
 - A different identity key from the pinned one is a key mismatch (below), never a rotation.
 
+**Addresses.** An address is a plain base URL: `http` or `https`, a host, optionally a port and a path
+prefix, and no user name, password, query or fragment (a request path is joined to the URL as a path,
+so no address can reach a different URL than the one asked for). A descriptor's addresses are chosen
+by the peer, and this server connects to them (a probe every minute, a visit, the peer's page in the
+console, key records, the session), so they are checked before each connection:
+
+- The addresses the admin chose, which are the one typed at pairing, the ones the descriptor listed
+  when the admin confirmed the pairing, and any approved later (`peer_trusted_addresses`), may be `http`
+  and may name a private network. Peers paired before this rule keep the addresses they have.
+- Any other address, one a later descriptor lists or a rotation brings, must be `https` and must resolve
+  to public addresses only: loopback, private, link-local (the cloud metadata address included),
+  carrier-grade NAT, documentation, multicast, reserved ranges and IPv6 addresses that carry one of
+  them are refused, and one private answer refuses the whole name. The connection then goes to
+  exactly the addresses that were checked, so a second lookup can't answer differently.
+- Answers are read with a running cap (128 KiB for a descriptor or a pairing message), redirects are
+  not followed, and proxy variables of the environment still apply to the HTTP calls (a proxy
+  resolves names itself).
+
 ## The handshake
 
 Server A (the initiator) has fetched B's descriptor and checked it against B's pinned key.
