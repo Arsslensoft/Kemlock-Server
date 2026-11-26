@@ -2132,3 +2132,103 @@ fn a_space_whose_chain_was_refused_is_never_served_as_having_none() {
         false
     );
 }
+
+use crate::item_writes::{WriteFields, verify_item_write};
+
+fn write_fields(owner: &str, writer: Option<(&str, u32)>, deleted: bool) -> String {
+    let mut fields = json!({
+        "owner": owner,
+        "id": "11111111-2222-4333-8444-555555555555",
+        "kind": "login",
+        "revision": 4,
+        "deleted": deleted,
+        "keyVersion": 1,
+    });
+    if !deleted {
+        fields["ciphertext"] = json!(b64::encode(&[7u8; 40]));
+        fields["itemKey"] = json!(b64::encode(&[8u8; 60]));
+    }
+    if let Some((writer, version)) = writer {
+        fields["writer"] = json!(writer);
+        fields["writerKeyVersion"] = json!(version);
+    }
+    fields.to_string()
+}
+
+#[wasm_bindgen_test]
+fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle() {
+    let account_id = [0x91u8; 16];
+    let (session, bundle) = open_account(account_id);
+    let me = "91919191-9191-9191-9191-919191919191";
+    let owner = format!("user:{me}");
+
+    let signed = session
+        .sign_item_write(
+            &WriteFields::parse(&write_fields(&owner, None, false)).expect("fields"),
+        )
+        .expect("the account signs its write");
+    assert_eq!(signed.writer, me);
+    assert_eq!(signed.writer_key_version, FIRST_KEY_VERSION);
+    let signature = b64::decode(&signed.write_signature).expect("base64url");
+    assert_eq!(signature.len(), 3373);
+
+    // The same fields, naming the writer, verify with the account's own key and with its bundle.
+    let named = write_fields(&owner, Some((me, FIRST_KEY_VERSION)), false);
+    let fields = WriteFields::parse(&named).expect("fields");
+    session
+        .verify_own_item_write(&fields, &signature)
+        .expect("its own signature checks");
+    verify_item_write(&bundle.to_bytes(), &fields, &signature).expect("and its bundle's does");
+
+    // Another revision, another ciphertext or another signature does not check.
+    let other_revision = named.replace("\"revision\":4", "\"revision\":5");
+    assert!(
+        session
+            .verify_own_item_write(&WriteFields::parse(&other_revision).expect("fields"), &signature)
+            .is_err()
+    );
+    let mut bad = signature.clone();
+    bad[10] ^= 1;
+    assert!(session.verify_own_item_write(&fields, &bad).is_err());
+    assert!(verify_item_write(&bundle.to_bytes(), &fields, &bad).is_err());
+
+    // A tombstone is signed too, and its signature is not a live write's.
+    let tombstone = session
+        .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, true)).expect("fields"))
+        .expect("the account signs a delete");
+    let tombstone_signature = b64::decode(&tombstone.write_signature).expect("base64url");
+    assert!(session.verify_own_item_write(&fields, &tombstone_signature).is_err());
+
+    // Another account's signature is not this account's, and the bundle of another account
+    // doesn't check this one's.
+    let (other, other_bundle) = open_account([0x92u8; 16]);
+    let theirs = other
+        .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, false)).expect("fields"))
+        .expect_err("another account does not sign for this vault");
+    assert_eq!(theirs, Error::Invalid);
+    assert!(verify_item_write(&other_bundle.to_bytes(), &fields, &signature).is_err());
+
+    // A space's writes are signed by a member; the vault of another person is never signed.
+    let space = "space:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    session
+        .sign_item_write(&WriteFields::parse(&write_fields(space, None, false)).expect("fields"))
+        .expect("a member signs for a space");
+    let someone_elses = write_fields("user:93939393-9393-9393-9393-939393939393", None, false);
+    assert_eq!(
+        session
+            .sign_item_write(&WriteFields::parse(&someone_elses).expect("fields"))
+            .err(),
+        Some(Error::Invalid)
+    );
+
+    // Anything that isn't a write's fields is refused, and a locked session signs nothing.
+    assert!(WriteFields::parse("{\"owner\":1}").is_err());
+    assert!(WriteFields::parse("not json").is_err());
+    let own_fields = write_fields(&owner, None, false);
+    assert_eq!(
+        Session::new()
+            .sign_item_write(&WriteFields::parse(&own_fields).expect("fields"))
+            .err(),
+        Some(Error::Locked)
+    );
+}

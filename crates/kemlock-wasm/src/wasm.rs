@@ -21,7 +21,7 @@ use kemlock_crypto::space_chain::KeyRef;
 use crate::{
     b64, chain,
     error::Error,
-    ids, kit, manifests, sends,
+    ids, item_writes, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
     sharing::{self, Facts},
     spaces::{NameKind, NewCollection},
@@ -1219,6 +1219,52 @@ impl Vault {
             return false;
         };
         manifests::verify_space_manifest(&bundle, &manifest, &signature).is_ok()
+    }
+
+    /// Signs a write of an item as the unlocked account (docs/crypto.md, "Signed item writes").
+    /// `fields` is JSON: `{owner, id, kind, revision, deleted, keyVersion, ciphertext?, itemKey?}`
+    /// with the base64url `ciphertext` and `itemKey` the write carries (absent on a tombstone).
+    /// Answers JSON `{writer, writerKeyVersion, writeSignature}`: the three members the server
+    /// takes with the item. Only a write for this account's own vault or a space is signed.
+    #[wasm_bindgen(js_name = itemWriteSign)]
+    pub fn item_write_sign(&self, fields: &str) -> Result<String, JsError> {
+        let fields = item_writes::WriteFields::parse(fields).map_err(fail)?;
+        let signed = self.session.sign_item_write(&fields).map_err(fail)?;
+        json(&signed)
+    }
+
+    /// Whether `signature` (base64url) is the unlocked account's own signature of the write
+    /// `fields` (as above, with `writer` and `writerKeyVersion` naming this account). The key is
+    /// the account's own, never one the server served. Anything malformed is `false`; a vault
+    /// opened without the private keys gives no verdict and throws `"locked"`.
+    #[wasm_bindgen(js_name = itemWriteVerifyOwn)]
+    pub fn item_write_verify_own(&self, fields: &str, signature: &str) -> Result<bool, JsError> {
+        let (Ok(fields), Ok(signature)) = (
+            item_writes::WriteFields::parse(fields),
+            b64::decode(signature),
+        ) else {
+            return Ok(false);
+        };
+        match self.session.verify_own_item_write(&fields, &signature) {
+            Ok(()) => Ok(true),
+            Err(Error::Locked) => Err(fail(Error::Locked)),
+            Err(Error::Invalid) => Ok(false),
+        }
+    }
+
+    /// Whether `signature` is the signature of the write `fields` by the account whose bundle is
+    /// `signer_bundle` (the page has checked that bundle against the space's members), at the
+    /// bundle's key version. Anything malformed is `false`.
+    #[wasm_bindgen(js_name = itemWriteVerify)]
+    pub fn item_write_verify(&self, signer_bundle: &str, fields: &str, signature: &str) -> bool {
+        let (Ok(bundle), Ok(fields), Ok(signature)) = (
+            b64::decode(signer_bundle),
+            item_writes::WriteFields::parse(fields),
+            b64::decode(signature),
+        ) else {
+            return false;
+        };
+        item_writes::verify_item_write(&bundle, &fields, &signature).is_ok()
     }
 
     // ---- the space chain (src/chain.rs) -----------------------------------------------------
