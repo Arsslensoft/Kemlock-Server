@@ -589,20 +589,21 @@ async fn imports_the_sample_and_serves_it_as_vaultwarden_would_then_applies_a_se
         sqlx::query_scalar::<sqlx::Sqlite, String>("SELECT value FROM settings WHERE key = ?")
             .bind(key)
     };
-    // Only the names of the admin settings list are carried: `domain` is not one of them.
+    // Only the names of the admin settings list are carried, under the key the settings code reads:
+    // `domain` is not one of them.
     assert_eq!(
         count(&mut conn, "SELECT COUNT(*) FROM settings WHERE key = 'domain'").await,
         0
     );
     assert_eq!(
-        setting("smtp_host")
+        setting("setting.smtp_host")
             .fetch_one(&mut conn)
             .await
             .expect("a setting"),
         "mail.example.org"
     );
     assert_eq!(
-        setting("signups_allowed")
+        setting("setting.signups_allowed")
             .fetch_one(&mut conn)
             .await
             .expect("a setting"),

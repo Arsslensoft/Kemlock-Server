@@ -249,8 +249,9 @@ accounts or spaces that aren't its own. Running a move again over its own earlie
 before, but never over what this server has changed since: an account whose record, vault or
 password was changed here after the import wrote it, a space that was renamed or whose members
 changed, and an item revised here after the source's date are left as they are, with everything
-that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings are kept only when the admin console has a setting of that
-name (secrets are never carried).
+that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings become the console's own settings (Settings screen; an
+environment variable still wins) when the console has a setting of that name and accepts the
+value; the others, and every secret, are not carried and are listed in the result.
 
 What was left alone is listed in the move's result and in the admin event log
 (`admin.migration.done`, `admin.migration.failed` for the console and `admin.migration.cli` for

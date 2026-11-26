@@ -524,27 +524,30 @@ pub(super) async fn put_events(ctx: &Ctx, table: &Table) -> Res<()> {
     Ok(())
 }
 
-/// `config.json` settings, under their Vaultwarden names: a string as it is, anything else as
-/// JSON text. Only the names of the admin settings registry are kept, and never a secret (those
-/// are sealed elsewhere): a `config.json` can't make this write any other row of `settings`,
-/// which also holds the move's own status and the server's markers.
+/// `config.json` settings, under the key the settings code reads them from (`setting.<name>`): a
+/// string as it is, anything else as JSON text, checked as the console checks a value it is given.
+/// Only the names of the admin settings registry are kept, and never a secret (those are sealed
+/// elsewhere): a `config.json` can't make this write any other row of `settings`, which also
+/// holds the move's own status and the server's markers. A value the console would refuse is left
+/// out.
 pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<()> {
     for (name, value) in &mapped.values {
-        if !is_registered(name) {
-            ctx.refuse("setting", name);
-            continue;
-        }
         let text = match value {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        settings::Entity::delete_by_id(name.clone())
+        let Some(stored) = stored_value(name, &text) else {
+            ctx.refuse("setting", name);
+            continue;
+        };
+        let key = format!("{}{name}", kemlock_app::admin::settings::KEY_PREFIX);
+        settings::Entity::delete_by_id(key.clone())
             .exec(&ctx.txn)
             .await
             .store()?;
         settings::Entity::insert(settings::ActiveModel {
-            key: Set(name.clone()),
-            value: Set(text),
+            key: Set(key),
+            value: Set(stored),
         })
         .exec(&ctx.txn)
         .await
@@ -559,9 +562,29 @@ fn is_registered(name: &str) -> bool {
         .is_some_and(|d| d.kind != kemlock_app::admin::settings::Kind::Secret)
 }
 
+/// What the settings code stores for `name` set to `text`; `None` for a name it doesn't have, a
+/// secret, or a value it would refuse.
+fn stored_value(name: &str, text: &str) -> Option<String> {
+    let definition = kemlock_app::admin::settings::definition(name)?;
+    if definition.kind == kemlock_app::admin::settings::Kind::Secret {
+        return None;
+    }
+    kemlock_app::admin::settings::validate(definition, text).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_are_stored_as_the_console_would_store_them() {
+        assert_eq!(stored_value("signups_allowed", "false").as_deref(), Some("false"));
+        assert_eq!(stored_value("signups_allowed", " Yes ").as_deref(), Some("true"));
+        assert_eq!(stored_value("smtp_port", "465").as_deref(), Some("465"));
+        assert_eq!(stored_value("smtp_port", "not a port"), None);
+        assert_eq!(stored_value("smtp_password", "hunter2"), None);
+        assert_eq!(stored_value("domain", "https://vault.example.org"), None);
+    }
 
     #[test]
     fn only_registered_settings_are_kept() {

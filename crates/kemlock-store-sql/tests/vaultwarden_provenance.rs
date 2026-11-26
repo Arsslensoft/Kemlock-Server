@@ -494,6 +494,9 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
     let mut settings = MappedSettings::default();
     for (name, value) in [
         ("signups_allowed", json!(false)),
+        ("smtp_port", json!(465)),
+        ("smtp_port_typo", json!(1)),
+        ("trash_days", json!("a month")),
         ("migration.status", json!("overwritten")),
         ("setting.smtp_host", json!("evil.example.org")),
         ("smtp_password", json!("hunter2")),
@@ -504,19 +507,38 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
     mapped.settings = settings;
     let report = pass(&store, &mapped, false).await;
 
-    assert_eq!(report.settings, 1);
+    // Kept under the key the settings code reads, so they take effect.
+    assert_eq!(report.settings, 2);
     assert_eq!(
-        store.setting("signups_allowed").await.expect("a read").as_deref(),
+        store
+            .setting("setting.signups_allowed")
+            .await
+            .expect("a read")
+            .as_deref(),
         Some("false")
     );
-    for other in ["setting.smtp_host", "smtp_password", "domain"] {
+    assert_eq!(
+        store.setting("setting.smtp_port").await.expect("a read").as_deref(),
+        Some("465")
+    );
+    // Not the bare name, not a name the list lacks, not a secret, not a value it would refuse.
+    for other in [
+        "signups_allowed",
+        "setting.smtp_port_typo",
+        "setting.trash_days",
+        "setting.setting.smtp_host",
+        "setting.smtp_password",
+        "setting.domain",
+        "smtp_password",
+        "domain",
+    ] {
         assert_eq!(store.setting(other).await.expect("a read"), None, "{other}");
     }
     assert_eq!(
         store.setting("migration.status").await.expect("a read").as_deref(),
         Some("kept")
     );
-    assert_eq!(refused(&report, "setting").len(), 4);
+    assert_eq!(refused(&report, "setting").len(), 6);
 }
 
 #[tokio::test]
