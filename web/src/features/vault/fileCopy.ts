@@ -57,12 +57,20 @@ export function withoutServerFiles(data: ItemData): ItemData {
   });
 }
 
-/** The body with each server file id replaced by `ids.get(old)`. An id with no new one is dropped. */
+/**
+ * The body with each server file id replaced by `ids.get(old)`. An id with no new one is dropped, and
+ * so is an id key that holds nothing at all: an entry that was never uploaded names no file, not even
+ * with a member set to `undefined`.
+ */
 export function withServerFiles(data: ItemData, ids: ReadonlyMap<string, string>): ItemData {
   return mapEntries(data, (entry) => {
     const copy = { ...entry };
     for (const key of KEYS) {
       const old = copy[key];
+      if (old === undefined) {
+        delete copy[key];
+        continue;
+      }
       if (typeof old !== 'string' || old === '') continue;
       const next = ids.get(old);
       if (next === undefined) delete copy[key];
