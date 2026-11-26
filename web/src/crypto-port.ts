@@ -276,6 +276,19 @@ export interface CryptoPort {
   /** Seals an item of a space's collection under the collection's key. */
   sealSpaceItem(input: SealSpaceItemInput): Promise<SealedItem>;
   openSpaceItem(input: OpenSpaceItemInput): Promise<string>;
+  /**
+   * A sig1 signature (3,373 bytes) of the unlocked account over a manifest's exact bytes
+   * (docs/crypto.md, "Signed manifest"). Only a manifest of the account's own vault or of a space.
+   */
+  manifestSign(manifest: Uint8Array): Promise<Uint8Array>;
+  /** Whether the signature is the unlocked account's own, by its own key, over a manifest of its own vault. */
+  manifestVerifyOwn(manifest: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  /** Whether the signature is the signer's (the bundle's sig1 key) over a space's manifest. */
+  manifestVerify(
+    signerBundle: Uint8Array,
+    manifest: Uint8Array,
+    signature: Uint8Array,
+  ): Promise<boolean>;
 }
 
 // A worker handle crosses the app as 4 opaque bytes, so the app's Uint8Array-typed secrets stay
@@ -474,6 +487,13 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         ciphertext: encodeB64(input.ciphertext),
         itemKey: encodeB64(input.itemKey),
       }),
+    async manifestSign(manifest) {
+      return decodeB64(await api.manifestSign(encodeB64(manifest)));
+    },
+    manifestVerifyOwn: (manifest, signature) =>
+      api.manifestVerifyOwn(encodeB64(manifest), encodeB64(signature)),
+    manifestVerify: (signerBundle, manifest, signature) =>
+      api.manifestVerify(encodeB64(signerBundle), encodeB64(manifest), encodeB64(signature)),
   };
 }
 

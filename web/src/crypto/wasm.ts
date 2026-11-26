@@ -163,6 +163,12 @@ export interface WasmVault {
     recipientKx1: string,
     recipientId: string,
   ): string;
+  /** A sig1 signature of the unlocked account over a manifest (base64url, exact bytes). */
+  manifestSign(manifest: string): string;
+  /** Whether the signature is the unlocked account's own over a manifest of its own vault. */
+  manifestVerifyOwn(manifest: string, signature: string): boolean;
+  /** Whether the signature is the bundle's sig1 key over a space's manifest. */
+  manifestVerify(signerBundle: string, manifest: string, signature: string): boolean;
   lock(): void;
   /** Frees the instance's WebAssembly memory (wasm-bindgen). */
   free?(): void;

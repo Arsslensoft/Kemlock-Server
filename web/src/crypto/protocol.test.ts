@@ -94,6 +94,9 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     unlockWithRoot: vi.fn(),
     sealSpaceItem: vi.fn(() => JSON.stringify({ ciphertext: 'c2k', itemKey: 'a2s', keyVersion: 2 })),
     openSpaceItem: vi.fn(() => '{"name":"vpn"}'),
+    manifestSign: vi.fn(() => 'c2lnbmF0dXJl'),
+    manifestVerifyOwn: vi.fn(() => true),
+    manifestVerify: vi.fn(() => true),
     lock: vi.fn(),
     free: vi.fn(),
     ...overrides,
@@ -508,6 +511,17 @@ describe('the dispatcher', () => {
     ]);
     expect(json).toBe('{"name":"vpn"}');
     expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2);
+  });
+
+  it('signs and checks manifests in the module, with the manifest and signature as they are', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('manifestSign', ['bWFuaWZlc3Q'])).toBe('c2lnbmF0dXJl');
+    expect(vault.manifestSign).toHaveBeenCalledWith('bWFuaWZlc3Q');
+    expect(await dispatch('manifestVerifyOwn', ['bWFuaWZlc3Q', 'c2ln'])).toBe(true);
+    expect(vault.manifestVerifyOwn).toHaveBeenCalledWith('bWFuaWZlc3Q', 'c2ln');
+    expect(await dispatch('manifestVerify', ['YnVuZGxl', 'bWFuaWZlc3Q', 'c2ln'])).toBe(true);
+    expect(vault.manifestVerify).toHaveBeenCalledWith('YnVuZGxl', 'bWFuaWZlc3Q', 'c2ln');
   });
 
   it('refuses a revision or collection key version the module cannot take', async () => {

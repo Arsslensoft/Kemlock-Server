@@ -383,6 +383,15 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         toKeyVersion(keyVersion),
       );
     },
+    async manifestSign(manifest) {
+      return (await current()).manifestSign(manifest);
+    },
+    async manifestVerifyOwn(manifest, signature) {
+      return (await current()).manifestVerifyOwn(manifest, signature);
+    },
+    async manifestVerify(signerBundle, manifest, signature) {
+      return (await current()).manifestVerify(signerBundle, manifest, signature);
+    },
   };
 
   const dispatch = (op: string, args: unknown[]): Promise<unknown> => {

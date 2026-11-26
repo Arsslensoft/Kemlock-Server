@@ -518,6 +518,22 @@ export interface CryptoApi {
   sealSpaceItem(input: SealSpaceItemInput): Promise<SealedItem>;
   /** Resolves with the item's JSON text. */
   openSpaceItem(input: OpenSpaceItemInput): Promise<string>;
+
+  // The signed manifest (docs/crypto.md, "Signed manifest"): the worker signs and checks it, so the
+  // page holds no signing key. Manifests and signatures are base64url.
+
+  /**
+   * A sig1 signature of the unlocked account over a manifest's exact bytes, context `manifest`.
+   * Only bytes that parse as a manifest of the account's own vault or of a space are signed.
+   */
+  manifestSign(manifest: string): Promise<string>;
+  /**
+   * Whether the signature is the unlocked account's own over a manifest of its own vault. The key
+   * is the account's own, never a bundle the server served; needs the sealed private keys at unlock.
+   */
+  manifestVerifyOwn(manifest: string, signature: string): Promise<boolean>;
+  /** Whether the signature is the signer's (the bundle's sig1 key) over a space's manifest. */
+  manifestVerify(signerBundle: string, manifest: string, signature: string): Promise<boolean>;
 }
 
 /** Every operation the worker answers, with its arguments and result. */
@@ -646,6 +662,12 @@ export interface Ops {
   };
   sealSpaceItem: { args: [input: SealSpaceItemInput]; result: SealedItem };
   openSpaceItem: { args: [input: OpenSpaceItemInput]; result: string };
+  manifestSign: { args: [manifest: string]; result: string };
+  manifestVerifyOwn: { args: [manifest: string, signature: string]; result: boolean };
+  manifestVerify: {
+    args: [signerBundle: string, manifest: string, signature: string];
+    result: boolean;
+  };
 }
 
 export type OpName = keyof Ops;

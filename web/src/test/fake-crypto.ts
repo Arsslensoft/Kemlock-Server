@@ -3,7 +3,7 @@
 // under the id, revision, kind and owner it was sealed with, like the real AAD), so the app's
 // logic is tested without WebAssembly.
 import type { CryptoPort } from '@/crypto-port';
-import { fromUtf8, utf8 } from '@/lib/b64url';
+import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 
 const calls: string[] = [];
 
@@ -306,6 +306,23 @@ export const crypto: CryptoPort = {
       throw new Error('the item does not open under these details');
     }
     return json;
+  },
+  // The signed manifest. A signature names its signer and the manifest's bytes, so a test sees
+  // that it checks only under the key that made it and only for those bytes; the fake's bundles
+  // are `bundle:<account>`.
+  async manifestSign(manifest) {
+    calls.push('manifestSign');
+    if (locked) throw new Error('the vault is locked');
+    return utf8(`msig:${openedFor}:${encodeB64(manifest)}`);
+  },
+  async manifestVerifyOwn(manifest, signature) {
+    calls.push('manifestVerifyOwn');
+    return !locked && fromUtf8(signature) === `msig:${openedFor}:${encodeB64(manifest)}`;
+  },
+  async manifestVerify(signerBundle, manifest, signature) {
+    calls.push('manifestVerify');
+    const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
+    return signer !== undefined && fromUtf8(signature) === `msig:${signer}:${encodeB64(manifest)}`;
   },
 };
 

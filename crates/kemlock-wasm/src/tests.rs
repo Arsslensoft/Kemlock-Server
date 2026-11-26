@@ -1734,3 +1734,90 @@ fn the_root_key_is_sealed_to_a_spaces_recovery_key_under_its_aad() {
         );
     }
 }
+
+use crate::manifests::verify_space_manifest;
+use kemlock_crypto::manifest::{Entry, Manifest};
+
+fn manifest_bytes(owner: Owner, counter: u64) -> Vec<u8> {
+    Manifest {
+        owner,
+        counter,
+        entries: vec![
+            Entry::live([1; 16], 2, b"cipher one"),
+            Entry::tombstone([2; 16], 4),
+        ],
+    }
+    .to_bytes()
+    .expect("a manifest encodes")
+}
+
+#[wasm_bindgen_test]
+fn an_accounts_own_manifest_is_signed_and_checked_with_its_own_key() {
+    let account_id = [0x81u8; 16];
+    let (session, _) = open_account(account_id);
+    let own = manifest_bytes(Owner::user(account_id), 3);
+    let signature = session.sign_manifest(&own).expect("the account signs its manifest");
+    assert_eq!(signature.len(), 3373);
+    session
+        .verify_own_manifest(&own, &signature)
+        .expect("its own signature checks");
+
+    // One changed byte, a changed counter or another signature does not check.
+    let mut changed = own.clone();
+    changed[40] ^= 1;
+    assert!(session.verify_own_manifest(&changed, &signature).is_err());
+    let mut bad_signature = signature.clone();
+    bad_signature[10] ^= 1;
+    assert!(session.verify_own_manifest(&own, &bad_signature).is_err());
+
+    // Another person's signature does not check as this account's.
+    let (other, _) = open_account([0x82u8; 16]);
+    let theirs = other
+        .sign_manifest(&manifest_bytes(Owner::user(account_id), 3))
+        .expect_err("another account does not sign this account's manifest");
+    assert_eq!(theirs, Error::Invalid);
+    let (impostor, _) = open_account(account_id);
+    let forged = impostor.sign_manifest(&own).expect("a copy of the account signs");
+    assert!(
+        session.verify_own_manifest(&own, &forged).is_err(),
+        "a signature by other keys of the same id is not the account's"
+    );
+
+    // Only a manifest is signed, and only the account's own or a space's.
+    assert_eq!(session.sign_manifest(b"not a manifest"), Err(Error::Invalid));
+    assert_eq!(
+        session.sign_manifest(&manifest_bytes(Owner::user([0x83; 16]), 1)),
+        Err(Error::Invalid)
+    );
+    let space = manifest_bytes(Owner::space([0x84; 16]), 1);
+    let space_signature = session.sign_manifest(&space).expect("a member signs a space's");
+    // A space's manifest is not the account's own.
+    assert!(session.verify_own_manifest(&space, &space_signature).is_err());
+
+    // A locked session signs and checks nothing.
+    let locked = Session::new();
+    assert_eq!(locked.sign_manifest(&own), Err(Error::Locked));
+    assert_eq!(locked.verify_own_manifest(&own, &signature), Err(Error::Locked));
+}
+
+#[wasm_bindgen_test]
+fn a_spaces_manifest_is_checked_against_its_signers_bundle_only() {
+    let space = Owner::space([0x85; 16]);
+    let (signer, signer_bundle) = open_account([0x86u8; 16]);
+    let (_, other_bundle) = open_account([0x87u8; 16]);
+    let manifest = manifest_bytes(space, 7);
+    let signature = signer.sign_manifest(&manifest).expect("a member signs");
+
+    verify_space_manifest(&signer_bundle.to_bytes(), &manifest, &signature)
+        .expect("the signer's bundle checks it");
+    assert!(verify_space_manifest(&other_bundle.to_bytes(), &manifest, &signature).is_err());
+    let mut changed = manifest.clone();
+    changed[44] ^= 1;
+    assert!(verify_space_manifest(&signer_bundle.to_bytes(), &changed, &signature).is_err());
+    assert!(verify_space_manifest(b"no bundle", &manifest, &signature).is_err());
+
+    // A person's own manifest is never taken as a space's, even under its signer's own bundle.
+    let own = manifest_bytes(Owner::user([0x86; 16]), 7);
+    let own_signature = signer.sign_manifest(&own).expect("signs its own");
+    assert!(verify_space_manifest(&signer_bundle.to_bytes(), &own, &own_signature).is_err());
+}
