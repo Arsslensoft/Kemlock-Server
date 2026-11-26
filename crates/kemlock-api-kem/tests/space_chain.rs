@@ -254,6 +254,31 @@ async fn a_second_append_at_the_same_seq_is_a_conflict_with_the_head() {
 }
 
 #[tokio::test]
+async fn a_chain_that_names_another_spaces_collection_is_refused_not_retried() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let zoe = rig.person("zoe@example.org", 3).await;
+    let (space, collection, _, _) = make(&rig, &sam).await;
+
+    // Zoe makes a space whose first collection has the id of Sam's: a 400, not a 409 with a head
+    // that would send her client to try again.
+    let other = Uuid::new_v4();
+    let mut chain = rig.chain(other);
+    let create = chain.create(&zoe.person, *collection.as_bytes());
+    let reply = zoe.post(&uri(other), request(&[&create])).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{:?}", reply.json());
+    assert!(reply.json().get("head").is_none(), "{:?}", reply.json());
+    assert_eq!(
+        zoe.get(&format!("/kem/v1/spaces/{other}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Sam's space still has its collection.
+    let view = sam.get(&format!("/kem/v1/spaces/{space}")).await;
+    assert_eq!(view.json()["collections"].as_array().map(Vec::len), Some(1));
+}
+
+#[tokio::test]
 async fn an_outsider_is_not_told_the_head_of_a_chain() {
     let rig = Rig::new();
     let sam = rig.person("sam@example.org", 1).await;

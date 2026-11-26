@@ -897,6 +897,9 @@ impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
         if head != append.expected {
             return Ok(AppendOutcome::Stale(head));
         }
+        if foreign(&g, &append.changes) {
+            return Err(StoreError::Duplicate);
+        }
         let last = append.records.last().map(|r| ChainHead {
             seq: r.seq,
             link: r.link,
