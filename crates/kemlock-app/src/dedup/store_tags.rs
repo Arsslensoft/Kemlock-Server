@@ -10,6 +10,7 @@ use super::ports::TagStore;
 use crate::authenticate::Actor;
 use crate::ports::ItemStore;
 use crate::spaces::SpaceRepo;
+use kemlock_domain::spaces::SpaceState;
 use kemlock_domain::{Item, ItemId, MatchingSettings, Owner, Revision, TagSet};
 use std::collections::HashMap;
 
@@ -88,6 +89,12 @@ impl<T: TagStore, R: SpaceRepo> StoreTags<T, R> {
         if item.is_tombstone() || !settings.enabled || tags.version != settings.version {
             return Ok(TagOutcome::ignored());
         }
+        // Who may see the matches is settled before anything is stored: a failure here must not
+        // leave stored tags that the answer then calls not stored.
+        let state = match item.owner {
+            Owner::Space(_) => authorize(&self.spaces, actor.user, item.owner, Need::Read).await?,
+            Owner::User(_) => None,
+        };
         let stored = self
             .tags
             .put_tags(item.owner, item.id, item.revision, &tags)
@@ -99,7 +106,7 @@ impl<T: TagStore, R: SpaceRepo> StoreTags<T, R> {
             .tags
             .matches(item.owner, settings.version, item.id)
             .await?;
-        let matches = narrow(&self.spaces, actor, item.owner, matches).await?;
+        let matches = narrow(&self.spaces, actor, state.as_ref(), matches).await?;
         Ok(TagOutcome {
             stored: true,
             matches,
@@ -158,7 +165,7 @@ impl<T: TagStore, I: ItemStore, R: SpaceRepo> BackfillTags<T, I, R> {
             return Err(DedupError::StaleItem { item: id, current });
         }
         let matches = self.tags.matches(item.owner, settings.version, id).await?;
-        narrow(&self.spaces, actor, item.owner, matches).await
+        narrow(&self.spaces, actor, state.as_ref(), matches).await
     }
 }
 
@@ -167,17 +174,17 @@ impl<T: TagStore, I: ItemStore, R: SpaceRepo> BackfillTags<T, I, R> {
 async fn narrow<R: SpaceRepo>(
     spaces: &R,
     actor: &Actor,
-    owner: Owner,
+    state: Option<&SpaceState>,
     matches: Vec<ItemId>,
 ) -> Result<Vec<ItemId>, DedupError> {
-    // A vault's matches are all the owner's own, and the owner is the only writer.
-    if matches.is_empty() || !matches!(owner, Owner::Space(_)) {
-        return Ok(matches);
-    }
-    let Some(state) = authorize(spaces, actor.user, owner, Need::Read).await? else {
+    // No state: a vault, whose matches are all the owner's own, and the owner is the only writer.
+    let Some(state) = state else {
         return Ok(matches);
     };
-    let seen = visible(spaces, &state, actor.user, &matches).await?;
+    if matches.is_empty() {
+        return Ok(matches);
+    }
+    let seen = visible(spaces, state, actor.user, &matches).await?;
     Ok(matches
         .into_iter()
         .filter(|item| seen.contains(item))

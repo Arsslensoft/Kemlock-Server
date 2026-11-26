@@ -743,3 +743,33 @@ async fn a_tag_write_names_only_the_matches_the_writer_may_see() {
         .expect("backfilled");
     assert_eq!(seen, vec![mine.id]);
 }
+
+#[tokio::test]
+async fn tags_are_not_stored_when_the_writer_cannot_be_checked_against_the_space() {
+    let s = Scene::new();
+    let sam = s.user("sam@example.org").await;
+    let zed = s.user("zed@example.org").await;
+    let (space, everyone) = s.w.make_space(sam).await;
+    s.set_matching()
+        .execute(&actor(sam), Owner::Space(space), true)
+        .await
+        .expect("an owner turns it on");
+    let item =
+        s.w.put_space_item()
+            .execute(
+                &actor(sam),
+                everyone,
+                s.w.item_write(space, ItemId::random(), None, 1, 1),
+            )
+            .await
+            .expect("Sam's item");
+
+    // Zed isn't in the space. The refusal comes before the tags are stored, so the answer can't
+    // say "not stored" about tags that were.
+    let refused = s
+        .store_tags()
+        .after_write(&actor(zed), &item, set(1, &[1]))
+        .await;
+    assert_eq!(refused.map(|_| ()), Err(DedupError::NotFound));
+    assert!(s.store().tags_of(item.id).is_empty());
+}
