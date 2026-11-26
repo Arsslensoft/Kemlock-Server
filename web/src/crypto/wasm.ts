@@ -162,13 +162,6 @@ export interface WasmVault {
     recipientId: string,
   ): string;
   // The space chain: JSON in and out (see crates/kemlock-wasm/src/chain.rs).
-  newChainedSpace(
-    spaceId: string,
-    collectionId: string,
-    spaceName: string,
-    collectionName: string,
-    at: number,
-  ): string;
   verifySpaceChain(spaceId: string, records: string, anchor?: string): string;
   spaceChainView(spaceId: string): string | undefined;
   acceptFirstContact(spaceId: string): void;

@@ -248,14 +248,7 @@ function ChainNotice({
   const t = useT();
   const [picked, setPicked] = useState('');
   const trust = detail.trust;
-  if (!trust || trust.kind === 'unchained') return null;
-  if (trust.kind === 'verified') {
-    return (
-      <Notice tone="warn">
-        <p>{t('space.chain.readonly')}</p>
-      </Notice>
-    );
-  }
+  if (!trust || trust.kind === 'unchained' || trust.kind === 'verified') return null;
   if (trust.kind === 'unverified') {
     return (
       <Notice tone="error" live>

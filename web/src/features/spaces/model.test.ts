@@ -4,8 +4,7 @@ import type { MemberViewDto } from '@/api/spaces';
 import { decodeB64, fromUtf8 } from '@/lib/b64url';
 import { checkedFingerprint, fingerprintText, fingerprintBytes } from '@/sharing/bundle';
 import { makeBundleB64 } from '@/test/bundles';
-import { memoryAnchorStore } from '@/spaces/anchors';
-import { NO_CHAIN, fakeSpaceCrypto } from '@/test/fake-space-crypto';
+import { fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
   FINANCE,
   INFRA,
@@ -35,7 +34,6 @@ import {
   reachedBy,
   renameCollection,
   setGroupMembers,
-  SpaceNotChecked,
 } from './model';
 import { MemberNotVerified } from './verify';
 
@@ -91,52 +89,15 @@ describe('the space list', () => {
 });
 
 describe('making a space', () => {
-  /** What the worker reports once the record it made is on the server's chain and verifies as mine. */
-  const mine = { ...NO_CHAIN, chained: true, head: { seq: 0, link: 'bGluaw' }, epoch: 1, links: ['bGluaw'] };
-
-  it('makes a chain: the create record, the boxes and the names, signed and sealed here', async () => {
-    const { spaceDeps, api, crypto } = deps();
-    crypto.chain = mine;
-    await createSpace(
-      { ...spaceDeps, now: () => 1_700_000_000 },
-      { name: 'Example Co', firstCollection: 'Infrastructure' },
-    );
-    expect(crypto.calls).toContain('newChainedSpace:1700000000');
-    // Nothing is made the old way, where the server would hold an unchained space.
-    expect(api.create).not.toHaveBeenCalled();
-    const [space, body] = api.appendChain.mock.calls[0] ?? [];
-    expect(space).toBe('99999999-0000-4000-8000-000000000001');
-    expect(body?.records).toHaveLength(1);
-    expect(body?.seals.map((s) => s.key)).toEqual([
-      'collection:99999999-0000-4000-8000-000000000002',
-      'space',
-    ]);
-    // Names go up sealed, never as the text given.
-    expect(JSON.stringify(body)).not.toContain('Example Co');
-    expect(body?.names.map((n) => n.target)).toEqual([
-      'collection:99999999-0000-4000-8000-000000000002',
-      'space',
-    ]);
-  });
-
-  it('verifies the chain at once, which keeps this browser’s anchor', async () => {
-    const { spaceDeps, crypto } = deps();
-    const anchors = memoryAnchorStore();
-    crypto.chain = mine;
-    await createSpace({ ...spaceDeps, anchors }, { name: 'Example Co', firstCollection: 'Infrastructure' });
-    expect(await anchors.load(ME, '99999999-0000-4000-8000-000000000001')).toEqual({
-      seq: 0,
-      epoch: 1,
-      links: ['bGluaw'],
-    });
-  });
-
-  it('says so when what the server serves back isn’t verified as mine', async () => {
-    const { spaceDeps } = deps();
-    // The default fake says the server serves no chain at all.
-    await expect(
-      createSpace(spaceDeps, { name: 'Example Co', firstCollection: 'Infrastructure' }),
-    ).rejects.toBeInstanceOf(SpaceNotChecked);
+  it('seals both names and keys here and sends only ciphertext', async () => {
+    const { spaceDeps, api } = deps();
+    await createSpace(spaceDeps, { name: 'Example Co', firstCollection: 'Infrastructure' });
+    const body = api.create.mock.calls[0]?.[0];
+    expect(body?.id).toBe('99999999-0000-4000-8000-000000000001');
+    expect(body?.collection.id).toBe('99999999-0000-4000-8000-000000000002');
+    expect(fromUtf8(decodeB64(body?.sealedSpaceKey ?? ''))).toBe(`space-key:${body?.id}`);
+    expect(body?.name).not.toContain('Example');
+    expect(fromUtf8(decodeB64(body?.name ?? ''))).toContain('Example Co');
   });
 });
 

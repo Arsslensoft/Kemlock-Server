@@ -24,23 +24,15 @@ use std::collections::BTreeMap;
 use kemlock_crypto::{
     bundle::{Bundle, fingerprint_groups},
     keys::SecretKey,
-    sealed_box,
     space_chain::{
-        self as sc, Anchor, Body, Commitment, Hash, Id, KeyRef, NameTarget, Record, SignedRecord,
-        State, Status,
+        self as sc, Anchor, Body, Hash, Id, KeyRef, Record, SignedRecord, State, Status,
         client::{FirstContact, SealListEntry, anchor_person, open_key},
         verify_chain,
     },
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    b64,
-    error::Error,
-    ids,
-    session::Session,
-    spaces::{NameKind, seal_name_under},
-};
+use crate::{b64, error::Error, ids, session::Session};
 
 /// A record as the server serves it.
 #[derive(Deserialize)]
@@ -658,181 +650,6 @@ impl Session {
             }
         }
         Ok(())
-    }
-}
-
-/// A record, as the append route takes it (docs/crypto.md, "Wire form").
-#[derive(Serialize)]
-struct RecordOut {
-    entry: String,
-    signature: String,
-}
-
-/// A box a request carries for a commitment of record `seq`.
-#[derive(Serialize)]
-struct SealOut {
-    #[serde(rename = "box")]
-    sealed: String,
-    key: String,
-    member: String,
-    seq: u64,
-    version: u32,
-}
-
-/// A sealed name a request carries for a name hash of record `seq`.
-#[derive(Serialize)]
-struct NameOut {
-    name: String,
-    seq: u64,
-    target: String,
-}
-
-/// What `POST /kem/v1/spaces/{id}/chain` takes (docs/crypto.md, "Accepting records").
-#[derive(Serialize)]
-pub(crate) struct AppendOut {
-    records: Vec<RecordOut>,
-    seals: Vec<SealOut>,
-    names: Vec<NameOut>,
-}
-
-impl Session {
-    /// Makes a new space as a chain: its first record, `create`, signed with this account's `sig1`
-    /// key, with the space key and the first collection's key (both version 1) sealed to this
-    /// account's own bundle, the key checks, and both names under the space key. The two keys are
-    /// kept, as `new_space` keeps them, so the space opens once the record is appended. `at` is
-    /// the time in Unix seconds, which the server checks is within 10 minutes of its own clock.
-    ///
-    /// The record is checked as the server will check it before it is returned.
-    pub(crate) fn create_chained_space(
-        &mut self,
-        space: &Id,
-        collection: &Id,
-        space_name: &str,
-        collection_name: &str,
-        at: u64,
-    ) -> Result<AppendOut, Error> {
-        let unlocked = self.unlocked_mut()?;
-        let (kx_private, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
-        if unlocked.spaces.spaces.keys().any(|(held, _)| held == space) {
-            return Err(Error::Invalid);
-        }
-        unlocked.spaces.require_unchained(space)?;
-        let me = unlocked.account_id;
-        let bundle = Bundle {
-            account_id: me,
-            key_version: unlocked.key_version,
-            kx1_public: kx_private.public_key()?,
-            sig1_public: sig_private.public_key()?,
-        };
-        let version = 1u32;
-        let space_key = SecretKey::generate();
-        let collection_key = SecretKey::generate();
-
-        // One box per key, to this account's bundle, and the commitment that covers it.
-        let seal = |key: &KeyRef, secret: &SecretKey| -> Result<(Vec<u8>, Commitment), Error> {
-            let (context, aad) = sc::seals::box_context(key, space, version, &me);
-            let boxed = sealed_box::seal(&bundle.kx1_public, context, &aad, secret.as_bytes())?;
-            let entries = [(me, bundle.key_version, sc::seal_hash(&boxed))];
-            let commitment = Commitment {
-                key: *key,
-                version,
-                count: 1,
-                digest: sc::seal_digest(space, key, version, &entries),
-                check: Some(sc::key_check(space, key, version, secret.as_bytes())?),
-            };
-            Ok((boxed, commitment))
-        };
-        let collection_ref = KeyRef::Collection(*collection);
-        let (collection_box, collection_commitment) = seal(&collection_ref, &collection_key)?;
-        let (space_box, space_commitment) = seal(&KeyRef::Space, &space_key)?;
-
-        let space_sealed = seal_name_under(
-            &space_key,
-            space,
-            version,
-            NameKind::Space,
-            space,
-            space_name,
-        )?;
-        let collection_sealed = seal_name_under(
-            &space_key,
-            space,
-            version,
-            NameKind::Collection,
-            collection,
-            collection_name,
-        )?;
-
-        let record = Record {
-            space: *space,
-            seq: 0,
-            prev: [0; 32],
-            epoch: 1,
-            at,
-            by: me,
-            body: Body::Create {
-                bundle: bundle.to_bytes(),
-                bundle_signature: bundle.sign(sig_private)?,
-                collection: *collection,
-                collection_name: kemlock_crypto::hash::sha256(&collection_sealed),
-                member: me,
-                name_hash: kemlock_crypto::hash::sha256(&space_sealed),
-                // Sorted by key: a collection's before the space's.
-                seals: vec![collection_commitment, space_commitment],
-            },
-        };
-        let entry = record.to_bytes();
-        let signed = SignedRecord {
-            signature: sc::sign_record(sig_private, &entry)?,
-            entry,
-            cosignature: None,
-        };
-        // What the server will do with it, done here first: a record the verifier refuses would
-        // leave a space nobody can open.
-        State::empty()
-            .apply(space, &signed)
-            .map_err(|_| Error::Invalid)?;
-
-        let out = AppendOut {
-            records: vec![RecordOut {
-                entry: b64::encode(&signed.entry),
-                signature: b64::encode(&signed.signature),
-            }],
-            seals: vec![
-                SealOut {
-                    sealed: b64::encode(&collection_box),
-                    key: collection_ref.text(),
-                    member: sc::uuid_text(&me),
-                    seq: 0,
-                    version,
-                },
-                SealOut {
-                    sealed: b64::encode(&space_box),
-                    key: KeyRef::Space.text(),
-                    member: sc::uuid_text(&me),
-                    seq: 0,
-                    version,
-                },
-            ],
-            names: vec![
-                NameOut {
-                    name: b64::encode(&collection_sealed),
-                    seq: 0,
-                    target: NameTarget::Collection(*collection).text(),
-                },
-                NameOut {
-                    name: b64::encode(&space_sealed),
-                    seq: 0,
-                    target: NameTarget::Space.text(),
-                },
-            ],
-        };
-        unlocked.spaces.spaces.insert((*space, version), space_key);
-        unlocked
-            .spaces
-            .collections
-            .insert((*space, *collection, version), collection_key);
-        Ok(out)
     }
 }
 

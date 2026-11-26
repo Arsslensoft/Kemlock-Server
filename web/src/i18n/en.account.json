@@ -15,7 +15,6 @@
   "space.error.unchecked": "This space can't be checked, so it can't be changed.",
 
   "space.chain.tag": "Can't be checked",
-  "space.chain.readonly": "This space's changes are signed records, and the web vault can't make them yet: to add members, collections, groups or grants, use a Kemlock app. Its items can be read and written here.",
   "space.chain.unchecked.title": "This space can't be checked",
   "space.chain.unchecked.body": "Its signed history didn't verify here ({reason}), so no key of the space is opened, nothing is sealed to anyone, and nothing about it is shown as checked. Tell an admin if this keeps happening.",
   "space.chain.unreachable.body": "Its signed history couldn't be read just now, so no key of the space is opened and nothing about it is shown as checked. Try again in a moment.",

@@ -37,8 +37,6 @@ export interface SpaceDeps {
   newId?: () => string;
   /** Where this browser keeps the anchors of the chains it verified; its IndexedDB when left out. */
   anchors?: AnchorStore;
-  /** The time in Unix seconds, for the records this browser signs. */
-  now?: () => number;
 }
 
 /**
@@ -135,32 +133,26 @@ export interface NewSpaceInput {
   firstCollection: string;
 }
 
-/**
- * Makes a space as a chain (docs/crypto.md, "Space chain"): the worker signs the `create` record
- * with my own key and seals the space key and the first collection's key to me, and the server
- * appends it and stores the boxes and names the record commits. Nothing the server can make up
- * is in it, so the space is mine from its first record. The chain is verified at once, which
- * keeps its anchor: this account's own key made it, so there is nothing to compare.
- */
+/** Makes a space: the space key and first collection key are made and sealed to me here. */
 export async function createSpace(deps: SpaceDeps, input: NewSpaceInput): Promise<SpaceViewDto> {
   const spaceId = newId(deps);
   const collectionId = newId(deps);
-  const at = (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
-  const made = await deps.crypto.newChainedSpace({
+  const keys = await deps.crypto.newSpace({
     spaceId,
     collectionId,
     spaceName: input.name,
     collectionName: input.firstCollection,
-    at,
   });
-  await deps.api.appendChain(spaceId, made);
-  const view = await deps.api.get(spaceId);
-  const trust = await checkSpaceChain(deps, spaceId, view.me.user);
-  if (trust.kind !== 'verified') {
-    // The server took the record but what it serves back doesn't verify as this account's own.
-    throw new SpaceNotChecked(trust.kind);
-  }
-  return view;
+  return deps.api.create({
+    id: spaceId,
+    name: encodeB64(keys.name),
+    sealedSpaceKey: encodeB64(keys.sealedSpaceKey),
+    collection: {
+      id: collectionId,
+      name: encodeB64(keys.collection.name),
+      sealedKey: encodeB64(keys.collection.sealedKey),
+    },
+  });
 }
 
 // ---- one space ----------------------------------------------------------------------------

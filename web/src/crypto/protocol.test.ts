@@ -94,13 +94,6 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     unlockWithRoot: vi.fn(),
     sealSpaceItem: vi.fn(() => JSON.stringify({ ciphertext: 'c2k', itemKey: 'a2s', keyVersion: 2 })),
     openSpaceItem: vi.fn(() => '{"name":"vpn"}'),
-    newChainedSpace: vi.fn(() =>
-      JSON.stringify({
-        records: [{ entry: 'ZW50cnk', signature: 'c2ln' }],
-        seals: [{ box: 'Ym94', key: 'space', member: '00010203-0405-0607-0809-0a0b0c0d0e0f', seq: 0, version: 1 }],
-        names: [{ name: 'bmFtZQ', seq: 0, target: 'space' }],
-      }),
-    ),
     verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn((): string | undefined => undefined),
     acceptFirstContact: vi.fn(),
@@ -353,18 +346,6 @@ describe('the dispatcher', () => {
     expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s');
     await dispatch('openCollection', [{ spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s' }]);
     expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s');
-
-    // A new chained space: the append request comes back parsed, and the time is checked.
-    const created = await dispatch('newChainedSpace', [
-      { spaceId: UUID, collectionId: UUID, spaceName: 'Family', collectionName: 'Everyone', at: 1_700_000_000 },
-    ]);
-    expect(created.records).toEqual([{ entry: 'ZW50cnk', signature: 'c2ln' }]);
-    expect(vault.newChainedSpace).toHaveBeenCalledWith(UUID, UUID, 'Family', 'Everyone', 1_700_000_000);
-    await expect(
-      dispatch('newChainedSpace', [
-        { spaceId: UUID, collectionId: UUID, spaceName: 'a', collectionName: 'b', at: -1 },
-      ]),
-    ).rejects.toMatchObject({ code: 'invalid' });
 
     // The space chain: JSON goes in and comes out, and a key version is checked before the module.
     const record = { entry: 'ZW50cnk', signature: 'c2ln' };

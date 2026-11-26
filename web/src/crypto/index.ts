@@ -160,7 +160,6 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     unlockWithRoot: (accountId, root, options) => call('unlockWithRoot', [accountId, root, options]),
     sealSpaceItem: (input) => call('sealSpaceItem', [input]),
     openSpaceItem: (input) => call('openSpaceItem', [input]),
-    newChainedSpace: (input) => call('newChainedSpace', [input]),
     verifySpaceChain: (input) => call('verifySpaceChain', [input]),
     spaceChainView: (spaceId) => call('spaceChainView', [spaceId]),
     acceptFirstContact: (spaceId) => call('acceptFirstContact', [spaceId]),

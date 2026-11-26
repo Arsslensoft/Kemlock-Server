@@ -34,11 +34,6 @@ function worker() {
     verifyBundle: vi.fn(async (_bundle: string, _signature: string) => true),
     ownFingerprint: vi.fn(async () => '11111 22222'),
     verifyConfirmation: vi.fn(async () => true),
-    newChainedSpace: vi.fn(async () => ({
-      records: [{ entry: 'ZW50cnk', signature: 'c2ln' }],
-      seals: [],
-      names: [],
-    })),
     verifySpaceChain: vi.fn(async () => ({ ok: false as const, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn(async () => null),
     acceptFirstContact: vi.fn(async () => undefined),
@@ -144,9 +139,6 @@ describe('spaces over the worker', () => {
     });
     expect(api.verifySpaceChain).toHaveBeenCalledWith({ spaceId: SPACE, records });
     await expect(spaces.spaceChainView(SPACE)).resolves.toBeNull();
-    const input = { spaceId: SPACE, collectionId: COLLECTION, spaceName: 'Family', collectionName: 'Everyone', at: 5 };
-    await expect(spaces.newChainedSpace(input)).resolves.toMatchObject({ records: [{ entry: 'ZW50cnk' }] });
-    expect(api.newChainedSpace).toHaveBeenCalledWith(input);
     await spaces.acceptFirstContact(SPACE);
     expect(api.acceptFirstContact).toHaveBeenCalledWith(SPACE);
     const sealed = utf8('box');

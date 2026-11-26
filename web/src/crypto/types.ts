@@ -289,13 +289,6 @@ export interface ChainView {
 
 export type ChainVerdict = ChainView | ChainRefusal;
 
-/** What POST /kem/v1/spaces/{id}/chain takes: records, and the boxes and names they commit. */
-export interface ChainAppend {
-  records: ChainRecord[];
-  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
-  names: Array<{ name: string; seq: number; target: string }>;
-}
-
 /** An entry of the server's seal hash list for a record (GET /chain/{seq}/seals). */
 export interface SealHashEntry {
   bundleVersion: number;
@@ -633,12 +626,6 @@ export interface CryptoApi {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
-  /**
-   * A new space as a chain: the body of POST /kem/v1/spaces/{id}/chain, with a `create` record
-   * signed by the unlocked account, both keys sealed to it and both names under the space key.
-   * `at` is the time in Unix seconds. The keys are kept, so the space opens once it is appended.
-   */
-  newChainedSpace(input: NewSpaceInput & { at: number }): Promise<ChainAppend>;
   /** The view of the chain this unlock verified, or null when it hasn't verified one. */
   spaceChainView(spaceId: string): Promise<ChainView | null>;
   /** The person compared the fingerprint first contact asked for and it matched. */
@@ -788,7 +775,6 @@ export interface Ops {
     args: [input: { spaceId: string; records: ChainRecord[]; anchor?: ChainAnchor }];
     result: ChainVerdict;
   };
-  newChainedSpace: { args: [input: NewSpaceInput & { at: number }]; result: ChainAppend };
   spaceChainView: { args: [spaceId: string]; result: ChainView | null };
   acceptFirstContact: { args: [spaceId: string]; result: void };
   openChainKey: {
