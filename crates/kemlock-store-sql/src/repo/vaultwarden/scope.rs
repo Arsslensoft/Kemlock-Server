@@ -83,12 +83,10 @@ impl Ctx {
     }
 
     async fn mark_row(&self, kind: &str, id: Uuid) -> Res<Option<vw_import_ids::Model>> {
-        Ok(
-            vw_import_ids::Entity::find_by_id((kind.to_owned(), id))
-                .one(&self.txn)
-                .await
-                .store()?,
-        )
+        Ok(vw_import_ids::Entity::find_by_id((kind.to_owned(), id))
+            .one(&self.txn)
+            .await
+            .store()?)
     }
 
     async fn marked(&self, kind: &str, id: Uuid) -> Res<bool> {
@@ -110,12 +108,7 @@ impl Ctx {
     }
 
     /// Whether the server's own API changed the user or space since the import last wrote it.
-    async fn changed_since(
-        &self,
-        kind: &str,
-        id: Uuid,
-        mark: &vw_import_ids::Model,
-    ) -> Res<bool> {
+    async fn changed_since(&self, kind: &str, id: Uuid, mark: &vw_import_ids::Model) -> Res<bool> {
         let written = utc(mark.written_at);
         if kind == SPACE {
             let space = spaces::Entity::find_by_id(id)
@@ -140,10 +133,7 @@ impl Ctx {
                 .store()?;
             return Ok(moved.is_some());
         }
-        let user = users::Entity::find_by_id(id)
-            .one(&self.txn)
-            .await
-            .store()?;
+        let user = users::Entity::find_by_id(id).one(&self.txn).await.store()?;
         if user.is_some_and(|u| utc(u.updated_at) > written) {
             return Ok(true);
         }
@@ -587,8 +577,9 @@ pub(super) async fn delete_allowed(ctx: &mut Ctx, table: &str, key: &[String]) -
         "groups" => group_owned(ctx, first).await,
         // [user, collection], [collection, group] and [group, membership]: the space they are in.
         "users_collections" => collection_owned(ctx, second).await,
-        "collections_groups" => Ok(collection_owned(ctx, first).await?
-            && group_owned(ctx, second).await?),
+        "collections_groups" => {
+            Ok(collection_owned(ctx, first).await? && group_owned(ctx, second).await?)
+        }
         "groups_users" => group_owned(ctx, first).await,
         "emergency_access" => {
             let Some(id) = first else {

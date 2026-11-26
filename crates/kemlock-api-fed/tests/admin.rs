@@ -680,12 +680,21 @@ async fn an_address_change_that_came_with_a_rotation_waits_for_a_step_up_token()
         .await
         .expect("put");
 
-    let (status, listed) = admin(&e.app, Method::GET, "/admin/v1/federation/address-changes", None).await;
+    let (status, listed) = admin(
+        &e.app,
+        Method::GET,
+        "/admin/v1/federation/address-changes",
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{listed}");
     assert_eq!(listed[0]["peer"], other.server.0.to_string());
     assert_eq!(listed[0]["addresses"], json!(["https://moved.example.org"]));
 
-    let uri = format!("/admin/v1/federation/peers/{}/address-change", other.server.0);
+    let uri = format!(
+        "/admin/v1/federation/peers/{}/address-change",
+        other.server.0
+    );
     let (status, _, _) = call(
         &e.app,
         Method::POST,
@@ -694,7 +703,11 @@ async fn an_address_change_that_came_with_a_rotation_waits_for_a_step_up_token()
         &[("x-admin", "1"), ("x-fresh", "1")],
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a recent sign-in is not enough");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a recent sign-in is not enough"
+    );
     let (status, _) = admin(&e.app, Method::POST, &uri, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let moved = e
@@ -704,8 +717,17 @@ async fn an_address_change_that_came_with_a_rotation_waits_for_a_step_up_token()
         .await
         .expect("get")
         .expect("peer");
-    assert_eq!(moved.addresses, vec!["https://moved.example.org".to_owned()]);
-    let (_, listed) = admin(&e.app, Method::GET, "/admin/v1/federation/address-changes", None).await;
+    assert_eq!(
+        moved.addresses,
+        vec!["https://moved.example.org".to_owned()]
+    );
+    let (_, listed) = admin(
+        &e.app,
+        Method::GET,
+        "/admin/v1/federation/address-changes",
+        None,
+    )
+    .await;
     assert_eq!(listed, json!([]));
     // Nothing is left to approve or refuse.
     let (status, _) = admin(&e.app, Method::POST, &uri, None).await;
@@ -742,7 +764,11 @@ async fn a_contested_peer_shows_as_such_and_is_trusted_again_only_with_a_step_up
         &[("x-admin", "1"), ("x-fresh", "1")],
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "a recent sign-in is not enough");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a recent sign-in is not enough"
+    );
     let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let held = e

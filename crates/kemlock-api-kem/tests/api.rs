@@ -793,7 +793,11 @@ async fn second_step_attempts_are_counted_in_the_store_so_every_replica_sees_the
     let wrong = wrong_code(&app, &secret);
     let challenge = challenge_from(&client, "sam@example.org", peer(72)).await;
     let again = second_step_from(&client, &challenge, &wrong, peer(72)).await;
-    assert_eq!(again.status, StatusCode::UNAUTHORIZED, "the count started again");
+    assert_eq!(
+        again.status,
+        StatusCode::UNAUTHORIZED,
+        "the count started again"
+    );
 }
 
 #[tokio::test]

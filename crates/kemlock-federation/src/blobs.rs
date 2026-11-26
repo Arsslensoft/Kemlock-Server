@@ -578,12 +578,14 @@ mod tests {
             more: false,
         }]);
 
-        let report = me.sync_blobs(&mut channel, home, vault).await.expect("sync");
+        let report = me
+            .sync_blobs(&mut channel, home, vault)
+            .await
+            .expect("sync");
         assert_eq!((report.rows, report.skipped), (1, 2));
         let held: Vec<AttachmentId> = me.store.attachments().iter().map(|a| a.id).collect();
         assert!(held.contains(&good.attachment));
         assert!(!held.contains(&unknown_item.attachment));
         assert!(!held.contains(&stolen_file.attachment));
     }
-
 }

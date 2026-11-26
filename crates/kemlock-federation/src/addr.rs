@@ -202,7 +202,9 @@ pub async fn resolve(url: &Url, trust: Trust) -> Result<Vec<SocketAddr>> {
                 tokio::time::timeout(LOOKUP_TIMEOUT, tokio::net::lookup_host((name, port)))
                     .await
                     .map_err(|_| {
-                        FedError::Remote("the peer's name could not be looked up in time".to_owned())
+                        FedError::Remote(
+                            "the peer's name could not be looked up in time".to_owned(),
+                        )
                     })?
                     .map_err(|_| {
                         FedError::Remote("the peer's name could not be looked up".to_owned())
@@ -211,7 +213,9 @@ pub async fn resolve(url: &Url, trust: Trust) -> Result<Vec<SocketAddr>> {
         }
     };
     if found.is_empty() {
-        return Err(FedError::Remote("the peer's name has no address".to_owned()));
+        return Err(FedError::Remote(
+            "the peer's name has no address".to_owned(),
+        ));
     }
     if trust == Trust::Descriptor && found.iter().any(|a| !is_public_ip(a.ip())) {
         return Err(FedError::Refused(
@@ -314,7 +318,10 @@ mod tests {
             "https://[fd00::1]",
         ] {
             assert!(
-                matches!(base_url(private, Trust::Descriptor), Err(FedError::Refused(_))),
+                matches!(
+                    base_url(private, Trust::Descriptor),
+                    Err(FedError::Refused(_))
+                ),
                 "{private}"
             );
             assert!(base_url(private, Trust::Admin).is_ok(), "{private}");
@@ -345,8 +352,14 @@ mod tests {
 
     #[test]
     fn addresses_compare_without_case_or_a_trailing_slash() {
-        assert!(same_address("https://A.example.org/", "https://a.example.org"));
-        assert!(!same_address("https://a.example.org", "https://b.example.org"));
+        assert!(same_address(
+            "https://A.example.org/",
+            "https://a.example.org"
+        ));
+        assert!(!same_address(
+            "https://a.example.org",
+            "https://b.example.org"
+        ));
     }
 
     #[tokio::test]

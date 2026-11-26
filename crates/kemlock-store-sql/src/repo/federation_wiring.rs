@@ -10,10 +10,10 @@ use crate::store::SqlStore;
 use crate::tables::attachments::{self, READY};
 use crate::tables::events;
 use crate::tables::federation::{item_siblings, peers};
+use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::federation_wiring::{
     federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
 };
-use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::items::{owner_from, owner_parts};
 use crate::tables::settings;
 use kemlock_app::ports::{DeviceRepo, Event, StoreError, UserRepo};
@@ -63,23 +63,25 @@ impl FedAdminRepo for SqlStore {
             .collect())
     }
 
-    async fn trust_addresses(&self, peer: ServerId, addresses: &[String]) -> Result<(), StoreError> {
+    async fn trust_addresses(
+        &self,
+        peer: ServerId,
+        addresses: &[String],
+    ) -> Result<(), StoreError> {
         let held = self.trusted_addresses(peer).await?;
         for address in addresses {
             let address = address.trim();
             // The column is a key, so it has a length; a longer address is never trusted.
-            if address.is_empty()
-                || address.len() > 512
-                || held.iter().any(|h| h == address)
-            {
+            if address.is_empty() || address.len() > 512 || held.iter().any(|h| h == address) {
                 continue;
             }
-            let inserted = peer_trusted_addresses::Entity::insert(peer_trusted_addresses::ActiveModel {
-                peer: Set(peer.0),
-                address: Set(address.to_owned()),
-            })
-            .exec(self.writer())
-            .await;
+            let inserted =
+                peer_trusted_addresses::Entity::insert(peer_trusted_addresses::ActiveModel {
+                    peer: Set(peer.0),
+                    address: Set(address.to_owned()),
+                })
+                .exec(self.writer())
+                .await;
             match inserted {
                 Ok(_) => {}
                 // Another write put it there between the read and this one.

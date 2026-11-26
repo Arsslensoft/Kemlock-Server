@@ -1367,7 +1367,11 @@ mod tests {
         let fp = [5u8; FINGERPRINT_LEN];
         // A member who is already confirmed may be confirmed again, by someone who manages them
         // as of now; a member who is only invited or revoked can't be, and a member can't confirm.
-        assert!(f.state.authorize_confirm(f.owner, f.member, &fp, &fp).is_ok());
+        assert!(
+            f.state
+                .authorize_confirm(f.owner, f.member, &fp, &fp)
+                .is_ok()
+        );
         assert!(matches!(
             f.state.authorize_confirm(f.member, f.admin, &fp, &fp).err(),
             Some(SpaceError::Forbidden(_))
@@ -1379,7 +1383,10 @@ mod tests {
         let mut revoked = Fixture::new();
         revoked.set_state(revoked.member, MemberState::Revoked);
         assert!(matches!(
-            revoked.state.authorize_confirm(revoked.owner, revoked.member, &fp, &fp).err(),
+            revoked
+                .state
+                .authorize_confirm(revoked.owner, revoked.member, &fp, &fp)
+                .err(),
             Some(SpaceError::State(_))
         ));
         assert!(matches!(

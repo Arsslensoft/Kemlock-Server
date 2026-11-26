@@ -179,8 +179,13 @@ async fn devices(store: &SqlStore) {
     keyed.dpop_jkt = Some("jkt-x".to_owned());
     DeviceRepo::upsert(store, &keyed).await.expect("upsert");
     assert_eq!(
-        DeviceRepo::touch_seen(store, older.id, "jkt-other", datetime!(2026-06-06 06:06:06 UTC))
-            .await,
+        DeviceRepo::touch_seen(
+            store,
+            older.id,
+            "jkt-other",
+            datetime!(2026-06-06 06:06:06 UTC)
+        )
+        .await,
         Ok(false),
         "another key"
     );

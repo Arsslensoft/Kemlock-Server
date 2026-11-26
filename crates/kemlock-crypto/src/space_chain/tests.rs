@@ -608,7 +608,10 @@ fn case_13_a_server_made_chain_shows_another_fingerprint() {
     // A confirmed member's new device compares with their confirmer; the creator with no one.
     let confirmed = compare(anchor_person(&real.state, &uid(ANA)));
     assert_eq!(confirmed.person, owner);
-    assert_eq!(anchor_person(&real.state, &owner), FirstContact::SelfVouched);
+    assert_eq!(
+        anchor_person(&real.state, &owner),
+        FirstContact::SelfVouched
+    );
 }
 
 #[test]
@@ -629,7 +632,10 @@ fn a_rekey_vouches_for_the_chain_on_a_members_own_device() {
     let remove = k.remove_body(&uid(LEE));
     k.ok::<Gen>(&owner, remove);
     assert_eq!(anchor_person(&k.state, &uid(LEE)), FirstContact::PickOwner);
-    assert_eq!(anchor_person(&k.state, &[0xee; 16]), FirstContact::PickOwner);
+    assert_eq!(
+        anchor_person(&k.state, &[0xee; 16]),
+        FirstContact::PickOwner
+    );
 }
 
 #[test]

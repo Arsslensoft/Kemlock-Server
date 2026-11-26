@@ -129,11 +129,20 @@ pub async fn apply<S: ImportSink>(
     let mut report = ApplyReport::default();
 
     sink.put_accounts(&mapped.accounts).await?;
-    report.accounts = mapped.accounts.len().saturating_sub(refused_of(&*sink, "user"));
+    report.accounts = mapped
+        .accounts
+        .len()
+        .saturating_sub(refused_of(&*sink, "user"));
     sink.put_folders(&mapped.folders).await?;
-    report.folders = mapped.folders.len().saturating_sub(refused_of(&*sink, "folder"));
+    report.folders = mapped
+        .folders
+        .len()
+        .saturating_sub(refused_of(&*sink, "folder"));
     sink.put_items(&mapped.items).await?;
-    report.items = mapped.items.len().saturating_sub(refused_of(&*sink, "item"));
+    report.items = mapped
+        .items
+        .len()
+        .saturating_sub(refused_of(&*sink, "item"));
     sink.put_cipher_states(&mapped.cipher_states).await?;
     report.cipher_states = mapped.cipher_states.len();
     sink.put_attachments(&mapped.attachments).await?;

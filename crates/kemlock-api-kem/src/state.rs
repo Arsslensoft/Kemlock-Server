@@ -277,7 +277,12 @@ impl<S, P, K> Api<S, P, K> {
     /// Remembers a login state or passkey challenge finished by someone nobody is signed in for,
     /// on behalf of `ip`, which may take only its share of the set. `Ok(false)` for a state
     /// already spent, `Err(Full)` when the set or the address's share is full.
-    pub(crate) fn spend_open_state(&self, ip: IpAddr, state: &[u8], now: i64) -> Result<bool, Full> {
+    pub(crate) fn spend_open_state(
+        &self,
+        ip: IpAddr,
+        state: &[u8],
+        now: i64,
+    ) -> Result<bool, Full> {
         self.used_states_open.insert_from(
             crate::ratelimit::ip_key(ip).as_bytes(),
             OPEN_USED_STATES_PER_SOURCE,

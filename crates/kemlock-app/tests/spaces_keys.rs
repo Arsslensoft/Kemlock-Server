@@ -8,8 +8,8 @@ use fakes::actor;
 use kemlock_app::dedup::TagStore;
 use kemlock_app::ports::ItemStore;
 use kemlock_app::spaces::{
-    CollectionRekey, CreateCollectionInput, CreateGroupInput, CreateSpaceInput, EditCollectionInput,
-    EditGroupInput, NewCollection, ReplacementInput, SpacesError,
+    CollectionRekey, CreateCollectionInput, CreateGroupInput, CreateSpaceInput,
+    EditCollectionInput, EditGroupInput, NewCollection, ReplacementInput, SpacesError,
 };
 use kemlock_domain::spaces::{
     Collection, CollectionId, CollectionPermission, Grantee, GroupId, MemberState, SpaceError,

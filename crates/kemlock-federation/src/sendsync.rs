@@ -839,7 +839,10 @@ mod tests {
             let held = t.b.store.send(target.id).expect("held");
             assert_eq!(held.access_count, target.access_count + 5);
             assert_eq!(
-                SendRecord { access_count: target.access_count, ..held },
+                SendRecord {
+                    access_count: target.access_count,
+                    ..held
+                },
                 *target
             );
         }

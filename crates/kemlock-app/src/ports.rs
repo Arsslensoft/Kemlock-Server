@@ -132,7 +132,6 @@ pub trait UserRepo: Send + Sync {
         async { Ok(false) }
     }
 
-
     /// Inserts a new account that is held until its link is opened, in one step: the account and
     /// its hold go in together or not at all, so the account is never there unheld. `Duplicate`
     /// when the email is taken. The default inserts and then holds in two steps, which leaves a

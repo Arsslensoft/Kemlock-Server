@@ -466,7 +466,12 @@ impl Harness {
 
     /// Changes one member's row in an organization's space the way the Kemlock API, the admin
     /// console and SSO group sync do: the Bitwarden documents are left as they are.
-    pub(crate) async fn change_row(&self, org: &str, user: UserId, change: impl FnOnce(&mut Member)) {
+    pub(crate) async fn change_row(
+        &self,
+        org: &str,
+        user: UserId,
+        change: impl FnOnce(&mut Member),
+    ) {
         let space = SpaceId(org.parse::<Uuid>().expect("an organization id"));
         let state = SpaceRepo::load(&self.store, space)
             .await

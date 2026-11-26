@@ -267,7 +267,10 @@ doc!(
         ),
     ),
     responses(
-        (status = 204, description = "This server dials the new addresses from now on"),
+        (
+            status = 204,
+            description = "This server dials the new addresses from now on"
+        ),
         (
             status = 409,
             description = "No address change waits for this peer",
@@ -292,7 +295,10 @@ doc!(
         ),
     ),
     responses(
-        (status = 204, description = "The addresses this server knew stay"),
+        (
+            status = 204,
+            description = "The addresses this server knew stay"
+        ),
         (
             status = 409,
             description = "No address change waits for this peer",
@@ -317,7 +323,10 @@ doc!(
         ),
     ),
     responses(
-        (status = 204, description = "The contested peer is trusted again and syncs from the next visit"),
+        (
+            status = 204,
+            description = "The contested peer is trusted again and syncs from the next visit"
+        ),
         (
             status = 409,
             description = "The peer is not contested",

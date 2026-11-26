@@ -274,7 +274,12 @@ async fn an_account_takes_thirty_requests_an_hour_and_past_them_the_answer_is_th
     // The next, from an address that has asked nothing, is answered like any other: it is
     // not a refusal that tells a stranger the account exists, and it stores nothing.
     let eleventh = ask(&from(&app, 99), EMAIL).await;
-    assert_eq!(eleventh.status, StatusCode::CREATED, "{:?}", eleventh.json());
+    assert_eq!(
+        eleventh.status,
+        StatusCode::CREATED,
+        "{:?}",
+        eleventh.json()
+    );
     let stranger = ask(&from(&app, 99), "nobody@example.org").await;
     assert_eq!(stranger.status, StatusCode::CREATED);
     let keys = |reply: &Reply| {
@@ -569,7 +574,11 @@ async fn signing_out_of_this_session_keeps_the_device_and_its_key_copy() {
     let other_id: DeviceId = other_session.device_id.parse().expect("a device id");
 
     let out = other
-        .post_authed("/kem/v1/auth/sign-out", &other_session.access_token, json!({}))
+        .post_authed(
+            "/kem/v1/auth/sign-out",
+            &other_session.access_token,
+            json!({}),
+        )
         .await;
     assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
 

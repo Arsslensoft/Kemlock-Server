@@ -481,12 +481,7 @@ fn contact_of(
 /// Whether the chain's bundle for this account (`listed`) is someone else's key in its place: it
 /// is at this account's key version or a newer one, and isn't the bundle this browser holds. One
 /// at an older version is a bundle this account has since replaced, which a `rekey` moves on from.
-fn takes_my_place(
-    listed_version: u32,
-    listed: &[u8],
-    own_version: u32,
-    own: &[u8],
-) -> bool {
+fn takes_my_place(listed_version: u32, listed: &[u8], own_version: u32, own: &[u8]) -> bool {
     listed_version >= own_version && listed != own
 }
 
@@ -654,8 +649,16 @@ impl Session {
 
         // The chain's bundle for this account, at the key version this account is at, is this
         // account's own key: another one means someone else's key is in the account's place.
-        if let Some(listed) = verified.state.confirmed(&me).and_then(|m| m.bundle.as_ref())
-            && takes_my_place(listed.key_version, &listed.to_bytes(), unlocked.key_version, &own)
+        if let Some(listed) = verified
+            .state
+            .confirmed(&me)
+            .and_then(|m| m.bundle.as_ref())
+            && takes_my_place(
+                listed.key_version,
+                &listed.to_bytes(),
+                unlocked.key_version,
+                &own,
+            )
         {
             return Ok(Verdict::Refused(Refused::new("own keys", None)));
         }
@@ -693,7 +696,11 @@ impl Session {
     pub(crate) fn accept_first_contact(&mut self, space: &Id) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
         let me = unlocked.account_id;
-        let held = unlocked.spaces.chains.get_mut(space).ok_or(Error::Invalid)?;
+        let held = unlocked
+            .spaces
+            .chains
+            .get_mut(space)
+            .ok_or(Error::Invalid)?;
         held.trusted = true;
         held.refresh(&me)
     }

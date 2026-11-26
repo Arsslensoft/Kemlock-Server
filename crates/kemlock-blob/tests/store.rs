@@ -381,7 +381,10 @@ async fn a_pre_signed_upload_is_checked_and_moved_so_a_later_put_cannot_change_t
     let staged = stage(dir.path(), blob, &bytes);
 
     assert_eq!(store.verify(blob, bytes.len() as u64).await, Ok(()));
-    assert!(!staged.exists(), "the staging object went once it was moved");
+    assert!(
+        !staged.exists(),
+        "the staging object went once it was moved"
+    );
     assert_eq!(read(&store, blob).await.expect("reads").0, bytes);
 
     // The signed URL still works for its lifetime: a bigger body goes to the staging name again.
@@ -399,11 +402,11 @@ async fn a_pre_signed_upload_is_checked_and_moved_so_a_later_put_cannot_change_t
         Err(BlobError::WrongSize),
     );
     store.delete(blob).await.expect("deleted");
-    assert!(!again.exists(), "deleting the blob takes its staging object too");
     assert!(
-        store.open(blob).await.is_err(),
-        "and the blob itself"
+        !again.exists(),
+        "deleting the blob takes its staging object too"
     );
+    assert!(store.open(blob).await.is_err(), "and the blob itself");
 }
 
 #[tokio::test]

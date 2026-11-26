@@ -34,8 +34,9 @@ where
         else {
             return Ok(None);
         };
-        let data = open_row::<YubikeyData, _>(&self.seal, PURPOSE_YUBIKEY, user, &row.sealed_secret)
-            .ok_or_else(|| AppError::Store("a stored YubiKey setup doesn't open".to_owned()))?;
+        let data =
+            open_row::<YubikeyData, _>(&self.seal, PURPOSE_YUBIKEY, user, &row.sealed_secret)
+                .ok_or_else(|| AppError::Store("a stored YubiKey setup doesn't open".to_owned()))?;
         Ok(Some(data))
     }
 

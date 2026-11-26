@@ -1530,7 +1530,12 @@ async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
             &token,
         )
         .await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
     assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
 
     // A host alone is not a mail server: the server needs a sender too, and a user name with its
@@ -1550,7 +1555,12 @@ async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
                 &token,
             )
             .await;
-        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{:?}",
+            refused.json()
+        );
     }
     assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
 

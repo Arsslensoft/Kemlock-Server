@@ -15,10 +15,10 @@ use crate::tables::federation::{
     change_meta, home_records, item_siblings, peer_cursors, peer_log_switches, peers,
     vault_federation,
 };
-use crate::tables::federation_wiring::federation_erasures;
 use crate::tables::federation_keys::{
     peer_key_history, peer_pending_addresses, peer_trusted_addresses,
 };
+use crate::tables::federation_wiring::federation_erasures;
 use crate::tables::items::{self, owner_parts};
 use crate::tables::{changes, server_meta};
 use kemlock_app::ports::StoreError;

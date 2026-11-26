@@ -132,11 +132,17 @@ mod tests {
     fn an_ipv6_client_is_followed_by_its_64_bit_prefix() {
         let limit = IpLimit::new(2, 60);
         let a: IpAddr = "2001:db8:1:2::1".parse().expect("an address");
-        let b: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd".parse().expect("an address");
+        let b: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd"
+            .parse()
+            .expect("an address");
         let elsewhere: IpAddr = "2001:db8:1:3::1".parse().expect("an address");
         assert_eq!(limit.check(a, 0), Ok(()));
         assert_eq!(limit.check(b, 0), Ok(()));
-        assert_eq!(limit.check(a, 0), Err(60), "one client, however it picks its low bits");
+        assert_eq!(
+            limit.check(a, 0),
+            Err(60),
+            "one client, however it picks its low bits"
+        );
         assert_eq!(limit.check(elsewhere, 0), Ok(()));
     }
 

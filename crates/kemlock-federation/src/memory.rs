@@ -854,7 +854,12 @@ impl crate::extra::FedAdminRepo for MemoryStore {
 }
 impl crate::extra::MemberStore for MemoryStore {
     async fn member_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
-        Ok(self.extras().members.get(&vault).cloned().unwrap_or_default())
+        Ok(self
+            .extras()
+            .members
+            .get(&vault)
+            .cloned()
+            .unwrap_or_default())
     }
 
     async fn member_account(

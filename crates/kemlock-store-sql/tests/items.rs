@@ -560,7 +560,8 @@ async fn clock_ignores_a_far_future_draft(store: &SqlStore) {
     let mut ahead = draft(ItemId::random(), owner, None, 1);
     ahead.updated_at = datetime!(2100-01-01 00:00:00 UTC);
     let written = put(store, ahead).await;
-    let now_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000).expect("a time");
+    let now_ms =
+        u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000).expect("a time");
     assert!(
         written.change.hlc.millis() <= now_ms + 61_000,
         "the clock stayed near the server's, at {}",

@@ -592,7 +592,11 @@ async fn imports_the_sample_and_serves_it_as_vaultwarden_would_then_applies_a_se
     // Only the names of the admin settings list are carried, under the key the settings code reads:
     // `domain` is not one of them.
     assert_eq!(
-        count(&mut conn, "SELECT COUNT(*) FROM settings WHERE key = 'domain'").await,
+        count(
+            &mut conn,
+            "SELECT COUNT(*) FROM settings WHERE key = 'domain'"
+        )
+        .await,
         0
     );
     assert_eq!(

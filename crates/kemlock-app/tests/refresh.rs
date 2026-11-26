@@ -403,7 +403,10 @@ async fn a_refresh_racing_the_end_of_a_session_does_not_put_the_devices_key_back
         },
     };
     let result = racing.execute(&first.refresh_token, JKT).await;
-    assert_eq!(result.map(|_| ()), Err(AppError::SessionEnded("signed-out")));
+    assert_eq!(
+        result.map(|_| ()),
+        Err(AppError::SessionEnded("signed-out"))
+    );
 
     // The key the session end cleared stays cleared, and no new token was issued.
     let device = DeviceRepo::get(&world.store, first.device)

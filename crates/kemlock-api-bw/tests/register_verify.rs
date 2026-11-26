@@ -94,7 +94,12 @@ async fn the_token_goes_to_the_address_and_not_to_whoever_asks() {
     assert_eq!(mailed[0].0, "victim@example.com");
 
     // A token that was not mailed, made by someone who had none, does not register the address.
-    let (status, body) = finish(&h, "victim@example.com", &token_for(&h, "victim@example.com", false)).await;
+    let (status, body) = finish(
+        &h,
+        "victim@example.com",
+        &token_for(&h, "victim@example.com", false),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(
         body["message"],

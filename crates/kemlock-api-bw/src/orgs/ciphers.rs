@@ -466,13 +466,9 @@ async fn update_with<S: BwStore>(
     let user = authed.user.id;
     // A share changes which collections the cipher is in, which a member who may not see its
     // passwords has no right to (`update_collections` asks the same).
-    let allowed = l.restrict.is_some_and(|r| {
-        if shared {
-            r.editable()
-        } else {
-            r.writable()
-        }
-    });
+    let allowed = l
+        .restrict
+        .is_some_and(|r| if shared { r.editable() } else { r.writable() });
     if !allowed {
         return Err(BwError::msg("Cipher is not write accessible"));
     }

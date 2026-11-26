@@ -8,7 +8,9 @@ use chain_kit::{Chain, Person};
 use kemlock_app::spaces::chain_project::{Batch, project};
 use kemlock_app::spaces::{SpaceChanges, StoredSeal};
 use kemlock_crypto::space_chain::{Body, CollectionPerm, Grantee, Role, State};
-use kemlock_domain::spaces::{CustomPermissions, Member, MemberState, Space, SpaceRole, SpaceState};
+use kemlock_domain::spaces::{
+    CustomPermissions, Member, MemberState, Space, SpaceRole, SpaceState,
+};
 use kemlock_domain::{SpaceId, UserId};
 use time::OffsetDateTime;
 use uuid::Uuid;

@@ -160,7 +160,10 @@ pub(crate) fn parse_restore(args: &[String]) -> Result<RestoreArgs, String> {
 /// (the file is missing or unreadable and `KEMLOCK_SERVER_KEY` is not set): refuses, unless the
 /// operator said to write the archive without a code, which a later restore then takes only with
 /// `--allow-unauthenticated`. `Ok(Some(warning))` is to be shown on stderr.
-fn without_server_key(has_key: bool, allow_unauthenticated: bool) -> Result<Option<String>, String> {
+fn without_server_key(
+    has_key: bool,
+    allow_unauthenticated: bool,
+) -> Result<Option<String>, String> {
     match (has_key, allow_unauthenticated) {
         (true, _) => Ok(None),
         (false, true) => Ok(Some(

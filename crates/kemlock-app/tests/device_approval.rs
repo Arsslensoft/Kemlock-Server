@@ -177,7 +177,10 @@ async fn an_address_takes_three_requests_an_hour_and_the_rest_are_answered_like_
             .await
             .expect("inside the limit");
     }
-    assert_eq!(world.store.auth_request_count(), SOURCE_HOURLY_REQUEST_LIMIT);
+    assert_eq!(
+        world.store.auth_request_count(),
+        SOURCE_HOURLY_REQUEST_LIMIT
+    );
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
 
     // The next from the same address is answered like a request for an email with no account: no
@@ -196,7 +199,10 @@ async fn an_address_takes_three_requests_an_hour_and_the_rest_are_answered_like_
     assert_eq!(fourth.phrase, phrase_for(&world.env, &key));
     assert_eq!(fourth.phrase, stranger.phrase);
     assert_eq!(fourth.expires_at, stranger.expires_at);
-    assert_eq!(world.store.auth_request_count(), SOURCE_HOURLY_REQUEST_LIMIT);
+    assert_eq!(
+        world.store.auth_request_count(),
+        SOURCE_HOURLY_REQUEST_LIMIT
+    );
     assert!(world.store.auth_request(fourth.id).is_none());
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR);
 
@@ -253,7 +259,11 @@ async fn all_addresses_take_thirty_an_hour_and_the_owner_is_told_once_when_one_i
         .expect("answered like any other");
     assert_eq!(notices.new_devices().len(), NOTICES_PER_HOUR + 1);
     let listed = list_approvals(&world).execute(&open).await.expect("lists");
-    assert_eq!(listed.len(), HOURLY_REQUEST_LIMIT, "held back ones are not shown");
+    assert_eq!(
+        listed.len(),
+        HOURLY_REQUEST_LIMIT,
+        "held back ones are not shown"
+    );
     assert!(world.store.auth_request(held.id).is_none());
 }
 

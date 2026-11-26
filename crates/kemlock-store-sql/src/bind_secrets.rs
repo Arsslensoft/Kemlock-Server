@@ -92,7 +92,11 @@ impl SqlStore {
             }
         }
 
-        for row in two_factor_recovery::Entity::find().all(&txn).await.store()? {
+        for row in two_factor_recovery::Entity::find()
+            .all(&txn)
+            .await
+            .store()?
+        {
             let user = UserId(row.user_id);
             match rebind(seal, PURPOSE_RECOVERY, user, &row.sealed_code) {
                 Rebound::Bound => {}

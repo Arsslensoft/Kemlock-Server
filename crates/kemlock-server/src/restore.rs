@@ -150,7 +150,8 @@ fn copy_file(from: &Path, to: &Path) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("can't make {}: {e}", parent.display()))?;
     }
-    let failed = |e: std::io::Error| format!("can't copy {} to {}: {e}", from.display(), to.display());
+    let failed =
+        |e: std::io::Error| format!("can't copy {} to {}: {e}", from.display(), to.display());
     let mut source = std::fs::File::open(from).map_err(failed)?;
     let mut target = kemlock_backup::create_private_file(to).map_err(failed)?;
     std::io::copy(&mut source, &mut target)
@@ -234,11 +235,15 @@ fn skipped_data_file_note(name: &str) -> String {
 /// is a way to roll a server back to a state an attacker (or a mistake) prefers.
 pub fn archive_warnings(archive: &Path, created_at: &str) -> Vec<String> {
     let mut warnings = Vec::new();
-    let Ok(made) = OffsetDateTime::parse(created_at, &time::format_description::well_known::Rfc3339)
+    let Ok(made) =
+        OffsetDateTime::parse(created_at, &time::format_description::well_known::Rfc3339)
     else {
         return warnings;
     };
-    let Some(name) = archive.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+    let Some(name) = archive
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+    else {
         return warnings;
     };
     if let Some(named) = archive_time(&name)
@@ -793,8 +798,12 @@ mod tests {
         ] {
             std::fs::write(dir.path().join(name), b"x").expect("a file");
         }
-        let old = dir.path().join("kemlock-backup-20261101T030000Z.tar.zst.age");
-        let newest = dir.path().join("kemlock-backup-20261120T030000Z.tar.zst.age");
+        let old = dir
+            .path()
+            .join("kemlock-backup-20261101T030000Z.tar.zst.age");
+        let newest = dir
+            .path()
+            .join("kemlock-backup-20261120T030000Z.tar.zst.age");
 
         // The newest, with the date it says: nothing to say.
         assert!(archive_warnings(&newest, "2026-11-20T03:00:00Z").is_empty());

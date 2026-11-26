@@ -258,7 +258,10 @@ async fn only_the_server_a_copy_came_from_can_change_it(store: &SqlStore) {
         let held = store.send_row(target.id).await.expect("row").expect("held");
         assert_eq!(held.access_count, 9, "the larger view count counts");
         assert_eq!(
-            SendRecord { access_count: target.access_count, ..held },
+            SendRecord {
+                access_count: target.access_count,
+                ..held
+            },
             *target,
             "and nothing else changed"
         );
@@ -281,7 +284,14 @@ async fn only_the_server_a_copy_came_from_can_change_it(store: &SqlStore) {
         store.apply_replicated_send(other, &revised).await,
         Ok(SendApply::Updated)
     );
-    assert!(store.send_row(copied.id).await.expect("row").expect("held").disabled);
+    assert!(
+        store
+            .send_row(copied.id)
+            .await
+            .expect("row")
+            .expect("held")
+            .disabled
+    );
     store
         .put_vault(&kemlock_federation::home::VaultFederation::federated(
             Owner::User(user),
@@ -299,7 +309,14 @@ async fn only_the_server_a_copy_came_from_can_change_it(store: &SqlStore) {
         store.apply_replicated_send(home, &update).await,
         Ok(SendApply::Updated)
     );
-    assert!(!store.send_row(copied.id).await.expect("row").expect("held").disabled);
+    assert!(
+        !store
+            .send_row(copied.id)
+            .await
+            .expect("row")
+            .expect("held")
+            .disabled
+    );
 }
 
 async fn run_all(store: &SqlStore) {

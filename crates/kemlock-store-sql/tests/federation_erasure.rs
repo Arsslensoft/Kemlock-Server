@@ -266,7 +266,10 @@ async fn a_replica_never_erases_an_account_that_lives_on_it() {
 
     for item in &items {
         assert!(
-            ItemStore::get(&store, *item).await.expect("a read").is_some(),
+            ItemStore::get(&store, *item)
+                .await
+                .expect("a read")
+                .is_some(),
             "the item stays"
         );
     }
@@ -414,7 +417,9 @@ async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
         created_at: MADE_AT.unix_timestamp(),
     }];
     assert_eq!(
-        store.apply_member_account(space, other_home, &takeover).await,
+        store
+            .apply_member_account(space, other_home, &takeover)
+            .await,
         Ok(MemberApply::Refused)
     );
     let kept = UserRepo::by_id(&store, id)
@@ -503,18 +508,26 @@ async fn the_home_of_a_personal_vault_speaks_for_its_account_not_the_home_of_a_s
     // Then the victim's own home offers the vault and this server accepts it. From now on the
     // space home can't touch the copy, and the personal home replaces what the space home made.
     store
-        .put_vault(&VaultFederation::federated(personal, personal_home, vec![me]))
+        .put_vault(&VaultFederation::federated(
+            personal,
+            personal_home,
+            vec![me],
+        ))
         .await
         .expect("settings");
     let mut hostile = forged.clone();
     hostile.wrapped_root_key = vec![0xEE; 90];
     assert_eq!(
-        store.apply_member_account(space, space_home, &hostile).await,
+        store
+            .apply_member_account(space, space_home, &hostile)
+            .await,
         Ok(MemberApply::Refused)
     );
     let real = copy_of(victim, &email);
     assert_eq!(
-        store.apply_member_account(personal, personal_home, &real).await,
+        store
+            .apply_member_account(personal, personal_home, &real)
+            .await,
         Ok(MemberApply::Applied)
     );
     let kept = UserRepo::by_id(&store, victim)

@@ -6,18 +6,17 @@
 mod common;
 
 use common::{draft, kind, memory, unique_email, user};
+use kemlock_app::Actor;
 use kemlock_app::b64url;
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::ports::{Clock, DeviceRepo, ItemStore, TwoFactorRepo, UserRepo};
 use kemlock_app::spaces::{CreateSpace, CreateSpaceInput, NewCollection, SpaceRepo};
-use kemlock_app::Actor;
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::spaces::{CollectionId, SEALED_KEY_LEN, SpaceRole};
 use kemlock_domain::{AccountMode, DeviceId, ItemId, Owner, Role, SpaceId, UserId};
 use kemlock_store_sql::{ImportFiles, ImportFilesFuture, ImportOptions, SqlImportSink, SqlStore};
 use kemlock_vaultwarden::mapping::{
-    BitwardenAccount, FileCopy, FileKind, MappedAccount, MappedAttachment, MappedImport,
-    MappedItem,
+    BitwardenAccount, FileCopy, FileKind, MappedAccount, MappedAttachment, MappedImport, MappedItem,
 };
 use kemlock_vaultwarden::schema;
 use kemlock_vaultwarden::settings::MappedSettings;
@@ -297,12 +296,11 @@ async fn a_snapshot_cannot_rewrite_accounts_or_spaces_that_already_exist() {
         .expect("the account");
 
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(listed, "owned@example.org", "Owned"));
+    mapped
+        .accounts
+        .push(account(listed, "owned@example.org", "Owned"));
     mapped.carried = vec![
-        devices(&[
-            (Uuid::new_v4(), listed),
-            (Uuid::new_v4(), pointed_at),
-        ]),
+        devices(&[(Uuid::new_v4(), listed), (Uuid::new_v4(), pointed_at)]),
         organizations(&[(space, "Hijacked")]),
         memberships(&[(space, attacker)]),
         twofactor(&[listed, pointed_at]),
@@ -326,12 +324,27 @@ async fn a_snapshot_cannot_rewrite_accounts_or_spaces_that_already_exist() {
     assert_eq!(after.name, before.name);
     assert_eq!(after.security_stamp, before.security_stamp);
     assert_eq!(after.mode, before.mode);
-    assert!(BwAccountRepo::get(&store, listed).await.expect("a read").is_none());
+    assert!(
+        BwAccountRepo::get(&store, listed)
+            .await
+            .expect("a read")
+            .is_none()
+    );
 
     // No device and no refresh token was planted, and no second step was replaced or added.
     for victim in [listed, pointed_at] {
-        assert!(DeviceRepo::list(&store, victim).await.expect("a read").is_empty());
-        assert!(TwoFactorRepo::list(&store, victim).await.expect("a read").is_empty());
+        assert!(
+            DeviceRepo::list(&store, victim)
+                .await
+                .expect("a read")
+                .is_empty()
+        );
+        assert!(
+            TwoFactorRepo::list(&store, victim)
+                .await
+                .expect("a read")
+                .is_empty()
+        );
     }
 
     // The space keeps its name and its members: the attacker is not one of them.
@@ -378,7 +391,10 @@ async fn a_collection_of_another_space_is_not_moved_into_an_imported_one() {
     let mut mapped = MappedImport::default();
     mapped.carried = vec![
         organizations(&[(imported_space, "Imported")]),
-        collections(&[(native_collection, imported_space), (own_collection, imported_space)]),
+        collections(&[
+            (native_collection, imported_space),
+            (own_collection, imported_space),
+        ]),
     ];
     let report = pass(&store, &mapped, false).await;
     assert_eq!(
@@ -397,7 +413,12 @@ async fn a_collection_of_another_space_is_not_moved_into_an_imported_one() {
         .await
         .expect("a read")
         .expect("the imported space");
-    assert!(imported.collections.iter().all(|c| c.id != native_collection));
+    assert!(
+        imported
+            .collections
+            .iter()
+            .all(|c| c.id != native_collection)
+    );
     assert!(imported.collections.iter().any(|c| c.id == own_collection));
 
     // Listing a collection under the other space itself is refused as well, space and all.
@@ -415,7 +436,9 @@ async fn a_move_may_run_again_over_its_own_earlier_copy() {
     let device = Uuid::new_v4();
 
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(user, &unique_email("moved"), "Moved"));
+    mapped
+        .accounts
+        .push(account(user, &unique_email("moved"), "Moved"));
     mapped.carried = vec![
         devices(&[(device, user)]),
         organizations(&[(space, "Family")]),
@@ -425,8 +448,17 @@ async fn a_move_may_run_again_over_its_own_earlier_copy() {
     let first = pass(&store, &mapped, false).await;
     assert!(first.refused.is_empty(), "{:?}", first.refused);
     assert_eq!(first.accounts, 1);
-    assert_eq!(DeviceRepo::list(&store, user).await.expect("a read").len(), 1);
-    assert_eq!(TwoFactorRepo::list(&store, user).await.expect("a read").len(), 1);
+    assert_eq!(
+        DeviceRepo::list(&store, user).await.expect("a read").len(),
+        1
+    );
+    assert_eq!(
+        TwoFactorRepo::list(&store, user)
+            .await
+            .expect("a read")
+            .len(),
+        1
+    );
 
     // Run again with the account renamed and the space renamed: the import's own rows change.
     let mut again = mapped.clone();
@@ -455,7 +487,10 @@ async fn a_move_may_run_again_over_its_own_earlier_copy() {
     delta.carried = vec![devices(&[(Uuid::new_v4(), user)]), twofactor(&[user])];
     let third = pass(&store, &delta, false).await;
     assert!(third.refused.is_empty(), "{:?}", third.refused);
-    assert_eq!(DeviceRepo::list(&store, user).await.expect("a read").len(), 2);
+    assert_eq!(
+        DeviceRepo::list(&store, user).await.expect("a read").len(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -463,10 +498,15 @@ async fn an_operator_can_adopt_what_is_there_and_it_is_the_imports_from_then_on(
     let store = memory().await;
     let existing = native(&store, "adopted").await;
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(existing, "adopted@example.org", "Adopted"));
+    mapped
+        .accounts
+        .push(account(existing, "adopted@example.org", "Adopted"));
 
     let refused_first = pass(&store, &mapped, false).await;
-    assert_eq!(refused(&refused_first, "user"), vec![existing.0.to_string()]);
+    assert_eq!(
+        refused(&refused_first, "user"),
+        vec![existing.0.to_string()]
+    );
 
     let adopted = pass(&store, &mapped, true).await;
     assert!(adopted.refused.is_empty(), "{:?}", adopted.refused);
@@ -476,7 +516,12 @@ async fn an_operator_can_adopt_what_is_there_and_it_is_the_imports_from_then_on(
         .expect("a read")
         .expect("the account");
     assert_eq!(user.email.as_str(), "adopted@example.org");
-    assert!(BwAccountRepo::get(&store, existing).await.expect("a read").is_some());
+    assert!(
+        BwAccountRepo::get(&store, existing)
+            .await
+            .expect("a read")
+            .is_some()
+    );
 
     // Adopting recorded it, so an ordinary rerun accepts it.
     let rerun = pass(&store, &mapped, false).await;
@@ -518,7 +563,11 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
         Some("false")
     );
     assert_eq!(
-        store.setting("setting.smtp_port").await.expect("a read").as_deref(),
+        store
+            .setting("setting.smtp_port")
+            .await
+            .expect("a read")
+            .as_deref(),
         Some("465")
     );
     // Not the bare name, not a name the list lacks, not a secret, not a value it would refuse.
@@ -535,7 +584,11 @@ async fn config_json_can_only_set_the_names_of_the_settings_list() {
         assert_eq!(store.setting(other).await.expect("a read"), None, "{other}");
     }
     assert_eq!(
-        store.setting("migration.status").await.expect("a read").as_deref(),
+        store
+            .setting("migration.status")
+            .await
+            .expect("a read")
+            .as_deref(),
         Some("kept")
     );
     assert_eq!(refused(&report, "setting").len(), 6);
@@ -555,7 +608,9 @@ async fn items_attachments_and_files_of_another_owner_are_not_touched() {
     std::fs::write(&file, b"payload").expect("a file");
     let storage_key = format!("attachments/{}/att0000000000001", item.0);
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(thief, &unique_email("thief"), "Thief"));
+    mapped
+        .accounts
+        .push(account(thief, &unique_email("thief"), "Thief"));
     mapped.items.push(MappedItem {
         id: item,
         owner: Owner::User(thief),
@@ -586,9 +641,15 @@ async fn items_attachments_and_files_of_another_owner_are_not_touched() {
 
     assert_eq!(refused(&report, "item"), vec![item.0.to_string()]);
     assert_eq!(report.items, 0);
-    assert_eq!(report.attachments, 0, "the attachment is on an item that isn't the import's");
+    assert_eq!(
+        report.attachments, 0,
+        "the attachment is on an item that isn't the import's"
+    );
     assert_eq!(refused(&report, "file").len(), 1);
-    assert!(files.0.lock().expect("a lock").is_empty(), "no file was stored");
+    assert!(
+        files.0.lock().expect("a lock").is_empty(),
+        "no file was stored"
+    );
 
     // The victim's item is as it was: same owner, same revision, same bytes.
     let after = ItemStore::get(&store, item)
@@ -610,7 +671,9 @@ async fn an_id_a_pass_only_names_is_not_marked_as_the_imports() {
     // but the space is not created and so is not recorded as the import's.
     let user = UserId::random();
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(user, &unique_email("member"), "Member"));
+    mapped
+        .accounts
+        .push(account(user, &unique_email("member"), "Member"));
     mapped
         .items
         .push(cipher(ItemId::random(), Owner::Space(space), NOW));
@@ -682,7 +745,9 @@ async fn an_address_another_account_holds_leaves_that_account_out_and_not_the_pa
     mapped
         .accounts
         .push(account(clash, holder.email.as_str(), "Clash"));
-    mapped.accounts.push(account(fine, &unique_email("fine"), "Fine"));
+    mapped
+        .accounts
+        .push(account(fine, &unique_email("fine"), "Fine"));
     // Two accounts of the snapshot with one address: the first is written, the second is left out.
     let mut first = account(twin, &shared, "Twin");
     first.id = UserId(Uuid::from_u128(1));
@@ -690,9 +755,23 @@ async fn an_address_another_account_holds_leaves_that_account_out_and_not_the_pa
     mapped.accounts.push(account(twin, &shared, "Other twin"));
     let report = pass(&store, &mapped, false).await;
 
-    assert!(refused(&report, "user").contains(&clash.0.to_string()), "{:?}", report.refused);
-    assert!(UserRepo::by_id(&store, fine).await.expect("a read").is_some());
-    assert!(UserRepo::by_id(&store, clash).await.expect("a read").is_none());
+    assert!(
+        refused(&report, "user").contains(&clash.0.to_string()),
+        "{:?}",
+        report.refused
+    );
+    assert!(
+        UserRepo::by_id(&store, fine)
+            .await
+            .expect("a read")
+            .is_some()
+    );
+    assert!(
+        UserRepo::by_id(&store, clash)
+            .await
+            .expect("a read")
+            .is_none()
+    );
     assert_eq!(
         UserRepo::by_id(&store, holder.id)
             .await
@@ -743,7 +822,9 @@ async fn events_of_a_deleted_vaultwarden_user_are_kept_but_not_those_naming_this
     let gone = UserId::random();
 
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(moved, &unique_email("moved"), "Moved"));
+    mapped
+        .accounts
+        .push(account(moved, &unique_email("moved"), "Moved"));
     mapped.carried = vec![events(&[
         // Done by a user of the snapshot, and by one Vaultwarden has since deleted.
         (Some(moved), None),
@@ -825,7 +906,12 @@ async fn a_second_pass_cannot_delete_rows_that_hang_off_what_the_import_does_not
         "collections",
         "ciphers",
     ] {
-        assert_eq!(refused(&report, table).len(), 1, "{table}: {:?}", report.refused);
+        assert_eq!(
+            refused(&report, table).len(),
+            1,
+            "{table}: {:?}",
+            report.refused
+        );
     }
     let after = SpaceRepo::load(&store, space)
         .await
@@ -837,7 +923,10 @@ async fn a_second_pass_cannot_delete_rows_that_hang_off_what_the_import_does_not
         .await
         .expect("a read")
         .expect("the item");
-    assert!(kept.deleted_at.is_none(), "the item was not turned into a tombstone");
+    assert!(
+        kept.deleted_at.is_none(),
+        "the item was not turned into a tombstone"
+    );
 }
 
 #[tokio::test]
@@ -846,7 +935,9 @@ async fn an_account_the_api_changed_since_is_not_rolled_back_by_a_rerun() {
     let user = UserId::random();
     let device = Uuid::new_v4();
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(user, &unique_email("moved"), "Moved"));
+    mapped
+        .accounts
+        .push(account(user, &unique_email("moved"), "Moved"));
     mapped.carried = vec![devices(&[(device, user)]), twofactor(&[user])];
     let first = pass(&store, &mapped, false).await;
     assert!(first.refused.is_empty(), "{:?}", first.refused);
@@ -872,7 +963,12 @@ async fn an_account_the_api_changed_since_is_not_rolled_back_by_a_rerun() {
         .expect("a read")
         .expect("the account");
     assert_eq!(after.name.as_deref(), Some("Changed here"));
-    assert!(DeviceRepo::list(&store, user).await.expect("a read").is_empty());
+    assert!(
+        DeviceRepo::list(&store, user)
+            .await
+            .expect("a read")
+            .is_empty()
+    );
 
     // An operator who means it adopts, and the snapshot wins again.
     let adopted = pass(&store, &mapped, true).await;
@@ -886,7 +982,10 @@ async fn an_account_the_api_changed_since_is_not_rolled_back_by_a_rerun() {
             .as_deref(),
         Some("Moved")
     );
-    assert_eq!(DeviceRepo::list(&store, user).await.expect("a read").len(), 1);
+    assert_eq!(
+        DeviceRepo::list(&store, user).await.expect("a read").len(),
+        1
+    );
 
     // The vault moving on (any change to the Bitwarden record's revision) counts too.
     BwAccountRepo::touch(&store, user, 9_999_999_999_999)
@@ -902,7 +1001,9 @@ async fn an_item_the_api_revised_after_the_source_is_not_overwritten() {
     let user = UserId::random();
     let item = ItemId::random();
     let mut mapped = MappedImport::default();
-    mapped.accounts.push(account(user, &unique_email("vault"), "Vault"));
+    mapped
+        .accounts
+        .push(account(user, &unique_email("vault"), "Vault"));
     mapped.items.push(cipher(item, Owner::User(user), NOW));
     let first = pass(&store, &mapped, false).await;
     assert_eq!(first.items, 1);

@@ -479,5 +479,4 @@ mod tests {
         assert_eq!(awaiting.server(), b_id);
         assert!(!shower.code_waiting(NOW), "a real attempt uses it");
     }
-
 }

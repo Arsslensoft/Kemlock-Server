@@ -164,9 +164,8 @@ pub(crate) fn invite_link<S: BwStore>(
         .keys
         .encode(&claims)
         .map_err(|e| BwError::Server(e.to_string()))?;
-    let encoded = |text: &str| -> String {
-        url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
-    };
+    let encoded =
+        |text: &str| -> String { url::form_urlencoded::byte_serialize(text.as_bytes()).collect() };
     let link = format!(
         "{}/#/accept-organization/?organizationId={}&organizationUserId={}&email={}&organizationName={}&token={}",
         app.host(),
@@ -217,7 +216,6 @@ pub(crate) async fn mail_invitation<S: BwStore>(
     };
     app.notices.send(notice).await;
 }
-
 
 /// `POST /api/organizations/{id}/users/invite`.
 pub(crate) async fn invite<S: BwStore>(

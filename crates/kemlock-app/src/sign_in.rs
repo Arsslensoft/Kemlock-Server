@@ -8,8 +8,8 @@
 use crate::error::AppError;
 use crate::platform::Platform;
 use crate::ports::{
-    DeviceRepo, EventLog, PasswordAuth, SecretSeal, TokenRepo, TokenSigner, Totp, TwoFactorMethod,
-    TwoFactor, TwoFactorRepo, UserRepo, Zeroizing,
+    DeviceRepo, EventLog, PasswordAuth, SecretSeal, TokenRepo, TokenSigner, Totp, TwoFactor,
+    TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
 use crate::privacy::ensure_not_pending;
 use crate::sealed::{
@@ -263,7 +263,9 @@ where
         match factor.method {
             TwoFactorMethod::Totp => {
                 let opened = open_bound(&self.seal, PURPOSE_TOTP, user.id, &factor.sealed_secret)
-                    .map_err(|_| AppError::Store("a stored TOTP secret doesn't open".to_owned()))?;
+                    .map_err(|_| {
+                    AppError::Store("a stored TOTP secret doesn't open".to_owned())
+                })?;
                 let step = self
                     .totp
                     .verify_step(&opened.value, input.code.trim(), now)
@@ -279,12 +281,7 @@ where
                     // not undone). Failing to write it back loses nothing, the next sign-in tries
                     // again.
                     let bound = TwoFactor {
-                        sealed_secret: seal_bound(
-                            &self.seal,
-                            PURPOSE_TOTP,
-                            user.id,
-                            &opened.value,
-                        ),
+                        sealed_secret: seal_bound(&self.seal, PURPOSE_TOTP, user.id, &opened.value),
                         ..factor.clone()
                     };
                     if let Err(error) = self

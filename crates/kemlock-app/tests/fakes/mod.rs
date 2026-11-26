@@ -7,9 +7,8 @@
 
 use kemlock_app::ports::{
     AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, EmailConfirmation, Event, EventLog,
-    ItemStore, Notifier,
-    PasswordAuth, Random, RefreshToken, SecretSeal, ServerInfo, StoreError, TokenRepo, TokenSigner,
-    Totp, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
+    ItemStore, Notifier, PasswordAuth, Random, RefreshToken, SecretSeal, ServerInfo, StoreError,
+    TokenRepo, TokenSigner, Totp, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
 use kemlock_app::privacy::{NewSignIn, PrivacyLog};
 use kemlock_app::register::{
@@ -551,9 +550,11 @@ impl TwoFactorRepo for FakeStore {
 
     async fn replace_if_sealed(&self, from: &[u8], to: &TwoFactor) -> Result<bool, StoreError> {
         let mut g = self.lock();
-        match g.two_factor.iter_mut().find(|t| {
-            t.user == to.user && t.method == to.method && t.sealed_secret == from
-        }) {
+        match g
+            .two_factor
+            .iter_mut()
+            .find(|t| t.user == to.user && t.method == to.method && t.sealed_secret == from)
+        {
             Some(row) => {
                 *row = to.clone();
                 Ok(true)

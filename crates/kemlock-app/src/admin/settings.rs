@@ -934,7 +934,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn a_promotion_is_held_for_the_admin_unless_the_setting_says_auto() {
         let d = def("federation_promotion");

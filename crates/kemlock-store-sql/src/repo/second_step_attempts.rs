@@ -75,8 +75,14 @@ impl SecondStepGuard for SqlStore {
                             second_step_attempts::Column::WindowStart,
                             Expr::value(after.window_start),
                         )
-                        .col_expr(second_step_attempts::Column::Count, Expr::value(after.count))
-                        .col_expr(second_step_attempts::Column::Level, Expr::value(after.level))
+                        .col_expr(
+                            second_step_attempts::Column::Count,
+                            Expr::value(after.count),
+                        )
+                        .col_expr(
+                            second_step_attempts::Column::Level,
+                            Expr::value(after.level),
+                        )
                         .col_expr(
                             second_step_attempts::Column::BlockedUntil,
                             Expr::value(after.blocked_until),

@@ -260,7 +260,6 @@ mod tests {
         assert_eq!(options.sqlite_readers, 4);
     }
 
-
     fn file_url(path: &Path) -> String {
         format!(
             "sqlite://{}?mode=rwc",
@@ -337,7 +336,13 @@ mod tests {
     #[tokio::test]
     async fn the_database_files_are_readable_by_their_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let mode = |path: &Path| std::fs::metadata(path).expect("a file").permissions().mode() & 0o777;
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("a file")
+                .permissions()
+                .mode()
+                & 0o777
+        };
         let dir = tempfile::tempdir().expect("a temp dir");
 
         // A new database is made private from the start.

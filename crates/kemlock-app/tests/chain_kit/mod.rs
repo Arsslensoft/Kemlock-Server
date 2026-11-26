@@ -262,8 +262,7 @@ impl Chain {
     /// A `seal` of `collection`'s key (version 1) to `to`, by someone who holds it.
     pub(crate) fn seal_collection_key(&mut self, by: &Person, collection: Id, to: &Person) -> Step {
         let seq = self.head.map_or(0, |(s, _)| s + 1);
-        let (commitment, seals) =
-            self.commit(KeyRef::Collection(collection), 1, &[to], false, seq);
+        let (commitment, seals) = self.commit(KeyRef::Collection(collection), 1, &[to], false, seq);
         let (_, record) = self.push(
             by,
             Body::Seal {

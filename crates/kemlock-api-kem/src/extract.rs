@@ -273,12 +273,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
         let proof = proof_header(parts, api)?;
         let pending = api
             .dpop
-            .verify_unrecorded(
-                proof,
-                parts.method.as_str(),
-                parts.uri.path(),
-                api.now(),
-            )
+            .verify_unrecorded(proof, parts.method.as_str(), parts.uri.path(), api.now())
             .map_err(|e| dpop_problem(api, e))?;
         Ok(RefreshProof {
             jkt: pending.jkt.clone(),

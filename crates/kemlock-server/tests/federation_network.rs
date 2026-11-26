@@ -213,7 +213,9 @@ async fn two_servers_on_loopback_pair_over_http_and_replicate_an_item_over_a_web
     // The descriptor is served over HTTP and verifies against the key the server holds.
     let http = Http::new().expect("an HTTP client");
     let descriptor = http
-        .descriptor(&a.domain, kemlock_federation::addr::Trust::Admin).await.expect("A's descriptor");
+        .descriptor(&a.domain, kemlock_federation::addr::Trust::Admin)
+        .await
+        .expect("A's descriptor");
     descriptor
         .verify(unix_now(), Some(&a.built.replica.identity().public))
         .expect("signed by A's identity key");

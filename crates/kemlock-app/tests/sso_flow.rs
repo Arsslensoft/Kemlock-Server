@@ -815,7 +815,8 @@ async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_
 }
 
 #[tokio::test]
-async fn an_account_with_no_second_step_links_at_once_and_keeps_the_amr_skip_after_it_turns_one_on() {
+async fn an_account_with_no_second_step_links_at_once_and_keeps_the_amr_skip_after_it_turns_one_on()
+{
     let sso = Sso::new();
     let existing = make_user(&sso.world, "ada@example.org").await;
     let first = sso.sign_in("provider-code-1").await.expect("links");
@@ -882,9 +883,15 @@ async fn an_account_whose_email_isnt_confirmed_is_not_linked_by_email() {
     sso.world.config.signups_verify = true;
     let existing = make_user(&sso.world, "ada@example.org").await;
     let now = sso.world.env.now();
-    UserRepo::hold_unconfirmed(&sso.world.store, existing, [1; 32], now, now + Duration::hours(1))
-        .await
-        .expect("held");
+    UserRepo::hold_unconfirmed(
+        &sso.world.store,
+        existing,
+        [1; 32],
+        now,
+        now + Duration::hours(1),
+    )
+    .await
+    .expect("held");
 
     assert_eq!(
         sso.sign_in("provider-code-1").await,

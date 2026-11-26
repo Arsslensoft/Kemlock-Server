@@ -450,9 +450,8 @@ async fn invite_link<S: BwStore>(
             "grantor_email": grantor.email.as_str(),
         }))
         .map_err(|e| BwError::Server(e.to_string()))?;
-    let encoded = |text: &str| -> String {
-        url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
-    };
+    let encoded =
+        |text: &str| -> String { url::form_urlencoded::byte_serialize(text.as_bytes()).collect() };
     let link = format!(
         "{}/#/accept-emergency/?id={}&name={}&email={}&token={}",
         app.host(),
@@ -551,7 +550,8 @@ async fn resend_invite<S: BwStore>(
         && crate::orgs::members::auto_accepts(&app, contact.id).await?
     {
         let mut next = grant.clone();
-        next.accept(contact.id, app.now()).map_err(|_| not_valid())?;
+        next.accept(contact.id, app.now())
+            .map_err(|_| not_valid())?;
         save(&app, &next, EmergencyState::Invited).await?;
         touch_quiet(&app, contact.id).await;
         return Ok(axum::http::StatusCode::OK);

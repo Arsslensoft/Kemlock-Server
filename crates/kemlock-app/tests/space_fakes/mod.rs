@@ -133,20 +133,19 @@ fn foreign(g: &Inner, c: &SpaceChanges) -> bool {
         .iter()
         .any(|x| x.space != space || other_collection(&x.id))
         || c.collections_removed.iter().any(other_collection)
-        || c.groups.iter().any(|x| x.space != space || other_group(&x.id))
+        || c.groups
+            .iter()
+            .any(|x| x.space != space || other_group(&x.id))
         || c.groups_removed.iter().any(other_group)
         || c.members.iter().any(|m| m.space != space)
-        || c
-            .grants
+        || c.grants
             .iter()
             .any(|x| other_collection(&x.collection) || other_grantee(&x.grantee))
-        || c
-            .grants_removed
+        || c.grants_removed
             .iter()
             .any(|(col, grantee)| other_collection(col) || other_grantee(grantee))
         || c.key_copies.iter().any(|k| other_collection(&k.collection))
-        || c
-            .key_copies_removed
+        || c.key_copies_removed
             .iter()
             .any(|(col, _)| other_collection(col))
 }

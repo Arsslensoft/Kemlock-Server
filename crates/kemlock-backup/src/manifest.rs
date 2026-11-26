@@ -327,7 +327,10 @@ mod tests {
 
         // No code at all.
         let err = check_manifest_mac(dir.path(), &key).expect_err("no code");
-        assert!(matches!(&err, BackupError::Unauthenticated(m) if m.contains("no manifest.mac")), "{err}");
+        assert!(
+            matches!(&err, BackupError::Unauthenticated(m) if m.contains("no manifest.mac")),
+            "{err}"
+        );
 
         // The right code, with the newline an editor might add.
         let code = manifest_mac(&key, &manifest);
@@ -342,8 +345,11 @@ mod tests {
         // A manifest changed after the code was made.
         let mut edited = sample();
         edited.files[0].sha256 = hash_bytes(b"planted");
-        std::fs::write(dir.path().join(MANIFEST_NAME), edited.to_json().expect("json"))
-            .expect("manifest");
+        std::fs::write(
+            dir.path().join(MANIFEST_NAME),
+            edited.to_json().expect("json"),
+        )
+        .expect("manifest");
         let err = check_manifest_mac(dir.path(), &key).expect_err("a changed manifest");
         assert!(matches!(&err, BackupError::Unauthenticated(_)), "{err}");
 

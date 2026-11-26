@@ -103,11 +103,10 @@ impl Rig {
             DpopSigner::es256(),
         );
         let signing = kemlock_crypto::sig1::SigningKey::generate();
-        let session =
-            register_and_sign_in_with(&client, email, |user| {
-                common::fakes::signed_bundle(user, &signing)
-            })
-            .await;
+        let session = register_and_sign_in_with(&client, email, |user| {
+            common::fakes::signed_bundle(user, &signing)
+        })
+        .await;
         let id = UserId(session.user_id.parse().expect("a user id"));
         let bundle = real_bundle(id, &signing);
         Person {

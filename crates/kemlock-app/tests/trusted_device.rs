@@ -512,7 +512,11 @@ async fn ending_the_other_sessions_keeps_this_one_the_device_and_its_key_copy() 
         .await
         .expect("reads")
         .expect("the device is still there");
-    assert_eq!(device.dpop_jkt.as_deref(), Some("jkt-1"), "its key stays bound");
+    assert_eq!(
+        device.dpop_jkt.as_deref(),
+        Some("jkt-1"),
+        "its key stays bound"
+    );
     assert!(
         s.world
             .store

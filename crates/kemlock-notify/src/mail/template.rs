@@ -10,10 +10,10 @@
 use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
-    EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice,
-    BwEmergencyInviteNotice, BwOrgInviteNotice, InvitationNotice, Notice, PasswordChangedNotice,
-    ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice,
-    TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
+    BwEmergencyInviteNotice, BwOrgInviteNotice, EmailChangeNotice, EmailChangeRequestedNotice,
+    EmailChangedNotice, EmailTakenNotice, InvitationNotice, Notice, PasswordChangedNotice,
+    ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice, TwoStepChangedNotice,
+    TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -496,7 +496,8 @@ fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendere
 /// The mail of a registration that has to prove its address first. The link is the Bitwarden web
 /// vault's `finish-signup`; its token proves the mailbox is the person's, and works for 30 minutes.
 fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered {
-    let email: String = url::form_urlencoded::byte_serialize(notice.to.as_str().as_bytes()).collect();
+    let email: String =
+        url::form_urlencoded::byte_serialize(notice.to.as_str().as_bytes()).collect();
     let link = format!(
         "{}/#/finish-signup/?token={}&email={}",
         brand.domain.trim_end_matches('/'),
@@ -559,10 +560,7 @@ fn bw_emergency_invite(notice: &BwEmergencyInviteNotice, brand: &Branding) -> Re
     ]);
     finish(
         notice.to.as_str(),
-        format!(
-            "You were named an emergency contact on {}",
-            brand.app_name
-        ),
+        format!("You were named an emergency contact on {}", brand.app_name),
         &body,
         brand,
     )

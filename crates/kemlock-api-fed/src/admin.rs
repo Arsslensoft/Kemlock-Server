@@ -1481,7 +1481,10 @@ where
             post(accept_demotion::<S, C>).delete(refuse_demotion::<S, C>),
         )
         .route(&format!("{BASE}/promotions"), get(held_promotions::<S, C>))
-        .route(&format!("{BASE}/address-changes"), get(address_changes::<S, C>))
+        .route(
+            &format!("{BASE}/address-changes"),
+            get(address_changes::<S, C>),
+        )
         .route(
             &format!("{BASE}/peers/{{id}}/address-change"),
             post(approve_address_change::<S, C>).delete(refuse_address_change::<S, C>),

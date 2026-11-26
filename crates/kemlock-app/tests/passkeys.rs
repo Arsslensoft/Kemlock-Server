@@ -877,7 +877,10 @@ async fn a_security_key_turns_the_method_on_with_a_sealed_list() {
     assert!(
         fx.world
             .seal
-            .open(&kemlock_app::sealed::bound_purpose("webauthn", user), &rows[0].sealed_secret)
+            .open(
+                &kemlock_app::sealed::bound_purpose("webauthn", user),
+                &rows[0].sealed_secret
+            )
             .is_ok()
     );
     assert!(fx.world.seal.open("totp", &rows[0].sealed_secret).is_err());

@@ -936,7 +936,10 @@ async fn another_space_cannot_take_over_or_wipe_a_collection_or_group() {
     )
     .await
     .expect("the owner space deletes its own");
-    assert_eq!(SpaceRepo::collection_space(&store, everyone).await, Ok(None));
+    assert_eq!(
+        SpaceRepo::collection_space(&store, everyone).await,
+        Ok(None)
+    );
 }
 
 #[tokio::test]
@@ -994,10 +997,7 @@ async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
         },
     )
     .await;
-    assert_eq!(
-        removed,
-        Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
-    );
+    assert_eq!(removed, Err(StoreError::Backend(OWNER_REQUIRED.to_owned())));
     let mut demoted = lee_row.clone();
     demoted.role = SpaceRole::Admin;
     let mut revoked = lee_row.clone();
@@ -1011,18 +1011,22 @@ async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
             },
         )
         .await;
-        assert_eq!(
-            refused,
-            Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
-        );
+        assert_eq!(refused, Err(StoreError::Backend(OWNER_REQUIRED.to_owned())));
     }
     // Lee is still the confirmed owner, and the refusals rolled back whole.
     let after = SpaceRepo::load(&store, space)
         .await
         .expect("loads")
         .expect("exists");
-    let lee_now = after.members.iter().find(|m| m.user == lee.id).expect("Lee");
-    assert_eq!((lee_now.role, lee_now.state), (SpaceRole::Owner, MemberState::Confirmed));
+    let lee_now = after
+        .members
+        .iter()
+        .find(|m| m.user == lee.id)
+        .expect("Lee");
+    assert_eq!(
+        (lee_now.role, lee_now.state),
+        (SpaceRole::Owner, MemberState::Confirmed)
+    );
     assert_eq!(after.members.len(), 2);
 
     // A change that leaves an owner still works, and so does one that removes everyone (an

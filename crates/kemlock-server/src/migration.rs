@@ -163,9 +163,9 @@ fn console_source(
 /// name paths, goes to the server's log.
 fn read_failure(error: &ReadError) -> String {
     match error {
-        ReadError::SchemaOlder { .. } | ReadError::SchemaUnknown { .. } | ReadError::BadConfig(_) => {
-            error.to_string()
-        }
+        ReadError::SchemaOlder { .. }
+        | ReadError::SchemaUnknown { .. }
+        | ReadError::BadConfig(_) => error.to_string(),
         ReadError::NotVaultwarden(_) => "this isn't a Vaultwarden database".to_owned(),
         _ => "couldn't read the Vaultwarden database; the server's log says why".to_owned(),
     }
@@ -375,12 +375,14 @@ impl VaultwardenMove {
             Ok(report) => {
                 tracing::info!(%report, "the move from Vaultwarden is done");
                 // What it changed, and what it refused, go to the admin event log.
-                self.audit(by, "admin.migration.done", &shown, &report).await;
+                self.audit(by, "admin.migration.done", &shown, &report)
+                    .await;
                 record.finished(report).await
             }
             Err(error) => {
                 tracing::warn!(%error, "the move from Vaultwarden failed");
-                self.audit(by, "admin.migration.failed", &shown, &error).await;
+                self.audit(by, "admin.migration.failed", &shown, &error)
+                    .await;
                 record.failed(by, shown, error).await
             }
         };
@@ -516,8 +518,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temp dir");
         std::fs::create_dir_all(dir.path().join(IMPORT_FOLDER).join("vw")).expect("folders");
         std::fs::write(dir.path().join(IMPORT_FOLDER).join("db.sqlite3"), b"x").expect("a file");
-        std::fs::write(dir.path().join(IMPORT_FOLDER).join("vw").join("db.sqlite3"), b"x")
-            .expect("a file");
+        std::fs::write(
+            dir.path().join(IMPORT_FOLDER).join("vw").join("db.sqlite3"),
+            b"x",
+        )
+        .expect("a file");
         std::fs::write(dir.path().join("server.key"), b"secret").expect("a file");
         dir
     }
@@ -532,7 +537,11 @@ mod tests {
     #[test]
     fn the_console_takes_a_sqlite_file_or_folder_inside_the_import_folder() {
         let dir = data_folder();
-        let root = dir.path().join(IMPORT_FOLDER).canonicalize().expect("a root");
+        let root = dir
+            .path()
+            .join(IMPORT_FOLDER)
+            .canonicalize()
+            .expect("a root");
 
         let (source, shown) = console_source(dir.path(), "db.sqlite3", None).expect("a file");
         assert_eq!(source.database, Database::Sqlite(root.join("db.sqlite3")));
@@ -615,7 +624,11 @@ mod tests {
         // The files folder follows the same rules.
         let answer = refusal(console_source(dir.path(), "db.sqlite3", Some("..")));
         assert_eq!(answer, answers[0]);
-        let answer = refusal(console_source(dir.path(), "db.sqlite3", Some("postgres://db")));
+        let answer = refusal(console_source(
+            dir.path(),
+            "db.sqlite3",
+            Some("postgres://db"),
+        ));
         assert_eq!(answer, answers[0]);
         // A file where a folder is wanted, and a data folder with no import folder at all.
         let answer = refusal(console_source(dir.path(), "db.sqlite3", Some("db.sqlite3")));
@@ -661,7 +674,10 @@ mod tests {
             ReadError::NotVaultwarden(leaked.to_owned()),
         ] {
             let told = read_failure(&error);
-            assert!(!told.contains("secret") && !told.contains("10.0.0.5"), "{told}");
+            assert!(
+                !told.contains("secret") && !told.contains("10.0.0.5"),
+                "{told}"
+            );
         }
         let newer = ReadError::SchemaUnknown {
             unknown: vec!["2099-01-01".to_owned()],

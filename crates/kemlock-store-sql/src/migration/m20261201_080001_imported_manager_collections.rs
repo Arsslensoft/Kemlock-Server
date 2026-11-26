@@ -38,9 +38,7 @@ impl MigrationTrait for Migration {
                     .columns([Alias::new("scope"), Alias::new("doc_key")])
                     .from(Alias::new("bw_docs"))
                     .and_where(Expr::col(Alias::new("kind")).eq("member"))
-                    .and_where(
-                        Expr::col(Alias::new("body")).like("%\"accessAll\":true%"),
-                    )
+                    .and_where(Expr::col(Alias::new("body")).like("%\"accessAll\":true%"))
                     .to_owned(),
             )
             .await?;
@@ -70,10 +68,7 @@ impl MigrationTrait for Migration {
                     .exec_stmt(
                         Query::update()
                             .table(Alias::new("members"))
-                            .value(
-                                Alias::new("custom_permissions"),
-                                held | CREATE_COLLECTIONS,
-                            )
+                            .value(Alias::new("custom_permissions"), held | CREATE_COLLECTIONS)
                             .and_where(Expr::col(Alias::new("space_id")).eq(space))
                             .and_where(Expr::col(Alias::new("user_id")).eq(user))
                             .to_owned(),

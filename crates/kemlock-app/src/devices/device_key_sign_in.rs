@@ -164,7 +164,12 @@ where
         self.account_allows(&user).await?;
         // Only the time is written, and only while the device still has this key: sessions may
         // have been ended since it was read, and writing the whole row back would put its key back.
-        if !self.sessions.devices.touch_seen(device.id, jkt, now).await? {
+        if !self
+            .sessions
+            .devices
+            .touch_seen(device.id, jkt, now)
+            .await?
+        {
             return Err(AppError::Unauthorized);
         }
         let device = Device {

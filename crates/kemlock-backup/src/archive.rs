@@ -117,9 +117,9 @@ pub fn create_private_file(path: &Path) -> std::io::Result<File> {
 pub fn is_restorable_data_file(name: &str) -> bool {
     let sealed_name = |stem: &str| {
         !stem.is_empty()
-            && stem
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'))
+            && stem.bytes().all(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.')
+            })
     };
     matches!(name, "rsa_key.pem" | "config.json")
         || name.strip_suffix(".sealed").is_some_and(sealed_name)
@@ -739,7 +739,11 @@ mod tests {
 
         read_archive(&out, &identity, &unpacked).expect("read");
 
-        for path in ["data/opaque-setup.sealed", "attachments/ab/abcdef", MANIFEST_NAME] {
+        for path in [
+            "data/opaque-setup.sealed",
+            "attachments/ab/abcdef",
+            MANIFEST_NAME,
+        ] {
             let mode = std::fs::metadata(unpacked.join(path))
                 .expect("a file")
                 .permissions()
@@ -1046,7 +1050,14 @@ mod tests {
             assert!(is_never_restored(never), "{never}");
         }
         assert!(is_restorable_config_name("kemlock.toml"));
-        for bad in ["server.key", ".toml", "a/b.toml", "..\\x.toml", ".hidden.toml", "k.json"] {
+        for bad in [
+            "server.key",
+            ".toml",
+            "a/b.toml",
+            "..\\x.toml",
+            ".hidden.toml",
+            "k.json",
+        ] {
             assert!(!is_restorable_config_name(bad), "{bad}");
         }
     }

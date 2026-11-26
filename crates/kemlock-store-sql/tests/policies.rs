@@ -310,7 +310,6 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
 
 /// `SpaceRepo`'s Require SSO calls and `PolicyRepo` are two ways at the one table.
 async fn the_narrow_require_sso_calls_use_the_general_policies(store: &SqlStore) {
-
     let (admin, _) = account(store, "narrow-admin").await;
     let space = SpaceId::random();
     let two_step = SpacePolicies {

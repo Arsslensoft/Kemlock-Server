@@ -543,7 +543,8 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
     }
     // Where the server verifies sign-ups, the token has to be the one mailed to the address: the
     // asker never sees it. A server invitation was mailed to the address too, so it proves it.
-    if crate::signup_hold::verifies(app) && !verified && !matches!(admission, Admission::Invited(_)) {
+    if crate::signup_hold::verifies(app) && !verified && !matches!(admission, Admission::Invited(_))
+    {
         return Err(BwError::msg(
             "Email verification is required: open the link mailed to the address to finish registering",
         ));

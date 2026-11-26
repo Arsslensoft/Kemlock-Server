@@ -357,7 +357,10 @@ async fn with_no_mail_the_inviting_administrator_can_copy_the_link_to_hand_over(
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["object"], "inviteLink");
     let link = body["link"].as_str().expect("a link").to_owned();
-    assert!(link.starts_with(&format!("{DOMAIN}/#/accept-organization/?")), "{link}");
+    assert!(
+        link.starts_with(&format!("{DOMAIN}/#/accept-organization/?")),
+        "{link}"
+    );
     assert_eq!(body["token"], token_of(&link));
 
     let (status, body) = accept_without_signing_in(&h, &org, bob_id, &token_of(&link)).await;

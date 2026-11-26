@@ -289,7 +289,11 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
     items.sort();
     // The replica holds the space's items (they are pulled before the home records).
     for item in items {
-        put(&replica, draft(item, kemlock_domain::Owner::Space(space), None, 1)).await;
+        put(
+            &replica,
+            draft(item, kemlock_domain::Owner::Space(space), None, 1),
+        )
+        .await;
     }
 
     // The home's snapshot says which items its key replacement left held.
@@ -401,7 +405,9 @@ async fn a_collection_or_group_of_another_space_is_reported_before_a_record_name
     );
     // Its own ids and ids nobody has are fine.
     assert_eq!(
-        store.ids_held_elsewhere(theirs, &[collection.id], &[group.id]).await,
+        store
+            .ids_held_elsewhere(theirs, &[collection.id], &[group.id])
+            .await,
         Ok(false)
     );
     assert_eq!(
@@ -417,8 +423,16 @@ async fn a_held_record_only_touches_the_items_of_its_own_space() {
     let replica = memory().await;
     let (mine, theirs) = (SpaceId::random(), SpaceId::random());
     let (own_item, their_item) = (ItemId::random(), ItemId::random());
-    put(&replica, draft(own_item, kemlock_domain::Owner::Space(mine), None, 1)).await;
-    put(&replica, draft(their_item, kemlock_domain::Owner::Space(theirs), None, 1)).await;
+    put(
+        &replica,
+        draft(own_item, kemlock_domain::Owner::Space(mine), None, 1),
+    )
+    .await;
+    put(
+        &replica,
+        draft(their_item, kemlock_domain::Owner::Space(theirs), None, 1),
+    )
+    .await;
     // The other space's home holds its item.
     SpaceMirror::apply_space_record(&replica, theirs, &SpaceRecord::Held(vec![their_item]))
         .await
@@ -433,7 +447,10 @@ async fn a_held_record_only_touches_the_items_of_its_own_space() {
     )
     .await
     .expect("applied");
-    assert_eq!(replica.held_items(mine).await.expect("held"), vec![own_item]);
+    assert_eq!(
+        replica.held_items(mine).await.expect("held"),
+        vec![own_item]
+    );
     assert_eq!(
         replica.held_items(theirs).await.expect("held"),
         vec![their_item]

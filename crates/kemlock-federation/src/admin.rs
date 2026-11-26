@@ -40,11 +40,7 @@ const EVENTS_LOOKED_AT: u32 = 200;
 /// tests give it fixed ones.
 pub trait DescriptorSource: Send + Sync {
     /// The descriptor published at `address`, parsed but not checked, reached as `trust` allows.
-    fn fetch<'a>(
-        &'a self,
-        address: &'a str,
-        trust: Trust,
-    ) -> BoxFut<'a, Result<SignedDescriptor>>;
+    fn fetch<'a>(&'a self, address: &'a str, trust: Trust) -> BoxFut<'a, Result<SignedDescriptor>>;
 }
 
 /// [`DescriptorSource`] over `GET /fed/v1/descriptor`.
@@ -52,11 +48,7 @@ pub trait DescriptorSource: Send + Sync {
 struct HttpDescriptors;
 
 impl DescriptorSource for HttpDescriptors {
-    fn fetch<'a>(
-        &'a self,
-        address: &'a str,
-        trust: Trust,
-    ) -> BoxFut<'a, Result<SignedDescriptor>> {
+    fn fetch<'a>(&'a self, address: &'a str, trust: Trust) -> BoxFut<'a, Result<SignedDescriptor>> {
         Box::pin(async move { Http::new()?.descriptor(address, trust).await })
     }
 }

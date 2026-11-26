@@ -333,7 +333,9 @@ async fn a_writer_cannot_freeze_the_counter_by_jumping_far_ahead() {
     // As far as the limit lets it go from 5, a step is taken; one past it isn't.
     let far = 5 + SignedManifest::MAX_STEP;
     assert!(invalid(
-        put(&c.w).execute(&actor(c.ana), input(space, far + 1)).await
+        put(&c.w)
+            .execute(&actor(c.ana), input(space, far + 1))
+            .await
     ));
     assert!(invalid(
         put(&c.w)

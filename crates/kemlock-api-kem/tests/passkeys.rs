@@ -153,7 +153,8 @@ impl Pk {
         name: &str,
         prf: Option<Value>,
     ) -> (String, SoftwareAuthenticator) {
-        self.new_passkey_with(client, session, name, prf, None).await
+        self.new_passkey_with(client, session, name, prf, None)
+            .await
     }
 
     /// [`Pk::new_passkey`] with a fresh proof, which an account with a second step on needs.
@@ -837,7 +838,10 @@ async fn a_passkey_beside_an_authenticator_app_needs_a_proof() {
         )
         .await;
     assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.json());
-    assert_eq!(pk.passkeys(&d1, &s1).await.as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        pk.passkeys(&d1, &s1).await.as_array().map(Vec::len),
+        Some(1)
+    );
 }
 
 #[tokio::test]

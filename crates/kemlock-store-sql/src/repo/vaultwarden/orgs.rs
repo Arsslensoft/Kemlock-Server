@@ -594,8 +594,14 @@ mod tests {
 
     #[test]
     fn values_are_stored_as_the_console_would_store_them() {
-        assert_eq!(stored_value("signups_allowed", "false").as_deref(), Some("false"));
-        assert_eq!(stored_value("signups_allowed", " Yes ").as_deref(), Some("true"));
+        assert_eq!(
+            stored_value("signups_allowed", "false").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            stored_value("signups_allowed", " Yes ").as_deref(),
+            Some("true")
+        );
         assert_eq!(stored_value("smtp_port", "465").as_deref(), Some("465"));
         assert_eq!(stored_value("smtp_port", "not a port"), None);
         assert_eq!(stored_value("smtp_password", "hunter2"), None);
@@ -606,7 +612,10 @@ mod tests {
     fn only_registered_settings_are_kept() {
         assert!(is_registered("signups_allowed"));
         assert!(is_registered("smtp_host"));
-        assert!(!is_registered("smtp_password"), "a secret is sealed elsewhere");
+        assert!(
+            !is_registered("smtp_password"),
+            "a secret is sealed elsewhere"
+        );
         assert!(!is_registered("domain"));
         assert!(!is_registered("migration.status"));
         assert!(!is_registered("setting.signups_allowed"));

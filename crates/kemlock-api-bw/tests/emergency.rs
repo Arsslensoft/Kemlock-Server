@@ -70,7 +70,13 @@ async fn accept_as(h: &Harness, email: &str, id: &str) {
             "grantor_email": "ada@example.com",
         }))
         .expect("a token");
-    let (status, body) = post(h, &token, &format!("{id}/accept"), Some(json!({"token": link}))).await;
+    let (status, body) = post(
+        h,
+        &token,
+        &format!("{id}/accept"),
+        Some(json!({"token": link})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
@@ -95,7 +101,8 @@ async fn confirmed(h: &Harness, ada: &str, kind: i32) -> String {
 }
 
 #[tokio::test]
-async fn an_invited_account_stays_invited_until_it_accepts_and_is_then_listed_with_vaultwardens_keys() {
+async fn an_invited_account_stays_invited_until_it_accepts_and_is_then_listed_with_vaultwardens_keys()
+ {
     let h = Harness::new().await;
     let (ada, ada_id) = h.signed_in("ada@example.com").await;
     let (bob, bob_id) = h.signed_in("bob@example.com").await;

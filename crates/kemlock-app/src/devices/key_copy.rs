@@ -210,7 +210,11 @@ impl<D: DeviceRepo, T: TokenRepo, E: Clock, V: EventLog> EndSession<D, T, E, V> 
     /// the tokens of a family carry the time of the sign-in it began with, so the caller's family is
     /// the one with that time. Two sign-ins in the same second can't be told apart, and both are kept.
     /// Returns how many sessions ended.
-    pub async fn execute_others(&self, actor: &Actor, signed_in_at: i64) -> Result<usize, AppError> {
+    pub async fn execute_others(
+        &self,
+        actor: &Actor,
+        signed_in_at: i64,
+    ) -> Result<usize, AppError> {
         let mut others = std::collections::BTreeSet::new();
         for token in self.tokens.device_tokens(actor.device).await? {
             if token.created_at.unix_timestamp() != signed_in_at {

@@ -1048,7 +1048,14 @@ async fn require_sso_closes_the_api_key_to_members_and_not_to_owners() {
 }
 
 /// Invites `email` with `kind` (0 owner, 1 admin, 2 user) and confirms them.
-async fn add_member_as(h: &Harness, owner: &str, org: &str, member: UserId, email: &str, kind: i32) {
+async fn add_member_as(
+    h: &Harness,
+    owner: &str,
+    org: &str,
+    member: UserId,
+    email: &str,
+    kind: i32,
+) {
     let (status, body) = h
         .json(
             "POST",
@@ -1083,7 +1090,8 @@ async fn an_admin_demoted_through_the_space_rows_loses_bitwarden_admin_access() 
     assert_eq!(status, StatusCode::OK, "an admin lists the members");
 
     // The Kemlock API's role change touches only the space row.
-    h.change_row(&org, bob_id, |row| row.role = Role::Member).await;
+    h.change_row(&org, bob_id, |row| row.role = Role::Member)
+        .await;
     let (status, _) = get(&h, &bob, &members).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "no longer an admin here");
     let (status, _) = h
@@ -1181,7 +1189,12 @@ async fn a_member_who_may_not_see_passwords_can_not_change_which_collections_a_c
     let mut change = login_request(bob_id, "2.bobs edit");
     change["organizationId"] = json!(org);
     let (status, body) = h
-        .json("PUT", &format!("/api/ciphers/{id}"), Some(&bob), Some(change))
+        .json(
+            "PUT",
+            &format!("/api/ciphers/{id}"),
+            Some(&bob),
+            Some(change),
+        )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = h

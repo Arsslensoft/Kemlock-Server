@@ -141,7 +141,11 @@ pub fn pack_held(records: &[Vec<u8>]) -> Option<Vec<u8>> {
     let mut out = vec![1u8];
     for record in records {
         // A record is at most a few kilobytes.
-        out.extend_from_slice(&u32::try_from(record.len()).unwrap_or(u32::MAX).to_be_bytes());
+        out.extend_from_slice(
+            &u32::try_from(record.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
         out.extend_from_slice(record);
     }
     Some(out)

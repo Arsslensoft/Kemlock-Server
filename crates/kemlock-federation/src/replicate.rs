@@ -1046,9 +1046,8 @@ impl<S: FedStore> Replica<S> {
 /// The held promotion `new_home` signed, or the only one held when none is named.
 fn pick_held(vault: &VaultFederation, new_home: Option<ServerId>) -> Result<Vec<u8>> {
     let mut found = vault.held_demotion.iter().filter(|record| {
-        new_home.is_none_or(|wanted| {
-            home::peek_promotion(record).is_ok_and(|p| p.new_home == wanted)
-        })
+        new_home
+            .is_none_or(|wanted| home::peek_promotion(record).is_ok_and(|p| p.new_home == wanted))
     });
     match (found.next(), found.next()) {
         (Some(record), None) => Ok(record.clone()),
@@ -1584,7 +1583,12 @@ mod tests {
 
     /// A home `a` and a replica `b` that both hold a vault at epoch 2 (who was the home of epoch 1
     /// is not known), with a third server `ic` in its set.
-    async fn stale_world() -> (Replica<MemoryStore>, Replica<MemoryStore>, LocalIdentity, Owner) {
+    async fn stale_world() -> (
+        Replica<MemoryStore>,
+        Replica<MemoryStore>,
+        LocalIdentity,
+        Owner,
+    ) {
         let ia = identity(1, NOW, &crate::suite::Suite::IMPLEMENTED);
         let ib = identity(2, NOW, &crate::suite::Suite::IMPLEMENTED);
         let ic = identity(3, NOW, &crate::suite::Suite::IMPLEMENTED);
@@ -1654,7 +1658,11 @@ mod tests {
             .expect("sync");
         assert_eq!((sync.applied, sync.quarantined, sync.refused), (0, 0, 1));
         assert!(
-            b.store.home_records(vault, 0, 10).await.expect("held").is_empty(),
+            b.store
+                .home_records(vault, 0, 10)
+                .await
+                .expect("held")
+                .is_empty(),
             "the squatted index stays free"
         );
 
@@ -1830,22 +1838,44 @@ mod tests {
             matches!(&refused, Err(FedError::Remote(d)) if d.contains("admin must accept")),
             "{refused:?}"
         );
-        let at_c = c.store.get_vault(held_vault.owner).await.expect("get").expect("vault");
-        assert_eq!((at_c.home, at_c.epoch), (ia.server, 1), "the vault stays where it was");
+        let at_c = c
+            .store
+            .get_vault(held_vault.owner)
+            .await
+            .expect("get")
+            .expect("vault");
+        assert_eq!(
+            (at_c.home, at_c.epoch),
+            (ia.server, 1),
+            "the vault stays where it was"
+        );
         assert_eq!(at_c.held_demotion, vec![promotion.clone()]);
         let held = c.held_promotions().await.expect("held");
         assert_eq!(held.len(), 1);
-        assert_eq!((held[0].0, held[0].1.new_home), (held_vault.owner, ib.server));
+        assert_eq!(
+            (held[0].0, held[0].1.new_home),
+            (held_vault.owner, ib.server)
+        );
 
         // The admin refuses it: gone, and nothing changed.
         c.refuse_demotion(held_vault.owner).await.expect("refused");
         assert!(c.held_promotions().await.expect("held").is_empty());
-        assert!(c.refuse_demotion(held_vault.owner).await.is_err(), "nothing left to refuse");
-        let at_c = c.store.get_vault(held_vault.owner).await.expect("get").expect("vault");
+        assert!(
+            c.refuse_demotion(held_vault.owner).await.is_err(),
+            "nothing left to refuse"
+        );
+        let at_c = c
+            .store
+            .get_vault(held_vault.owner)
+            .await
+            .expect("get")
+            .expect("vault");
         assert_eq!((at_c.home, at_c.epoch), (ia.server, 1));
 
         // Announced again and accepted this time.
-        b.announce(&mut to_c, promotion).await.expect_err("held again");
+        b.announce(&mut to_c, promotion)
+            .await
+            .expect_err("held again");
         let next = c.accept_demotion(held_vault.owner).await.expect("accepted");
         assert_eq!((next.home, next.epoch), (ib.server, 2));
         assert!(next.held_demotion.is_empty());
@@ -1854,7 +1884,12 @@ mod tests {
         c.store.set_promotion_mode(PromotionMode::Auto);
         let promotion = b.promote(auto_vault.owner, NOW).await.expect("promote");
         b.announce(&mut to_c, promotion).await.expect("applied");
-        let at_c = c.store.get_vault(auto_vault.owner).await.expect("get").expect("vault");
+        let at_c = c
+            .store
+            .get_vault(auto_vault.owner)
+            .await
+            .expect("get")
+            .expect("vault");
         assert_eq!((at_c.home, at_c.epoch), (ib.server, 2));
         assert!(at_c.held_demotion.is_empty());
     }
@@ -1871,11 +1906,8 @@ mod tests {
         d.pin_peer(&ib.descriptor, NOW).await.expect("pin");
         d.pin_peer(&ic.descriptor, NOW).await.expect("pin");
         let vault = Owner::User(UserId::random());
-        let settings = VaultFederation::federated(
-            vault,
-            ia.server,
-            vec![ib.server, ic.server, id.server],
-        );
+        let settings =
+            VaultFederation::federated(vault, ia.server, vec![ib.server, ic.server, id.server]);
         for replica in [&b, &c, &d] {
             replica.store.put_vault(&settings).await.expect("put");
         }
@@ -1890,11 +1922,17 @@ mod tests {
             remote: &d,
             caller: ic.server,
         };
-        b.announce(&mut from_b, by_b.clone()).await.expect_err("held");
-        c.announce(&mut from_c, by_c.clone()).await.expect_err("held");
+        b.announce(&mut from_b, by_b.clone())
+            .await
+            .expect_err("held");
+        c.announce(&mut from_c, by_c.clone())
+            .await
+            .expect_err("held");
         // The same one again, and again: it can't push the other out, or pile up.
         for _ in 0..3 {
-            b.announce(&mut from_b, by_b.clone()).await.expect_err("held");
+            b.announce(&mut from_b, by_b.clone())
+                .await
+                .expect_err("held");
         }
         let held = d.store.get_vault(vault).await.expect("get").expect("vault");
         assert_eq!(held.held_demotion.len(), 2, "one for each server");

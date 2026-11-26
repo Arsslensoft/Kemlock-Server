@@ -527,12 +527,7 @@ impl<S: FedStore> Replica<S> {
             .await?
             .ok_or(FedError::Refused("no address change waits for this peer"))?;
         self.store
-            .update_peer_descriptor(
-                peer,
-                &pending.operator,
-                &pending.addresses,
-                &pending.suites,
-            )
+            .update_peer_descriptor(peer, &pending.operator, &pending.addresses, &pending.suites)
             .await?;
         // The admin looked at the new addresses and approved them.
         self.store.trust_addresses(peer, &pending.addresses).await?;
@@ -855,7 +850,12 @@ mod tests {
         // Not revoked outright: the old key can't be told from a thief's, so the peer is contested,
         // with nothing deleted and nothing syncing, until the admin settles it.
         assert_eq!(peer_of(&p).await.state, PeerState::Contested);
-        assert!(!p.b.peer_keys().await.expect("keys").contains_key(&p.old.server));
+        assert!(
+            !p.b.peer_keys()
+                .await
+                .expect("keys")
+                .contains_key(&p.old.server)
+        );
         assert_eq!(
             p.b.pending_address_changes().await.expect("list").len(),
             1,
@@ -863,7 +863,10 @@ mod tests {
         );
         assert!(p.b.clear_contest(p.old.server).await.is_ok());
         assert_eq!(peer_of(&p).await.state, PeerState::Paired);
-        assert!(p.b.clear_contest(p.old.server).await.is_err(), "no longer contested");
+        assert!(
+            p.b.clear_contest(p.old.server).await.is_err(),
+            "no longer contested"
+        );
 
         // Someone who never held a key of the server can't revoke it this way.
         let p = pair().await;

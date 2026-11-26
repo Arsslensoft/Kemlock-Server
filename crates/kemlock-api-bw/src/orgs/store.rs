@@ -597,7 +597,10 @@ mod tests {
         );
         assert!(revoked.revoked());
         assert_eq!(revoked.unrevoked_status(), CONFIRMED);
-        assert_eq!(revoked.akey, "4.wrapped", "a Bitwarden restore may bring it back");
+        assert_eq!(
+            revoked.akey, "4.wrapped",
+            "a Bitwarden restore may bring it back"
+        );
         // Revoking twice is the same revocation.
         assert_eq!(
             reconcile(

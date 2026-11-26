@@ -405,7 +405,12 @@ impl Session {
         // A name of a chained space is shown only when it is the one the chain committed, at the
         // name version it recorded ("Using the state", "Names").
         if let Some(state) = unlocked.spaces.chain_state(space) {
-            if !unlocked.spaces.chains.get(space).is_some_and(|held| held.trusted) {
+            if !unlocked
+                .spaces
+                .chains
+                .get(space)
+                .is_some_and(|held| held.trusted)
+            {
                 return Err(Error::Invalid);
             }
             let committed = match kind {
@@ -421,7 +426,8 @@ impl Session {
             };
             match committed {
                 Some((hash, version))
-                    if version == key_version && hash == kemlock_crypto::hash::sha256(ciphertext) => {}
+                    if version == key_version
+                        && hash == kemlock_crypto::hash::sha256(ciphertext) => {}
                 _ => return Err(Error::Invalid),
             }
         }
@@ -471,7 +477,9 @@ impl Session {
     ) -> Result<SealedItem, Error> {
         let unlocked = self.unlocked()?;
         let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
-        unlocked.spaces.allow_item_write(space, collection, version)?;
+        unlocked
+            .spaces
+            .allow_item_write(space, collection, version)?;
         let wrap = key.child(ITEM_WRAP_LABEL)?;
         let owner = Owner::space(*space);
         let item_key = SecretKey::generate();
@@ -496,7 +504,9 @@ impl Session {
         }
         let unlocked = self.unlocked()?;
         let version = item.key_version.ok_or(Error::Invalid)?;
-        unlocked.spaces.allow_item_open(space, collection, version)?;
+        unlocked
+            .spaces
+            .allow_item_open(space, collection, version)?;
         let wrap = unlocked
             .spaces
             .collection(space, collection, version)?

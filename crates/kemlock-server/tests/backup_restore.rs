@@ -95,7 +95,10 @@ async fn fixture_with(authenticated: bool) -> Fixture {
         zstd_level: 1,
     };
     let mut layout = layout(&config).expect("a layout");
-    assert!(layout.mac_key.is_some(), "the server key is there to make the code with");
+    assert!(
+        layout.mac_key.is_some(),
+        "the server key is there to make the code with"
+    );
     if !authenticated {
         layout.mac_key = None;
     }
@@ -233,7 +236,6 @@ async fn a_restore_refuses_a_data_folder_with_another_server_key() {
         "nothing was restored"
     );
 }
-
 
 /// The key files a restore puts down are readable by their owner only, whatever the umask and
 /// whatever mode the archive's copies had.
@@ -380,7 +382,10 @@ async fn an_archive_with_its_code_restores_with_the_key_and_the_drill_says_so() 
         .await
         .expect("the restore works");
     assert!(
-        report.notes.iter().all(|n| !n.contains("NOT authenticated")),
+        report
+            .notes
+            .iter()
+            .all(|n| !n.contains("NOT authenticated")),
         "{:?}",
         report.notes
     );
@@ -396,7 +401,10 @@ async fn inspecting_an_archive_says_what_it_is_without_changing_anything() {
         .await
         .expect("the archive opens");
     assert!(info.created_at.starts_with("20"), "{}", info.created_at);
-    assert!(info.tables > 10 && info.rows >= 1 && info.files >= 2, "{info:?}");
+    assert!(
+        info.tables > 10 && info.rows >= 1 && info.files >= 2,
+        "{info:?}"
+    );
     assert!(info.warnings.is_empty(), "{:?}", info.warnings);
     // Nothing was restored, and the scratch folder is gone.
     assert!(!target.data_folder.join("db.sqlite3").exists());

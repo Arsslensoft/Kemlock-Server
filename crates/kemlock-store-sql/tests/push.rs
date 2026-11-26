@@ -113,7 +113,11 @@ async fn racing_registrations_cannot_exceed_the_cap(store: &SqlStore) {
     UserRepo::insert(store, &ada).await.expect("insert user");
     let mut devices = Vec::new();
     for i in 0..8 {
-        let d = device(ada.id, &format!("Phone {i}"), datetime!(2026-11-01 00:00 UTC));
+        let d = device(
+            ada.id,
+            &format!("Phone {i}"),
+            datetime!(2026-11-01 00:00 UTC),
+        );
         DeviceRepo::upsert(store, &d).await.expect("device");
         devices.push(d);
     }
@@ -167,7 +171,14 @@ async fn racing_registrations_cannot_exceed_the_cap(store: &SqlStore) {
         store.put_registration_within_cap(&apns, 3).await,
         Ok(Ok(()))
     );
-    assert_eq!(store.registrations_for(&[ada.id]).await.expect("lists").len(), 4);
+    assert_eq!(
+        store
+            .registrations_for(&[ada.id])
+            .await
+            .expect("lists")
+            .len(),
+        4
+    );
 }
 
 async fn nudge_log(store: &SqlStore) {

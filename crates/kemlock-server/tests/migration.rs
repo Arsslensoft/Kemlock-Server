@@ -361,7 +361,9 @@ async fn a_move_leaves_an_existing_account_alone_and_the_event_log_says_what_it_
     let rig = rig().await;
     vwfix::create_sample_folder(&rig.vw_folder()).await;
     let native = native_alice();
-    UserRepo::insert(&rig.store, &native).await.expect("inserted");
+    UserRepo::insert(&rig.store, &native)
+        .await
+        .expect("inserted");
 
     let request = rig.request(&rig.vw_path());
     let by = request.by;

@@ -6,7 +6,7 @@ mod fakes;
 use fakes::FakeSeal;
 use kemlock_app::ports::SecretSeal;
 use kemlock_app::sealed::{
-    allow_bare_secrets, bare_secrets_allowed, open_bound, seal_bound, PURPOSE_TOTP,
+    PURPOSE_TOTP, allow_bare_secrets, bare_secrets_allowed, open_bound, seal_bound,
 };
 use kemlock_domain::UserId;
 

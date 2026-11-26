@@ -35,8 +35,7 @@ impl<F: TwoFactorRepo, S: SecretSeal, O: Totp, E: Platform> ConfirmTotp<F, S, O,
             // replaced since is not undone.
             let from = enrolment.sealed_secret.clone();
             if opened.legacy {
-                enrolment.sealed_secret =
-                    seal_bound(&self.seal, PURPOSE_TOTP, user, &opened.value);
+                enrolment.sealed_secret = seal_bound(&self.seal, PURPOSE_TOTP, user, &opened.value);
             }
             enrolment.enabled = true;
             if !self.two_factor.replace_if_sealed(&from, &enrolment).await? {

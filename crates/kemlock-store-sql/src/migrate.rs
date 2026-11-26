@@ -10,7 +10,8 @@ use kemlock_domain::{Hlc, ServerId};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter, Statement,
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement,
 };
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use std::path::Path;

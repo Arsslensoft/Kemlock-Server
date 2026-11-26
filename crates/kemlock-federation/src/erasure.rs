@@ -154,7 +154,9 @@ mod tests {
         let b = Replica::new(MemoryStore::new(b_id), Arc::new(ib.clone()));
         b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
         let vault = Owner::User(UserId::random());
-        b.accept_vault(vault, a_id, vec![b_id]).await.expect("accept");
+        b.accept_vault(vault, a_id, vec![b_id])
+            .await
+            .expect("accept");
         // The vault's account lives on B, not as a copy.
         b.store.set_local_account(vault);
         a.store.queue_erasure(b_id, vault, NOW);
@@ -165,10 +167,18 @@ mod tests {
         };
         // B says so in a way A takes as final: nothing is acknowledged, nothing stays queued.
         assert_eq!(
-            a.forward_erasures(&mut channel, b_id).await.expect("a visit"),
+            a.forward_erasures(&mut channel, b_id)
+                .await
+                .expect("a visit"),
             0
         );
-        assert!(a.store.pending_erasures(b_id).await.expect("pending").is_empty());
+        assert!(
+            a.store
+                .pending_erasures(b_id)
+                .await
+                .expect("pending")
+                .is_empty()
+        );
         // And B still holds the vault.
         assert!(b.store.get_vault(vault).await.expect("get").is_some());
 
@@ -176,7 +186,9 @@ mod tests {
         let elsewhere = Owner::User(UserId::random());
         a.store.queue_erasure(b_id, elsewhere, NOW);
         assert_eq!(
-            a.forward_erasures(&mut channel, b_id).await.expect("a visit"),
+            a.forward_erasures(&mut channel, b_id)
+                .await
+                .expect("a visit"),
             1
         );
     }

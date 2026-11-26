@@ -11,9 +11,9 @@ use core::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
-    Error, ed25519,
+    Error,
     backend::{Active, Backend, MLDSA_PUBLIC_LEN, MLDSA_SEED_LEN, MLDSA_SIGNATURE_LEN},
-    rand,
+    ed25519, rand,
     wire::{array, array_ref, lp},
 };
 

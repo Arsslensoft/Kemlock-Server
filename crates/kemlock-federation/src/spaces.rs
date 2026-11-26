@@ -823,7 +823,9 @@ impl<S: FedStore> Replica<S> {
             .into_iter()
             .filter(|r| r.status == crate::ports::HomeStatus::Applied)
             .filter(|r| r.record.kind == crate::members::KIND)
-            .filter(|r| crate::publish::entity_key(&r.record.payload).as_deref() == Some(key.as_slice()))
+            .filter(|r| {
+                crate::publish::entity_key(&r.record.payload).as_deref() == Some(key.as_slice())
+            })
             .max_by_key(|r| r.record.index);
         if let Some(stored) = latest {
             self.apply_member_record(&stored.record).await;
@@ -1241,7 +1243,11 @@ mod tests {
             parent: None,
             ..mine.clone()
         };
-        apply(KIND_COLLECTION, encode_collection(&own_collection, &[grant])).await;
+        apply(
+            KIND_COLLECTION,
+            encode_collection(&own_collection, &[grant]),
+        )
+        .await;
         let under_parent = Collection {
             id: CollectionId::random(),
             parent: Some(theirs.id),

@@ -31,12 +31,12 @@ use axum::routing::get;
 use axum::{Json, Router};
 use kemlock_app::Actor;
 use kemlock_app::AppError;
-use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_app::policies::{
     GetPolicies, JoinGuard, MyPolicies, PoliciesError, PolicyRepo, SetPolicies, StoredPolicies,
 };
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::{SpaceChainRepo, SpaceRepo};
+use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_domain::policies::{
     EffectivePolicies, MasterPasswordPolicy, SpacePolicies, TimeoutAction,
 };

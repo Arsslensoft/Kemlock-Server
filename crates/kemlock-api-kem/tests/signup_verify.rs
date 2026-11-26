@@ -83,7 +83,12 @@ async fn an_account_made_while_verifying_signs_in_only_after_its_link_is_opened(
 
     // The right password isn't enough until the address is confirmed.
     let refused = sign_in_reply(&client, EMAIL, test_device()).await;
-    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::FORBIDDEN,
+        "{:?}",
+        refused.json()
+    );
     assert_eq!(refused.problem(), "email-not-confirmed");
 
     // A link that isn't ours opens nothing.
@@ -167,7 +172,12 @@ async fn a_new_link_is_mailed_on_asking_and_only_when_one_is_due() {
     assert_eq!(made.status, StatusCode::CREATED);
     assert_eq!(mailbox.tokens(EMAIL).len(), 1);
 
-    let ask = |email: &'static str| client.post("/kem/v1/accounts/confirm-email/resend", json!({"email": email}));
+    let ask = |email: &'static str| {
+        client.post(
+            "/kem/v1/accounts/confirm-email/resend",
+            json!({"email": email}),
+        )
+    };
     // Too soon: the answer is the same, and nothing is sent.
     assert_eq!(ask(EMAIL).await.status, StatusCode::ACCEPTED);
     assert_eq!(mailbox.tokens(EMAIL).len(), 1);
@@ -189,7 +199,12 @@ async fn a_new_link_is_mailed_on_asking_and_only_when_one_is_due() {
     // A sign-in with the right password, once another link is due, mails one too.
     app.clock.advance(Duration::minutes(6));
     let refused = sign_in_reply(&client, EMAIL, test_device()).await;
-    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::FORBIDDEN,
+        "{:?}",
+        refused.json()
+    );
     let tokens = mailbox.tokens(EMAIL);
     assert_eq!(tokens.len(), 3);
     assert_eq!(confirm(&client, &tokens[2]).await.status, StatusCode::OK);
@@ -203,7 +218,10 @@ async fn a_link_runs_out_after_a_day() {
     assert_eq!(made.status, StatusCode::CREATED);
     let token = mailbox.tokens(EMAIL).remove(0);
     app.clock.advance(Duration::hours(25));
-    assert_eq!(confirm(&client, &token).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        confirm(&client, &token).await.status,
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]
@@ -241,7 +259,10 @@ async fn opening_the_link_changes_nothing_until_the_button_is_pressed() {
             .header("content-security-policy")
             .is_some_and(|csp| csp.contains("form-action 'none'"))
     );
-    assert_eq!(confirm(&client, &token).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        confirm(&client, &token).await.status,
+        StatusCode::BAD_REQUEST
+    );
     assert_eq!(
         sign_in_reply(&client, EMAIL, test_device()).await.status,
         StatusCode::OK

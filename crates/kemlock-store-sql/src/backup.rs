@@ -48,17 +48,16 @@ use crate::tables::{
     admin, attachments, auth_requests, bw_account_extras, bw_accounts, bw_attachments, bw_devices,
     bw_docs, bw_tries, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
     device_key_copies, devices, duplicate_dismissals, email_changes, email_confirmations,
-    emergency_access, events,
-    federation, federation_insight, federation_keys, federation_logs, federation_wiring, item_tags,
-    items, passkeys, pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens,
-    revoked_families, second_step_attempts, sends, server_meta, settings, sign_in_log,
-    signed_manifests, sync_horizon, two_factor, two_factor_recovery, two_step_versions, users,
-    vw_import_ids, vw_rows, webauthn_challenges,
+    emergency_access, events, federation, federation_insight, federation_keys, federation_logs,
+    federation_wiring, item_tags, items, passkeys, pending_erasures, policies, push_tokens,
+    recovery_kits, refresh_tokens, revoked_families, second_step_attempts, sends, server_meta,
+    settings, sign_in_log, signed_manifests, sync_horizon, two_factor, two_factor_recovery,
+    two_step_versions, users, vw_import_ids, vw_rows, webauthn_challenges,
 };
 use kemlock_app::admin::SettingsRepo;
 use kemlock_app::b64url;
-use kemlock_app::sealed::SECRETS_BOUND_KEY;
 use kemlock_app::ports::StoreError;
+use kemlock_app::sealed::SECRETS_BOUND_KEY;
 use sea_orm::sea_query::{Alias, Expr, Order, Query};
 use sea_orm::{
     AccessMode, ColumnTrait, ColumnType, ConnectionTrait, DatabaseConnection, DbBackend,

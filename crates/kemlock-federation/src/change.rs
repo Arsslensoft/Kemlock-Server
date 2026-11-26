@@ -376,13 +376,22 @@ mod tests {
         let mut r = record(origin, 5, 3);
         let now_ms = 1_700_000_000_000;
         r.change.hlc = Hlc::from_parts(now_ms + MAX_FUTURE_MS, 9);
-        assert!(check_not_future(&r, now_ms).is_ok(), "the skew allowance is kept");
+        assert!(
+            check_not_future(&r, now_ms).is_ok(),
+            "the skew allowance is kept"
+        );
         r.change.hlc = Hlc::from_parts(now_ms + MAX_FUTURE_MS + 1, 0);
-        assert!(matches!(check_not_future(&r, now_ms), Err(FedError::Refused(_))));
+        assert!(matches!(
+            check_not_future(&r, now_ms),
+            Err(FedError::Refused(_))
+        ));
         r.change.hlc = Hlc(u64::MAX >> 1);
         assert!(check_not_future(&r, now_ms).is_err());
         r.change.hlc = Hlc::from_parts(1_000, 0);
-        assert!(check_not_future(&r, now_ms).is_ok(), "old records are normal");
+        assert!(
+            check_not_future(&r, now_ms).is_ok(),
+            "old records are normal"
+        );
     }
 
     #[test]

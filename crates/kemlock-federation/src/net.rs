@@ -65,7 +65,11 @@ pub fn ws_url(address: &str) -> Result<String> {
 fn ws_of(http: &url::Url) -> String {
     let mut url = http.clone();
     // `http` and `https` are special schemes, as `ws` and `wss` are, so the change is allowed.
-    let _ = url.set_scheme(if http.scheme() == "https" { "wss" } else { "ws" });
+    let _ = url.set_scheme(if http.scheme() == "https" {
+        "wss"
+    } else {
+        "ws"
+    });
     url.to_string()
 }
 
@@ -478,7 +482,8 @@ mod tests {
             );
             assert!(
                 matches!(
-                    http.post(address, KEYS_PATH, vec![1], Trust::Descriptor).await,
+                    http.post(address, KEYS_PATH, vec![1], Trust::Descriptor)
+                        .await,
                     Err(FedError::Refused(_))
                 ),
                 "{address}"
@@ -528,10 +533,7 @@ mod tests {
                 Trust::Admin,
             )
             .await;
-        assert!(
-            matches!(answer, Err(FedError::Malformed(_))),
-            "{answer:?}"
-        );
+        assert!(matches!(answer, Err(FedError::Malformed(_))), "{answer:?}");
         let _ = server.join();
     }
 
@@ -574,7 +576,13 @@ mod tests {
             .approve_address_change(peer.id)
             .await
             .expect("approved");
-        assert!(replica.pending_address_changes().await.expect("list").is_empty());
+        assert!(
+            replica
+                .pending_address_changes()
+                .await
+                .expect("list")
+                .is_empty()
+        );
         assert!(!matches!(
             connector.probe(&peer).await,
             Err(FedError::Refused(_))
@@ -594,5 +602,4 @@ mod tests {
             .expect("the client builder");
         assert!(client.contains(".no_proxy()"));
     }
-
 }

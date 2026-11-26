@@ -599,17 +599,38 @@ mod tests {
         // A share of 200 / OPEN_SOURCE_SHARE = 2 proofs.
         for jti in ["a", "b"] {
             assert!(
-                v.verify_from(Some(b"ip:1"), &good(&v, &signer, jti), "POST", PATH, NOW, None)
-                    .is_ok()
+                v.verify_from(
+                    Some(b"ip:1"),
+                    &good(&v, &signer, jti),
+                    "POST",
+                    PATH,
+                    NOW,
+                    None
+                )
+                .is_ok()
             );
         }
         assert_eq!(
-            v.verify_from(Some(b"ip:1"), &good(&v, &signer, "c"), "POST", PATH, NOW, None),
+            v.verify_from(
+                Some(b"ip:1"),
+                &good(&v, &signer, "c"),
+                "POST",
+                PATH,
+                NOW,
+                None
+            ),
             Err(DpopError::Overloaded)
         );
         assert!(
-            v.verify_from(Some(b"ip:2"), &good(&v, &signer, "d"), "POST", PATH, NOW, None)
-                .is_ok()
+            v.verify_from(
+                Some(b"ip:2"),
+                &good(&v, &signer, "d"),
+                "POST",
+                PATH,
+                NOW,
+                None
+            )
+            .is_ok()
         );
     }
 

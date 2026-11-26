@@ -674,10 +674,7 @@ async fn a_compatible_account_enrols_opaque_in_one_exchange_and_signs_in_with_it
     assert_eq!(keys["keyVersion"], 1);
     assert_eq!(keys["wrappedRootKey"], b64(&[0x33u8; WRAPPED_ROOT_KEY_LEN]));
     assert_eq!(keys["publicBundle"], b64(&fakes::bundle(user)));
-    assert_eq!(
-        keys["bundleSignature"],
-        b64(&fakes::bundle_signature(user))
-    );
+    assert_eq!(keys["bundleSignature"], b64(&fakes::bundle_signature(user)));
     assert_eq!(keys["sealedPrivateKeys"], b64(&[0x22u8; 64]));
     assert_eq!(keys["kdf"]["iterations"], 3);
 }

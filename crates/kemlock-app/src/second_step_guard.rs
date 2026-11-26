@@ -114,7 +114,11 @@ mod tests {
     fn each_attempt_after_a_wait_doubles_the_next_wait() {
         let (state, _) = reserve_n(Attempts::default(), 5, 1000, 5);
         let (state, answer) = state.reserve(1001, 5, 900);
-        assert_eq!(answer, Reservation::Granted, "one try once the wait is over");
+        assert_eq!(
+            answer,
+            Reservation::Granted,
+            "one try once the wait is over"
+        );
         let (state, answer) = state.reserve(1001, 5, 900);
         assert_eq!(answer, Reservation::Wait(2));
         let (state, answer) = state.reserve(1003, 5, 900);
@@ -147,7 +151,10 @@ mod tests {
         let (state, answer) = state.reserve(901, 5, 900);
         assert_eq!(answer, Reservation::Granted);
         assert_eq!(state.count, 1);
-        assert_eq!(state.level, 1, "the window had a wait in it: no forgiveness");
+        assert_eq!(
+            state.level, 1,
+            "the window had a wait in it: no forgiveness"
+        );
         // Another window with no wait in it forgives the level.
         let (state, _) = state.reserve(1802, 5, 900);
         assert_eq!(state.level, 0);

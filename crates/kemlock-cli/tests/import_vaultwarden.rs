@@ -146,7 +146,11 @@ async fn accounts_no_import_made_are_left_alone_unless_the_operator_adopts_them(
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(
-        count(data.path(), "SELECT COUNT(*) FROM vw_import_ids WHERE kind = 'user'").await,
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM vw_import_ids WHERE kind = 'user'"
+        )
+        .await,
         2,
         "the import recorded the accounts it made"
     );
@@ -172,7 +176,11 @@ async fn accounts_no_import_made_are_left_alone_unless_the_operator_adopts_them(
     assert!(said.contains("WARNING"), "{said}");
     assert!(!said.contains("left alone"), "{said}");
     assert_eq!(
-        count(data.path(), "SELECT COUNT(*) FROM vw_import_ids WHERE kind = 'user'").await,
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM vw_import_ids WHERE kind = 'user'"
+        )
+        .await,
         2
     );
     // The pass is in the admin event log.

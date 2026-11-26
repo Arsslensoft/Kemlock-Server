@@ -5,10 +5,10 @@ use crate::error::StoreResult;
 use crate::lease;
 use crate::migrate;
 use kemlock_app::ports::{ServerInfo, StoreError};
+use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::ServerId;
 use kemlock_domain::privacy::Retention;
 use sea_orm::DatabaseConnection;
-use kemlock_crypto::seal::ServerSeal;
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 /// SQL storage for accounts, devices, tokens and the vault's items, on SQLite, PostgreSQL or

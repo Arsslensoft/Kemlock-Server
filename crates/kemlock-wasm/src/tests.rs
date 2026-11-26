@@ -7,6 +7,7 @@
 //! run end to end against `kemlock-crypto`'s server half (its RFC 9807 vectors are checked
 //! natively, where the random inputs can be fixed).
 
+use kemlock_crypto::space_chain::KeyRef;
 use kemlock_crypto::{
     argon2id,
     bundle::Bundle,
@@ -17,7 +18,6 @@ use kemlock_crypto::{
     owner::Owner,
     password_wrap, private_keys, sealed_box, sig1,
 };
-use kemlock_crypto::space_chain::KeyRef;
 use serde_json::{Value, json};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -1759,7 +1759,9 @@ fn an_accounts_own_manifest_is_signed_and_checked_with_its_own_key() {
     let account_id = [0x81u8; 16];
     let (session, _) = open_account(account_id);
     let own = manifest_bytes(Owner::user(account_id), 3);
-    let signature = session.sign_manifest(&own).expect("the account signs its manifest");
+    let signature = session
+        .sign_manifest(&own)
+        .expect("the account signs its manifest");
     assert_eq!(signature.len(), 3373);
     session
         .verify_own_manifest(&own, &signature)
@@ -1780,32 +1782,49 @@ fn an_accounts_own_manifest_is_signed_and_checked_with_its_own_key() {
         .expect_err("another account does not sign this account's manifest");
     assert_eq!(theirs, Error::Invalid);
     let (impostor, _) = open_account(account_id);
-    let forged = impostor.sign_manifest(&own).expect("a copy of the account signs");
+    let forged = impostor
+        .sign_manifest(&own)
+        .expect("a copy of the account signs");
     assert!(
         session.verify_own_manifest(&own, &forged).is_err(),
         "a signature by other keys of the same id is not the account's"
     );
 
     // Only a manifest is signed, and only the account's own or a space's.
-    assert_eq!(session.sign_manifest(b"not a manifest"), Err(Error::Invalid));
+    assert_eq!(
+        session.sign_manifest(b"not a manifest"),
+        Err(Error::Invalid)
+    );
     assert_eq!(
         session.sign_manifest(&manifest_bytes(Owner::user([0x83; 16]), 1)),
         Err(Error::Invalid)
     );
     let space = manifest_bytes(Owner::space([0x84; 16]), 1);
-    let space_signature = session.sign_manifest(&space).expect("a member signs a space's");
+    let space_signature = session
+        .sign_manifest(&space)
+        .expect("a member signs a space's");
     // A space's manifest is not the account's own.
-    assert!(session.verify_own_manifest(&space, &space_signature).is_err());
+    assert!(
+        session
+            .verify_own_manifest(&space, &space_signature)
+            .is_err()
+    );
 
     // A vault opened without the private keys has no key to check with: no verdict, not "false".
     let account = RootKey::generate();
     let keyless = unlocked_with(&account, &account_id, FIRST_KEY_VERSION);
-    assert_eq!(keyless.verify_own_manifest(&own, &signature), Err(Error::Locked));
+    assert_eq!(
+        keyless.verify_own_manifest(&own, &signature),
+        Err(Error::Locked)
+    );
 
     // A locked session signs and checks nothing.
     let locked = Session::new();
     assert_eq!(locked.sign_manifest(&own), Err(Error::Locked));
-    assert_eq!(locked.verify_own_manifest(&own, &signature), Err(Error::Locked));
+    assert_eq!(
+        locked.verify_own_manifest(&own, &signature),
+        Err(Error::Locked)
+    );
 }
 
 #[wasm_bindgen_test]
@@ -1858,7 +1877,10 @@ fn vector_chain(name: &str) -> ([u8; 16], Vec<chain::WireIn>) {
             cosignature: wire(record, "cosignature"),
         })
         .collect();
-    (ids::parse_uuid(text(case, "space")).expect("a uuid"), records)
+    (
+        ids::parse_uuid(text(case, "space")).expect("a uuid"),
+        records,
+    )
 }
 
 fn verdict_json(session: &mut Session, space: &[u8; 16], records: &[chain::WireIn]) -> Value {
@@ -1905,7 +1927,10 @@ fn a_chain_that_verifies_is_not_trusted_until_first_contact() {
         session.new_space(&space, &[1; 16], "a", "b").map(|_| ()),
         Err(Error::Invalid)
     );
-    assert_eq!(session.open_space(&space, 1, &[0; 1661]), Err(Error::Invalid));
+    assert_eq!(
+        session.open_space(&space, 1, &[0; 1661]),
+        Err(Error::Invalid)
+    );
     assert_eq!(
         session.seal_space_key_to(&space, &[0; 1600], &[1; 16]),
         Err(Error::Invalid)
@@ -1959,7 +1984,10 @@ fn a_chain_that_ends_earlier_than_one_already_verified_is_rolled_back() {
         assert_eq!(view["reason"], "rolled back");
     }
     // The state held is still the longer chain.
-    let held = session.space_chain_view(&space).expect("view").expect("held");
+    let held = session
+        .space_chain_view(&space)
+        .expect("view")
+        .expect("held");
     let held: Value = serde_json::from_str(&held).expect("json");
     assert_eq!(held["head"]["seq"], 49);
     // The kept view is the one the verdict gave, read again, not made again.
@@ -1971,7 +1999,8 @@ fn the_page_s_anchor_makes_first_contact_done_and_refuses_a_fork() {
     let (space, records) = vector_chain("valid-every-kind");
     let (mut first, _) = open_account([0xD4; 16]);
     let view = verdict_json(&mut first, &space, &records);
-    let anchor = json!({"seq": view["head"]["seq"], "epoch": view["epoch"], "links": view["links"]});
+    let anchor =
+        json!({"seq": view["head"]["seq"], "epoch": view["epoch"], "links": view["links"]});
 
     // Another unlock, with the anchor the page stored after first contact: trusted at once.
     let (mut again, _) = open_account([0xD5; 16]);
@@ -2013,7 +2042,11 @@ fn keys_opened_outside_the_chain_do_not_outlive_a_chain_or_a_refusal() {
     let held_for = |session: &Session, space: &[u8; 16]| {
         let unlocked = session.unlocked().expect("unlocked");
         unlocked.spaces.spaces.keys().any(|(s, _)| s == space)
-            || unlocked.spaces.collections.keys().any(|(s, _, _)| s == space)
+            || unlocked
+                .spaces
+                .collections
+                .keys()
+                .any(|(s, _, _)| s == space)
     };
 
     // Keys made for a space before the server serves a chain for it are dropped once it does.
@@ -2042,7 +2075,9 @@ fn keys_opened_outside_the_chain_do_not_outlive_a_chain_or_a_refusal() {
         Err(Error::Invalid)
     );
     assert_eq!(
-        session.seal_space_item(&space, &[3; 16], &[7; 16], "login", 1, b"{}").map(|_| ()),
+        session
+            .seal_space_item(&space, &[3; 16], &[7; 16], "login", 1, b"{}")
+            .map(|_| ()),
         Err(Error::Invalid)
     );
 }
@@ -2058,11 +2093,17 @@ fn a_local_value_opens_for_its_account_and_label_only() {
         b"{\"seq\":3}".to_vec()
     );
     // Not under another label, not with a byte changed, not by another account, not locked.
-    assert_eq!(session.open_local("anchor/two", &sealed), Err(Error::Invalid));
+    assert_eq!(
+        session.open_local("anchor/two", &sealed),
+        Err(Error::Invalid)
+    );
     let mut altered = sealed.clone();
     let last = altered.len() - 1;
     altered[last] ^= 1;
-    assert_eq!(session.open_local("anchor/one", &altered), Err(Error::Invalid));
+    assert_eq!(
+        session.open_local("anchor/one", &altered),
+        Err(Error::Invalid)
+    );
     assert_eq!(session.open_local("anchor/one", &[]), Err(Error::Invalid));
     let (other, _) = open_account([0xF4; 16]);
     assert_eq!(other.open_local("anchor/one", &sealed), Err(Error::Invalid));
@@ -2086,5 +2127,8 @@ fn a_space_whose_chain_was_refused_is_never_served_as_having_none() {
     assert_eq!(nothing["ok"], false);
     assert_eq!(nothing["reason"], "rolled back");
     // A space the page never had a chain for is still one with none.
-    assert_eq!(verdict_json(&mut session, &[0xAB; 16], &[])["chained"], false);
+    assert_eq!(
+        verdict_json(&mut session, &[0xAB; 16], &[])["chained"],
+        false
+    );
 }

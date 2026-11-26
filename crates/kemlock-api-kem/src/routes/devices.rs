@@ -19,8 +19,8 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use kemlock_app::devices::{
-    Answer, AnswerApproval, ApprovalRequestInput, DeviceSignIn, DevicesStore, KeyCopies,
-    EndSession, ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
+    Answer, AnswerApproval, ApprovalRequestInput, DeviceSignIn, DevicesStore, EndSession,
+    KeyCopies, ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
     UntrustDevice,
 };
 use kemlock_app::notices::Notices;

@@ -235,7 +235,10 @@ mod tests {
         for _ in 0..MAX_PER_MINUTE {
             assert!(limits.allow(noisy, 100));
         }
-        assert!(!limits.allow(noisy, 101), "the noisy host is over its limit");
+        assert!(
+            !limits.allow(noisy, 101),
+            "the noisy host is over its limit"
+        );
         // The admin who is pairing comes from elsewhere and is not affected.
         assert!(limits.allow(ip("198.51.100.4"), 101));
         // A minute later the noisy host may try again.

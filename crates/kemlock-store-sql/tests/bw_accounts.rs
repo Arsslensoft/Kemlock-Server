@@ -137,7 +137,10 @@ async fn an_api_key_is_kept_sealed_and_read_back_whole() {
     BwAccountRepo::insert(&store, &a).await.expect("insert");
 
     let rows = stored_rows(&store).await;
-    assert!(!rows.contains("PlainApiKey"), "the key is not at rest: {rows}");
+    assert!(
+        !rows.contains("PlainApiKey"),
+        "the key is not at rest: {rows}"
+    );
     assert!(rows.contains("sealed:"));
     let back = BwAccountRepo::get(&store, owner.id)
         .await
@@ -148,7 +151,9 @@ async fn an_api_key_is_kept_sealed_and_read_back_whole() {
     // A new key replaces it, sealed again.
     let mut rotated = back;
     rotated.api_key = Some("RotatedKey0123456789abcdefghijk".to_owned());
-    BwAccountRepo::update(&store, &rotated).await.expect("update");
+    BwAccountRepo::update(&store, &rotated)
+        .await
+        .expect("update");
     let rows = stored_rows(&store).await;
     assert!(!rows.contains("RotatedKey"), "{rows}");
     assert_eq!(
@@ -244,7 +249,10 @@ async fn the_start_up_pass_seals_every_plain_key_without_anyone_reading_it() {
     store.set_secret_seal(kemlock_crypto::seal::ServerSeal::new(&[9; 32]));
     assert_eq!(store.seal_stored_secrets().await.expect("pass"), 2);
     let rows = stored_rows(&store).await;
-    assert!(!rows.contains("PlainOne") && !rows.contains("PlainTwo"), "{rows}");
+    assert!(
+        !rows.contains("PlainOne") && !rows.contains("PlainTwo"),
+        "{rows}"
+    );
     // They still read back whole, and a second pass has nothing left.
     for (owner, a) in [(&ana, &with_key), (&bea, &also)] {
         let back = BwAccountRepo::get(&store, owner.id)

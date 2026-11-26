@@ -62,13 +62,7 @@ fn page(status: StatusCode, title: &str, text: &str) -> Response {
 }
 
 /// A page with `extra` (trusted markup) after the text, under the policy `csp`.
-fn html(
-    status: StatusCode,
-    title: &str,
-    text: &str,
-    extra: &str,
-    csp: &'static str,
-) -> Response {
+fn html(status: StatusCode, title: &str, text: &str, extra: &str, csp: &'static str) -> Response {
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\

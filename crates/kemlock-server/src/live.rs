@@ -838,8 +838,7 @@ mod tests {
         plain.overlay_store_settings(&store);
         assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
         // `kemlock.toml` says auto, and the store sees it though nothing was saved.
-        let from_file =
-            watching(&store, layered(&[], &[("federation_promotion", "auto")])).await;
+        let from_file = watching(&store, layered(&[], &[("federation_promotion", "auto")])).await;
         from_file.overlay_store_settings(&store);
         assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Auto));
         // The environment outranks the file.

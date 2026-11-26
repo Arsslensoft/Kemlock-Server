@@ -447,23 +447,21 @@ mod tests {
         replica.store.set_owned(theirs, false);
 
         // A paired server offers an id that is an account of this server, and one that isn't.
-        let about_ours = replica
-            .receive_offer(home, ours, home, 1, &[me], NOW)
-            .await;
+        let about_ours = replica.receive_offer(home, ours, home, 1, &[me], NOW).await;
         let about_theirs = replica
             .receive_offer(home, theirs, home, 1, &[me], NOW)
             .await;
         assert_eq!(about_ours, Ok(OfferState::Pending));
-        assert_eq!(about_ours, about_theirs, "it can't tell which id exists here");
+        assert_eq!(
+            about_ours, about_theirs,
+            "it can't tell which id exists here"
+        );
         // Only the one that doesn't live here waits for the admin; nothing is kept for the other.
         assert_eq!(replica.store.offer(ours).await, Ok(None));
         assert!(replica.store.offer(theirs).await.expect("read").is_some());
         // A vault held here under another home is answered the same way.
-        let mut held = VaultFederation::federated(
-            Owner::User(UserId::random()),
-            ServerId::random(),
-            vec![me],
-        );
+        let mut held =
+            VaultFederation::federated(Owner::User(UserId::random()), ServerId::random(), vec![me]);
         held.epoch = 3;
         replica.store.put_vault(&held).await.expect("put");
         let about_held = replica
@@ -557,5 +555,4 @@ mod tests {
             "once, not at every visit"
         );
     }
-
 }

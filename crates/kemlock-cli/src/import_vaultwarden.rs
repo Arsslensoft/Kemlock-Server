@@ -468,8 +468,8 @@ mod tests {
 
     #[test]
     fn adopting_existing_rows_is_an_explicit_flag() {
-        let parsed = parse_args(&args(&["--from", "/data", "--apply", "--adopt-existing"]))
-            .expect("parses");
+        let parsed =
+            parse_args(&args(&["--from", "/data", "--apply", "--adopt-existing"])).expect("parses");
         assert!(parsed.adopt_existing);
         let plain = parse_args(&args(&["--from", "/data", "--apply"])).expect("parses");
         assert!(!plain.adopt_existing);

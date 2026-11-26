@@ -24,7 +24,9 @@ impl SecretSeal for Seal {
     }
 
     fn open(&self, purpose: &str, sealed: &[u8]) -> Result<Zeroizing<Vec<u8>>, CryptoError> {
-        self.0.open(purpose, sealed).map_err(|_| CryptoError::Invalid)
+        self.0
+            .open(purpose, sealed)
+            .map_err(|_| CryptoError::Invalid)
     }
 }
 
@@ -62,7 +64,10 @@ async fn pass(store: &SqlStore) {
         .expect("put");
 
     let report = store.bind_secrets(&seal).await.expect("the pass runs");
-    assert!(report.sealed_again >= 1 && report.unreadable >= 1, "{report:?}");
+    assert!(
+        report.sealed_again >= 1 && report.unreadable >= 1,
+        "{report:?}"
+    );
 
     let rows = TwoFactorRepo::list(store, sam.id).await.expect("list");
     let totp = rows
@@ -76,14 +81,23 @@ async fn pass(store: &SqlStore) {
             .as_slice(),
         b"seed"
     );
-    assert!(seal.open("totp", &totp.sealed_secret).is_err(), "no longer the bare form");
+    assert!(
+        seal.open("totp", &totp.sealed_secret).is_err(),
+        "no longer the bare form"
+    );
     // Not another account's.
-    assert!(seal.open(&bound_purpose("totp", kim.id), &totp.sealed_secret).is_err());
+    assert!(
+        seal.open(&bound_purpose("totp", kim.id), &totp.sealed_secret)
+            .is_err()
+    );
     let email = rows
         .iter()
         .find(|r| r.method == TwoFactorMethod::Email)
         .expect("an email row");
-    assert_eq!(email.sealed_secret, foreign, "what opens neither way is left alone");
+    assert_eq!(
+        email.sealed_secret, foreign,
+        "what opens neither way is left alone"
+    );
     let kims = TwoFactorRepo::list(store, kim.id).await.expect("list");
     assert_eq!(kims[0].sealed_secret, bound, "already bound: untouched");
 

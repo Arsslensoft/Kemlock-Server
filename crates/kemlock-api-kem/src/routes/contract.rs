@@ -27,6 +27,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use kemlock_app::account_keys::AccountKeys;
 use kemlock_app::api_use::{DeviceEntry, ListDevices};
+use kemlock_app::b64url;
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::bitwarden::enrol::{
     BitwardenEnrol, EnrolFinishInput, EnrolStartInput, MAX_PASSWORD_HASH_LEN,
@@ -36,7 +37,6 @@ use kemlock_app::enrol_keys::{EnrolKeys, EnrolKeysInput};
 use kemlock_app::manifests::{ManifestError, ManifestRepo};
 use kemlock_app::ports::{TokenSigner, TwoFactorMethod};
 use kemlock_app::sign_in::credential_id;
-use kemlock_app::b64url;
 use kemlock_domain::manifest::SignedManifest;
 use kemlock_domain::unlock::KeyProtection;
 use kemlock_domain::{DeviceKind, Email, Owner};

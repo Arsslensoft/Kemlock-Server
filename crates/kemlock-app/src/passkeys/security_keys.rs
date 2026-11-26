@@ -192,9 +192,7 @@ async fn load_keys<F: TwoFactorRepo, S: SecretSeal>(
     let (created_at, keys) = match row {
         Some(row) => {
             let plain = open_bound(seal, PURPOSE_WEBAUTHN, user, &row.sealed_secret)
-                .map_err(|_| {
-                    AppError::Store("a stored security key list doesn't open".to_owned())
-                })?
+                .map_err(|_| AppError::Store("a stored security key list doesn't open".to_owned()))?
                 .value;
             let stored: StoredKeys = serde_json::from_slice(&plain).map_err(|_| {
                 AppError::Store("a stored security key list isn't valid".to_owned())

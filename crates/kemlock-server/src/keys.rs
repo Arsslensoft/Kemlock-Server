@@ -263,7 +263,13 @@ mod tests {
     #[test]
     fn a_data_folder_the_server_makes_is_private_and_one_that_exists_is_left_alone() {
         use std::os::unix::fs::PermissionsExt;
-        let mode = |path: &Path| std::fs::metadata(path).expect("a folder").permissions().mode() & 0o777;
+        let mode = |path: &Path| {
+            std::fs::metadata(path)
+                .expect("a folder")
+                .permissions()
+                .mode()
+                & 0o777
+        };
         let dir = TempDir::new("data-folder");
 
         let made = dir.0.join("made").join("data");

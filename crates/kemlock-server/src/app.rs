@@ -697,7 +697,10 @@ mod tests {
             let _span = PathOnlySpan.make_span(&request);
         });
         let log = String::from_utf8(captured.0.lock().expect("buffer").clone()).expect("utf-8");
-        assert!(log.contains("/notifications/hub"), "the path is logged: {log}");
+        assert!(
+            log.contains("/notifications/hub"),
+            "the path is logged: {log}"
+        );
         assert!(!log.contains("secret"), "the access token leaked: {log}");
         assert!(!log.contains("token"), "the query leaked: {log}");
         assert!(!log.contains("xyz"), "the query leaked: {log}");

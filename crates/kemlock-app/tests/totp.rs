@@ -2,8 +2,8 @@ mod fakes;
 
 use fakes::*;
 use kemlock_app::AppError;
-use kemlock_app::sealed::bound_purpose;
 use kemlock_app::ports::{SecretSeal, TwoFactorMethod};
+use kemlock_app::sealed::bound_purpose;
 use kemlock_domain::UserId;
 
 #[tokio::test]
@@ -49,7 +49,10 @@ async fn enrolling_stores_a_sealed_secret_that_is_not_yet_enabled() {
     assert!(
         world
             .seal
-            .open(&bound_purpose("totp", UserId::random()), &rows[0].sealed_secret)
+            .open(
+                &bound_purpose("totp", UserId::random()),
+                &rows[0].sealed_secret
+            )
             .is_err()
     );
 }
