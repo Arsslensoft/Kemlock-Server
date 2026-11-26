@@ -845,6 +845,7 @@ impl crate::extra::MemberStore for MemoryStore {
 
     async fn apply_member_account(
         &self,
+        _vault: Owner,
         home: ServerId,
         account: &crate::members::MemberAccount,
     ) -> Result<crate::extra::MemberApply, StoreError> {

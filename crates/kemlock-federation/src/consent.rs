@@ -230,7 +230,7 @@ impl<S: FedStore> Replica<S> {
         }
         match self
             .store
-            .apply_member_account(record.signer, &account)
+            .apply_member_account(record.vault, record.signer, &account)
             .await
         {
             Ok(MemberApply::Refused) => tracing::warn!(

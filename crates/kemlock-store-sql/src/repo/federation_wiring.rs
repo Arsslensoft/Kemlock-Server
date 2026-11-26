@@ -27,8 +27,10 @@ use kemlock_federation::extra::{
     Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply, MemberStore,
     PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
 };
+use kemlock_federation::home::Policy;
 use kemlock_federation::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use kemlock_federation::members::{MemberAccount, MemberDevice};
+use kemlock_federation::ports::VaultRepo;
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
@@ -356,6 +358,7 @@ impl MemberStore for SqlStore {
 
     async fn apply_member_account(
         &self,
+        vault: Owner,
         home: ServerId,
         account: &MemberAccount,
     ) -> Result<MemberApply, StoreError> {
@@ -369,10 +372,22 @@ impl MemberStore for SqlStore {
             // An account of this server: a copy never replaces it.
             return Ok(MemberApply::Refused);
         }
-        if copy.is_some_and(|c| c.home != home.0) {
-            // A copy follows the server it came from, and no other: the home of one vault must
-            // not take over the copy of an account that belongs to another vault.
-            return Ok(MemberApply::Refused);
+        match vault {
+            // The home of the account's own personal vault is its authority, and replaces a copy
+            // that came in some other way (through a space).
+            Owner::User(_) => {}
+            Owner::Space(_) => {
+                // A space's home may not speak for an account whose personal vault this server
+                // federates: that vault's home does. Where it doesn't, a copy follows the
+                // server it came from, and no other: the home of one vault must not take over
+                // the copy of an account that belongs to another.
+                let personal = VaultRepo::get_vault(self, Owner::User(account.id)).await?;
+                if personal.is_some_and(|v| v.policy == Policy::Federated)
+                    || copy.is_some_and(|c| c.home != home.0)
+                {
+                    return Ok(MemberApply::Refused);
+                }
+            }
         }
         let user = user_of(account, existing.as_ref())?;
         if let Some(other) = UserRepo::by_email(self, &user.email).await?

@@ -199,7 +199,7 @@ async fn a_replica_deletes_its_copy_of_an_erased_vault_and_the_copied_account() 
         }],
     };
     assert_eq!(
-        store.apply_member_account(home, &copy).await,
+        store.apply_member_account(vault, home, &copy).await,
         Ok(MemberApply::Applied)
     );
     let first = ItemId::random();
@@ -393,11 +393,12 @@ async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
     let store = memory().await;
     let first_home = ServerId::random();
     let other_home = ServerId::random();
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
     let id = UserId::random();
     let email = unique_email("ada");
     let mut copy = copy_of(id, &email);
     assert_eq!(
-        store.apply_member_account(first_home, &copy).await,
+        store.apply_member_account(space, first_home, &copy).await,
         Ok(MemberApply::Applied)
     );
 
@@ -412,7 +413,7 @@ async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
         created_at: MADE_AT.unix_timestamp(),
     }];
     assert_eq!(
-        store.apply_member_account(other_home, &takeover).await,
+        store.apply_member_account(space, other_home, &takeover).await,
         Ok(MemberApply::Refused)
     );
     let kept = UserRepo::by_id(&store, id)
@@ -430,7 +431,7 @@ async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
     // The home it came from still updates it.
     copy.wrapped_root_key = vec![0x11; 100];
     assert_eq!(
-        store.apply_member_account(first_home, &copy).await,
+        store.apply_member_account(space, first_home, &copy).await,
         Ok(MemberApply::Applied)
     );
 }
@@ -462,7 +463,7 @@ async fn a_copied_account_cannot_take_a_device_of_another_account() {
         created_at: MADE_AT.unix_timestamp(),
     }];
     store
-        .apply_member_account(home, &copy)
+        .apply_member_account(Owner::Space(kemlock_domain::SpaceId::random()), home, &copy)
         .await
         .expect("the account itself is taken");
 
@@ -477,5 +478,69 @@ async fn a_copied_account_cannot_take_a_device_of_another_account() {
             .await
             .expect("devices")
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn the_home_of_a_personal_vault_speaks_for_its_account_not_the_home_of_a_space() {
+    let store = memory().await;
+    let me = ServerInfo::server_id(&store);
+    let (space_home, personal_home) = (ServerId::random(), ServerId::random());
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let victim = UserId::random();
+    let personal = Owner::User(victim);
+    let email = unique_email("victim");
+
+    // Before this server federates the victim's vault, a space home may create the copy.
+    let mut forged = copy_of(victim, &email);
+    forged.public_bundle = vec![0xAA; 50];
+    assert_eq!(
+        store.apply_member_account(space, space_home, &forged).await,
+        Ok(MemberApply::Applied)
+    );
+
+    // Then the victim's own home offers the vault and this server accepts it. From now on the
+    // space home can't touch the copy, and the personal home replaces what the space home made.
+    store
+        .put_vault(&VaultFederation::federated(personal, personal_home, vec![me]))
+        .await
+        .expect("settings");
+    let mut hostile = forged.clone();
+    hostile.wrapped_root_key = vec![0xEE; 90];
+    assert_eq!(
+        store.apply_member_account(space, space_home, &hostile).await,
+        Ok(MemberApply::Refused)
+    );
+    let real = copy_of(victim, &email);
+    assert_eq!(
+        store.apply_member_account(personal, personal_home, &real).await,
+        Ok(MemberApply::Applied)
+    );
+    let kept = UserRepo::by_id(&store, victim)
+        .await
+        .expect("a read")
+        .expect("the copy");
+    assert_eq!(kept.public_bundle, real.public_bundle);
+    // And it is the personal home's now: the space home is still refused.
+    assert_eq!(
+        store.apply_member_account(space, space_home, &forged).await,
+        Ok(MemberApply::Refused)
+    );
+
+    // A space home can't create a copy of an account whose personal vault is federated here.
+    let other = UserId::random();
+    store
+        .put_vault(&VaultFederation::federated(
+            Owner::User(other),
+            personal_home,
+            vec![me],
+        ))
+        .await
+        .expect("settings");
+    assert_eq!(
+        store
+            .apply_member_account(space, space_home, &copy_of(other, &unique_email("o")))
+            .await,
+        Ok(MemberApply::Refused)
     );
 }

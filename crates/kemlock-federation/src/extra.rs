@@ -220,9 +220,13 @@ pub trait MemberStore: Send + Sync {
         ready(Ok(None))
     }
 
-    /// Stores a copy of an account made at `home`, replacing an earlier copy.
+    /// Stores a copy of an account, published by `home` as the home of `vault`, replacing an
+    /// earlier copy. The home of the account's own personal vault may replace a copy that came
+    /// in through a space; the home of a space may not (and creates one only while this server
+    /// doesn't federate that personal vault at all).
     fn apply_member_account(
         &self,
+        _vault: Owner,
         _home: ServerId,
         _account: &MemberAccount,
     ) -> impl Future<Output = R<MemberApply>> + Send {
