@@ -10,7 +10,11 @@ early_access: false
 reviews:
   # The stricter profile: it raises more, which suits a password manager's server.
   profile: assertive
-  request_changes_workflow: false
+  # It requests changes while a finding is open and approves once they are settled: its approval is
+  # the one the main ruleset requires. A pull request's author cannot have it approve by a command.
+  auto_approvals:
+    enabled: true
+    allow_author_approval: false
   high_level_summary: true
   poem: false
   review_status: true
