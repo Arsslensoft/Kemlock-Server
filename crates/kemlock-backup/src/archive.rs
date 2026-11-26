@@ -23,7 +23,7 @@ use crate::manifest::{
 use age::x25519::{Identity, Recipient};
 use kemlock_store_sql::Snapshot;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use time::OffsetDateTime;
@@ -357,9 +357,61 @@ fn safe_relative(path: &Path) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// Decrypts, decompresses and unpacks `archive` into `dest`. Only plain files go out, and only to
-/// paths inside `dest`; anything else in the archive stops the restore.
+/// How much an archive may unpack to. Backups are age-encrypted to a public key, so anyone who can
+/// write the backup destination can make an archive; without a limit a small one (zstd squeezes
+/// zeros a thousandfold) fills the disk of whoever restores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnpackLimits {
+    /// The most one file may hold.
+    pub max_file_bytes: u64,
+    /// The most all the files together may hold.
+    pub max_total_bytes: u64,
+    /// The most files and folders the archive may have.
+    pub max_entries: u64,
+}
+
+impl UnpackLimits {
+    /// The most a single file of a real backup holds: an attachment.
+    pub const MAX_FILE_BYTES: u64 = 16 << 30;
+    /// The most a restore unpacks whatever the archive's size: 4 TiB.
+    pub const MAX_TOTAL_BYTES: u64 = 4 << 40;
+    /// What a small archive may still unpack to.
+    pub const MIN_TOTAL_BYTES: u64 = 1 << 30;
+    /// How many times its own size an archive may unpack to. Rows and attachments are already
+    /// compressed or compress a few times over; a ratio beyond this is a bomb.
+    pub const RATIO: u64 = 200;
+    /// The most entries an archive may have.
+    pub const MAX_ENTRIES: u64 = 2_000_000;
+
+    /// The limits for an archive of `archive_bytes`: 200 times its size, between 1 GiB and 4 TiB.
+    pub fn for_archive(archive_bytes: u64) -> Self {
+        UnpackLimits {
+            max_file_bytes: Self::MAX_FILE_BYTES,
+            max_total_bytes: archive_bytes
+                .saturating_mul(Self::RATIO)
+                .clamp(Self::MIN_TOTAL_BYTES, Self::MAX_TOTAL_BYTES),
+            max_entries: Self::MAX_ENTRIES,
+        }
+    }
+}
+
+/// Decrypts, decompresses and unpacks `archive` into `dest`, within [`UnpackLimits::for_archive`].
+/// Only plain files go out, and only to paths inside `dest`; anything else in the archive stops
+/// the restore.
 pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<(), BackupError> {
+    let size = std::fs::metadata(archive)
+        .map_err(|e| BackupError::io(format!("can't read {}", archive.display()), e))?
+        .len();
+    read_archive_within(archive, identity, dest, &UnpackLimits::for_archive(size))
+}
+
+/// [`read_archive`] with the limits given.
+pub fn read_archive_within(
+    archive: &Path,
+    identity: &Identity,
+    dest: &Path,
+    limits: &UnpackLimits,
+) -> Result<(), BackupError> {
     let file = File::open(archive)
         .map_err(|e| BackupError::io(format!("can't read {}", archive.display()), e))?;
     let decryptor = age::Decryptor::new(BufReader::new(file)).map_err(age_error)?;
@@ -372,13 +424,23 @@ pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<
     let entries = tar
         .entries()
         .map_err(|e| BackupError::io("can't read the archive", e))?;
+    let mut count = 0u64;
+    let mut total = 0u64;
     for entry in entries {
         let mut entry = entry.map_err(|e| BackupError::io("can't read the archive", e))?;
+        count += 1;
+        if count > limits.max_entries {
+            return Err(BackupError::Verify(format!(
+                "the archive has more than {} files",
+                limits.max_entries
+            )));
+        }
         let path = entry
             .path()
             .map_err(|e| BackupError::io("can't read an entry's name", e))?
             .into_owned();
-        if !entry.header().entry_type().is_file() {
+        // Only plain files: a sparse entry would read back far more than it stores.
+        if entry.header().entry_type() != tar::EntryType::Regular {
             return Err(BackupError::Verify(format!(
                 "{} is not a plain file",
                 path.display()
@@ -394,8 +456,28 @@ pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<
         }
         let mut out = create_private_file(&target)
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
-        std::io::copy(&mut entry, &mut out)
+        // What is copied is counted, not what the header claims, and the copy stops one byte past
+        // the room left, so an entry can't write more than the limits allow.
+        let room = limits
+            .max_file_bytes
+            .min(limits.max_total_bytes.saturating_sub(total));
+        let written = std::io::copy(&mut (&mut entry).take(room.saturating_add(1)), &mut out)
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
+        if written > room {
+            return Err(BackupError::Verify(if written > limits.max_file_bytes {
+                format!(
+                    "{} holds more than {} bytes, the most one file of an archive may",
+                    path.display(),
+                    limits.max_file_bytes
+                )
+            } else {
+                format!(
+                    "the archive unpacks to more than {} bytes, the most it may",
+                    limits.max_total_bytes
+                )
+            }));
+        }
+        total += written;
         out.flush()
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
     }
@@ -608,6 +690,87 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "{path} is {mode:o}");
         }
+    }
+
+    #[test]
+    fn an_archive_that_unpacks_to_more_than_the_limits_allow_is_refused() {
+        let f = fixture();
+        // 100 kB of zeros: tiny in the archive, big on disk.
+        std::fs::write(f.data.join("big.sealed"), vec![0u8; 100_000]).expect("a big file");
+        let identity = Identity::generate();
+        let skip = skip_list(&f);
+        let out = f._root.path().join("out.age");
+        write_archive(&spec(&f, &identity.to_public(), &skip), &out).expect("written");
+        let roomy = UnpackLimits {
+            max_file_bytes: 1 << 20,
+            max_total_bytes: 1 << 30,
+            max_entries: 1000,
+        };
+        let unpack = |name: &str, limits: &UnpackLimits| {
+            read_archive_within(&out, &identity, &f._root.path().join(name), limits)
+        };
+        unpack("roomy", &roomy).expect("within the limits");
+        assert_eq!(
+            std::fs::metadata(f._root.path().join("roomy/data/big.sealed"))
+                .expect("a file")
+                .len(),
+            100_000
+        );
+
+        let err = unpack(
+            "one-file",
+            &UnpackLimits {
+                max_file_bytes: 50_000,
+                ..roomy
+            },
+        )
+        .expect_err("a file over the limit");
+        assert!(
+            matches!(&err, BackupError::Verify(m) if m.contains("one file")),
+            "{err}"
+        );
+        // Nothing past the limit was written.
+        let written = std::fs::metadata(f._root.path().join("one-file/data/big.sealed"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        assert!(written <= 50_001, "{written}");
+
+        let err = unpack(
+            "total",
+            &UnpackLimits {
+                max_total_bytes: 60_000,
+                ..roomy
+            },
+        )
+        .expect_err("a total over the limit");
+        assert!(
+            matches!(&err, BackupError::Verify(m) if m.contains("unpacks to more than")),
+            "{err}"
+        );
+
+        let err = unpack(
+            "entries",
+            &UnpackLimits {
+                max_entries: 2,
+                ..roomy
+            },
+        )
+        .expect_err("too many files");
+        assert!(
+            matches!(&err, BackupError::Verify(m) if m.contains("more than 2 files")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_unpack_limit_follows_the_archive_but_stays_between_its_bounds() {
+        let small = UnpackLimits::for_archive(10);
+        assert_eq!(small.max_total_bytes, UnpackLimits::MIN_TOTAL_BYTES);
+        let middle = UnpackLimits::for_archive(10 << 30);
+        assert_eq!(middle.max_total_bytes, (10 << 30) * UnpackLimits::RATIO);
+        let huge = UnpackLimits::for_archive(u64::MAX);
+        assert_eq!(huge.max_total_bytes, UnpackLimits::MAX_TOTAL_BYTES);
+        assert_eq!(huge.max_file_bytes, UnpackLimits::MAX_FILE_BYTES);
     }
 
     #[test]

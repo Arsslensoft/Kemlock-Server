@@ -24,7 +24,7 @@ pub use age::x25519::Identity as AgeIdentity;
 pub use archive::{
     ArchiveSpec, SERVER_KEY_FILE, create_private_file, is_never_restored, is_restorable_config_name,
     is_restorable_data_file, parse_identity, parse_recipient,
-    read_archive, verify_unpacked, write_archive,
+    UnpackLimits, read_archive, read_archive_within, verify_unpacked, write_archive,
 };
 pub use destination::{ArchiveInfo, Destination, DestinationConfig, S3Destination};
 pub use error::BackupError;
