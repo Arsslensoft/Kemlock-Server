@@ -105,6 +105,45 @@ describe('the verdict on a write signature', () => {
   });
 });
 
+describe('what a sync looks up', () => {
+  const signedBy = async () => {
+    resetFakeCrypto();
+    await crypto.unlock(MEMBER, utf8(`wrapped:${MEMBER}`), new Uint8Array(), new Uint8Array());
+    const signed = await signedItem(crypto, item(SPACE));
+    resetFakeCrypto();
+    await crypto.unlock(ACCOUNT, utf8(`wrapped:${ACCOUNT}`), new Uint8Array(), new Uint8Array());
+    return signed;
+  };
+
+  it('asks for a space's writer once for all the items of a sync, and again for the next', async () => {
+    const signed = await signedBy();
+    const check = checker();
+    check.beginSync();
+    spaceSigner.mockClear();
+    for (let n = 0; n < 5; n += 1) expect(await check.verdict(signed)).toBe('signed');
+    expect(spaceSigner).toHaveBeenCalledTimes(1);
+    check.beginSync();
+    expect(await check.verdict(signed)).toBe('signed');
+    expect(spaceSigner).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not keep a failure, and forgets an answer after a while without a sync', async () => {
+    const signed = await signedBy();
+    let time = 0;
+    const check = createWriteChecker({ crypto, accountId: () => ACCOUNT, spaceSigner, now: () => time });
+    spaceSigner.mockClear();
+    spaceSigner.mockRejectedValueOnce(new Error('offline'));
+    expect(await check.verdict(signed)).toBe('unknown');
+    expect(await check.verdict(signed)).toBe('signed');
+    expect(spaceSigner).toHaveBeenCalledTimes(2);
+    expect(await check.verdict(signed)).toBe('signed');
+    expect(spaceSigner).toHaveBeenCalledTimes(2);
+    time = 60_000;
+    expect(await check.verdict(signed)).toBe('signed');
+    expect(spaceSigner).toHaveBeenCalledTimes(3);
+  });
+});
+
 describe('a write signed under a key version the writer has replaced', () => {
   const served = (bundle: Uint8Array) => ({
     keyVersion: 1,

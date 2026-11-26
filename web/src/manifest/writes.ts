@@ -38,17 +38,54 @@ export interface WriteCheckerDeps {
   accountId: () => string | null;
   /** The bundle of a member the space vouches for, or null (see `SpaceSigner`). */
   spaceSigner: SpaceSigner;
+  /** The time in ms; for tests. */
+  now?: () => number;
 }
 
 export interface WriteChecker {
+  /**
+   * Starts a sync: what was looked up for the one before (a space's member list, a writer's past
+   * bundle) is asked again. Within a sync each is asked once, however many items name it.
+   */
+  beginSync(): void;
   /** The verdict for an item as served, or `undefined` for one that is not a `kem1` item. */
   verdict(dto: ItemDto): Promise<WriteVerdict | undefined>;
 }
 
+/** How long what was looked up is kept when no sync says otherwise. */
+const MEMO_MS = 30_000;
+
 export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
   /** The versions pinned this session: once each is enough. */
   const pinned = new Set<string>();
+  // One sync names the same space and writer for many items, and each lookup asks the server
+  // (the member list and the space, a past bundle), so the answers are kept for the sync. A failure
+  // is not kept.
+  const now = deps.now ?? Date.now;
+  let memo = new Map<string, Promise<Uint8Array | null>>();
+  let since = now();
+  const memoized = (key: string, ask: () => Promise<Uint8Array | null>): Promise<Uint8Array | null> => {
+    if (now() - since > MEMO_MS) {
+      memo = new Map();
+      since = now();
+    }
+    let answer = memo.get(key);
+    if (!answer) {
+      answer = ask();
+      memo.set(key, answer);
+      answer.catch(() => memo.delete(key));
+    }
+    return answer;
+  };
+  const spaceBundle = (space: string, writer: string) =>
+    memoized(`space/${space}/${writer}`, () => deps.spaceSigner(space, writer, { former: true }));
+  const pastBundle = (writer: string, version: number) =>
+    memoized(`past/${writer}/${version}`, async () => (await deps.history?.past(writer, version)) ?? null);
   return {
+    beginSync() {
+      memo = new Map();
+      since = now();
+    },
     async verdict(dto) {
       if (dto.format !== 'kem1') return undefined;
       const { writer, writerKeyVersion, writeSignature } = dto;
@@ -66,12 +103,12 @@ export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
             await deps.history?.pinOwn(current, pinned);
             return (await deps.crypto.itemWriteVerifyOwn(fields, writeSignature)) ? 'signed' : 'invalid';
           }
-          const past = await deps.history?.past(writer, writerKeyVersion);
+          const past = await pastBundle(writer, writerKeyVersion);
           if (!past) return 'unknown';
           return (await deps.crypto.itemWriteVerify(past, fields, writeSignature)) ? 'signed' : 'invalid';
         }
         const space = dto.owner.slice('space:'.length);
-        const bundle = await deps.spaceSigner(space, writer, { former: true });
+        const bundle = await spaceBundle(space, writer);
         const parsed = bundle ? parseBundle(bundle) : null;
         if (!bundle || !parsed) return 'unknown';
         if (writerKeyVersion > parsed.keyVersion) return 'unknown';
@@ -79,7 +116,7 @@ export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
         if (writerKeyVersion === parsed.keyVersion) {
           await deps.history?.pin(bundle, pinned);
         } else {
-          const past = await deps.history?.past(writer, writerKeyVersion);
+          const past = await pastBundle(writer, writerKeyVersion);
           if (!past) return 'unknown';
           signer = past;
         }

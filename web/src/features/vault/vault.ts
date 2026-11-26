@@ -120,7 +120,7 @@ export interface VaultDeps {
    * Checks the write signature of an item the server serves (src/manifest/writes.ts). Without it
    * nothing is checked and every revision is taken in as before.
    */
-  writes?: Pick<WriteChecker, 'verdict'>;
+  writes?: Pick<WriteChecker, 'verdict' | 'beginSync'>;
   /**
    * Told of a revision that was served and not taken in because of its signature: `invalid` (one
    * came and fails), or `unsigned` and `unknown` for an item of an owner whose writes are signed.
@@ -335,6 +335,7 @@ async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<
 
 /** Pulls every change since the stored cursor (everything, the first time) into the store. */
 export async function syncVault(deps: VaultDeps, store: VaultStore): Promise<VaultItem[]> {
+  deps.writes?.beginSync();
   let since = store.cursor;
   for (;;) {
     let result: SyncResult;
