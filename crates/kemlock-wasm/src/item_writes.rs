@@ -85,12 +85,7 @@ impl WriteFields {
         })
     }
 
-    fn statement<'a>(
-        &'a self,
-        parts: &Parts,
-        writer: [u8; 16],
-        writer_key_version: u32,
-    ) -> Statement<'a> {
+    fn statement(&self, parts: &Parts, writer: [u8; 16], writer_key_version: u32) -> Statement<'_> {
         Statement {
             owner: parts.owner,
             item_id: parts.id,
