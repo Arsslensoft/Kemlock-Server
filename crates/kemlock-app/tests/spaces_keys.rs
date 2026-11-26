@@ -1,4 +1,10 @@
-//! Spaces: collections, groups, grants, item writes, the key replacement after offboarding, and
+//! Spaces: collecti    case("a space key not signed by the sealer", &|i| {
+        i.sealed_space_keys[0].signature = vec![0x66; kemlock_domain::spaces::CONFIRMATION_SIGNATURE_LEN]
+    });
+    case("a collection key with no signature", &|i| {
+        i.collections[0].keys[0].signature = Vec::new()
+    });
+ons, groups, grants, item writes, the key replacement after offboarding, and
 //! the owners a device syncs.
 
 mod fakes;
@@ -18,7 +24,7 @@ use kemlock_domain::spaces::{
 use kemlock_domain::{
     DedupTag, Item, ItemError, ItemId, Owner, Revision, SpaceId, TagSet, UserId, VersionVector,
 };
-use space_fakes::{SpaceWorld, key_for, name, sealed_key};
+use space_fakes::{SpaceWorld, key_for, name, sealed_key, signature, space_key_for};
 
 /// Sam owns a space; Ana and Lee are members with Edit on its first collection.
 struct Ctx {
@@ -941,7 +947,7 @@ impl AfterRevoke {
         ReplacementInput {
             space_key_version: 2,
             space_name: Some(name(40)),
-            sealed_space_keys: vec![(c.sam, sealed_key(20)), (c.ana, sealed_key(21))],
+            sealed_space_keys: vec![space_key_for(c.sam, 20), space_key_for(c.ana, 21)],
             collection_names: vec![(c.everyone, name(41)), (self.private, name(42))],
             group_names: Vec::new(),
             collections: vec![CollectionRekey {
@@ -1013,9 +1019,16 @@ async fn a_replacement_lands_new_keys_names_and_items_as_one_transaction() {
     // The members who stay hold the new space key and collection key; Lee holds nothing.
     let ana = c.w.spaces.member(c.space, c.ana).expect("Ana");
     assert_eq!(ana.sealed_space_key, Some(sealed_key(21)));
+    // Every new box carries the signature of the owner who replaced the keys.
+    let signed_by_sam = |by: Option<&kemlock_domain::spaces::KeyBoxSignature>| {
+        by.map(|s| (s.by, s.key_version, s.signature.clone()))
+    };
+    let expected = Some((c.sam, 1, space_fakes::signature()));
+    assert_eq!(signed_by_sam(ana.sealed_by.as_ref()), expected);
     assert_eq!(ana.key_version, Some(2));
     let copy = c.w.spaces.copy(c.everyone, c.ana).expect("Ana's new copy");
     assert_eq!((copy.key_version, copy.sealed), (2, sealed_key(31)));
+    assert_eq!(signed_by_sam(copy.sealed_by.as_ref()), expected);
     let lee = c.w.spaces.member(c.space, c.lee).expect("Lee's row");
     assert_eq!(
         (lee.state, lee.sealed_space_key),
@@ -1079,10 +1092,10 @@ async fn an_incomplete_replacement_changes_nothing() {
     };
     case("a skipped key version", &|i| i.space_key_version = 3);
     case("no key for a member who stays", &|i| {
-        i.sealed_space_keys.retain(|(u, _)| *u != c.ana)
+        i.sealed_space_keys.retain(|k| k.user != c.ana)
     });
     case("a key for the revoked member", &|i| {
-        i.sealed_space_keys.push((c.lee, sealed_key(22)))
+        i.sealed_space_keys.push(space_key_for(c.lee, 22))
     });
     case("a name left under the old key", &|i| {
         i.collection_names.pop();
@@ -1380,10 +1393,12 @@ async fn a_collection_or_group_id_another_space_holds_is_taken() {
                 id: SpaceId::random(),
                 name: name(1),
                 sealed_space_key: sealed_key(2),
+                space_key_signature: signature(),
                 collection: NewCollection {
                     id: everyone,
                     name: name(3),
                     sealed_key: sealed_key(4),
+                    key_signature: signature(),
                 },
             },
         )

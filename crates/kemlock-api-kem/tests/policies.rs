@@ -138,6 +138,38 @@ fn sealed(fill: u8) -> String {
     b64(&sealed_key(fill))
 }
 
+/// `by`'s signature (base64url) over the box `sealed(fill)` of a space key (`collection` `None`) or
+/// a collection key (docs/crypto.md, "Signed key boxes"), sealed to `recipient` at key version 1.
+fn key_sig(by: &Person, space: Uuid, collection: Option<Uuid>, recipient: UserId, fill: u8) -> String {
+    use kemlock_crypto::key_box::{self, Kind};
+    let boxed = sealed_key(fill);
+    let (kind, aad) = match collection {
+        None => (
+            Kind::Space,
+            key_box::space_aad(space.as_bytes(), 1, recipient.as_bytes()),
+        ),
+        Some(collection) => (
+            Kind::Collection,
+            key_box::collection_aad(
+                space.as_bytes(),
+                collection.as_bytes(),
+                1,
+                recipient.as_bytes(),
+            ),
+        ),
+    };
+    let signature = key_box::Statement {
+        kind,
+        aad: &aad,
+        sealed_box: &boxed,
+        sealer: *by.id.as_bytes(),
+        sealer_key_version: 1,
+    }
+    .sign(&by.signing)
+    .expect("the box signs");
+    b64(&signature)
+}
+
 async fn make_space(owner: &Person) -> (Uuid, Uuid) {
     let space = Uuid::new_v4();
     let collection = Uuid::new_v4();
@@ -149,10 +181,12 @@ async fn make_space(owner: &Person) -> (Uuid, Uuid) {
                 "id": space.to_string(),
                 "name": b64(&name(1)),
                 "sealedSpaceKey": sealed(2),
+                "sealedSpaceKeySignature": key_sig(owner, space, None, owner.id, 2),
                 "collection": {
                     "id": collection.to_string(),
                     "name": b64(&name(3)),
                     "sealedKey": sealed(4),
+                    "sealedKeySignature": key_sig(owner, space, Some(collection), owner.id, 4),
                 },
             })),
         )
@@ -208,6 +242,7 @@ async fn confirm(owner: &Person, member: &Person, space: Uuid) -> Reply {
                 "statement": b64(&statement.to_bytes()),
                 "signature": b64(&signature),
                 "sealedSpaceKey": sealed(5),
+                "sealedSpaceKeySignature": key_sig(owner, space, None, member.id, 5),
                 "collectionKeys": [],
             })),
         )

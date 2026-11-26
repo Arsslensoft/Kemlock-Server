@@ -32,12 +32,13 @@ use kemlock_app::spaces::{
     CreateSpace, CreateSpaceInput, DeleteCollection, DeleteGroup, EditCollection,
     EditCollectionInput, EditGroup, EditGroupInput, GetSpace, GrantAccess, InviteInput,
     InviteMember, ListMembers, ListSpaces, LookupAccount, NewCollection, Offboard, ReplaceKeys,
-    ReplacementInput, ResendInvitation, RevokeGrant, SealedCollectionKey, SpaceRepo, SpacesError,
+    KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, ReplacementInput, ResendInvitation, RevokeGrant,
+    SealedCollectionKey, SealedSpaceKey, SpaceRepo, SpacesError,
 };
 use kemlock_app::{Actor, AppError, b64url};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, CustomPermissions, Grantee,
-    Group, GroupId, KeyCopy, Member, Space, SpaceError, SpaceRole,
+    Group, GroupId, KeyBoxSignature, KeyCopy, Member, Space, SpaceError, SpaceRole,
 };
 use kemlock_domain::{ItemWrite, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,65 @@ impl BundleFingerprints for CryptoFingerprints {
         }
         .verify(&confirmer.sig1_public, statement, signature)
         .is_ok()
+    }
+}
+
+/// Checks a key box signature against the sealing account's registered bundle: the statement is
+/// rebuilt from the route's facts and the bundle's own key version, never from the request.
+#[derive(Clone, Debug)]
+struct StoreKeyBoxes<S> {
+    users: S,
+}
+
+impl<S: UserRepo> KeyBoxVerifier for StoreKeyBoxes<S> {
+    async fn verify(&self, facts: &KeyBoxFacts<'_>, signature: &[u8]) -> Result<u32, SpacesError> {
+        let refused = || {
+            SpacesError::Rule(SpaceError::Invalid(
+                "the key's signature isn't the sealing member's over this box",
+            ))
+        };
+        let sealer = self
+            .users
+            .by_id(facts.sealer)
+            .await?
+            .ok_or(SpacesError::NotFound)?;
+        let bundle = kemlock_crypto::bundle::Bundle::from_bytes(&sealer.public_bundle)
+            .map_err(|_| refused())?;
+        if sealer.key_version == 0
+            || bundle.account_id != *facts.sealer.as_bytes()
+            || bundle.key_version != sealer.key_version
+        {
+            return Err(refused());
+        }
+        let (kind, aad) = match facts.key {
+            KeyBoxKey::Space => (
+                kemlock_crypto::key_box::Kind::Space,
+                kemlock_crypto::key_box::space_aad(
+                    facts.space.as_bytes(),
+                    facts.key_version,
+                    facts.recipient.as_bytes(),
+                ),
+            ),
+            KeyBoxKey::Collection(collection) => (
+                kemlock_crypto::key_box::Kind::Collection,
+                kemlock_crypto::key_box::collection_aad(
+                    facts.space.as_bytes(),
+                    collection.as_bytes(),
+                    facts.key_version,
+                    facts.recipient.as_bytes(),
+                ),
+            ),
+        };
+        kemlock_crypto::key_box::Statement {
+            kind,
+            aad: &aad,
+            sealed_box: facts.sealed_box,
+            sealer: *facts.sealer.as_bytes(),
+            sealer_key_version: bundle.key_version,
+        }
+        .verify(&bundle.sig1_public, signature)
+        .map_err(|_| refused())?;
+        Ok(bundle.key_version)
     }
 }
 
@@ -253,6 +313,9 @@ pub(crate) struct UserKeyDto {
     user: Uuid,
     /// The key sealed to the member (a `kx1` sealed box), base64url.
     sealed: String,
+    /// The sealer's `sig1` signature over the box (context `"key-box"`), base64url; the sealer is the
+    /// signed-in account (docs/crypto.md, "Signed key boxes").
+    signature: String,
 }
 
 /// `{ collection, user, sealed }`: a collection key sealed to one member.
@@ -262,6 +325,7 @@ pub(crate) struct CollectionKeyDto {
     collection: Uuid,
     user: Uuid,
     sealed: String,
+    signature: String,
 }
 
 /// `{ collection, sealed }`: a collection key, in a confirmation (the member is the path's).
@@ -270,6 +334,7 @@ pub(crate) struct CollectionKeyDto {
 pub(crate) struct OwnKeyDto {
     collection: Uuid,
     sealed: String,
+    signature: String,
 }
 
 fn user_keys(
@@ -282,6 +347,7 @@ fn user_keys(
                 collection,
                 user: UserId(k.user),
                 sealed: decode("sealed", &k.sealed)?,
+                signature: decode("signature", &k.signature)?,
             })
         })
         .collect()
@@ -294,6 +360,7 @@ fn collection_keys(keys: Vec<CollectionKeyDto>) -> Result<Vec<SealedCollectionKe
                 collection: CollectionId(k.collection),
                 user: UserId(k.user),
                 sealed: decode("sealed", &k.sealed)?,
+                signature: decode("signature", &k.signature)?,
             })
         })
         .collect()
@@ -323,6 +390,25 @@ impl SpaceDto {
     }
 }
 
+/// Who sealed a key copy and their signature over the box (docs/crypto.md, "Signed key boxes").
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SealedByDto {
+    account: Uuid,
+    key_version: u32,
+    signature: String,
+}
+
+impl SealedByDto {
+    fn of(signature: &KeyBoxSignature) -> Self {
+        SealedByDto {
+            account: signature.by.0,
+            key_version: signature.key_version,
+            signature: b64url::encode(&signature.signature),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ConfirmationDto {
@@ -347,6 +433,9 @@ pub(crate) struct MemberDto {
     accepted_at: Option<i64>,
     /// The space key sealed to this member, base64url. Present only while confirmed.
     sealed_space_key: Option<String>,
+    /// Who sealed `sealedSpaceKey` and their signature over it; null for a copy made before keys were
+    /// signed and for a space with a chain.
+    sealed_by: Option<SealedByDto>,
     key_version: Option<u32>,
     confirmation: Option<ConfirmationDto>,
     revoked_at: Option<i64>,
@@ -363,6 +452,7 @@ impl MemberDto {
             invited_at: secs(member.invited_at),
             accepted_at: member.accepted_at.map(secs),
             sealed_space_key: member.sealed_space_key.as_deref().map(b64url::encode),
+            sealed_by: member.sealed_by.as_ref().map(SealedByDto::of),
             key_version: member.key_version,
             confirmation: member.confirmation.as_ref().map(|c| ConfirmationDto {
                 by: c.by.0,
@@ -460,6 +550,8 @@ pub(crate) struct KeyCopyDto {
     collection: Uuid,
     key_version: u32,
     sealed: String,
+    /// Who sealed this copy and their signature over it; null for a copy made before keys were signed.
+    sealed_by: Option<SealedByDto>,
 }
 
 impl KeyCopyDto {
@@ -468,6 +560,7 @@ impl KeyCopyDto {
             collection: copy.collection.0,
             key_version: copy.key_version,
             sealed: b64url::encode(&copy.sealed),
+            sealed_by: copy.sealed_by.as_ref().map(SealedByDto::of),
         }
     }
 }
@@ -517,6 +610,8 @@ pub(crate) struct NewCollectionDto {
     name: String,
     /// The collection key sealed to the maker, base64url.
     sealed_key: String,
+    /// The maker's signature over that box, base64url.
+    sealed_key_signature: String,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -525,6 +620,7 @@ pub(crate) struct CreateSpaceRequest {
     id: Uuid,
     name: String,
     sealed_space_key: String,
+    sealed_space_key_signature: String,
     collection: NewCollectionDto,
 }
 
@@ -561,6 +657,8 @@ pub(crate) struct ConfirmRequest {
     signature: String,
     /// The space key sealed to the member, base64url.
     sealed_space_key: String,
+    /// The confirmer's signature over that box, base64url.
+    sealed_space_key_signature: String,
     /// The key of every collection the member is granted, sealed to them.
     #[serde(default)]
     collection_keys: Vec<OwnKeyDto>,
@@ -691,11 +789,18 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + Clone + 'static,
 {
-    fn create_space(&self) -> CreateSpace<R, S, P> {
+    fn key_boxes(&self) -> StoreKeyBoxes<S> {
+        StoreKeyBoxes {
+            users: self.api.store.clone(),
+        }
+    }
+
+    fn create_space(&self) -> CreateSpace<R, S, P, StoreKeyBoxes<S>> {
         CreateSpace {
             spaces: self.spaces.clone(),
             events: self.api.store.clone(),
             clock: self.api.crypto.clone(),
+            boxes: self.key_boxes(),
         }
     }
 
@@ -716,13 +821,14 @@ where
         }
     }
 
-    fn confirm(&self) -> ConfirmMember<R, S, CryptoFingerprints, S, P> {
+    fn confirm(&self) -> ConfirmMember<R, S, CryptoFingerprints, S, P, StoreKeyBoxes<S>> {
         ConfirmMember {
             spaces: self.spaces.clone(),
             users: self.api.store.clone(),
             fingerprints: CryptoFingerprints,
             events: self.api.store.clone(),
             clock: self.api.crypto.clone(),
+            boxes: self.key_boxes(),
         }
     }
 
@@ -742,11 +848,12 @@ where
         }
     }
 
-    fn create_collection(&self) -> CreateCollection<R, S, P> {
+    fn create_collection(&self) -> CreateCollection<R, S, P, StoreKeyBoxes<S>> {
         CreateCollection {
             spaces: self.spaces.clone(),
             events: self.api.store.clone(),
             clock: self.api.crypto.clone(),
+            boxes: self.key_boxes(),
         }
     }
 
@@ -774,11 +881,12 @@ where
         }
     }
 
-    fn edit_group(&self) -> EditGroup<R, S, P> {
+    fn edit_group(&self) -> EditGroup<R, S, P, StoreKeyBoxes<S>> {
         EditGroup {
             spaces: self.spaces.clone(),
             events: self.api.store.clone(),
             clock: self.api.crypto.clone(),
+            boxes: self.key_boxes(),
         }
     }
 
@@ -790,11 +898,12 @@ where
         }
     }
 
-    fn grant(&self) -> GrantAccess<R, S, P> {
+    fn grant(&self) -> GrantAccess<R, S, P, StoreKeyBoxes<S>> {
         GrantAccess {
             spaces: self.spaces.clone(),
             events: self.api.store.clone(),
             clock: self.api.crypto.clone(),
+            boxes: self.key_boxes(),
         }
     }
 
@@ -806,7 +915,7 @@ where
         }
     }
 
-    fn replace_keys(&self) -> ReplaceKeys<R, S, S, S, crate::LiveHub, P> {
+    fn replace_keys(&self) -> ReplaceKeys<R, S, S, S, crate::LiveHub, P, StoreKeyBoxes<S>> {
         ReplaceKeys {
             spaces: self.spaces.clone(),
             items: self.api.store.clone(),
@@ -815,6 +924,7 @@ where
             push: self.api.hub.clone(),
             clock: self.api.crypto.clone(),
             config: self.api.auth_config(),
+            boxes: self.key_boxes(),
         }
     }
 }
@@ -864,10 +974,18 @@ where
         id: SpaceId(request.id),
         name: decode("name", &request.name)?,
         sealed_space_key: decode("sealedSpaceKey", &request.sealed_space_key)?,
+        space_key_signature: decode(
+            "sealedSpaceKeySignature",
+            &request.sealed_space_key_signature,
+        )?,
         collection: NewCollection {
             id: CollectionId(request.collection.id),
             name: decode("collection.name", &request.collection.name)?,
             sealed_key: decode("collection.sealedKey", &request.collection.sealed_key)?,
+            key_signature: decode(
+                "collection.sealedKeySignature",
+                &request.collection.sealed_key_signature,
+            )?,
         },
     };
     let actor = caller.actor();
@@ -1224,6 +1342,7 @@ where
                 collection: CollectionId(k.collection),
                 user: member,
                 sealed: decode("sealed", &k.sealed)?,
+                signature: decode("signature", &k.signature)?,
             })
         })
         .collect::<Result<Vec<_>, Problem>>()?;
@@ -1232,6 +1351,10 @@ where
         statement: decode("statement", &request.statement)?,
         signature: decode("signature", &request.signature)?,
         sealed_space_key: decode("sealedSpaceKey", &request.sealed_space_key)?,
+        space_key_signature: decode(
+            "sealedSpaceKeySignature",
+            &request.sealed_space_key_signature,
+        )?,
         collection_keys,
     };
     let confirmed = env
@@ -1594,7 +1717,13 @@ where
         sealed_space_keys: request
             .sealed_space_keys
             .into_iter()
-            .map(|k| Ok::<_, Problem>((UserId(k.user), decode("sealed", &k.sealed)?)))
+            .map(|k| {
+                Ok::<_, Problem>(SealedSpaceKey {
+                    user: UserId(k.user),
+                    sealed: decode("sealed", &k.sealed)?,
+                    signature: decode("signature", &k.signature)?,
+                })
+            })
             .collect::<Result<Vec<_>, Problem>>()?,
         collection_names: named(request.collection_names)?
             .into_iter()
@@ -2103,6 +2232,7 @@ fn doc_key_replacement() {}
     components(schemas(
         SpaceDto,
         MemberDto,
+        SealedByDto,
         ConfirmationDto,
         MemberViewDto,
         AccountLookupDto,

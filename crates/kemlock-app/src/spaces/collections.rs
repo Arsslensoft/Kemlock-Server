@@ -5,6 +5,7 @@
 //! every confirmed grantee got a copy and nobody else did.
 
 use super::error::SpacesError;
+use super::key_boxes::KeyBoxVerifier;
 use super::ports::{SpaceChanges, SpaceRepo};
 use super::support::{SealedCollectionKey, key_changes, load_open, record};
 use crate::authenticate::Actor;
@@ -39,10 +40,11 @@ pub(crate) fn check_grantee(state: &SpaceState, grantee: Grantee) -> Result<(), 
 }
 
 #[derive(Debug)]
-pub struct CreateCollection<R, V, C> {
+pub struct CreateCollection<R, V, C, K> {
     pub spaces: R,
     pub events: V,
     pub clock: C,
+    pub boxes: K,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +60,7 @@ pub struct CreateCollectionInput {
     pub keys: Vec<SealedCollectionKey>,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> CreateCollection<R, V, C> {
+impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> CreateCollection<R, V, C, K> {
     /// Makes a collection at key version 1. Owners, admins and Custom members who may create
     /// collections can; the space must not be waiting for a key replacement.
     pub async fn execute(
@@ -119,7 +121,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateCollection<R, V, C> {
             needed,
             ..KeyDelta::default()
         };
-        let keys = key_changes(&after, &delta, input.keys, now)?;
+        let keys = key_changes(&after, &delta, input.keys, now, &self.boxes, actor.user).await?;
 
         self.spaces
             .apply(SpaceChanges {

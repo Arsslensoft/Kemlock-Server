@@ -136,8 +136,65 @@ fn sealed(fill: u8) -> String {
     b64(&sealed_key(fill))
 }
 
+/// A key sealed to `user` with a filler signature: for requests refused before any signature is
+/// checked.
 fn user_key(user: UserId, fill: u8) -> Value {
-    json!({"user": user.to_string(), "sealed": sealed(fill)})
+    json!({"user": user.to_string(), "sealed": sealed(fill), "signature": b64(&[0x55u8; 3373])})
+}
+
+/// `by`'s signature (base64url) over the box `sealed(fill)` of the space key (`collection` `None`)
+/// or of a collection key, sealed to `recipient` at `version` (docs/crypto.md, "Signed key boxes").
+fn key_sig(
+    by: &Person,
+    space: Uuid,
+    collection: Option<Uuid>,
+    version: u32,
+    recipient: UserId,
+    fill: u8,
+) -> String {
+    use kemlock_crypto::key_box::{self, Kind};
+    let boxed = sealed_key(fill);
+    let (kind, aad) = match collection {
+        None => (
+            Kind::Space,
+            key_box::space_aad(space.as_bytes(), version, recipient.as_bytes()),
+        ),
+        Some(collection) => (
+            Kind::Collection,
+            key_box::collection_aad(
+                space.as_bytes(),
+                collection.as_bytes(),
+                version,
+                recipient.as_bytes(),
+            ),
+        ),
+    };
+    let signature = key_box::Statement {
+        kind,
+        aad: &aad,
+        sealed_box: &boxed,
+        sealer: *by.id.as_bytes(),
+        sealer_key_version: 1,
+    }
+    .sign(&by.signing)
+    .expect("the box signs");
+    b64(&signature)
+}
+
+/// A key sealed to `recipient`, signed by `by`.
+fn signed_key(
+    by: &Person,
+    space: Uuid,
+    collection: Option<Uuid>,
+    version: u32,
+    recipient: UserId,
+    fill: u8,
+) -> Value {
+    json!({
+        "user": recipient.to_string(),
+        "sealed": sealed(fill),
+        "signature": key_sig(by, space, collection, version, recipient, fill),
+    })
 }
 
 /// Sam makes a space with its first collection.
@@ -151,10 +208,12 @@ async fn make_space(sam: &Person) -> (Uuid, Uuid) {
                 "id": space.to_string(),
                 "name": b64(&name(1)),
                 "sealedSpaceKey": sealed(2),
+                "sealedSpaceKeySignature": key_sig(sam, space, None, 1, sam.id, 2),
                 "collection": {
                     "id": collection.to_string(),
                     "name": b64(&name(3)),
                     "sealedKey": sealed(4),
+                    "sealedKeySignature": key_sig(sam, space, Some(collection), 1, sam.id, 4),
                 },
             }),
         )
@@ -220,7 +279,9 @@ fn confirm_body(
         "statement": b64(&statement.to_bytes()),
         "signature": b64(&signature),
         "sealedSpaceKey": sealed(5),
-        "collectionKeys": [{"collection": collection.to_string(), "sealed": sealed(fill)}],
+        "sealedSpaceKeySignature": key_sig(confirmer, space, None, 1, member.id, 5),
+        "collectionKeys": [{"collection": collection.to_string(), "sealed": sealed(fill),
+            "signature": key_sig(confirmer, space, Some(collection), 1, member.id, fill)}],
     })
 }
 
@@ -293,10 +354,12 @@ async fn a_space_id_is_taken_once_and_values_must_be_base64url() {
             "id": id.to_string(),
             "name": name_field,
             "sealedSpaceKey": sealed(2),
+            "sealedSpaceKeySignature": key_sig(&sam, id, None, 1, sam.id, 2),
             "collection": {
                 "id": collection.to_string(),
                 "name": b64(&name(3)),
                 "sealedKey": sealed(4),
+                "sealedKeySignature": key_sig(&sam, id, Some(collection), 1, sam.id, 4),
             },
         })
     };
@@ -539,13 +602,13 @@ async fn revoking_pauses_the_space_until_the_keys_are_replaced() {
             json!({
                 "spaceKeyVersion": 2,
                 "spaceName": b64(&name(40)),
-                "sealedSpaceKeys": [user_key(sam.id, 20)],
+                "sealedSpaceKeys": [signed_key(&sam, space, None, 2, sam.id, 20)],
                 "collectionNames": [{"id": collection.to_string(), "name": b64(&name(41))}],
                 "groupNames": [],
                 "collections": [{
                     "collection": collection.to_string(),
                     "keyVersion": 2,
-                    "keys": [user_key(sam.id, 21)],
+                    "keys": [signed_key(&sam, space, Some(collection), 2, sam.id, 21)],
                 }],
                 "writes": [],
             }),
@@ -637,7 +700,7 @@ async fn collections_groups_and_grants_are_shaped_over_http() {
         .post(
             &format!("/kem/v1/spaces/{space}/collections"),
             json!({"id": finance.to_string(), "name": b64(&name(10)),
-                   "keys": [user_key(sam.id, 11)]}),
+                   "keys": [signed_key(&sam, space, Some(finance), 1, sam.id, 11)]}),
         )
         .await;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
@@ -662,7 +725,8 @@ async fn collections_groups_and_grants_are_shaped_over_http() {
         .put(
             &format!("/kem/v1/spaces/{space}/grants"),
             json!({"collection": finance.to_string(), "grantee": format!("user:{}", ana.id),
-                   "permission": "view", "keys": [user_key(ana.id, 12)]}),
+                   "permission": "view",
+                   "keys": [signed_key(&sam, space, Some(finance), 1, ana.id, 12)]}),
         )
         .await;
     assert_eq!(granted.status, StatusCode::OK, "{:?}", granted.json());
@@ -1529,4 +1593,194 @@ async fn a_refused_resend_does_not_use_the_members_turn() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     let sent = sam.post(&resend_uri(space, ana.id), json!({})).await;
     assert_eq!(sent.status, StatusCode::NO_CONTENT);
+}
+
+/// The body that makes a space with the two signatures given.
+fn space_body(
+    space: Uuid,
+    collection: Uuid,
+    space_key_signature: String,
+    collection_key_signature: String,
+) -> Value {
+    json!({
+        "id": space.to_string(),
+        "name": b64(&name(1)),
+        "sealedSpaceKey": sealed(2),
+        "sealedSpaceKeySignature": space_key_signature,
+        "collection": {
+            "id": collection.to_string(),
+            "name": b64(&name(3)),
+            "sealedKey": sealed(4),
+            "sealedKeySignature": collection_key_signature,
+        },
+    })
+}
+
+#[tokio::test]
+async fn a_sealed_key_must_carry_the_signature_of_the_member_who_sends_it() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org").await;
+    let zed = rig.person("zed@example.org").await;
+    let space = Uuid::new_v4();
+    let collection = Uuid::new_v4();
+    let good_space_key = key_sig(&sam, space, None, 1, sam.id, 2);
+    let good_collection_key = key_sig(&sam, space, Some(collection), 1, sam.id, 4);
+
+    // Another member's signature over the same box isn't the sender's.
+    for (why, space_key, collection_key) in [
+        (
+            "a space key signed by Zed",
+            key_sig(&zed, space, None, 1, sam.id, 2),
+            good_collection_key.clone(),
+        ),
+        (
+            "a collection key signed by Zed",
+            good_space_key.clone(),
+            key_sig(&zed, space, Some(collection), 1, sam.id, 4),
+        ),
+        (
+            // Signed for a box that isn't the one sent.
+            "a signature over another box",
+            key_sig(&sam, space, None, 1, sam.id, 3),
+            good_collection_key.clone(),
+        ),
+        (
+            // Signed for another recipient or key version.
+            "a signature for another version",
+            good_space_key.clone(),
+            key_sig(&sam, space, Some(collection), 2, sam.id, 4),
+        ),
+        (
+            "a filler signature",
+            b64(&[0x55u8; 3373]),
+            good_collection_key.clone(),
+        ),
+        ("a short signature", b64(&[1u8; 10]), good_collection_key.clone()),
+    ] {
+        let refused = sam
+            .post(
+                "/kem/v1/spaces",
+                space_body(space, collection, space_key, collection_key),
+            )
+            .await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{why}");
+    }
+    // Nothing was made by any of them.
+    assert_eq!(
+        sam.get(&format!("/kem/v1/spaces/{space}")).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    // The signature is required, not optional.
+    let mut unsigned = space_body(space, collection, good_space_key.clone(), good_collection_key.clone());
+    unsigned
+        .as_object_mut()
+        .expect("an object")
+        .remove("sealedSpaceKeySignature");
+    let missing = sam.post("/kem/v1/spaces", unsigned).await;
+    assert!(missing.status.is_client_error(), "{:?}", missing.status);
+
+    // The right ones land, and the copies are served with who sealed them.
+    let made = sam
+        .post(
+            "/kem/v1/spaces",
+            space_body(space, collection, good_space_key.clone(), good_collection_key.clone()),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
+    let view = sam.get(&format!("/kem/v1/spaces/{space}")).await.json();
+    let sealed_by = |at: &Value| {
+        (
+            at["sealedBy"]["account"].clone(),
+            at["sealedBy"]["keyVersion"].clone(),
+            at["sealedBy"]["signature"].clone(),
+        )
+    };
+    assert_eq!(
+        sealed_by(&view["me"]),
+        (
+            json!(sam.id.to_string()),
+            json!(1),
+            json!(good_space_key.clone())
+        )
+    );
+    assert_eq!(
+        sealed_by(&view["collectionKeys"][0]),
+        (
+            json!(sam.id.to_string()),
+            json!(1),
+            json!(good_collection_key)
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_confirmation_seals_keys_signed_by_the_confirmer() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org").await;
+    let ana = rig.person("ana@example.org").await;
+    let zed = rig.person("zed@example.org").await;
+    let (space, collection) = make_space(&sam).await;
+    let invited = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/members"),
+            json!({
+                "email": ana.email,
+                "role": "member",
+                "grants": [{"collection": collection.to_string(), "permission": "edit"}],
+            }),
+        )
+        .await;
+    assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.json());
+    let accepted = ana
+        .post(
+            &format!("/kem/v1/spaces/{space}/members/me/accept"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.json());
+
+    // A server that sealed a key of its own can't have Sam's signature on it, and Zed can't lend
+    // his: the space key box and each collection key box must be signed by the confirmer.
+    let uri = format!("/kem/v1/spaces/{space}/members/{}/confirm", ana.id);
+    let mut forged_space_key = confirm_body(&sam, &ana, space, collection, 6);
+    forged_space_key["sealedSpaceKeySignature"] =
+        json!(key_sig(&zed, space, None, 1, ana.id, 5));
+    assert_eq!(
+        sam.post(&uri, forged_space_key).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let mut forged_collection_key = confirm_body(&sam, &ana, space, collection, 6);
+    forged_collection_key["collectionKeys"][0]["signature"] =
+        json!(key_sig(&zed, space, Some(collection), 1, ana.id, 6));
+    assert_eq!(
+        sam.post(&uri, forged_collection_key).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    let still = sam
+        .get(&format!("/kem/v1/spaces/{space}/members"))
+        .await
+        .json();
+    assert!(
+        still
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|m| m["user"] == json!(ana.id.to_string()) && m["state"] == "accepted")
+    );
+
+    let confirmed = sam
+        .post(&uri, confirm_body(&sam, &ana, space, collection, 6))
+        .await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{:?}", confirmed.json());
+    assert_eq!(
+        confirmed.json()["sealedBy"]["account"],
+        json!(sam.id.to_string())
+    );
+    let view = ana.get(&format!("/kem/v1/spaces/{space}")).await.json();
+    assert_eq!(view["me"]["sealedBy"]["account"], json!(sam.id.to_string()));
+    assert_eq!(
+        view["collectionKeys"][0]["sealedBy"]["account"],
+        json!(sam.id.to_string())
+    );
 }

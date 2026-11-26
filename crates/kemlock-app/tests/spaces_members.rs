@@ -10,7 +10,7 @@ use kemlock_domain::spaces::{
     MemberState, SEALED_KEY_LEN, SpaceError, SpaceRole,
 };
 use kemlock_domain::{ItemId, SpaceId, UserId};
-use space_fakes::{SpaceWorld, key_for, name, sealed_key};
+use space_fakes::{SpaceWorld, key_for, name, sealed_key, signature};
 
 async fn change(
     w: &SpaceWorld,
@@ -86,10 +86,12 @@ async fn a_space_id_is_taken_once_and_keys_must_look_sealed() {
                 id: space,
                 name: name(1),
                 sealed_space_key: sealed_key(2),
+                space_key_signature: signature(),
                 collection: NewCollection {
                     id: CollectionId::random(),
                     name: name(3),
                     sealed_key: sealed_key(4),
+                    key_signature: signature(),
                 },
             },
         )
@@ -104,10 +106,12 @@ async fn a_space_id_is_taken_once_and_keys_must_look_sealed() {
                 id: SpaceId::random(),
                 name: name(1),
                 sealed_space_key: vec![1; 10],
+                space_key_signature: signature(),
                 collection: NewCollection {
                     id: CollectionId::random(),
                     name: name(3),
                     sealed_key: sealed_key(4),
+                    key_signature: signature(),
                 },
             },
         )

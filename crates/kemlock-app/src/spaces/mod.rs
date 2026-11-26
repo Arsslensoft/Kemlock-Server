@@ -36,6 +36,7 @@ pub mod facts;
 pub mod grants;
 pub mod groups;
 pub mod invite;
+pub mod key_boxes;
 pub mod lookup;
 pub mod members;
 pub mod ports;
@@ -67,6 +68,7 @@ pub use facts::SpaceFacts;
 pub use grants::{GrantAccess, RevokeGrant};
 pub use groups::{CreateGroup, CreateGroupInput, DeleteGroup, EditGroup, EditGroupInput};
 pub use invite::{AcceptInvitation, InviteInput, InviteMember, ResendInvitation};
+pub use key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier};
 pub use lookup::{AccountLookup, LookupAccount};
 pub use members::{ChangeRole, Exposure, Offboard, Offboarded};
 pub use ports::{
@@ -81,6 +83,6 @@ pub use recovery::{
 };
 pub use replace_keys::{CollectionRekey, ReplaceKeys, ReplacementInput};
 pub use sso_groups::ApplyGroupRules;
-pub use support::SealedCollectionKey;
+pub use support::{SealedCollectionKey, SealedSpaceKey};
 pub use sync_owners::SyncOwners;
 pub use view::{GetSpace, ListMembers, ListSpaces, MemberView, SpaceSummary, SpaceView};
