@@ -184,6 +184,8 @@ struct Extras {
     local_accounts: HashSet<Owner>,
     /// The attachment rows, for `BlobSync`.
     attachments: Vec<kemlock_domain::Attachment>,
+    /// The offers received from homes, by vault.
+    offers: BTreeMap<Owner, crate::extra::StoredOffer>,
 }
 
 impl MemoryStore {
@@ -759,6 +761,19 @@ impl MemoryStore {
 }
 
 impl crate::extra::FedAdminRepo for MemoryStore {
+    async fn put_offer(&self, offer: &crate::extra::StoredOffer) -> Result<(), StoreError> {
+        self.extras().offers.insert(offer.vault, offer.clone());
+        Ok(())
+    }
+
+    async fn offer(&self, vault: Owner) -> Result<Option<crate::extra::StoredOffer>, StoreError> {
+        Ok(self.extras().offers.get(&vault).cloned())
+    }
+
+    async fn list_offers(&self) -> Result<Vec<crate::extra::StoredOffer>, StoreError> {
+        Ok(self.extras().offers.values().cloned().collect())
+    }
+
     async fn owns_vault(&self, vault: Owner) -> Result<bool, StoreError> {
         Ok(!self.extras().unowned.contains(&vault))
     }
