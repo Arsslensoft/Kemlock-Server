@@ -1,11 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import { ApiError } from '@/api/errors';
 import type { MemberViewDto } from '@/api/spaces';
-import { decodeB64, fromUtf8 } from '@/lib/b64url';
+import type { ChainView } from '@/crypto/types';
+import { decodeB64, encodeB64, fromUtf8 } from '@/lib/b64url';
 import { checkedFingerprint, fingerprintText, fingerprintBytes } from '@/sharing/bundle';
-import { memoryPinStore } from '@/spaces/anchors';
+import { memoryAnchorStore, memoryPinStore } from '@/spaces/anchors';
 import { makeBundleB64 } from '@/test/bundles';
-import { fakeSpaceCrypto } from '@/test/fake-space-crypto';
+import { NO_CHAIN, fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
   FINANCE,
   INFRA,
@@ -22,19 +24,28 @@ import {
   members,
 } from './fixtures';
 import {
+  ChainConflict,
   type SpaceDeps,
+  SpaceNotChecked,
   canManageUsers,
+  changeRole,
   collectionsOfMember,
   confirmMember,
   createCollection,
+  createGroup,
   createSpace,
+  deleteCollection,
+  deleteGroup,
   grantAccess,
   inviteMember,
   loadSpaceDetail,
   loadSpaceList,
+  offboardMember,
   pinMember,
   reachedBy,
   renameCollection,
+  revokeGrant,
+  sealPending,
   setGroupMembers,
 } from './model';
 import { MemberNotVerified } from './verify';
@@ -87,19 +98,6 @@ describe('the space list', () => {
     if (!summary) throw new Error('fixture');
     api.list.mockResolvedValueOnce([{ ...summary, member: { ...summary.member, sealedSpaceKey: null } }]);
     expect((await loadSpaceList(spaceDeps))[0]?.name).toBeNull();
-  });
-});
-
-describe('making a space', () => {
-  it('seals both names and keys here and sends only ciphertext', async () => {
-    const { spaceDeps, api } = deps();
-    await createSpace(spaceDeps, { name: 'Example Co', firstCollection: 'Infrastructure' });
-    const body = api.create.mock.calls[0]?.[0];
-    expect(body?.id).toBe('99999999-0000-4000-8000-000000000001');
-    expect(body?.collection.id).toBe('99999999-0000-4000-8000-000000000002');
-    expect(fromUtf8(decodeB64(body?.sealedSpaceKey ?? ''))).toBe(`space-key:${body?.id}`);
-    expect(body?.name).not.toContain('Example');
-    expect(fromUtf8(decodeB64(body?.name ?? ''))).toContain('Example Co');
   });
 });
 
@@ -329,5 +327,282 @@ describe('collections, groups and grants', () => {
       setGroupMembers({ ...spaceDeps, crypto }, { ...loaded, members: other }, OPS, [LEE, THEO]),
     ).rejects.toMatchObject({ reason: 'no-confirmation' });
     expect(api.editGroup).not.toHaveBeenCalled();
+  });
+});
+
+// ---- a space with a chain ---------------------------------------------------------------------
+
+const NEW_SPACE = '99999999-0000-4000-8000-000000000001';
+
+/** What the worker reports once the chain verifies: Sam owns it, Lee is in Ops, Theo is invited. */
+function chained(over: Partial<ChainView> = {}): ChainView {
+  return {
+    ...NO_CHAIN,
+    chained: true,
+    head: { seq: 4, link: 'bGluaw' },
+    epoch: 1,
+    links: ['l0', 'l1', 'l2', 'l3', 'l4'],
+    trusted: true,
+    members: [
+      { id: ME, role: 'owner', custom: [], status: 'confirmed', invitedBy: ME, bundleVersion: 1 },
+      { id: THEO, role: 'member', custom: [], status: 'invited', invitedBy: ME },
+      { id: LEE, role: 'member', custom: [], status: 'confirmed', invitedBy: ME, bundleVersion: 1 },
+    ],
+    space: { keyVersion: 1, marked: false, nameHash: 'h', nameVersion: 1 },
+    collections: [
+      { id: INFRA, keyVersion: 1, marked: false, nameHash: 'h', nameVersion: 1 },
+      { id: FINANCE, keyVersion: 1, marked: false, nameHash: 'h', nameVersion: 1 },
+    ],
+    groups: [{ id: OPS, members: [LEE], nameHash: 'h', nameVersion: 1 }],
+    grants: [{ collection: INFRA, grantee: `group:${OPS}`, permission: 'edit' }],
+    ...over,
+  };
+}
+
+function chainedDeps(chain: ChainView = chained()) {
+  const { api, crypto, spaceDeps } = deps();
+  crypto.chain = chain;
+  const anchors = memoryAnchorStore();
+  const withChain: SpaceDeps = { ...spaceDeps, anchors, now: () => 1_700_000_000 };
+  const loaded = detail({ trust: { kind: 'verified', view: chain } });
+  return { api, crypto, anchors, spaceDeps: withChain, loaded };
+}
+
+describe('making a space', () => {
+  it('makes a chain: the create record, the boxes and the names, signed and sealed here', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(chained({ head: { seq: 0, link: 'bGluaw' } }));
+    await createSpace(spaceDeps, { name: 'Example Co', firstCollection: 'Infrastructure' });
+    expect(crypto.calls).toContain('newChainedSpace:1700000000');
+    // Nothing is made the old way, where the server would hold an unchained space.
+    expect(api.create).not.toHaveBeenCalled();
+    expect(crypto.calls).not.toContain('newSpace');
+    const [space, body] = api.appendChain.mock.calls[0] ?? [];
+    expect(space).toBe(NEW_SPACE);
+    expect(body?.records).toHaveLength(1);
+    expect(body?.seals.map((s) => s.key)).toEqual([
+      'collection:99999999-0000-4000-8000-000000000002',
+      'space',
+    ]);
+    // The request carries exactly what the append route takes, and no key or plain name.
+    expect(Object.keys(body ?? {}).sort()).toEqual(['names', 'records', 'seals']);
+    expect(body?.names.map((n) => n.target)).toEqual([
+      'collection:99999999-0000-4000-8000-000000000002',
+      'space',
+    ]);
+    expect(JSON.stringify(body)).not.toContain('Example Co');
+  });
+
+  it('verifies the chain at once, which keeps this browser’s anchor', async () => {
+    const { spaceDeps, anchors } = chainedDeps(chained({ head: { seq: 0, link: 'bGluaw' }, links: ['bGluaw'], epoch: 1 }));
+    await createSpace(spaceDeps, { name: 'Example Co', firstCollection: 'Infrastructure' });
+    expect(await anchors.load(ME, NEW_SPACE)).toEqual({ seq: 0, epoch: 1, links: ['bGluaw'] });
+  });
+
+  it('says so when what the server serves back isn’t verified as mine', async () => {
+    const { spaceDeps, crypto } = chainedDeps();
+    // The server serves no chain at all.
+    crypto.chain = NO_CHAIN;
+    await expect(
+      createSpace(spaceDeps, { name: 'Example Co', firstCollection: 'Infrastructure' }),
+    ).rejects.toBeInstanceOf(SpaceNotChecked);
+  });
+});
+
+describe('changing a space that has a chain', () => {
+  /** The one record the fake worker makes for a change, and the plain routes left alone. */
+  function expectOnlyRecords(api: ReturnType<typeof chainedDeps>['api']) {
+    expect(api.appendChain).toHaveBeenCalledTimes(1);
+    const body = api.appendChain.mock.calls[0]?.[1];
+    expect(body?.records).toHaveLength(1);
+    for (const route of [
+      'invite',
+      'confirm',
+      'changeRole',
+      'revoke',
+      'remove',
+      'createCollection',
+      'editCollection',
+      'deleteCollection',
+      'createGroup',
+      'editGroup',
+      'deleteGroup',
+      'grant',
+      'revokeGrant',
+    ] as const) {
+      expect(api[route], route).not.toHaveBeenCalled();
+    }
+  }
+
+  it('invites the account the server looked up, as a record', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    await inviteMember(
+      spaceDeps,
+      SPACE,
+      {
+        email: ' theo@example.co ',
+        role: 'custom',
+        custom: ['manage-groups'],
+        grants: [{ collection: INFRA, permission: 'view' }],
+      },
+      loaded,
+    );
+    expect(api.lookup).toHaveBeenCalledWith(SPACE, 'theo@example.co');
+    expect(crypto.changes).toEqual([
+      {
+        action: 'invite',
+        member: THEO,
+        role: 'custom',
+        custom: ['manage-groups'],
+        grants: [{ collection: INFRA, permission: 'view' }],
+      },
+    ]);
+    expectOnlyRecords(api);
+  });
+
+  it('confirms with the fingerprint the person compared, as a record', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    const theo = members().find((m) => m.user === THEO);
+    if (!theo) throw new Error('fixture');
+    const bundle = decodeB64(theo.publicBundle);
+    const bytes = await fingerprintBytes(bundle);
+    const fp = await checkedFingerprint(bundle, async () => fingerprintText(bytes));
+    if (!fp) throw new Error('fixture');
+    await confirmMember(spaceDeps, loaded, theo, fp);
+    expect(crypto.changes).toEqual([
+      {
+        action: 'confirm',
+        member: THEO,
+        bundle: theo.publicBundle,
+        bundleSignature: theo.bundleSignature,
+        fingerprint: encodeB64(bytes),
+      },
+    ]);
+    // No key is sealed by the page, and no statement is signed by it: the worker does both.
+    expect(crypto.calls.some((c) => c.startsWith('seal') && !c.startsWith('sealLocal'))).toBe(false);
+    expect(crypto.calls).not.toContain('sign:confirm');
+    expectOnlyRecords(api);
+
+    // A fingerprint of other keys than the bundle's still stops before anything is built.
+    crypto.changes.length = 0;
+    const other = await fingerprintBytes(decodeB64(makeBundleB64(THEO, 1, 0x55)));
+    await expect(
+      confirmMember(spaceDeps, loaded, theo, { text: fingerprintText(other), bytes: other, consistent: true }),
+    ).rejects.toBeInstanceOf(MemberNotVerified);
+    expect(crypto.changes).toEqual([]);
+  });
+
+  it('makes collections, groups and grants as records', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    await createCollection(spaceDeps, loaded, { name: 'Support', parent: INFRA });
+    await renameCollection(spaceDeps, loaded, INFRA, 'Ops infra');
+    await deleteCollection(spaceDeps, loaded, FINANCE);
+    await createGroup(spaceDeps, loaded, { name: 'Eng', members: [LEE] });
+    await deleteGroup(spaceDeps, loaded, OPS);
+    await grantAccess(spaceDeps, loaded, { collection: FINANCE, grantee: `user:${LEE}`, permission: 'view' });
+    await revokeGrant(spaceDeps, loaded, INFRA, `group:${OPS}`);
+    await changeRole(spaceDeps, loaded, LEE, 'admin', ['manage-users']);
+    expect(crypto.changes).toEqual([
+      { action: 'collection', collection: '99999999-0000-4000-8000-000000000001', name: 'Support', parent: INFRA },
+      { action: 'rename', target: `collection:${INFRA}`, name: 'Ops infra' },
+      { action: 'collection-delete', collection: FINANCE },
+      { action: 'group', group: '99999999-0000-4000-8000-000000000002', name: 'Eng', members: [LEE] },
+      { action: 'group-delete', group: OPS },
+      { action: 'grant', collection: FINANCE, grantee: `user:${LEE}`, permission: 'view' },
+      { action: 'ungrant', collection: INFRA, grantee: `group:${OPS}` },
+      // Custom permissions go only with the custom role.
+      { action: 'role', member: LEE, role: 'admin', custom: [] },
+    ]);
+    expect(api.appendChain).toHaveBeenCalledTimes(8);
+    expect(api.createCollection).not.toHaveBeenCalled();
+    expect(api.editCollection).not.toHaveBeenCalled();
+    expect(api.grant).not.toHaveBeenCalled();
+    expect(api.revokeGrant).not.toHaveBeenCalled();
+  });
+
+  it('changes a group by who it adds and who it drops, and does nothing when nothing changes', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    await setGroupMembers(spaceDeps, loaded, OPS, [ME]);
+    expect(crypto.changes).toEqual([{ action: 'group-members', group: OPS, add: [ME], remove: [LEE] }]);
+    expect(await setGroupMembers(spaceDeps, loaded, OPS, [LEE])).toBe(false);
+    expect(api.appendChain).toHaveBeenCalledTimes(1);
+    expect(api.editGroup).not.toHaveBeenCalled();
+  });
+
+  it('removes a member as one record, and says whether keys now wait to be replaced', async () => {
+    const marked = chained({ space: { keyVersion: 1, marked: true, nameHash: 'h', nameVersion: 1 } });
+    const { spaceDeps, api, crypto, loaded } = chainedDeps(marked);
+    const outcome = await offboardMember(spaceDeps, loaded, LEE, 'revoke');
+    expect(crypto.changes).toEqual([{ action: 'remove', member: LEE }]);
+    expect(outcome).toEqual({ exposed: [], keysPending: true });
+    expect(api.revoke).not.toHaveBeenCalled();
+    expect(api.remove).not.toHaveBeenCalled();
+    // Removing and revoking are the same record in a space with a chain.
+    await offboardMember(spaceDeps, loaded, LEE, 'remove');
+    expect(crypto.changes.map((c) => c.action)).toEqual(['remove', 'remove']);
+  });
+
+  it('shows the reason when the chain’s rules refuse the change, and appends nothing', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    crypto.built = { ok: false, reason: 'not allowed', seq: 5 };
+    await expect(createCollection(spaceDeps, loaded, { name: 'Support' })).rejects.toMatchObject({
+      name: 'ChainRefused',
+      reason: 'not allowed',
+    });
+    expect(api.appendChain).not.toHaveBeenCalled();
+  });
+
+  it('reads the chain again and builds once more when the head moved, then shows a second conflict', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    const conflict = () =>
+      new ApiError(409, {
+        type: 'urn:kemlock:problem:space-chain-conflict',
+        title: 'The chain’s head isn’t the one the records follow',
+        status: 409,
+      });
+    api.appendChain.mockRejectedValueOnce(conflict());
+    await createGroup(spaceDeps, loaded, { name: 'Eng', members: [] });
+    expect(crypto.changes).toHaveLength(2);
+    expect(api.appendChain).toHaveBeenCalledTimes(2);
+    expect(crypto.calls.filter((c) => c.startsWith('verifySpaceChain'))).toHaveLength(1);
+
+    crypto.changes.length = 0;
+    api.appendChain.mockRejectedValue(conflict());
+    await expect(createGroup(spaceDeps, loaded, { name: 'Eng', members: [] })).rejects.toBeInstanceOf(
+      ChainConflict,
+    );
+    expect(crypto.changes).toHaveLength(2);
+    // Another failure is not read as a conflict.
+    api.appendChain.mockRejectedValue(new ApiError(500, { type: 'x', title: 'x', status: 500 }));
+    await expect(createGroup(spaceDeps, loaded, { name: 'Eng', members: [] })).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it('signs nothing for a space that isn’t checked or whose keys aren’t open', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    const waiting = { ...loaded, trust: { kind: 'first-contact' as const, view: chained({ trusted: false }) } };
+    const closed = { ...loaded, readable: false };
+    for (const space of [waiting, closed]) {
+      await expect(createCollection(spaceDeps, space, { name: 'Support' })).rejects.toBeInstanceOf(
+        SpaceNotChecked,
+      );
+      await expect(grantAccess(spaceDeps, space, { collection: INFRA, grantee: `user:${ME}`, permission: 'view' })).rejects.toBeInstanceOf(
+        SpaceNotChecked,
+      );
+      await expect(offboardMember(spaceDeps, space, LEE, 'remove')).rejects.toBeInstanceOf(SpaceNotChecked);
+    }
+    expect(crypto.changes).toEqual([]);
+    expect(api.appendChain).not.toHaveBeenCalled();
+  });
+
+  it('shares keys it holds only when there is something to share', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    // The worker has nothing for anyone: no record is made.
+    expect(await sealPending(spaceDeps, loaded)).toBe(false);
+    expect(crypto.changes).toEqual([{ action: 'seal' }]);
+    expect(api.appendChain).not.toHaveBeenCalled();
+    crypto.built = { ok: true, records: [{ entry: 'ZW50cnk', signature: 'c2ln' }], seals: [], names: [] };
+    expect(await sealPending(spaceDeps, loaded)).toBe(true);
+    expect(api.appendChain).toHaveBeenCalledTimes(1);
+    // A space with no chain, or one that isn't checked, is left alone.
+    expect(await sealPending(spaceDeps, detail())).toBe(false);
   });
 });

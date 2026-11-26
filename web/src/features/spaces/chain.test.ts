@@ -284,9 +284,9 @@ describe('a space with a chain, loaded', () => {
     expect(rows[0]).toMatchObject({ id: SPACE, name: null, trust: 'unverified' });
   });
 
-  it('seals nothing for a space it can not use the chain to change', async () => {
+  it('seals nothing for a space whose keys this browser could not open', async () => {
     const { deps, api, crypto } = setup(view());
-    const loaded = { ...detail(), trust: { kind: 'verified' as const, view: view() } };
+    const loaded = { ...detail(), readable: false, trust: { kind: 'verified' as const, view: view() } };
     const theo = members().find((m) => m.user === THEO);
     if (!theo) throw new Error('fixture');
     const bytes = new Uint8Array(64);
