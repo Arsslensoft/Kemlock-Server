@@ -283,6 +283,12 @@ pub fn check_install(
     staged: &[(ItemId, Revision)],
 ) -> Result<(), RotationError> {
     let request = &install.request;
+
+    // The install is one transaction: a vault too large for it is refused, not half moved.
+    if holdings.live_items.len() > MAX_ROTATION_ITEMS {
+        return Err(AppError::Invalid("the vault has more items than one rotation moves").into());
+    }
+
     covers(
         "passkeys",
         &holdings.passkeys.iter().map(|(id, _)| id.0).collect(),
@@ -813,6 +819,22 @@ mod tests {
                 "{staged:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_vault_too_large_for_one_transaction_is_refused() {
+        let live: Vec<_> = (0..=MAX_ROTATION_ITEMS)
+            .map(|n| item(ItemId::random(), n as u64 + 1))
+            .collect();
+        let staged: Vec<_> = live.iter().map(|(id, revision, _)| (*id, *revision)).collect();
+        let holdings = Holdings {
+            live_items: live,
+            ..Holdings::default()
+        };
+        assert!(matches!(
+            check_install(&install(request()), &holdings, &staged),
+            Err(RotationError::App(AppError::Invalid(_)))
+        ));
     }
 
     #[test]

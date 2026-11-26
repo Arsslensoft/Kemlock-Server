@@ -155,21 +155,29 @@ async fn holdings_in<C: ConnectionTrait>(db: &C, user: UserId) -> Result<Holding
     })
 }
 
-/// The ids and base revisions of the rows `rotation` staged for `user` since `since`.
+/// The ids and base revisions of the rows `rotation` staged for `user` since `since`, without the
+/// ciphertexts: those are read a chunk at a time when they are written.
 async fn staged_in<C: ConnectionTrait>(
     db: &C,
     user: UserId,
     rotation: Uuid,
     since: OffsetDateTime,
-) -> Result<Vec<rotation_staged_items::Model>, StoreError> {
+) -> Result<Vec<(Uuid, i64)>, StoreError> {
     rotation_staged_items::Entity::find()
         .filter(rotation_staged_items::Column::UserId.eq(user.0))
         .filter(rotation_staged_items::Column::RotationId.eq(rotation))
         .filter(rotation_staged_items::Column::StagedAt.gte(utc(since)))
+        .select_only()
+        .column(rotation_staged_items::Column::ItemId)
+        .column(rotation_staged_items::Column::BaseRevision)
+        .into_tuple()
         .all(db)
         .await
         .store()
 }
+
+/// How many staged items the install reads and writes at a time.
+const WRITE_CHUNK: usize = 500;
 
 async fn finish<T>(
     txn: DatabaseTransaction,
@@ -352,19 +360,21 @@ impl SqlStore {
         let rotation = Uuid::from_bytes(request.rotation);
         let staged = staged_in(txn, user, rotation, install.staged_since).await?;
         let mut pairs = Vec::with_capacity(staged.len());
-        for row in &staged {
-            let base = u64::try_from(row.base_revision)
+        for (item, base) in &staged {
+            let base = u64::try_from(*base)
                 .map_err(|_| StoreError::Backend("a revision is negative".into()))?;
-            pairs.push((ItemId(row.item_id), Revision(base)));
+            pairs.push((ItemId(*item), Revision(base)));
         }
         check_install(install, &holdings, &pairs)?;
 
-        // The items, through the one write every item write goes through.
-        let ids: Vec<Uuid> = staged.iter().map(|row| row.item_id).collect();
-        let mut live = std::collections::HashMap::new();
-        for chunk in ids.chunks(500) {
+        // The items, through the one write every item write goes through, a chunk at a time: the
+        // ciphertexts of a large vault are not all held at once.
+        let mut change = None;
+        for chunk in staged.chunks(WRITE_CHUNK) {
+            let ids: Vec<Uuid> = chunk.iter().map(|(item, _)| *item).collect();
+            let mut live = std::collections::HashMap::new();
             for row in items::Entity::find()
-                .filter(items::Column::Id.is_in(chunk.to_vec()))
+                .filter(items::Column::Id.is_in(ids.clone()))
                 .all(txn)
                 .await
                 .store()?
@@ -372,35 +382,42 @@ impl SqlStore {
                 let id = row.id;
                 live.insert(id, row.into_domain()?);
             }
-        }
-        let mut drafts = Vec::with_capacity(staged.len());
-        for row in staged {
-            // A row staged for an item deleted since is of no account.
-            let Some(item) = live.get(&row.item_id).filter(|item| !item.is_tombstone()) else {
+            let rows = rotation_staged_items::Entity::find()
+                .filter(rotation_staged_items::Column::UserId.eq(user.0))
+                .filter(rotation_staged_items::Column::RotationId.eq(rotation))
+                .filter(rotation_staged_items::Column::ItemId.is_in(ids))
+                .all(txn)
+                .await
+                .store()?;
+            let mut drafts = Vec::with_capacity(rows.len());
+            for row in rows {
+                // A row staged for an item deleted since is of no account.
+                let Some(item) = live.get(&row.item_id).filter(|item| !item.is_tombstone()) else {
+                    continue;
+                };
+                let base = Revision(u64::try_from(row.base_revision).unwrap_or(0));
+                let next = base.next().ok_or_else(|| {
+                    RotationError::Incomplete("items: a revision is spent".to_owned())
+                })?;
+                drafts.push(ItemDraft {
+                    id: item.id,
+                    owner: item.owner,
+                    kind: item.kind.clone(),
+                    format: item.format,
+                    expected: Some(base),
+                    revision: next,
+                    key_version: request.to_version,
+                    ciphertext: Some(row.ciphertext),
+                    item_key: Some(row.item_key),
+                    deleted_at: None,
+                    updated_at: now,
+                });
+            }
+            if drafts.is_empty() {
                 continue;
-            };
-            let base = Revision(u64::try_from(row.base_revision).unwrap_or(0));
-            let next = base.next().ok_or_else(|| {
-                RotationError::Incomplete("items: a revision is spent".to_owned())
-            })?;
-            drafts.push(ItemDraft {
-                id: item.id,
-                owner: item.owner,
-                kind: item.kind.clone(),
-                format: item.format,
-                expected: Some(base),
-                revision: next,
-                key_version: request.to_version,
-                ciphertext: Some(row.ciphertext),
-                item_key: Some(row.item_key),
-                deleted_at: None,
-                updated_at: now,
-            });
-        }
-        let mut change = None;
-        if !drafts.is_empty() {
+            }
             match write_in(txn, self.origin(), drafts).await {
-                Ok(written) => change = written.last().map(|item| item.change),
+                Ok(written) => change = written.last().map(|item| item.change).or(change),
                 Err(StoreError::Conflict { .. }) => {
                     return Err(RotationError::Incomplete(
                         "items: one changed while the rotation was installed".to_owned(),
