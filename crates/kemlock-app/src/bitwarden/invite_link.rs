@@ -63,6 +63,10 @@ pub trait BwInviteLinks: Send + Sync {
         member: UserId,
         asker: Asker,
     ) -> BoxFuture<'_, Result<MemberInviteLink, InviteLinkError>>;
+
+    /// Whether `space` is a Bitwarden organization (it has an organization side), so a page can
+    /// offer the invitation link only where it applies. Any failure to tell is "no".
+    fn is_organization(&self, space: SpaceId) -> BoxFuture<'_, bool>;
 }
 
 /// What the server layers on its router as a request extension, so both APIs can reach the port.

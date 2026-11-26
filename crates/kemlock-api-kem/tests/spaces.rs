@@ -265,6 +265,8 @@ async fn a_space_is_made_listed_and_viewed() {
     assert_eq!(view["grants"][0]["grantee"], format!("user:{}", sam.id));
     assert_eq!(view["grants"][0]["permission"], "manage");
     assert_eq!(view["collectionKeys"][0]["sealed"], sealed(4));
+    // No Bitwarden API on this server: no organization.
+    assert_eq!(view["bitwardenOrganization"], false);
 
     // Someone outside the space sees nothing of it, and a missing space looks the same.
     assert!(
@@ -1530,4 +1532,38 @@ async fn a_refused_resend_does_not_use_the_members_turn() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     let sent = sam.post(&resend_uri(space, ana.id), json!({})).await;
     assert_eq!(sent.status, StatusCode::NO_CONTENT);
+}
+
+/// Stands in for the Bitwarden API's invitation links: it only says whether a space is one of its
+/// organizations.
+struct Organizations(bool);
+
+impl kemlock_app::bitwarden::BwInviteLinks for Organizations {
+    fn member_link(
+        &self,
+        _space: kemlock_domain::SpaceId,
+        _member: UserId,
+        _asker: kemlock_app::bitwarden::Asker,
+    ) -> BoxFuture<'_, Result<kemlock_app::bitwarden::MemberInviteLink, kemlock_app::bitwarden::InviteLinkError>>
+    {
+        Box::pin(async { Err(kemlock_app::bitwarden::InviteLinkError::NotFound) })
+    }
+
+    fn is_organization(&self, _space: kemlock_domain::SpaceId) -> BoxFuture<'_, bool> {
+        Box::pin(async move { self.0 })
+    }
+}
+
+#[tokio::test]
+async fn the_space_view_says_whether_the_space_is_a_bitwarden_organization() {
+    for (answer, expected) in [(true, true), (false, false)] {
+        let mut rig = Rig::new();
+        let links: kemlock_app::bitwarden::SharedInviteLinks = std::sync::Arc::new(Organizations(answer));
+        rig.router = rig.router.layer(axum::Extension(links));
+        let sam = rig.person("sam@example.org").await;
+        let (space, _collection) = make_space(&sam).await;
+        let view = sam.get(&format!("/kem/v1/spaces/{space}")).await;
+        assert_eq!(view.status, StatusCode::OK, "{:?}", view.json());
+        assert_eq!(view.json()["bitwardenOrganization"], expected);
+    }
 }

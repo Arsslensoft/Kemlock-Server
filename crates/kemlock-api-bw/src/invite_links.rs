@@ -9,9 +9,9 @@
 
 use crate::app::{App, BwStore};
 use crate::orgs::members::{LinkRefusal, pending_link_of};
-use crate::orgs::model::{ADMIN, OWNER, level};
+use crate::orgs::model::{ADMIN, KIND_ORG, OWNER, level};
 use kemlock_app::bitwarden::{
-    Asker, BwInviteLinks, InviteLinkError, MemberInviteLink, SharedInviteLinks,
+    Asker, BwInviteLinks, BwOrgStore, InviteLinkError, MemberInviteLink, SharedInviteLinks,
 };
 use kemlock_app::notices::BoxFuture;
 use kemlock_domain::{SpaceId, UserId};
@@ -63,6 +63,14 @@ impl<S: BwStore> BwInviteLinks for Links<S> {
                     "only an owner may hand over the invitation of a manager, admin or owner",
                 )),
             }
+        })
+    }
+
+    fn is_organization(&self, space: SpaceId) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            BwOrgStore::doc_get(&self.0.store, space.0, KIND_ORG, "")
+                .await
+                .is_ok_and(|doc| doc.is_some())
         })
     }
 }

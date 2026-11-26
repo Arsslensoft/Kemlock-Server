@@ -421,6 +421,15 @@ impl BwInviteLinks for FakeInviteLinks {
             self.answer.lock().expect("the lock isn't poisoned").clone()
         })
     }
+
+    fn is_organization(&self, _space: SpaceId) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            !matches!(
+                *self.answer.lock().expect("the lock isn't poisoned"),
+                Err(InviteLinkError::NotOrganization)
+            )
+        })
+    }
 }
 
 impl Rig {
