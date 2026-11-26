@@ -348,7 +348,12 @@ describe('the profile client', () => {
   });
 
   it('keeps the wrap as base64url the server accepts', () => {
-    expect(decodeB64(encodeB64(utf8('wrap')))).toEqual(utf8('wrap'));
+    const wrap = encodeB64(utf8('wrap'));
+    // No padding and no `+` or `/`, the one binary encoding of /kem/v1.
+    expect(wrap).toBe('d3JhcA');
+    // Compared as numbers: vitest's jsdom hands the test its own Uint8Array, and TextEncoder makes
+    // Node's, so two arrays with the same bytes are not equal to toEqual there.
+    expect(Array.from(decodeB64(wrap))).toEqual(Array.from(utf8('wrap')));
   });
 
   it('words each refusal the server gives', () => {
