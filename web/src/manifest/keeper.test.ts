@@ -83,6 +83,7 @@ function setup(
   options: {
     spaceSigner?: (space: string, signer: string) => Promise<Uint8Array | null>;
     spaces?: () => Promise<string[]>;
+    maxBytes?: number;
   } = {},
 ) {
   const stored = new Map<string, ManifestDto>();
@@ -122,6 +123,7 @@ function setup(
     accountId: () => ACCOUNT,
     spaceSigner: options.spaceSigner ?? (async () => null),
     ...(options.spaces ? { spaces: options.spaces } : {}),
+    ...(options.maxBytes ? { maxBytes: options.maxBytes } : {}),
     now: () => clock,
     schedule: (run) => {
       timers.push(run);
@@ -630,9 +632,32 @@ describe('signing the next manifest after this browser writes', () => {
     await run.keeper.flush();
     expect(run.api.put).toHaveBeenCalledTimes(1);
     expect(putBody(run.api).owner).toBe(SPACE);
+    // Not being allowed to write a space's manifest is no failure to show.
+    expect(run.keeper.getWarning().publishFailed).toBe(false);
     await run.keeper.wrote([item(A, 2, 'y', SPACE)]);
     await run.keeper.flush();
     expect(run.api.put).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a manifest it could not store, and stops showing it once one is", async () => {
+    const run = setup();
+    await run.sync([]);
+    run.api.put.mockRejectedValueOnce(new Error('offline'));
+    await run.keeper.wrote([item(A, 1)]);
+    await run.keeper.flush();
+    expect(run.keeper.getWarning()).toEqual({ manifests: [], items: [], publishFailed: true });
+    await run.keeper.wrote([item(B, 1)]);
+    await run.keeper.flush();
+    expect(run.keeper.getWarning()).toBe(NO_WARNING);
+  });
+
+  it("shows a manifest too big for the server, and sends nothing", async () => {
+    const run = setup({ maxBytes: 100 });
+    await run.sync([]);
+    await run.keeper.wrote([item(A, 1)]);
+    await run.keeper.flush();
+    expect(run.api.put).not.toHaveBeenCalled();
+    expect(run.keeper.getWarning().publishFailed).toBe(true);
   });
 
   it('drops what it planned when the vault locks', async () => {

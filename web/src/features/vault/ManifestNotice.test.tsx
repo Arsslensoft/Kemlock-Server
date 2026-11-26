@@ -16,6 +16,7 @@ describe('ManifestNoticeView', () => {
   it('counts what is older, missing and back, and says what to do', () => {
     const warning: ManifestWarning = {
       manifests: [],
+      publishFailed: false,
       items: [
         { owner: OWN, id: ID, verdict: 'rolled-back', revision: 1, manifestRevision: 2 },
         { owner: OWN, id: `${ID}x`, verdict: 'rolled-back', revision: 1, manifestRevision: 2 },
@@ -40,8 +41,15 @@ describe('ManifestNoticeView', () => {
     ['invalid' as const, /could not be verified/],
     ['dropped' as const, /no signed list of items, though this browser has seen one/],
   ])('says what is wrong with a manifest that is %s', (problem, words) => {
-    renderWithIntl(<ManifestNoticeView warning={{ manifests: [{ owner: OWN, problem }], items: [] }} />);
+    renderWithIntl(<ManifestNoticeView warning={{ manifests: [{ owner: OWN, problem }], items: [], publishFailed: false }} />);
     expect(screen.getByText(words)).toBeInTheDocument();
+  });
+
+  it('says only that when the signed list could not be saved', () => {
+    renderWithIntl(<ManifestNoticeView warning={{ manifests: [], items: [], publishFailed: true }} />);
+    expect(screen.getByText(/could not save the signed list of your items/)).toBeInTheDocument();
+    expect(screen.queryByText(/doesn't match what your devices signed/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tell your administrator/)).not.toBeInTheDocument();
   });
 
   it('says each problem once, however many owners have it', () => {
@@ -53,6 +61,7 @@ describe('ManifestNoticeView', () => {
             { owner: 'space:44444444-4444-4444-8444-444444444444', problem: 'invalid' },
           ],
           items: [],
+          publishFailed: false,
         }}
       />,
     );

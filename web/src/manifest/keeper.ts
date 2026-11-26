@@ -51,9 +51,18 @@ export type ManifestProblem =
 export interface ManifestWarning {
   manifests: Array<{ owner: string; problem: ManifestProblem }>;
   items: Array<Finding & { owner: string }>;
+  /**
+   * This browser could not store the signed list it made after a write (too big for the server,
+   * a counter it would not go above, no network): until one is stored, a rollback or a hidden
+   * item may go unseen.
+   */
+  publishFailed: boolean;
 }
 
-export const NO_WARNING: ManifestWarning = { manifests: [], items: [] };
+export const NO_WARNING: ManifestWarning = { manifests: [], items: [], publishFailed: false };
+
+/** The most bytes a manifest may hold: the server refuses more (docs/crypto.md, "What the server checks"). */
+export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
 
 /**
  * The bundle of the member who signed a space's manifest, or null when the space does not vouch
@@ -80,6 +89,8 @@ export interface KeeperDeps {
    */
   spaces?: () => Promise<string[]>;
   now?: () => number;
+  /** The most bytes a manifest may hold; the server's limit when left out. */
+  maxBytes?: number;
   /** Runs `run` after `ms` and returns what cancels it. */
   schedule?: (run: () => void, ms: number) => () => void;
 }
@@ -145,6 +156,8 @@ export function createManifestKeeper(deps: KeeperDeps) {
   const pending = new Set<string>();
   /** Owners the server refused our manifest for (not allowed to write); not asked again. */
   const refused = new Set<string>();
+  /** Owners whose last manifest could not be stored. */
+  const failed = new Set<string>();
   let complete = false;
   let dirty = false;
   let lastVerify = 0;
@@ -171,7 +184,12 @@ export function createManifestKeeper(deps: KeeperDeps) {
     }
     const seen = new Set(items.map((item) => `${item.owner}|${item.id}`));
     for (const [key, finding] of anomalies) if (!seen.has(key)) items.push(finding);
-    setWarning(manifests.length === 0 && items.length === 0 ? NO_WARNING : { manifests, items });
+    const publishFailed = failed.size > 0;
+    setWarning(
+      manifests.length === 0 && items.length === 0 && !publishFailed
+        ? NO_WARNING
+        : { manifests, items, publishFailed },
+    );
   }
 
   /** Runs `task` after everything queued before it, whatever became of that. */
@@ -337,6 +355,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
       const counter = Math.max(checked.floor, above) + 1;
       const next: Manifest = { owner, counter, entries };
       const bytes = encodeManifest(next);
+      if (bytes.length > (deps.maxBytes ?? MAX_MANIFEST_BYTES)) throw new Error('size');
       const signature = await deps.crypto.manifestSign(bytes);
       try {
         await deps.api.put(owner, { manifest: encodeB64(bytes), signature: encodeB64(signature) });
@@ -380,11 +399,15 @@ export function createManifestKeeper(deps: KeeperDeps) {
       for (const owner of owners) {
         try {
           await publish(owner, account, mine);
-        } catch {
-          // Not allowed, locked, or no network: the next write signs it again.
+          failed.delete(owner);
+        } catch (error) {
+          // Not allowed to write a space's manifest is no failure. Anything else (too big, a
+          // counter it would not go above, no network) is shown, and the next write tries again.
+          if (!(isApiError(error) && (error.status === 403 || error.status === 404))) failed.add(owner);
         }
         if (mine !== epoch) return;
       }
+      publishWarning();
     });
   }
 
@@ -398,6 +421,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
       results.clear();
       pending.clear();
       refused.clear();
+      failed.clear();
       cancelTimer?.();
       cancelTimer = undefined;
       complete = false;

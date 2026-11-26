@@ -46,5 +46,6 @@
   "manifest.notice.resurrected": "{count, plural, one {# deleted item came back.} other {# deleted items came back.}}",
   "manifest.notice.deleted": "{count, plural, one {# item was deleted by another device or by the server, and that can not be told apart from here.} other {# items were deleted by another device or by the server, and that can not be told apart from here.}}",
   "manifest.notice.implausible": "{count, plural, one {# item has a revision it could not have reached.} other {# items have a revision they could not have reached.}}",
+  "manifest.notice.publishFailed": "This browser could not save the signed list of your items after your last change, so a rolled-back or hidden item may go unseen until it can.",
   "manifest.notice.hint": "Treat this as unreliable until you have checked it on another device that is signed in. It can be a fault on the server, or someone tampering with it: tell your administrator."
 }

@@ -17,7 +17,9 @@ const PROBLEM: Record<ManifestProblem, MessageId> = {
 /** The notice for a warning. Takes the warning, so it is shown and tested without the keeper. */
 export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
   const t = useT();
-  if (warning.manifests.length === 0 && warning.items.length === 0) return null;
+  if (warning.manifests.length === 0 && warning.items.length === 0 && !warning.publishFailed) return null;
+  // The title and the advice are for a mismatch; a list that could not be saved says only that.
+  const mismatch = warning.manifests.length > 0 || warning.items.length > 0;
   const count = (verdict: ManifestWarning['items'][number]['verdict']) =>
     warning.items.filter((item) => item.verdict === verdict).length;
   const problems = [...new Set(warning.manifests.map((entry) => entry.problem))];
@@ -28,18 +30,21 @@ export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
   const implausible = count('implausible');
   return (
     <Notice tone="warn" live>
-      <p>
-        <b>{t('manifest.notice.title')}</b>
-      </p>
+      {mismatch ? (
+        <p>
+          <b>{t('manifest.notice.title')}</b>
+        </p>
+      ) : null}
       {problems.map((problem) => (
         <p key={problem}>{t(PROBLEM[problem])}</p>
       ))}
+      {warning.publishFailed ? <p>{t('manifest.notice.publishFailed')}</p> : null}
       {rolledBack > 0 ? <p>{t('manifest.notice.rolledBack', { count: rolledBack })}</p> : null}
       {missing > 0 ? <p>{t('manifest.notice.missing', { count: missing })}</p> : null}
       {resurrected > 0 ? <p>{t('manifest.notice.resurrected', { count: resurrected })}</p> : null}
       {deleted > 0 ? <p>{t('manifest.notice.deleted', { count: deleted })}</p> : null}
       {implausible > 0 ? <p>{t('manifest.notice.implausible', { count: implausible })}</p> : null}
-      <p className="hint">{t('manifest.notice.hint')}</p>
+      {mismatch ? <p className="hint">{t('manifest.notice.hint')}</p> : null}
     </Notice>
   );
 }
