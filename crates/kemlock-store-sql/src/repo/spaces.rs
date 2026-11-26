@@ -21,8 +21,8 @@ use kemlock_app::spaces::{
     ExternalChangeMode, KeyReplacement, PendingExternal, SpaceChanges, SpaceItemInfo, SpaceRepo,
 };
 use kemlock_domain::spaces::{
-    Collection, CollectionGrant, CollectionId, Group, KeyCopy, Member, MemberState, Space,
-    SpaceState,
+    Collection, CollectionGrant, CollectionId, Grantee, Group, GroupId, KeyCopy, Member,
+    MemberState, Space, SpaceState,
 };
 use kemlock_domain::{Item, ItemDraft, ItemId, Owner, SpaceId, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
@@ -140,6 +140,22 @@ impl SpaceRepo for SqlStore {
             .into_iter()
             .map(spaces::Model::into_domain)
             .collect()
+    }
+
+    async fn collection_space(&self, id: CollectionId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(collections::Entity::find_by_id(id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .map(|row| SpaceId(row.space_id)))
+    }
+
+    async fn group_space(&self, id: GroupId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(groups::Entity::find_by_id(id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .map(|row| SpaceId(row.space_id)))
     }
 
     async fn key_copies(&self, space: SpaceId, user: UserId) -> Result<Vec<KeyCopy>, StoreError> {
@@ -457,6 +473,7 @@ pub(super) async fn apply_in(
     creating: bool,
 ) -> Result<(), StoreError> {
     let space = changes.space_id.0;
+    ensure_changes_are_here(txn, space, &changes).await?;
 
     // Removals.
     for user in &changes.members_removed {
@@ -496,7 +513,7 @@ pub(super) async fn apply_in(
         }
     }
     for group in &changes.groups_removed {
-        delete_group(txn, group.0).await?;
+        delete_group(txn, space, group.0).await?;
     }
     for collection in &changes.collections_removed {
         collection_grants::Entity::delete_many()
@@ -516,6 +533,7 @@ pub(super) async fn apply_in(
             .store()?;
         collections::Entity::delete_many()
             .filter(collections::Column::Id.eq(collection.0))
+            .filter(collections::Column::SpaceId.eq(space))
             .exec(txn)
             .await
             .store()?;
@@ -567,7 +585,7 @@ pub(super) async fn apply_in(
             .store()?;
     }
     for group in &changes.groups {
-        delete_group(txn, group.id.0).await?;
+        delete_group(txn, space, group.id.0).await?;
         groups::Entity::insert(groups::active(group))
             .exec(txn)
             .await
@@ -585,6 +603,7 @@ pub(super) async fn apply_in(
     for collection in &changes.collections {
         collections::Entity::delete_many()
             .filter(collections::Column::Id.eq(collection.id.0))
+            .filter(collections::Column::SpaceId.eq(space))
             .exec(txn)
             .await
             .store()?;
@@ -625,8 +644,75 @@ pub(super) async fn delete_recovery_box(
     Ok(())
 }
 
-/// Deletes a group, its members and the grants made to it.
-async fn delete_group(txn: &DatabaseTransaction, group: Uuid) -> Result<(), StoreError> {
+/// Refuses (`Duplicate`) changes that name a collection or group of another space, or a row that
+/// says it belongs to another space. Collection and group ids are chosen by clients and are
+/// unique across spaces, and the tables have no foreign keys, so a delete or an upsert by id alone
+/// would move or wipe the other space's row, its grants and its key copies.
+async fn ensure_changes_are_here(
+    txn: &DatabaseTransaction,
+    space: Uuid,
+    changes: &SpaceChanges,
+) -> Result<(), StoreError> {
+    let foreign_row = changes.space.as_ref().is_some_and(|s| s.id.0 != space)
+        || changes.members.iter().any(|m| m.space.0 != space)
+        || changes.groups.iter().any(|g| g.space.0 != space)
+        || changes.collections.iter().any(|c| c.space.0 != space);
+    if foreign_row {
+        return Err(StoreError::Duplicate);
+    }
+
+    let mut collection_ids: Vec<Uuid> = Vec::new();
+    collection_ids.extend(changes.collections.iter().map(|c| c.id.0));
+    collection_ids.extend(changes.collections_removed.iter().map(|c| c.0));
+    collection_ids.extend(changes.grants.iter().map(|g| g.collection.0));
+    collection_ids.extend(changes.grants_removed.iter().map(|(c, _)| c.0));
+    collection_ids.extend(changes.key_copies.iter().map(|k| k.collection.0));
+    collection_ids.extend(changes.key_copies_removed.iter().map(|(c, _)| c.0));
+    if !collection_ids.is_empty() {
+        let foreign = collections::Entity::find()
+            .filter(collections::Column::Id.is_in(collection_ids))
+            .filter(collections::Column::SpaceId.ne(space))
+            .one(txn)
+            .await
+            .store()?;
+        if foreign.is_some() {
+            return Err(StoreError::Duplicate);
+        }
+    }
+
+    let mut group_ids: Vec<Uuid> = Vec::new();
+    group_ids.extend(changes.groups.iter().map(|g| g.id.0));
+    group_ids.extend(changes.groups_removed.iter().map(|g| g.0));
+    let grantees = changes
+        .grants
+        .iter()
+        .map(|g| g.grantee)
+        .chain(changes.grants_removed.iter().map(|(_, grantee)| *grantee));
+    for grantee in grantees {
+        if let Grantee::Group(group) = grantee {
+            group_ids.push(group.0);
+        }
+    }
+    if !group_ids.is_empty() {
+        let foreign = groups::Entity::find()
+            .filter(groups::Column::Id.is_in(group_ids))
+            .filter(groups::Column::SpaceId.ne(space))
+            .one(txn)
+            .await
+            .store()?;
+        if foreign.is_some() {
+            return Err(StoreError::Duplicate);
+        }
+    }
+    Ok(())
+}
+
+/// Deletes a group of `space`, its members and the grants made to it.
+async fn delete_group(
+    txn: &DatabaseTransaction,
+    space: Uuid,
+    group: Uuid,
+) -> Result<(), StoreError> {
     group_members::Entity::delete_many()
         .filter(group_members::Column::GroupId.eq(group))
         .exec(txn)
@@ -640,6 +726,7 @@ async fn delete_group(txn: &DatabaseTransaction, group: Uuid) -> Result<(), Stor
         .store()?;
     groups::Entity::delete_many()
         .filter(groups::Column::Id.eq(group))
+        .filter(groups::Column::SpaceId.eq(space))
         .exec(txn)
         .await
         .store()?;

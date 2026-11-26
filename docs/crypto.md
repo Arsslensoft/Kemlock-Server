@@ -1568,6 +1568,10 @@ that the `confirm` records its own bundle, byte for byte.
   its revoke and remove are both `remove`, and its restore is a new `invite`.
 - S3. With each record that commits seals or names, it keeps the boxes and sealed names the record
   committed, by `seq`.
+- S4. A collection id and a group id belong to one space on a server. Clients choose them, so the
+  server refuses a create, a record or a change that names an id another space holds (`409`
+  `already-exists`, and `400` for a chain request), and never moves, replaces or deletes a row of another
+  space. A client chooses a fresh random UUID for each.
 
 **Serving**
 

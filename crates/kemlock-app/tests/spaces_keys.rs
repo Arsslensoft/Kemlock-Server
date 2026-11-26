@@ -8,8 +8,8 @@ use fakes::actor;
 use kemlock_app::dedup::TagStore;
 use kemlock_app::ports::ItemStore;
 use kemlock_app::spaces::{
-    CollectionRekey, CreateCollectionInput, CreateGroupInput, EditCollectionInput, EditGroupInput,
-    ReplacementInput, SpacesError,
+    CollectionRekey, CreateCollectionInput, CreateGroupInput, CreateSpaceInput, EditCollectionInput,
+    EditGroupInput, NewCollection, ReplacementInput, SpacesError,
 };
 use kemlock_domain::spaces::{
     Collection, CollectionId, CollectionPermission, Grantee, GroupId, MemberState, SpaceError,
@@ -1318,4 +1318,81 @@ async fn replacing_only_a_collection_key_keeps_the_dedup_key_version() {
     let after = c.w.world.store.settings(owner).await.expect("settings");
     assert_eq!(after.version, before.version);
     assert_eq!(c.w.world.store.tags_of(kept).len(), 1);
+}
+
+#[tokio::test]
+async fn a_collection_or_group_id_another_space_holds_is_taken() {
+    let w = SpaceWorld::new();
+    let sam = w.user("sam@example.org").await;
+    let eve = w.user("eve@example.org").await;
+    let (victim, everyone) = w.make_space(sam).await;
+    let (attacker, _) = w.make_space(eve).await;
+    let ops = GroupId::random();
+    w.create_group()
+        .execute(
+            &actor(sam),
+            victim,
+            CreateGroupInput {
+                id: ops,
+                name: name(21),
+                members: vec![sam],
+            },
+        )
+        .await
+        .expect("Sam's group");
+    let before = w.spaces.state(victim);
+
+    // Eve reuses the ids she saw in Sam's space: as a new collection, a new group, and a new
+    // space's first collection.
+    let collection = w
+        .create_collection()
+        .execute(
+            &actor(eve),
+            attacker,
+            CreateCollectionInput {
+                id: everyone,
+                parent: None,
+                name: name(8),
+                grants: Vec::new(),
+                keys: vec![key_for(everyone, eve, 6)],
+            },
+        )
+        .await;
+    assert_eq!(collection.map(|_| ()), Err(SpacesError::Duplicate));
+    let group = w
+        .create_group()
+        .execute(
+            &actor(eve),
+            attacker,
+            CreateGroupInput {
+                id: ops,
+                name: name(21),
+                members: Vec::new(),
+            },
+        )
+        .await;
+    assert_eq!(group.map(|_| ()), Err(SpacesError::Duplicate));
+    let space = w
+        .create_space()
+        .execute(
+            &actor(eve),
+            CreateSpaceInput {
+                id: SpaceId::random(),
+                name: name(1),
+                sealed_space_key: sealed_key(2),
+                collection: NewCollection {
+                    id: everyone,
+                    name: name(3),
+                    sealed_key: sealed_key(4),
+                },
+            },
+        )
+        .await;
+    assert_eq!(space.map(|_| ()), Err(SpacesError::Duplicate));
+
+    // Sam's space is as it was, and Eve's has neither.
+    assert_eq!(w.spaces.state(victim), before);
+    let theirs = w.spaces.state(attacker);
+    assert!(theirs.collection(everyone).is_none() && theirs.group(ops).is_none());
+    assert!(w.spaces.copy(everyone, eve).is_none());
 }

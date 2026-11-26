@@ -120,6 +120,37 @@ fn apply_in(g: &mut Inner, c: SpaceChanges) {
     }
 }
 
+/// Whether `c` names a collection or group of another space, or a row that says it is another
+/// space's: the SQL store refuses these (`Duplicate`) instead of taking the row over.
+fn foreign(g: &Inner, c: &SpaceChanges) -> bool {
+    let space = c.space_id;
+    let other_collection =
+        |id: &CollectionId| g.collections.get(id).is_some_and(|x| x.space != space);
+    let other_group = |id: &GroupId| g.groups.get(id).is_some_and(|x| x.space != space);
+    let other_grantee =
+        |grantee: &Grantee| matches!(grantee, Grantee::Group(group) if other_group(group));
+    c.collections
+        .iter()
+        .any(|x| x.space != space || other_collection(&x.id))
+        || c.collections_removed.iter().any(other_collection)
+        || c.groups.iter().any(|x| x.space != space || other_group(&x.id))
+        || c.groups_removed.iter().any(other_group)
+        || c.members.iter().any(|m| m.space != space)
+        || c
+            .grants
+            .iter()
+            .any(|x| other_collection(&x.collection) || other_grantee(&x.grantee))
+        || c
+            .grants_removed
+            .iter()
+            .any(|(col, grantee)| other_collection(col) || other_grantee(grantee))
+        || c.key_copies.iter().any(|k| other_collection(&k.collection))
+        || c
+            .key_copies_removed
+            .iter()
+            .any(|(col, _)| other_collection(col))
+}
+
 /// What the SQL store does with a held item that a space item write has replaced (I4): a
 /// tombstone, or a revision under the collection's current key version, releases it.
 fn release_written(g: &mut Inner, item: &Item, collection: Option<CollectionId>) {
@@ -227,6 +258,14 @@ impl<I: ItemStore> SpaceRepo for FakeSpaces<I> {
             .collect())
     }
 
+    async fn collection_space(&self, id: CollectionId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(self.lock().collections.get(&id).map(|c| c.space))
+    }
+
+    async fn group_space(&self, id: GroupId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(self.lock().groups.get(&id).map(|x| x.space))
+    }
+
     async fn key_copies(&self, space: SpaceId, user: UserId) -> Result<Vec<KeyCopy>, StoreError> {
         let g = self.lock();
         Ok(g.copies
@@ -286,12 +325,19 @@ impl<I: ItemStore> SpaceRepo for FakeSpaces<I> {
         if g.spaces.contains_key(&changes.space_id) {
             return Err(StoreError::Duplicate);
         }
+        if foreign(&g, &changes) {
+            return Err(StoreError::Duplicate);
+        }
         apply_in(&mut g, changes);
         Ok(())
     }
 
     async fn apply(&self, changes: SpaceChanges) -> Result<(), StoreError> {
-        apply_in(&mut self.lock(), changes);
+        let mut g = self.lock();
+        if foreign(&g, &changes) {
+            return Err(StoreError::Duplicate);
+        }
+        apply_in(&mut g, changes);
         Ok(())
     }
 

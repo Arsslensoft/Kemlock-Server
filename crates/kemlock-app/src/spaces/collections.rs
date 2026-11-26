@@ -71,7 +71,10 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateCollection<R, V, C> {
         let state = load_open(&self.spaces, space).await?;
         state.authorize_create_collection(actor.user)?;
         state.ensure_keys_open()?;
-        if state.collection(input.id).is_some() {
+        // Collection ids are unique across spaces: another space's id is taken too.
+        if state.collection(input.id).is_some()
+            || self.spaces.collection_space(input.id).await?.is_some()
+        {
             return Err(SpacesError::Duplicate);
         }
         state.check_parent(input.id, input.parent)?;

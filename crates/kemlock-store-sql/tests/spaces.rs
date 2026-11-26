@@ -810,3 +810,131 @@ async fn the_require_sso_policy_is_kept_per_space_and_binds_confirmed_members() 
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn another_space_cannot_take_over_or_wipe_a_collection_or_group() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let eve = person(&store, 2, "eve@example.org").await;
+    let (victim, everyone) = make_space(&store, sam.id).await;
+    let (attacker, _) = make_space(&store, eve.id).await;
+    let group = Group {
+        id: GroupId::random(),
+        space: victim,
+        name: name(5),
+        members: BTreeSet::from([sam.id]),
+        created_at: datetime!(2026-06-01 12:00:00 UTC),
+    };
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            groups: vec![group.clone()],
+            ..SpaceChanges::new(victim)
+        },
+    )
+    .await
+    .expect("the victim's own group");
+    let before = SpaceRepo::load(&store, victim)
+        .await
+        .expect("loads")
+        .expect("exists");
+    let holders = SpaceRepo::holders(&store, victim).await.expect("holders");
+    assert_eq!(
+        SpaceRepo::collection_space(&store, everyone).await,
+        Ok(Some(victim))
+    );
+    assert_eq!(
+        SpaceRepo::group_space(&store, group.id).await,
+        Ok(Some(victim))
+    );
+    assert_eq!(
+        SpaceRepo::collection_space(&store, CollectionId::random()).await,
+        Ok(None)
+    );
+
+    // Taking the id over: the collection and the group, each under the attacker's own space.
+    let mut moved = before.collections[0].clone();
+    moved.space = attacker;
+    let mut hijacked = group.clone();
+    hijacked.space = attacker;
+    hijacked.members = BTreeSet::new();
+    let attempts = [
+        SpaceChanges {
+            collections: vec![moved],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            groups: vec![hijacked],
+            ..SpaceChanges::new(attacker)
+        },
+        // Wiping it: removals by id, and the grants and key copies under it.
+        SpaceChanges {
+            collections_removed: vec![everyone],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            groups_removed: vec![group.id],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            grants_removed: vec![(everyone, Grantee::Member(sam.id))],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            key_copies_removed: vec![(everyone, sam.id)],
+            ..SpaceChanges::new(attacker)
+        },
+        // A grant on the victim's collection, to the victim's group, is just as foreign.
+        SpaceChanges {
+            grants: vec![CollectionGrant {
+                collection: everyone,
+                grantee: Grantee::Group(group.id),
+                permission: CollectionPermission::Manage,
+            }],
+            ..SpaceChanges::new(attacker)
+        },
+        // A change to one space that carries a row of another.
+        SpaceChanges {
+            groups: vec![group.clone()],
+            ..SpaceChanges::new(attacker)
+        },
+    ];
+    for changes in attempts {
+        assert_eq!(
+            SpaceRepo::apply(&store, changes).await,
+            Err(StoreError::Duplicate)
+        );
+    }
+
+    // Nothing of the victim's moved or went.
+    let after = SpaceRepo::load(&store, victim)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert_eq!(after.collections, before.collections);
+    assert_eq!(after.grants, before.grants);
+    assert_eq!(after.groups, before.groups);
+    assert_eq!(
+        SpaceRepo::holders(&store, victim).await.expect("holders"),
+        holders
+    );
+    let theirs = SpaceRepo::load(&store, attacker)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert!(theirs.groups.is_empty());
+    assert!(theirs.collections.iter().all(|c| c.id != everyone));
+
+    // The victim's own space can still change and delete them.
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            groups_removed: vec![group.id],
+            collections_removed: vec![everyone],
+            ..SpaceChanges::new(victim)
+        },
+    )
+    .await
+    .expect("the owner space deletes its own");
+    assert_eq!(SpaceRepo::collection_space(&store, everyone).await, Ok(None));
+}

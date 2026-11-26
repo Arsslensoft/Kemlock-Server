@@ -45,7 +45,8 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateGroup<R, V, C> {
         let state = load_open(&self.spaces, space).await?;
         state.authorize_manage_groups(actor.user)?;
         state.ensure_keys_open()?;
-        if state.group(input.id).is_some() {
+        // Group ids are unique across spaces: another space's id is taken too.
+        if state.group(input.id).is_some() || self.spaces.group_space(input.id).await?.is_some() {
             return Err(SpacesError::Duplicate);
         }
         let members = check_members(&state, &input.members)?;

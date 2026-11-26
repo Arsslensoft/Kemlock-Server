@@ -333,7 +333,14 @@ where
                     state: Some(state_after),
                 },
             )
-            .await?;
+            .await
+            .map_err(|e| match e {
+                // The tables are shared by every space: a collection or group id of another space.
+                StoreError::Duplicate => AppendError::Invalid(
+                    "a collection or group id is already used by another space",
+                ),
+                other => other.into(),
+            })?;
         match outcome {
             AppendOutcome::Appended(new_head) => {
                 record(

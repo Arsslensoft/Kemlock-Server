@@ -29,7 +29,7 @@ use kemlock_app::{
 use kemlock_crypto::opaque::OpaqueServer;
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::privacy::{SignInEntry, StoredEvent, truncate_ip};
-use kemlock_domain::spaces::{CollectionId, KeyCopy, Member, Space, SpaceState};
+use kemlock_domain::spaces::{CollectionId, GroupId, KeyCopy, Member, Space, SpaceState};
 use kemlock_domain::{
     ChangeId, Device, DeviceId, DeviceKind, Hlc, Item, ItemDraft, ItemId, KdfParams, Owner,
     ServerId, SpaceId, User, UserId, VersionVector,
@@ -1106,6 +1106,14 @@ impl SpaceRepo for NoSpaceStore {
 
     async fn spaces(&self, _: &[SpaceId]) -> Result<Vec<Space>, StoreError> {
         Ok(Vec::new())
+    }
+
+    async fn collection_space(&self, _: CollectionId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(None)
+    }
+
+    async fn group_space(&self, _: GroupId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(None)
     }
 
     async fn key_copies(&self, _: SpaceId, _: UserId) -> Result<Vec<KeyCopy>, StoreError> {
