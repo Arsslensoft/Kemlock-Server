@@ -304,6 +304,27 @@ describe('SpaceDetailView', () => {
     expect(screen.getByText('Keys not traced')).toBeInTheDocument();
   });
 
+  it('shows no roster and no way to accept or invite while first contact is pending', () => {
+    view({
+      detail: detail({
+        readable: false,
+        name: null,
+        trust: {
+          kind: 'first-contact',
+          view: {
+            ...NO_CHAIN,
+            chained: true,
+            trusted: false,
+            firstContact: { kind: 'compare', person: ME, fingerprint: '12345 67890', owners: [] },
+          },
+        },
+      }),
+    });
+    expect(screen.queryByRole('row', { name: /Theo Grant/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Accept the invitation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Invite people' })).not.toBeInTheDocument();
+  });
+
   it('shows a plain notice when the space can not be opened here', () => {
     view({ detail: detail({ readable: false, name: null }) });
     expect(screen.getByText(/can't seal or sign keys yet/)).toBeInTheDocument();

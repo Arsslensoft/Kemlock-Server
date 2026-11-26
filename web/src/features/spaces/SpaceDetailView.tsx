@@ -357,7 +357,10 @@ export function SpaceDetailView({
   }
 
   const { view } = detail;
-  const members = detail.members;
+  // While first contact is pending the roster is the server's word, so it isn't shown, and an
+  // invitation can't be accepted yet (docs/crypto.md, "First contact", "When").
+  const waiting = detail.trust?.kind === 'first-contact';
+  const members = waiting ? [] : detail.members;
   const me = view.me;
   const manage = canManageUsers(me);
   const pendingKeys =
@@ -382,7 +385,7 @@ export function SpaceDetailView({
             })}
           </p>
         </div>
-        {manage ? (
+        {manage && !waiting ? (
           <Button variant="primary" onPress={() => setInviting((open) => !open)}>
             {t('space.invite.open')}
           </Button>
@@ -575,7 +578,7 @@ export function SpaceDetailView({
               ) : null;
             })()
           : null}
-        {inviting && manage ? (
+        {inviting && manage && !waiting ? (
           <InviteForm
             detail={detail}
             busy={busy}
