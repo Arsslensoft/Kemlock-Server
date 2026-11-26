@@ -17,7 +17,7 @@ use kemlock_app::rotation::{
     Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
 };
 use kemlock_domain::unlock::{EmergencyState, GrantId};
-use kemlock_domain::{ChangeId, PasskeyId, UserId};
+use kemlock_domain::{ChangeId, ItemId, PasskeyId, Revision, UserId};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -42,6 +42,7 @@ struct FakeRotation {
     users: FakeStore,
     holdings: Arc<Mutex<Holdings>>,
     installs: Arc<Mutex<u32>>,
+    snapshots: Arc<Mutex<u32>>,
 }
 
 impl RotationStore for FakeRotation {
@@ -60,7 +61,18 @@ impl RotationStore for FakeRotation {
         Ok(items.len() as u64)
     }
 
+    async fn snapshot(
+        &self,
+        _user: UserId,
+        _rotation: [u8; 16],
+        _since: OffsetDateTime,
+    ) -> Result<(Holdings, Vec<(ItemId, Revision)>), StoreError> {
+        *self.snapshots.lock().expect("lock") += 1;
+        Ok((self.holdings.lock().expect("lock").clone(), Vec::new()))
+    }
+
     async fn discard(&self, _user: UserId) -> Result<(), StoreError> {
+
         Ok(())
     }
 
@@ -107,6 +119,7 @@ fn rig() -> Rig {
         users: app.store.clone(),
         holdings: Arc::new(Mutex::new(Holdings::default())),
         installs: Arc::new(Mutex::new(0)),
+        snapshots: Arc::new(Mutex::new(0)),
     };
     let router = app
         .router
@@ -529,4 +542,56 @@ async fn a_federated_account_is_refused_by_every_rotation_route() {
         assert_eq!(install.problem(), "rotation-federated");
         assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
     }
+}
+
+#[tokio::test]
+async fn a_refused_install_does_not_spend_the_password() {
+    let rig = rig();
+    let sam = rig.person().await;
+    // A passkey wrap the request names nowhere: refused by the check that runs before the login
+    // state is spent, so the same body works once the account is as the client read it.
+    rig.repo.holdings.lock().expect("lock").passkeys = vec![(PasskeyId::random(), vec![1])];
+    let body = sam.install_body().await;
+    let refused = sam
+        .call("POST", "/kem/v1/account/rotation", Some(body.clone()))
+        .await;
+    assert_eq!(refused.problem(), "rotation-incomplete");
+    assert!(*rig.repo.snapshots.lock().expect("lock") >= 1);
+
+    *rig.repo.holdings.lock().expect("lock") = Holdings::default();
+    let again = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
+}
+
+#[tokio::test]
+async fn an_account_with_no_password_needs_a_passkey_answer_not_a_session() {
+    let rig = rig();
+    let sam = rig.person().await;
+    let mut account = rig.app.store.user(sam.id).expect("user");
+    account.wrapped_root_key = Vec::new();
+    UserRepo::update(&rig.app.store, &account)
+        .await
+        .expect("the account has no password wrap now");
+
+    let mut body = sam.install_body().await;
+    for field in ["loginState", "finalization", "wrappedRootKey"] {
+        body.as_object_mut().expect("object").remove(field);
+    }
+    // A session alone, a mailed code, and a recovery code are not enough.
+    for proof in [None, Some(json!("123456"))] {
+        let mut attempt = body.clone();
+        if let Some(proof) = proof {
+            attempt["proof"] = proof;
+        }
+        let reply = sam
+            .call("POST", "/kem/v1/account/rotation", Some(attempt))
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{:?}", reply.body);
+    }
+    // An answer that is no assertion of this account's passkey is refused too, and nothing is written.
+    body["proof"] = json!({"webauthn": {"id": "AAAA"}});
+    let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+    assert_ne!(reply.status, StatusCode::OK, "{:?}", reply.body);
+    assert_eq!(*rig.repo.installs.lock().expect("lock"), 0);
+    assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
 }

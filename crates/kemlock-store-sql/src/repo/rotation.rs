@@ -208,6 +208,24 @@ impl RotationStore for SqlStore {
         holdings_in(self.reader(), user).await
     }
 
+    async fn snapshot(
+        &self,
+        user: UserId,
+        rotation: [u8; 16],
+        since: OffsetDateTime,
+    ) -> Result<(Holdings, Vec<(ItemId, Revision)>), StoreError> {
+        let holdings = holdings_in(self.reader(), user).await?;
+        let mut staged = Vec::new();
+        for (item, base) in
+            staged_in(self.reader(), user, Uuid::from_bytes(rotation), since).await?
+        {
+            let base = u64::try_from(base)
+                .map_err(|_| StoreError::Backend("a revision is negative".into()))?;
+            staged.push((ItemId(item), Revision(base)));
+        }
+        Ok((holdings, staged))
+    }
+
     async fn stage(
         &self,
         user: UserId,

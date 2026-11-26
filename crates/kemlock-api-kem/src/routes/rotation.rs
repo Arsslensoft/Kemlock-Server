@@ -622,20 +622,45 @@ where
     let request = dto.decoded()?;
     let user = authed.actor.user;
     let rotation = rotation(&api, &repos);
-    // What can be known to be wrong is said before the password is spent.
+    // What can be known to be wrong is said before anything one-time is spent.
     let account = rotation.check(user, &request).await?;
-    let proof = proof_needed(&api, user, dto.proof.as_ref()).await?;
-    if !account.wrapped_root_key.is_empty() {
+    let passwordless = account.wrapped_root_key.is_empty();
+    let proof = if passwordless {
+        // With no password there is nothing to prove but a key in the person's hand: a session
+        // alone must never replace the account's keys, so a fresh answer of a passkey or a
+        // security key is required, whether or not a second step is on.
+        match dto.proof.as_ref() {
+            Some(proof @ FreshProof::Assertion(_)) => Some(proof),
+            _ => {
+                return Err(AppError::Invalid(
+                    "an account with no password needs a fresh answer of a passkey or security key to rotate its keys",
+                )
+                .into());
+            }
+        }
+    } else {
+        proof_needed(&api, user, dto.proof.as_ref()).await?
+    };
+    let password = if passwordless {
+        None
+    } else {
         let (Some(login_state), Some(finalization)) = (&dto.login_state, &dto.finalization) else {
             return Err(AppError::Invalid("the password is needed to rotate the keys").into());
         };
+        Some((login_state, finalization))
+    };
+    // The install's own checks on what the account holds, run on a plain read before the password
+    // and the proof are spent: another device's write makes the install incomplete, and that
+    // must not burn a login state or a one-time code.
+    rotation.precheck(&authed.actor, &request).await?;
+    if let Some((login_state, finalization)) = password {
         let account = account_of(&api, &authed).await?;
         reauthenticate(&api, &authed, &account, login_state, finalization).await?;
     }
     // With a second step on, the password alone is not enough: a stolen session and a guessed
     // password must not replace the account's keys.
     if let Some(proof) = proof {
-        require_proof_via_api(&api, user, proof, true).await?;
+        require_proof_via_api(&api, user, proof, !passwordless).await?;
     }
     let after = rotation.install(&authed.actor, request).await?;
     // The keys are rotated: nothing from here on can say they were not. The new security stamp

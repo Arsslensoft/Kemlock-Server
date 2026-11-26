@@ -216,7 +216,18 @@ pub trait RotationStore: Send + Sync {
     /// What the account holds that a rotation covers.
     fn holdings(&self, user: UserId) -> impl Future<Output = Result<Holdings, StoreError>> + Send;
 
-    /// Stages `items` for `rotation`: a row for the same item is replaced; rows of another
+    /// What the account holds and the items `rotation` staged since `since`, as `(item, base
+    /// revision)`, read without a lock: for a check that spends nothing, before the password and a
+    /// one-time proof are spent on an install the same check would refuse.
+    fn snapshot(
+        &self,
+        user: UserId,
+        rotation: [u8; 16],
+        since: OffsetDateTime,
+    ) -> impl Future<Output = Result<(Holdings, Vec<(ItemId, Revision)>), StoreError>> + Send;
+
+    /// Stages `items` for `rotation`: a row for the same item is replaced;
+ rows of another
     /// rotation, or staged before `since`, are deleted first. Returns how many rows the rotation
     /// has staged now.
     fn stage(
@@ -535,7 +546,34 @@ where
         Ok(account)
     }
 
-    /// Installs the rotation. `actor` is the signed-in device. Returns the account as it is now.
+    /// The checks the install runs inside its transaction, run now on a plain read: it says what
+    /// the install would say about the account's wraps, Sends and items, and spends nothing. The
+    /// route runs it before it asks for the password and a one-time proof, so an install that
+    /// another device's write made incomplete does not burn either. The install checks again.
+    pub async fn precheck(
+        &self,
+        actor: &Actor,
+        request: &InstallRequest,
+    ) -> Result<(), RotationError> {
+        let account = self.check(actor.user, request).await?;
+        let now = self.env.now();
+        let (holdings, staged) = self
+            .store
+            .snapshot(actor.user, request.rotation, now - STAGING_TTL)
+            .await?;
+        let install = Install {
+            request: request.clone(),
+            before: account.clone(),
+            after: account,
+            device: actor.device,
+            now,
+            staged_since: now - STAGING_TTL,
+        };
+        check_install(&install, &holdings, &staged)
+    }
+
+    /// Installs the rotation. `actor` is the signed-in device.
+ Returns the account as it is now.
     pub async fn install(
         &self,
         actor: &Actor,
