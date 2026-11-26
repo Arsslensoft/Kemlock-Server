@@ -1240,6 +1240,25 @@ impl Vault {
             .map_err(fail)
     }
 
+    /// Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`.
+    #[wasm_bindgen(js_name = sealLocal)]
+    pub fn seal_local(&self, label: &str, text: &str) -> Result<String, JsError> {
+        let sealed = self
+            .session
+            .seal_local(label, text.as_bytes())
+            .map_err(fail)?;
+        Ok(b64::encode(&sealed))
+    }
+
+    /// Opens what `sealLocal` sealed under the same label and account; anything else is
+    /// `invalid`.
+    #[wasm_bindgen(js_name = openLocal)]
+    pub fn open_local(&self, label: &str, sealed: &str) -> Result<String, JsError> {
+        let sealed = b64::decode(sealed).map_err(fail)?;
+        let plain = self.session.open_local(label, &sealed).map_err(fail)?;
+        String::from_utf8(plain).map_err(|_| fail(Error::Invalid))
+    }
+
     /// Wipes every secret: all handles and the unlocked account.
     pub fn lock(&mut self) {
         self.session.lock();

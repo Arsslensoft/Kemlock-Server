@@ -326,6 +326,12 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         ),
       );
     },
+    async sealLocal(label, text) {
+      return (await current()).sealLocal(label, text);
+    },
+    async openLocal(label, sealed) {
+      return (await current()).openLocal(label, sealed);
+    },
     async spaceChainView(spaceId) {
       const view = (await current()).spaceChainView(spaceId);
       return view === undefined ? null : parse<ChainView>(view);

@@ -19,7 +19,7 @@ import type {
 } from '@/api/spaces';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
-import type { AnchorStore } from '@/spaces/anchors';
+import type { AnchorStore, PinStore } from '@/spaces/anchors';
 import type { SpaceCrypto } from '@/spaces/crypto';
 import {
   type SpaceTrust,
@@ -37,6 +37,8 @@ export interface SpaceDeps {
   newId?: () => string;
   /** Where this browser keeps the anchors of the chains it verified; its IndexedDB when left out. */
   anchors?: AnchorStore;
+  /** Where it keeps the members whose fingerprint a person compared here. */
+  pins?: PinStore;
 }
 
 /**

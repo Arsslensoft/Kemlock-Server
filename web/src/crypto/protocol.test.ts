@@ -96,6 +96,8 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     openSpaceItem: vi.fn(() => '{"name":"vpn"}'),
     verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn((): string | undefined => undefined),
+    sealLocal: vi.fn(() => 'c2VhbGVk'),
+    openLocal: vi.fn(() => '{"seq":1}'),
     acceptFirstContact: vi.fn(),
     openChainKey: vi.fn(),
     lock: vi.fn(),
@@ -365,6 +367,10 @@ describe('the dispatcher', () => {
     expect(await dispatch('spaceChainView', [UUID])).toBeNull();
     vault.spaceChainView = vi.fn(() => JSON.stringify({ ok: true, chained: false }));
     expect(await dispatch('spaceChainView', [UUID])).toEqual({ ok: true, chained: false });
+    expect(await dispatch('sealLocal', ['anchor/x', '{"seq":1}'])).toBe('c2VhbGVk');
+    expect(vault.sealLocal).toHaveBeenCalledWith('anchor/x', '{"seq":1}');
+    expect(await dispatch('openLocal', ['anchor/x', 'c2VhbGVk'])).toBe('{"seq":1}');
+    expect(vault.openLocal).toHaveBeenCalledWith('anchor/x', 'c2VhbGVk');
     await dispatch('acceptFirstContact', [UUID]);
     expect(vault.acceptFirstContact).toHaveBeenCalledWith(UUID);
     await dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94' }]);

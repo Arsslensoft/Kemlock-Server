@@ -3,7 +3,7 @@
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
 import type { ChainView } from '@/crypto/types';
-import { fromUtf8, utf8 } from '@/lib/b64url';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
 
@@ -77,6 +77,14 @@ export function fakeSpaceCrypto(): FakeSpaces {
     },
     async spaceChainView() {
       return held;
+    },
+    async sealLocal(label, text) {
+      return encodeB64(utf8(JSON.stringify([label, text])));
+    },
+    async openLocal(label, sealed) {
+      const [kept, text] = JSON.parse(fromUtf8(decodeB64(sealed))) as [string, string];
+      if (kept !== label) throw new Error('invalid');
+      return text;
     },
     async acceptFirstContact(spaceId) {
       calls.push(`acceptFirstContact:${spaceId}`);

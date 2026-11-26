@@ -23,7 +23,9 @@ use std::collections::BTreeMap;
 
 use kemlock_crypto::{
     bundle::{Bundle, fingerprint_groups},
+    kem1,
     keys::SecretKey,
+    owner::Owner,
     space_chain::{
         self as sc, Anchor, Body, Hash, Id, KeyRef, Record, SignedRecord, State, Status,
         client::{FirstContact, SealListEntry, anchor_person, open_key},
@@ -489,6 +491,56 @@ fn own_bundle_bytes(session: &Session) -> Result<Vec<u8>, Error> {
     .to_bytes())
 }
 
+// ---- what this browser keeps for itself --------------------------------------------------------
+
+/// The child of the user key that seals what this browser keeps locally for the account (the
+/// anchors of chains it verified, the members whose fingerprints a person compared).
+const LOCAL_STORE_LABEL: &str = "kemlock/v1/local-store";
+/// The `kem1` kind of a locally kept value.
+const LOCAL_KIND: &str = "local-store";
+
+/// The id a local value is bound to: the first 16 bytes of the SHA-256 of its label, so a value
+/// sealed under one label doesn't open under another.
+fn local_id(label: &str) -> [u8; 16] {
+    let hash = kemlock_crypto::hash::sha256(label.as_bytes());
+    let mut id = [0u8; 16];
+    id.copy_from_slice(&hash[..16]);
+    id
+}
+
+impl Session {
+    /// Seals a value this browser keeps for the unlocked account (`kem1`, under a child of the
+    /// account's user key, bound to the label and the account), so what sits in IndexedDB is not
+    /// something a script or the server can write or read.
+    pub(crate) fn seal_local(&self, label: &str, text: &[u8]) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let key = unlocked.root.user_key()?.child(LOCAL_STORE_LABEL)?;
+        Ok(kem1::seal_item(
+            &key,
+            &local_id(label),
+            1,
+            LOCAL_KIND,
+            &Owner::user(unlocked.account_id),
+            text,
+        )?)
+    }
+
+    /// Opens a value `seal_local` sealed, for this account and this label only.
+    pub(crate) fn open_local(&self, label: &str, sealed: &[u8]) -> Result<Vec<u8>, Error> {
+        let unlocked = self.unlocked()?;
+        let key = unlocked.root.user_key()?.child(LOCAL_STORE_LABEL)?;
+        let plain = kem1::open_item(
+            &key,
+            &local_id(label),
+            1,
+            LOCAL_KIND,
+            &Owner::user(unlocked.account_id),
+            sealed,
+        )?;
+        Ok(plain.to_vec())
+    }
+}
+
 // ---- the operations ----------------------------------------------------------------------------
 
 impl Session {
@@ -762,6 +814,13 @@ mod tests {
         assert!(takes_my_place(3, &mine, 2, &mine) == false);
         // An older one is one I replaced since.
         assert!(!takes_my_place(1, &other, 2, &mine));
+    }
+
+    #[test]
+    fn a_local_value_is_bound_to_its_label() {
+        assert_ne!(local_id("anchor/a"), local_id("anchor/b"));
+        assert_eq!(local_id("anchor/a"), local_id("anchor/a"));
+        assert!(kem1::is_valid_kind(LOCAL_KIND));
     }
 
     #[test]

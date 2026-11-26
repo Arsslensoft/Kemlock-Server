@@ -22,14 +22,16 @@ import type {
 } from '@/api/spaces';
 import type { ChainAnchor, ChainMember, ChainView } from '@/crypto/types';
 import { decodeB64 } from '@/lib/b64url';
-import { type AnchorStore, defaultAnchorStore } from '@/spaces/anchors';
+import { type AnchorStore, type PinStore, memoryStores } from '@/spaces/anchors';
 import type { SpaceCrypto } from '@/spaces/crypto';
 
 export interface ChainDeps {
   api: SpacesApi;
   crypto: SpaceCrypto;
-  /** Where this browser keeps its anchors; the browser's IndexedDB when left out. */
+  /** Where this browser keeps its anchors; in memory for the page when left out. */
   anchors?: AnchorStore;
+  /** Where it keeps the members whose fingerprint a person compared; in memory when left out. */
+  pins?: PinStore;
 }
 
 export type SpaceTrust =
@@ -38,12 +40,12 @@ export type SpaceTrust =
   | { kind: 'first-contact'; view: ChainView }
   | { kind: 'unverified'; reason: string; seq: number | null };
 
-let fallback: AnchorStore | undefined;
+let fallback: ReturnType<typeof memoryStores> | undefined;
 
 function storeOf(deps: ChainDeps): AnchorStore {
   if (deps.anchors) return deps.anchors;
-  fallback ??= defaultAnchorStore();
-  return fallback;
+  fallback ??= memoryStores();
+  return fallback.anchors;
 }
 
 function classify(view: ChainView): SpaceTrust {

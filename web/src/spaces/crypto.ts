@@ -98,6 +98,10 @@ export interface SpaceCrypto extends SharingCrypto {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
+  /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
+  sealLocal(label: string, text: string): Promise<string>;
+  /** Opens what `sealLocal` sealed under the same label and account. */
+  openLocal(label: string, sealed: string): Promise<string>;
   /** The view of the chain this unlock verified for a space, or null. */
   spaceChainView(spaceId: string): Promise<ChainView | null>;
   /** The person compared the fingerprint first contact asked for and it matched. */
@@ -144,6 +148,8 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   verifyConfirmation: () => unavailable(),
   verifySpaceChain: () => unavailable(),
   spaceChainView: () => unavailable(),
+  sealLocal: () => unavailable(),
+  openLocal: () => unavailable(),
   acceptFirstContact: () => unavailable(),
   openChainKey: () => unavailable(),
 };
@@ -166,6 +172,8 @@ type SpaceWorker = Pick<
   | 'verifyConfirmation'
   | 'verifySpaceChain'
   | 'spaceChainView'
+  | 'sealLocal'
+  | 'openLocal'
   | 'acceptFirstContact'
   | 'openChainKey'
 >;
@@ -229,6 +237,8 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
     },
     verifySpaceChain: (input) => api.verifySpaceChain(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
+    sealLocal: (label, text) => api.sealLocal(label, text),
+    openLocal: (label, sealed) => api.openLocal(label, sealed),
     acceptFirstContact: (spaceId) => api.acceptFirstContact(spaceId),
     openChainKey: ({ sealed, ...rest }) => api.openChainKey({ ...rest, sealed: encodeB64(sealed) }),
     verifyBundle: (bundle, signature) => api.verifyBundle(encodeB64(bundle), encodeB64(signature)),

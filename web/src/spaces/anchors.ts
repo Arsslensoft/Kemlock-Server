@@ -1,14 +1,28 @@
-// What this browser remembers of each space's chain: the anchor (docs/crypto.md, "Hash link":
-// the `seq` and `epoch` of the last record it accepted, and the link of every record up to it).
-// The anchor is why a server can't roll a chain back, fork it, or serve another one, unnoticed,
-// and its presence says first contact was done for that space, so it is only ever stored after the
-// person compared the fingerprint (or the chain is the account's own).
+// What this browser remembers about spaces, kept for the account and sealed by its worker:
 //
-// It lives in IndexedDB, in a database of its own, keyed by account and space: the server can't
-// reach it, and a different account on the same browser has its own. Where IndexedDB isn't
-// available (private windows in some browsers) the anchor lasts until the page closes, and first
-// contact is asked again next time: safe, only more asking.
+//  - the **anchor** of each space's chain (docs/crypto.md, "Hash link": the `seq` and `epoch` of the
+//    last record it accepted, and the link of every record up to it). It is why a server can't roll
+//    a chain back, fork it, or serve another one, unnoticed, and its presence says first contact was
+//    done for that space, so it is only ever stored after the person compared the fingerprint (or
+//    the chain is the account's own);
+//  - the **pins**: members whose fingerprint a person compared in this browser. A member's
+//    confirmation vouches for another member's keys only when the confirmer is me or a pinned one.
+//
+// Both live in IndexedDB, in a database of their own, keyed by account and space or member, and
+// each value is sealed by the worker under the account's user key (`sealLocal`), bound to its key:
+// the server can't reach them, and a script that can write to IndexedDB can't make a value the
+// worker opens. A value that doesn't open, or isn't what it should be, is an error, never "none":
+// a space whose anchor was damaged is "can't be checked", not a space met for the first time.
+//
+// Where IndexedDB isn't available (private windows in some browsers) they last until the page
+// closes, and first contact and comparisons are asked again next time: safe, only more asking.
 import type { ChainAnchor } from '@/crypto/types';
+
+/** What seals and opens a value for the unlocked account: the crypto worker. */
+export interface LocalSeal {
+  sealLocal(label: string, text: string): Promise<string>;
+  openLocal(label: string, sealed: string): Promise<string>;
+}
 
 export interface AnchorStore {
   load(account: string, space: string): Promise<ChainAnchor | undefined>;
@@ -19,30 +33,75 @@ export interface AnchorStore {
   save(account: string, space: string, anchor: ChainAnchor, afterFence?: boolean): Promise<void>;
 }
 
-const DATABASE = 'kemlock-space-anchors';
-const STORE = 'anchors';
-
-function keyOf(account: string, space: string): string {
-  return `${account}/${space}`;
+/** The members a person compared the fingerprint of, here. A pin is a fingerprint, 12 groups of 5 digits. */
+export interface PinStore {
+  /** The fingerprint pinned for a member, if any. */
+  load(account: string, member: string): Promise<string | undefined>;
+  /** Pins a member's fingerprint, replacing the one before. */
+  save(account: string, member: string, fingerprint: string): Promise<void>;
 }
+
+const DATABASE = 'kemlock-space-anchors';
+const ANCHORS = 'anchors';
+const PINS = 'pins';
+
+const anchorKey = (account: string, space: string) => `anchor/${account}/${space}`;
+const pinKey = (account: string, member: string) => `pin/${account}/${member}`;
 
 /** Whether `kept` is at least as far along as `next`, so `next` must not replace it. */
 function further(kept: ChainAnchor | undefined, next: ChainAnchor): boolean {
   return kept !== undefined && kept.seq > next.seq;
 }
 
-/** An anchor store in memory: for tests, and the fallback when IndexedDB can't be used. */
-export function memoryAnchorStore(): AnchorStore {
-  const kept = new Map<string, ChainAnchor>();
+function isAnchor(value: unknown): value is ChainAnchor {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(v.seq) &&
+    Number.isSafeInteger(v.epoch) &&
+    Array.isArray(v.links) &&
+    v.links.every((link) => typeof link === 'string')
+  );
+}
+
+/** Reads a kept anchor from its text; anything that isn't one is an error. */
+export function parseAnchor(text: string): ChainAnchor {
+  const value: unknown = JSON.parse(text);
+  if (!isAnchor(value)) throw new Error('the kept anchor is damaged');
+  return value;
+}
+
+/** The anchors and pins in memory: for tests, and the fallback when IndexedDB can't be used. */
+export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
+  const anchors = new Map<string, ChainAnchor>();
+  const pins = new Map<string, string>();
   return {
-    async load(account, space) {
-      return kept.get(keyOf(account, space));
+    anchors: {
+      async load(account, space) {
+        return anchors.get(anchorKey(account, space));
+      },
+      async save(account, space, anchor, afterFence = false) {
+        const key = anchorKey(account, space);
+        if (afterFence || !further(anchors.get(key), anchor)) anchors.set(key, anchor);
+      },
     },
-    async save(account, space, anchor, afterFence = false) {
-      const key = keyOf(account, space);
-      if (afterFence || !further(kept.get(key), anchor)) kept.set(key, anchor);
+    pins: {
+      async load(account, member) {
+        return pins.get(pinKey(account, member));
+      },
+      async save(account, member, fingerprint) {
+        pins.set(pinKey(account, member), fingerprint);
+      },
     },
   };
+}
+
+export function memoryAnchorStore(): AnchorStore {
+  return memoryStores().anchors;
+}
+
+export function memoryPinStore(): PinStore {
+  return memoryStores().pins;
 }
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
@@ -55,60 +114,70 @@ function request<T>(req: IDBRequest<T>): Promise<T> {
 function open(factory: IDBFactory): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = factory.open(DATABASE, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(ANCHORS);
+      req.result.createObjectStore(PINS);
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('indexeddb'));
     req.onblocked = () => reject(new Error('indexeddb'));
   });
 }
 
-function isAnchor(value: unknown): value is ChainAnchor {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return (
-    typeof v.seq === 'number' &&
-    typeof v.epoch === 'number' &&
-    Array.isArray(v.links) &&
-    v.links.every((link) => typeof link === 'string')
-  );
-}
-
 /**
- * The anchors in IndexedDB. `factory` is injectable for tests. A read or write that fails is not
- * hidden: a space whose anchor can't be read is "can't be checked", and one that can't be stored
- * asks for first contact again.
+ * The anchors and pins in IndexedDB, sealed by `seal`. `factory` is injectable for tests. A read
+ * or write that fails, and a value that doesn't open or isn't what it should be, is thrown.
  */
-export function indexedDbAnchorStore(factory: IDBFactory = indexedDB): AnchorStore {
+export function indexedDbStores(
+  seal: LocalSeal,
+  factory: IDBFactory = indexedDB,
+): { anchors: AnchorStore; pins: PinStore } {
   async function withStore<T>(
+    name: string,
     mode: IDBTransactionMode,
     run: (store: IDBObjectStore) => IDBRequest<T>,
   ): Promise<T> {
     const db = await open(factory);
     try {
-      return await request(run(db.transaction(STORE, mode).objectStore(STORE)));
+      return await request(run(db.transaction(name, mode).objectStore(name)));
     } finally {
       db.close();
     }
   }
-  return {
+  /** The text kept under a key, opened; undefined only when nothing is kept. */
+  async function read(store: string, key: string): Promise<string | undefined> {
+    const value: unknown = await withStore(store, 'readonly', (s) => s.get(key));
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string') throw new Error('a kept value is damaged');
+    return seal.openLocal(key, value);
+  }
+  async function write(store: string, key: string, text: string): Promise<void> {
+    const sealed = await seal.sealLocal(key, text);
+    await withStore(store, 'readwrite', (s) => s.put(sealed, key));
+  }
+  const anchors: AnchorStore = {
     async load(account, space) {
-      const value: unknown = await withStore('readonly', (s) => s.get(keyOf(account, space)));
-      return isAnchor(value) ? value : undefined;
+      const text = await read(ANCHORS, anchorKey(account, space));
+      return text === undefined ? undefined : parseAnchor(text);
     },
     async save(account, space, anchor, afterFence = false) {
-      const kept = await this.load(account, space);
-      if (!afterFence && further(kept, anchor)) return;
-      await withStore('readwrite', (s) => s.put(anchor, keyOf(account, space)));
+      if (!afterFence && further(await this.load(account, space), anchor)) return;
+      await write(ANCHORS, anchorKey(account, space), JSON.stringify(anchor));
     },
   };
+  const pins: PinStore = {
+    load: (account, member) => read(PINS, pinKey(account, member)),
+    save: (account, member, fingerprint) => write(PINS, pinKey(account, member), fingerprint),
+  };
+  return { anchors, pins };
 }
 
-/** The store the app uses: IndexedDB where there is one, memory otherwise. */
-export function defaultAnchorStore(): AnchorStore {
+/** The stores the app uses: IndexedDB where there is one, memory otherwise. */
+export function defaultStores(seal: LocalSeal): { anchors: AnchorStore; pins: PinStore } {
   try {
-    if (typeof indexedDB !== 'undefined') return indexedDbAnchorStore();
+    if (typeof indexedDB !== 'undefined') return indexedDbStores(seal);
   } catch {
     // Falls through to memory.
   }
-  return memoryAnchorStore();
+  return memoryStores();
 }

@@ -1827,3 +1827,28 @@ fn keys_opened_outside_the_chain_do_not_outlive_a_chain_or_a_refusal() {
         Err(Error::Invalid)
     );
 }
+
+#[wasm_bindgen_test]
+fn a_local_value_opens_for_its_account_and_label_only() {
+    let (session, _) = open_account([0xF3; 16]);
+    let sealed = session
+        .seal_local("anchor/one", b"{\"seq\":3}")
+        .expect("sealed");
+    assert_eq!(
+        session.open_local("anchor/one", &sealed).expect("opens"),
+        b"{\"seq\":3}".to_vec()
+    );
+    // Not under another label, not with a byte changed, not by another account, not locked.
+    assert_eq!(session.open_local("anchor/two", &sealed), Err(Error::Invalid));
+    let mut altered = sealed.clone();
+    let last = altered.len() - 1;
+    altered[last] ^= 1;
+    assert_eq!(session.open_local("anchor/one", &altered), Err(Error::Invalid));
+    assert_eq!(session.open_local("anchor/one", &[]), Err(Error::Invalid));
+    let (other, _) = open_account([0xF4; 16]);
+    assert_eq!(other.open_local("anchor/one", &sealed), Err(Error::Invalid));
+    assert_eq!(
+        Session::new().seal_local("anchor/one", b"x"),
+        Err(Error::Locked)
+    );
+}

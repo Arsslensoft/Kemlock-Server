@@ -36,6 +36,8 @@ function worker() {
     verifyConfirmation: vi.fn(async () => true),
     verifySpaceChain: vi.fn(async () => ({ ok: false as const, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn(async () => null),
+    sealLocal: vi.fn(async () => 'c2VhbGVk'),
+    openLocal: vi.fn(async () => 'text'),
     acceptFirstContact: vi.fn(async () => undefined),
     openChainKey: vi.fn(async () => undefined),
   };
@@ -139,6 +141,9 @@ describe('spaces over the worker', () => {
     });
     expect(api.verifySpaceChain).toHaveBeenCalledWith({ spaceId: SPACE, records });
     await expect(spaces.spaceChainView(SPACE)).resolves.toBeNull();
+    await expect(spaces.sealLocal('anchor/x', 'text')).resolves.toBe('c2VhbGVk');
+    expect(api.sealLocal).toHaveBeenCalledWith('anchor/x', 'text');
+    await expect(spaces.openLocal('anchor/x', 'c2VhbGVk')).resolves.toBe('text');
     await spaces.acceptFirstContact(SPACE);
     expect(api.acceptFirstContact).toHaveBeenCalledWith(SPACE);
     const sealed = utf8('box');

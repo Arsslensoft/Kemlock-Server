@@ -626,6 +626,13 @@ export interface CryptoApi {
     records: ChainRecord[];
     anchor?: ChainAnchor;
   }): Promise<ChainVerdict>;
+  /**
+   * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
+   * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
+   */
+  sealLocal(label: string, text: string): Promise<string>;
+  /** Opens what `sealLocal` sealed under the same label and account; anything else is `invalid`. */
+  openLocal(label: string, sealed: string): Promise<string>;
   /** The view of the chain this unlock verified, or null when it hasn't verified one. */
   spaceChainView(spaceId: string): Promise<ChainView | null>;
   /** The person compared the fingerprint first contact asked for and it matched. */
@@ -775,6 +782,8 @@ export interface Ops {
     args: [input: { spaceId: string; records: ChainRecord[]; anchor?: ChainAnchor }];
     result: ChainVerdict;
   };
+  sealLocal: { args: [label: string, text: string]; result: string };
+  openLocal: { args: [label: string, sealed: string]; result: string };
   spaceChainView: { args: [spaceId: string]; result: ChainView | null };
   acceptFirstContact: { args: [spaceId: string]; result: void };
   openChainKey: {
