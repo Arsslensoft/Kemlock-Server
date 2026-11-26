@@ -2163,9 +2163,7 @@ fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle()
     let owner = format!("user:{me}");
 
     let signed = session
-        .sign_item_write(
-            &WriteFields::parse(&write_fields(&owner, None, false)).expect("fields"),
-        )
+        .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, false)).expect("fields"))
         .expect("the account signs its write");
     assert_eq!(signed.writer, me);
     assert_eq!(signed.writer_key_version, FIRST_KEY_VERSION);
@@ -2184,7 +2182,10 @@ fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle()
     let other_revision = named.replace("\"revision\":4", "\"revision\":5");
     assert!(
         session
-            .verify_own_item_write(&WriteFields::parse(&other_revision).expect("fields"), &signature)
+            .verify_own_item_write(
+                &WriteFields::parse(&other_revision).expect("fields"),
+                &signature
+            )
             .is_err()
     );
     let mut bad = signature.clone();
@@ -2197,7 +2198,11 @@ fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle()
         .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, true)).expect("fields"))
         .expect("the account signs a delete");
     let tombstone_signature = b64::decode(&tombstone.write_signature).expect("base64url");
-    assert!(session.verify_own_item_write(&fields, &tombstone_signature).is_err());
+    assert!(
+        session
+            .verify_own_item_write(&fields, &tombstone_signature)
+            .is_err()
+    );
 
     // Another account's signature is not this account's, and the bundle of another account
     // doesn't check this one's.

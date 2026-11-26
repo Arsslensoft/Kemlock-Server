@@ -586,9 +586,8 @@ mod tests {
     #[test]
     fn a_signature_that_cannot_be_the_actors_is_refused() {
         let me = UserId::random();
-        let apply = |w: ItemWrite| {
-            w.apply(None, me, ItemLimits::default(), OffsetDateTime::UNIX_EPOCH)
-        };
+        let apply =
+            |w: ItemWrite| w.apply(None, me, ItemLimits::default(), OffsetDateTime::UNIX_EPOCH);
         // Another writer.
         let mut w = write(me, None, 1);
         w.signature = Some(signature(UserId::random()));

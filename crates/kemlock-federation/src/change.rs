@@ -204,7 +204,9 @@ impl ChangeRecord {
             return Err(FedError::Malformed("sequence and revision start at 1"));
         }
         if record.write.is_some() && record.format != ItemFormat::Kem1 {
-            return Err(FedError::Malformed("only a kem1 record carries a writer signature"));
+            return Err(FedError::Malformed(
+                "only a kem1 record carries a writer signature",
+            ));
         }
         if record.lineage.len() > MAX_LINEAGE || record.lineage.contains(&record.key()) {
             return Err(FedError::Malformed("the lineage is not valid"));

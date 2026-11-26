@@ -1816,16 +1816,16 @@ async fn a_replica_cannot_delete_or_replay_what_the_account_signed() {
         .await
         .expect("a read")
         .expect("the item");
-    assert!(!held.is_tombstone(), "the replica could not delete the item");
+    assert!(
+        !held.is_tombstone(),
+        "the replica could not delete the item"
+    );
     assert_eq!(held.revision, Revision(1));
 
     // It replays an old signed ciphertext as a new change: not applied either.
-    ItemStore::put(
-        b.store(),
-        draft_with(two, owner, Some(1), 2, 6_000, 0x77),
-    )
-    .await
-    .expect("a hostile revision");
+    ItemStore::put(b.store(), draft_with(two, owner, Some(1), 2, 6_000, 0x77))
+        .await
+        .expect("a hostile revision");
     let RunOutcome::Done(statuses) = a.visit(&b).await else {
         panic!("a run");
     };

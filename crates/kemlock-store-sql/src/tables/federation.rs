@@ -512,7 +512,10 @@ pub(crate) mod item_siblings {
                 "updated_at",
             )?),
             hlc: Set(to_i64(item.change.hlc.0, "hlc")?),
-            write_sig: Set(item.signature.as_ref().map(kemlock_domain::WriteSignature::to_stored)),
+            write_sig: Set(item
+                .signature
+                .as_ref()
+                .map(kemlock_domain::WriteSignature::to_stored)),
         })
     }
 

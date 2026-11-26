@@ -10,9 +10,9 @@ use crate::{
     backend::{Backend, rustcrypto::RustCrypto},
     bundle::{self, Bundle},
     confirm::Statement,
-    dedup, kem1,
+    dedup, item_write, kem1,
     keys::{ITEM_WRAP_LABEL, MANIFEST_LABEL, PRIVATE_KEYS_LABEL, RootKey, SecretKey, USER_LABEL},
-    item_write, kma1, kx1, legacy_id,
+    kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
     opaque::{self, OpaqueServer},
     owner::Owner,
@@ -1244,30 +1244,73 @@ fn item_write_doc() -> Result<Value, Error> {
             let mut other_envelope = envelope;
             other_envelope[0] ^= 1;
             let mut changed = vec![
-                ("another-owner", item_write::Statement { owner: other_owner, ..statement }),
-                ("another-item", item_write::Statement { item_id: other_item, ..statement }),
-                ("another-kind", item_write::Statement { kind: "note", ..statement }),
-                ("another-revision", item_write::Statement { revision: revision + 1, ..statement }),
-                ("another-writer", item_write::Statement { writer: other_writer, ..statement }),
+                (
+                    "another-owner",
+                    item_write::Statement {
+                        owner: other_owner,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-item",
+                    item_write::Statement {
+                        item_id: other_item,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-kind",
+                    item_write::Statement {
+                        kind: "note",
+                        ..statement
+                    },
+                ),
+                (
+                    "another-revision",
+                    item_write::Statement {
+                        revision: revision + 1,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-writer",
+                    item_write::Statement {
+                        writer: other_writer,
+                        ..statement
+                    },
+                ),
                 (
                     "another-key-version",
-                    item_write::Statement { writer_key_version: writer_key_version + 1, ..statement },
+                    item_write::Statement {
+                        writer_key_version: writer_key_version + 1,
+                        ..statement
+                    },
                 ),
             ];
             if deleted {
                 // A tombstone's hash can't be anything but zero, so it is the live flag that flips.
                 changed.push((
                     "not-a-tombstone",
-                    item_write::Statement { deleted: false, ..statement },
+                    item_write::Statement {
+                        deleted: false,
+                        ..statement
+                    },
                 ));
             } else {
                 changed.push((
                     "another-envelope",
-                    item_write::Statement { envelope: other_envelope, ..statement },
+                    item_write::Statement {
+                        envelope: other_envelope,
+                        ..statement
+                    },
                 ));
                 changed.push((
                     "a-tombstone",
-                    item_write::Statement { deleted: true, envelope: [0; 32], ..statement },
+                    item_write::Statement {
+                        deleted: true,
+                        envelope: [0; 32],
+                        ..statement
+                    },
                 ));
             }
             let changed: Vec<Value> = changed

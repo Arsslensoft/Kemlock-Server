@@ -1331,8 +1331,11 @@ fn item_write_file<B: Backend>(doc: &Value) {
             lp(&mut data, &item_key).expect("lp");
             assert_eq!(B::sha256(&data), envelope, "{} {name}", B::NAME);
             assert_eq!(
-                item_write::envelope_hash(key_version, Some((ciphertext.as_slice(), item_key.as_slice())))
-                    .expect("hash"),
+                item_write::envelope_hash(
+                    key_version,
+                    Some((ciphertext.as_slice(), item_key.as_slice()))
+                )
+                .expect("hash"),
                 envelope,
                 "{name}"
             );

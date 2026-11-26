@@ -25,7 +25,6 @@ pub(crate) mod push;
 pub(crate) mod reauth;
 pub(crate) mod recovery_kit;
 pub(crate) mod sends;
-mod write_sig;
 mod server;
 mod signup_verify;
 pub(crate) mod space_chain;
@@ -34,6 +33,7 @@ pub(crate) mod spaces;
 pub(crate) mod sso;
 pub(crate) mod two_step;
 pub(crate) mod view;
+mod write_sig;
 
 use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::Limiter;

@@ -75,7 +75,9 @@ impl UserRepo for SqlStore {
 
     async fn bundles_of(&self, id: UserId) -> Result<Vec<StoredBundle>, StoreError> {
         let mut all = account_bundles::all_of(self.reader(), id.0).await?;
-        if let Some(current) = self.bundle_at(id, self.by_id(id).await?.map_or(0, |u| u.key_version)).await?
+        if let Some(current) = self
+            .bundle_at(id, self.by_id(id).await?.map_or(0, |u| u.key_version))
+            .await?
             && !all.iter().any(|b| b.key_version == current.key_version)
         {
             all.push(current);

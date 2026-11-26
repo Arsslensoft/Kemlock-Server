@@ -713,22 +713,41 @@ async fn a_signed_write_is_kept_with_the_item_and_makes_its_owner_signed_only() 
 
     // Unsigned writes leave no flag.
     put(&store, draft(ItemId::random(), owner, None, 1)).await;
-    assert!(!ItemStore::signed_writes_required(&store, owner).await.expect("flag"));
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
 
     let mut signed = draft(id, owner, None, 1);
     signed.signature = Some(signature.clone());
     let stored = put(&store, signed).await;
     assert_eq!(stored.signature, Some(signature.clone()));
-    assert_eq!(get(&store, id).await.expect("the item").signature, Some(signature.clone()));
-    assert!(ItemStore::signed_writes_required(&store, owner).await.expect("flag"));
+    assert_eq!(
+        get(&store, id).await.expect("the item").signature,
+        Some(signature.clone())
+    );
+    assert!(
+        ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
     // It is the owner's, and no other's.
-    assert!(!ItemStore::signed_writes_required(&store, other).await.expect("flag"));
+    assert!(
+        !ItemStore::signed_writes_required(&store, other)
+            .await
+            .expect("flag")
+    );
 
     // The signature comes back on a sync, and a newer unsigned write replaces it.
     let page = ItemStore::changes_since(&store, &[owner], &VersionVector::new(), 10)
         .await
         .expect("a page");
-    assert!(page.items.iter().any(|i| i.id == id && i.signature == Some(signature.clone())));
+    assert!(
+        page.items
+            .iter()
+            .any(|i| i.id == id && i.signature == Some(signature.clone()))
+    );
     let replaced = put(&store, draft(id, owner, Some(1), 2)).await;
     assert_eq!(replaced.signature, None);
 }
@@ -737,12 +756,20 @@ async fn a_signed_write_is_kept_with_the_item_and_makes_its_owner_signed_only() 
 async fn an_owner_may_ask_for_signed_writes_and_it_is_never_undone() {
     let store = memory().await;
     let owner = user_owner();
-    assert!(!ItemStore::signed_writes_required(&store, owner).await.expect("flag"));
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
     ItemStore::require_signed_writes(&store, owner, MADE_AT)
         .await
         .expect("asked");
     ItemStore::require_signed_writes(&store, owner, MADE_AT)
         .await
         .expect("asked twice");
-    assert!(ItemStore::signed_writes_required(&store, owner).await.expect("flag"));
+    assert!(
+        ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
 }

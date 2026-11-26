@@ -80,12 +80,13 @@ impl<U: crate::ports::UserRepo, R: crate::spaces::SpaceRepo> GetBundleAt<U, R> {
         b: kemlock_domain::UserId,
     ) -> Result<bool, StoreError> {
         use kemlock_domain::spaces::MemberState;
-        let confirmed = |rows: Vec<kemlock_domain::spaces::Member>| -> std::collections::BTreeSet<_> {
-            rows.into_iter()
-                .filter(|m| m.state == MemberState::Confirmed)
-                .map(|m| m.space)
-                .collect()
-        };
+        let confirmed =
+            |rows: Vec<kemlock_domain::spaces::Member>| -> std::collections::BTreeSet<_> {
+                rows.into_iter()
+                    .filter(|m| m.state == MemberState::Confirmed)
+                    .map(|m| m.space)
+                    .collect()
+            };
         let mine = confirmed(self.spaces.memberships(a).await?);
         if mine.is_empty() {
             return Ok(false);

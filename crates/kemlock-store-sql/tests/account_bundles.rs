@@ -35,7 +35,10 @@ async fn a_new_account_keeps_its_first_bundle() {
         UserRepo::bundle_at(&store, ada.id, 1).await.expect("read"),
         Some(stored(&ada))
     );
-    assert_eq!(UserRepo::bundle_at(&store, ada.id, 2).await.expect("read"), None);
+    assert_eq!(
+        UserRepo::bundle_at(&store, ada.id, 2).await.expect("read"),
+        None
+    );
 }
 
 #[tokio::test]
@@ -46,7 +49,9 @@ async fn a_key_replacement_keeps_the_bundle_before_it() {
     let second = rotated(&ada, 2, 20);
     UserRepo::update(&store, &second).await.expect("rotate");
     let third = rotated(&second, 3, 30);
-    UserRepo::update(&store, &third).await.expect("rotate again");
+    UserRepo::update(&store, &third)
+        .await
+        .expect("rotate again");
 
     for version in [&ada, &second, &third] {
         assert_eq!(
@@ -96,10 +101,17 @@ async fn the_first_keys_of_an_account_are_kept_too() {
     bare.sealed_private_keys = Vec::new();
     bare.key_version = 0;
     UserRepo::insert(&store, &bare).await.expect("insert");
-    assert!(UserRepo::bundles_of(&store, bare.id).await.expect("read").is_empty());
+    assert!(
+        UserRepo::bundles_of(&store, bare.id)
+            .await
+            .expect("read")
+            .is_empty()
+    );
 
     let keyed = rotated(&bare, 1, 40);
-    UserRepo::set_first_keys(&store, &keyed).await.expect("first keys");
+    UserRepo::set_first_keys(&store, &keyed)
+        .await
+        .expect("first keys");
     assert_eq!(
         UserRepo::bundle_at(&store, bare.id, 1).await.expect("read"),
         Some(stored(&keyed))
@@ -110,8 +122,18 @@ async fn the_first_keys_of_an_account_are_kept_too() {
 async fn an_unknown_account_has_no_history() {
     let store = memory().await;
     let nobody = user(&unique_email("nobody"));
-    assert_eq!(UserRepo::bundle_at(&store, nobody.id, 1).await.expect("read"), None);
-    assert!(UserRepo::bundles_of(&store, nobody.id).await.expect("read").is_empty());
+    assert_eq!(
+        UserRepo::bundle_at(&store, nobody.id, 1)
+            .await
+            .expect("read"),
+        None
+    );
+    assert!(
+        UserRepo::bundles_of(&store, nobody.id)
+            .await
+            .expect("read")
+            .is_empty()
+    );
 }
 
 #[tokio::test]
@@ -141,12 +163,21 @@ async fn a_copy_of_a_rotated_account_carries_its_past_bundles_to_a_replica() {
         .await
         .expect("applied");
     assert_eq!(
-        MemberStore::writer_bundle(&replica, ada.id, 2).await.expect("read"),
+        MemberStore::writer_bundle(&replica, ada.id, 2)
+            .await
+            .expect("read"),
         Some(second.public_bundle.clone())
     );
     assert_eq!(
-        MemberStore::writer_bundle(&replica, ada.id, 1).await.expect("read"),
+        MemberStore::writer_bundle(&replica, ada.id, 1)
+            .await
+            .expect("read"),
         Some(ada.public_bundle.clone())
     );
-    assert_eq!(MemberStore::writer_bundle(&replica, ada.id, 3).await.expect("read"), None);
+    assert_eq!(
+        MemberStore::writer_bundle(&replica, ada.id, 3)
+            .await
+            .expect("read"),
+        None
+    );
 }

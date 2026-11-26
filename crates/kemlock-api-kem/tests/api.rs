@@ -2491,7 +2491,11 @@ async fn a_signature_by_another_key_or_over_another_item_is_refused_and_stores_n
         &session,
         &id,
         ("if-none-match", "*"),
-        signed_with(&thief, &session.user_id, item_json(&session.user_id, &id, 1)),
+        signed_with(
+            &thief,
+            &session.user_id,
+            item_json(&session.user_id, &id, 1),
+        ),
     )
     .await;
     assert_eq!(forged.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -2636,10 +2640,16 @@ async fn an_account_reads_its_own_bundle_by_key_version_and_a_stranger_gets_a_40
 
     // A version the account never had, an account that shares no space, and one that doesn't exist
     // are the same answer.
-    assert_eq!(get(session.user_id.clone(), 2).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(session.user_id.clone(), 2).await.status,
+        StatusCode::NOT_FOUND
+    );
     assert_eq!(
         get(uuid::Uuid::from_u128(77).to_string(), 1).await.status,
         StatusCode::NOT_FOUND
     );
-    assert_eq!(get("not-a-uuid".to_owned(), 1).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get("not-a-uuid".to_owned(), 1).await.status,
+        StatusCode::NOT_FOUND
+    );
 }

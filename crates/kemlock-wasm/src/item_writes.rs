@@ -172,7 +172,11 @@ pub(crate) fn verify_item_write(
 ) -> Result<(), Error> {
     let (writer, version) = fields.named_writer()?;
     let parts = fields.parts()?;
-    item_write::verify_with_bundle(&fields.statement(&parts, writer, version), signer_bundle, signature)?;
+    item_write::verify_with_bundle(
+        &fields.statement(&parts, writer, version),
+        signer_bundle,
+        signature,
+    )?;
     Ok(())
 }
 

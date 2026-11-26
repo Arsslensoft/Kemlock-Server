@@ -32,19 +32,32 @@ async fn an_account_and_its_space_mates_may_read_a_bundle_and_nobody_else() {
     };
 
     // The account reads its own bundle.
-    let own = read.execute(&actor(sam), sam, 1).await.expect("its own bundle");
+    let own = read
+        .execute(&actor(sam), sam, 1)
+        .await
+        .expect("its own bundle");
     assert_eq!(own.key_version, 1);
     assert!(!own.public_bundle.is_empty());
     // A member of a space it is confirmed in reads it, and the other way round.
-    let seen = read.execute(&actor(alex), sam, 1).await.expect("a space mate");
+    let seen = read
+        .execute(&actor(alex), sam, 1)
+        .await
+        .expect("a space mate");
     assert_eq!(seen, own);
     assert!(read.execute(&actor(sam), alex, 1).await.is_ok());
     // A version the account never had is not found, and neither is an account that shares no
     // space, nor one that doesn't exist.
-    assert_eq!(read.execute(&actor(sam), sam, 2).await, Err(AppError::NotFound));
-    assert_eq!(read.execute(&actor(kim), sam, 1).await, Err(AppError::NotFound));
     assert_eq!(
-        read.execute(&actor(sam), kemlock_domain::UserId::random(), 1).await,
+        read.execute(&actor(sam), sam, 2).await,
+        Err(AppError::NotFound)
+    );
+    assert_eq!(
+        read.execute(&actor(kim), sam, 1).await,
+        Err(AppError::NotFound)
+    );
+    assert_eq!(
+        read.execute(&actor(sam), kemlock_domain::UserId::random(), 1)
+            .await,
         Err(AppError::NotFound)
     );
 }

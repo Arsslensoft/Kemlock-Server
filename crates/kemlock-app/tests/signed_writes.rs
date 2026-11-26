@@ -47,10 +47,7 @@ async fn unsigned_writes_are_accepted_until_a_signed_one_is() {
         Err(AppError::Item(ItemError::SignatureRequired))
     );
     assert_eq!(
-        world
-            .put_item()
-            .execute(&who, delete(user, id, 2, 3))
-            .await,
+        world.put_item().execute(&who, delete(user, id, 2, 3)).await,
         Err(AppError::Item(ItemError::SignatureRequired))
     );
     // A signed delete goes through.
@@ -83,10 +80,7 @@ async fn a_batch_with_an_unsigned_write_is_refused_whole() {
             ],
         )
         .await;
-    assert_eq!(
-        result,
-        Err(AppError::Item(ItemError::SignatureRequired))
-    );
+    assert_eq!(result, Err(AppError::Item(ItemError::SignatureRequired)));
     assert!(world.store.item(a).is_none(), "nothing was stored");
 }
 
@@ -131,9 +125,7 @@ async fn an_owner_may_ask_for_signed_writes_before_the_first() {
     );
     // Nobody asks for another account's vault, or for a space.
     assert_eq!(
-        require
-            .execute(&who, Owner::User(UserId::random()))
-            .await,
+        require.execute(&who, Owner::User(UserId::random())).await,
         Err(AppError::Forbidden)
     );
 }

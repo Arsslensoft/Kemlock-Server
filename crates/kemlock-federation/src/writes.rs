@@ -64,7 +64,10 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
     };
     let allowed = match record.owner {
         Owner::User(user) => user == write.writer,
-        Owner::Space(_) => store.member_ids(record.owner).await?.contains(&write.writer),
+        Owner::Space(_) => store
+            .member_ids(record.owner)
+            .await?
+            .contains(&write.writer),
     };
     if !allowed {
         return Ok(Verdict::Refuse(
@@ -73,10 +76,7 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
     }
     // The bundle of the key version the signature names, which may be one the account has
     // replaced since (docs/crypto.md, "Signed item writes", "Key versions").
-    let Some(bundle) = store
-        .writer_bundle(write.writer, write.key_version)
-        .await?
-    else {
+    let Some(bundle) = store.writer_bundle(write.writer, write.key_version).await? else {
         return Ok(Verdict::Refuse(
             "a change by a writer whose keys at that version we do not hold",
         ));

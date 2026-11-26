@@ -1358,10 +1358,7 @@ fn change_doc() -> Result<Json> {
                 map.insert("envelope".to_owned(), hx(&signed.encode()));
                 if record.write.is_some() {
                     map.insert("writer_signing_seed".to_owned(), hx(&writer_seed));
-                    map.insert(
-                        "writer_public_key".to_owned(),
-                        hx(writer_public.as_bytes()),
-                    );
+                    map.insert("writer_public_key".to_owned(), hx(writer_public.as_bytes()));
                     map.insert("writer_statement".to_owned(), hx(&writer_statement));
                 }
             }

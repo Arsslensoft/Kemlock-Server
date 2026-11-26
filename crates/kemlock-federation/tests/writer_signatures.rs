@@ -53,8 +53,12 @@ async fn pair(a: &Server, b: &Server) {
     let (pending, second) = pairing::respond(shown, &a.identity(), &first).expect("respond");
     let (paired_b, third) = initiator.finish(&second, now).expect("message 2");
     let paired_a = pending.finish(&third, now).expect("message 3");
-    a.pin_peer(&paired_a.descriptor, now).await.expect("A pins B");
-    b.pin_peer(&paired_b.descriptor, now).await.expect("B pins A");
+    a.pin_peer(&paired_a.descriptor, now)
+        .await
+        .expect("A pins B");
+    b.pin_peer(&paired_b.descriptor, now)
+        .await
+        .expect("B pins A");
 }
 
 struct Writer {
@@ -138,7 +142,9 @@ async fn vault_pair(writer: &Writer) -> (Server, Server, Owner) {
     let b = server(2, None);
     pair(&a, &b).await;
     let vault = Owner::User(writer.id);
-    a.federate(vault, vec![b.server_id()]).await.expect("federate");
+    a.federate(vault, vec![b.server_id()])
+        .await
+        .expect("federate");
     b.accept_vault(vault, a.server_id(), vec![b.server_id()])
         .await
         .expect("accept");
@@ -226,7 +232,9 @@ async fn a_writer_whose_keys_a_replica_does_not_hold_yet_is_left_out_not_lost() 
     let b = server(2, None);
     pair(&a, &b).await;
     let vault = Owner::User(writer.id);
-    a.federate(vault, vec![b.server_id()]).await.expect("federate");
+    a.federate(vault, vec![b.server_id()])
+        .await
+        .expect("federate");
     b.accept_vault(vault, a.server_id(), vec![b.server_id()])
         .await
         .expect("accept");
@@ -269,7 +277,9 @@ async fn an_origin_over_its_quota_is_left_out() {
     );
     pair(&a, &b).await;
     let vault = Owner::User(UserId::random());
-    a.federate(vault, vec![b.server_id()]).await.expect("federate");
+    a.federate(vault, vec![b.server_id()])
+        .await
+        .expect("federate");
     b.accept_vault(vault, a.server_id(), vec![b.server_id()])
         .await
         .expect("accept");
@@ -296,9 +306,15 @@ async fn a_record_that_names_the_head_at_a_lower_revision_is_not_applied() {
     let store = MemoryStore::new(kemlock_domain::ServerId::random());
     let owner = Owner::User(UserId::random());
     let item = ItemId::random();
-    store.put(draft(item, owner, None, 1, 1_000)).expect("rev 1");
-    store.put(draft(item, owner, Some(1), 2, 2_000)).expect("rev 2");
-    let head = store.put(draft(item, owner, Some(2), 3, 3_000)).expect("rev 3");
+    store
+        .put(draft(item, owner, None, 1, 1_000))
+        .expect("rev 1");
+    store
+        .put(draft(item, owner, Some(1), 2, 2_000))
+        .expect("rev 2");
+    let head = store
+        .put(draft(item, owner, Some(2), 3, 3_000))
+        .expect("rev 3");
 
     // A replica re-signs the first ciphertext as a new change with a late clock, naming the head.
     let origin = kemlock_domain::ServerId::random();

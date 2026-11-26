@@ -813,7 +813,6 @@ impl FreshProof {
     }
 }
 
-
 /// An account's public-key bundle at one key version (docs/crypto.md, "Signed item writes").
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

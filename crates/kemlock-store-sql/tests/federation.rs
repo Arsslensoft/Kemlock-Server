@@ -572,8 +572,16 @@ async fn a_writer_signature_travels_with_a_version_and_makes_the_owner_signed_on
     let mut signed = draft(id, owner, None, 1);
     signed.signature = Some(signature_of(writer, 7));
     put(&a, signed).await;
-    assert!(ItemStore::signed_writes_required(&a, owner).await.expect("flag"));
-    assert!(!ItemStore::signed_writes_required(&b, owner).await.expect("flag"));
+    assert!(
+        ItemStore::signed_writes_required(&a, owner)
+            .await
+            .expect("flag")
+    );
+    assert!(
+        !ItemStore::signed_writes_required(&b, owner)
+            .await
+            .expect("flag")
+    );
 
     // The signature is in the record, and applying it keeps it and sets the flag at B.
     let records = records_of(&a, owner).await;
@@ -581,7 +589,11 @@ async fn a_writer_signature_travels_with_a_version_and_makes_the_owner_signed_on
     assert_eq!(apply_all(&b, &records).await, vec![ApplyOutcome::Applied]);
     let held = ItemStore::get(&b, id).await.expect("get").expect("item");
     assert_eq!(held.signature, Some(signature_of(writer, 7)));
-    assert!(ReplicaStore::owner_signed_only(&b, owner).await.expect("flag"));
+    assert!(
+        ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
 
     // A sibling keeps its signature too.
     let mut edit_a = draft(id, owner, Some(1), 2);
@@ -592,8 +604,14 @@ async fn a_writer_signature_travels_with_a_version_and_makes_the_owner_signed_on
     edit_b.updated_at += Duration::seconds(5);
     put(&b, edit_b).await;
     let from_a = records_of(&a, owner).await;
-    assert!(apply_all(&b, &from_a).await.contains(&ApplyOutcome::Sibling));
-    let siblings = ReplicaStore::siblings(&b, owner, id).await.expect("siblings");
+    assert!(
+        apply_all(&b, &from_a)
+            .await
+            .contains(&ApplyOutcome::Sibling)
+    );
+    let siblings = ReplicaStore::siblings(&b, owner, id)
+        .await
+        .expect("siblings");
     assert_eq!(siblings.len(), 1);
     assert_eq!(siblings[0].signature, Some(signature_of(writer, 8)));
 }
@@ -616,7 +634,9 @@ async fn a_record_that_names_the_head_at_a_lower_revision_is_refused_and_leaves_
     };
     replay.revision = Revision(2);
     assert_eq!(
-        ReplicaStore::apply(&a, &replay, b"signature").await.expect("apply"),
+        ReplicaStore::apply(&a, &replay, b"signature")
+            .await
+            .expect("apply"),
         ApplyOutcome::Refused
     );
     let held = ItemStore::get(&a, id).await.expect("get").expect("item");

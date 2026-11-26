@@ -254,10 +254,24 @@ mod tests {
 
     #[test]
     fn nonsense_statements_are_not_encoded() {
-        assert!(Statement { revision: 0, ..live() }.to_bytes().is_err());
+        assert!(
+            Statement {
+                revision: 0,
+                ..live()
+            }
+            .to_bytes()
+            .is_err()
+        );
         assert!(Statement { kind: "", ..live() }.to_bytes().is_err());
         let long = "x".repeat(65);
-        assert!(Statement { kind: &long, ..live() }.to_bytes().is_err());
+        assert!(
+            Statement {
+                kind: &long,
+                ..live()
+            }
+            .to_bytes()
+            .is_err()
+        );
         // A tombstone has no envelope hash.
         assert!(statement([1; 32], true).to_bytes().is_err());
         assert!(statement([0; 32], true).to_bytes().is_ok());
@@ -268,10 +282,7 @@ mod tests {
         let signature = vec![7u8; sig1::SIGNATURE_LEN];
         let stored = to_stored(&[1; 16], 9, &signature).expect("stored");
         assert_eq!(stored.len(), STORED_LEN);
-        assert_eq!(
-            from_stored(&stored),
-            Ok(([1; 16], 9, signature.as_slice()))
-        );
+        assert_eq!(from_stored(&stored), Ok(([1; 16], 9, signature.as_slice())));
         assert!(to_stored(&[1; 16], 9, &signature[1..]).is_err());
         assert!(from_stored(&stored[1..]).is_err());
     }
