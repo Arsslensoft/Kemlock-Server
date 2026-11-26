@@ -96,6 +96,11 @@ fn parse_jwk(jwk: &Map<String, Value>) -> Result<(PublicKey, String), DpopError>
             let Some(x) = coordinate("x") else {
                 return Err(DpopError::Invalid("the jwk's key is malformed"));
             };
+            // A small-order or non-canonical key verifies trivial signatures (docs/crypto.md,
+            // "Ed25519 verification rule").
+            if ed25519::check_public_key(&x).is_err() {
+                return Err(DpopError::Invalid("the jwk's key is a weak point"));
+            }
             let thumbprint = format!(
                 r#"{{"crv":"Ed25519","kty":"OKP","x":"{}"}}"#,
                 b64url::encode(&x)
@@ -571,6 +576,22 @@ mod tests {
             &claims,
         );
         assert!(v.verify(&with_d, "POST", PATH, NOW, None).is_err());
+    }
+
+    #[test]
+    fn an_ed25519_jwk_that_is_a_weak_point_is_refused() {
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let jwk = |x: &[u8]| {
+            json!({"kty": "OKP", "crv": "Ed25519", "x": b64url::encode(x)})
+                .as_object()
+                .cloned()
+                .expect("an object")
+        };
+        assert!(parse_jwk(&jwk(&identity)).is_err());
+        assert!(parse_jwk(&jwk(&[0u8; 32])).is_err());
+        let honest = ed25519::SigningKey::generate().public_key();
+        assert!(parse_jwk(&jwk(&honest)).is_ok());
     }
 
     #[test]
