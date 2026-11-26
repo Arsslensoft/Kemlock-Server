@@ -472,6 +472,20 @@ pub(crate) struct HeldDemotionDto {
     issued_at: u64,
 }
 
+/// A promotion held for this server's admin: the vault, the server that would become its home and
+/// the epoch it would start.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HeldPromotionDto {
+    #[schema(value_type = String)]
+    vault: Owner,
+    #[schema(value_type = String)]
+    new_home: ServerId,
+    epoch: u64,
+    /// When the new home signed it, in Unix seconds.
+    issued_at: u64,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct OfferDto {
@@ -1211,6 +1225,48 @@ where
     Ok(Json(settings_dto(&next, false)))
 }
 
+/// `GET …/promotions`: the promotions held for this server's admin, whether this server is the
+/// vault's home or one of its replicas.
+async fn held_promotions<S, C>(
+    State(state): State<AdminState<S, C>>,
+    _admin: Admin,
+) -> Result<Json<Vec<HeldPromotionDto>>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    Ok(Json(
+        state
+            .federation
+            .held_promotions()
+            .await?
+            .into_iter()
+            .map(|(vault, p)| HeldPromotionDto {
+                vault,
+                new_home: p.new_home,
+                epoch: p.epoch,
+                issued_at: p.issued_at,
+            })
+            .collect(),
+    ))
+}
+
+/// `DELETE …/vaults/{owner}/demotion`: drops the held promotion without applying it.
+async fn refuse_demotion<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(owner): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let owner = parse_owner(&owner)?;
+    require_step_up(&actor)?;
+    state.federation.refuse_demotion(owner).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn offers<S, C>(
     State(state): State<AdminState<S, C>>,
     _admin: Admin,
@@ -1308,8 +1364,9 @@ where
         )
         .route(
             &format!("{BASE}/vaults/{{owner}}/demotion"),
-            post(accept_demotion::<S, C>),
+            post(accept_demotion::<S, C>).delete(refuse_demotion::<S, C>),
         )
+        .route(&format!("{BASE}/promotions"), get(held_promotions::<S, C>))
         .route(
             &format!("{BASE}/vaults/{{owner}}/events"),
             get(peer_events::<S, C>),

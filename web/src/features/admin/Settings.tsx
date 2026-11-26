@@ -27,6 +27,7 @@ const GROUP_TITLES: Record<string, MessageId> = {
   retention: 'admin.settings.group.retention',
   'rate-limits': 'admin.settings.group.rateLimits',
   security: 'admin.settings.group.security',
+  federation: 'admin.settings.group.federation',
 };
 
 /** The words for each setting the server has today; one it adds later shows under its own key. */
@@ -69,6 +70,7 @@ const LABELS: Record<string, MessageId> = {
   rate_register_per_hour: 'admin.settings.key.rate_register_per_hour',
   security_contact: 'admin.settings.key.security_contact',
   security_encryption: 'admin.settings.key.security_encryption',
+  federation_promotion: 'admin.settings.key.federation_promotion',
 };
 
 /** The gray line under each switch's label: what turning it on or off does. */

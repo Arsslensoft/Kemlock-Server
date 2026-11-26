@@ -49,7 +49,35 @@ pub struct StoredOffer {
     pub received_at: u64,
 }
 
+/// What a server does with a promotion a replica signed for itself and announces unasked. The
+/// setting `federation_promotion` (environment `KEMLOCK_FEDERATION_PROMOTION`) chooses it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PromotionMode {
+    /// Keep it, unapplied, for this server's admin to accept or refuse. The default.
+    #[default]
+    Hold,
+    /// Apply it at once, when it checks out. (The home of a vault still holds one that would
+    /// take the vault from it.)
+    Auto,
+}
+
+impl PromotionMode {
+    /// `auto` is the one word that turns holding off; anything else holds.
+    pub fn parse(text: &str) -> PromotionMode {
+        if text.trim().eq_ignore_ascii_case("auto") {
+            PromotionMode::Auto
+        } else {
+            PromotionMode::Hold
+        }
+    }
+}
+
 pub trait FedAdminRepo: Send + Sync {
+    /// What to do with a promotion another server signed for itself: see [`PromotionMode`].
+    fn promotion_mode(&self) -> impl Future<Output = R<PromotionMode>> + Send {
+        ready(Ok(PromotionMode::Hold))
+    }
+
     /// Refreshes what a peer's descriptor says: operator, addresses and suites. The identity key
     /// is never changed here. A peer that isn't known is not an error.
     fn update_peer_descriptor(

@@ -14,6 +14,7 @@ use crate::tables::federation_wiring::{
     federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
 };
 use crate::tables::items::{owner_from, owner_parts};
+use crate::tables::settings;
 use kemlock_app::ports::{DeviceRepo, Event, StoreError, UserRepo};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_domain::spaces::MemberState;
@@ -23,7 +24,7 @@ use kemlock_domain::{
 };
 use kemlock_federation::extra::{
     Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply, MemberStore,
-    PendingErasure, StoredOffer, VaultErased, VaultErasure,
+    PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
 };
 use kemlock_federation::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use kemlock_federation::members::{MemberAccount, MemberDevice};
@@ -34,6 +35,10 @@ use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// The setting `federation_promotion` as the console saves it, and the variable that overrides it.
+const PROMOTION_SETTING: &str = "setting.federation_promotion";
+const PROMOTION_ENV: &str = "KEMLOCK_FEDERATION_PROMOTION";
+
 fn now_secs() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -43,6 +48,20 @@ fn from_secs(secs: i64, what: &str) -> Result<OffsetDateTime, StoreError> {
 }
 
 impl FedAdminRepo for SqlStore {
+    async fn promotion_mode(&self) -> Result<PromotionMode, StoreError> {
+        // The environment, then what the console saved, then `hold`: anything but `auto` holds.
+        if let Ok(value) = std::env::var(PROMOTION_ENV)
+            && !value.trim().is_empty()
+        {
+            return Ok(PromotionMode::parse(&value));
+        }
+        let saved = settings::Entity::find_by_id(PROMOTION_SETTING.to_owned())
+            .one(self.reader())
+            .await
+            .store()?;
+        Ok(saved.map_or(PromotionMode::Hold, |row| PromotionMode::parse(&row.value)))
+    }
+
     async fn update_peer_descriptor(
         &self,
         peer: ServerId,

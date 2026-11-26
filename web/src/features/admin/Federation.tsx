@@ -32,8 +32,13 @@ export interface FederationViewProps {
   onPromote: (vault: FedVault, homeIsDown: boolean) => void;
   onAccept: (vault: FedVault) => void;
   onDecline: (vault: FedVault) => void;
-  /** Hands the home of a vault this server is the home of to the server whose promotion waits. */
+  /**
+   * Accepts the promotion held for a vault: at the vault's home it hands the home to the server
+   * that signed it, and at a replica it makes that server the home here.
+   */
   onAcceptDemotion?: (vault: FedVault) => void;
+  /** Drops the promotion held for a vault without applying it. */
+  onRefuseDemotion?: (vault: FedVault) => void;
   labelsOf?: LabelsOf;
   busy?: boolean;
   error?: unknown;
@@ -50,6 +55,7 @@ export function FederationView({
   onAccept,
   onDecline,
   onAcceptDemotion,
+  onRefuseDemotion,
   labelsOf,
   busy,
   error,
@@ -330,13 +336,33 @@ export function FederationView({
                           <Button
                             size="small"
                             isDisabled={busy}
-                            aria-label={t('admin.fed.demotion.accept.of', {
+                            aria-label={
+                              homeHere
+                                ? t('admin.fed.demotion.accept.of', {
+                                    name,
+                                    peer: nameOf(vault.heldDemotion.newHomeId),
+                                  })
+                                : t('admin.fed.promotion.accept.of', {
+                                    name,
+                                    peer: nameOf(vault.heldDemotion.newHomeId),
+                                  })
+                            }
+                            onPress={() => onAcceptDemotion(vault)}
+                          >
+                            {homeHere ? t('admin.fed.demotion.accept') : t('admin.fed.promotion.accept')}
+                          </Button>
+                        ) : null}
+                        {vault.heldDemotion && onRefuseDemotion ? (
+                          <Button
+                            size="small"
+                            isDisabled={busy}
+                            aria-label={t('admin.fed.promotion.refuse.of', {
                               name,
                               peer: nameOf(vault.heldDemotion.newHomeId),
                             })}
-                            onPress={() => onAcceptDemotion(vault)}
+                            onPress={() => onRefuseDemotion(vault)}
                           >
-                            {t('admin.fed.demotion.accept')}
+                            {t('admin.fed.promotion.refuse')}
                           </Button>
                         ) : null}
                         {vault.federated && !homeHere && !vault.request ? (
@@ -504,6 +530,10 @@ export default function Federation() {
     mutationFn: (vault: FedVault) => guard((grant) => admin.acceptDemotion(vault.id, grant)),
     onSuccess: refresh,
   });
+  const refuseDemotion = useMutation({
+    mutationFn: (vault: FedVault) => guard((grant) => admin.refuseDemotion(vault.id, grant)),
+    onSuccess: refresh,
+  });
   if (overview.isPending) return <Loading />;
   if (!overview.data) return <ErrorNotice error={overview.error} />;
   return (
@@ -518,13 +548,15 @@ export default function Federation() {
         onAccept={(vault) => accept.mutate(vault)}
         onDecline={(vault) => decline.mutate(vault)}
         onAcceptDemotion={(vault) => demotion.mutate(vault)}
+        onRefuseDemotion={(vault) => refuseDemotion.mutate(vault)}
         busy={
           logs.isPending ||
           check.isPending ||
           consistency.isPending ||
           promote.isPending ||
           accept.isPending ||
-          demotion.isPending
+          demotion.isPending ||
+          refuseDemotion.isPending
         }
         error={
           logs.error ??
@@ -533,7 +565,8 @@ export default function Federation() {
           promote.error ??
           accept.error ??
           decline.error ??
-          demotion.error
+          demotion.error ??
+          refuseDemotion.error
         }
       />
       {dialog}

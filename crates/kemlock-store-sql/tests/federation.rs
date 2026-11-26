@@ -421,3 +421,21 @@ async fn a_record_with_a_huge_hlc_time_neither_stops_local_writes_nor_survives_a
     );
     assert!(written.change.hlc.millis() >= now_ms - 60_000);
 }
+
+#[tokio::test]
+async fn a_promotion_is_held_unless_the_saved_setting_says_auto() {
+    use kemlock_federation::extra::{FedAdminRepo, PromotionMode};
+    let store = memory().await;
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+    store
+        .put_setting("setting.federation_promotion", "auto")
+        .await
+        .expect("saved");
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Auto));
+    // Anything else, a misspelling included, holds.
+    store
+        .put_setting("setting.federation_promotion", "atuo")
+        .await
+        .expect("saved");
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+}

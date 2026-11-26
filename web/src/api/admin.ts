@@ -933,6 +933,13 @@ export function createAdminApi(api: AdminTransport) {
      */
     acceptDemotion: (owner: string, grant?: string) =>
       post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/vaults/{owner}/demotion`: drops the held promotion without
+     * applying it, at the home or at a replica that holds promotions for its admin. Needs a
+     * step-up token.
+     */
+    refuseDemotion: (owner: string, grant?: string) =>
+      act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
     /** `PUT /admin/v1/federation/vaults/{owner} { policy, replicas }`: a vault's policy at its home. */
     setVaultPolicy: (
       owner: string,

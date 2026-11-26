@@ -143,6 +143,40 @@ describe('FederationView', () => {
     expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }));
   });
 
+  it('shows a promotion held at a replica, and accepts or refuses it only on request', async () => {
+    const office = '02020202020202020202020202020202';
+    const held = {
+      ...OVERVIEW.vaults[0],
+      heldDemotion: { newHomeId: office, epoch: 2, at: NOW - 300 },
+    } as FedVault;
+    const onAcceptDemotion = vi.fn();
+    const onRefuseDemotion = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, vaults: [held] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onAcceptDemotion={onAcceptDemotion}
+        onRefuseDemotion={onRefuseDemotion}
+      />,
+    );
+    expect(screen.getByText('Office server asks to become the home')).toBeInTheDocument();
+    expect(onAcceptDemotion).not.toHaveBeenCalled();
+    expect(onRefuseDemotion).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Refuse the promotion of Office server for Family' }));
+    expect(onRefuseDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }));
+    await user.click(screen.getByRole('button', { name: 'Accept Office server as the home of Family' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }));
+  });
+
   it('leads to a peer with a key mismatch', async () => {
     const { onNavigate } = view({ ...OVERVIEW, peers: [peer({ mismatch: true })] });
     await userEvent.setup().click(screen.getByRole('button', { name: 'Possible man in the middle with Office server' }));

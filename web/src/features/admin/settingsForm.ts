@@ -5,7 +5,7 @@ import type { AdminSetting, SettingChanges } from '@/api/admin';
 import type { MessageId } from '@/i18n';
 
 /** The console's sections, in the order they are shown; a group the server adds goes after them. */
-export const GROUP_ORDER = ['smtp', 'push', 'backups', 'signups', 'files', 'trash', 'retention', 'rate-limits', 'security'] as const;
+export const GROUP_ORDER = ['smtp', 'push', 'backups', 'signups', 'files', 'trash', 'retention', 'rate-limits', 'security', 'federation'] as const;
 
 export interface SettingGroupView {
   group: string;

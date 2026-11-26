@@ -379,20 +379,30 @@ home:
 A peer applies it only if it is for a federated vault it holds, its epoch is the next one, its
 previous home is the home the peer knows, its signer is a replica the peer already knows, and it
 keeps exactly the servers the peer knows. Two replicas that promote themselves at once both make a
-record for the next epoch; the first to arrive wins and the other fails the previous-home check,
-which is why an admin does it, after a fresh passkey or password check.
+record for the next epoch; the first one a peer takes wins and the other fails the previous-home
+check, which is why an admin does it, after a fresh passkey or password check.
 
-**The home a promotion takes the vault from holds it for its own admin.** A peer that is the
-vault's home by what it knows does not apply a promotion that names another server as the new
-home: it checks it as above, keeps it beside the vault's settings (`held_demotion`) and answers
-the announcement with a refusal that says so. Until its admin accepts it
-(`POST /admin/v1/federation/vaults/{owner}/demotion`, after a fresh passkey or password check;
-the console lists it beside the vault), the vault stays at this server's epoch, the other side's
-newer home records stop the sync as a missed promotion does, and nothing the other server sends as
-the home is taken. Accepting checks the record again and applies it as above. Without this, any
-replica, or anyone holding a replica's identity key, could make itself the home of every vault it
-holds and then, as the home, `Erase` the old home's copy. A changed set of servers drops a held
-promotion, which no longer fits it.
+**A promotion nobody asked for is held, at every server.** What a server does with a promotion
+another server announces is the admin setting `federation_promotion` (environment
+`KEMLOCK_FEDERATION_PROMOTION`): `hold`, the default, or `auto`.
+
+- With `hold`, a replica checks the record as above, keeps it beside the vault's settings
+  (`held_demotion`) and answers the announcement with a refusal that says so. Until its admin
+  accepts it, the vault stays at this server's epoch, the other side's newer home records stop the
+  sync as a missed promotion does, and nothing the other server sends as the home is taken.
+  Without this, any replica, or anyone holding a replica's identity key, could make itself the home
+  of every vault it holds, at every server at once, and then, as the home, `Erase` the old home's
+  copy.
+- With `auto`, a replica applies it at once, as before ("the first to arrive wins").
+- A peer that is the vault's home by what it knows holds it whatever the setting says: it is the
+  server a promotion takes the vault from.
+
+The admin sees the held promotions at `GET /admin/v1/federation/promotions` (and as `heldDemotion`
+beside each vault), accepts one with `POST /admin/v1/federation/vaults/{owner}/demotion` (after a
+fresh passkey or password check) and refuses it with `DELETE` on the same path (with a step-up
+token); the console shows both beside the vault. Accepting checks the record again and applies it
+as above; refusing drops it, and the other server announces it again when it restarts. A changed
+set of servers drops a held promotion, which no longer fits it.
 
 ## Pairing
 

@@ -168,6 +168,8 @@ struct Extras {
     members: HashMap<Owner, Vec<UserId>>,
     /// The account copies applied: the home that signed and the user.
     accounts_applied: Vec<(ServerId, UserId)>,
+    /// What a promotion from another server does here; holds unless a test says otherwise.
+    promotion_mode: crate::extra::PromotionMode,
 }
 
 impl MemoryStore {
@@ -264,6 +266,11 @@ impl MemoryStore {
     pub fn set_space_snapshot(&self, snapshot: SpaceSnapshot) {
         let space = snapshot.state.space.id;
         self.extras().snapshots.insert(space, snapshot);
+    }
+
+    /// Sets what this store answers for the `federation_promotion` setting.
+    pub fn set_promotion_mode(&self, mode: crate::extra::PromotionMode) {
+        self.extras().promotion_mode = mode;
     }
 
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
@@ -701,6 +708,10 @@ impl MemoryStore {
 }
 
 impl crate::extra::FedAdminRepo for MemoryStore {
+    async fn promotion_mode(&self) -> Result<crate::extra::PromotionMode, StoreError> {
+        Ok(self.extras().promotion_mode)
+    }
+
     async fn local_vaults(&self) -> Result<Vec<VaultInfo>, StoreError> {
         Ok(self.vault_infos())
     }

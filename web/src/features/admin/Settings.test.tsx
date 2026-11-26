@@ -33,6 +33,23 @@ describe('the settings form', () => {
     ]);
   });
 
+  it('puts the federation setting in its own group after the security ones, with its words', () => {
+    const promotion = setting({
+      key: 'federation_promotion',
+      group: 'federation',
+      kind: 'choice',
+      choices: ['hold', 'auto'],
+      default: 'hold',
+      value: 'hold',
+    });
+    expect(groupsOf([promotion, ...SETTINGS]).map((g) => g.group).slice(-2)).toEqual(['security', 'federation']);
+    view({ settings: [promotion] });
+    const card = within(screen.getByRole('region', { name: 'Federation' }));
+    expect(card.getByLabelText(/hold it for you to accept or refuse/)).toHaveValue('hold');
+    expect(errorOf(promotion, 'auto')).toBeUndefined();
+    expect(errorOf(promotion, 'whenever')).toBe('admin.settings.error.choice');
+  });
+
   it('starts from the values in effect, with a secret empty', () => {
     const draft = draftOf(SETTINGS);
     expect(draft['smtp_host']).toBe('smtp.example.org');

@@ -14,7 +14,7 @@ use crate::eventsync::PeerEvent;
 use crate::extra::{Acknowledgement, Leases, StoredOffer};
 use crate::forget::{CANT_FORCE, PeerReport};
 use crate::health::{HealthStatus, PeerHealth};
-use crate::home::{MAX_REPLICAS, Policy, VaultFederation};
+use crate::home::{MAX_REPLICAS, Policy, PromotionRecord, VaultFederation};
 use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::job::{Connector, LEASE_SECS, PeerRunner, PeerStatus, RunOutcome, lease_name};
@@ -817,6 +817,17 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
             }
         }
         Ok(next)
+    }
+
+    /// Drops the promotion held for `vault` ([`VaultFederation::held_demotion`]) without applying
+    /// it. The caller has checked the admin with a fresh passkey or password first.
+    pub async fn refuse_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        self.replica.refuse_demotion(vault).await
+    }
+
+    /// Every promotion held for this server's admin: the vault and what the record says.
+    pub async fn held_promotions(&self) -> Result<Vec<(Owner, PromotionRecord)>> {
+        self.replica.held_promotions().await
     }
 
     /// The event log entries peers sent for `vault`, newest first: what the switches allowed.

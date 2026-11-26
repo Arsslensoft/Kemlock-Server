@@ -876,8 +876,8 @@ async fn the_document_names_routes_the_router_answers_and_every_write_names_the_
             }
         }
     }
-    assert_eq!(operations, 16, "every operation is documented once");
-    assert_eq!(writes, 8);
+    assert_eq!(operations, 18, "every operation is documented once");
+    assert_eq!(writes, 9);
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"

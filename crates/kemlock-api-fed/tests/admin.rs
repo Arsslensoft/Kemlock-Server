@@ -585,3 +585,55 @@ async fn every_federation_write_asks_for_a_step_up_token() {
         }
     }
 }
+
+#[tokio::test]
+async fn held_promotions_are_listed_and_refusing_one_needs_a_step_up_token() {
+    use kemlock_domain::Owner;
+    use kemlock_federation::home::{PromotionRecord, VaultFederation};
+    use kemlock_federation::ports::VaultRepo;
+
+    let e = env(1, Arc::new(Dead));
+    let me = e.replica.server_id();
+    let vault = Owner::User(UserId::random());
+    // Another server is the home; a third one (not this server) signed a promotion for itself,
+    // which this replica holds for its admin.
+    let home = ServerId::random();
+    let other = ServerId::random();
+    let settings = VaultFederation::federated(vault, home, vec![other, me]);
+    let record = PromotionRecord::build(&settings, other, unix_now()).expect("a promotion");
+    let signer = kemlock_federation::testing::identity(9, unix_now(), &Suite::IMPLEMENTED);
+    let held = VaultFederation {
+        held_demotion: Some(record.sign(&signer.signing).expect("sign").encode()),
+        ..settings
+    };
+    e.replica.store().put_vault(&held).await.expect("put");
+
+    let listing = "/admin/v1/federation/promotions";
+    let (status, listed) = admin(&e.app, Method::GET, listing, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed[0]["vault"], vault.to_string());
+    assert_eq!(listed[0]["newHome"], other.0.to_string());
+    assert_eq!(listed[0]["epoch"], 2);
+
+    let uri = format!("/admin/v1/federation/vaults/{vault}/demotion");
+    // A recent sign-in is not enough to refuse: a step-up token is.
+    let (status, _, bytes) = call(
+        &e.app,
+        Method::DELETE,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+    assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, listed) = admin(&e.app, Method::GET, listing, None).await;
+    assert_eq!(listed, json!([]));
+    // Nothing is left to refuse.
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}

@@ -863,12 +863,20 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("the vault");
     assert_eq!((after.home, after.epoch), (b.id, 2));
     assert_eq!(after.replicas, vec![c.id, a.id], "the old home goes last");
-    // C takes the promotion when B visits it.
+    // C holds the promotion for its own admin, as every replica does by default (an admin can
+    // set `federation_promotion` to `auto`); it applies it when the admin accepts.
     b.visit(&c).await;
     let at_c = VaultRepo::get_vault(c.store(), owner)
         .await
         .expect("a read")
         .expect("the vault");
+    assert_eq!((at_c.home, at_c.epoch), (a.id, 1), "C waits for its admin");
+    assert!(at_c.held_demotion.is_some(), "C holds the promotion");
+    let at_c = c
+        .facade
+        .accept_demotion(owner)
+        .await
+        .expect("C's admin accepts");
     assert_eq!((at_c.home, at_c.epoch), (b.id, 2));
 
     // The old home, cut off and unaware, makes a home-only write under epoch 1.
