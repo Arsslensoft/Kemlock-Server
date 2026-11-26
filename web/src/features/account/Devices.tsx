@@ -76,7 +76,7 @@ export default function Devices() {
             await leaveThisBrowser(
               {
                 signOutDevice: (id) => devicesApi.signOut(id),
-                endSession: signOut,
+                endSession: () => signOut({ server: false }),
                 goToSignIn: () => navigate({ to: '/sign-in' }),
               },
               device,

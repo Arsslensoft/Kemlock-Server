@@ -143,6 +143,7 @@ describe('Export', () => {
     const user = userEvent.setup();
     await user.click(screen.getByRole('radio', { name: /CSV, not encrypted/ }));
     expect(screen.getByText(/A CSV file isn't encrypted/)).toBeInTheDocument();
+    expect(screen.getByText(/Spreadsheet apps may still treat some cells as formulas/)).toBeInTheDocument();
     expect(screen.queryByLabelText('New export password')).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Export' }));
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
@@ -151,6 +152,39 @@ describe('Export', () => {
     expect(mime).toBe('text/csv');
     expect(String(csv)).toContain('login,GitHub');
     expect(String(csv)).toContain('login,Family Netflix');
+  });
+
+  describe('protecting a CSV against formulas', () => {
+    const hostile = () => [login('=cmd|x', '+user', '=pw', ['github.com'], { totp: '+JBSWY3DP' })];
+
+    it('is on by default, and says plainly that the password and code columns are left as they are', async () => {
+      const { save } = setup({ items: hostile });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('radio', { name: /CSV, not encrypted/ }));
+      expect(screen.getByRole('checkbox', { name: 'Protect against spreadsheet formulas' })).toBeChecked();
+      expect(
+        screen.getByText(/The password and one-time code columns are always written exactly as they are/),
+      ).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Export' }));
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const csv = String(save.mock.calls[0]?.[0]);
+      expect(csv).toContain("'=cmd|x");
+      expect(csv).toContain("'+user");
+      expect(csv).toContain(',=pw,+JBSWY3DP');
+    });
+
+    it('writes everything as saved when the person turns it off', async () => {
+      const { save } = setup({ items: hostile });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('radio', { name: /CSV, not encrypted/ }));
+      await user.click(screen.getByRole('checkbox', { name: 'Protect against spreadsheet formulas' }));
+      await user.click(screen.getByRole('button', { name: 'Export' }));
+      await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+      const csv = String(save.mock.calls[0]?.[0]);
+      expect(csv).not.toContain("'");
+      expect(csv).toContain('login,=cmd|x');
+      expect(csv).toContain(',+user,=pw,+JBSWY3DP');
+    });
   });
 });
 

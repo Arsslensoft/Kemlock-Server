@@ -158,7 +158,7 @@ export function SecurityView({
                         {t('twoStep.typeKey')}
                         <span className="cmd">
                           <code>{groupSecret(totp.enrol.secret)}</code>
-                          <CopyButton value={totp.enrol.secret} label={t('twoStep.copyKey')} big />
+                          <CopyButton value={totp.enrol.secret} label={t('twoStep.copyKey')} secret big />
                         </span>
                       </li>
                       <li>{t('twoStep.typeCode')}</li>

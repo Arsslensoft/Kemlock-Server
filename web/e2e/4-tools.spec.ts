@@ -101,6 +101,11 @@ test('vault health runs in the browser and asks Pwned Passwords only for a hash 
   await expect(page.getByRole('heading', { name: 'Vault health', level: 1 })).toBeVisible();
   await expectAccessible(page);
 
+  // Nothing is sent until the account says yes: the page asks first, and has not asked Pwned Passwords.
+  await expect(page.getByText('Check your passwords against known breaches?')).toBeVisible();
+  expect(asked).toEqual([]);
+  await page.getByRole('button', { name: 'Check my passwords' }).click();
+
   // Every request carries five hex characters and nothing else of the password.
   await expect.poll(() => asked.length).toBeGreaterThan(0);
   for (const url of asked) expect(url).toMatch(/^https:\/\/api\.pwnedpasswords\.com\/range\/[0-9A-F]{5}$/);

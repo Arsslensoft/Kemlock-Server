@@ -168,7 +168,7 @@ export default function SetupTwoStep() {
               {t('setup.twoStep.typeKey')}
               <span className="cmd">
                 <code tabIndex={0}>{groupSecret(enrol.data.secret)}</code>
-                <CopyButton value={enrol.data.secret} label={t('setup.twoStep.copyKey')} big />
+                <CopyButton value={enrol.data.secret} label={t('setup.twoStep.copyKey')} secret big />
               </span>
             </li>
             <li>{t('setup.twoStep.typeCode')}</li>

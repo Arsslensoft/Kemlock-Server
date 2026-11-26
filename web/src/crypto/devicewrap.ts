@@ -26,6 +26,11 @@ export interface DeviceWrap {
 
 export interface DeviceWrapDeps {
   store: DeviceKeyStore;
+  /**
+   * The additional-data label. Only the trusted-device copy uses the default, which is the format
+   * docs/crypto.md pins; a tab's reload copy has its own label, so the two never open each other.
+   */
+  label?: string;
   subtle?: SubtleCrypto;
   random?: (bytes: Uint8Array<ArrayBuffer>) => Uint8Array<ArrayBuffer>;
 }
@@ -43,8 +48,9 @@ export function deviceWrapAad(
   accountId: string,
   deviceId: string,
   keyVersion: number,
+  labelText: string = AAD_LABEL,
 ): Uint8Array<ArrayBuffer> {
-  const label = new TextEncoder().encode(AAD_LABEL);
+  const label = new TextEncoder().encode(labelText);
   const out = new Uint8Array(label.length + 36);
   out.set(label, 0);
   out.set(uuidBytes(accountId), label.length);
@@ -56,6 +62,7 @@ export function deviceWrapAad(
 export function createDeviceWrap(deps: DeviceWrapDeps): DeviceWrap {
   const subtle = deps.subtle ?? crypto.subtle;
   const random = deps.random ?? ((bytes) => crypto.getRandomValues(bytes));
+  const aadLabel = deps.label ?? AAD_LABEL;
 
   async function key(make: boolean): Promise<CryptoKey | undefined> {
     const held = await deps.store.load();
@@ -76,7 +83,7 @@ export function createDeviceWrap(deps: DeviceWrapDeps): DeviceWrap {
       const nonce = random(new Uint8Array(NONCE_LEN));
       const sealed = new Uint8Array(
         await subtle.encrypt(
-          { name: 'AES-GCM', iv: nonce, additionalData: deviceWrapAad(accountId, deviceId, keyVersion) },
+          { name: 'AES-GCM', iv: nonce, additionalData: deviceWrapAad(accountId, deviceId, keyVersion, aadLabel) },
           aes,
           root as Uint8Array<ArrayBuffer>,
         ),
@@ -105,7 +112,7 @@ export function createDeviceWrap(deps: DeviceWrapDeps): DeviceWrap {
             {
               name: 'AES-GCM',
               iv: sealed.slice(2, 2 + NONCE_LEN),
-              additionalData: deviceWrapAad(accountId, deviceId, keyVersion),
+              additionalData: deviceWrapAad(accountId, deviceId, keyVersion, aadLabel),
             },
             aes,
             sealed.slice(2 + NONCE_LEN),

@@ -6,7 +6,7 @@
 
 use super::{FakeEnv, FakeSeal, FakeStore, FakeTokenSigner, World};
 use kemlock_app::devices::{
-    AnswerApproval, ApprovalRepo, DeviceNotices, DeviceSignIn, KeyCopies, KeyCopyRepo,
+    AnswerApproval, ApprovalRepo, DeviceNotices, DeviceSignIn, EndSession, KeyCopies, KeyCopyRepo,
     ListApprovals, NewDeviceNotice, PollApproval, PurgeApprovals, RecentRequest, RequestApproval,
     SignOutDevice, UntrustDevice,
 };
@@ -357,6 +357,15 @@ pub(crate) fn sign_out_device(
     SignOutDevice {
         devices: world.store.clone(),
         copies: world.store.clone(),
+        tokens: world.store.clone(),
+        clock: world.env.clone(),
+        events: world.store.clone(),
+    }
+}
+
+pub(crate) fn end_session(world: &World) -> EndSession<FakeStore, FakeStore, FakeEnv, FakeStore> {
+    EndSession {
+        devices: world.store.clone(),
         tokens: world.store.clone(),
         clock: world.env.clone(),
         events: world.store.clone(),

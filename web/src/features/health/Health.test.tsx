@@ -86,4 +86,35 @@ describe('HealthView', () => {
     expect(screen.getByText("Pwned Passwords couldn't be reached, so exposed passwords aren't shown. Check your connection and reload.")).toBeInTheDocument();
     expect(screen.getByText('Nothing to fix right now.')).toBeInTheDocument();
   });
+
+  it('asks before the first lookup, saying what is sent and to whom, and sends nothing itself', async () => {
+    const onHibp = vi.fn();
+    await renderInRouter(
+      <HealthView analysis={analysis()} hibpOn={false} askHibp onHibp={onHibp} onDealtWith={vi.fn()} />,
+    );
+    expect(screen.getByText('Check your passwords against known breaches?')).toBeInTheDocument();
+    expect(screen.getByText(/api.pwnedpasswords.com, a service run by Have I Been Pwned/)).toBeInTheDocument();
+    expect(screen.getByText(/the first 5 characters of the SHA-1 hash of each password/)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Look passwords up in Pwned Passwords' })).not.toBeChecked();
+    expect(onHibp).not.toHaveBeenCalled();
+  });
+
+  it('takes yes and no from the question', async () => {
+    const onHibp = vi.fn();
+    const user = userEvent.setup();
+    await renderInRouter(
+      <HealthView analysis={analysis()} hibpOn={false} askHibp onHibp={onHibp} onDealtWith={vi.fn()} />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Check my passwords' }));
+    expect(onHibp).toHaveBeenLastCalledWith(true);
+    await user.click(screen.getByRole('button', { name: "Don't check" }));
+    expect(onHibp).toHaveBeenLastCalledWith(false);
+  });
+
+  it('does not ask once the account has answered', async () => {
+    await renderInRouter(
+      <HealthView analysis={analysis()} hibpOn={false} onHibp={vi.fn()} onDealtWith={vi.fn()} />,
+    );
+    expect(screen.queryByText('Check your passwords against known breaches?')).not.toBeInTheDocument();
+  });
 });

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { crypto as fake, fakeCalls } from '@/test/fake-crypto';
+import { decodeB64, fromUtf8 } from '@/lib/b64url';
+import { crypto as fake, fakeCalls, fakeTabKeys } from '@/test/fake-crypto';
 import { keepRootSealed, restoreSession } from './persistence';
 import { type TabStorage, createSession } from './session';
+import { createTabSealer } from './tabSeal';
 
 const USER = '11111111-1111-4111-8111-111111111111';
 const DEVICE = '22222222-2222-4222-8222-222222222222';
@@ -31,21 +33,35 @@ function leave(storage: TabStorage, secondsAgo = 1) {
 }
 
 function setup(storage: TabStorage, navigationType: string | null = 'reload') {
-  const session = createSession({ storage, now: () => NOW, navigationType: () => navigationType ?? undefined });
+  const session = createSession({
+    storage,
+    seal: createTabSealer(fake),
+    now: () => NOW,
+    navigationType: () => navigationType ?? undefined,
+  });
   const api = { accountKeys: vi.fn(async () => ({ keyVersion: 1, sealedPrivateKeys: 'c2s' }) as never) };
   const deps = { session, api, crypto: fake };
   return { session, api, deps };
 }
 
+/** What the storage keeps for the tokens, opened by the fake worker: the tokens' text, or nothing yet. */
+function storedTokens(storage: TabStorage): string | undefined {
+  const raw = storage.getItem('kemlock.session.tokens');
+  if (!raw) return undefined;
+  const { sealed } = JSON.parse(raw) as { sealed: string };
+  return fromUtf8(decodeB64(sealed));
+}
+
 /** A person signs in and the vault opens: what every unlock path ends with. */
-async function signInAndUnlock(storage: TabStorage) {
+async function signInAndUnlock(storage: TabStorage, signedInWith = tokens) {
   const first = setup(storage);
   keepRootSealed(first.deps);
-  first.session.tokenStore.set(tokens);
+  first.session.tokenStore.set(signedInWith);
   first.session.signedIn({ email: 'sam@example.co', name: 'Sam', userId: USER, deviceId: DEVICE, admin: true });
   await fake.newSsoAccount(USER); // the worker holds the root key
   first.session.unlocked();
   await vi.waitFor(() => expect(first.session.sealedRoot.get()).toBeDefined());
+  await vi.waitFor(() => expect(storedTokens(storage)).toContain(signedInWith.access));
   return first;
 }
 
@@ -62,13 +78,19 @@ async function reload(storage: TabStorage) {
 beforeEach(async () => {
   await fake.lock();
   fakeCalls.length = 0;
+  fakeTabKeys.clear();
 });
 
 describe('keeping the vault open across a reload', () => {
   it('seals the root key when the vault opens, and a reload opens it again', async () => {
     const storage = tabStore();
     await signInAndUnlock(storage);
-    expect(storage.keys()).toEqual(['kemlock.session.info', 'kemlock.session.root', 'kemlock.session.tokens']);
+    expect(storage.keys()).toEqual([
+      'kemlock.session.info',
+      'kemlock.session.root',
+      'kemlock.session.tab',
+      'kemlock.session.tokens',
+    ]);
 
     const back = await reload(storage);
     expect(back.session.getState()).toEqual({
@@ -80,7 +102,7 @@ describe('keeping the vault open across a reload', () => {
       admin: true,
     });
     expect(back.session.tokenStore.get()).toEqual(tokens);
-    expect(fakeCalls).toEqual(['deviceCopyOpen', 'unlockWithRoot']);
+    expect(fakeCalls).toEqual(['tabOpen', 'deviceCopyOpen', 'unlockWithRoot']);
   });
 
   it('takes the key version and the sealed private keys from the server on a restore', async () => {
@@ -114,13 +136,13 @@ describe('keeping the vault open across a reload', () => {
     const storage = tabStore();
     const first = await signInAndUnlock(storage);
     first.session.locked();
-    expect(storage.keys()).toEqual(['kemlock.session.info', 'kemlock.session.tokens']);
+    expect(storage.keys()).toEqual(['kemlock.session.info', 'kemlock.session.tab', 'kemlock.session.tokens']);
 
     const back = await reload(storage);
     expect(back.session.getState().status).toBe('locked');
     expect(back.session.getState().email).toBe('sam@example.co');
     expect(back.session.tokenStore.get()).toEqual(tokens);
-    expect(fakeCalls).toEqual([]);
+    expect(fakeCalls).toEqual(['tabOpen']);
   });
 
   it('seals again when the vault is opened after a lock', async () => {
@@ -136,8 +158,11 @@ describe('keeping the vault open across a reload', () => {
   it('forgets everything on sign-out', async () => {
     const storage = tabStore();
     const first = await signInAndUnlock(storage);
+    const tabId = first.session.currentTab() ?? '';
     first.session.end();
     expect(storage.keys()).toEqual([]);
+    // The tab's key goes with the session, so nothing sealed under it opens any more.
+    await vi.waitFor(() => expect(fakeTabKeys.has(tabId)).toBe(false));
     const back = await reload(storage);
     expect(back.session.getState().status).toBe('signed-out');
     expect(back.session.tokenStore.get()).toBeUndefined();
@@ -148,6 +173,7 @@ describe('keeping the vault open across a reload', () => {
     const first = await signInAndUnlock(storage);
     const refreshed = { ...tokens, access: 'access-2', refresh: 'refresh-2' };
     first.session.tokenStore.set(refreshed);
+    await vi.waitFor(() => expect(storedTokens(storage)).toContain('access-2'));
     expect((await reload(storage)).session.tokenStore.get()).toEqual(refreshed);
     first.session.tokenStore.clear();
     expect(storage.getItem('kemlock.session.tokens')).toBeNull();
@@ -163,13 +189,63 @@ describe('keeping the vault open across a reload', () => {
     expect(first.session.tokenStore.get()).toBeUndefined();
   });
 
-  it('still stores the tokens of a sign-in, which are set just before signedIn', () => {
+  it('still stores the tokens of a sign-in, which are set just before signedIn', async () => {
     const storage = tabStore();
-    const session = createSession({ storage, now: () => NOW });
+    const { session } = setup(storage);
     session.tokenStore.set(tokens);
     session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
-    expect(JSON.parse(storage.getItem('kemlock.session.tokens') ?? 'null')).toEqual(tokens);
+    await vi.waitFor(() => expect(JSON.parse(storedTokens(storage) ?? 'null')).toEqual(tokens));
     expect(session.tokenStore.get()).toEqual(tokens);
+  });
+
+  it('never writes a token in the clear, and writes none without a way to seal it', async () => {
+    const storage = tabStore();
+    await signInAndUnlock(storage);
+    for (const key of storage.keys()) {
+      const text = storage.getItem(key) ?? '';
+      expect(text, key).not.toContain('access-1');
+      expect(text, key).not.toContain('refresh-1');
+    }
+    const bare = tabStore();
+    const session = createSession({ storage: bare, now: () => NOW });
+    session.tokenStore.set(tokens);
+    session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
+    await Promise.resolve();
+    expect(bare.getItem('kemlock.session.tokens')).toBeNull();
+  });
+
+  it('seals the root key under the tab key, never the trusted-device key', async () => {
+    const storage = tabStore();
+    const spy = vi.spyOn(fake, 'deviceCopySeal');
+    const first = await signInAndUnlock(storage);
+    const tabId = first.session.currentTab();
+    expect(tabId).toBeTruthy();
+    expect(spy).toHaveBeenCalledWith(USER, DEVICE, 1, tabId);
+    spy.mockRestore();
+  });
+
+  it('does not restore a closed tab: its key is gone by the next load, so nothing opens', async () => {
+    const storage = tabStore();
+    await signInAndUnlock(storage);
+    // The tab was closed. Its storage was kept for session restore; the next page load of the origin
+    // deleted the tab key, since the page had been silent for longer than a reload takes.
+    fakeTabKeys.clear();
+    const back = await reload(storage);
+    expect(back.session.getState().status).toBe('signed-out');
+    expect(back.session.tokenStore.get()).toBeUndefined();
+    expect(fakeCalls).not.toContain('unlockWithRoot');
+    expect(storage.keys()).toEqual([]);
+  });
+
+  it('gives a new sign-in a tab key of its own and drops the one an earlier sign-in used', async () => {
+    const storage = tabStore();
+    const first = await signInAndUnlock(storage);
+    const before = first.session.currentTab() ?? '';
+    first.session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
+    await vi.waitFor(() => expect(fakeTabKeys.has(before)).toBe(false));
+    await vi.waitFor(() => expect(storedTokens(storage)).toBeDefined());
+    expect(first.session.currentTab()).not.toBe(before);
+    expect(first.session.sealedRoot.get()).toBeUndefined();
   });
 
   it('does not seal a vault that was shut while the keys were being fetched', async () => {
@@ -200,7 +276,7 @@ describe('keeping the vault open across a reload', () => {
     const back = await reload(storage);
     expect(back.session.getState().status).toBe('locked');
     expect(back.session.tokenStore.get()).toEqual(tokens);
-    expect(storage.keys()).toEqual(['kemlock.session.info', 'kemlock.session.tokens']);
+    expect(storage.keys()).toEqual(['kemlock.session.info', 'kemlock.session.tab', 'kemlock.session.tokens']);
   });
 
   it('stays locked when the key version moved on', async () => {
@@ -248,14 +324,46 @@ describe('keeping the vault open across a reload', () => {
     expect(storage.keys()).toEqual([]);
   });
 
-  it('is signed out when the refresh token has run out', async () => {
+  it('claims the tab as open before the network call that follows the restore', async () => {
     const storage = tabStore();
     await signInAndUnlock(storage);
-    storage.setItem('kemlock.session.tokens', JSON.stringify({ ...tokens, refreshExpiresAt: NOW }));
+    await fake.lock();
+    leave(storage);
+    const next = setup(storage);
+    const order: string[] = [];
+    const claimTab = vi.fn(async (id: string) => void order.push(`claim:${id}`));
+    next.api.accountKeys.mockImplementation(async () => {
+      order.push('accountKeys');
+      return { keyVersion: 1, sealedPrivateKeys: 'c2s' } as never;
+    });
+    await restoreSession({ ...next.deps, claimTab });
+    expect(order).toEqual([`claim:${next.session.currentTab()}`, 'accountKeys']);
+    expect(next.session.getState().status).toBe('unlocked');
+  });
+
+  it('does not take back what an earlier version kept in the clear, and clears it', async () => {
+    const storage = tabStore();
+    // The old format: the tokens as they were, and a root key sealed under the trusted-device key.
+    storage.setItem(
+      'kemlock.session.info',
+      JSON.stringify({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false }),
+    );
+    storage.setItem('kemlock.session.tokens', JSON.stringify(tokens));
+    storage.setItem('kemlock.session.root', JSON.stringify({ sealed: 'AAAA', keyVersion: 1 }));
+    const back = await reload(storage);
+    expect(back.session.getState().status).toBe('signed-out');
+    expect(back.session.tokenStore.get()).toBeUndefined();
+    expect(storage.keys()).toEqual([]);
+    expect(fakeCalls).toEqual([]);
+  });
+
+  it('is signed out when the refresh token has run out', async () => {
+    const storage = tabStore();
+    await signInAndUnlock(storage, { ...tokens, refreshExpiresAt: NOW });
     const back = await reload(storage);
     expect(back.session.getState().status).toBe('signed-out');
     expect(storage.keys()).toEqual([]);
-    expect(fakeCalls).toEqual([]);
+    expect(fakeCalls).toEqual(['tabOpen']);
   });
 
   it('ignores storage it cannot read', async () => {
@@ -276,7 +384,7 @@ describe('keeping the vault open across a reload', () => {
     storage.setItem('kemlock.session.root', '{"sealed":42}');
     const back = await reload(storage);
     expect(back.session.getState().status).toBe('locked');
-    expect(fakeCalls).toEqual([]);
+    expect(fakeCalls).toEqual(['tabOpen']);
   });
 
   it('works with storage that throws, and with none', async () => {
@@ -416,6 +524,7 @@ describe('adminConfirmed', () => {
     first.session.signedIn({ email: 'sam@example.co', userId: USER, deviceId: DEVICE, admin: false });
     first.session.adminConfirmed();
     expect(first.session.getState().admin).toBe(true);
+    await vi.waitFor(() => expect(storedTokens(storage)).toBeDefined());
     leave(storage);
     const next = setup(storage);
     await restoreSession(next.deps);

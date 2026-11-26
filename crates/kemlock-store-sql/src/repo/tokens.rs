@@ -126,6 +126,17 @@ impl TokenRepo for SqlStore {
             .store()?;
         Ok(())
     }
+
+    async fn device_tokens(&self, device: DeviceId) -> Result<Vec<RefreshToken>, StoreError> {
+        refresh_tokens::Entity::find()
+            .filter(refresh_tokens::Column::DeviceId.eq(device.0))
+            .all(self.writer())
+            .await
+            .store()?
+            .into_iter()
+            .map(refresh_tokens::Model::into_domain)
+            .collect()
+    }
 }
 
 #[cfg(test)]

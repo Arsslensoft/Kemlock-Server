@@ -29,7 +29,7 @@ export function useDeleteAccount(email: string, secondStep: boolean, onGone: () 
       erase: async (typed, password, proof) => {
         const done = await run(() =>
           deleteAccount(
-            { api: { erase: eraseApi.erase, prelogin: api.prelogin, opaqueStart: api.opaqueStart }, crypto: vaultCrypto, signOut },
+            { api: { erase: eraseApi.erase, prelogin: api.prelogin, opaqueStart: api.opaqueStart }, crypto: vaultCrypto, signOut: () => signOut({ server: false }) },
             { email, typed, password, proof, secondStep },
           ),
         );

@@ -2,12 +2,14 @@
 //
 //   keepRootSealed: whenever the vault opens, by any road (password, passkey, Recovery Kit, device
 //                   approval, single sign-on, a new account), the worker seals the root key under
-//                   this browser's non-extractable key and the sealed blob goes into the tab's
-//                   storage. One subscription to the session covers every unlock path;
+//                   this tab's own non-extractable key (never the trusted-device key: src/app/tabKey.ts
+//                   deletes it once the tab has been silent for longer than a reload takes) and the
+//                   sealed blob goes into the tab's storage. One subscription to the session covers
+//                   every unlock path;
 //   restoreSession: at start, before the router decides where a page may go, takes back the tokens
 //                   and, if a sealed copy is there, opens it and opens the vault with it.
 //
-// The sealed blob opens only in this browser, for this account, device and key version, and only
+// The sealed blob opens only in this browser, for this tab, account, device and key version, and only
 // inside the worker. If it does not open (the browser's key was reset, the key version moved on,
 // the blob is damaged, the server is out of reach) the copy is dropped and the vault stays shut:
 // the master password opens it. A shut vault is the safe failure, never a signed-out one, unless
@@ -22,6 +24,12 @@ export interface PersistenceDeps {
   /** Where the key version and the sealed private keys come from. */
   api: Pick<Api, 'accountKeys'>;
   crypto: Pick<CryptoPort, 'deviceCopySeal' | 'deviceCopyOpen' | 'unlockWithRoot' | 'release' | 'lock'>;
+  /**
+   * Marks the restored tab as open (its key stamped, its lock held), called as soon as the restore has
+   * opened its tokens and before the network call that follows, so a slow server does not leave the
+   * tab's key to another page's cleanup.
+   */
+  claimTab?: ((tabId: string) => Promise<void>) | undefined;
 }
 
 /** Seals the open vault's root key for this tab, unless it already is. Never throws. */
@@ -32,10 +40,12 @@ async function sealRoot({ session, api, crypto }: PersistenceDeps): Promise<void
   if (session.sealedRoot.get()) return;
   try {
     const { keyVersion } = await api.accountKeys();
-    const sealed = await crypto.deviceCopySeal(userId, deviceId, keyVersion);
+    const tabId = session.tabId();
+    const sealed = await crypto.deviceCopySeal(userId, deviceId, keyVersion, tabId);
     // The vault may have been shut, or another account opened, while this waited.
     const now = session.getState();
     if (now.status !== 'unlocked' || now.userId !== userId || now.deviceId !== deviceId) return;
+    if (session.currentTab() !== tabId) return;
     session.sealedRoot.set({ sealed: encodeB64(sealed), keyVersion });
   } catch {
     // No copy, so a reload asks for the master password. That is the cost, not a failure.
@@ -85,16 +95,24 @@ export async function restoreSession(
 
 async function restore(deps: PersistenceDeps, isLate: () => boolean): Promise<void> {
   const { session, api, crypto } = deps;
-  if (!session.restore()) return;
+  if (!(await session.restore())) return;
+  if (isLate()) {
+    // The page is showing the sign-in already: it must not turn into a session behind the person.
+    session.end();
+    return;
+  }
+  const claimed = session.currentTab();
+  if (claimed && deps.claimTab) await deps.claimTab(claimed).catch(() => undefined);
   const held = session.sealedRoot.get();
   if (!held) return;
   const { userId, deviceId } = session.getState();
-  if (!userId || !deviceId) return;
+  const tabId = session.currentTab();
+  if (!userId || !deviceId || !tabId) return;
   let root: Uint8Array | undefined;
   try {
     // Also where an expired access token is refreshed; a refresh the server refuses ends the session.
     const keys = await api.accountKeys();
-    root = await crypto.deviceCopyOpen(userId, deviceId, keys.keyVersion, decodeB64(held.sealed));
+    root = await crypto.deviceCopyOpen(userId, deviceId, keys.keyVersion, decodeB64(held.sealed), tabId);
     await crypto.unlockWithRoot(userId, root, {
       keyVersion: keys.keyVersion,
       ...(keys.sealedPrivateKeys ? { sealedPrivateKeys: decodeB64(keys.sealedPrivateKeys) } : {}),

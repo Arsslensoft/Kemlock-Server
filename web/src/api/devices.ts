@@ -124,6 +124,19 @@ export function createDevicesApi(http: Http) {
      */
     untrustDevice: (deviceId: string) =>
       http.send({ method: 'DELETE', path: `/kem/v1/devices/${encodeURIComponent(deviceId)}/key-copy` }),
+    /**
+     * Ends this device's session on the server and nothing else: its refresh tokens are revoked,
+     * and its device row and key copy stay, so an account that can only open its vault with this
+     * browser's copy is not locked out of it by signing out.
+     */
+    endSession: () => http.send({ method: 'POST', path: '/kem/v1/auth/sign-out' }),
+    /**
+     * Ends this device's other sessions and keeps this one, the device row and its key copy: the
+     * refresh tokens an earlier sign-in left behind (in a closed tab's storage) stop working.
+     */
+    endOtherSessions: () =>
+      http.send({ method: 'POST', path: '/kem/v1/auth/sign-out', body: { others: true } }),
+    /** Removes a device: its session, its row and its key copy. The "remove this device" action. */
     signOut: (deviceId: string) =>
       http.send({ method: 'POST', path: '/kem/v1/devices/sign-out', body: { deviceId } }),
     /** The account's devices, or null when an older server has no such list (a 404 or 405). */

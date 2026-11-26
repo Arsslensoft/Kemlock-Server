@@ -432,6 +432,37 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   /56 (the failed-password limit per account counts by /64), so a host that rotates through the
   /64s of its site shares one count.
 
+## The web vault on a shared computer
+
+The web vault keeps the person signed in, with the vault open, across a reload of the tab, and only
+that. What it keeps lives in the tab's session storage: the tokens and the root key, both sealed
+in a Web Worker under a key that belongs to that tab alone (non-extractable, in IndexedDB), and
+honoured only for a reload within 10 seconds of the page leaving. A tab that was closed and restored,
+or duplicated, has to sign in again. Every page of the vault stamps its tab's key every few seconds
+and deletes the keys of tabs that have been silent for longer than a reload takes, on each load and on
+each stamp, so what a closed tab left behind stops opening within about 14 seconds of anyone using
+the vault again on that computer.
+
+What this does not cover: a person with the browser's developer tools open on the vault's own
+origin, and a tab closed a moment ago. They can keep stamping a closed tab's key from any page of the
+origin and open the tab's storage with the vault's script blocked; the key then opens what it sealed.
+The seal protects against someone who only has the browser profile's files, or the browser's session
+restore, not against a script running on the origin. On a computer that other people use, give each
+person their own browser profile or account, sign out when you leave, and lock the vault. A vault
+locks by itself after 15 minutes idle and 5 hidden, sooner when a space's session timeout policy says
+so, and a sign-out ends the session on the server too (the device and its trusted-device copy stay).
+
+Tabs closed under an earlier version of the web vault are a remaining risk. That version kept the
+tokens in the clear in the tab's session storage and sealed the open vault's root key under the
+browser's shared trusted-device key. The first time a browser that was in use before signs in or
+restores a tab on this version, the vault asks the server to end the device's other sessions and
+keep the current one, so the tokens in old closed tabs stop working. The trusted-device key is not
+reset, since other accounts that sign in on the same browser may depend on it. A root key sealed
+under it in an old closed tab can still be opened by someone who runs script on the vault's origin,
+but with no live token it can fetch nothing, and the web vault keeps no vault data in the browser to
+decrypt instead: there is no service worker, no Cache API and no stored query cache, and IndexedDB
+holds keys only.
+
 ## Operations
 
 - Health: `/alive` is 200 while the process serves requests; `/health` also checks the database,

@@ -317,7 +317,12 @@ export interface CryptoApi {
    * key"): sealed in the worker under a non-extractable key that never leaves this browser. The
    * root key does not reach the page. Returns the blob (base64url) the server keeps.
    */
-  deviceCopySeal(accountId: string, deviceId: string, keyVersion: number): Promise<string>;
+  deviceCopySeal(
+    accountId: string,
+    deviceId: string,
+    keyVersion: number,
+    tabId?: string,
+  ): Promise<string>;
   /**
    * Opens this browser's copy into a root-key handle for `unlockWithRoot`. Refuses a copy made
    * for another account, device or key version, or by another browser.
@@ -327,9 +332,20 @@ export interface CryptoApi {
     deviceId: string,
     keyVersion: number,
     sealed: string,
+    tabId?: string,
   ): Promise<ApprovedKeyHandle>;
   /** Forgets this browser's key: its copies stop opening. */
-  deviceCopyReset(): Promise<void>;
+  deviceCopyReset(tabId?: string): Promise<void>;
+  /**
+   * With a `tabId`, the three `deviceCopy` operations above use that tab's own key instead of the
+   * trusted-device key: the copy a reload of the tab opens the vault from. The key is made on the
+   * first seal, is non-extractable, and goes when the tab's page has been silent for longer than a
+   * reload takes (`purgeTabKeys`). `tabSeal` seals the session's tokens under the same key, bound
+   * to the account and device. `data` and the result are base64url.
+   */
+  tabSeal(tabId: string, accountId: string, deviceId: string, data: string): Promise<string>;
+  /** Opens what `tabSeal` sealed; refuses anything else, and anything once the tab's key is gone. */
+  tabOpen(tabId: string, accountId: string, deviceId: string, sealed: string): Promise<string>;
   /** Opens the password wrap of the root key; consumes both handles. */
   unlock(
     accountId: string,
@@ -625,14 +641,22 @@ export interface Ops {
   };
   newSsoAccount: { args: [accountId: string]; result: NewAccount };
   deviceCopySeal: {
-    args: [accountId: string, deviceId: string, keyVersion: number];
+    args: [accountId: string, deviceId: string, keyVersion: number, tabId?: string];
     result: string;
   };
   deviceCopyOpen: {
-    args: [accountId: string, deviceId: string, keyVersion: number, sealed: string];
+    args: [accountId: string, deviceId: string, keyVersion: number, sealed: string, tabId?: string];
     result: ApprovedKeyHandle;
   };
-  deviceCopyReset: { args: []; result: void };
+  deviceCopyReset: { args: [tabId?: string]; result: void };
+  tabSeal: {
+    args: [tabId: string, accountId: string, deviceId: string, data: string];
+    result: string;
+  };
+  tabOpen: {
+    args: [tabId: string, accountId: string, deviceId: string, sealed: string];
+    result: string;
+  };
   unlockWithRoot: {
     args: [accountId: string, root: ApprovedKeyHandle, options?: UnlockOptions];
     result: void;

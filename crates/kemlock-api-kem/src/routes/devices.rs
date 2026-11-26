@@ -20,7 +20,7 @@ use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use kemlock_app::devices::{
     Answer, AnswerApproval, ApprovalRequestInput, DeviceSignIn, DevicesStore, KeyCopies,
-    ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
+    EndSession, ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
     UntrustDevice,
 };
 use kemlock_app::notices::Notices;
@@ -221,6 +221,16 @@ impl KeyCopyResponse {
     }
 }
 
+/// `POST /kem/v1/auth/sign-out`: an empty body ends this session; `{"others": true}` keeps it and ends
+/// the device's other sessions.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EndSessionRequest {
+    /// End the device's other sessions and keep this one.
+    #[serde(default)]
+    pub(crate) others: bool,
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SignOutRequest {
@@ -298,6 +308,15 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         UntrustDevice {
             devices: self.store.clone(),
             copies: self.store.clone(),
+            clock: self.crypto.clone(),
+            events: self.store.clone(),
+        }
+    }
+
+    fn end_session(&self) -> EndSession<S, S, P, S> {
+        EndSession {
+            devices: self.store.clone(),
+            tokens: self.store.clone(),
             clock: self.crypto.clone(),
             events: self.store.clone(),
         }
@@ -514,6 +533,28 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         Ok(StatusCode::NO_CONTENT)
     }
 
+    /// `POST /kem/v1/auth/sign-out`: ends this device's session only, or, with `{"others": true}`, its
+    /// other sessions and not this one. The key copy stays either way.
+    pub(crate) async fn handle_auth_sign_out(
+        State(api): State<Self>,
+        authed: Authed,
+        body: Body,
+    ) -> Result<StatusCode, Problem> {
+        let others = if body.is_empty() {
+            false
+        } else {
+            body.json::<EndSessionRequest>()?.others
+        };
+        if others {
+            api.end_session()
+                .execute_others(&authed.actor, authed.auth_time)
+                .await?;
+        } else {
+            api.end_session().execute(&authed.actor).await?;
+        }
+        Ok(StatusCode::NO_CONTENT)
+    }
+
     /// `POST /kem/v1/devices/sign-out`: ends a device's session and deletes its key copy.
     pub(crate) async fn handle_device_sign_out(
         State(api): State<Self>,
@@ -570,6 +611,10 @@ where
         .route(
             "/kem/v1/devices/{id}/key-copy",
             delete(A::<S, P, K>::handle_device_untrust),
+        )
+        .route(
+            "/kem/v1/auth/sign-out",
+            post(A::<S, P, K>::handle_auth_sign_out),
         )
         .route(
             "/kem/v1/devices/sign-out",
@@ -692,6 +737,18 @@ fn doc_key_copy_delete() {}
 fn doc_device_untrust() {}
 
 #[utoipa::path(
+    post, path = "/kem/v1/auth/sign-out", tag = "trusted-device",
+    security(("dpop" = [])),
+    request_body = Option<EndSessionRequest>,
+    responses(
+        (status = 204, description = "With no body: this device's refresh tokens are revoked and its DPoP key unbound. With {\"others\": true}: its other sessions end and this one goes on. The device and its key copy stay either way"),
+        (status = 401, description = "Not signed in", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_auth_sign_out() {}
+
+#[utoipa::path(
     post, path = "/kem/v1/devices/sign-out", tag = "trusted-device",
     security(("dpop" = [])),
     request_body = SignOutRequest,
@@ -717,6 +774,7 @@ fn doc_device_sign_out() {}
         doc_key_copy_get,
         doc_key_copy_delete,
         doc_device_untrust,
+        doc_auth_sign_out,
         doc_device_sign_out
     ),
     components(schemas(
@@ -731,6 +789,7 @@ fn doc_device_sign_out() {}
         ApprovalAnswerRequest,
         KeyCopyRequest,
         KeyCopyResponse,
+        EndSessionRequest,
         SignOutRequest
     ))
 )]

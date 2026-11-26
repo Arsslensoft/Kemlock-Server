@@ -408,6 +408,46 @@ describe('the dispatcher', () => {
     expect(wrap.reset).toHaveBeenCalled();
   });
 
+  it("seals a tab's root key and session under that tab's own wrap, and leaves the device key alone", async () => {
+    const vault = mockVault();
+    const device = {
+      seal: vi.fn(async () => new Uint8Array([1])),
+      open: vi.fn(async () => new Uint8Array([2])),
+      reset: vi.fn(async () => undefined),
+    };
+    const tab = {
+      seal: vi.fn(async () => new Uint8Array([1, 2, 3])),
+      open: vi.fn(async () => new Uint8Array([9, 9])),
+      reset: vi.fn(async () => undefined),
+    };
+    const tabWrap = vi.fn(() => tab);
+    const dispatch = createDispatcher({ loadWasm: async () => () => vault, dpop: dpopStub(), deviceWrap: device, tabWrap });
+    await dispatch('newSsoAccount', [UUID]);
+
+    expect(await dispatch('deviceCopySeal', [UUID, UUID, 1, 'tab-1'])).toBe('AQID');
+    expect(tabWrap).toHaveBeenLastCalledWith('tab-1', 'root');
+    expect(tab.seal).toHaveBeenCalledWith(expect.any(Uint8Array), UUID, UUID, 1);
+    expect(await dispatch('deviceCopyOpen', [UUID, UUID, 1, 'AQID', 'tab-1'])).toBe(34);
+    expect(tab.open).toHaveBeenCalled();
+    await dispatch('deviceCopyReset', ['tab-1']);
+    expect(tab.reset).toHaveBeenCalled();
+
+    // The session's tokens go under the same tab, as a separate purpose and with no vault needed.
+    expect(await dispatch('tabSeal', ['tab-1', UUID, UUID, 'dG9rZW5z'])).toBe('AQID');
+    expect(tabWrap).toHaveBeenLastCalledWith('tab-1', 'session');
+    expect(await dispatch('tabOpen', ['tab-1', UUID, UUID, 'AQID'])).toBe('CQk');
+
+    expect(device.seal).not.toHaveBeenCalled();
+    expect(device.open).not.toHaveBeenCalled();
+    expect(device.reset).not.toHaveBeenCalled();
+  });
+
+  it('has no tab copy without a tab key store', async () => {
+    const { dispatch } = setup();
+    await expect(dispatch('tabSeal', ['tab-1', UUID, UUID, 'AQID'])).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(dispatch('deviceCopyReset', ['tab-1'])).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
   it('has no device copy without a device key', async () => {
     const { dispatch } = setup();
     await expect(dispatch('deviceCopySeal', [UUID, UUID, 1])).rejects.toMatchObject({ code: 'unavailable' });

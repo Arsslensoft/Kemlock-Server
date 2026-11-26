@@ -193,6 +193,25 @@ describe('the devices client', () => {
     });
   });
 
+  it('ends only this session from the sign-out button, and removes a device by id elsewhere', async () => {
+    const send = vi.fn(async () => undefined);
+    const api = createDevicesApi({ request: vi.fn(), send } as never);
+    await api.endSession();
+    expect(send).toHaveBeenLastCalledWith({ method: 'POST', path: '/kem/v1/auth/sign-out' });
+    await api.endOtherSessions();
+    expect(send).toHaveBeenLastCalledWith({
+      method: 'POST',
+      path: '/kem/v1/auth/sign-out',
+      body: { others: true },
+    });
+    await api.signOut('d1');
+    expect(send).toHaveBeenLastCalledWith({
+      method: 'POST',
+      path: '/kem/v1/devices/sign-out',
+      body: { deviceId: 'd1' },
+    });
+  });
+
   it('reads when a device made its key copy', async () => {
     const entry = {
       id: 'd1',
