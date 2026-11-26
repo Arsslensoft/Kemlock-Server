@@ -1133,3 +1133,86 @@ async fn a_member_revoked_or_removed_through_the_space_rows_is_out_of_the_organi
     let (_, listed) = get(&h, &ada, &members).await;
     assert_eq!(listed["data"].as_array().map(Vec::len), Some(2));
 }
+
+#[tokio::test]
+async fn a_member_who_may_not_see_passwords_can_not_change_which_collections_a_cipher_is_in() {
+    let h = Harness::new().await;
+    let (ada, ada_id) = h.signed_in("ada@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (org, collection) = organization(&h, &ada).await;
+    // Bob may edit what is in the collection, with its passwords hidden from him.
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/invite"),
+            Some(&ada),
+            Some(json!({
+                "emails": ["bob@example.com"], "type": 2, "groups": [],
+                "collections": [{"id": collection, "readOnly": false, "hidePasswords": true}]
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, bob_id).await;
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{bob_id}/confirm"),
+            Some(&ada),
+            Some(json!({"key": "4.bobskey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut cipher = login_request(ada_id, "2.shared login");
+    cipher["organizationId"] = json!(org);
+    let (status, created) = h
+        .json(
+            "POST",
+            "/api/ciphers/create",
+            Some(&ada),
+            Some(json!({"cipher": cipher, "collectionIds": [collection]})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().expect("an id").to_owned();
+
+    // Bob can edit the cipher itself, but taking it out of its collection is not his to do.
+    let mut change = login_request(bob_id, "2.bobs edit");
+    change["organizationId"] = json!(org);
+    let (status, body) = h
+        .json("PUT", &format!("/api/ciphers/{id}"), Some(&bob), Some(change))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/ciphers/bulk-collections",
+            Some(&bob),
+            Some(json!({
+                "organizationId": org, "cipherIds": [id],
+                "collectionIds": [collection], "removeCollections": true
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, seen) = get(&h, &ada, &format!("/api/ciphers/{id}/details")).await;
+    assert_eq!(status, StatusCode::OK, "{seen}");
+    assert_eq!(seen["collectionIds"], json!([collection]), "still in it");
+
+    // Ada, who manages it, can.
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/ciphers/bulk-collections",
+            Some(&ada),
+            Some(json!({
+                "organizationId": org, "cipherIds": [id],
+                "collectionIds": [collection], "removeCollections": true
+            })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, seen) = get(&h, &ada, &format!("/api/ciphers/{id}/details")).await;
+    assert_eq!(seen["collectionIds"], json!([]));
+}
