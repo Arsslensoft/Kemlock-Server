@@ -1227,20 +1227,20 @@ async fn a_proof_can_be_used_once() {
     let app = App::new(false);
     let client = app.client();
     // Learn the nonce.
-    client.post("/kem/v1/auth/token", token_request()).await;
-    let proof = client.proof_for("POST", "/kem/v1/auth/token", None);
+    client.post("/kem/v1/auth/opaque/start", json!({})).await;
+    let proof = client.proof_for("POST", "/kem/v1/auth/opaque/start", None);
     let req = Req {
-        body: Some(token_request()),
+        body: Some(json!({})),
         proof: Some(proof),
         ..Req::default()
     };
-    let first = client.once("POST", "/kem/v1/auth/token", &req).await;
+    let first = client.once("POST", "/kem/v1/auth/opaque/start", &req).await;
     assert_eq!(
         first.status,
         StatusCode::BAD_REQUEST,
         "the proof was accepted"
     );
-    let replay = client.once("POST", "/kem/v1/auth/token", &req).await;
+    let replay = client.once("POST", "/kem/v1/auth/opaque/start", &req).await;
     assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
     assert_eq!(replay.problem(), "invalid-dpop-proof");
 }
@@ -1455,6 +1455,40 @@ async fn a_changed_security_stamp_ends_the_session() {
 
 fn refresh_body(token: &str) -> serde_json::Value {
     json!({"grantType": "refresh_token", "refreshToken": token})
+}
+
+#[tokio::test]
+async fn a_refresh_proof_is_remembered_only_once_the_refresh_worked() {
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let open_before = app.api.dpop.tracked_open();
+    let total_before = app.api.dpop.tracked();
+
+    // Refreshes that lead nowhere take no room in either replay set, so they can't fill them.
+    for _ in 0..5 {
+        let bad = client
+            .post("/kem/v1/auth/token", refresh_body("not-a-refresh-token"))
+            .await;
+        assert_eq!(bad.status, StatusCode::UNAUTHORIZED, "{:?}", bad.json());
+    }
+    assert_eq!(app.api.dpop.tracked(), total_before);
+
+    // One that works is remembered with the sessions' proofs, not in the open set, and is then
+    // a replay.
+    let proof = client.proof_for("POST", "/kem/v1/auth/token", None);
+    let req = Req {
+        body: Some(refresh_body(&session.refresh_token)),
+        proof: Some(proof),
+        ..Req::default()
+    };
+    let ok = client.once("POST", "/kem/v1/auth/token", &req).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert_eq!(app.api.dpop.tracked_open(), open_before);
+    assert_eq!(app.api.dpop.tracked(), total_before + 1);
+    let replay = client.once("POST", "/kem/v1/auth/token", &req).await;
+    assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(replay.problem(), "invalid-dpop-proof");
 }
 
 #[tokio::test]

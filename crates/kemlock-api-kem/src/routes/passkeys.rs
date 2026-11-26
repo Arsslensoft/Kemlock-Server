@@ -447,7 +447,7 @@ where
     let flow = passkey_sign_in(&api, &runtime);
     // Only a genuine, fresh challenge is remembered as used, so made-up ones take no room.
     flow.check_challenge(&challenge)?;
-    match api.used_states_open.insert(&challenge, now) {
+    match api.spend_open_state(proof.ip, &challenge, now) {
         Ok(true) => {}
         Ok(false) => {
             return Err(Problem::bad_request(

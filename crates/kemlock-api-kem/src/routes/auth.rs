@@ -10,7 +10,7 @@ use crate::dto::{
     RegisterStartResponse, SignInResponse, SsoOffer, TokenResponse, TotpConfirmRequest,
     TotpEnrolResponse, TwoFactorRequest, decode,
 };
-use crate::extract::{Authed, Body, ClientIp, Proof, SecureConnection};
+use crate::extract::{Authed, Body, ClientIp, Proof, RefreshProof, SecureConnection};
 use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::ip_key;
 use crate::replay::Full;
@@ -224,7 +224,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         // A login state finishes once, whether the password was right or not. Only a genuine,
         // fresh state is remembered, so made-up ones take no room.
         api.sign_in().check_login_state(&login_state)?;
-        match api.used_states_open.insert(&login_state, api.now()) {
+        match api.spend_open_state(proof.ip, &login_state, api.now()) {
             Ok(true) => {}
             Ok(false) => {
                 return Err(Problem::bad_request("the login state was already used"));
@@ -322,10 +322,12 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         Ok(Json(token_response(&tokens, now)))
     }
 
-    /// `POST /kem/v1/auth/token`: refresh. The refresh token rotates at every use.
+    /// `POST /kem/v1/auth/token`: refresh. The refresh token rotates at every use. The proof is
+    /// remembered only once the refresh token has worked, so proofs that lead nowhere take no
+    /// room in the replay sets and can't be used to fill them.
     pub(crate) async fn handle_token(
         State(api): State<Self>,
-        proof: Proof,
+        proof: RefreshProof,
         body: Body,
     ) -> Result<Json<TokenResponse>, Problem> {
         let request: RefreshRequest = body.json()?;
@@ -336,6 +338,11 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .refresh()
             .execute(&request.refresh_token, &proof.jkt)
             .await;
+        if refreshed.is_ok() {
+            // A proof raced to the same end is refused here, and the refresh token's rotation
+            // already decides which of two refreshes with one token wins.
+            let _ = api.dpop.record(&proof.pending, api.now());
+        }
         api.log_attempt(api.attempt("refresh", None, &refreshed, proof.ip, token_ids))
             .await;
         let tokens = refreshed?;

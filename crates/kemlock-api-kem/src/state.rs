@@ -4,7 +4,7 @@
 use crate::dpop::DpopVerifier;
 use crate::live::LiveHub;
 use crate::ratelimit::Limiter;
-use crate::replay::TimedSet;
+use crate::replay::{Full, TimedSet};
 use kemlock_app::admin::{InviteGate, InviteTicket, Live};
 use kemlock_app::api_use::{ApiUseRepo, RecordApiUse, USE_GRANULARITY};
 use kemlock_app::dedup::TagStore;
@@ -88,6 +88,8 @@ const MAX_USED_STATES: usize = 100_000;
 /// fill through opaque/start and passkey options: they have a set of their own, so filling it
 /// refuses new sign-ins and nothing else (see [`crate::dpop::MAX_OPEN_JTIS`]).
 const MAX_OPEN_USED_STATES: usize = 25_000;
+/// How many of them one client address may take, so a few addresses can't fill the set.
+const OPEN_USED_STATES_PER_SOURCE: usize = MAX_OPEN_USED_STATES / 100;
 /// How long after a resend of an invitation the same member's invitation can't be resent.
 pub(crate) const RESEND_WINDOW_SECS: i64 = 600;
 
@@ -258,6 +260,18 @@ impl<S, P, K> Api<S, P, K> {
 
     pub(crate) fn upgrade(weak: &std::sync::Weak<Inner<S, P, K>>) -> Option<Self> {
         weak.upgrade().map(Api)
+    }
+
+    /// Remembers a login state or passkey challenge finished by someone nobody is signed in for,
+    /// on behalf of `ip`, which may take only its share of the set. `Ok(false)` for a state
+    /// already spent, `Err(Full)` when the set or the address's share is full.
+    pub(crate) fn spend_open_state(&self, ip: IpAddr, state: &[u8], now: i64) -> Result<bool, Full> {
+        self.used_states_open.insert_from(
+            crate::ratelimit::ip_key(ip).as_bytes(),
+            OPEN_USED_STATES_PER_SOURCE,
+            state,
+            now,
+        )
     }
 }
 
