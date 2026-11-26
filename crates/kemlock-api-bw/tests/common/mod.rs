@@ -16,8 +16,11 @@ use kemlock_app::notices::{Notices, Outbox};
 use kemlock_app::platform::Hasher;
 use kemlock_app::ports::{Clock, Random, StoreError, UserRepo};
 use kemlock_app::privacy::{EraseAccount, ErasureFiles, NoSends};
+use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::BlobId;
+use kemlock_domain::SpaceId;
+use kemlock_domain::spaces::{Member, MemberState};
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use kemlock_store_sql::SqlStore;
 use serde_json::{Value, json};
@@ -441,6 +444,48 @@ impl Harness {
             .await
             .expect("an account");
         user.id
+    }
+
+    /// Changes one member's row in an organization's space the way the Kemlock API, the admin
+    /// console and SSO group sync do: the Bitwarden documents are left as they are.
+    pub(crate) async fn change_row(&self, org: &str, user: UserId, change: impl FnOnce(&mut Member)) {
+        let space = SpaceId(org.parse::<Uuid>().expect("an organization id"));
+        let state = SpaceRepo::load(&self.store, space)
+            .await
+            .expect("the space loads")
+            .expect("a space");
+        let mut row = state.member(user).cloned().expect("a member of the space");
+        change(&mut row);
+        let changes = SpaceChanges {
+            members: vec![row],
+            ..SpaceChanges::new(space)
+        };
+        SpaceRepo::apply(&self.store, changes)
+            .await
+            .expect("the row is written");
+    }
+
+    /// Takes a member's row out of an organization's space, as the Kemlock API's remove does.
+    pub(crate) async fn drop_row(&self, org: &str, user: UserId) {
+        let space = SpaceId(org.parse::<Uuid>().expect("an organization id"));
+        let changes = SpaceChanges {
+            members_removed: vec![user],
+            ..SpaceChanges::new(space)
+        };
+        SpaceRepo::apply(&self.store, changes)
+            .await
+            .expect("the row goes");
+    }
+
+    /// The invitee accepts through the Kemlock API's accept route (what the web vault's space page
+    /// does): the space row moves to accepted, the Bitwarden document is left as it is.
+    pub(crate) async fn accept_in_space(&self, org: &str, user: UserId) {
+        let now = self.env.time();
+        self.change_row(org, user, |row| {
+            row.state = MemberState::Accepted;
+            row.accepted_at = Some(now);
+        })
+        .await;
     }
 
     /// A signed-in account: its access token and its user id.

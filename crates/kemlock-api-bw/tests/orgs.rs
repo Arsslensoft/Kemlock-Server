@@ -976,3 +976,90 @@ async fn require_sso_closes_the_api_key_to_members_and_not_to_owners() {
     let (status, body) = sign_in(ada_id, ada_key).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+/// Invites `email` with `kind` (0 owner, 1 admin, 2 user) and confirms them.
+async fn add_member_as(h: &Harness, owner: &str, org: &str, member: UserId, email: &str, kind: i32) {
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/invite"),
+            Some(owner),
+            Some(json!({"emails": [email], "type": kind, "collections": [], "groups": []})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(org, member).await;
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{member}/confirm"),
+            Some(owner),
+            Some(json!({"key": "4.memberkeywrappedbytheirpublickey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn an_admin_demoted_through_the_space_rows_loses_bitwarden_admin_access() {
+    use kemlock_domain::spaces::SpaceRole as Role;
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (org, _) = organization(&h, &ada).await;
+    add_member_as(&h, &ada, &org, bob_id, "bob@example.com", 1).await;
+    let members = format!("/api/organizations/{org}/users");
+    let (status, _) = get(&h, &bob, &members).await;
+    assert_eq!(status, StatusCode::OK, "an admin lists the members");
+
+    // The Kemlock API's role change touches only the space row.
+    h.change_row(&org, bob_id, |row| row.role = Role::Member).await;
+    let (status, _) = get(&h, &bob, &members).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no longer an admin here");
+    let (status, _) = h
+        .json(
+            "PUT",
+            &format!("/api/organizations/{org}/policies/3"),
+            Some(&bob),
+            Some(json!({"policy": {"enabled": true, "data": null}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, listed) = get(&h, &ada, &members).await;
+    let row = listed["data"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|m| m["email"] == "bob@example.com"))
+        .expect("bob is listed");
+    assert_eq!(row["type"], 2, "the owner sees the new role");
+}
+
+#[tokio::test]
+async fn a_member_revoked_or_removed_through_the_space_rows_is_out_of_the_organization() {
+    use kemlock_domain::spaces::MemberState;
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (cat, cat_id) = h.signed_in("cat@example.com").await;
+    let (org, _) = organization(&h, &ada).await;
+    add_member_as(&h, &ada, &org, bob_id, "bob@example.com", 1).await;
+    add_member_as(&h, &ada, &org, cat_id, "cat@example.com", 1).await;
+    let members = format!("/api/organizations/{org}/users");
+
+    h.change_row(&org, bob_id, |row| row.state = MemberState::Revoked)
+        .await;
+    let (status, _) = get(&h, &bob, &members).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (_, listed) = get(&h, &ada, &members).await;
+    let bobs = listed["data"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|m| m["email"] == "bob@example.com"))
+        .expect("bob is still listed");
+    assert_eq!(bobs["status"], -1);
+
+    h.drop_row(&org, cat_id).await;
+    let (status, _) = get(&h, &cat, &members).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(sync(&h, &cat).await["profile"]["organizations"], json!([]));
+    let (_, listed) = get(&h, &ada, &members).await;
+    assert_eq!(listed["data"].as_array().map(Vec::len), Some(2));
+}
