@@ -344,12 +344,51 @@ export type ChainChange =
   /** Shares the keys this account holds with the members awaiting them. */
   | { action: 'seal' };
 
+/** An item a `keys` record re-writes under its collection's new key version. */
+export interface ChainWrite {
+  collection: string;
+  /** The revision being replaced; the item is written as the next one. */
+  expectedRevision: number;
+  item: {
+    id: string;
+    owner: string;
+    kind: string;
+    format: 'kem1';
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+    deleted: false;
+    collectionId: string;
+  };
+}
+
 /** What POST /kem/v1/spaces/{id}/chain takes: records, and the boxes and names they commit. */
 export interface ChainAppend {
   ok: true;
   records: ChainRecord[];
   seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
   names: Array<{ name: string; seq: number; target: string }>;
+  /** Live items of the replaced collections this account can't re-write (key replacement). */
+  held?: string[];
+  /** Items of the replaced collections, sealed again under their new key versions. */
+  writes?: ChainWrite[];
+}
+
+/** The server's copy of what a key replacement seals again. */
+export interface ChainReplacement {
+  /** The live items of the space, as the server serves them. */
+  items: Array<{
+    id: string;
+    collection: string;
+    kind: string;
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+  }>;
+  /** Every sealed name of the space (`space`, `collection:<uuid>`, `group:<uuid>`), base64url. */
+  names: Array<{ target: string; sealed: string }>;
 }
 
 /** Records ready to append, or the verifier's reason for refusing the change. */
@@ -744,6 +783,16 @@ export interface CryptoApi {
     change: ChainChange;
   }): Promise<ChainBuilt>;
   /**
+   * Replaces the keys the chain marks (a removal or an ungrant marked them): a `keys` record, and
+   * the items of the replaced collections sealed again under their new key versions (`writes`),
+   * with those the account can't re-write named `held`. No records when nothing can be replaced.
+   */
+  buildKeyReplacement(input: {
+    spaceId: string;
+    at: number;
+    replacement: ChainReplacement;
+  }): Promise<ChainBuilt>;
+  /**
    * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
    * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
    */
@@ -916,6 +965,10 @@ export interface Ops {
   newChainedSpace: { args: [input: NewSpaceInput & { at: number }]; result: ChainAppend };
   buildChainRecords: {
     args: [input: { spaceId: string; at: number; change: ChainChange }];
+    result: ChainBuilt;
+  };
+  buildKeyReplacement: {
+    args: [input: { spaceId: string; at: number; replacement: ChainReplacement }];
     result: ChainBuilt;
   };
   sealLocal: { args: [label: string, text: string]; result: string };

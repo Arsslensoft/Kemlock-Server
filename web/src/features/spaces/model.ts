@@ -19,7 +19,7 @@ import type {
   SpacesApi,
 } from '@/api/spaces';
 import { isApiError } from '@/api/errors';
-import type { ChainChange, ChainView } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainView, ChainWrite } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
 import type { AnchorStore, PinStore } from '@/spaces/anchors';
@@ -97,28 +97,51 @@ const newId = (deps: SpaceDeps) => (deps.newId ?? (() => globalThis.crypto.rando
 
 const unixNow = (deps: SpaceDeps) => (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
 
+/** What an append left to do: the writes that didn't fit in the request, and the items held. */
+interface Appended {
+  appended: boolean;
+  chain: ChainView;
+  /** How many re-written items went up with the records. */
+  first: number;
+  rest: ChainWrite[];
+  held: string[];
+}
+
 /**
- * Makes the records of one change in the worker, appends them to the space's chain, and verifies
- * the chain again, which keeps this browser's anchor and the worker's state up to date. When the
- * head moved meanwhile (409), the chain is read and verified again and the records are made once
- * more on the new head; a second conflict is shown. Resolves with the verified chain, and whether
- * any record was appended (a `seal` with nothing to share makes none).
+ * Makes records in the worker (`make`), appends them to the space's chain, and verifies the chain
+ * again, which keeps this browser's anchor and the worker's state up to date. When the head moved
+ * meanwhile (409), the chain is read and verified again and the records are made once more on the
+ * new head; a second conflict is shown. Resolves with the verified chain, and whether any record
+ * was appended (a `seal` with nothing to share makes none).
+ *
+ * A key replacement's re-written items go up with its `keys` record, in one transaction, as many
+ * as `writeBytes` lets one request hold; `rest` is what didn't fit.
  */
-async function appendChange(
+async function appendBuilt(
   deps: SpaceDeps,
   detail: Pick<SpaceDetail, 'view'>,
-  change: ChainChange,
-): Promise<{ appended: boolean; chain: ChainView }> {
+  make: () => Promise<ChainBuilt>,
+  writeBytes = 0,
+): Promise<Appended> {
   const spaceId = detail.view.space.id;
   const me = detail.view.me.user;
+  let first = 0;
+  let rest: ChainWrite[] = [];
+  let held: string[] = [];
   const attempt = async (): Promise<boolean> => {
-    const built = await deps.crypto.buildChainRecords({ spaceId, at: unixNow(deps), change });
+    const built = await make();
     if (!built.ok) throw new ChainRefused(built.reason, built.seq);
     if (built.records.length === 0) return false;
+    const writes = takeWithin(built.writes ?? [], writeBytes);
+    first = writes.length;
+    rest = (built.writes ?? []).slice(writes.length);
+    held = built.held ?? [];
     await deps.api.appendChain(spaceId, {
       records: built.records,
       seals: built.seals,
       names: built.names,
+      ...(held.length > 0 ? { held } : {}),
+      ...(writes.length > 0 ? { writes } : {}),
     });
     return true;
   };
@@ -140,7 +163,32 @@ async function appendChange(
       throw again;
     }
   }
-  return { appended, chain: await verified() };
+  return { appended, chain: await verified(), first, rest, held };
+}
+
+/** The first of `writes` that fit in `bytes` of JSON (at least one when any are given). */
+function takeWithin(writes: ChainWrite[], bytes: number): ChainWrite[] {
+  if (bytes <= 0) return [];
+  let used = 0;
+  const taken: ChainWrite[] = [];
+  for (const write of writes) {
+    used += JSON.stringify(write).length;
+    if (used > bytes && taken.length > 0) break;
+    taken.push(write);
+  }
+  return taken;
+}
+
+/** Makes the records of one change in the worker and appends them (see `appendBuilt`). */
+function appendChange(
+  deps: SpaceDeps,
+  detail: Pick<SpaceDetail, 'view'>,
+  change: ChainChange,
+): Promise<{ appended: boolean; chain: ChainView }> {
+  const spaceId = detail.view.space.id;
+  return appendBuilt(deps, detail, () =>
+    deps.crypto.buildChainRecords({ spaceId, at: unixNow(deps), change }),
+  );
 }
 
 // ---- the list ---------------------------------------------------------------------------
@@ -840,4 +888,134 @@ export async function sealPending(deps: SpaceDeps, detail: SpaceDetail): Promise
   if (detail.trust?.kind !== 'verified' || !detail.readable) return false;
   const { appended } = await appendChange(deps, detail, { action: 'seal' });
   return appended;
+}
+
+// ---- replacing the keys a removal marked -------------------------------------------------------
+
+/** A request to the append route holds this much of the re-written items; the rest go in batches. */
+const REQUEST_WRITE_BYTES = 4 * 1024 * 1024;
+/** Items a batch write takes at most. */
+const BATCH_SIZE = 500;
+
+/** Whether the verified chain of this space has keys that wait to be replaced. */
+export function keysAwaitReplacement(detail: Pick<SpaceDetail, 'trust'>): boolean {
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified') return false;
+  const { space, collections } = trust.view;
+  return space.marked || collections.some((c) => c.marked);
+}
+
+export interface ReplaceProgress {
+  /** `reading` the space's items, `sealing` them again in the worker, `sending` them. */
+  phase: 'reading' | 'sealing' | 'sending';
+  done: number;
+  /** 0 while it isn't known yet. */
+  total: number;
+}
+
+export interface Replaced {
+  /** Items sealed again under their new key versions. */
+  rewritten: number;
+  /** Items this account couldn't seal again, which stay held until someone with edit writes them. */
+  held: number;
+}
+
+/** The live kem1 items of the space's marked collections, as the server serves them. */
+async function readItems(
+  deps: SpaceDeps,
+  spaceId: string,
+  collections: Set<string>,
+  progress: (p: ReplaceProgress) => void,
+) {
+  const items: Array<{
+    id: string;
+    collection: string;
+    kind: string;
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+  }> = [];
+  let since: string | undefined;
+  let seen = 0;
+  for (;;) {
+    const page = await deps.api.sync(since, 500);
+    for (const dto of page.items) {
+      seen += 1;
+      if (
+        dto.owner === `space:${spaceId}` &&
+        !dto.deleted &&
+        !dto.held &&
+        dto.format === 'kem1' &&
+        dto.collectionId &&
+        collections.has(dto.collectionId) &&
+        dto.ciphertext &&
+        dto.itemKey
+      ) {
+        items.push({
+          id: dto.id,
+          collection: dto.collectionId,
+          kind: dto.kind,
+          revision: dto.revision,
+          keyVersion: dto.keyVersion,
+          ciphertext: dto.ciphertext,
+          itemKey: dto.itemKey,
+        });
+      }
+    }
+    progress({ phase: 'reading', done: seen, total: 0 });
+    if (!page.more) return items;
+    since = page.cursor;
+  }
+}
+
+/**
+ * Replaces the keys that wait for it ("Removal and replacement"): the worker makes the `keys`
+ * record and seals every item of the replaced collections again under the new key (an item it
+ * can't open, or has no edit on, is held, which the chain allows and keeps from being re-wrapped
+ * into the new key), and the server stores them with the record in one transaction. Items that
+ * don't fit in that request go in batches after it. `progress` says how far it is.
+ */
+export async function replaceKeys(
+  deps: SpaceDeps,
+  detail: SpaceDetail,
+  progress: (p: ReplaceProgress) => void = () => undefined,
+): Promise<Replaced> {
+  if (!isChained(detail) || !keysAwaitReplacement(detail)) return { rewritten: 0, held: 0 };
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified') return { rewritten: 0, held: 0 };
+  const spaceId = detail.view.space.id;
+  const marked = new Set(trust.view.collections.filter((c) => c.marked).map((c) => c.id));
+  const items = await readItems(deps, spaceId, marked, progress);
+  // What the server holds of each name, to be sealed again when the space key is replaced.
+  const names = [
+    { target: 'space', sealed: detail.view.space.name },
+    ...detail.view.collections.map((c) => ({ target: `collection:${c.id}`, sealed: c.name })),
+    ...detail.view.groups.map((g) => ({ target: `group:${g.id}`, sealed: g.name })),
+  ];
+  progress({ phase: 'sealing', done: 0, total: items.length });
+  const sent = await appendBuilt(
+    deps,
+    detail,
+    () =>
+      deps.crypto.buildKeyReplacement({
+        spaceId,
+        at: unixNow(deps),
+        replacement: { items, names },
+      }),
+    REQUEST_WRITE_BYTES,
+  );
+  if (!sent.appended) return { rewritten: 0, held: 0 };
+  const total = sent.first + sent.rest.length;
+  let done = sent.first;
+  progress({ phase: 'sending', done, total });
+  for (let at = 0; at < sent.rest.length; at += BATCH_SIZE) {
+    const batch = sent.rest.slice(at, at + BATCH_SIZE);
+    await deps.api.putBatch({
+      writes: batch.map((write) => ({ expectedRevision: write.expectedRevision, item: write.item })),
+    });
+    done += batch.length;
+    progress({ phase: 'sending', done, total });
+  }
+  return { rewritten: total, held: sent.held.length };
 }

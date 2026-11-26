@@ -169,6 +169,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     verifySpaceChain: (input) => call('verifySpaceChain', [input]),
     newChainedSpace: (input) => call('newChainedSpace', [input]),
     buildChainRecords: (input) => call('buildChainRecords', [input]),
+    buildKeyReplacement: (input) => call('buildKeyReplacement', [input]),
     sealLocal: (label, text) => call('sealLocal', [label, text]),
     openLocal: (label, sealed) => call('openLocal', [label, sealed]),
     spaceChainView: (spaceId) => call('spaceChainView', [spaceId]),

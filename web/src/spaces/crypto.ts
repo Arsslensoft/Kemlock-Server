@@ -10,6 +10,7 @@ import {
   type ChainBuilt,
   type ChainChange,
   type ChainRecord,
+  type ChainReplacement,
   type ChainVerdict,
   type ChainView,
   type CryptoApi,
@@ -26,6 +27,7 @@ export type {
   ChainBuilt,
   ChainChange,
   ChainRecord,
+  ChainReplacement,
   ChainVerdict,
   ChainView,
   NameKind,
@@ -127,6 +129,15 @@ export interface SpaceCrypto extends SharingCrypto {
    * verified, or the verifier's reason for refusing the change. No records: nothing to do.
    */
   buildChainRecords(input: { spaceId: string; at: number; change: ChainChange }): Promise<ChainBuilt>;
+  /**
+   * Replaces the keys a removal or an ungrant marked: the `keys` record and the items of the
+   * replaced collections sealed again, built in the worker from the state it verified.
+   */
+  buildKeyReplacement(input: {
+    spaceId: string;
+    at: number;
+    replacement: ChainReplacement;
+  }): Promise<ChainBuilt>;
   /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
   sealLocal(label: string, text: string): Promise<string>;
   /** Opens what `sealLocal` sealed under the same label and account. */
@@ -178,6 +189,7 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   verifySpaceChain: () => unavailable(),
   newChainedSpace: () => unavailable(),
   buildChainRecords: () => unavailable(),
+  buildKeyReplacement: () => unavailable(),
   spaceChainView: () => unavailable(),
   sealLocal: () => unavailable(),
   openLocal: () => unavailable(),
@@ -204,6 +216,7 @@ type SpaceWorker = Pick<
   | 'verifySpaceChain'
   | 'newChainedSpace'
   | 'buildChainRecords'
+  | 'buildKeyReplacement'
   | 'spaceChainView'
   | 'sealLocal'
   | 'openLocal'
@@ -271,6 +284,7 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
     verifySpaceChain: (input) => api.verifySpaceChain(input),
     newChainedSpace: (input) => api.newChainedSpace(input),
     buildChainRecords: (input) => api.buildChainRecords(input),
+    buildKeyReplacement: (input) => api.buildKeyReplacement(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
     sealLocal: (label, text) => api.sealLocal(label, text),
     openLocal: (label, sealed) => api.openLocal(label, sealed),

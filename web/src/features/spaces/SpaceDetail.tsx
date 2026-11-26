@@ -26,7 +26,10 @@ import {
   loadSpaceDetail,
   offboardMember,
   pinMember,
+  type ReplaceProgress,
+  type Replaced,
   renameCollection,
+  replaceKeys,
   revokeGrant,
   sealPending,
   setGroupMembers,
@@ -60,6 +63,8 @@ export default function SpaceDetail() {
   const query = useQuery({ queryKey: key, queryFn: () => loadSpaceDetail(spaceDeps, spaceId) });
   const { run, pending, error } = useRun(describeSpaceError);
   const [confirming, setConfirming] = useState<ConfirmState | null>(null);
+  const [replacing, setReplacing] = useState<ReplaceProgress | null>(null);
+  const [replaced, setReplaced] = useState<Replaced | null>(null);
   const [offboarded, setOffboarded] = useState<{ name: string; outcome: OffboardedDto } | null>(null);
   const detail: Detail | undefined = query.data;
   const { api } = spaceDeps;
@@ -135,6 +140,8 @@ export default function SpaceDetail() {
       busy={pending}
       error={error}
       offboarded={offboarded}
+      replacing={replacing}
+      replaced={replaced}
       cryptoAvailable={spaceDeps.crypto.available}
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
@@ -142,6 +149,16 @@ export default function SpaceDetail() {
         acceptFirstContact: () => {
           if (!detail) return;
           void change(() => acceptFirstContact(spaceDeps, spaceId, detail.view.me.user));
+        },
+        replaceKeys: () => {
+          if (!detail) return;
+          setReplaced(null);
+          setReplacing({ phase: 'reading', done: 0, total: 0 });
+          void change(() => replaceKeys(spaceDeps, detail, setReplacing))
+            .then((result) => {
+              if (result) setReplaced(result);
+            })
+            .finally(() => setReplacing(null));
         },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),

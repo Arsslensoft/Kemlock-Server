@@ -374,6 +374,12 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         (await current()).buildChainRecords(spaceId, at, JSON.stringify(change)),
       );
     },
+    async buildKeyReplacement({ spaceId, at, replacement }) {
+      if (!Number.isInteger(at) || at < 0 || at > 0xffff_ffff) throw new CryptoError('invalid');
+      return parse<ChainBuilt>(
+        (await current()).buildKeyReplacement(spaceId, at, JSON.stringify(replacement)),
+      );
+    },
     async sealLocal(label, text) {
       return (await current()).sealLocal(label, text);
     },

@@ -393,3 +393,44 @@ describe('SpaceDetailView', () => {
     expect(accept).toHaveBeenCalledOnce();
   });
 });
+
+describe('SpaceDetailView, a space with a chain', () => {
+  const marked = {
+    ...NO_CHAIN,
+    chained: true,
+    head: { seq: 3, link: 'bGluaw' },
+    space: { keyVersion: 1, marked: true, nameHash: 'h', nameVersion: 1 },
+  };
+  const waiting = () => detail({ trust: { kind: 'verified' as const, view: marked } });
+
+  it('offers to replace the keys that wait, runs it, and shows how far it is', async () => {
+    const replaceKeys = vi.fn();
+    view({ detail: waiting(), actions: { ...actions(), replaceKeys } });
+    expect(screen.getByText(/Replacing them here seals every item/)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Replace the keys' }));
+    expect(replaceKeys).toHaveBeenCalledOnce();
+  });
+
+  it('shows the progress and holds the button while it runs, and what it did when done', () => {
+    view({
+      detail: waiting(),
+      actions: { ...actions(), replaceKeys: vi.fn() },
+      replacing: { phase: 'sending', done: 2, total: 5 },
+    });
+    expect(screen.getByText(/Sending 2 of 5/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Replace the keys' })).toBeDisabled();
+  });
+
+  it('says what a finished replacement did, and how many items stay held', () => {
+    view({ replaced: { rewritten: 4, held: 2 } });
+    expect(screen.getByText(/4 items sealed again/)).toBeInTheDocument();
+    expect(screen.getByText(/2 items stay held/)).toBeInTheDocument();
+  });
+
+  it('says what the web vault does not do for a space with a chain', () => {
+    view({ detail: detail({ trust: { kind: 'verified' as const, view: { ...NO_CHAIN, chained: true } } }) });
+    expect(screen.getByText(/Moving a collection and restoring a removed member/)).toBeInTheDocument();
+    // Nothing waits for replacement, so there is nothing to replace.
+    expect(screen.queryByRole('button', { name: 'Replace the keys' })).not.toBeInTheDocument();
+  });
+});

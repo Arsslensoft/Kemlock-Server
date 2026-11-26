@@ -46,6 +46,12 @@ function worker() {
       seals: [],
       names: [],
     })),
+    buildKeyReplacement: vi.fn(async () => ({
+      ok: true as const,
+      records: [],
+      seals: [],
+      names: [],
+    })),
     verifySpaceChain: vi.fn(async () => ({ ok: false as const, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn(async () => null),
     sealLocal: vi.fn(async () => 'c2VhbGVk'),
@@ -159,6 +165,9 @@ describe('spaces over the worker', () => {
     const build = { spaceId: SPACE, at: 5, change: { action: 'seal' as const } };
     await expect(spaces.buildChainRecords(build)).resolves.toMatchObject({ ok: true, records: [] });
     expect(api.buildChainRecords).toHaveBeenCalledWith(build);
+    const replacing = { spaceId: SPACE, at: 5, replacement: { items: [], names: [] } };
+    await expect(spaces.buildKeyReplacement(replacing)).resolves.toMatchObject({ ok: true });
+    expect(api.buildKeyReplacement).toHaveBeenCalledWith(replacing);
     await expect(spaces.sealLocal('anchor/x', 'text')).resolves.toBe('c2VhbGVk');
     expect(api.sealLocal).toHaveBeenCalledWith('anchor/x', 'text');
     await expect(spaces.openLocal('anchor/x', 'c2VhbGVk')).resolves.toBe('text');

@@ -179,6 +179,7 @@ export interface WasmVault {
     at: number,
   ): string;
   buildChainRecords(spaceId: string, at: number, change: string): string;
+  buildKeyReplacement(spaceId: string, at: number, replacement: string): string;
   spaceChainView(spaceId: string): string | undefined;
   sealLocal(label: string, text: string): string;
   openLocal(label: string, sealed: string): string;

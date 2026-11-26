@@ -2,7 +2,7 @@
 // the same failure points (a name opens only under the id, kind and key version it was sealed
 // with; a sealed key says who it is for), so the account screens' logic is tested without
 // WebAssembly.
-import type { ChainBuilt, ChainChange, ChainView } from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import type { SharingCrypto } from '@/sharing/crypto';
 import type { SpaceCrypto } from '@/spaces/crypto';
@@ -60,6 +60,10 @@ export interface FakeSpaces extends SpaceCrypto {
   built: ChainBuilt | null;
   /** The changes `buildChainRecords` was asked for, in order. */
   changes: ChainChange[];
+  /** What `buildKeyReplacement` answers instead of a keys record and every item sealed again. */
+  replaced: ChainBuilt | null;
+  /** What `buildKeyReplacement` was given, in order. */
+  replacements: ChainReplacement[];
 }
 
 function utf8Text(text: string): string {
@@ -80,6 +84,36 @@ export function fakeSpaceCrypto(): FakeSpaces {
     chain: NO_CHAIN,
     built: null,
     changes: [],
+    replaced: null,
+    replacements: [],
+    async buildKeyReplacement({ spaceId, replacement }) {
+      fake.replacements.push(replacement);
+      calls.push('buildKeyReplacement');
+      if (fake.replaced) return fake.replaced;
+      // A keys record, and every item given sealed again as the next revision, one version up.
+      return {
+        ok: true,
+        records: [{ entry: utf8Text('keys-record'), signature: utf8Text('signature') }],
+        seals: [],
+        names: [],
+        writes: replacement.items.map((item) => ({
+          collection: item.collection,
+          expectedRevision: item.revision,
+          item: {
+            id: item.id,
+            owner: `space:${spaceId}`,
+            kind: item.kind,
+            format: 'kem1' as const,
+            revision: item.revision + 1,
+            keyVersion: item.keyVersion + 1,
+            ciphertext: utf8Text(`again:${item.id}`),
+            itemKey: utf8Text(`wrapped:${item.id}`),
+            deleted: false as const,
+            collectionId: item.collection,
+          },
+        })),
+      };
+    },
     async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {
       calls.push(`newChainedSpace:${at}`);
       return {

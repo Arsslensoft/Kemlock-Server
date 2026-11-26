@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { ApiError } from '@/api/errors';
-import type { MemberViewDto } from '@/api/spaces';
+import type { MemberViewDto, ServedItemDto } from '@/api/spaces';
 import type { ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8 } from '@/lib/b64url';
 import { checkedFingerprint, fingerprintText, fingerprintBytes } from '@/sharing/bundle';
@@ -38,12 +38,14 @@ import {
   deleteGroup,
   grantAccess,
   inviteMember,
+  keysAwaitReplacement,
   loadSpaceDetail,
   loadSpaceList,
   offboardMember,
   pinMember,
   reachedBy,
   renameCollection,
+  replaceKeys,
   revokeGrant,
   sealPending,
   setGroupMembers,
@@ -491,6 +493,31 @@ describe('changing a space that has a chain', () => {
     expect(crypto.changes).toEqual([]);
   });
 
+  it('confirms a member’s newer keys again, from the bundle the server lists, as a record', async () => {
+    const { spaceDeps, crypto, loaded } = chainedDeps();
+    const newer = makeBundleB64(LEE, 2);
+    const lee = memberView(LEE, 'lee@example.co', {
+      publicBundle: newer,
+      userKeyVersion: 2,
+      needsReconfirmation: true,
+    });
+    const bytes = await fingerprintBytes(decodeB64(newer));
+    await confirmMember(spaceDeps, loaded, lee, {
+      text: fingerprintText(bytes),
+      bytes,
+      consistent: true,
+    });
+    expect(crypto.changes).toEqual([
+      {
+        action: 'confirm',
+        member: LEE,
+        bundle: newer,
+        bundleSignature: lee.bundleSignature,
+        fingerprint: encodeB64(bytes),
+      },
+    ]);
+  });
+
   it('makes collections, groups and grants as records', async () => {
     const { spaceDeps, api, crypto, loaded } = chainedDeps();
     await createCollection(spaceDeps, loaded, { name: 'Support', parent: INFRA });
@@ -604,5 +631,149 @@ describe('changing a space that has a chain', () => {
     expect(api.appendChain).toHaveBeenCalledTimes(1);
     // A space with no chain, or one that isn't checked, is left alone.
     expect(await sealPending(spaceDeps, detail())).toBe(false);
+  });
+});
+
+describe('replacing the keys of a space that has a chain', () => {
+  /** An item as the server serves it. */
+  function served(id: string, collection: string, over: Partial<ServedItemDto> = {}): ServedItemDto {
+    return {
+      id,
+      owner: `space:${SPACE}`,
+      kind: 'login',
+      format: 'kem1' as const,
+      revision: 1,
+      keyVersion: 1,
+      ciphertext: 'Y2lwaGVy',
+      itemKey: 'a2V5',
+      deleted: false,
+      collectionId: collection,
+      ...over,
+    };
+  }
+
+  const MARKED = chained({
+    space: { keyVersion: 1, marked: true, nameHash: 'h', nameVersion: 1 },
+    collections: [
+      { id: INFRA, keyVersion: 1, marked: true, nameHash: 'h', nameVersion: 1 },
+      { id: FINANCE, keyVersion: 1, marked: false, nameHash: 'h', nameVersion: 1 },
+    ],
+  });
+  const ITEM = '50000000-0000-4000-8000-000000000001';
+
+  it('knows when keys wait: the chain says so, not the server’s flags', () => {
+    expect(keysAwaitReplacement(detail({ trust: { kind: 'verified', view: MARKED } }))).toBe(true);
+    expect(keysAwaitReplacement(detail({ trust: { kind: 'verified', view: chained() } }))).toBe(false);
+    expect(keysAwaitReplacement(detail())).toBe(false);
+  });
+
+  it('gives the worker the live items of the marked collections and every name, and sends what it makes', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(MARKED);
+    const loaded = detail({ trust: { kind: 'verified', view: MARKED } });
+    api.sync.mockResolvedValueOnce({
+      cursor: 'c1',
+      more: true,
+      items: [
+        served(ITEM, INFRA),
+        // Not of a marked collection, held already, a tombstone, another owner's: none is given.
+        served('50000000-0000-4000-8000-000000000002', FINANCE),
+        served('50000000-0000-4000-8000-000000000003', INFRA, { held: true }),
+      ],
+    });
+    api.sync.mockResolvedValueOnce({
+      cursor: 'c2',
+      more: false,
+      items: [
+        served('50000000-0000-4000-8000-000000000004', INFRA, { deleted: true, ciphertext: null, itemKey: null }),
+        served('50000000-0000-4000-8000-000000000005', INFRA, { owner: `user:${ME}` }),
+      ],
+    });
+    const phases: string[] = [];
+    const result = await replaceKeys(spaceDeps, loaded, (p) => phases.push(p.phase));
+
+    expect(api.sync.mock.calls.map((c) => c[0])).toEqual([undefined, 'c1']);
+    const given = crypto.replacements[0];
+    expect(given?.items.map((i) => i.id)).toEqual([ITEM]);
+    expect(given?.items[0]).toMatchObject({ collection: INFRA, revision: 1, keyVersion: 1 });
+    expect(given?.names.map((n) => n.target)).toEqual([
+      'space',
+      `collection:${INFRA}`,
+      `collection:${FINANCE}`,
+      `group:${OPS}`,
+    ]);
+    // The record and the item sealed again go up in one request, as the next revision.
+    expect(api.appendChain).toHaveBeenCalledTimes(1);
+    const body = api.appendChain.mock.calls[0]?.[1];
+    expect(body?.records).toHaveLength(1);
+    expect(body?.writes?.map((w) => [w.collection, w.expectedRevision, w.item.revision, w.item.keyVersion])).toEqual([
+      [INFRA, 1, 2, 2],
+    ]);
+    expect(body?.held).toBeUndefined();
+    expect(api.putBatch).not.toHaveBeenCalled();
+    expect(result).toEqual({ rewritten: 1, held: 0 });
+    expect(phases).toContain('reading');
+    expect(phases).toContain('sealing');
+    expect(phases).toContain('sending');
+  });
+
+  it('names the items the worker could not seal again as held', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(MARKED);
+    const loaded = detail({ trust: { kind: 'verified', view: MARKED } });
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [served(ITEM, INFRA)] });
+    crypto.replaced = { ok: true, records: [{ entry: 'ZW50cnk', signature: 'c2ln' }], seals: [], names: [], held: [ITEM] };
+    expect(await replaceKeys(spaceDeps, loaded)).toEqual({ rewritten: 0, held: 1 });
+    const body = api.appendChain.mock.calls[0]?.[1];
+    expect(body?.held).toEqual([ITEM]);
+    expect(body?.writes).toBeUndefined();
+  });
+
+  it('sends what does not fit in the request in batches after it, and says how far it is', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(MARKED);
+    const loaded = detail({ trust: { kind: 'verified', view: MARKED } });
+    api.sync.mockResolvedValueOnce({ cursor: 'c', more: false, items: [served(ITEM, INFRA)] });
+    const big = (n: number) => ({
+      collection: INFRA,
+      expectedRevision: 1,
+      item: { ...served(`50000000-0000-4000-8000-00000000010${n}`, INFRA, { revision: 2, keyVersion: 2, ciphertext: 'A'.repeat(3 * 1024 * 1024) }) } as never,
+    });
+    crypto.replaced = {
+      ok: true,
+      records: [{ entry: 'ZW50cnk', signature: 'c2ln' }],
+      seals: [],
+      names: [],
+      writes: [big(1), big(2), big(3)],
+    };
+    const sent: Array<[number, number]> = [];
+    const result = await replaceKeys(spaceDeps, loaded, (p) => {
+      if (p.phase === 'sending') sent.push([p.done, p.total]);
+    });
+    // One item fits beside the record, the other two follow in a batch.
+    expect(api.appendChain.mock.calls[0]?.[1].writes).toHaveLength(1);
+    expect(api.putBatch).toHaveBeenCalledTimes(1);
+    expect(api.putBatch.mock.calls[0]?.[0].writes.map((w) => w.expectedRevision)).toEqual([1, 1]);
+    expect(sent).toEqual([
+      [1, 3],
+      [3, 3],
+    ]);
+    expect(result).toEqual({ rewritten: 3, held: 0 });
+  });
+
+  it('shows the reason when the chain’s rules refuse the replacement, and sends nothing', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps(MARKED);
+    const loaded = detail({ trust: { kind: 'verified', view: MARKED } });
+    crypto.replaced = { ok: false, reason: 'not allowed', seq: 6 };
+    await expect(replaceKeys(spaceDeps, loaded)).rejects.toMatchObject({ name: 'ChainRefused' });
+    expect(api.appendChain).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a space with no keys waiting or no chain', async () => {
+    const { spaceDeps, api, crypto } = chainedDeps();
+    expect(await replaceKeys(spaceDeps, detail({ trust: { kind: 'verified', view: chained() } }))).toEqual({
+      rewritten: 0,
+      held: 0,
+    });
+    expect(await replaceKeys(spaceDeps, detail())).toEqual({ rewritten: 0, held: 0 });
+    expect(api.sync).not.toHaveBeenCalled();
+    expect(crypto.replacements).toEqual([]);
   });
 });

@@ -152,6 +152,8 @@ export function fakeSpacesApi() {
     chain: vi.fn<SpacesApi['chain']>(async () => []),
     chainSeals: vi.fn<SpacesApi['chainSeals']>(async () => []),
     appendChain: vi.fn<SpacesApi['appendChain']>(async () => ({ link: 'bGluaw', seq: 0 })),
+    sync: vi.fn<SpacesApi['sync']>(async () => ({ items: [], cursor: 'c', more: false })),
+    putBatch: vi.fn<SpacesApi['putBatch']>(async () => ({ items: [] })),
     lookup: vi.fn<SpacesApi['lookup']>(async (_space, email) => ({
       account: THEO,
       bundle: makeBundleB64(THEO),

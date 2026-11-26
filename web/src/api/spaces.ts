@@ -2,6 +2,7 @@
 // ids are UUIDs, times are Unix seconds, every binary value is base64url without padding. Names
 // are encrypted under the space key, so the server only ever holds them as base64url ciphertext.
 import type { Api } from './client';
+import type { BatchRequest, BatchResponse, ItemDto } from './types';
 
 export type SpaceRole = 'owner' | 'admin' | 'custom' | 'member';
 export type MemberState = 'invited' | 'accepted' | 'confirmed' | 'revoked';
@@ -200,6 +201,20 @@ export interface AppendChainRequest {
   records: ChainRecordDto[];
   seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
   names: Array<{ name: string; seq: number; target: string }>;
+  /** Live items a `keys` record in the request leaves held. */
+  held?: string[];
+  /** Items a `keys` record in the request re-writes under the collection's new key version. */
+  writes?: Array<{ collection: string; expectedRevision: number; item: ItemDto }>;
+}
+
+/** An item as `GET /sync` serves it: a space's item that a key replacement left held says so. */
+export type ServedItemDto = ItemDto & { held?: boolean };
+
+/** One page of `GET /sync`. */
+export interface ServedPageDto {
+  items: ServedItemDto[];
+  cursor: string;
+  more: boolean;
 }
 
 /** The head of a chain after an append. */
@@ -253,6 +268,16 @@ export function createSpacesApi(http: Http) {
         path: `${base(space)}/lookup`,
         query: { email },
       }),
+    /** What changed since `since` (everything when left out), as `GET /kem/v1/sync` serves it. */
+    sync: (since?: string, limit?: number) =>
+      http.request<ServedPageDto>({
+        method: 'GET',
+        path: '/kem/v1/sync',
+        query: { since, limit },
+      }),
+    /** Up to 500 item writes, all or none. */
+    putBatch: (body: BatchRequest) =>
+      http.request<BatchResponse>({ method: 'POST', path: '/kem/v1/items:batch', body }),
     /** The seal hashes record `seq` committed. */
     chainSeals: (space: string, seq: number) =>
       http.request<SealHashDto[]>({ method: 'GET', path: `${base(space)}/chain/${seq}/seals` }),
