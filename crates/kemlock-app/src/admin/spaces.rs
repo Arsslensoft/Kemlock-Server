@@ -146,15 +146,17 @@ where
             mail: self.mail.clone(),
             clock: self.clock.clone(),
         };
+        // The link is a secret that accepts for the account: it leaves only when the event is
+        // written, so a copy is never unseen.
         audit
-            .record(
+            .record_checked(
                 actor,
                 ip,
                 "admin.space.invite_link",
                 Some(format!("{space}/{member}")),
                 "copied the link that accepts a member's invitation to a Bitwarden organization",
             )
-            .await;
+            .await?;
         Ok(link)
     }
 }

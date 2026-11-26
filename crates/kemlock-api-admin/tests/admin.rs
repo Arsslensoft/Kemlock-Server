@@ -3192,3 +3192,29 @@ async fn the_console_says_which_spaces_are_organizations_and_who_has_an_invitati
         }
     }
 }
+
+#[tokio::test]
+async fn the_invitation_link_is_not_given_when_the_copy_cannot_be_recorded() {
+    let links = FakeInviteLinks::working();
+    let rig = Rig::new().with_invite_links(links.shared());
+    let root = rig.admin(ADMIN).await;
+    let invited = rig.user("invited@kemlock.test").await;
+    let token = root.step_up(&rig).await;
+    rig.admin.fail_events();
+
+    let reply = root
+        .write(
+            "GET",
+            &invite_link_uri(SpaceId::random(), invited.id),
+            None,
+            &token,
+        )
+        .await;
+    assert!(reply.status.is_server_error(), "{:?}", reply.status);
+    // Whatever it says, it doesn't carry the link.
+    assert!(
+        !String::from_utf8_lossy(&reply.body).contains("accept-organization"),
+        "a copy nobody recorded was handed over"
+    );
+    assert!(rig.admin.actions().is_empty());
+}
