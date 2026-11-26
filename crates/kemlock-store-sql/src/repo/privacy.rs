@@ -390,6 +390,12 @@ async fn delete_owner_data(
         .exec(txn)
         .await
         .store()?;
+    crate::tables::signed_writes::Entity::delete_many()
+        .filter(crate::tables::signed_writes::Column::OwnerType.eq(owner_type))
+        .filter(crate::tables::signed_writes::Column::OwnerId.eq(owner_id))
+        .exec(txn)
+        .await
+        .store()?;
     // A vault this server is the home of: its replicas hold copies that must go too. The erasure
     // is queued here, in this transaction, because the settings that name the replicas are
     // deleted just below; the replication job tells each peer in its next session.

@@ -7,6 +7,7 @@ use crate::convert::{corrupt, from_i64, from_i64_u32, to_i64, utc};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{
     ChangeId, Hlc, Item, ItemFormat, ItemId, ItemKind, Owner, Revision, ServerId, SpaceId, UserId,
+    WriteSignature,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::entity::prelude::*;
@@ -32,6 +33,9 @@ pub struct Model {
     pub origin: Uuid,
     pub seq: i64,
     pub hlc: i64,
+    /// The writing account's signature of this revision: `writer (16) ‖ u32be(key version) ‖
+    /// signature`. Absent on an item written unsigned and on every `bw` item.
+    pub write_sig: Option<Vec<u8>>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -83,9 +87,16 @@ impl Model {
                 seq: from_i64(self.seq, "sequence number")?,
                 hlc: Hlc(from_i64(self.hlc, "hlc")?),
             },
-            signature: None,
+            signature: stored_signature(self.write_sig.as_deref())?,
         })
     }
+}
+
+/// The signature a row holds, refusing a value that isn't the stored form.
+pub(crate) fn stored_signature(bytes: Option<&[u8]>) -> Result<Option<WriteSignature>, StoreError> {
+    bytes
+        .map(|b| WriteSignature::from_stored(b).ok_or_else(|| corrupt("write signature")))
+        .transpose()
 }
 
 /// Every column set, the id included: fit for an insert. An update of the same item drops the
@@ -107,6 +118,7 @@ pub(crate) fn active(item: &Item) -> Result<ActiveModel, StoreError> {
         origin: Set(item.change.origin.0),
         seq: Set(to_i64(item.change.seq, "sequence number")?),
         hlc: Set(to_i64(item.change.hlc.0, "hlc")?),
+        write_sig: Set(item.signature.as_ref().map(WriteSignature::to_stored)),
     })
 }
 
@@ -153,6 +165,7 @@ mod tests {
             origin: item.change.origin.0,
             seq: 12,
             hlc: i64::try_from(item.change.hlc.0).expect("fits"),
+            write_sig: item.signature.as_ref().map(WriteSignature::to_stored),
         }
     }
 

@@ -323,6 +323,13 @@ impl MemberStore for SqlStore {
         }
     }
 
+    async fn writer_bundle(&self, user: UserId) -> Result<Option<(u32, Vec<u8>)>, StoreError> {
+        Ok(UserRepo::by_id(self, user)
+            .await?
+            .filter(|u| !u.public_bundle.is_empty())
+            .map(|u| (u.key_version, u.public_bundle)))
+    }
+
     async fn member_account(&self, user: UserId) -> Result<Option<MemberAccount>, StoreError> {
         let Some(account) = UserRepo::by_id(self, user).await? else {
             return Ok(None);

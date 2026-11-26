@@ -405,6 +405,10 @@ async fn apply_in(
     }
     let held_head = head.as_ref().map(|h| ChangeKey::of(&h.change));
     let merge = conflict::merge(&held, held_head, &Version::of(record));
+    if merge.regressed {
+        // A version replaces the head only at a higher revision (docs/federation.md, "Rollback").
+        return Ok(ApplyOutcome::Refused);
+    }
     if !merge.kept {
         return Ok(ApplyOutcome::Duplicate);
     }
@@ -461,6 +465,11 @@ async fn apply_in(
     .exec(txn)
     .await
     .store()?;
+    if record.write.is_some() {
+        // A signed write makes the owner signed-only here too (docs/crypto.md, "Signed item
+        // writes").
+        super::items::mark_signed_only(txn, record.owner, incoming.updated_at).await?;
+    }
 
     // A later write here must carry an HLC time after the one just received.
     let meta = server_meta::Entity::find_by_id(server_meta::ROW_ID)
@@ -582,6 +591,10 @@ impl ReplicaStore for SqlStore {
         let txn = self.writer().begin().await.store()?;
         let result = apply_in(&txn, self.origin(), record, signature).await;
         finish(txn, result).await
+    }
+
+    async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
+        kemlock_app::ports::ItemStore::signed_writes_required(self, owner).await
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {

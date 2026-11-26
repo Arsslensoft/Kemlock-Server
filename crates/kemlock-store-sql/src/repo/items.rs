@@ -13,7 +13,7 @@ use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::space_chain::held;
 use crate::tables::space_tables::{collections, item_collections};
-use crate::tables::{changes, items, server_meta, sync_horizon};
+use crate::tables::{changes, items, server_meta, signed_writes, sync_horizon};
 use kemlock_app::ports::{ChangePage, EachPage, HeldPage, ItemStore, StoreError};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::{
@@ -311,6 +311,40 @@ impl ItemStore for SqlStore {
         vectors_by_owner(owners, rows)
     }
 
+    async fn signed_writes_required(&self, owner: Owner) -> Result<bool, StoreError> {
+        let key = items::owner_parts(owner);
+        Ok(signed_writes::Entity::find_by_id(key)
+            .one(self.reader())
+            .await
+            .store()?
+            .is_some())
+    }
+
+    async fn require_signed_writes(
+        &self,
+        owner: Owner,
+        at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
+        let marked = async {
+            lock_meta(&txn).await?;
+            mark_signed_only(&txn, owner, at).await
+        }
+        .await;
+        match marked {
+            Ok(()) => {
+                txn.commit().await.store()?;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = txn.rollback().await {
+                    tracing::warn!(%rollback, "rollback after a failed signed-only mark failed");
+                }
+                Err(err)
+            }
+        }
+    }
+
     async fn purge_tombstones(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
         let txn = self.writer().begin().await.store()?;
         match purge_in(&txn, before).await {
@@ -424,6 +458,27 @@ pub(super) async fn release_written(
     Ok(())
 }
 
+/// Marks `owner` as accepting signed writes only (docs/crypto.md, "Signed item writes"), once. The
+/// caller holds the `server_meta` lock, so two writers can't both insert the row.
+pub(super) async fn mark_signed_only(
+    txn: &DatabaseTransaction,
+    owner: Owner,
+    at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    let key = items::owner_parts(owner);
+    let known = signed_writes::Entity::find_by_id(key)
+        .one(txn)
+        .await
+        .store()?;
+    if known.is_none() {
+        signed_writes::Entity::insert(signed_writes::active(owner, at))
+            .exec(txn)
+            .await
+            .store()?;
+    }
+    Ok(())
+}
+
 /// Takes the `server_meta` row's lock by rewriting a column with its own value.
 async fn lock_meta(txn: &DatabaseTransaction) -> Result<(), StoreError> {
     server_meta::Entity::update_many()
@@ -523,6 +578,10 @@ async fn write_over(
         }
     } else {
         items::Entity::insert(row).exec(txn).await.store()?;
+    }
+    if item.signature.is_some() {
+        // The first signed write makes the owner signed-only, in the transaction that stores it.
+        mark_signed_only(txn, item.owner, item.updated_at).await?;
     }
     changes::Entity::insert(changes::active(&item)?)
         .exec(txn)
@@ -774,6 +833,7 @@ mod tests {
             origin: Uuid::new_v4(),
             seq: 1,
             hlc: 1,
+            write_sig: None,
         }
     }
 

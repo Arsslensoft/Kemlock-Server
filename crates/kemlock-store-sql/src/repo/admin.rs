@@ -375,6 +375,12 @@ async fn erase_in(txn: &DatabaseTransaction, user: UserId) -> Result<(), StoreEr
         .exec(txn)
         .await
         .store()?;
+    crate::tables::signed_writes::Entity::delete_many()
+        .filter(crate::tables::signed_writes::Column::OwnerType.eq(owner_type))
+        .filter(crate::tables::signed_writes::Column::OwnerId.eq(user.0))
+        .exec(txn)
+        .await
+        .store()?;
 
     // Spaces: the account's rows and the keys sealed to it.
     space_recovery::Entity::delete_many()

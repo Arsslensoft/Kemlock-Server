@@ -51,6 +51,7 @@ pub(crate) mod space_chain;
 pub(crate) mod space_recovery;
 pub(crate) mod space_tables;
 pub(crate) mod sso;
+pub(crate) mod signed_writes;
 pub(crate) mod sync_horizon;
 pub(crate) mod two_factor;
 pub(crate) mod two_factor_recovery;
