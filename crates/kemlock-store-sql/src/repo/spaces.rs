@@ -390,9 +390,10 @@ impl SpaceRepo for SqlStore {
 
 impl SqlStore {
     /// As `write_changes` for a space that exists, but refuses (`OWNER_REQUIRED`) a change that
-    /// leaves a space that had a confirmed owner with none. The use cases check the state they read,
-    /// and two owners removing each other at once each pass; this checks the state written, in the
-    /// same transaction, and the writer takes them one at a time.
+    /// leaves a space that had a confirmed owner with members but none of them a confirmed owner.
+    /// A change that removes every member (an organization's deletion) leaves no space to manage
+    /// and passes. The use cases check the state they read, and two owners removing each other at
+    /// the same moment each pass; this checks the state written, in the same transaction.
     pub(crate) async fn write_changes_keeping_owner(
         &self,
         changes: SpaceChanges,
@@ -403,7 +404,10 @@ impl SqlStore {
         let outcome = async {
             let had_owner = touches_members && has_confirmed_owner(&txn, space).await?;
             apply_in(&txn, changes, false).await?;
-            if had_owner && !has_confirmed_owner(&txn, space).await? {
+            if had_owner
+                && !has_confirmed_owner(&txn, space).await?
+                && has_any_member(&txn, space).await?
+            {
                 return Err(StoreError::Backend(OWNER_REQUIRED.to_owned()));
             }
             Ok::<(), StoreError>(())
@@ -441,6 +445,16 @@ pub(super) async fn finish<T>(
             Err(err)
         }
     }
+}
+
+/// Whether the space has any member row.
+async fn has_any_member<C: ConnectionTrait>(db: &C, space: Uuid) -> Result<bool, StoreError> {
+    Ok(members::Entity::find()
+        .filter(members::Column::SpaceId.eq(space))
+        .one(db)
+        .await
+        .store()?
+        .is_some())
 }
 
 /// Whether the space has a confirmed owner.

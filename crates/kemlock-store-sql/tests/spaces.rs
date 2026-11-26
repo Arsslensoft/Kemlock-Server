@@ -963,8 +963,9 @@ async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
     .await
     .expect("a second owner");
 
-    // Two owners each take the other out at once, each valid against what they read. The first
-    // lands; the second would leave nobody and is refused, whichever way it is done.
+    // Two owners each take the other out, each valid against what they read. The first lands; the
+    // second would leave members but no owner and is refused, whichever way it is done. (Sam
+    // comes back as an admin first, so that members remain.)
     SpaceRepo::apply(
         &store,
         SpaceChanges {
@@ -974,6 +975,17 @@ async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
     )
     .await
     .expect("Lee removes Sam");
+    let mut sam_back = sam_row.clone();
+    sam_back.role = SpaceRole::Admin;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![sam_back],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("an admin joins");
     let removed = SpaceRepo::apply(
         &store,
         SpaceChanges {
@@ -1009,22 +1021,33 @@ async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
         .await
         .expect("loads")
         .expect("exists");
-    assert_eq!(after.members.len(), 1);
-    assert_eq!(
-        (after.members[0].user, after.members[0].role, after.members[0].state),
-        (lee.id, SpaceRole::Owner, MemberState::Confirmed)
-    );
+    let lee_now = after.members.iter().find(|m| m.user == lee.id).expect("Lee");
+    assert_eq!((lee_now.role, lee_now.state), (SpaceRole::Owner, MemberState::Confirmed));
+    assert_eq!(after.members.len(), 2);
 
-    // A change that leaves an owner still works.
-    let mut sam_back = sam_row.clone();
-    sam_back.role = SpaceRole::Admin;
+    // A change that leaves an owner still works, and so does one that removes everyone (an
+    // organization's deletion leaves no space to manage).
     SpaceRepo::apply(
         &store,
         SpaceChanges {
-            members: vec![sam_back],
+            members_removed: vec![sam.id],
             ..SpaceChanges::new(space)
         },
     )
     .await
-    .expect("an admin joins");
+    .expect("the admin leaves");
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![lee.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("the last member leaves with the space");
+    let emptied = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert!(emptied.members.is_empty());
 }
