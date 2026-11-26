@@ -24,6 +24,7 @@ carries the bytes, and the check is to open them and to re-seal with the nonce t
 | `kx1.json` | Hybrid exchange key: private and public key, ciphertext, shared secret, implicit-rejection outputs |
 | `sealed-box.json` | Sealed box to a `kx1` key under a context label, one case per context with the aad the clients use (device-approval, space-key, collection-key, emergency-access, account-recovery) and the parts it is built from; the contexts that must not open it |
 | `sig1.json` | Hybrid ML-DSA-65 + Ed25519 signatures, public keys from seeds |
+| `sig1-edge.json` | The Ed25519 verification rule: small-order, non-canonical and mixed-order keys, non-canonical S and R, with the verdict of each |
 | `bundle.json` | Public-key bundle, its 60-digit fingerprint (12 groups of 5), its signature |
 | `kem1.json` | Item AAD, item ciphertext, item-key wrap, with the key chain from the root key |
 | `manifest.json` | Signed manifest encoding (entries sorted, tombstones), signature |
@@ -66,6 +67,10 @@ lists all third-party material.
 - **sig1**: derive the public key from the seeds, verify the signature, and fail on another
   context, a changed message and a changed signature byte in either half. ML-DSA signatures in
   these files are deterministic; hedged ones verify the same.
+- **sig1-edge**: for each case, check that the key passes or fails the parse-time key check
+  (`key_ok`) and that verification of `public_key`, `message` and `signature` gives `valid`, with
+  the rule of `docs/crypto.md` ("Ed25519 verification rule"). A library that only checks the
+  signature equation will accept the small-order cases; it must not.
 - **opaque**: replay the exchange with the listed random inputs and compare every message. The
   blind scalars are 32-byte little-endian scalars; the server also draws a 64-byte dummy masking
   key before the masking nonce (RFC 9807 vectors don't list it). The configuration is that of

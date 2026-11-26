@@ -46,6 +46,7 @@ pub(crate) fn all() -> Result<Vec<(&'static str, Value)>, Error> {
         ("kx1", kx1_doc()?),
         ("sealed-box", sealed_box_doc()?),
         ("sig1", sig1_doc()?),
+        ("sig1-edge", super::sig1_edge::generate()),
         ("bundle", bundle_doc()?),
         ("kem1", kem1_doc()?),
         ("manifest", manifest_doc()?),
