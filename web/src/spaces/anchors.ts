@@ -47,6 +47,20 @@ export interface PinStore {
   save(account: string, member: string, fingerprint: string): Promise<void>;
 }
 
+/**
+ * The highest revision of each item of an owner that this browser has seen with a valid write
+ * signature (docs/crypto.md, "Signed item writes"): an item id to a revision. A newer revision of
+ * such an item that comes without a signature is not taken in, after a reload or on a fresh full
+ * sync as in the session that saw the signature. It lives beside the anchors, sealed the same way.
+ */
+export type SignedFloor = Record<string, number>;
+
+export interface FloorStore {
+  /** The floor kept for an owner; empty when none is. */
+  load(account: string, owner: string): Promise<SignedFloor>;
+  save(account: string, owner: string, floor: SignedFloor): Promise<void>;
+}
+
 const DATABASE = 'kemlock-space-anchors';
 const ANCHORS = 'anchors';
 const PINS = 'pins';
@@ -54,6 +68,19 @@ const PINS = 'pins';
 const anchorKey = (account: string, space: string) => `anchor/${account}/${space}`;
 const seenKey = (account: string, space: string) => `seen/${account}/${space}`;
 const pinKey = (account: string, member: string) => `pin/${account}/${member}`;
+const floorKey = (account: string, owner: string) => `floor/${account}/${owner}`;
+
+/** Reads a kept floor from its text; anything that isn't one is an error. */
+export function parseFloor(text: string): SignedFloor {
+  const value: unknown = JSON.parse(text);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('the kept floor is damaged');
+  const floor: SignedFloor = {};
+  for (const [id, revision] of Object.entries(value)) {
+    if (!Number.isSafeInteger(revision) || (revision as number) < 1) throw new Error('the kept floor is damaged');
+    floor[id] = revision as number;
+  }
+  return floor;
+}
 
 /** Whether `kept` is at least as far along as `next`, so `next` must not replace it. */
 function further(kept: ChainAnchor | undefined, next: ChainAnchor): boolean {
@@ -79,7 +106,8 @@ export function parseAnchor(text: string): ChainAnchor {
 }
 
 /** The anchors and pins in memory: for tests, and the fallback when IndexedDB can't be used. */
-export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
+export function memoryStores(): { anchors: AnchorStore; pins: PinStore; floors: FloorStore } {
+  const floors = new Map<string, SignedFloor>();
   const anchors = new Map<string, ChainAnchor>();
   const pins = new Map<string, string>();
   const seen = new Set<string>();
@@ -107,6 +135,14 @@ export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
         pins.set(pinKey(account, member), fingerprint);
       },
     },
+    floors: {
+      async load(account, owner) {
+        return { ...floors.get(floorKey(account, owner)) };
+      },
+      async save(account, owner, floor) {
+        floors.set(floorKey(account, owner), { ...floor });
+      },
+    },
   };
 }
 
@@ -116,6 +152,10 @@ export function memoryAnchorStore(): AnchorStore {
 
 export function memoryPinStore(): PinStore {
   return memoryStores().pins;
+}
+
+export function memoryFloorStore(): FloorStore {
+  return memoryStores().floors;
 }
 
 function request<T>(req: IDBRequest<T>): Promise<T> {
@@ -145,7 +185,7 @@ function open(factory: IDBFactory): Promise<IDBDatabase> {
 export function indexedDbStores(
   seal: LocalSeal,
   factory: IDBFactory = indexedDB,
-): { anchors: AnchorStore; pins: PinStore } {
+): { anchors: AnchorStore; pins: PinStore; floors: FloorStore } {
   async function withStore<T>(
     name: string,
     mode: IDBTransactionMode,
@@ -189,11 +229,18 @@ export function indexedDbStores(
     load: (account, member) => read(PINS, pinKey(account, member)),
     save: (account, member, fingerprint) => write(PINS, pinKey(account, member), fingerprint),
   };
-  return { anchors, pins };
+  const floors: FloorStore = {
+    async load(account, owner) {
+      const text = await read(ANCHORS, floorKey(account, owner));
+      return text === undefined ? {} : parseFloor(text);
+    },
+    save: (account, owner, floor) => write(ANCHORS, floorKey(account, owner), JSON.stringify(floor)),
+  };
+  return { anchors, pins, floors };
 }
 
 /** The stores the app uses: IndexedDB where there is one, memory otherwise. */
-export function defaultStores(seal: LocalSeal): { anchors: AnchorStore; pins: PinStore } {
+export function defaultStores(seal: LocalSeal): { anchors: AnchorStore; pins: PinStore; floors: FloorStore } {
   try {
     if (typeof indexedDB !== 'undefined') return indexedDbStores(seal);
   } catch {

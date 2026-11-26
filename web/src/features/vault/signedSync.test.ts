@@ -8,6 +8,7 @@ import { signedItem } from '@/api/signedWrites';
 import { createWriteChecker } from '@/manifest/writes';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import { crypto, resetFakeCrypto } from '@/test/fake-crypto';
+import { memoryFloorStore } from '@/spaces/anchors';
 import { type VaultDeps, VaultStore, syncVault } from './vault';
 
 const ACCOUNT = '99999999-9999-4999-8999-999999999999';
@@ -47,7 +48,7 @@ const tombstone = (id: string, revision: number): ItemDto => ({
   deleted: true,
 });
 
-function setup() {
+function setup(floors?: ReturnType<typeof memoryFloorStore>) {
   const store = new VaultStore();
   const pages: ItemDto[][] = [];
   const rejected = vi.fn();
@@ -69,6 +70,14 @@ function setup() {
     }),
     rejected,
     served,
+    ...(floors
+      ? {
+          floors: {
+            load: (owner: string) => floors.load(ACCOUNT, owner),
+            save: (owner: string, floor: Record<string, number>) => floors.save(ACCOUNT, owner, floor),
+          },
+        }
+      : {}),
   };
   const sync = async (...next: ItemDto[]) => {
     pages.push(next);
@@ -133,6 +142,62 @@ describe('syncing with write signatures', () => {
     await sync(await signedItem(crypto, tombstone(B, 2)));
     expect(store.items.has(B)).toBe(false);
     expect(served).toHaveBeenLastCalledWith(expect.objectContaining({ id: B, deleted: true }), false, 'signed');
+  });
+
+  it('remembers across a reload which items it saw signed, and refuses an unsigned newer revision of one', async () => {
+    const floors = memoryFloorStore();
+    const first = setup(floors);
+    await first.sync(await signedItem(crypto, await sealed(A, 3)), await sealed(B, 1));
+    expect(await floors.load(ACCOUNT, OWN)).toEqual({ [A]: 3 });
+
+    // A reload: nothing is held, the server serves everything again, and an unsigned revision 4
+    // of the item this browser saw signed is not taken in. An unsigned item it never saw signed is.
+    const second = setup(floors);
+    await second.sync(await sealed(A, 4), await sealed(B, 1));
+    expect(second.store.items.has(A)).toBe(false);
+    expect(second.rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 4 }), 'unsigned');
+    expect(second.store.items.get(B)?.revision).toBe(1);
+    // The signed revision it saw is the floor: an unsigned one at or below it is no change of it.
+    await second.sync(await signedItem(crypto, await sealed(A, 3)));
+    expect(second.store.items.get(A)?.revision).toBe(3);
+    await second.sync(await sealed(A, 5));
+    expect(second.store.items.get(A)?.revision).toBe(3);
+  });
+
+  it('raises the kept floor as newer signed revisions are served, and never lowers it', async () => {
+    const floors = memoryFloorStore();
+    const run = setup(floors);
+    await run.sync(await signedItem(crypto, await sealed(A, 2)));
+    await run.sync(await signedItem(crypto, await sealed(A, 6)));
+    expect(await floors.load(ACCOUNT, OWN)).toEqual({ [A]: 6 });
+    await run.sync(await signedItem(crypto, await sealed(A, 4)));
+    expect(await floors.load(ACCOUNT, OWN)).toEqual({ [A]: 6 });
+  });
+
+  it('carries on when the kept floor cannot be read or written', async () => {
+    const store = new VaultStore();
+    const deps: VaultDeps = {
+      api: {
+        putItem: vi.fn(),
+        putBatch: vi.fn(),
+        sync: async () => ({
+          notModified: false,
+          page: { items: [await signedItem(crypto, await sealed(A, 1))], cursor: 'c', more: false },
+        }),
+      },
+      crypto,
+      writes: createWriteChecker({ crypto, accountId: () => ACCOUNT, spaceSigner: async () => null }),
+      floors: {
+        load: async () => {
+          throw new Error('damaged');
+        },
+        save: async () => {
+          throw new Error('full');
+        },
+      },
+    };
+    await syncVault(deps, store);
+    expect(store.items.get(A)?.revision).toBe(1);
   });
 
   it('does not check anything when it has no checker', async () => {

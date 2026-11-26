@@ -9,6 +9,8 @@ import type { SpaceDeps } from './model';
 // their own, each value sealed by the worker under the account's key.
 const stores = defaultStores(spaceCrypto);
 
+export const floorStore = stores.floors;
+
 export const spaceDeps: SpaceDeps = {
   api: createSpacesApi(api),
   crypto: spaceCrypto,

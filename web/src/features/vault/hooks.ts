@@ -3,7 +3,7 @@ import { queryOptions, useMutation, useQuery } from '@tanstack/react-query';
 import { useCallback, useMemo } from 'react';
 import { api, queryClient, session } from '@/app/services';
 import { vaultCrypto } from '@/crypto-port';
-import { spaceDeps } from '@/features/spaces/deps';
+import { floorStore, spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
 import { duplicatesViewStore } from '@/features/duplicates/viewState';
@@ -45,6 +45,17 @@ const deps: VaultDeps = {
   crypto: vaultCrypto,
   ensureSpaceKeys: spaceKeys.ensure,
   writes: writeChecker,
+  // What this browser has seen signed is kept across reloads, sealed by the worker.
+  floors: {
+    load: async (owner) => {
+      const account = session.getState().userId;
+      return account ? floorStore.load(account, owner) : {};
+    },
+    save: async (owner, floor) => {
+      const account = session.getState().userId;
+      if (account) await floorStore.save(account, owner, floor);
+    },
+  },
   served: (dto, opened, verdict) => manifestKeeper.served(dto, opened, verdict),
   rejected: (dto, verdict) => manifestKeeper.rejected(dto, verdict),
 };
