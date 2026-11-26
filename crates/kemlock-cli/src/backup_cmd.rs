@@ -20,7 +20,8 @@
 use kemlock_server::Config;
 use kemlock_server::backups::{layout, run_backup, settings_from_env};
 use kemlock_server::restore::{
-    DRILL_KEY, RestoreOptions, drill_json, restore, restore_check, restore_pre_migration,
+    DRILL_KEY, RestoreOptions, drill_json, inspect_archive, restore, restore_check,
+    restore_pre_migration,
 };
 use kemlock_store_sql::SqlStore;
 use std::path::PathBuf;
@@ -330,24 +331,35 @@ async fn run_restore(config: &Config, args: RestoreArgs) -> Result<(), (u8, Stri
         }
         RestoreMode::Restore { archive } => {
             let identity = need(&args.identity, "--identity <file>").map_err(usage)?;
+            let options = RestoreOptions {
+                archive: PathBuf::from(&archive),
+                identity,
+                server_key: args.server_key.as_deref().map(PathBuf::from),
+                allow_unauthenticated: args.allow_unauthenticated,
+            };
             if !args.yes {
+                // Before asking for --yes, say which archive this is: when it says it was made,
+                // and whether a newer one sits beside it or the file was renamed, so an old
+                // archive under a new name is noticed.
+                let info = inspect_archive(config, &options)
+                    .await
+                    .map_err(|e| (1, format!("can't open the archive: {e}")))?;
+                println!(
+                    "{archive}: made {}, {} tables, {} rows, {} files",
+                    info.created_at, info.tables, info.rows, info.files
+                );
+                for warning in &info.warnings {
+                    println!("warning: {warning}");
+                }
                 return Err(usage(
                     "restore replaces the database and files with the archive's; stop the \
                      server and add --yes (try --check first)"
                         .to_owned(),
                 ));
             }
-            let report = restore(
-                config,
-                &RestoreOptions {
-                    archive: PathBuf::from(&archive),
-                    identity,
-                    server_key: args.server_key.as_deref().map(PathBuf::from),
-                    allow_unauthenticated: args.allow_unauthenticated,
-                },
-            )
-            .await
-            .map_err(|e| (1, format!("the restore failed: {e}")))?;
+            let report = restore(config, &options)
+                .await
+                .map_err(|e| (1, format!("the restore failed: {e}")))?;
             println!(
                 "restored the archive of {}: {} tables, {} rows, {} files",
                 report.created_at, report.tables, report.rows, report.files

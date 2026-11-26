@@ -385,3 +385,31 @@ async fn an_archive_with_its_code_restores_with_the_key_and_the_drill_says_so() 
         report.notes
     );
 }
+
+#[tokio::test]
+async fn inspecting_an_archive_says_what_it_is_without_changing_anything() {
+    use kemlock_server::restore::inspect_archive;
+    let f = fixture().await;
+    let target = config(&f.root.path().join("target"));
+
+    let info = inspect_archive(&target, &options(&f, Some(&f.key_file), false))
+        .await
+        .expect("the archive opens");
+    assert!(info.created_at.starts_with("20"), "{}", info.created_at);
+    assert!(info.tables > 10 && info.rows >= 1 && info.files >= 2, "{info:?}");
+    assert!(info.warnings.is_empty(), "{:?}", info.warnings);
+    // Nothing was restored, and the scratch folder is gone.
+    assert!(!target.data_folder.join("db.sqlite3").exists());
+    assert_eq!(
+        std::fs::read_dir(&target.data_folder)
+            .expect("the data folder")
+            .count(),
+        0
+    );
+
+    // Without the key it can't be checked, and says so rather than showing an unchecked archive.
+    let error = inspect_archive(&target, &options(&f, None, false))
+        .await
+        .expect_err("no key to check it with");
+    assert!(error.contains("server.key"), "{error}");
+}

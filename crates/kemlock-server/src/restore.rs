@@ -18,9 +18,9 @@ use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use kemlock_backup::{
-    AgeIdentity, Attachments, MacKey, Manifest, check_manifest_mac, is_never_restored,
-    is_restorable_config_name, is_restorable_data_file, parse_identity, read_archive,
-    verify_unpacked,
+    AgeIdentity, Attachments, BACKUP_PREFIX, MacKey, Manifest, archive_time, check_manifest_mac,
+    is_never_restored, is_restorable_config_name, is_restorable_data_file, parse_identity,
+    read_archive, verify_unpacked,
 };
 use kemlock_store_sql::{SnapshotTable, SqlStore};
 use std::net::SocketAddr;
@@ -228,6 +228,104 @@ fn skipped_data_file_note(name: &str) -> String {
     }
 }
 
+/// What to tell the operator about an archive's age and name before it replaces everything: the
+/// archive's own `created_at` is what counts, and the names in its folder show whether a newer
+/// backup exists and whether the file was renamed. An older archive put under a newer one's name
+/// is a way to roll a server back to a state an attacker (or a mistake) prefers.
+pub fn archive_warnings(archive: &Path, created_at: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let Ok(made) = OffsetDateTime::parse(created_at, &time::format_description::well_known::Rfc3339)
+    else {
+        return warnings;
+    };
+    let Some(name) = archive.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+        return warnings;
+    };
+    if let Some(named) = archive_time(&name)
+        && (named - made).whole_seconds().abs() > 1
+    {
+        warnings.push(format!(
+            "the file name says {name} was made at {named}, but the archive says {created_at}: \
+             was it renamed?"
+        ));
+    }
+    if name.starts_with(BACKUP_PREFIX) {
+        let folder = archive
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let newest = std::fs::read_dir(folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(BACKUP_PREFIX))
+            .filter_map(|n| archive_time(&n).map(|at| (at, n)))
+            .max();
+        if let Some((at, newer)) = newest
+            && at > made
+            && (at - made).whole_seconds() > 1
+        {
+            warnings.push(format!(
+                "this is not the newest archive: {newer} in the same folder is from {at}, and \
+                 restoring this one goes back to {created_at}"
+            ));
+        }
+    }
+    warnings
+}
+
+/// What `inspect_archive` found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveInfo {
+    /// When the archive says it was made.
+    pub created_at: String,
+    pub tables: usize,
+    pub rows: u64,
+    pub files: usize,
+    /// Why the operator might not want this archive (see [`archive_warnings`]).
+    pub warnings: Vec<String>,
+}
+
+/// Opens the archive far enough to say what it is, changing nothing: decrypts and unpacks it into a
+/// scratch folder under the data folder, checks its authentication code (as `restore` does, with
+/// the key given or the data folder's own) and its manifest, and reports. `kemlock-cli restore`
+/// shows this before it asks for `--yes`.
+pub async fn inspect_archive(
+    config: &Config,
+    options: &RestoreOptions,
+) -> Result<ArchiveInfo, String> {
+    let mac_key = match &options.server_key {
+        Some(path) => <[u8; 32]>::try_from(read_server_key(path)?.as_slice())
+            .ok()
+            .map(|key| manifest_mac_key(&key)),
+        None => existing_server_key(config).map(|key| manifest_mac_key(&key)),
+    };
+    crate::keys::create_data_folder(&config.data_folder)
+        .map_err(|e| format!("can't make {}: {e}", config.data_folder.display()))?;
+    let scratch = tempfile::Builder::new()
+        .prefix(".kemlock-inspect-")
+        .tempdir_in(&config.data_folder)
+        .map_err(|e| format!("can't make a working folder: {e}"))?;
+    let (manifest, unauthenticated) = unpack(
+        &options.archive,
+        &options.identity,
+        &scratch.path().join("unpacked"),
+        mac_key,
+        options.allow_unauthenticated,
+    )
+    .await?;
+    let mut warnings = archive_warnings(&options.archive, &manifest.created_at);
+    warnings.extend(unauthenticated);
+    Ok(ArchiveInfo {
+        created_at: manifest.created_at.clone(),
+        tables: manifest.tables.len(),
+        rows: manifest.total_rows(),
+        files: manifest.files.len(),
+        warnings,
+    })
+}
+
 /// Replaces this server's database and files with the archive's. Stop the server first. The
 /// database is migrated to this version, then every table is emptied and refilled in one
 /// transaction; the data folder's files and the attachments are copied over what is there.
@@ -285,6 +383,7 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
     )
     .await?;
     notes.extend(unauthenticated);
+    notes.extend(archive_warnings(&options.archive, &manifest.created_at));
     if let Some(wanted) = key_to_install {
         write_server_key(&key_path, &wanted)?;
         server_key_installed = true;
@@ -681,6 +780,42 @@ mod tests {
             None,
         )
         .expect("valid")
+    }
+
+    #[test]
+    fn an_older_archive_or_a_renamed_one_is_pointed_out() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        for name in [
+            "kemlock-backup-20261101T030000Z.tar.zst.age",
+            "kemlock-backup-20261120T030000Z.tar.zst.age",
+            "kemlock-premigration-0.1.4-20261125T030000Z.tar.zst.age",
+            "notes.txt",
+        ] {
+            std::fs::write(dir.path().join(name), b"x").expect("a file");
+        }
+        let old = dir.path().join("kemlock-backup-20261101T030000Z.tar.zst.age");
+        let newest = dir.path().join("kemlock-backup-20261120T030000Z.tar.zst.age");
+
+        // The newest, with the date it says: nothing to say.
+        assert!(archive_warnings(&newest, "2026-11-20T03:00:00Z").is_empty());
+        // An older one: the newer one in its folder is named.
+        let warnings = archive_warnings(&old, "2026-11-01T03:00:00Z");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("not the newest"), "{warnings:?}");
+        assert!(warnings[0].contains("20261120T030000Z"), "{warnings:?}");
+        // The old archive under the newest one's name: its own date gives it away.
+        let warnings = archive_warnings(&newest, "2026-11-01T03:00:00Z");
+        assert!(
+            warnings.iter().any(|w| w.contains("renamed")),
+            "{warnings:?}"
+        );
+        // A pre-migration archive is not a scheduled one: no newest to compare with.
+        let pre = dir
+            .path()
+            .join("kemlock-premigration-0.1.4-20261125T030000Z.tar.zst.age");
+        assert!(archive_warnings(&pre, "2026-11-25T03:00:00Z").is_empty());
+        // Not a date: nothing is claimed.
+        assert!(archive_warnings(&old, "yesterday").is_empty());
     }
 
     #[test]
