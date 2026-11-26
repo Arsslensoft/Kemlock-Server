@@ -27,6 +27,8 @@ export interface VaultItem {
   id: string;
   owner: string;
   kind: string;
+  /** The format the item has: what it was served in, or `kem1` for what this browser wrote. */
+  format?: ItemDto['format'];
   revision: number;
   keyVersion: number;
   /** The collection an item of a space is in; absent for an item of the account's own vault. */
@@ -242,6 +244,7 @@ export async function openDto(
     id: dto.id,
     owner: dto.owner,
     kind: dto.kind,
+    format: dto.format,
     revision: dto.revision,
     keyVersion: dto.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),
@@ -282,6 +285,13 @@ async function keepFloors(deps: VaultDeps, store: VaultStore): Promise<void> {
 
 async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<void> {
   const current = store.items.get(dto.id);
+  // An item keeps the format it was made in. A revision that says another (a `bw` label on a `kem1`
+  // item would skip every signature check) is not taken in, and the item is not deleted for it.
+  if (current?.format !== undefined && current.format !== dto.format) {
+    deps.served?.(dto, false, undefined);
+    deps.rejected?.(dto, 'invalid');
+    return;
+  }
   const verdict = await deps.writes?.verdict(dto);
   const floor = await floorOf(deps, store, dto.owner);
   if (verdict === 'signed') {
@@ -423,6 +433,7 @@ export async function saveItem(
     id,
     owner,
     kind: input.kind,
+    format: 'kem1',
     revision,
     keyVersion: sealed.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),

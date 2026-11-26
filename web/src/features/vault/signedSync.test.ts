@@ -217,3 +217,19 @@ describe('syncing with write signatures', () => {
     expect(served).toHaveBeenCalledWith(expect.anything(), true, undefined);
   });
 });
+
+describe('an item keeps its format', () => {
+  it('takes in no revision that relabels an item it holds, and does not delete it for one', async () => {
+    const { store, sync, rejected } = setup();
+    await sync(await sealed(A, 1));
+    await sync({ ...(await sealed(A, 2)), format: 'bw' });
+    expect(store.items.get(A)?.revision).toBe(1);
+    expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 2 }), 'invalid');
+    // A tombstone labelled bw is no deletion of a kem1 item either.
+    await sync({ ...tombstone(A, 3), format: 'bw' });
+    expect(store.items.has(A)).toBe(true);
+    // The item as a kem1 item still moves on.
+    await sync(await sealed(A, 4));
+    expect(store.items.get(A)?.revision).toBe(4);
+  });
+});
