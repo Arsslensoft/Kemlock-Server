@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalPollResponse, ApprovalRequestBody } from '@/api/devices';
 import type { AccountKeysResponse, TokenResponse } from '@/api/types';
 import { createSession } from '@/app/session';
+import { CryptoError } from '@/crypto/types';
 import { approvalPhrase } from '@/lib/approvalPhrase';
 import { decodeB64, encodeB64, utf8 } from '@/lib/b64url';
 import { crypto, fakeApprovalBox, fakeCalls, isFakeLocked, resetFakeCrypto } from '@/test/fake-crypto';
@@ -167,9 +168,24 @@ describe('signInWithAnotherDevice', () => {
     // The root key opens (a server sealed its own), but its private keys are not the bundle's.
     const run = setup({ polls: [approvedFor()], publicBundle: encodeB64(utf8('bundle:somebody-else')) });
     const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
-    expect(outcome.status).toBe('failed');
+    // The person is told the keys were not the account's, not handed a generic failure.
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.any(ApprovalRefused) });
+    expect(outcome.status === 'failed' && (outcome.error as ApprovalRefused).reason).toBe('keys');
     expect(run.confirmFingerprint).not.toHaveBeenCalled();
     expect(isFakeLocked()).toBe(true);
+    expect(run.session.getState().status).toBe('signed-out');
+  });
+
+  it("does not call a worker that is not there a forgery", async () => {
+    const run = setup({ polls: [approvedFor()] });
+    run.deps.crypto = {
+      ...crypto,
+      unlockWithRoot: async () => {
+        throw new CryptoError('unavailable');
+      },
+    };
+    const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.any(CryptoError) });
     expect(run.session.getState().status).toBe('signed-out');
   });
 

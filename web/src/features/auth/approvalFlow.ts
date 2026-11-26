@@ -21,6 +21,7 @@ import type { NewDeviceApi } from '@/api/devices';
 import type { DeviceDto } from '@/api/types';
 import type { Session } from '@/app/session';
 import type { CryptoPort } from '@/crypto-port';
+import { CryptoError } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { approvalPhrase } from '@/lib/approvalPhrase';
 import { rememberDeviceId } from '@/lib/device';
@@ -162,11 +163,19 @@ export async function signInWithAnotherDevice(
           // are the bundle's. The unlock consumes the root handle; releasing it afterwards (in
           // `finally`) is harmless.
           if (!keys.sealedPrivateKeys || !keys.publicBundle) throw new ApprovalRefused('keys');
-          await deps.crypto.unlockWithRoot(tokens.userId, root, {
-            keyVersion: keys.keyVersion,
-            sealedPrivateKeys: decodeB64(keys.sealedPrivateKeys),
-            publicBundle: decodeB64(keys.publicBundle),
-          });
+          try {
+            await deps.crypto.unlockWithRoot(tokens.userId, root, {
+              keyVersion: keys.keyVersion,
+              sealedPrivateKeys: decodeB64(keys.sealedPrivateKeys),
+              publicBundle: decodeB64(keys.publicBundle),
+            });
+          } catch (error) {
+            // The worker only says "invalid" for keys that are not the bundle's (or do not open
+            // under this root key): tell the person that, not a generic failure. A worker that
+            // is not there is another matter.
+            if (error instanceof CryptoError && error.code === 'unavailable') throw error;
+            throw new ApprovalRefused('keys');
+          }
           const fingerprint = await deps.crypto.ownFingerprint();
           onProgress({ step: 'compare', fingerprint });
           if (!(await deps.confirmFingerprint(fingerprint, signal))) {
