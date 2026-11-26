@@ -366,3 +366,69 @@ async fn erasing_a_replica_vault_clears_its_event_log_tags_and_matching_switch()
         1
     );
 }
+
+fn copy_of(id: UserId, email: &str) -> MemberAccount {
+    let template = user(email);
+    MemberAccount {
+        id,
+        email: template.email.as_str().to_owned(),
+        name: template.name.clone(),
+        mode: template.mode,
+        kdf: template.kdf.clone(),
+        wrapped_root_key: template.wrapped_root_key.clone(),
+        public_bundle: template.public_bundle.clone(),
+        bundle_signature: template.bundle_signature.clone(),
+        sealed_private_keys: template.sealed_private_keys.clone(),
+        key_version: template.key_version,
+        created_at: MADE_AT.unix_timestamp(),
+        updated_at: MADE_AT.unix_timestamp(),
+        devices: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
+    let store = memory().await;
+    let first_home = ServerId::random();
+    let other_home = ServerId::random();
+    let id = UserId::random();
+    let email = unique_email("ada");
+    let mut copy = copy_of(id, &email);
+    assert_eq!(
+        store.apply_member_account(first_home, &copy).await,
+        Ok(MemberApply::Applied)
+    );
+
+    // Another server's home record can't replace the copy: not its keys, not its devices.
+    let mut takeover = copy.clone();
+    takeover.wrapped_root_key = vec![0xEE; 100];
+    takeover.devices = vec![MemberDevice {
+        id: DeviceId::random(),
+        name: "Thief".to_owned(),
+        kind: DeviceKind::KemlockAndroid,
+        dpop_jkt: Some("thief-jkt".to_owned()),
+        created_at: MADE_AT.unix_timestamp(),
+    }];
+    assert_eq!(
+        store.apply_member_account(other_home, &takeover).await,
+        Ok(MemberApply::Refused)
+    );
+    let kept = UserRepo::by_id(&store, id)
+        .await
+        .expect("a read")
+        .expect("the copy");
+    assert_eq!(kept.wrapped_root_key, copy.wrapped_root_key);
+    assert!(
+        DeviceRepo::list(&store, id)
+            .await
+            .expect("devices")
+            .is_empty()
+    );
+
+    // The home it came from still updates it.
+    copy.wrapped_root_key = vec![0x11; 100];
+    assert_eq!(
+        store.apply_member_account(first_home, &copy).await,
+        Ok(MemberApply::Applied)
+    );
+}

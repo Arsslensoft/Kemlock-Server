@@ -187,6 +187,26 @@ impl<S: FedStore> Replica<S> {
                 return;
             }
         };
+        // The home may only publish accounts that belong to its vault: the owner of a personal
+        // vault, or a confirmed member of a space as this server knows it. Otherwise the home of
+        // any vault this server replicates could replace the copy of a user who belongs to
+        // another vault, devices and keys included.
+        let belongs = match record.vault {
+            Owner::User(owner) => account.id == owner,
+            Owner::Space(_) => self
+                .store
+                .member_ids(record.vault)
+                .await
+                .is_ok_and(|ids| ids.contains(&account.id)),
+        };
+        if !belongs {
+            tracing::warn!(
+                user = %account.id,
+                vault = ?record.vault,
+                "a member account record for an account that is not in the vault was refused"
+            );
+            return;
+        }
         match self
             .store
             .apply_member_account(record.signer, &account)
@@ -215,5 +235,89 @@ impl<S: FedStore> Replica<S> {
                 .await?;
         }
         Ok(publisher.made)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::MemoryStore;
+    use crate::suite::Suite;
+    use crate::testing::identity;
+    use kemlock_domain::{AccountMode, DeviceKind, KdfParams, SpaceId, UserId};
+    use std::sync::Arc;
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn account(id: UserId) -> MemberAccount {
+        MemberAccount {
+            id,
+            email: "ada@example.org".to_owned(),
+            name: None,
+            mode: AccountMode::KemlockOnly,
+            kdf: KdfParams::new_account([3; 16]),
+            wrapped_root_key: vec![1; 80],
+            public_bundle: vec![2; 300],
+            bundle_signature: vec![3; 100],
+            sealed_private_keys: vec![4; 200],
+            key_version: 1,
+            created_at: 1_700_000_000,
+            updated_at: 1_700_000_100,
+            devices: vec![members::MemberDevice {
+                id: kemlock_domain::DeviceId::random(),
+                name: "Pixel".to_owned(),
+                kind: DeviceKind::KemlockAndroid,
+                dpop_jkt: Some("thumbprint".to_owned()),
+                created_at: 1_700_000_050,
+            }],
+        }
+    }
+
+    fn record(vault: Owner, signer: ServerId, account: &MemberAccount) -> HomeRecord {
+        HomeRecord {
+            vault,
+            index: crate::home::home_index(1, 1),
+            epoch: 1,
+            kind: members::KIND.to_owned(),
+            payload: account.to_payload(),
+            signer,
+        }
+    }
+
+    fn replica() -> Replica<MemoryStore> {
+        let id = identity(1, NOW, &Suite::IMPLEMENTED);
+        Replica::new(MemoryStore::new(id.server), Arc::new(id))
+    }
+
+    #[tokio::test]
+    async fn a_personal_vaults_home_can_only_publish_that_vaults_account() {
+        let r = replica();
+        let home = ServerId::random();
+        let owner = UserId::random();
+        let other = UserId::random();
+        // The home of the vault of `owner` carries the account of someone else: refused.
+        r.apply_home_record(&record(Owner::User(owner), home, &account(other)))
+            .await;
+        assert!(r.store.applied_accounts().is_empty());
+        // Its own account goes through.
+        r.apply_home_record(&record(Owner::User(owner), home, &account(owner)))
+            .await;
+        assert_eq!(r.store.applied_accounts(), vec![(home, owner)]);
+    }
+
+    #[tokio::test]
+    async fn a_spaces_home_can_only_publish_accounts_of_its_confirmed_members() {
+        let r = replica();
+        let home = ServerId::random();
+        let space = Owner::Space(SpaceId::random());
+        let member = UserId::random();
+        let stranger = UserId::random();
+        r.store.set_members(space, vec![member]);
+        r.apply_home_record(&record(space, home, &account(stranger)))
+            .await;
+        assert!(r.store.applied_accounts().is_empty());
+        r.apply_home_record(&record(space, home, &account(member)))
+            .await;
+        assert_eq!(r.store.applied_accounts(), vec![(home, member)]);
     }
 }

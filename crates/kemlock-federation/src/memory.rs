@@ -24,7 +24,8 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::BlobId;
 use kemlock_domain::sends::{SendId, SendRecord};
 use kemlock_domain::{
-    ChangeId, Hlc, Item, ItemDraft, ItemId, Owner, Revision, ServerId, SpaceId, VersionVector,
+    ChangeId, Hlc, Item, ItemDraft, ItemId, Owner, Revision, ServerId, SpaceId, UserId,
+    VersionVector,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -163,6 +164,10 @@ struct Extras {
     sends: BTreeMap<SendId, SendRecord>,
     send_marks: HashMap<SendId, ServerId>,
     withheld: HashMap<(ServerId, Owner), Withheld>,
+    /// The members `member_ids` answers with, by vault.
+    members: HashMap<Owner, Vec<UserId>>,
+    /// The account copies applied: the home that signed and the user.
+    accounts_applied: Vec<(ServerId, UserId)>,
 }
 
 impl MemoryStore {
@@ -259,6 +264,16 @@ impl MemoryStore {
     pub fn set_space_snapshot(&self, snapshot: SpaceSnapshot) {
         let space = snapshot.state.space.id;
         self.extras().snapshots.insert(space, snapshot);
+    }
+
+    /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
+    pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
+        self.extras().members.insert(vault, members);
+    }
+
+    /// The account copies applied so far, as (the home that signed them, the user).
+    pub fn applied_accounts(&self) -> Vec<(ServerId, UserId)> {
+        self.extras().accounts_applied.clone()
     }
 
     /// The space records applied at this replica, in order.
@@ -732,7 +747,20 @@ impl crate::extra::FedAdminRepo for MemoryStore {
         Ok(self.extras().mismatches.get(&peer).cloned())
     }
 }
-impl crate::extra::MemberStore for MemoryStore {}
+impl crate::extra::MemberStore for MemoryStore {
+    async fn member_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        Ok(self.extras().members.get(&vault).cloned().unwrap_or_default())
+    }
+
+    async fn apply_member_account(
+        &self,
+        home: ServerId,
+        account: &crate::members::MemberAccount,
+    ) -> Result<crate::extra::MemberApply, StoreError> {
+        self.extras().accounts_applied.push((home, account.id));
+        Ok(crate::extra::MemberApply::Applied)
+    }
+}
 impl crate::extra::BlobSync for MemoryStore {}
 
 impl ErasureOutbox for MemoryStore {

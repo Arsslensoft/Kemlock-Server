@@ -297,9 +297,18 @@ impl MemberStore for SqlStore {
         account: &MemberAccount,
     ) -> Result<MemberApply, StoreError> {
         let existing = UserRepo::by_id(self, account.id).await?;
-        let replicated = MemberStore::is_replica_account(self, account.id).await?;
+        let copy = replicated_accounts::Entity::find_by_id(account.id.0)
+            .one(self.writer())
+            .await
+            .store()?;
+        let replicated = copy.is_some();
         if existing.is_some() && !replicated {
             // An account of this server: a copy never replaces it.
+            return Ok(MemberApply::Refused);
+        }
+        if copy.is_some_and(|c| c.home != home.0) {
+            // A copy follows the server it came from, and no other: the home of one vault must
+            // not take over the copy of an account that belongs to another vault.
             return Ok(MemberApply::Refused);
         }
         let user = user_of(account, existing.as_ref())?;
