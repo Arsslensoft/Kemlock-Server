@@ -6,7 +6,7 @@
 // The PRF output and the root key never leave the browser: only the wrap of the root key under the
 // PRF output goes to the server (docs/crypto.md, "The passkey PRF wrap of the root key").
 import type { PasskeyDto, PasskeysApi, SecurityKeyApi } from '@/api/passkeys';
-import type { WebauthnProof } from '@/api/twoStep';
+import type { Proof, WebauthnProof } from '@/api/twoStep';
 import type { CryptoPort } from '@/crypto-port';
 import { encodeB64, wipe } from './b64url';
 import {
@@ -39,7 +39,12 @@ export interface RegisterPasskeyDeps {
  * gives a PRF output also stores a wrap of the open account's root key, which opens the vault at
  * sign-in; one that does not stores a passkey that only proves who is asking.
  */
-export async function registerPasskey(deps: RegisterPasskeyDeps, name: string): Promise<PasskeyDto> {
+export async function registerPasskey(
+  deps: RegisterPasskeyDeps,
+  name: string,
+  /** The fresh proof an account with a second step on has to give. */
+  proof?: Proof,
+): Promise<PasskeyDto> {
   const options = await deps.passkeys.creationOptions();
   const made = await (deps.create ?? createPasskey)(options);
   try {
@@ -48,7 +53,9 @@ export async function registerPasskey(deps: RegisterPasskeyDeps, name: string): 
       const wrap = await deps.crypto.prfWrapRoot(made.prfOutput, made.credentialId);
       prf = { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
     }
-    return await deps.passkeys.register(name, made.credential, prf);
+    return proof === undefined
+      ? await deps.passkeys.register(name, made.credential, prf)
+      : await deps.passkeys.register(name, made.credential, prf, proof);
   } finally {
     wipe(made.prfOutput);
   }

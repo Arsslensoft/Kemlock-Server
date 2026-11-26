@@ -42,6 +42,14 @@ describe('registerPasskey', () => {
     expect(d.passkeys.register).toHaveBeenCalledWith('Key', { id: 'c' }, undefined);
   });
 
+  it('sends the fresh proof an account with a second step on has to give', async () => {
+    const d = deps();
+    await registerPasskey(d, 'Key', '123456');
+    expect(d.passkeys.register).toHaveBeenCalledWith('Key', { id: 'c' }, undefined, '123456');
+    await registerPasskey(d, 'Key', { webauthn: { id: 'k' } });
+    expect(d.passkeys.register).toHaveBeenLastCalledWith('Key', { id: 'c' }, undefined, { webauthn: { id: 'k' } });
+  });
+
   it('wipes the PRF output when the server refuses the passkey', async () => {
     const prf = new Uint8Array([5, 5, 5]);
     const d = deps(prf);

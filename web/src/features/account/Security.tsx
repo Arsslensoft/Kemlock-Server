@@ -123,10 +123,14 @@ export default function Security() {
           ? {
               passkeys: passkeys.data,
               busy: passkeyRun.pending,
-              onAdd: () =>
-                void changePasskeys(() =>
-                  registerPasskey({ passkeys: passkeysApi, crypto: vaultCrypto }, t('security.passkeys.defaultName')),
-                ),
+              // A passkey signs in without the second step, so with one on it is added on a fresh proof.
+              proofNeeded: (methods?.length ?? 0) > 0,
+              keyProof: secondSteps.props.keyProof,
+              onAskProof: () => void secondSteps.props.actions.askProof(),
+              onAdd: (proof) =>
+                changePasskeys(() =>
+                  registerPasskey({ passkeys: passkeysApi, crypto: vaultCrypto }, t('security.passkeys.defaultName'), proof),
+                ).then((added) => added !== undefined),
               onRemove: (id) => void changePasskeys(() => passkeysApi.remove(id).then(() => true)),
             }
           : undefined

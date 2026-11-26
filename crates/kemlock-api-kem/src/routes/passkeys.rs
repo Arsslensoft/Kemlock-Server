@@ -192,6 +192,9 @@ pub(crate) struct RegisterPasskeyRequest {
     pub(crate) credential: Value,
     /// The PRF copy of the root key, when the client already has the PRF output.
     pub(crate) prf: Option<PrfBody>,
+    /// A fresh proof, as adding a second step takes: needed when the account has one on already,
+    /// since a passkey signs in without the password or the second step.
+    pub(crate) proof: Option<FreshProof>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -557,6 +560,17 @@ where
         }),
         None => None,
     };
+    // A passkey signs in without the password or the second step and outlives a password change,
+    // so with a second step on it is added on a fresh proof, as a security key or an
+    // authenticator is. The proof is spent here, last before the change.
+    require_proof_to_add(
+        &api,
+        &proof_steps(&api, runtime.repos.clone()),
+        authed.actor.user,
+        None,
+        request.proof.as_ref(),
+    )
+    .await?;
     let passkey = manage(&api, &runtime)
         .finish_registration(FinishRegistration {
             user: authed.actor.user,
@@ -1111,7 +1125,7 @@ fn doc_passkey_registration_options() {}
     request_body = RegisterPasskeyRequest,
     responses(
         (status = 201, description = "The passkey is registered", body = PasskeyDto),
-        (status = 400, description = "The answer wasn't accepted, no registration is in progress, or the PRF copy doesn't fit", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "The answer wasn't accepted, no registration is in progress, the PRF copy doesn't fit, or a second step is on and the fresh `proof` (a mailed code, a current code of the authenticator app, the recovery code, or `{\"webauthn\": ...}`) is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "The credential is registered already", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
