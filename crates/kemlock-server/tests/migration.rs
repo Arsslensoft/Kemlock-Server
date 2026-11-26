@@ -130,7 +130,7 @@ async fn a_move_starts_at_once_runs_in_the_background_and_writes_the_vaultwarden
         assert!(account.is_some(), "{who} was imported");
     }
 
-    // The lease went back, and a rerun finds what the first one put.
+    // The lease went back.
     assert_eq!(
         rig.store
             .try_lease(MIGRATION_LEASE, "probe", LEASE_TTL)
@@ -141,11 +141,23 @@ async fn a_move_starts_at_once_runs_in_the_background_and_writes_the_vaultwarden
         .release_lease(MIGRATION_LEASE, "probe")
         .await
         .expect("released");
-    rig.runner
-        .start(rig.request(&rig.vw_path()))
-        .await
-        .expect("started again");
-    assert_eq!(rig.finished().await.state, MigrationState::Done);
+
+    // A finished move is the console's only one: what this server holds has been changed here
+    // since, and a rerun would roll it back. Later passes are the command line's.
+    let again = rig.runner.start(rig.request(&rig.vw_path())).await;
+    assert!(matches!(again, Err(AdminError::State(_))), "{again:?}");
+    assert_eq!(
+        rig.record().status().await.expect("a status").state,
+        MigrationState::Done,
+        "the refused start left the result as it was"
+    );
+    assert_eq!(
+        rig.store
+            .try_lease(MIGRATION_LEASE, "probe", LEASE_TTL)
+            .await,
+        Ok(true),
+        "and took no lease"
+    );
 }
 
 #[tokio::test]

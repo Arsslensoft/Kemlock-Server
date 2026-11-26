@@ -231,6 +231,11 @@ refused one. An admin can't put files into the import folder, so only whoever ru
 decides what the console may read. A MySQL or PostgreSQL Vaultwarden has to be moved with the
 command line, or exported to SQLite first.
 
+The console makes **one** move: once it has finished, it refuses to start another. People use their
+accounts here from then on, and a second pass over the same snapshot would be one click from
+undoing what they changed. **Empty the `import` folder when the move is done** (it holds your
+Vaultwarden data, password hashes and keys included); a later pass is the command line's.
+
 **From the command line**, on the server (`kemlock-cli import-vaultwarden --from <folder|url>
 [--files <folder>] [--twice] [--apply] [--adopt-existing]`): `--from` is a data folder or a
 `mysql://` or `postgres://` URL, and without `--apply` it only prints the plan.
@@ -241,7 +246,10 @@ the import's only when the import created it (the server keeps a record of each 
 devices, two-step setups, memberships, items, attachments, collections, groups, Sends, events and
 files) is skipped too, so a Vaultwarden database can't rewrite, sign in as, or take ownership in
 accounts or spaces that aren't its own. Running a move again over its own earlier copy works as
-before. Imported `config.json` settings are kept only when the admin console has a setting of that
+before, but never over what this server has changed since: an account whose record, vault or
+password was changed here after the import wrote it, a space that was renamed or whose members
+changed, and an item revised here after the source's date are left as they are, with everything
+that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings are kept only when the admin console has a setting of that
 name (secrets are never carried).
 
 What was left alone is listed in the move's result and in the admin event log

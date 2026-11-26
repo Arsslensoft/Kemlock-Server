@@ -62,6 +62,10 @@ const NOT_A_SOURCE: &str = "that isn't a Vaultwarden SQLite database in the impo
     db.sqlite3 into the import folder of the server's data folder and name it relative to that \
     folder (database URLs and other folders are for kemlock-cli import-vaultwarden)";
 
+/// Why the console won't start a second move.
+const ALREADY_DONE: &str = "a move from Vaultwarden has already finished; run any later pass \
+    with kemlock-cli import-vaultwarden";
+
 fn not_a_source() -> AdminError {
     AdminError::Invalid(NOT_A_SOURCE.to_owned())
 }
@@ -217,8 +221,9 @@ pub fn describe(report: &ApplyReport) -> String {
     let refused = refused_text(&refused);
     if !refused.is_empty() {
         text.push_str(&format!(
-            ". Left alone, because the import didn't create them or this server changed them since: {refused}. To overwrite them \
-             on purpose, run kemlock-cli import-vaultwarden --adopt-existing"
+            ". Left alone, because the import didn't create them or this server changed them \
+             since: {refused}. To overwrite them on purpose, run kemlock-cli import-vaultwarden \
+             --adopt-existing"
         ));
     }
     text
@@ -295,6 +300,20 @@ impl VaultwardenMove {
             return Err(AdminError::State(
                 "a move from Vaultwarden is already running",
             ));
+        }
+        // One move from the console. What this server holds has been changed here since, and a
+        // second console move would be a person's one click away from undoing it; later passes
+        // are the operator's, with kemlock-cli import-vaultwarden.
+        match self.record().status().await {
+            Ok(status) if status.state == MigrationState::Done => {
+                self.release().await;
+                return Err(AdminError::State(ALREADY_DONE));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                self.release().await;
+                return Err(e);
+            }
         }
         let status = match self.record().running(request.by, shown.clone()).await {
             Ok(status) => status,
@@ -449,7 +468,8 @@ mod tests {
         let text = describe(&report);
         assert!(
             text.contains(&format!(
-                "Left alone, because the import didn't create them or this server changed them                  since: user 1 ({id})"
+                "Left alone, because the import didn't create them or this server changed them \
+                 since: user 1 ({id})"
             )),
             "{text}"
         );
