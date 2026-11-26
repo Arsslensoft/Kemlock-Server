@@ -86,6 +86,7 @@ async fn the_openapi_document_names_every_route() {
         ("/kem/v1/items/{id}", "put"),
         ("/kem/v1/items:batch", "post"),
         ("/kem/v1/owners/{owner}/signed-writes", "put"),
+        ("/kem/v1/accounts/{id}/bundles/{version}", "get"),
         ("/kem/v1/sync", "get"),
         ("/kem/v1/sync", "post"),
         ("/kem/v1/live", "get"),
@@ -2603,4 +2604,42 @@ async fn an_owner_may_ask_for_signed_writes_for_its_own_vault_only() {
     )
     .await;
     assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn an_account_reads_its_own_bundle_by_key_version_and_a_stranger_gets_a_404() {
+    let (_app, client, session) = signed_in().await;
+    let get = |account: String, version: u32| {
+        let client = &client;
+        let token = session.access_token.clone();
+        async move {
+            client
+                .send(
+                    "GET",
+                    &format!("/kem/v1/accounts/{account}/bundles/{version}"),
+                    Req {
+                        access_token: Some(&token),
+                        ..Req::default()
+                    },
+                )
+                .await
+        }
+    };
+    let own = get(session.user_id.clone(), 1).await;
+    assert_eq!(own.status, StatusCode::OK, "{:?}", own.json());
+    let json = own.json();
+    assert_eq!(json["keyVersion"], 1);
+    let bundle = unb64(json["publicBundle"].as_str().expect("a bundle"));
+    let account: kemlock_domain::UserId = session.user_id.parse().expect("a user id");
+    assert_eq!(&bundle[17..33], account.as_bytes().as_slice());
+    assert!(json["bundleSignature"].is_string());
+
+    // A version the account never had, an account that shares no space, and one that doesn't exist
+    // are the same answer.
+    assert_eq!(get(session.user_id.clone(), 2).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        get(uuid::Uuid::from_u128(77).to_string(), 1).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(get("not-a-uuid".to_owned(), 1).await.status, StatusCode::NOT_FOUND);
 }

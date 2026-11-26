@@ -513,6 +513,10 @@ where
             put(require_signed_writes::<S, P, K, R>),
         )
         .route(
+            "/kem/v1/accounts/{id}/bundles/{version}",
+            get(super::write_sig::get_bundle_at::<S, P, K, R>),
+        )
+        .route(
             "/kem/v1/items/{id}/siblings/resolve",
             post(resolve_siblings::<S, P, K, R>),
         )

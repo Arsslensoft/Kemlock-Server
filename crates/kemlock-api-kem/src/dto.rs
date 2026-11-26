@@ -813,6 +813,18 @@ impl FreshProof {
     }
 }
 
+
+/// An account's public-key bundle at one key version (docs/crypto.md, "Signed item writes").
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleAtDto {
+    pub key_version: u32,
+    /// The bundle, base64url.
+    pub public_bundle: String,
+    /// The account's own `sig1` signature of the bundle, base64url.
+    pub bundle_signature: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

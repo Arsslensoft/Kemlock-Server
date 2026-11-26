@@ -7,7 +7,7 @@
 //! `tests/openapi.rs` checks that every routed path is in the merged document.
 
 use crate::dto::{
-    ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
+    BundleAtDto, ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
     PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest,
     RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
@@ -421,6 +421,21 @@ fn doc_put_item() {}
 fn doc_batch() {}
 
 #[utoipa::path(
+    get, path = "/kem/v1/accounts/{id}/bundles/{version}", tag = "items",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The account's id, a UUID"),
+        ("version" = u32, Path, description = "The key version of the bundle"),
+    ),
+    responses(
+        (status = 200, description = "The bundle the account had at that key version (docs/crypto.md, \"Signed item writes\"): for the account itself and a confirmed member of a space it is a confirmed member of", body = BundleAtDto),
+        (status = 404, description = "No such account or version, or the caller may not read it: the same answer", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_bundle_at() {}
+
+#[utoipa::path(
     put, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
     security(("dpop" = [])),
     params(("owner" = String, Path, description = "The account's own vault, `user:<uuid>`")),
@@ -487,7 +502,7 @@ fn doc_live() {}
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
         doc_register_start, doc_register_finish, doc_confirm_email_page, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
-        doc_put_item, doc_batch, doc_signed_writes, doc_sync, doc_sync_post, doc_live
+        doc_put_item, doc_batch, doc_signed_writes, doc_bundle_at, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
         ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,
@@ -497,7 +512,7 @@ fn doc_live() {}
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,
         TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeRequest, RecoveryCodeResponse, ItemDto,
         ItemWriteDto, ItemWriteAnswerDto, TaggedBatchWriteDto, TaggedBatchRequest, TagOutcomeDto,
-        TaggedBatchResponse, SyncBody, SyncResponse
+        TaggedBatchResponse, SyncBody, SyncResponse, BundleAtDto
     )),
     modifiers(&SecurityAddon)
 )]

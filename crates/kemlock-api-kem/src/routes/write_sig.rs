@@ -6,9 +6,16 @@
 //! owner. Here the signature itself is verified, where the crypto and the bundle are: the bundle
 //! the account registered, at the account's current key version.
 
+use super::spaces::{Caller, Env};
+use crate::dto::BundleAtDto;
 use crate::problem::Problem;
-use kemlock_app::AppError;
-use kemlock_app::ports::UserRepo;
+use crate::state::{Crypto, Store};
+use axum::Json;
+use axum::extract::{Path, State};
+use kemlock_app::signed_writes::GetBundleAt;
+use kemlock_app::spaces::SpaceRepo;
+use kemlock_app::{AppError, b64url};
+use kemlock_app::ports::{TokenSigner, UserRepo};
 use kemlock_crypto::{item_write, owner::Owner as CryptoOwner};
 use kemlock_domain::{ItemError, ItemWrite, UserId};
 
@@ -68,4 +75,33 @@ pub(crate) async fn verify_writes<U: UserRepo>(
             .map_err(|_| invalid())?;
     }
     Ok(())
+}
+
+/// `GET /kem/v1/accounts/{id}/bundles/{version}`: the public-key bundle the account had at that key
+/// version, for checking a write it signed before a key replacement. The account itself and a
+/// confirmed member of a space it is a confirmed member of may read it; anyone else, an account
+/// that doesn't exist and a version it never had are the same `404`.
+pub(crate) async fn get_bundle_at<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path((account, version)): Path<(String, u32)>,
+) -> Result<Json<BundleAtDto>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let account: UserId = account.parse().map_err(|_| Problem::not_found())?;
+    let stored = GetBundleAt {
+        users: env.api.store.clone(),
+        spaces: env.spaces.clone(),
+    }
+    .execute(&caller.actor(), account, version)
+    .await?;
+    Ok(Json(BundleAtDto {
+        key_version: stored.key_version,
+        public_bundle: b64url::encode(&stored.public_bundle),
+        bundle_signature: b64url::encode(&stored.bundle_signature),
+    }))
 }
