@@ -185,6 +185,26 @@ export interface GrantRequest {
   keys?: UserKeyDto[];
 }
 
+/** A signed record of a space's chain, as the server serves it (docs/crypto.md, "Wire form"). */
+export interface ChainRecordDto {
+  /** The record's exact bytes, base64url. */
+  entry: string;
+  /** The signer's sig1 signature, base64url. */
+  signature: string;
+  /** A rekey's second signature. */
+  cosignature?: string;
+}
+
+/** The hash of a box a record committed (GET /chain/{seq}/seals). */
+export interface SealHashDto {
+  bundleVersion: number;
+  /** "space" or "collection:<uuid>" */
+  key: string;
+  member: string;
+  sealHash: string;
+  version: number;
+}
+
 const base = (space?: string) => `/kem/v1/spaces${space ? `/${space}` : ''}`;
 
 type Http = Pick<Api, 'request' | 'send'>;
@@ -195,6 +215,16 @@ export function createSpacesApi(http: Http) {
     create: (body: CreateSpaceRequest) =>
       http.request<SpaceViewDto>({ method: 'POST', path: base(), body }),
     get: (space: string) => http.request<SpaceViewDto>({ method: 'GET', path: base(space) }),
+    /** The space's chain from `from` (default 0): empty for a space that has none. */
+    chain: (space: string, from?: number) =>
+      http.request<ChainRecordDto[]>({
+        method: 'GET',
+        path: `${base(space)}/chain`,
+        ...(from === undefined ? {} : { query: { from } }),
+      }),
+    /** The seal hashes record `seq` committed. */
+    chainSeals: (space: string, seq: number) =>
+      http.request<SealHashDto[]>({ method: 'GET', path: `${base(space)}/chain/${seq}/seals` }),
     members: (space: string) =>
       http.request<MemberViewDto[]>({ method: 'GET', path: `${base(space)}/members` }),
     invite: (space: string, body: InviteRequest) =>

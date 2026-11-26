@@ -23,12 +23,18 @@ export interface ConfirmState {
   member: MemberViewDto;
   /** undefined while it is being worked out, null when the bundle can't be read. */
   fingerprint: Fingerprint | null | undefined;
+  /** `pin`: only compare, so this browser trusts the confirmations they made; default `confirm`. */
+  mode?: 'confirm' | 'pin';
 }
 
 export interface SpaceActions extends StructureActions {
+  /** The person compared the fingerprint first contact asked for and it matched. */
+  acceptFirstContact?: () => void;
   invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
+  /** Compares a member's fingerprint without confirming them, so their confirmations are trusted here. */
+  startPin?: (member: MemberViewDto) => void;
   cancelConfirm: () => void;
   confirm: () => void;
   changeRole: (user: string, role: SpaceRole, custom: CustomPermission[]) => Done;
@@ -193,8 +199,8 @@ function ConfirmPanel({
   const ready = fp !== undefined && fp !== null && fp.consistent;
   return (
     <section className="confirm-panel" aria-labelledby="h-confirm">
-      <h2 id="h-confirm">{t('space.confirm.title', { name })}</h2>
-      <p>{t('space.confirm.body', { name })}</p>
+      <h2 id="h-confirm">{t(state.mode === 'pin' ? 'space.pin.title' : 'space.confirm.title', { name })}</h2>
+      <p>{t(state.mode === 'pin' ? 'space.pin.body' : 'space.confirm.body', { name })}</p>
       {fp === undefined ? (
         <p role="status">{t('space.confirm.working')}</p>
       ) : fp === null ? (
@@ -227,6 +233,80 @@ function ConfirmPanel({
           onPress={onConfirm}
         >
           {t('space.confirm.matches')}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** What a space that isn't checked says: why, and for a chain waiting for first contact, what to compare. */
+function ChainNotice({
+  detail,
+  busy,
+  onAccept,
+}: {
+  detail: SpaceDetail;
+  busy: boolean;
+  onAccept: (() => void) | undefined;
+}) {
+  const t = useT();
+  const [picked, setPicked] = useState('');
+  const trust = detail.trust;
+  if (!trust || trust.kind === 'unchained' || trust.kind === 'verified') return null;
+  if (trust.kind === 'unverified') {
+    return (
+      <Notice tone="error" live>
+        <b>{t('space.chain.unchecked.title')}</b>
+        <p>
+          {trust.reason === 'unreachable'
+            ? t('space.chain.unreachable.body')
+            : t('space.chain.unchecked.body', { reason: trust.reason })}
+        </p>
+      </Notice>
+    );
+  }
+  const ask = trust.view.firstContact;
+  const owners = ask?.owners ?? [];
+  const chosen = ask?.kind === 'pick' ? owners.find((o) => o.id === picked) : undefined;
+  const person = ask?.kind === 'compare' ? ask.person : chosen?.id;
+  const digits = ask?.kind === 'compare' ? ask.fingerprint : chosen?.fingerprint;
+  const name = person ? memberLabel(detail.members, person) : '';
+  return (
+    <section className="confirm-panel" aria-labelledby="h-first-contact">
+      <h2 id="h-first-contact">{t('space.chain.contact.title')}</h2>
+      {ask?.kind === 'compare' ? (
+        <p>{t('space.chain.contact.compare', { name })}</p>
+      ) : owners.length > 0 ? (
+        <>
+          <p>{t('space.chain.contact.pick')}</p>
+          <SelectInput
+            label={t('space.chain.contact.owner')}
+            value={picked}
+            onChange={setPicked}
+            options={[
+              { value: '', label: '' },
+              ...owners.map((o) => ({ value: o.id, label: memberLabel(detail.members, o.id) })),
+            ]}
+          />
+        </>
+      ) : (
+        <Notice tone="warn">
+          <p>{t('space.chain.contact.none')}</p>
+        </Notice>
+      )}
+      {digits ? (
+        <p className="fp" aria-label={t('space.chain.contact.label', { name })}>
+          {digits}
+        </p>
+      ) : null}
+      <p>{t('space.chain.contact.warning')}</p>
+      <div className="actions">
+        <Button
+          variant="primary"
+          isDisabled={busy || !digits || !onAccept}
+          onPress={() => onAccept?.()}
+        >
+          {t('space.chain.contact.matches')}
         </Button>
       </div>
     </section>
@@ -276,7 +356,11 @@ export function SpaceDetailView({
     );
   }
 
-  const { view, members } = detail;
+  const { view } = detail;
+  // While first contact is pending the roster is the server's word, so it isn't shown, and an
+  // invitation can't be accepted yet (docs/crypto.md, "First contact", "When").
+  const waiting = detail.trust?.kind === 'first-contact';
+  const members = waiting ? [] : detail.members;
   const me = view.me;
   const manage = canManageUsers(me);
   const pendingKeys =
@@ -301,7 +385,7 @@ export function SpaceDetailView({
             })}
           </p>
         </div>
-        {manage ? (
+        {manage && !waiting ? (
           <Button variant="primary" onPress={() => setInviting((open) => !open)}>
             {t('space.invite.open')}
           </Button>
@@ -313,7 +397,8 @@ export function SpaceDetailView({
           <p>{t(error.id, error.values)}</p>
         </Notice>
       ) : null}
-      {!detail.readable ? (
+      <ChainNotice detail={detail} busy={busy} onAccept={actions.acceptFirstContact} />
+      {!detail.readable && (!detail.trust || detail.trust.kind === 'unchained') ? (
         <Notice tone="warn">
           <p>{me.state === 'confirmed' ? t('sharing.unavailable') : t('space.detail.notConfirmed')}</p>
         </Notice>
@@ -369,6 +454,11 @@ export function SpaceDetailView({
               {members.map((member) => {
                 const name = member.name || member.email;
                 const isMe = member.user === me.user;
+                const unverified = detail.unverified?.find((u) => u.user === member.user);
+                const compareWith = unverified?.compare
+                  ? members.find((m) => m.user === unverified.compare)
+                  : undefined;
+                const compareName = compareWith ? compareWith.name || compareWith.email : '';
                 return (
                   <tr key={member.user}>
                     <td>
@@ -390,6 +480,7 @@ export function SpaceDetailView({
                       {member.needsReconfirmation ? (
                         <span className="tag warn">{t('space.members.reconfirm')}</span>
                       ) : null}
+                      {unverified ? <span className="tag warn">{t('space.members.untraced')}</span> : null}
                     </td>
                     <td>
                       <div className="actions">
@@ -398,7 +489,22 @@ export function SpaceDetailView({
                             {t('space.members.accept')}
                           </Button>
                         ) : null}
-                        {!isMe && manage && (member.state === 'accepted' || member.needsReconfirmation) ? (
+                        {!isMe && manage && unverified ? (
+                          <>
+                            {compareWith && actions.startPin ? (
+                              <Button
+                                size="small"
+                                aria-label={t('space.members.compareFor', { name: compareName })}
+                                onPress={() => actions.startPin?.(compareWith)}
+                              >
+                                {t('space.members.compare')}
+                              </Button>
+                            ) : null}
+                          </>
+                        ) : null}
+                        {!isMe &&
+                        manage &&
+                        (member.state === 'accepted' || member.needsReconfirmation || unverified) ? (
                           <Button
                             size="small"
                             variant="primary"
@@ -472,7 +578,7 @@ export function SpaceDetailView({
               ) : null;
             })()
           : null}
-        {inviting && manage ? (
+        {inviting && manage && !waiting ? (
           <InviteForm
             detail={detail}
             busy={busy}

@@ -8,7 +8,10 @@ use std::collections::BTreeSet;
 
 use super::{
     Limits,
-    client::{ItemRefusal, KeyRefusal, anchor_person, check_item_revision, open_key_in},
+    client::{
+        AnchorPerson, FirstContact, ItemRefusal, KeyRefusal, anchor_person, check_item_revision,
+        open_key_in,
+    },
     model::{Body, CollectionPerm, Grantee, Id, KeyRef, Kind, Reason, Record, Role, SignedRecord},
     scenarios::{Case, Expect, cases, oversized, valid_chain, verdict},
     seals::{link, seal_hash},
@@ -584,7 +587,7 @@ fn case_13_a_server_made_chain_shows_another_fingerprint() {
     // The real chain: the owner invites Newbie.
     let mut real = world::<Gen>();
     real.invite::<Gen>(&owner, &newbie, Role::Member, &[], &[]);
-    let seen = anchor_person(&real.state, &newbie).expect("an anchor person");
+    let seen = compare(anchor_person(&real.state, &newbie));
     assert_eq!(seen.person, owner);
     let on_the_owners_screen = real.acc(&owner).bundle.fingerprint();
     assert_eq!(seen.fingerprint, on_the_owners_screen);
@@ -598,27 +601,59 @@ fn case_13_a_server_made_chain_shows_another_fingerprint() {
     // It verifies, which is why the comparison exists...
     verify_chain_in::<Gen>(&space_id(), &fake.records, None).expect("a consistent chain");
     // ...and the digits differ from the real owner's.
-    let shown = anchor_person(&fake.state, &newbie).expect("an anchor person");
+    let shown = compare(anchor_person(&fake.state, &newbie));
     assert_eq!(shown.person, owner);
     assert_ne!(shown.fingerprint, on_the_owners_screen);
 
     // A confirmed member's new device compares with their confirmer; the creator with no one.
-    let confirmed = anchor_person(&real.state, &uid(ANA)).expect("the confirmer");
+    let confirmed = compare(anchor_person(&real.state, &uid(ANA)));
     assert_eq!(confirmed.person, owner);
-    assert_eq!(anchor_person(&real.state, &owner), None);
+    assert_eq!(anchor_person(&real.state, &owner), FirstContact::SelfVouched);
 }
 
 #[test]
 fn a_rekey_vouches_for_the_chain_on_a_members_own_device() {
     let owner = uid(OWNER);
     let mut k = world::<Gen>();
-    assert!(anchor_person(&k.state, &uid(ANA)).is_some());
+    assert!(matches!(
+        anchor_person(&k.state, &uid(ANA)),
+        FirstContact::Compare(_)
+    ));
     k.rekey::<Gen>(&uid(ANA));
-    assert_eq!(anchor_person(&k.state, &uid(ANA)), None);
-    // A removed member has no anchor.
+    assert_eq!(
+        anchor_person(&k.state, &uid(ANA)),
+        FirstContact::SelfVouched
+    );
+    // A removed member, and an account the chain doesn't have, are not "no comparison needed":
+    // the human picks an Owner.
     let remove = k.remove_body(&uid(LEE));
     k.ok::<Gen>(&owner, remove);
-    assert_eq!(anchor_person(&k.state, &uid(LEE)), None);
+    assert_eq!(anchor_person(&k.state, &uid(LEE)), FirstContact::PickOwner);
+    assert_eq!(anchor_person(&k.state, &[0xee; 16]), FirstContact::PickOwner);
+}
+
+#[test]
+fn an_inviter_who_left_means_picking_an_owner() {
+    let owner = uid(OWNER);
+    let newbie = uid(NEWBIE);
+    let mut k = world::<Gen>();
+    k.invite::<Gen>(&uid(ADMIN), &newbie, Role::Member, &[], &[]);
+    assert!(matches!(
+        anchor_person(&k.state, &newbie),
+        FirstContact::Compare(_)
+    ));
+    // The admin is removed: the invitee can no longer compare with the one who invited them.
+    let remove = k.remove_body(&uid(ADMIN));
+    k.ok::<Gen>(&owner, remove);
+    assert_eq!(anchor_person(&k.state, &newbie), FirstContact::PickOwner);
+}
+
+/// The person of a `Compare`, which the case needs.
+fn compare(contact: FirstContact) -> AnchorPerson {
+    match contact {
+        FirstContact::Compare(person) => person,
+        other => panic!("expected a comparison, got {other:?}"),
+    }
 }
 
 // ---- the rest of the verifier ------------------------------------------------------------------

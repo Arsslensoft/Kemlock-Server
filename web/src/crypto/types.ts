@@ -204,6 +204,107 @@ export interface ConfirmationCheck extends ConfirmationFacts {
   signature: string;
 }
 
+// ---- the space chain (docs/crypto.md, "Space chain"; crates/kemlock-wasm/src/chain.rs) -----------
+
+/** A record of a space's chain as the server serves it: exact bytes, base64url. */
+export interface ChainRecord {
+  entry: string;
+  signature: string;
+  /** A rekey's second signature, on no other kind. */
+  cosignature?: string;
+}
+
+/** What a device keeps for a space: the last record it accepted and the link of every one. */
+export interface ChainAnchor {
+  seq: number;
+  epoch: number;
+  /** base64url of each record's link, from seq 0. */
+  links: string[];
+}
+
+/** A chain the verifier refused: the spec's reason ("Verification") and the record's seq. */
+export interface ChainRefusal {
+  ok: false;
+  reason: string;
+  seq: number | null;
+}
+
+export interface ChainMember {
+  id: string;
+  role: 'owner' | 'admin' | 'custom' | 'member';
+  custom: string[];
+  status: 'invited' | 'confirmed' | 'removed';
+  invitedBy: string;
+  /** The chain's bundle of the member, base64url; once they are confirmed. */
+  bundle?: string;
+  bundleVersion?: number;
+  /** That bundle's fingerprint, 12 groups of 5 digits. */
+  fingerprint?: string;
+  confirmedBy?: string;
+  confirmedSeq?: number;
+  rekeySeq?: number;
+}
+
+/** What the person compares on first contact. */
+export interface FirstContactAsk {
+  /** self: nothing to compare; compare: the fingerprint of person; pick: one of owners. */
+  kind: 'self' | 'compare' | 'pick';
+  person?: string;
+  fingerprint?: string;
+  owners: Array<{ id: string; fingerprint: string }>;
+}
+
+/** A key of a chained space and what this account holds of it. */
+export interface ChainKey {
+  /** "space" or "collection:<uuid>" */
+  key: string;
+  version: number;
+  marked: boolean;
+  sealSeq?: number;
+  /** The commitment covers more than this account: the server's seal hash list is needed. */
+  needsList: boolean;
+}
+
+/** The verified state of a space, as the worker holds it. */
+export interface ChainView {
+  ok: true;
+  /** false for a space with no chain. */
+  chained: boolean;
+  head?: { seq: number; link: string };
+  epoch: number;
+  /** The link of every record: the anchor to keep once first contact is done. */
+  links: string[];
+  /** Whether first contact is done, so keys open. */
+  trusted: boolean;
+  firstContact?: FirstContactAsk;
+  /** The seq of the fence where the chain parted from the kept anchor. */
+  divergence?: number;
+  members: ChainMember[];
+  space: { keyVersion: number; marked: boolean; nameHash: string; nameVersion: number };
+  collections: Array<{
+    id: string;
+    parent?: string;
+    keyVersion: number;
+    marked: boolean;
+    nameHash: string;
+    nameVersion: number;
+  }>;
+  groups: Array<{ id: string; members: string[]; nameHash: string; nameVersion: number }>;
+  grants: Array<{ collection: string; grantee: string; permission: string }>;
+  keys: ChainKey[];
+}
+
+export type ChainVerdict = ChainView | ChainRefusal;
+
+/** An entry of the server's seal hash list for a record (GET /chain/{seq}/seals). */
+export interface SealHashEntry {
+  bundleVersion: number;
+  key: string;
+  member: string;
+  sealHash: string;
+  version: number;
+}
+
 /** A new device's one-time key: the public half for the approval request (base64url, 1,600 bytes). */
 export interface DeviceKey {
   handle: DeviceKeyHandle;
@@ -551,6 +652,43 @@ export interface CryptoApi {
   manifestVerifyOwn(manifest: string, signature: string): Promise<boolean>;
   /** Whether the signature is the signer's (the bundle's sig1 key) over a space's manifest. */
   manifestVerify(signerBundle: string, manifest: string, signature: string): Promise<boolean>;
+
+  // The space chain: verified in the worker, which keeps the state. A space that has a chain opens
+  // and seals keys only through it.
+
+  /**
+   * Verifies the chain the server served for a space against the anchor the page kept (and the
+   * head this unlock already verified) and keeps its state. A chain that is refused resolves with
+   * `{ok: false, reason, seq}`, not an error; the space is then "can't be checked".
+   */
+  verifySpaceChain(input: {
+    spaceId: string;
+    records: ChainRecord[];
+    anchor?: ChainAnchor;
+  }): Promise<ChainVerdict>;
+  /**
+   * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
+   * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
+   */
+  sealLocal(label: string, text: string): Promise<string>;
+  /** Opens what `sealLocal` sealed under the same label and account; anything else is `invalid`. */
+  openLocal(label: string, sealed: string): Promise<string>;
+  /** The view of the chain this unlock verified, or null when it hasn't verified one. */
+  spaceChainView(spaceId: string): Promise<ChainView | null>;
+  /** The person compared the fingerprint first contact asked for and it matched. */
+  acceptFirstContact(spaceId: string): Promise<void>;
+  /**
+   * Opens the space key ("space") or a collection key ("collection:<uuid>") of a chained space at
+   * the chain's current version. servedVersion and sealed are what the server served; list is the
+   * seal hash list of the record that committed the seal, when the chain says it is needed.
+   */
+  openChainKey(input: {
+    spaceId: string;
+    key: string;
+    servedVersion: number;
+    sealed: string;
+    list?: SealHashEntry[];
+  }): Promise<void>;
 }
 
 /** Every operation the worker answers, with its arguments and result. */
@@ -692,6 +830,27 @@ export interface Ops {
   manifestVerify: {
     args: [signerBundle: string, manifest: string, signature: string];
     result: boolean;
+  };
+  // The space chain.
+  verifySpaceChain: {
+    args: [input: { spaceId: string; records: ChainRecord[]; anchor?: ChainAnchor }];
+    result: ChainVerdict;
+  };
+  sealLocal: { args: [label: string, text: string]; result: string };
+  openLocal: { args: [label: string, sealed: string]; result: string };
+  spaceChainView: { args: [spaceId: string]; result: ChainView | null };
+  acceptFirstContact: { args: [spaceId: string]; result: void };
+  openChainKey: {
+    args: [
+      input: {
+        spaceId: string;
+        key: string;
+        servedVersion: number;
+        sealed: string;
+        list?: SealHashEntry[];
+      },
+    ];
+    result: void;
   };
 }
 

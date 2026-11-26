@@ -169,6 +169,19 @@ export interface WasmVault {
   manifestVerifyOwn(manifest: string, signature: string): boolean;
   /** Whether the signature is the bundle's sig1 key over a space's manifest. */
   manifestVerify(signerBundle: string, manifest: string, signature: string): boolean;
+  // The space chain: JSON in and out (see crates/kemlock-wasm/src/chain.rs).
+  verifySpaceChain(spaceId: string, records: string, anchor?: string): string;
+  spaceChainView(spaceId: string): string | undefined;
+  sealLocal(label: string, text: string): string;
+  openLocal(label: string, sealed: string): string;
+  acceptFirstContact(spaceId: string): void;
+  openChainKey(
+    spaceId: string,
+    key: string,
+    servedVersion: number,
+    sealed: string,
+    list?: string,
+  ): void;
   lock(): void;
   /** Frees the instance's WebAssembly memory (wasm-bindgen). */
   free?(): void;

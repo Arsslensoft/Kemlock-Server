@@ -17,11 +17,14 @@ use kemlock_crypto::{
     owner::Owner,
     password_wrap, private_keys, sealed_box, sig1,
 };
-use serde_json::Value;
+use kemlock_crypto::space_chain::KeyRef;
+use serde_json::{Value, json};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 use crate::{
+    b64, chain,
     error::Error,
+    ids,
     session::{self, FIRST_KEY_VERSION, SealedItemRef, Session},
     sharing,
     spaces::NameKind,
@@ -1825,4 +1828,263 @@ fn a_spaces_manifest_is_checked_against_its_signers_bundle_only() {
     let own = manifest_bytes(Owner::user([0x86; 16]), 7);
     let own_signature = signer.sign_manifest(&own).expect("signs its own");
     assert!(verify_space_manifest(&signer_bundle.to_bytes(), &own, &own_signature).is_err());
+}
+
+// ---- the space chain ---------------------------------------------------------------------------
+
+const SPACE_CHAIN: &str = include_str!("../../../test-vectors/space-chain.json");
+
+/// A chain of the vectors, as the server serves it.
+fn vector_chain(name: &str) -> ([u8; 16], Vec<chain::WireIn>) {
+    let doc: Value = serde_json::from_str(SPACE_CHAIN).expect("a vector file is JSON");
+    let case = doc["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no case named {name}"));
+    let wire = |record: &Value, field: &str| {
+        record[field]
+            .as_str()
+            .map(|hex_text| b64::encode(&hex::decode(hex_text).expect("hex")))
+    };
+    let records = case["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .map(|record| chain::WireIn {
+            entry: wire(record, "entry").expect("entry"),
+            signature: wire(record, "signature").expect("signature"),
+            cosignature: wire(record, "cosignature"),
+        })
+        .collect();
+    (ids::parse_uuid(text(case, "space")).expect("a uuid"), records)
+}
+
+fn verdict_json(session: &mut Session, space: &[u8; 16], records: &[chain::WireIn]) -> Value {
+    let verdict = session
+        .verify_space_chain(space, records, None)
+        .expect("a verdict");
+    serde_json::to_value(&verdict).expect("json")
+}
+
+#[wasm_bindgen_test]
+fn a_chain_that_verifies_is_not_trusted_until_first_contact() {
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xD1; 16]);
+    let view = verdict_json(&mut session, &space, &records);
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["chained"], true);
+    assert_eq!(view["head"]["seq"], 49);
+    // The head's link is the vector's.
+    let doc: Value = serde_json::from_str(SPACE_CHAIN).expect("json");
+    let expected = doc["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "valid-every-kind")
+        .expect("case")["expect"]["head_link"]
+        .as_str()
+        .expect("link")
+        .to_owned();
+    assert_eq!(
+        view["head"]["link"],
+        b64::encode(&hex::decode(expected).expect("hex"))
+    );
+    // This account isn't in the chain: its person must pick an Owner, never "nothing to compare".
+    assert_eq!(view["trusted"], false);
+    assert_eq!(view["firstContact"]["kind"], "pick");
+    assert!(!view["members"].as_array().expect("members").is_empty());
+
+    // Before first contact no key opens, and the older operations don't reach the space.
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.new_space(&space, &[1; 16], "a", "b").map(|_| ()),
+        Err(Error::Invalid)
+    );
+    assert_eq!(session.open_space(&space, 1, &[0; 1661]), Err(Error::Invalid));
+    assert_eq!(
+        session.seal_space_key_to(&space, &[0; 1600], &[1; 16]),
+        Err(Error::Invalid)
+    );
+
+    session.accept_first_contact(&space).expect("accepted");
+    let held = session
+        .space_chain_view(&space)
+        .expect("a view")
+        .expect("held");
+    let held: Value = serde_json::from_str(&held).expect("json");
+    assert_eq!(held["trusted"], true);
+    // A box the chain didn't commit to for this account opens no key even now.
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_chain_with_an_altered_record_is_refused() {
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    let (mut session, _) = open_account([0xD2; 16]);
+    let view = verdict_json(&mut session, &space, &records);
+    assert_eq!(view["ok"], false);
+    assert!(view["reason"].is_string());
+    // A refused chain keeps nothing: no state, so no key.
+    assert!(session.space_chain_view(&space).expect("view").is_none());
+    // But the space has a chain, so the older operations stay closed to it too.
+    assert_eq!(
+        session.new_space(&space, &[1; 16], "a", "b").map(|_| ()),
+        Err(Error::Invalid)
+    );
+    // A space the page never named works as before.
+    assert!(session.new_space(&[0xEE; 16], &[1; 16], "a", "b").is_ok());
+}
+
+#[wasm_bindgen_test]
+fn a_chain_that_ends_earlier_than_one_already_verified_is_rolled_back() {
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xD3; 16]);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    // The server serves a prefix, or nothing at all, to the same unlock.
+    for shorter in [&records[..10], &records[..0]] {
+        let view = verdict_json(&mut session, &space, shorter);
+        assert_eq!(view["ok"], false);
+        assert_eq!(view["reason"], "rolled back");
+    }
+    // The state held is still the longer chain.
+    let held = session.space_chain_view(&space).expect("view").expect("held");
+    let held: Value = serde_json::from_str(&held).expect("json");
+    assert_eq!(held["head"]["seq"], 49);
+    // The kept view is the one the verdict gave, read again, not made again.
+    assert_eq!(held["ok"], true);
+}
+
+#[wasm_bindgen_test]
+fn the_page_s_anchor_makes_first_contact_done_and_refuses_a_fork() {
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut first, _) = open_account([0xD4; 16]);
+    let view = verdict_json(&mut first, &space, &records);
+    let anchor = json!({"seq": view["head"]["seq"], "epoch": view["epoch"], "links": view["links"]});
+
+    // Another unlock, with the anchor the page stored after first contact: trusted at once.
+    let (mut again, _) = open_account([0xD5; 16]);
+    let known: chain::AnchorIn = serde_json::from_value(anchor.clone()).expect("anchor");
+    let verdict = again
+        .verify_space_chain(&space, &records, Some(&known))
+        .expect("verdict");
+    let view = serde_json::to_value(&verdict).expect("json");
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["trusted"], true);
+
+    // An anchor with another link at seq 3 is a fork, and refused.
+    let mut forked = anchor;
+    forked["links"][3] = json!(b64::encode(&[0x55; 32]));
+    let forked: chain::AnchorIn = serde_json::from_value(forked).expect("anchor");
+    let (mut third, _) = open_account([0xD6; 16]);
+    let verdict = third
+        .verify_space_chain(&space, &records, Some(&forked))
+        .expect("verdict");
+    let view = serde_json::to_value(&verdict).expect("json");
+    assert_eq!(view["ok"], false);
+    assert_eq!(view["reason"], "forked");
+    assert_eq!(view["seq"], 3);
+
+    // An anchor that is not made of 32-byte links is a malformed request, not a refusal.
+    let junk: chain::AnchorIn =
+        serde_json::from_value(json!({"seq": 0, "epoch": 1, "links": ["AAAA"]})).expect("anchor");
+    let (mut fourth, _) = open_account([0xD7; 16]);
+    assert_eq!(
+        fourth
+            .verify_space_chain(&space, &records, Some(&junk))
+            .map(|_| ()),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn keys_opened_outside_the_chain_do_not_outlive_a_chain_or_a_refusal() {
+    let held_for = |session: &Session, space: &[u8; 16]| {
+        let unlocked = session.unlocked().expect("unlocked");
+        unlocked.spaces.spaces.keys().any(|(s, _)| s == space)
+            || unlocked.spaces.collections.keys().any(|(s, _, _)| s == space)
+    };
+
+    // Keys made for a space before the server serves a chain for it are dropped once it does.
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF1; 16]);
+    session
+        .new_space(&space, &[3; 16], "Before", "Also before")
+        .expect("keys made outside the chain");
+    assert!(held_for(&session, &space));
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    assert!(!held_for(&session, &space));
+
+    // A chain that is refused drops them too, and nothing opens for the space after it.
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF2; 16]);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    session.accept_first_contact(&space).expect("accepted");
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], false);
+    assert!(!held_for(&session, &space));
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.seal_space_item(&space, &[3; 16], &[7; 16], "login", 1, b"{}").map(|_| ()),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_local_value_opens_for_its_account_and_label_only() {
+    let (session, _) = open_account([0xF3; 16]);
+    let sealed = session
+        .seal_local("anchor/one", b"{\"seq\":3}")
+        .expect("sealed");
+    assert_eq!(
+        session.open_local("anchor/one", &sealed).expect("opens"),
+        b"{\"seq\":3}".to_vec()
+    );
+    // Not under another label, not with a byte changed, not by another account, not locked.
+    assert_eq!(session.open_local("anchor/two", &sealed), Err(Error::Invalid));
+    let mut altered = sealed.clone();
+    let last = altered.len() - 1;
+    altered[last] ^= 1;
+    assert_eq!(session.open_local("anchor/one", &altered), Err(Error::Invalid));
+    assert_eq!(session.open_local("anchor/one", &[]), Err(Error::Invalid));
+    let (other, _) = open_account([0xF4; 16]);
+    assert_eq!(other.open_local("anchor/one", &sealed), Err(Error::Invalid));
+    assert_eq!(
+        Session::new().seal_local("anchor/one", b"x"),
+        Err(Error::Locked)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_space_whose_chain_was_refused_is_never_served_as_having_none() {
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF5; 16]);
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], false);
+    // The server now serves nothing: that is the chain taken back, not a space with none.
+    let nothing = verdict_json(&mut session, &space, &[]);
+    assert_eq!(nothing["ok"], false);
+    assert_eq!(nothing["reason"], "rolled back");
+    // A space the page never had a chain for is still one with none.
+    assert_eq!(verdict_json(&mut session, &[0xAB; 16], &[])["chained"], false);
 }

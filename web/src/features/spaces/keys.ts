@@ -8,13 +8,28 @@
 // only keeps the form from offering what is certain to be refused.
 import type { CollectionPermission, GroupDto, SpaceViewDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
+import { checkSpaceChain, openChainedKeys, overlayChain } from './chain';
 import type { SpaceDeps } from './model';
 
 const EDIT: CollectionPermission[] = ['edit', 'edit-hide-passwords', 'manage'];
 
-/** Opens the space key and every collection key sealed to this account, and returns the space. */
+/**
+ * Opens the space key and every collection key sealed to this account, and returns the space.
+ * A space with a chain opens them through it (at the chain's version, under its commitments) and
+ * comes back as the chain gives it; one whose chain isn't verified, or waits for first contact,
+ * opens nothing and throws.
+ */
 export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<SpaceViewDto> {
   const view = await deps.api.get(spaceId);
+  const trust = await checkSpaceChain(deps, spaceId, view.me.user);
+  if (trust.kind === 'unverified' || trust.kind === 'first-contact') {
+    throw new Error("the space can't be checked");
+  }
+  if (trust.kind === 'verified') {
+    const opened = await openChainedKeys(deps, spaceId, trust.view, view);
+    const chained = overlayChain(view, [], trust.view).view;
+    return { ...chained, collectionKeys: view.collectionKeys.filter((c) => opened.has(c.collection)) };
+  }
   const sealed = view.me.sealedSpaceKey;
   if (!sealed) throw new Error('the space key is not sealed to this account yet');
   await deps.crypto.openSpace({

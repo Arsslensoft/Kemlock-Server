@@ -2,7 +2,8 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
-import { detail, THEO } from './fixtures';
+import { NO_CHAIN } from '@/test/fake-space-crypto';
+import { detail, LEE, ME, THEO } from './fixtures';
 import { type SpaceActions, type SpaceDetailViewProps, SpaceDetailView } from './SpaceDetailView';
 import { SpaceListView } from './SpaceListView';
 
@@ -289,8 +290,106 @@ describe('SpaceDetailView', () => {
     expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent('Something went wrong');
   });
 
+  it('offers to confirm again, or compare the confirmer, for a member whose keys can not be traced', async () => {
+    const startPin = vi.fn();
+    const props = view({
+      detail: detail({ unverified: [{ user: LEE, compare: ME }] }),
+      actions: { ...actions(), startPin },
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Confirm Lee Wong' }));
+    expect(props.actions.startConfirm).toHaveBeenCalledWith(expect.objectContaining({ user: LEE }));
+    await user.click(screen.getByRole('button', { name: 'Compare the fingerprint of Sam Rivera' }));
+    expect(startPin).toHaveBeenCalledWith(expect.objectContaining({ user: ME }));
+    expect(screen.getByText('Keys not traced')).toBeInTheDocument();
+  });
+
+  it('shows no roster and no way to accept or invite while first contact is pending', () => {
+    view({
+      detail: detail({
+        readable: false,
+        name: null,
+        trust: {
+          kind: 'first-contact',
+          view: {
+            ...NO_CHAIN,
+            chained: true,
+            trusted: false,
+            firstContact: { kind: 'compare', person: ME, fingerprint: '12345 67890', owners: [] },
+          },
+        },
+      }),
+    });
+    expect(screen.queryByRole('row', { name: /Theo Grant/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Accept the invitation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Invite people' })).not.toBeInTheDocument();
+  });
+
   it('shows a plain notice when the space can not be opened here', () => {
     view({ detail: detail({ readable: false, name: null }) });
     expect(screen.getByText(/can't seal or sign keys yet/)).toBeInTheDocument();
+  });
+
+  it('says a space can not be checked, and why, instead of the keys notice', () => {
+    view({
+      detail: detail({
+        readable: false,
+        name: null,
+        trust: { kind: 'unverified', reason: 'forked', seq: 3 },
+      }),
+    });
+    expect(screen.getByText("This space can't be checked")).toBeInTheDocument();
+    expect(screen.getByText(/didn't verify here \(forked\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/can't seal or sign keys yet/)).not.toBeInTheDocument();
+  });
+
+  it('asks to compare the confirmer’s fingerprint on first contact, and goes on only when it matches', async () => {
+    const accept = vi.fn();
+    const props = view({
+      detail: detail({
+        readable: false,
+        name: null,
+        trust: {
+          kind: 'first-contact',
+          view: {
+            ...NO_CHAIN,
+            chained: true,
+            trusted: false,
+            firstContact: { kind: 'compare', person: ME, fingerprint: '12345 67890', owners: [] },
+          },
+        },
+      }),
+      actions: { ...actions(), acceptFirstContact: accept },
+    });
+    expect(screen.getByLabelText("Fingerprint of Sam Rivera's keys")).toHaveTextContent('12345 67890');
+    await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
+    expect(accept).toHaveBeenCalledOnce();
+    expect(props.actions.confirm).not.toHaveBeenCalled();
+  });
+
+  it('has the person pick an owner when the one who added them can not be used', async () => {
+    const accept = vi.fn();
+    view({
+      detail: detail({
+        readable: false,
+        name: null,
+        trust: {
+          kind: 'first-contact',
+          view: {
+            ...NO_CHAIN,
+            chained: true,
+            trusted: false,
+            firstContact: { kind: 'pick', owners: [{ id: ME, fingerprint: '55555 44444' }] },
+          },
+        },
+      }),
+      actions: { ...actions(), acceptFirstContact: accept },
+    });
+    // Nothing to compare, so nothing to confirm, until an owner is picked.
+    expect(screen.getByRole('button', { name: 'It matches' })).toBeDisabled();
+    await userEvent.setup().selectOptions(screen.getByLabelText('Owner to compare with'), ME);
+    expect(screen.getByText('55555 44444')).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'It matches' }));
+    expect(accept).toHaveBeenCalledOnce();
   });
 });

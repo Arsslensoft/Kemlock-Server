@@ -1569,9 +1569,17 @@ once per space and device, before the device trusts the chain.
 - An invitee's device: `P` is the inviter, the `by` of the `invite` that is in effect for this
   account. If the inviter is no longer a confirmed member, `P` is a confirmed Owner the person picks.
 - A confirmed member's new device: `P` is the confirmer, the `by` of the record that last confirmed
-  this account. A device whose own account's current key signed or cosigned a record after that one
-  needs no comparison: its own key vouches for the chain.
+  this account. A device whose own account's current key signed a `rekey` after that one (the state
+  keeps the `seq` of the member's last `rekey`) needs no comparison: its own key vouches for the
+  chain. Other records the account signed since don't count, because the state doesn't keep them.
 - The creator's device made `create` itself and is its own anchor.
+
+So a client's answer is one of three, never a bare "none": **no comparison** (the creator's device, or
+an account whose own current key signed a `rekey`), **compare with `P`**, or **pick an Owner**. "Pick an
+Owner" also covers an account the chain doesn't have, a removed member, and a confirmed member nobody
+confirmed who isn't the creator; it is never read as "no comparison". Even for the first, the client
+checks that the bundle the chain records for its own account is the one it holds itself: a chain that
+records another one vouches for nothing, and the client treats it as the third answer.
 
 **What is confirmed.** The fingerprint `SHA-512("kemlock/v1/fingerprint" ‖ bundle)` of `P`'s bundle
 **as the verified chain records it at its head**, shown as the 12 groups of 5 digits or compared
@@ -1592,6 +1600,15 @@ fork, rollback and fence rules apply. When the chain later confirms this account
 that the `confirm` records its own bundle, byte for byte.
 
 ### Using the state
+
+A space with no chain is not covered by any of this. Its client takes who is in it and which key
+version is current from the server, and checks only what it can: that a member's bundle is theirs and
+that someone it can trace to itself, or to a fingerprint its person compared, confirmed exactly those
+keys. A server can still hand an unchained space's members a key of its own at the next version, or
+leave one out of a replacement, and nothing in the space shows it: **an unchained space trusts the
+server for which key version is current, and a chained space doesn't.** That is why a client that has
+ever been served a chain for a space never reads the space as unchained again, and why a space is
+made as a chain wherever the client can build one.
 
 - **Bundles.** A member's keys are the chain's bundle, never the server's. A member the server lists
   but the chain doesn't confirm, or whose server bundle differs by a byte from the chain's, gets no

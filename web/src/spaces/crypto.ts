@@ -4,11 +4,20 @@
 // has compared their fingerprint. The page speaks Uint8Array; the worker's contract
 // (src/crypto/types.ts) speaks base64url, so `createSpaceCrypto` adapts one to the other.
 import { crypto as worker } from '@/crypto';
-import { type CryptoApi, CryptoError, type NameKind } from '@/crypto/types';
+import {
+  type ChainAnchor,
+  type ChainRecord,
+  type ChainVerdict,
+  type ChainView,
+  type CryptoApi,
+  CryptoError,
+  type NameKind,
+  type SealHashEntry,
+} from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { createSharingCrypto, type SharingCrypto, unavailableSharingCrypto } from '@/sharing/crypto';
 
-export type { NameKind };
+export type { ChainAnchor, ChainRecord, ChainVerdict, ChainView, NameKind, SealHashEntry };
 
 export interface NewSpaceKeys {
   /** The space's name under the new space key. */
@@ -80,6 +89,35 @@ export interface SpaceCrypto extends SharingCrypto {
   }): Promise<Uint8Array>;
   /** The 134-byte statement the unlocked account signs to confirm a member (it is the confirmer). */
   confirmationStatement(input: ConfirmationFacts): Promise<Uint8Array>;
+  /**
+   * Verifies the chain the server served for a space against the anchor the page kept and keeps its
+   * state in the worker. A chain that is refused is a verdict with `ok: false`, not an error.
+   */
+  verifySpaceChain(input: {
+    spaceId: string;
+    records: ChainRecord[];
+    anchor?: ChainAnchor;
+  }): Promise<ChainVerdict>;
+  /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
+  sealLocal(label: string, text: string): Promise<string>;
+  /** Opens what `sealLocal` sealed under the same label and account. */
+  openLocal(label: string, sealed: string): Promise<string>;
+  /** The view of the chain this unlock verified for a space, or null. */
+  spaceChainView(spaceId: string): Promise<ChainView | null>;
+  /** The person compared the fingerprint first contact asked for and it matched. */
+  acceptFirstContact(spaceId: string): Promise<void>;
+  /** Opens a key of a chained space ("space" or "collection:<uuid>") at the chain's current version. */
+  openChainKey(input: {
+    spaceId: string;
+    key: string;
+    servedVersion: number;
+    sealed: Uint8Array;
+    list?: SealHashEntry[];
+  }): Promise<void>;
+  /** Whether the signature is the bundle's own sig1 signature: it proves the key made the bundle, not whose it is. */
+  verifyBundle(bundle: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  /** The unlocked account's own fingerprint, as 12 groups of 5 digits. */
+  ownFingerprint(): Promise<string>;
   /** Whether a stored confirmation is the confirmer's own signature over exactly these facts. */
   verifyConfirmation(
     input: ConfirmationFacts & {
@@ -105,7 +143,15 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   sealSpaceKeyTo: () => unavailable(),
   sealCollectionKeyTo: () => unavailable(),
   confirmationStatement: () => unavailable(),
+  verifyBundle: () => unavailable(),
+  ownFingerprint: () => unavailable(),
   verifyConfirmation: () => unavailable(),
+  verifySpaceChain: () => unavailable(),
+  spaceChainView: () => unavailable(),
+  sealLocal: () => unavailable(),
+  openLocal: () => unavailable(),
+  acceptFirstContact: () => unavailable(),
+  openChainKey: () => unavailable(),
 };
 
 type SpaceWorker = Pick<
@@ -121,7 +167,15 @@ type SpaceWorker = Pick<
   | 'sealSpaceKeyTo'
   | 'sealCollectionKeyTo'
   | 'confirmationStatement'
+  | 'verifyBundle'
+  | 'ownFingerprint'
   | 'verifyConfirmation'
+  | 'verifySpaceChain'
+  | 'spaceChainView'
+  | 'sealLocal'
+  | 'openLocal'
+  | 'acceptFirstContact'
+  | 'openChainKey'
 >;
 
 /** Space crypto over a crypto worker client. */
@@ -181,6 +235,14 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
         }),
       );
     },
+    verifySpaceChain: (input) => api.verifySpaceChain(input),
+    spaceChainView: (spaceId) => api.spaceChainView(spaceId),
+    sealLocal: (label, text) => api.sealLocal(label, text),
+    openLocal: (label, sealed) => api.openLocal(label, sealed),
+    acceptFirstContact: (spaceId) => api.acceptFirstContact(spaceId),
+    openChainKey: ({ sealed, ...rest }) => api.openChainKey({ ...rest, sealed: encodeB64(sealed) }),
+    verifyBundle: (bundle, signature) => api.verifyBundle(encodeB64(bundle), encodeB64(signature)),
+    ownFingerprint: () => api.ownFingerprint(),
     verifyConfirmation: ({
       space,
       member,

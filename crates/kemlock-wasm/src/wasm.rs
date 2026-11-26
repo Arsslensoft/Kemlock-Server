@@ -16,8 +16,10 @@ use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroize;
 
+use kemlock_crypto::space_chain::KeyRef;
+
 use crate::{
-    b64,
+    b64, chain,
     error::Error,
     ids, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
@@ -1217,6 +1219,99 @@ impl Vault {
             return false;
         };
         manifests::verify_space_manifest(&bundle, &manifest, &signature).is_ok()
+    }
+
+    // ---- the space chain (src/chain.rs) -----------------------------------------------------
+
+    /// Verifies the chain the server served for a space and keeps its state. `records` is the
+    /// JSON array of wire-form records (`entry`, `signature`, `cosignature` on a `rekey`), and
+    /// `anchor` the JSON `{seq, epoch, links}` the page kept for the space, when it did. Answers
+    /// JSON: `{ok: false, reason, seq}` for a chain that is refused, or the view of the verified
+    /// state (members, collections, groups, grants, key versions, the links to keep as the anchor
+    /// and what first contact asks for). Keys open only after first contact.
+    #[wasm_bindgen(js_name = verifySpaceChain)]
+    pub fn verify_space_chain(
+        &mut self,
+        space_id: &str,
+        records: &str,
+        anchor: Option<String>,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let records: Vec<chain::WireIn> =
+            serde_json::from_str(records).map_err(|_| fail(Error::Invalid))?;
+        let anchor: Option<chain::AnchorIn> = match anchor {
+            Some(text) => Some(serde_json::from_str(&text).map_err(|_| fail(Error::Invalid))?),
+            None => None,
+        };
+        let verdict = self
+            .session
+            .verify_space_chain(&space, &records, anchor.as_ref())
+            .map_err(fail)?;
+        json(&verdict)
+    }
+
+    /// The view of the chain this unlock verified for a space, as `verifySpaceChain` answers it,
+    /// or nothing when it hasn't verified one.
+    #[wasm_bindgen(js_name = spaceChainView)]
+    pub fn space_chain_view(&self, space_id: &str) -> Result<Option<String>, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        self.session.space_chain_view(&space).map_err(fail)
+    }
+
+    /// Says the person compared the fingerprint first contact asked for and it matched: the
+    /// chain is trusted, and the space's keys may be opened.
+    #[wasm_bindgen(js_name = acceptFirstContact)]
+    pub fn accept_first_contact(&mut self, space_id: &str) -> Result<(), JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        self.session.accept_first_contact(&space).map_err(fail)
+    }
+
+    /// Opens a key of a chained space (`space` or `collection:<uuid>`) at the chain's current
+    /// version: `servedVersion` and `sealed` are what the server served for this account, and
+    /// `list` the JSON of the server's seal hash list for the record that committed the seal
+    /// (`GET /chain/{seq}/seals`) when the chain says it is needed.
+    #[wasm_bindgen(js_name = openChainKey)]
+    pub fn open_chain_key(
+        &mut self,
+        space_id: &str,
+        key: &str,
+        served_version: u32,
+        sealed: &str,
+        list: Option<String>,
+    ) -> Result<(), JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let key = KeyRef::parse(key).ok_or_else(|| fail(Error::Invalid))?;
+        let sealed = b64::decode(sealed).map_err(fail)?;
+        let entries = match list {
+            Some(text) => {
+                let items: Vec<chain::SealListIn> =
+                    serde_json::from_str(&text).map_err(|_| fail(Error::Invalid))?;
+                Some(chain::seal_list(&items, &key, served_version).map_err(fail)?)
+            }
+            None => None,
+        };
+        self.session
+            .open_chain_key(&space, &key, served_version, &sealed, entries.as_deref())
+            .map_err(fail)
+    }
+
+    /// Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`.
+    #[wasm_bindgen(js_name = sealLocal)]
+    pub fn seal_local(&self, label: &str, text: &str) -> Result<String, JsError> {
+        let sealed = self
+            .session
+            .seal_local(label, text.as_bytes())
+            .map_err(fail)?;
+        Ok(b64::encode(&sealed))
+    }
+
+    /// Opens what `sealLocal` sealed under the same label and account; anything else is
+    /// `invalid`.
+    #[wasm_bindgen(js_name = openLocal)]
+    pub fn open_local(&self, label: &str, sealed: &str) -> Result<String, JsError> {
+        let sealed = b64::decode(sealed).map_err(fail)?;
+        let plain = self.session.open_local(label, &sealed).map_err(fail)?;
+        String::from_utf8(plain).map_err(|_| fail(Error::Invalid))
     }
 
     /// Wipes every secret: all handles and the unlocked account.

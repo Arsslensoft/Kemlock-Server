@@ -97,6 +97,12 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     manifestSign: vi.fn(() => 'c2lnbmF0dXJl'),
     manifestVerifyOwn: vi.fn(() => true),
     manifestVerify: vi.fn(() => true),
+    verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
+    spaceChainView: vi.fn((): string | undefined => undefined),
+    sealLocal: vi.fn(() => 'c2VhbGVk'),
+    openLocal: vi.fn(() => '{"seq":1}'),
+    acceptFirstContact: vi.fn(),
+    openChainKey: vi.fn(),
     lock: vi.fn(),
     free: vi.fn(),
     ...overrides,
@@ -345,6 +351,41 @@ describe('the dispatcher', () => {
     expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s');
     await dispatch('openCollection', [{ spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s' }]);
     expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s');
+
+    // The space chain: JSON goes in and comes out, and a key version is checked before the module.
+    const record = { entry: 'ZW50cnk', signature: 'c2ln' };
+    const anchor = { seq: 1, epoch: 1, links: ['bGluaw'] };
+    expect(await dispatch('verifySpaceChain', [{ spaceId: UUID, records: [record], anchor }])).toEqual({
+      ok: false,
+      reason: 'forked',
+      seq: 3,
+    });
+    expect(vault.verifySpaceChain).toHaveBeenCalledWith(
+      UUID,
+      JSON.stringify([record]),
+      JSON.stringify(anchor),
+    );
+    await dispatch('verifySpaceChain', [{ spaceId: UUID, records: [] }]);
+    expect(vault.verifySpaceChain).toHaveBeenLastCalledWith(UUID, '[]', undefined);
+    expect(await dispatch('spaceChainView', [UUID])).toBeNull();
+    vault.spaceChainView = vi.fn(() => JSON.stringify({ ok: true, chained: false }));
+    expect(await dispatch('spaceChainView', [UUID])).toEqual({ ok: true, chained: false });
+    expect(await dispatch('sealLocal', ['anchor/x', '{"seq":1}'])).toBe('c2VhbGVk');
+    expect(vault.sealLocal).toHaveBeenCalledWith('anchor/x', '{"seq":1}');
+    expect(await dispatch('openLocal', ['anchor/x', 'c2VhbGVk'])).toBe('{"seq":1}');
+    expect(vault.openLocal).toHaveBeenCalledWith('anchor/x', 'c2VhbGVk');
+    await dispatch('acceptFirstContact', [UUID]);
+    expect(vault.acceptFirstContact).toHaveBeenCalledWith(UUID);
+    await dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94' }]);
+    expect(vault.openChainKey).toHaveBeenCalledWith(UUID, 'space', 2, 'Ym94', undefined);
+    const list = [{ bundleVersion: 1, key: 'space', member: UUID, sealHash: 'aGFzaA', version: 2 }];
+    await dispatch('openChainKey', [
+      { spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94', list },
+    ]);
+    expect(vault.openChainKey).toHaveBeenLastCalledWith(UUID, 'space', 2, 'Ym94', JSON.stringify(list));
+    await expect(
+      dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: -1, sealed: 'Ym94' }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
 
     const address = { spaceId: UUID, keyVersion: 1, kind: 'space' as const, id: UUID };
     expect(await dispatch('openName', [{ ...address, ciphertext: 'Y3Q' }])).toBe('Family');

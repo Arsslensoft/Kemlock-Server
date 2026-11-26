@@ -5,9 +5,10 @@ import type { MemberViewDto, OffboardedDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
-import { describeAccountError } from '../account/errors';
+import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
 import { spaceDeps } from './deps';
+import { acceptFirstContact } from './chain';
 import { refreshSpaces } from './refresh';
 import {
   type SpaceDetail as Detail,
@@ -16,11 +17,28 @@ import {
   createGroup,
   grantAccess,
   inviteMember,
+  SpaceNotChecked,
   loadSpaceDetail,
+  pinMember,
   renameCollection,
   setGroupMembers,
 } from './model';
 import { type ConfirmState, SpaceDetailView } from './SpaceDetailView';
+import { MemberNotVerified } from './verify';
+
+/** A member whose keys weren't sealed to gets words of their own; everything else the account screens'. */
+function describeSpaceError(error: unknown): Described {
+  if (error instanceof MemberNotVerified) {
+    return {
+      id: 'space.error.notVerified',
+      values: { name: error.member.name || error.member.email },
+    };
+  }
+  if (error instanceof SpaceNotChecked) {
+    return { id: error.kind === 'verified' ? 'space.error.chained' : 'space.error.unchecked' };
+  }
+  return describeAccountError(error);
+}
 
 export default function SpaceDetail() {
   const { spaceId = '' } = useParams({ strict: false }) as { spaceId?: string };
@@ -28,15 +46,30 @@ export default function SpaceDetail() {
   const queryClient = useQueryClient();
   const key = ['spaces', spaceId] as const;
   const query = useQuery({ queryKey: key, queryFn: () => loadSpaceDetail(spaceDeps, spaceId) });
-  const { run, pending, error } = useRun();
+  const { run, pending, error } = useRun(describeSpaceError);
   const [confirming, setConfirming] = useState<ConfirmState | null>(null);
   const [offboarded, setOffboarded] = useState<{ name: string; outcome: OffboardedDto } | null>(null);
   const detail: Detail | undefined = query.data;
   const { api } = spaceDeps;
 
-  /** Runs a change, then reads the space again. */
+  /**
+   * Runs a change, then reads the space again. A member the browser wouldn't seal to is asked to
+   * be confirmed again, when the server lets them be.
+   */
   async function change<T>(action: () => Promise<T>): Promise<T | undefined> {
-    const result = await run(action);
+    const result = await run(async () => {
+      try {
+        return await action();
+      } catch (caught) {
+        if (caught instanceof MemberNotVerified) {
+          // What would put it right: compare the fingerprint of the member the walk ended at, or
+          // confirm this member again when their keys changed.
+          if (caught.compare) void startConfirm(caught.compare, 'pin');
+          else if (caught.member.needsReconfirmation) void startConfirm(caught.member);
+        }
+        throw caught;
+      }
+    });
     if (result !== undefined) {
       await refreshSpaces(queryClient);
     }
@@ -53,8 +86,8 @@ export default function SpaceDetail() {
     return member ? member.name || member.email : user;
   }
 
-  async function startConfirm(member: MemberViewDto) {
-    setConfirming({ member, fingerprint: undefined });
+  async function startConfirm(member: MemberViewDto, mode: 'confirm' | 'pin' = 'confirm') {
+    setConfirming({ member, fingerprint: undefined, mode });
     let fingerprint: Fingerprint | null = null;
     try {
       fingerprint = await checkedFingerprint(decodeB64(member.publicBundle), (bundle) =>
@@ -63,7 +96,7 @@ export default function SpaceDetail() {
     } catch {
       fingerprint = null;
     }
-    setConfirming({ member, fingerprint });
+    setConfirming({ member, fingerprint, mode });
   }
 
   return (
@@ -79,15 +112,24 @@ export default function SpaceDetail() {
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
         invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input)),
+        acceptFirstContact: () => {
+          if (!detail) return;
+          void change(() => acceptFirstContact(spaceDeps, spaceId, detail.view.me.user));
+        },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
+        startPin: (member) => void startConfirm(member, 'pin'),
         cancelConfirm: () => setConfirming(null),
         confirm: () => {
           const current = confirming;
           if (!detail || !current?.fingerprint) return;
           const member = current.member;
           const fingerprint = current.fingerprint;
-          void change(() => confirmMember(spaceDeps, detail, member, fingerprint)).then((done) => {
+          const act = (): Promise<unknown> =>
+            current.mode === 'pin'
+              ? pinMember(spaceDeps, detail.view.me.user, member, fingerprint).then(() => true)
+              : confirmMember(spaceDeps, detail, member, fingerprint);
+          void change(act).then((done) => {
             if (done) setConfirming(null);
           });
         },

@@ -31,7 +31,15 @@ function worker() {
     sealSpaceKeyTo: vi.fn(async () => encodeB64(utf8('space-box'))),
     sealCollectionKeyTo: vi.fn(async () => encodeB64(utf8('coll-box'))),
     confirmationStatement: vi.fn(async () => encodeB64(utf8('statement'))),
+    verifyBundle: vi.fn(async (_bundle: string, _signature: string) => true),
+    ownFingerprint: vi.fn(async () => '11111 22222'),
     verifyConfirmation: vi.fn(async () => true),
+    verifySpaceChain: vi.fn(async () => ({ ok: false as const, reason: 'forked', seq: 3 })),
+    spaceChainView: vi.fn(async () => null),
+    sealLocal: vi.fn(async () => 'c2VhbGVk'),
+    openLocal: vi.fn(async () => 'text'),
+    acceptFirstContact: vi.fn(async () => undefined),
+    openChainKey: vi.fn(async () => undefined),
   };
 }
 
@@ -109,6 +117,44 @@ describe('spaces over the worker', () => {
       collectionId: COLLECTION,
       spaceName: 'Family',
       collectionName: 'Everyone',
+    });
+  });
+
+  it('checks a bundle’s own signature and reads my own fingerprint', async () => {
+    const api = worker();
+    const spaces = createSpaceCrypto(api);
+    const bundle = utf8('bundle');
+    const signature = utf8('signature');
+    await expect(spaces.verifyBundle(bundle, signature)).resolves.toBe(true);
+    expect(api.verifyBundle).toHaveBeenCalledWith(encodeB64(bundle), encodeB64(signature));
+    await expect(spaces.ownFingerprint()).resolves.toBe('11111 22222');
+  });
+
+  it('passes the chain through, with a key box as bytes', async () => {
+    const api = worker();
+    const spaces = createSpaceCrypto(api);
+    const records = [{ entry: 'ZW50cnk', signature: 'c2ln' }];
+    await expect(spaces.verifySpaceChain({ spaceId: SPACE, records })).resolves.toEqual({
+      ok: false,
+      reason: 'forked',
+      seq: 3,
+    });
+    expect(api.verifySpaceChain).toHaveBeenCalledWith({ spaceId: SPACE, records });
+    await expect(spaces.spaceChainView(SPACE)).resolves.toBeNull();
+    await expect(spaces.sealLocal('anchor/x', 'text')).resolves.toBe('c2VhbGVk');
+    expect(api.sealLocal).toHaveBeenCalledWith('anchor/x', 'text');
+    await expect(spaces.openLocal('anchor/x', 'c2VhbGVk')).resolves.toBe('text');
+    await spaces.acceptFirstContact(SPACE);
+    expect(api.acceptFirstContact).toHaveBeenCalledWith(SPACE);
+    const sealed = utf8('box');
+    const list = [{ bundleVersion: 1, key: 'space', member: COLLECTION, sealHash: 'aGFzaA', version: 2 }];
+    await spaces.openChainKey({ spaceId: SPACE, key: 'space', servedVersion: 2, sealed, list });
+    expect(api.openChainKey).toHaveBeenCalledWith({
+      spaceId: SPACE,
+      key: 'space',
+      servedVersion: 2,
+      sealed: encodeB64(sealed),
+      list,
     });
   });
 
