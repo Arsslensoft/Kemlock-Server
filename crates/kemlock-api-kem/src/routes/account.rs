@@ -15,12 +15,10 @@
 
 use super::guard;
 use super::two_step::require_proof_via_api;
-use crate::dto::decode;
 use crate::extract::{Authed, Body, DPOP_NONCE};
 use crate::openapi::ProblemDoc;
-use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{Limiter, ip_key};
-use crate::replay::Full;
+use crate::problem::Problem;
+use crate::ratelimit::Limiter;
 use crate::state::{Api, Crypto, Store};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::request::Parts;
@@ -33,9 +31,8 @@ use kemlock_app::AppError;
 use kemlock_app::ports::{TokenSigner, TwoFactorRepo, UserRepo};
 use kemlock_app::privacy::{
     AccountData, AccountEraser, EraseAccount, Erasure, ErasureFiles, ExportAccount, PrivacyLog,
-    PrivacySettings, Reauthenticate, Requester, SendEraser,
+    PrivacySettings, Requester, SendEraser,
 };
-use kemlock_app::sign_in::credential_id;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -198,38 +195,14 @@ where
         )
         .into());
     }
-    guard(&api.limits.sign_in, &ip_key(caller.0.ip), api.now())?;
-
-    // A wrong password counts against the account like a wrong sign-in does.
-    let account = format!("acct:{}", credential_id(user.email.as_str()));
-    api.limits
-        .account
-        .blocked(&account, api.now())
-        .map_err(rate_limited)?;
-    let login_state = decode("loginState", &request.login_state)?;
-    let finalization = decode("finalization", &request.finalization)?;
-    // A login state finishes once, whether the password was right or not. Only a genuine, fresh
-    // state is remembered.
-    api.sign_in().check_login_state(&login_state)?;
-    match api.used_states.insert(&login_state, api.now()) {
-        Ok(true) => {}
-        Ok(false) => return Err(Problem::bad_request("the login state was already used")),
-        Err(Full) => return Err(Problem::overloaded()),
-    }
-    let checked = Reauthenticate {
-        users: api.store.clone(),
-        auth: api.crypto.clone(),
-        seal: api.crypto.clone(),
-        clock: api.crypto.clone(),
-    }
-    .execute(user.id, &login_state, &finalization, &caller.0.jkt)
-    .await;
-    match &checked {
-        Err(AppError::Unauthorized) => api.limits.account.fail(&account, api.now()),
-        Ok(()) => api.limits.account.clear(&account),
-        Err(_) => {}
-    }
-    checked?;
+    super::reauth::reauthenticate(
+        api,
+        &caller.0,
+        &user,
+        &request.login_state,
+        &request.finalization,
+    )
+    .await?;
     if let (true, Some(proof)) = (second_step, proof) {
         require_proof_via_api(api, user.id, proof, true).await?;
     }

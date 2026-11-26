@@ -40,3 +40,27 @@ pub(crate) fn big_blob(backend: DbBackend, name: &'static str, nullable: bool) -
     }
     col.take()
 }
+
+/// Text that is compared exactly: `utf8mb4_bin` on MySQL, whose usual collation treats `é` and `e`
+/// (and `A` and `a`) as the same letter and would call two different names a duplicate. SQLite and
+/// PostgreSQL compare text byte for byte already, so they get a plain `varchar`. Never null.
+pub(crate) fn exact_text_col(
+    backend: DbBackend,
+    name: &'static str,
+    len: u32,
+    unique: bool,
+) -> ColumnDef {
+    let mut col = ColumnDef::new(name);
+    if backend == DbBackend::MySql {
+        col.custom(Alias::new(format!(
+            "varchar({len}) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin"
+        )));
+    } else {
+        col.string_len(len);
+    }
+    col.not_null();
+    if unique {
+        col.unique_key();
+    }
+    col.take()
+}

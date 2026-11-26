@@ -27,3 +27,14 @@ export function isKindActive(pathname: string, shownKind: unknown, kind: string 
   if (pathname !== '/vault') return false;
   return (typeof shownKind === 'string' && shownKind !== '' ? shownKind : undefined) === kind;
 }
+
+/**
+ * The letters in the avatar: the first letters of the first two words of the name (or of the
+ * email's parts when there is no name), else the first two characters.
+ */
+export function initials(name: string | null, email: string | null): string {
+  const source = name?.trim() || email?.trim() || '?';
+  const words = source.split(/[\s@.]+/).filter(Boolean);
+  const letters = words.length > 1 ? `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}` : source.slice(0, 2);
+  return letters.toUpperCase();
+}

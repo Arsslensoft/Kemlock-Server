@@ -102,6 +102,38 @@ export interface AdminOverview {
   mailConfigured: boolean;
 }
 
+// ---- Custom fields -------------------------------------------------------------------------
+
+export type CustomFieldType = 'text' | 'hidden' | 'checkbox';
+
+/**
+ * The item types a field applies to: the word `all`, or kind ids such as `login` and `card`
+ * (`otp` is the MFA code). A file and a passkey take no custom fields.
+ */
+export type CustomFieldKinds = 'all' | string[];
+
+/** A field the admin offers, as `GET /admin/v1/custom-fields` and `GET /kem/v1/custom-fields` have it. */
+export interface CustomField {
+  id: string;
+  name: string;
+  type: CustomFieldType;
+  kinds: CustomFieldKinds;
+}
+
+export interface CustomFields {
+  /** Oldest first. */
+  fields: CustomField[];
+  /** Whether people may add fields of their own to an item. */
+  allowOwn: boolean;
+}
+
+/** What an admin types for a field. Nothing about a field is ever required of the person who fills it in. */
+export interface CustomFieldInput {
+  name: string;
+  type: CustomFieldType;
+  kinds: CustomFieldKinds;
+}
+
 // ---- Users, invitations and spaces ---------------------------------------------------------
 
 export type UserRole = 'user' | 'admin';
@@ -734,6 +766,21 @@ export function createAdminApi(api: AdminTransport) {
 
     /** `GET /admin/v1/overview` */
     overview: () => get<AdminOverview>('/overview'),
+
+    /** `GET /admin/v1/custom-fields`: the fields and whether people may add their own. */
+    customFields: () => get<CustomFields>('/custom-fields'),
+    /** `POST /admin/v1/custom-fields` answers 201 with the field; 409 when its name is taken. */
+    addCustomField: (input: CustomFieldInput, token?: string) =>
+      post<CustomField>('/custom-fields', input, token),
+    /** `PUT /admin/v1/custom-fields/{id}`: changes the name, the type and the item types. */
+    updateCustomField: (id: string, input: CustomFieldInput, token?: string) =>
+      put<CustomField>(`/custom-fields/${id}`, input, token),
+    /** `DELETE /admin/v1/custom-fields/{id}`: items that carry a value for it keep the value. */
+    deleteCustomField: (id: string, token?: string) =>
+      act('DELETE', `/custom-fields/${id}`, undefined, token),
+    /** `PUT /admin/v1/custom-fields/allow-own { allow }`: whether people may add fields of their own. */
+    allowOwnFields: (allow: boolean, token?: string) =>
+      put<{ allowOwn: boolean }>('/custom-fields/allow-own', { allow }, token),
 
     /** `GET /admin/v1/users?search&limit&offset` */
     users: (q: UsersQuery = {}) =>

@@ -1,62 +1,99 @@
 import type { MessageId } from '@/i18n';
 import type { IconName } from '@/ui/Icon';
 
-export type EditableKind =
-  | 'login'
-  | 'note'
-  | 'otp'
-  | 'backup-codes'
-  | 'card'
-  | 'identity'
-  | 'ssh-key'
-  | 'pgp-key'
-  | 'certificate'
-  | 'contact';
-
-export const EDITABLE_KINDS: EditableKind[] = [
+/**
+ * Every kind of item, in the order the sidebar, the filters and the New menu list them. `otp` is
+ * the MFA code: the id stays `otp` because that is what the Kemlock app and every stored item call it.
+ */
+export const KIND_ORDER = [
   'login',
   'note',
+  'file',
   'otp',
   'backup-codes',
+  'passkey',
   'card',
   'identity',
+  'contact',
+  'certificate',
   'ssh-key',
   'pgp-key',
-  'certificate',
-  'contact',
-];
+] as const;
+export type KnownKind = (typeof KIND_ORDER)[number];
 
-const KIND_LABELS: Record<string, MessageId> = {
+/** A kind this web vault has a form for. A passkey is made by a website, so it has none to edit. */
+export type EditableKind = Exclude<KnownKind, 'passkey'>;
+
+export const EDITABLE_KINDS: EditableKind[] = KIND_ORDER.filter((kind): kind is EditableKind => kind !== 'passkey');
+
+/** A kind whose fields can go in an item Send: a file's bytes live in a file, not in its fields. */
+export type SendableKind = Exclude<EditableKind, 'file'>;
+
+export const SENDABLE_KIND_ORDER: SendableKind[] = EDITABLE_KINDS.filter(
+  (kind): kind is SendableKind => kind !== 'file',
+);
+
+const KIND_LABELS: Record<KnownKind, MessageId> = {
   login: 'kind.login',
   note: 'kind.note',
+  file: 'kind.file',
   otp: 'kind.code',
   'backup-codes': 'kind.backupCodes',
   passkey: 'kind.passkey',
   card: 'kind.card',
   identity: 'kind.identity',
+  contact: 'kind.contact',
+  certificate: 'kind.certificate',
   'ssh-key': 'kind.sshKey',
   'pgp-key': 'kind.pgpKey',
-  certificate: 'kind.certificate',
-  contact: 'kind.contact',
 };
 
+const KIND_PLURALS: Record<KnownKind, MessageId> = {
+  login: 'kind.plural.login',
+  note: 'kind.plural.note',
+  file: 'kind.plural.file',
+  otp: 'kind.plural.otp',
+  'backup-codes': 'kind.plural.backup-codes',
+  passkey: 'kind.plural.passkey',
+  card: 'kind.plural.card',
+  identity: 'kind.plural.identity',
+  contact: 'kind.plural.contact',
+  certificate: 'kind.plural.certificate',
+  'ssh-key': 'kind.plural.ssh-key',
+  'pgp-key': 'kind.plural.pgp-key',
+};
+
+const KIND_ICONS: Record<KnownKind, IconName> = {
+  login: 'login',
+  note: 'note',
+  file: 'file',
+  otp: 'mfa',
+  'backup-codes': 'backupCodes',
+  passkey: 'passkey',
+  card: 'card',
+  identity: 'identity',
+  contact: 'contact',
+  certificate: 'certificate',
+  'ssh-key': 'key',
+  'pgp-key': 'pgpKey',
+};
+
+export function isKnownKind(kind: string): kind is KnownKind {
+  return (KIND_ORDER as readonly string[]).includes(kind);
+}
+
+/** "Login", "MFA code": the singular name of a kind. A kind from a newer app is "Item". */
 export function kindLabel(kind: string): MessageId {
-  return KIND_LABELS[kind] ?? 'kind.other';
+  return isKnownKind(kind) ? KIND_LABELS[kind] : 'kind.other';
+}
+
+/** "Logins", "MFA codes": the plural name, for the sidebar and the list titles. */
+export function kindPluralLabel(kind: string): MessageId {
+  return isKnownKind(kind) ? KIND_PLURALS[kind] : 'kind.plural.other';
 }
 
 export function kindIcon(kind: string): IconName {
-  switch (kind) {
-    case 'login':
-      return 'login';
-    case 'note':
-      return 'note';
-    case 'ssh-key':
-    case 'pgp-key':
-    case 'passkey':
-      return 'key';
-    default:
-      return 'items';
-  }
+  return isKnownKind(kind) ? KIND_ICONS[kind] : 'items';
 }
 
 export function isEditable(kind: string): kind is EditableKind {

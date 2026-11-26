@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem, signInAsAdmin } from './signin';
 
 // Items for a space owner: New item offers the collections the account may write to, and the item
 // is sealed in the worker under that collection's key and written with its `collectionId`.
@@ -26,7 +26,7 @@ test('a login saved to a space collection is sealed there and can be edited', as
   await expect(page.getByText('Item space').first()).toBeVisible({ timeout: 60_000 });
 
   // New item: pick the collection, and watch what the server is sent.
-  await page.getByRole('link', { name: 'New item' }).first().click();
+  await newItem(page, 'Login');
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   const where = page.getByLabel('Save to');
   await expect(where).toBeVisible({ timeout: 60_000 });
@@ -35,7 +35,7 @@ test('a login saved to a space collection is sealed there and can be edited', as
   await page.getByLabel('Name', { exact: true }).fill('Team VPN');
   await page.getByLabel('Username').fill('ops@example.org');
   await page.getByLabel('Password', { exact: true }).fill('Space-journey-pass-1!');
-  await page.getByLabel('Website').fill('https://vpn.example.org');
+  await page.getByLabel('Website 1', { exact: true }).fill('https://vpn.example.org');
   const put = page.waitForRequest(
     (request) => request.method() === 'PUT' && new URL(request.url()).pathname.startsWith('/kem/v1/items/'),
   );

@@ -100,6 +100,68 @@
   flex: 1;
 }
 
+/* The Overview's numbers: five fit a row, each with the icon of what it counts. */
+.adm-stats {
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+}
+.stat .si {
+  width: 32px;
+  height: 32px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+  color: var(--warn-text);
+}
+
+/* The Custom fields form: a column, its buttons at the right and as wide as their words. */
+.adm-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.adm-form .actions {
+  justify-content: flex-end;
+}
+.adm-form .actions > .btn,
+.adm-form .actions > .btn.p {
+  flex: none;
+}
+.adm-kinds {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.adm-kinds legend {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+/* A table's first column names the row, so it is a header cell that reads as a plain one. */
+.tbl tbody th.adm-field-name {
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: inherit;
+  color: var(--text);
+  /* A long name wraps; the header cells' no-wrap is for short column titles. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.tbl td.adm-dim {
+  color: var(--text-2);
+}
+.tbl tbody tr:last-child th.adm-field-name {
+  border-bottom: 0;
+}
+
 /* Words and fingerprints. */
 .words {
   font-family: var(--font-mono);

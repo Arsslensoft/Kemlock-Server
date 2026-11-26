@@ -15,3 +15,18 @@ eae84fb6abb4676dd66878f666215a59a3d9d1df:web/src/features/account/security.test.
 # The RFC 4226 / 6238 test secret ("12345678901234567890" in base32) in the one-time code tests.
 ee6ebf58fe26ab8f8a00d8441023ec4c6a264957:web/src/features/vault/details/KindDetails.test.tsx:generic-api-key:16
 ee6ebf58fe26ab8f8a00d8441023ec4c6a264957:web/src/features/vault/details/otp.test.ts:generic-api-key:5
+
+# The RFC 4226 / 6238 test secret again, in the item page's per-type rows.
+51eab3b92ab2bf434158bd66a7d5767a47b30ead:web/src/features/vault/Item.test.tsx:generic-api-key:268
+ed230c19964440d2cb10a43814f0c1b05033eec8:web/src/features/vault/Item.test.tsx:generic-api-key:276
+
+# Made-up key fingerprints (ABCDEF0123…, 0F1E2D3C…) in the duplicate check's normalisation cases,
+# and the same inputs hex-encoded in the generated vectors.
+8c312062b94e8db5ba5163ba2fc7c90795ac6131:crates/kemlock-crypto/src/vectors/check.rs:generic-api-key:980
+8c312062b94e8db5ba5163ba2fc7c90795ac6131:crates/kemlock-crypto/src/vectors/check.rs:generic-api-key:984
+8c312062b94e8db5ba5163ba2fc7c90795ac6131:crates/kemlock-crypto/src/vectors/check.rs:generic-api-key:988
+8c312062b94e8db5ba5163ba2fc7c90795ac6131:crates/kemlock-crypto/src/vectors/check.rs:generic-api-key:992
+9fac173bb466b2eec366f0108fb04da088b8fecd:test-vectors/dedup-normalise.json:generic-api-key:663
+9fac173bb466b2eec366f0108fb04da088b8fecd:test-vectors/dedup-normalise.json:generic-api-key:680
+9fac173bb466b2eec366f0108fb04da088b8fecd:test-vectors/dedup-normalise.json:generic-api-key:697
+9fac173bb466b2eec366f0108fb04da088b8fecd:test-vectors/dedup-normalise.json:generic-api-key:714

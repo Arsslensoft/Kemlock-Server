@@ -42,6 +42,12 @@ pub mod name {
     pub const KEY: &str = "key";
     pub const IDENTITY: &str = "identity";
     pub const CODES: &str = "codes";
+    /// A contact's email and phone (added with the contact person fields).
+    pub const CONTACT: &str = "contact";
+    /// An identity document's number (added with the identity documents).
+    pub const DOCUMENT: &str = "document";
+    /// A file's content hash (added with the `file` kind).
+    pub const FILE: &str = "file";
 }
 
 /// The dedup key of one owner and key version, derived from its user key or space key.
@@ -249,6 +255,27 @@ pub fn identity_input(full_name: &str, email: &str) -> Option<Vec<u8>> {
         .then(|| canonical_input(name::IDENTITY, &[&full_name, &email]))
 }
 
+/// The canonical input of a contact's tag (email, phone); `None` when both are empty once
+/// normalised. A contact with only an email or only a phone still has one.
+pub fn contact_input(email: &str, phone: &str) -> Option<Vec<u8>> {
+    let email = normalise::email(email);
+    let phone = normalise::phone(phone);
+    (!(email.is_empty() && phone.is_empty()))
+        .then(|| canonical_input(name::CONTACT, &[&email, &phone]))
+}
+
+/// The canonical input of an identity document's tag (its number); `None` for a number of fewer
+/// than four letters and digits.
+pub fn document_input(number: &str) -> Option<Vec<u8>> {
+    normalise::document_number(number).map(|n| canonical_input(name::DOCUMENT, &[&n]))
+}
+
+/// The canonical input of a file's tag (the SHA-256 of its plaintext as hex); `None` when it
+/// isn't 64 hex digits.
+pub fn file_input(content_hash: &str) -> Option<Vec<u8>> {
+    normalise::content_hash(content_hash).map(|h| canonical_input(name::FILE, &[&h]))
+}
+
 /// A login's tags: one `cred` and one `account` tag per site. Only the `cred` tags are uploaded
 /// when server matching is on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -310,6 +337,21 @@ pub fn codes_tag<S: AsRef<str>>(key: &SecretKey, codes: &[S]) -> Option<[u8; 32]
 /// The tag of an identity from its raw full name and email.
 pub fn identity_tag(key: &SecretKey, full_name: &str, email: &str) -> Option<[u8; 32]> {
     identity_input(full_name, email).map(|input| tag(key, &input))
+}
+
+/// The tag of a contact from its raw email and phone.
+pub fn contact_tag(key: &SecretKey, email: &str, phone: &str) -> Option<[u8; 32]> {
+    contact_input(email, phone).map(|input| tag(key, &input))
+}
+
+/// The tag of an identity document from its raw number.
+pub fn document_tag(key: &SecretKey, number: &str) -> Option<[u8; 32]> {
+    document_input(number).map(|input| tag(key, &input))
+}
+
+/// The tag of a file from the raw SHA-256 of its plaintext.
+pub fn file_tag(key: &SecretKey, content_hash: &str) -> Option<[u8; 32]> {
+    file_input(content_hash).map(|input| tag(key, &input))
 }
 
 #[cfg(test)]
@@ -608,6 +650,91 @@ mod tests {
                 &k,
                 name::KEY,
                 &["9F3A77C10B2E45D68A19C0DE12F45B6A77889900"]
+            ))
+        );
+    }
+
+    #[test]
+    fn contacts_documents_and_files_have_their_documented_inputs() {
+        assert_eq!(
+            contact_input(" Alex@Example.ORG ", "+1 (555) 0142"),
+            Some(br#"["contact","alex@example.org","15550142"]"#.to_vec())
+        );
+        // One of the two is enough; the other stays an empty string, so it can't run into it.
+        assert_eq!(
+            contact_input("a@b.c", ""),
+            Some(br#"["contact","a@b.c",""]"#.to_vec())
+        );
+        assert_eq!(
+            contact_input("", "555 0142"),
+            Some(br#"["contact","","5550142"]"#.to_vec())
+        );
+        assert_eq!(contact_input("  ", "call me"), None);
+        assert_ne!(contact_input("a@b.c", ""), contact_input("", "a@b.c"));
+
+        assert_eq!(
+            document_input("X 1234-567"),
+            Some(br#"["document","x1234567"]"#.to_vec())
+        );
+        assert_eq!(document_input("12"), None);
+
+        let hash = "0123456789ABCDEF".repeat(4);
+        assert_eq!(
+            file_input(&hash),
+            Some(format!(r#"["file","{}"]"#, hash.to_ascii_lowercase()).into_bytes())
+        );
+        assert_eq!(file_input("not a hash"), None);
+    }
+
+    #[test]
+    fn the_new_tag_names_keep_a_value_from_matching_another_kind() {
+        let k = key();
+        let hash = "ab".repeat(32);
+        assert_ne!(
+            file_tag(&k, &hash),
+            key_tag(&k, &hash),
+            "a file's hash and a key's fingerprint are different tags"
+        );
+        assert_ne!(
+            document_tag(&k, "abcd1234"),
+            note_tag(&k, "abcd1234"),
+            "a document number and a note are different tags"
+        );
+        assert_ne!(
+            contact_tag(&k, "a@b.c", ""),
+            identity_tag(&k, "a@b.c", ""),
+            "a contact and an identity are different tags"
+        );
+    }
+
+    #[test]
+    fn tags_of_the_new_kinds_are_the_tags_of_their_inputs() {
+        let k = key();
+        assert_eq!(
+            contact_tag(&k, "A@B.C", "+1 5"),
+            Some(tag_for(&k, name::CONTACT, &["a@b.c", "15"]))
+        );
+        assert_eq!(contact_tag(&k, "", ""), None);
+        assert_eq!(
+            document_tag(&k, "AB-12 34"),
+            Some(tag_for(&k, name::DOCUMENT, &["ab1234"]))
+        );
+        assert_eq!(document_tag(&k, "1"), None);
+        let hash = "ef".repeat(32);
+        assert_eq!(
+            file_tag(&k, &hash.to_ascii_uppercase()),
+            Some(tag_for(&k, name::FILE, &[hash.as_str()]))
+        );
+        assert_eq!(file_tag(&k, "short"), None);
+        // A certificate's thumbprint is a `key` tag, whichever way it is written.
+        let colons = ["EF"; 32].join(":");
+        assert_eq!(key_tag(&k, &colons), key_tag(&k, &hash));
+        assert_eq!(
+            key_tag(&k, &colons),
+            Some(tag_for(
+                &k,
+                name::KEY,
+                &[hash.to_ascii_uppercase().as_str()]
             ))
         );
     }

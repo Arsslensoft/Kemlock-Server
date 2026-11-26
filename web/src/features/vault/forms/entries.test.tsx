@@ -201,3 +201,82 @@ describe('secret length', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
+
+describe('the MFA code form, as the mockup draws it', () => {
+  it('can be named, and keeps the name in the body', async () => {
+    const onSubmit = vi.fn();
+    renderWithIntl(<OtpForm initial={otpDefaults()} onSubmit={onSubmit} onCancel={vi.fn()} submitLabel="Save" />);
+    const user = userEvent.setup({ delay: null });
+    await user.type(screen.getByLabelText('Name'), 'GitHub code');
+    await user.type(screen.getByLabelText('Secret key'), 'JBSWY3DPEHPK3PXP');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledOnce());
+    const values = onSubmit.mock.calls[0]?.[0] as Parameters<typeof otpFields>[0];
+    expect(otpFields(values)).toMatchObject({ name: 'GitHub code', issuer: '', label: '' });
+  });
+
+  it('wants a name, an issuer or an account', async () => {
+    const onSubmit = vi.fn();
+    renderWithIntl(<OtpForm initial={otpDefaults()} onSubmit={onSubmit} onCancel={vi.fn()} submitLabel="Save" />);
+    const user = userEvent.setup({ delay: null });
+    await user.type(screen.getByLabelText('Secret key'), 'JBSWY3DPEHPK3PXP');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText(/This is required/, {}, { timeout: 4000 })).toBeInTheDocument();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('offers 6, 7 and 8 digits, and the digits a code has already', () => {
+    const steam = item('otp', { issuer: 'Steam', secret: 'JBSWY3DPEHPK3PXP', type: 'steam' });
+    renderWithIntl(<OtpForm initial={otpDefaults(steam)} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />);
+    const digits = screen.getByLabelText('Digits');
+    expect([...digits.querySelectorAll('option')].map((option) => option.textContent)).toEqual(['5', '6', '7', '8']);
+    expect(digits).toHaveValue('5');
+  });
+});
+
+describe('the identity form, as the mockup draws it', () => {
+  it('picks the title from a list, takes a date of birth and has no username box', () => {
+    renderWithIntl(
+      <IdentityForm initial={identityDefaults()} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />,
+    );
+    const title = screen.getByLabelText('Title');
+    expect([...title.querySelectorAll('option')].map((option) => option.textContent)).toEqual([
+      'No title',
+      'Mr',
+      'Mrs',
+      'Ms',
+      'Mx',
+      'Dr',
+    ]);
+    expect(screen.getByLabelText('Date of birth')).toHaveAttribute('type', 'date');
+    expect(screen.getByLabelText('Phone')).toHaveAttribute('type', 'tel');
+    expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
+  });
+
+  it('keeps a title that is not in the list, and the username an item already had', () => {
+    const existing = item('identity', { id: 'd1', name: 'Sam', title: 'Prof', username: 'sam.r' });
+    renderWithIntl(
+      <IdentityForm initial={identityDefaults(existing)} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />,
+    );
+    expect(screen.getByLabelText('Title')).toHaveValue('Prof');
+    // The form has no username to change, so it writes none and the item keeps its own.
+    expect('username' in identityFields(identityDefaults(existing), existing)).toBe(false);
+  });
+});
+
+describe('the backup codes form, as the mockup draws it', () => {
+  it('can be named and favorited, and keeps the name', () => {
+    const fields = backupCodesFields({ ...backupCodesDefaults(), name: 'GitHub recovery codes', serviceName: 'GitHub', codes: 'a\nb', pinned: true });
+    expect(fields).toMatchObject({ name: 'GitHub recovery codes', serviceName: 'GitHub', pinned: true });
+  });
+});
+
+describe('the MFA secret, as the mockup draws it', () => {
+  it('is a plain monospaced text box, with no eye', () => {
+    renderWithIntl(<OtpForm initial={otpDefaults()} onSubmit={vi.fn()} onCancel={vi.fn()} submitLabel="Save" />);
+    const secret = screen.getByLabelText('Secret key');
+    expect(secret).toHaveAttribute('type', 'text');
+    expect(secret.closest('.field')).toHaveClass('mono');
+    expect(screen.queryByRole('button', { name: 'Show the password' })).not.toBeInTheDocument();
+  });
+});

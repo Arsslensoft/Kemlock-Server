@@ -142,6 +142,12 @@ export interface CryptoPort {
     exportKey: Uint8Array,
   ): Promise<NewAccountKeys>;
   /**
+   * Wraps the open account's root key under a new master key and OPAQUE export key (both made for
+   * the new password, or the new address), for a change of either: the 92-byte wrap the server
+   * keeps. The root key, the key version and the vault stay as they are; both handles are spent.
+   */
+  rewrapRoot(masterKey: Uint8Array, exportKey: Uint8Array): Promise<Uint8Array>;
+  /**
    * Opens the vault: unwraps the root key inside the worker. With `sealedPrivateKeys` it opens the
    * account's exchange and signing private keys too, which spaces, device approval and
    * confirmations need.
@@ -321,6 +327,11 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         sealedPrivateKeys: decodeB64(made.sealedPrivateKeys),
         wrappedRootKey: decodeB64(made.wrappedRootKey),
       };
+    },
+    async rewrapRoot(masterKey, exportKey) {
+      return decodeB64(
+        await api.rewrapRoot(handleOf<'master-key'>(masterKey), handleOf<'export-key'>(exportKey)),
+      );
     },
     unlock: (accountId, wrappedRootKey, masterKey, exportKey, options) =>
       api.unlock(

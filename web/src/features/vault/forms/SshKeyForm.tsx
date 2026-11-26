@@ -1,25 +1,28 @@
 // An SSH key: made in the browser (Ed25519, WebCrypto) or pasted as a PKCS#8 private key.
-// An item that exists keeps its halves; only its name and note change.
+// An item that exists keeps its halves; only its name, notes and extras change.
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useState } from 'react';
 import { useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
-import { Field } from '@/ui/fields';
+import { CheckField, Field } from '@/ui/fields';
+import { type ItemData, type VaultItem, itemName } from '../vault';
+import { ExtrasSections } from './ExtrasSections';
+import { extrasDefaults, extrasFields, extrasShape } from './extras';
 import { type SshMaterial, generateEd25519, readPastedSshKey } from './keyMaterial';
-import { FormActions, type KeyFormProps } from './shared';
-import type { ItemData, VaultItem } from '../vault';
-import { itemName } from '../vault';
+import { Actions, type FormProps, isPinned } from './parts';
 
 const text = (max: number) => z.string().max(max, 'error.tooLong');
 
 const base = {
   name: z.string().trim().min(1, 'error.required').max(200, 'error.tooLong'),
   note: text(10000),
+  pinned: z.boolean(),
   pasted: text(20000),
   generatedPrivate: z.string(),
   generatedPublic: z.string(),
+  ...extrasShape,
 };
 
 export const sshKeySchema = z.object(base).refine((v) => v.generatedPrivate !== '' || v.pasted.trim() !== '', {
@@ -33,15 +36,22 @@ export function sshKeyDefaults(item?: VaultItem): SshKeyValues {
   return {
     name: item ? itemName(item) : '',
     note: typeof item?.data?.['note'] === 'string' ? item.data['note'] : '',
+    pinned: isPinned(item),
     pasted: '',
     generatedPrivate: '',
     generatedPublic: '',
+    ...extrasDefaults(item),
   };
 }
 
-/** The fields an SSH key form owns. A key that exists changes only its name and note. */
-export function sshKeyFields(values: SshKeyValues, material?: SshMaterial): ItemData {
-  const fields: ItemData = { name: values.name, note: values.note === '' ? undefined : values.note };
+/** The fields an SSH key form owns. A key that exists changes only its name, notes and extras. */
+export function sshKeyFields(values: SshKeyValues, existing: VaultItem | undefined, material?: SshMaterial): ItemData {
+  const fields: ItemData = {
+    name: values.name,
+    note: values.note === '' ? undefined : values.note,
+    pinned: values.pinned ? true : undefined,
+    ...extrasFields(values, existing),
+  };
   if (!material) return fields;
   return {
     ...fields,
@@ -53,7 +63,7 @@ export function sshKeyFields(values: SshKeyValues, material?: SshMaterial): Item
   };
 }
 
-type Props = Omit<KeyFormProps<SshKeyValues>, 'onSubmit'> & {
+type Props = Omit<FormProps<SshKeyValues>, 'onSubmit'> & {
   onSubmit: (values: SshKeyValues, material?: SshMaterial) => void;
 };
 
@@ -98,21 +108,20 @@ export function SshKeyForm({ initial, editing, onSubmit, onCancel, pending, erro
   return (
     <form className="stack form-wide" noValidate onSubmit={handleSubmit(submit)}>
       <section className="card pad" aria-labelledby="h-ssh">
-        <h2 id="h-ssh" className="sr">
-          {t('keys.ssh.details')}
-        </h2>
+        <h2 id="h-ssh">{t('keys.ssh.details')}</h2>
         <Field control={control} name="name" label={t('newItem.name')} autoFocus />
         {editing ? (
           <p className="hint">{t('keys.halvesFixed')}</p>
         ) : (
           <>
-            <div className="field">
+            <div className="gen-row">
               <Button onPress={() => void generate()} isDisabled={busy}>
                 {t('keys.ssh.generate')}
               </Button>
-              {generated ? <p className="hint">{t('keys.ssh.generated')}</p> : null}
-              {unsupported ? <p className="error">{t('keys.ssh.error.unsupported')}</p> : null}
+              <span className="hint">{t('itemForm.ssh.orPaste')}</span>
             </div>
+            {generated ? <p className="hint">{t('keys.ssh.generated')}</p> : null}
+            {unsupported ? <p className="error">{t('keys.ssh.error.unsupported')}</p> : null}
             {generated ? null : (
               <Field
                 control={control}
@@ -127,9 +136,18 @@ export function SshKeyForm({ initial, editing, onSubmit, onCancel, pending, erro
             )}
           </>
         )}
-        <Field control={control} name="note" label={t('item.notes')} multiline />
       </section>
-      <FormActions pending={pending || busy} onCancel={onCancel} submitLabel={submitLabel} error={error} />
+      <ExtrasSections control={control} kind="ssh-key" />
+      <section className="card pad" aria-labelledby="h-ssh-more">
+        <h2 id="h-ssh-more" className="sr">
+          {t('newItem.more')}
+        </h2>
+        <Field control={control} name="note" label={t('item.notes')} multiline />
+        <CheckField control={control} name="pinned">
+          {t('newItem.favorite')}
+        </CheckField>
+      </section>
+      <Actions pending={pending || busy} onCancel={onCancel} submitLabel={submitLabel} error={error} />
     </form>
   );
 }

@@ -8,6 +8,7 @@ use super::{FakeEnv, FakeSeal, FakeStore, FakeTokenSigner, World};
 use kemlock_app::devices::{
     AnswerApproval, ApprovalRepo, DeviceNotices, DeviceSignIn, KeyCopies, KeyCopyRepo,
     ListApprovals, NewDeviceNotice, PollApproval, PurgeApprovals, RequestApproval, SignOutDevice,
+    UntrustDevice,
 };
 use kemlock_app::emergency::{
     ApproveDue, EmergencyAccess, EmergencyNotice, EmergencyNotices, EmergencyRepo,
@@ -353,6 +354,17 @@ pub(crate) fn sign_out_device(
         devices: world.store.clone(),
         copies: world.store.clone(),
         tokens: world.store.clone(),
+        clock: world.env.clone(),
+        events: world.store.clone(),
+    }
+}
+
+pub(crate) fn untrust_device(
+    world: &World,
+) -> UntrustDevice<FakeStore, FakeStore, FakeEnv, FakeStore> {
+    UntrustDevice {
+        devices: world.store.clone(),
+        copies: world.store.clone(),
         clock: world.env.clone(),
         events: world.store.clone(),
     }

@@ -1,5 +1,4 @@
 {
-  "newItem.titleOf": "New {kind}",
   "keys.halvesFixed": "The key itself cannot be changed. You can rename it and edit its notes.",
   "keys.ssh.details": "SSH key details",
   "keys.ssh.generate": "Generate an Ed25519 key",
@@ -14,7 +13,6 @@
   "keys.pgp.error.armor": "That does not hold a PGP private key block.",
   "keys.contact.details": "Contact details",
   "keys.contact.armor": "Public key",
-  "keys.contact.armorHint": "Paste their armored PGP public key block.",
   "keys.contact.error.armor": "That is not exactly one PGP public key block.",
   "keys.certificate.details": "Certificate details",
   "keys.certificate.pem": "Certificate",

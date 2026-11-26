@@ -11,13 +11,19 @@ import {
   type VaultStore,
   sealFor,
   spaceOf,
+  tombstone,
 } from './vault';
 
-/** Up to 500 saves, written atomically. Every `existing` item must be at the revision it was read at. */
+/**
+ * Up to 500 saves, written atomically. Every `existing` item must be at the revision it was read at.
+ * `removed` items are deleted for good in the same batch (a tombstone each), so a move that makes an
+ * item in its new place and removes it from the old one either does both or neither.
+ */
 export async function saveBatch(
   deps: VaultDeps,
   store: VaultStore,
   inputs: SaveInput[],
+  removed: VaultItem[] = [],
 ): Promise<VaultItem[]> {
   const now = deps.now?.() ?? new Date();
   const newId = deps.newId ?? (() => globalThis.crypto.randomUUID());
@@ -29,7 +35,7 @@ export async function saveBatch(
     const revision = existing ? existing.revision + 1 : 1;
     const owner = existing?.owner ?? input.owner;
     const data = sealedData(existing, id, input.fields, now);
-    const collectionId = existing?.collectionId ?? input.collectionId;
+    const collectionId = input.recollect ?? existing?.collectionId ?? input.collectionId;
     const sealed = await sealFor(deps.crypto, {
       id,
       owner,
@@ -65,9 +71,11 @@ export async function saveBatch(
       sizes: { ciphertext: sealed.ciphertext.length, itemKey: sealed.itemKey.length },
     });
   }
+  for (const item of removed) writes.push({ expectedRevision: item.revision, item: tombstone(item) });
   for (let i = 0; i < writes.length; i += 500) {
     await deps.api.putBatch({ writes: writes.slice(i, i + 500) });
   }
   for (const item of saved) store.items.set(item.id, item);
+  for (const item of removed) store.items.delete(item.id);
   return saved;
 }

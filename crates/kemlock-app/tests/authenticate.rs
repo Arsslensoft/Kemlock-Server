@@ -1,5 +1,6 @@
 mod fakes;
 
+use fakes::unlock::sign_out_device;
 use fakes::*;
 use kemlock_app::{AppError, SignedIn, TokenPair};
 use kemlock_domain::{Role, UserId};
@@ -74,6 +75,70 @@ async fn a_changed_security_stamp_ends_every_session() {
             .execute(&tokens.access_token, JKT)
             .await,
         Err(AppError::SessionEnded("security-stamp-changed"))
+    );
+}
+
+#[tokio::test]
+async fn a_token_of_a_device_that_was_signed_out_is_refused_at_once() {
+    let (world, user, tokens) = signed_in().await;
+    let SignedIn::Tokens(other) = sign_in_with(&world, EMAIL, &PASSWORD, device("Laptop"), "jkt-2")
+        .await
+        .expect("signs in")
+    else {
+        panic!("tokens expected");
+    };
+    let me = world
+        .authenticate()
+        .execute(&tokens.access_token, JKT)
+        .await
+        .expect("authenticates");
+
+    sign_out_device(&world)
+        .execute(&me, other.device)
+        .await
+        .expect("signs the other device out");
+
+    // Its access token is still unexpired and still carries the account's stamp, and no longer
+    // opens anything; the device that signed it out is untouched.
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&other.access_token, "jkt-2")
+            .await,
+        Err(AppError::SessionEnded("signed-out"))
+    );
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
+        Ok(me)
+    );
+    assert_eq!(user, me.user);
+}
+
+#[tokio::test]
+async fn a_token_naming_a_device_of_another_account_is_refused() {
+    let (world, user, tokens) = signed_in().await;
+    let stranger = make_user(&world, "kim@example.org").await;
+    // The device row now belongs to someone else, as a token minted for another account's device
+    // id would find it.
+    let mut device_row = world
+        .store
+        .devices_of(user)
+        .into_iter()
+        .next()
+        .expect("a device");
+    device_row.user = stranger;
+    kemlock_app::ports::DeviceRepo::upsert(&world.store, &device_row)
+        .await
+        .expect("moves the device");
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
+        Err(AppError::SessionEnded("signed-out"))
     );
 }
 

@@ -1,6 +1,7 @@
 // Plain labelled controls for the account screens: a native input or select under the canvas's
 // `.field` styling, which every screen reader already handles.
-import { type ReactNode, useId } from 'react';
+import { type ChangeEvent, type ReactNode, useId } from 'react';
+import { PasswordInput } from '@/ui/PasswordInput';
 
 export function TextInput({
   label,
@@ -20,19 +21,19 @@ export function TextInput({
   required?: boolean;
 }) {
   const id = useId();
+  const input = {
+    id,
+    className: mono ? 'mono' : undefined,
+    value,
+    required,
+    autoComplete: 'off',
+    spellCheck: false,
+    onChange: (event: ChangeEvent<HTMLInputElement>) => onChange(event.target.value),
+  };
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        className={mono ? 'mono' : undefined}
-        type={type}
-        value={value}
-        required={required}
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(event) => onChange(event.target.value)}
-      />
+      {type === 'password' ? <PasswordInput {...input} /> : <input type={type} {...input} />}
       {hint ? <span className="hint">{hint}</span> : null}
     </div>
   );

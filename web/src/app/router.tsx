@@ -13,6 +13,7 @@ import {
 } from '@tanstack/react-router';
 import { z } from 'zod';
 import type { ConfigResponse } from '@/api/types';
+import { KIND_ORDER, type KnownKind } from '@/features/vault/kinds';
 import { safeNext } from '@/lib/safe-next';
 import { configQuery } from './services';
 import type { Session } from './session';
@@ -43,17 +44,24 @@ interface VaultSearch {
   page?: number;
   fav?: boolean;
 }
+interface TokenSearch {
+  token?: string;
+}
 interface SsoSearch {
   code?: string;
   state?: string;
   error?: string;
 }
 interface NewItemSearch {
-  kind?: 'login' | 'note';
+  /** Which creation form opens; a login when absent or unknown. */
+  kind?: KnownKind;
+  /** The id of an item a new one is filled from (Make a copy); its kind is the kind of the form. */
+  copyOf?: string;
 }
 
 const nextSearch = z.object({ next: optionalString });
 const passwordSearch = z.object({ email: optionalString, next: optionalString });
+const tokenSearch = z.object({ token: optionalString });
 const ssoSearch = z.object({ code: optionalString, state: optionalString, error: optionalString });
 const vaultSearch = z.object({
   kind: optionalString,
@@ -61,7 +69,7 @@ const vaultSearch = z.object({
   page: z.number().int().min(1).optional().catch(undefined),
   fav: z.boolean().optional().catch(undefined),
 });
-const newItemSearch = z.object({ kind: z.enum(['login', 'note']).optional().catch(undefined) });
+const newItemSearch = z.object({ kind: z.enum(KIND_ORDER).optional().catch(undefined), copyOf: optionalString });
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   beforeLoad: async ({ context, location }) => {
@@ -108,6 +116,14 @@ const about = createRoute({
   getParentRoute: () => rootRoute,
   path: '/about',
   component: lazyRouteComponent(() => import('@/features/about/About')),
+});
+
+/** Where the link mailed to a new address lands: the token in it is the proof, so no sign-in is asked. */
+const confirmEmail = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/confirm-email',
+  validateSearch: (search): TokenSearch => tokenSearch.parse(search),
+  component: lazyRouteComponent(() => import('@/features/account/ConfirmEmail')),
 });
 
 // ---- First-run setup ----------------------------------------------------------------------
@@ -267,6 +283,11 @@ const security = createRoute({
   path: '/security',
   component: lazyRouteComponent(() => import('@/features/account/Security')),
 });
+const profile = createRoute({
+  getParentRoute: () => vaultLayout,
+  path: '/profile',
+  component: lazyRouteComponent(() => import('@/features/account/Profile')),
+});
 
 // Screens added after the first slice. Their components read params with `useParams({ strict: false })`,
 // so nothing here depends on a route id.
@@ -352,6 +373,12 @@ const adminSettings = createRoute({
   component: lazyRouteComponent(() => import('@/features/admin/Settings')),
 });
 
+const adminFields = createRoute({
+  getParentRoute: () => adminLayout,
+  path: '/admin/fields',
+  component: lazyRouteComponent(() => import('@/features/admin/Fields')),
+});
+
 const adminSso = createRoute({
   getParentRoute: () => adminLayout,
   path: '/admin/sso',
@@ -386,6 +413,7 @@ const adminKeyMismatch = createRoute({
 const routeTree = rootRoute.addChildren([
   indexRoute,
   about,
+  confirmEmail,
   setupCode,
   setupAdmin,
   setupTwoStep,
@@ -405,6 +433,7 @@ const routeTree = rootRoute.addChildren([
     trash,
     devices,
     security,
+    profile,
     spaces,
     space,
     send,
@@ -419,6 +448,7 @@ const routeTree = rootRoute.addChildren([
     adminUsers,
     adminEvents,
     adminSettings,
+    adminFields,
     adminSso,
     adminMigrate,
     adminFederation,

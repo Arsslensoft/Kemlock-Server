@@ -451,6 +451,129 @@
         ],
         "type": "object"
       },
+      "ChangeEmailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "description": "The new sign-in address.",
+            "type": "string"
+          },
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`, with the current password.",
+            "type": "string"
+          },
+          "kdf": {
+            "$ref": "#/components/schemas/KdfDto",
+            "description": "The settings and salt of the master key the record and the wrap were made with."
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread.",
+            "type": "string"
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof of the second step, needed beside the password when the account has one on,\nof the same kinds as for changing the password. Works once."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ticket": {
+            "description": "What `POST /account/credentials/start` answered as `ticket` for this `email`, unread.",
+            "type": "string"
+          },
+          "upload": {
+            "description": "OPAQUE's `RegistrationUpload`, registered under the new address, base64url.",
+            "type": "string"
+          },
+          "wrappedRootKey": {
+            "description": "The root key wrapped under that master key and the new record's export key, base64url.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "loginState",
+          "finalization",
+          "upload",
+          "kdf",
+          "wrappedRootKey",
+          "ticket"
+        ],
+        "type": "object"
+      },
+      "ChangePasswordRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`, with the current password.",
+            "type": "string"
+          },
+          "kdf": {
+            "$ref": "#/components/schemas/KdfDto",
+            "description": "The settings and salt of the new master key: the defaults and a new 16-byte salt."
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread.",
+            "type": "string"
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof of the second step, needed beside the password when the account has one on:\nthe code mailed by `POST /kem/v1/account/two-factor/proof`, a current code of the\nauthenticator app, the recovery code, or a security key's or passkey's answer. Works once."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "signOutOthers": {
+            "description": "End the sessions of every other device at once, and get new tokens for this one in the\nanswer. Defaults to false.",
+            "type": "boolean"
+          },
+          "ticket": {
+            "description": "What `POST /account/credentials/start` answered as `ticket`, for a registration made with no\n`email`, unread.",
+            "type": "string"
+          },
+          "upload": {
+            "description": "OPAQUE's `RegistrationUpload` for the new password, base64url.",
+            "type": "string"
+          },
+          "wrappedRootKey": {
+            "description": "The root key wrapped under the new master key and export key, base64url, 92 bytes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loginState",
+          "finalization",
+          "upload",
+          "kdf",
+          "wrappedRootKey",
+          "ticket"
+        ],
+        "type": "object"
+      },
+      "ChangedPasswordDto": {
+        "properties": {
+          "tokens": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TokenResponse",
+                "description": "New tokens for the device that asked, bound to its DPoP key, present exactly when\n`signOutOthers` was true: the change replaced the security stamp, so the tokens it held\nstopped working with it. Null otherwise, and the tokens it holds go on."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "CollectionDto": {
         "properties": {
           "id": {
@@ -587,6 +710,19 @@
         ],
         "type": "object"
       },
+      "ConfirmEmailRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "description": "The token in the mailed link.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
+      },
       "ConfirmRequest": {
         "additionalProperties": false,
         "properties": {
@@ -654,6 +790,18 @@
           "memberKeyVersion",
           "statement",
           "signature"
+        ],
+        "type": "object"
+      },
+      "ConfirmedEmailDto": {
+        "properties": {
+          "email": {
+            "description": "The address the account signs in with now.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
         ],
         "type": "object"
       },
@@ -886,6 +1034,89 @@
         ],
         "type": "object"
       },
+      "CredentialsStartRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "description": "The new address, when the registration is for one: the record is bound to it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request": {
+            "description": "OPAQUE's `RegistrationRequest`, base64url.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "type": "object"
+      },
+      "CredentialsStartResponse": {
+        "properties": {
+          "response": {
+            "description": "OPAQUE's `RegistrationResponse`, base64url.",
+            "type": "string"
+          },
+          "ticket": {
+            "description": "Binds the registration to the account, the DPoP key that asked, the address asked for (if\nany) and the next few minutes: base64url, opaque. `PUT /account/password` and\n`POST /account/email` need it back, with the last registration message made from\n`response`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "response",
+          "ticket"
+        ],
+        "type": "object"
+      },
+      "CustomFieldDto": {
+        "description": "One field an admin offers.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kinds": {
+            "$ref": "#/components/schemas/KindsDto"
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "description": "`text`, `hidden` or `checkbox`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "kinds"
+        ],
+        "type": "object"
+      },
+      "CustomFieldsDto": {
+        "description": "The fields an admin offers, oldest first, and whether people may add their own.",
+        "properties": {
+          "allowOwn": {
+            "description": "Whether people may add fields of their own to an item. Off only when an admin turned it\noff; fields already on items stay.",
+            "type": "boolean"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "fields",
+          "allowOwn"
+        ],
+        "type": "object"
+      },
       "DeviceChallengeRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1007,6 +1238,13 @@
           "trusted": {
             "description": "Whether the device keeps a trusted-device copy of the root key on the server.",
             "type": "boolean"
+          },
+          "trustedSince": {
+            "description": "When the device made that copy; absent when it holds none.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -1308,6 +1546,23 @@
         },
         "required": [
           "address"
+        ],
+        "type": "object"
+      },
+      "EmailChangeAskedDto": {
+        "properties": {
+          "expiresAt": {
+            "description": "When the link runs out, RFC 3339.",
+            "type": "string"
+          },
+          "pendingEmail": {
+            "description": "The address the link was mailed to.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pendingEmail",
+          "expiresAt"
         ],
         "type": "object"
       },
@@ -2241,6 +2496,22 @@
           "credential"
         ],
         "type": "object"
+      },
+      "KindsDto": {
+        "description": "The item types a field applies to.",
+        "oneOf": [
+          {
+            "description": "The word `all`: every type that takes custom fields, now and later.",
+            "type": "string"
+          },
+          {
+            "description": "These item kinds only, such as `login` or `card`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        ]
       },
       "KitDto": {
         "properties": {
@@ -3544,6 +3815,58 @@
         ],
         "type": "object"
       },
+      "ProfileDto": {
+        "description": "The profile: what it holds and which parts may change.",
+        "properties": {
+          "compatible": {
+            "description": "The account is shared with the Bitwarden apps, which hold its password: it is changed there.",
+            "type": "boolean"
+          },
+          "email": {
+            "description": "The address the account signs in with.",
+            "type": "string"
+          },
+          "hasPassword": {
+            "description": "The account has a master password to change.",
+            "type": "boolean"
+          },
+          "name": {
+            "description": "The display name, or null when the account has none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pendingEmail": {
+            "description": "The address a link was mailed to, while it can still be opened.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sso": {
+            "description": "A single sign-on identity is linked: the name and the address are the identity provider's.",
+            "type": "boolean"
+          },
+          "twoStep": {
+            "description": "The account has a second step on: changing the master password or the address asks a fresh\nproof of it (a code, a security key or a passkey) beside the password.",
+            "type": "boolean"
+          },
+          "userId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "email",
+          "sso",
+          "hasPassword",
+          "compatible",
+          "twoStep"
+        ],
+        "type": "object"
+      },
       "ProofRequest": {
         "additionalProperties": false,
         "description": "What proves it is the account's owner at a keyboard who turns a second step off, not only a\nsession: the one-time code mailed by `POST /kem/v1/account/two-factor/proof`, as Vaultwarden\ntakes a mailed code for the master password (`PasswordOrOtpData`).",
@@ -3823,6 +4146,19 @@
           "collection",
           "keyVersion",
           "keys"
+        ],
+        "type": "object"
+      },
+      "RenameProfileRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "The new name; blank clears it. At most 100 characters.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -5662,6 +5998,374 @@
         ]
       }
     },
+    "/kem/v1/account/credentials/start": {
+      "post": {
+        "operationId": "doc_credentials_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialsStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialsStartResponse"
+                }
+              }
+            },
+            "description": "OPAQUE's registration response, bound to the new address when one was given, else to the account's own, and the ticket that goes with it. An address another account has is answered exactly as a free one is"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The request or the address is malformed, or the address is the account's own"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed` (a new address for an identity provider's account), `compatible-account` or `no-password`"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/email": {
+      "delete": {
+        "operationId": "doc_cancel_email",
+        "responses": {
+          "204": {
+            "description": "No change of address is waiting: there was none, or its link no longer works"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "doc_request_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailChangeAskedDto"
+                }
+              }
+            },
+            "description": "The link is mailed to the new address; nothing changes until it is opened. The same answer whether or not another account has the address: that address is mailed a notice that says so instead of the link"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; a second step is on and the proof is missing, wrong or spent; the address, the settings, the wrap or the upload are malformed, or the address is the account's own"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed`, `compatible-account` or `no-password`"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`mail-off`: the server sends no mail"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Three asks an hour per account, and the limits of every password check"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          },
+          "502": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`mail-failed`: the mail with the link could not be sent"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/email/confirm": {
+      "post": {
+        "operationId": "doc_confirm_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmEmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfirmedEmailDto"
+                }
+              }
+            },
+            "description": "The address is the account's now, and every session has ended: sign in again with it"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`email-change-invalid`: the token is unknown, used or out of time, or the account is disabled or being deleted"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed`, `compatible-account` or `no-password`: the account became one that can't change its address; the ask is dropped"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`email-taken`: someone took the address meanwhile, the ask is dropped; or `account-changed`: the account was written meanwhile, nothing was, and the link still works"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/kem/v1/account/export": {
       "get": {
         "operationId": "doc_export",
@@ -6481,6 +7185,291 @@
         ],
         "tags": [
           "passkeys"
+        ]
+      }
+    },
+    "/kem/v1/account/password": {
+      "put": {
+        "operationId": "doc_change_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangedPasswordDto"
+                }
+              }
+            },
+            "description": "The password's records are replaced; the root key and its version stay. With `signOutOthers` the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; a second step is on and the proof is missing, wrong or spent; the settings, the wrap or the upload are malformed"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`compatible-account` or `no-password`"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`account-changed`: the account was written meanwhile and nothing was; ask again"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/profile": {
+      "get": {
+        "operationId": "doc_profile_show",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDto"
+                }
+              }
+            },
+            "description": "The profile: name, address and what may change"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "patch": {
+        "operationId": "doc_profile_rename",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameProfileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileDto"
+                }
+              }
+            },
+            "description": "The profile, with the new name"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The name is longer than 100 characters or holds control characters"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`sso-managed`: the name comes from the identity provider"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
         ]
       }
     },
@@ -10765,6 +11754,69 @@
         ]
       }
     },
+    "/kem/v1/custom-fields": {
+      "get": {
+        "operationId": "doc_custom_fields_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomFieldsDto"
+                }
+              }
+            },
+            "description": "The fields the admin offers for items, oldest first, and whether people may add their own. Names and types are in the clear; the values live in the items and never reach the server. Nothing is required"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "custom-fields"
+        ]
+      }
+    },
     "/kem/v1/devices": {
       "get": {
         "operationId": "doc_devices_list",
@@ -11416,6 +12468,107 @@
         "responses": {
           "204": {
             "description": "The device's tokens, key copy and row are gone"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "No such device on this account"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "trusted-device"
+        ]
+      }
+    },
+    "/kem/v1/devices/{id}/key-copy": {
+      "delete": {
+        "operationId": "doc_device_untrust",
+        "parameters": [
+          {
+            "description": "The device's id, from the device list",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "That device's copy of the root key is gone; its session goes on"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The id isn't a UUID"
           },
           "401": {
             "content": {

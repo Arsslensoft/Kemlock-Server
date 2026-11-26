@@ -181,6 +181,28 @@ mod tests {
         Owner::user([0x22; 16])
     }
 
+    /// Every kind the web vault and the Kemlock app make, in the order the vault lists them. The
+    /// server checks the alphabet and the length only, so a kind added later needs no change here.
+    #[test]
+    fn every_kind_of_item_is_a_valid_kind() {
+        for kind in [
+            "login",
+            "note",
+            "file",
+            "otp",
+            "backup-codes",
+            "passkey",
+            "card",
+            "identity",
+            "contact",
+            "certificate",
+            "ssh-key",
+            "pgp-key",
+        ] {
+            assert!(is_valid_kind(kind), "{kind}");
+        }
+    }
+
     #[test]
     fn kind_alphabet() {
         let longest = "a".repeat(64);

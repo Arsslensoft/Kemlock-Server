@@ -64,6 +64,18 @@ describe('writeWebsites', () => {
     expect(out.websites).toEqual(['example.co', 'intranet.example.co']);
   });
 
+  it('leaves a Never website out of the hosts, as it does a regular expression, and keeps it in uris and urls', () => {
+    const out = writeWebsites([
+      { uri: 'example.co', match: 'domain' },
+      { uri: 'wiki.example.co', match: 'never' },
+      { uri: '^x$', match: 'regex' },
+    ]);
+    expect(out.websites).toEqual(['example.co']);
+    expect(out.urls).toEqual(['example.co', 'wiki.example.co']);
+    expect(out.uris).toEqual([{ uri: 'example.co', match: 0 }, { uri: 'wiki.example.co', match: 5 }, { uri: '^x$', match: 4 }]);
+    expect(writeWebsites([{ uri: 'wiki.example.co', match: 'never' }]).websites).toEqual([]);
+  });
+
   it('round-trips through readWebsites', () => {
     const out = writeWebsites(rules);
     expect(readWebsites({ ...out })).toEqual(rules.slice(0, 3).map((r) => ({ ...r, uri: r.uri.trim() })));

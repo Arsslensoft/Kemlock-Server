@@ -473,6 +473,11 @@ async fn signing_a_device_out_deletes_its_tokens_and_its_copy() {
     assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
 
     assert!(app.store.key_copy_of(other_id).is_none());
+    // Its access token has not run out and carries the account's stamp, and opens nothing now.
+    let used = other
+        .get_authed("/kem/v1/devices/key-copy", &other_session.access_token)
+        .await;
+    assert_eq!(used.status, StatusCode::UNAUTHORIZED, "{:?}", used.json());
     let refreshed = other
         .post(
             "/kem/v1/auth/token",
@@ -492,6 +497,159 @@ async fn signing_a_device_out_deletes_its_tokens_and_its_copy() {
 }
 
 #[tokio::test]
+async fn one_device_stops_trusting_another_and_the_list_says_since_when() {
+    let (app, open, session) = open_device().await;
+    let other = app.client();
+    let other_session = {
+        let signed = sign_in_reply(&other, EMAIL, test_device()).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    let put = other
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(&other_session.access_token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "keystore",
+                })),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+    let other_id: DeviceId = other_session.device_id.parse().expect("a device id");
+
+    // The list names the device as trusted, and since when its copy was made.
+    let listed = open
+        .get_authed("/kem/v1/devices", &session.access_token)
+        .await
+        .json();
+    let entry = |list: &Value, id: &str| {
+        list["devices"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .find(|d| d["id"] == id)
+            .expect("listed")
+            .clone()
+    };
+    let trusted = entry(&listed, &other_session.device_id);
+    assert_eq!(trusted["trusted"], true);
+    assert_eq!(trusted["trustedSince"], put.json()["createdAt"]);
+    let mine = entry(&listed, &session.device_id);
+    assert_eq!(mine["trusted"], false);
+    assert!(mine["trustedSince"].is_null());
+
+    // Another device of the account takes the copy away; the session goes on.
+    let uri = format!("/kem/v1/devices/{}/key-copy", other_session.device_id);
+    let removed = open
+        .send(
+            "DELETE",
+            &uri,
+            Req {
+                access_token: Some(&session.access_token),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{:?}", removed.body);
+    assert!(app.store.key_copy_of(other_id).is_none());
+    let refreshed = other
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": other_session.refresh_token}),
+        )
+        .await;
+    assert_eq!(refreshed.status, StatusCode::OK, "{:?}", refreshed.json());
+    let after = open
+        .get_authed("/kem/v1/devices", &session.access_token)
+        .await
+        .json();
+    let untrusted = entry(&after, &other_session.device_id);
+    assert_eq!(untrusted["trusted"], false);
+    assert!(untrusted["trustedSince"].is_null());
+    assert!(
+        app.store
+            .events()
+            .iter()
+            .any(|e| e.action == "device.untrust")
+    );
+
+    // Nothing to take away is fine; a device that isn't there, or isn't an id, is refused.
+    let again = open
+        .send(
+            "DELETE",
+            &uri,
+            Req {
+                access_token: Some(&session.access_token),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(again.status, StatusCode::NO_CONTENT);
+    for (target, status) in [
+        (DeviceId::random().to_string(), StatusCode::NOT_FOUND),
+        ("not-a-uuid".to_owned(), StatusCode::BAD_REQUEST),
+    ] {
+        let reply = open
+            .send(
+                "DELETE",
+                &format!("/kem/v1/devices/{target}/key-copy"),
+                Req {
+                    access_token: Some(&session.access_token),
+                    ..Req::default()
+                },
+            )
+            .await;
+        assert_eq!(reply.status, status, "{target}");
+    }
+}
+
+#[tokio::test]
+async fn a_device_of_another_account_can_not_be_untrusted() {
+    let (app, open, session) = open_device().await;
+    let stranger = app.client();
+    let stranger_session = register_and_sign_in(&stranger, "kim@example.org").await;
+    let stranger_id: DeviceId = stranger_session.device_id.parse().expect("a device id");
+    let put = stranger
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(&stranger_session.access_token),
+                body: Some(json!({"wrappedKey": b64(&[0xc3u8; 92]), "protection": "keystore"})),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+
+    let reply = open
+        .send(
+            "DELETE",
+            &format!("/kem/v1/devices/{}/key-copy", stranger_session.device_id),
+            Req {
+                access_token: Some(&session.access_token),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+    assert!(app.store.key_copy_of(stranger_id).is_some());
+    let anonymous = open
+        .send(
+            "DELETE",
+            &format!("/kem/v1/devices/{}/key-copy", stranger_session.device_id),
+            Req::default(),
+        )
+        .await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn the_openapi_document_names_the_new_routes() {
     let app = App::new(false);
     let json = app.client().get("/kem/v1/openapi.json").await.json();
@@ -505,6 +663,7 @@ async fn the_openapi_document_names_the_new_routes() {
         ("/kem/v1/devices/key-copy", "get"),
         ("/kem/v1/devices/key-copy", "put"),
         ("/kem/v1/devices/key-copy", "delete"),
+        ("/kem/v1/devices/{id}/key-copy", "delete"),
         ("/kem/v1/devices/sign-out", "post"),
         ("/kem/v1/emergency", "get"),
         ("/kem/v1/emergency/grants", "post"),

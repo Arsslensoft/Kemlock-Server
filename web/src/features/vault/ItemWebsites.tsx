@@ -8,6 +8,7 @@ import { Button, IconButton, buttonClass } from '@/ui/Button';
 import { Icon } from '@/ui/Icon';
 import { Notice } from '@/ui/Notice';
 import '@/styles/tools.css';
+import '@/styles/item.css';
 import { useVaultActions, useVaultItem } from './hooks';
 import { itemName } from './vault';
 import {
@@ -63,7 +64,7 @@ export function WebsitesView({
           <h1 className="page-title">{t('sites.title', { name })}</h1>
           <p className="lede">{t('sites.lede', { count: filled.length })}</p>
         </div>
-        <div className="actions">
+        <div className="item-actions">
           <Button onPress={onCancel}>{t('action.cancel')}</Button>
           <Button variant="primary" isDisabled={pending} onPress={onSave}>
             {t('action.save')}

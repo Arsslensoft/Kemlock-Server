@@ -61,6 +61,21 @@ describe('PGP key info', () => {
     );
   });
 
+  it('says the algorithm of the primary key and counts its subkeys', async () => {
+    // The v4 RSA public key packet of the test above, then two public subkey packets (tag 14).
+    const body = Uint8Array.from([4, 0, 0, 0, 1, 1, 0, 8, 0xc3, 0, 8, 0x03]);
+    const key = Uint8Array.from([0xc6, body.length, ...body]);
+    const subkey = Uint8Array.from([0xce, body.length, ...body]);
+    const info = await pgpInfo(toB64(Uint8Array.from([...key, ...subkey, ...subkey])));
+    expect(info.algorithm).toBe('RSA');
+    expect(info.subkeys).toBe(2);
+    const bare = await pgpInfo(toB64(key));
+    expect(bare.subkeys).toBe(0);
+    // A key made with Ed25519 (algorithm 22) is called by that.
+    const ed = Uint8Array.from([0xc6, 6, 4, 0, 0, 0, 0, 22]);
+    expect((await pgpInfo(toB64(ed))).algorithm).toBe('ed25519');
+  });
+
   it('wraps a binary key in armor', () => {
     expect(armor('PGP PUBLIC KEY BLOCK', 'A'.repeat(70))).toBe(
       `-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n${'A'.repeat(64)}\n${'A'.repeat(6)}\n-----END PGP PUBLIC KEY BLOCK-----\n`,

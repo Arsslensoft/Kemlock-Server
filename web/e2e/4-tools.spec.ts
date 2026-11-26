@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { type Page, expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { signInAsAdmin } from './signin';
+import { newItem, signInAsAdmin } from './signin';
 import type { Placement } from '../src/api/placement';
 
 // The canvas's vault tools after sign-in: Duplicates and DuplicateMerge, ItemWebsites, Vault
@@ -14,12 +14,12 @@ import type { Placement } from '../src/api/placement';
 const PASSWORD = 'Tools-journey-pass-1!';
 
 async function newLogin(page: Page, name: string, website: string): Promise<void> {
-  await page.getByRole('link', { name: 'New item' }).first().click();
+  await newItem(page, 'Login');
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   await page.getByLabel('Name', { exact: true }).fill(name);
   await page.getByLabel('Username').fill('tools@example.org');
   await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
-  await page.getByLabel('Website').fill(website);
+  await page.getByLabel('Website 1', { exact: true }).fill(website);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('heading', { name, level: 1 })).toBeVisible();
 }
@@ -72,7 +72,8 @@ test('two logins that hold the same values merge into one, and can be unmerged',
   // The kept login holds both websites, each with its own rule: ItemWebsites.
   await page.getByRole('link', { name: 'All items' }).first().click();
   await page.getByRole('row', { name: /Tools (One|Two)/ }).getByRole('link').first().click();
-  await page.getByRole('link', { name: 'Websites and rules' }).click();
+  await page.getByRole('button', { name: /^More actions for Tools (One|Two)$/ }).click();
+  await page.getByRole('menuitem', { name: 'Websites and rules' }).click();
   await expect(page.getByRole('heading', { name: /^Websites of Tools (One|Two)$/, level: 1 })).toBeVisible();
   await expect(page.getByLabel('Website 1', { exact: true })).toHaveValue(/tools-journey\.example/);
   await expect(page.getByLabel('Website 2', { exact: true })).toHaveValue(/tools-journey\.example/);

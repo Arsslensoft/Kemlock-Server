@@ -91,6 +91,142 @@ wrapped  = AES-256-GCM(wrap key, nonce, root key, aad)
 The export key is OPAQUE's 64-byte export key. Neither the master key nor the export key alone
 opens the wrap, so a stolen database allows no offline guessing without the OPAQUE server secret.
 
+### Changing the master password and the sign-in address
+
+The root key does not change when the master password does. The browser makes a new master key and
+a new OPAQUE record, wraps the same root key again, and sends the three; the server swaps them in
+together. Nothing else the root key protects is touched: the key version, the public bundle and its
+signature, the sealed private keys, the Recovery Kit, the passkey PRF wraps, the trusted-device
+copies and every item stay byte for byte, because they hang off the root key and not off the master
+key. No item format changes.
+
+- **The new master key** is `Argon2id(new password, new salt, m = 65536, t = 3, p = 4, L = 32)`
+  with a new random 16-byte salt. The server accepts exactly these settings and a 16-byte salt, as
+  at registration, so prelogin answers an account no differently from an unknown email.
+- **The new wrap** is the password wrap above, `wrap key = HKDF(ikm = new master key ‖ new OPAQUE
+  export key, …)`, over the same root key, with the **same** `aad` (`"kemlock/v1/root-wrap"` ‖
+  account id ‖ `u32be(key version)`; the key version does not move) and a new random nonce. The key
+  worker makes it from the handles of the new master key and export key and the open account's root
+  key (`rewrapRoot`); the root key is never in JavaScript.
+- **The new OPAQUE record** is a registration of the new master key. OPAQUE binds the record to its
+  credential identifier, which is the account's email (lower-cased, `opaque1` above), so a change of
+  **address** needs a new record too: it is registered under the new address while the browser still
+  has the password. That is why changing the address asks for the master password, and why it
+  cannot be done for an account that has none.
+
+The routes need a session (`DPoP` and an access token); the one marked "no session" is opened from
+the mail client. Every change that writes also needs the password again, as erasing the account does:
+`loginState` and `finalization` are the last two messages of a fresh OPAQUE login
+(`POST /kem/v1/auth/opaque/start` first, with the same device key). A login state works once, a
+wrong password counts against the account like a wrong sign-in. With a second step on, a fresh
+proof of it is asked beside the password, exactly as erasing the account asks it: `proof` is the code mailed by
+`POST /kem/v1/account/two-factor/proof`, a current code of the authenticator app, the recovery code,
+or a security key's or passkey's answer as `{"webauthn": …}`, and works once. The profile says
+whether one is on (`twoStep`). A request with a second step on and no proof is refused with
+`400 invalid-request` before the login state is spent; the proof is checked once the password is. A
+stolen session and a guessed password are therefore not enough to take the account's password or
+address over.
+
+| Route | |
+|---|---|
+| `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail, twoStep}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened, `twoStep` when the account has a second step on. |
+| `PATCH /kem/v1/account/profile` | `{name}`: trimmed, blank clears it, at most 100 characters and no control characters. Answers the profile. `403 sso-managed` for an identity provider's account. Event `account.name_changed`. |
+| `POST /kem/v1/account/credentials/start` | `{request, email?}`: OPAQUE's `RegistrationResponse` for the account's own address, or for `email`, which must be well formed and not the account's own (`400`). Answers `{response, ticket}`, and answers the same for an address another account has (see "No account enumeration"). |
+| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked when `signOutOthers` was true, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
+| `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?}` with `upload` registered under `email` and `ticket` asked for it: keeps the change as pending and mails the new address. `202 {pendingEmail, expiresAt}`, for an address that has an account too. Three asks an hour per account. Event `account.email_change_requested`. |
+| `DELETE /kem/v1/account/email` | Takes the pending change back. `204`, also when there was none. |
+| `POST /kem/v1/account/email/confirm` | **No session.** `{token}`: opens the link. `200 {email}`. `409 account-changed` when the account was written meanwhile (the link still works). Event `account.email_changed`. |
+
+`upload` is OPAQUE's `RegistrationUpload`, `kdf` is `{memoryKib, iterations, parallelism, salt}`, and
+`wrappedRootKey` is the 92-byte wrap, all base64url as everywhere. The server checks the settings and
+the lengths and never opens anything.
+
+**The ticket.** `credentials/start` hands out, with the server's half of the registration, a ticket
+sealed under `server.key` (purpose `"profile-registration"`, as the login state is, so the server keeps
+nothing between the two messages). It holds the account, the DPoP key that asked, the address the
+registration was asked for (none for a password), the SHA-256 of the credential identifier the OPRF
+was evaluated for, and an expiry: as long as a login state lasts, five minutes. `PUT /password` and
+`POST /email` must send it back as `ticket`, and it is checked before the password is spent: a ticket
+that is missing, unreadable, run out, made for another account or another DPoP key, made for an
+address when a password is changed or for a different address than the request's `email` (compared
+the same way whether or not that address has an account), or made for an address the account no
+longer has, is `400 invalid-request`. A registration made for one use can't be spent on another.
+
+**`signOutOthers`** (default false) ends every other session of the account at once. The new
+records and a **new security stamp** are written in the same conditional write, so every access token
+and every refresh token the account holds stops working with it, the asking device's too; nothing
+waits for a token to run out. The answer carries the asking device's new tokens (`tokens`, the same
+as `POST /kem/v1/auth/token` answers), bound to its DPoP key and its device id, and its old refresh
+tokens are deleted. The other devices, their trusted-device copies and their tokens are deleted as
+`POST /kem/v1/devices/sign-out` does for one, after the write and best effort: they are dead by their
+stamp whether or not that works, and the change is not reported failed if it does not. Without
+`signOutOthers` the stamp stays, every device goes on and asks for the new password the next time it
+unlocks with it; `tokens` is `null`. An access token whose device has been signed out is refused too,
+whatever its stamp.
+
+**Writes are conditional.** The password's records and the address change each update the account's
+row only while it still has the `updated_at` and security stamp that were read, in one transaction
+with the deletion of the pending change (and, for an address, the spending of this very link and the
+move of the emergency grants), writing only the sign-in columns. A write that finds the row changed
+writes nothing and answers `409 account-changed`: asking again is safe, and a link is not spent by a
+change that did not happen.
+
+**The address changes only when the link is opened.** Asking keeps one pending change per account (a
+new ask replaces the old one, whose link stops working): the new address, the new record, settings
+and wrap, and the SHA-256 of the link's token, which is 32 random bytes as base64url and is never
+stored. The mail to the new address carries `<DOMAIN>/confirm-email?token=<token>`, good once and for
+24 hours; the mail to the old address says a change was asked for, names the new address and carries
+no link. The server must be able to send mail (`409 mail-off` otherwise), and a mail that cannot be
+sent leaves nothing pending (`502 mail-failed`). Three asks an hour per account are accepted, counted
+whether the address is free or not, on top of the limits every password check has; the fourth is
+`429 rate-limited`, before the password is spent.
+
+Opening the link looks at the account again, as it is now. An account that has been disabled or is
+being deleted gets `400 email-change-invalid`, as an unknown token does. One that has since been linked
+to an identity provider, shared with the Bitwarden apps or left with no password gets the refusal the
+ask would have had (`403`), and its pending change is dropped, since it can never be applied; so does
+an address another account has taken meanwhile (`409 email-taken`). Otherwise one conditional write
+replaces the account's address, record, settings and wrap with the pending ones, gives it a **new
+security stamp** (so every access and refresh token it holds stops working), spends the link, and
+points the **emergency-access grants** at the new address: the grants in which the account is the
+contact, and invitations still waiting at the old address, now name the new one (a grantor who already
+has a grant to the new address keeps both as they were). Every device's tokens are then deleted, so
+every device signs in again with the new address and password. A change of master password drops a
+pending change of address, which was made from the old password and would put it back. Erasing the
+account deletes it. Events carry no address.
+
+**No account enumeration.** Asking for an address another account has looks, to whoever asks, like
+asking for a free one. `credentials/start` evaluates the server's half of OPAQUE for random bytes
+instead of that address and never for another account's identifier, and the ticket has the same size;
+`POST /account/email` answers `202` with the same body, keeps a pending change that shows on the
+profile as any other does, and tells the old address as ever. The address itself is mailed a notice
+that it already has an account, that nothing was changed, and no link; the pending change that
+stands in for the real one has a token nobody was given, so nothing opens it. The checks that can
+fail (the ticket, the settings, the wrap, the rate limit, the password) come in the same order for
+both. Only opening a link can say `email-taken`, when someone took the address between the ask and
+the link.
+
+**Notices.** Every mail is best effort and none carries a secret or a link but the one that confirms
+the address: a new master password is mailed to the account's address (saying whether the other
+devices were signed out), and a change of address that was made is mailed to the address it had,
+naming the new one.
+
+Who may change what:
+
+- An account an identity provider owns (an SSO identity is linked) cannot change its name or its
+  address: `403 sso-managed`. It may change its master password, if it has one.
+- An account shared with the Bitwarden apps (`compatible`) holds its password hash and key in the
+  Bitwarden account record, so its password and address are changed there: `403 compatible-account`.
+- An account with no master password (single sign-on made it) has none to change, and a new address
+  needs one: `403 no-password`. Adding a password to such an account is a separate change.
+
+Other refusals: `400 invalid-request` for a malformed body, settings, wrap, upload, address, name or
+ticket, or a login state that was used or has run out; `401 unauthorized` for a wrong password;
+`400 email-change-invalid` for a token that is unknown, used or out of time, or whose account is
+disabled or being deleted (never which); `409 email-taken` when someone took the address between the
+ask and the link (the ask is then dropped); `409 account-changed` for a write that lost a race with
+another write of the account; `429 rate-limited` for the fourth ask in an hour.
+
 ### The account's private keys
 
 The kx1 and sig1 private keys are sealed under the user key's `"kemlock/v1/private-keys"` child:
@@ -341,8 +477,10 @@ wrap aad   = "kemlock/v1/item-key" ‖ item id (16) ‖ owner (17) ‖ u32be(key
 item_key   = AES-256-GCM(owner's "kemlock/v1/item-wrap" child key, nonce, item key, wrap aad)
 ```
 
-- `kind` is the item's kind as ASCII, 1 to 64 bytes of `[a-z0-9_-]`, such as `login`, `otp`,
-  `note`, `backup-codes`, `passkey`, `pgp-key`, `ssh-key`, `certificate`, `card`, `identity`.
+- `kind` is the item's kind as ASCII, 1 to 64 bytes of `[a-z0-9_-]`, such as `login`, `note`,
+  `file`, `otp` (the MFA code), `backup-codes`, `passkey`, `card`, `identity`, `contact`,
+  `certificate`, `ssh-key`, `pgp-key`. The server checks only the alphabet and the length, so a
+  kind it has never heard of is stored as it is; "Item bodies" below says what each kind holds.
 - The item key wrap is not bound to the revision, so an edit may keep the item key.
 - What the server can check: lengths, that a sealed value is at least 28 bytes, the kind's
   alphabet, the revision rule and the owner. It can't check the AAD: only a device holding the key
@@ -382,6 +520,151 @@ item_key   = AES-256-GCM(wrap key, nonce, item key, wrap aad)
   for an item of a vault), and the key that opens it is that collection's, at `keyVersion`.
 - The rules that use `keyVersion` (I2, "What the server checks", and "Items" under "What a client
   checks") are about this collection key version.
+
+## Item bodies
+
+The item JSON sealed in `ciphertext` is a body whose members depend on the kind. The Kemlock app
+writes most of them (`kemlock-core`, one JSON object for each entry), and the web vault writes the
+same keys. The members below are the **additions** of Kemlock Server's web vault. They follow these
+rules, so the Kemlock app and every older client keep working:
+
+- Every member here is **optional**. A body that has none of them is exactly the body an earlier
+  version wrote: an item the web vault doesn't edit is never rewritten, and one it edits gains a
+  member only when the person used the feature.
+- A client **ignores a member it doesn't know** and writes it back as it found it. `kemlock-core`
+  keeps the keys it doesn't read (`extra`), and the server never sees a body at all.
+- A member that is empty is **left out**, not written as `[]`, `""` or `null`.
+
+### `links`
+
+Items linked to this one, as a list of `{ "id": "<item uuid>" }` sorted by `id` (lower-case
+hyphenated UUIDs, compared as text, each once, never the item's own id). An entry may carry other
+keys, which a client keeps, and an entry a client can't read stays where it is, after the others.
+
+A link is **two-way**: A links B when both bodies name each other. Linking writes both items and
+unlinking removes both ends, so a client that finds one end only (a write that failed halfway)
+shows the link and may mend it. A link may join an item of the person's own vault to an item of a
+space; the person needs write access to both. A code that the importer made from a login's TOTP
+carries `linkedLoginId` (the login's item id); a client reads it as a link on both items (the login
+shows the code), removes it when the person unlinks them from either side, and never copies it
+into `links`.
+
+### `fields`: custom fields
+
+Any kind but `passkey` and `file` may hold custom fields, as a list of
+`{ "name", "value", "kind", "adminField"? }`:
+
+| `kind` | value |
+| --- | --- |
+| `text` | any text |
+| `hidden` | any text, shown masked |
+| `boolean` | `"true"` or `"false"` (a checkbox) |
+| `linked` | written by the Bitwarden importer; a client that can't edit it keeps it as it is |
+
+`adminField` is the id of the admin's definition (`GET /kem/v1/custom-fields`) the field was made
+from. Its `name` and `kind` are the admin's and are fixed; the person fills in the value. A field
+with no `adminField` is the person's own. A field is never required, a field with no name is left
+out, and a definition that is later changed or deleted does not change the fields already on items.
+A client writes a field nobody edited back exactly as it found it (every key, in the same order), an
+edited one with only its edited members changed, and every entry it can't edit (a `linked` field, one
+with no name) where it was.
+
+### Login websites: `uris`, `urls`, `websites`
+
+A login's websites are written three ways in step, so an older client reads the one it knows:
+
+- `uris`: a list of `{ "uri", "match"? }` where `match` is Bitwarden's rule number (absent is the
+  default rule, which fills on the base domain): `0` base domain, `1` host, `2` starts with, `3`
+  exact, `4` regular expression, `5` never. A regular expression is a pattern, not an address.
+- `urls`: the addresses, in order, without the regular expressions (the web vault's own key, always
+  written, `[]` for none).
+- `websites`: the hosts the websites fill on, each once, without the regular expressions and the
+  Never rule (the key the Kemlock app reads on a login and on a code).
+
+A login written before `uris` has `urls` alone, and every address in it is on the default rule.
+
+### MFA code and backup codes
+
+- `name` (optional): what the item is called; without it the item is named by its issuer and
+  account (`otp`) or its `serviceName` (`backup-codes`).
+- `websites` (optional): the hosts a code is used on, as on a login. A code linked to an item that has
+  websites shows that item's websites and doesn't write its own; unlinked, it writes the hosts
+  typed. `backup-codes` have no `websites` in `kemlock-core`, so there it is a member that app keeps.
+
+### `file`: a File item
+
+A File item is an item of kind `file`:
+
+```
+{ "name", "notes"?, "favorite"?, "file": { "id", "name", "size", "type"?, "key", "addedAt",
+  "sha256"?, "kemlockFile"? }, "links"?, "updatedAt" }
+```
+
+`file` is one attachment entry (below). The item holds no `fields` and no `attachments`. An app that
+doesn't know the kind lists it as an item of an unknown kind and keeps its body.
+
+### Attachments
+
+A file is stored as a `KMA1` file (see "Files" under "Sends") under **its own random 256-bit key**,
+which the body holds, so the server holds only ciphertext. The body names it the way the Kemlock
+app names an attachment (`kemlock-core` `NoteAttachment`):
+
+| member | meaning |
+| --- | --- |
+| `id` | 16 random bytes, base64url |
+| `name` | the file's name |
+| `size` | its size in bytes before encryption |
+| `type` | its media type, when the picker knew it |
+| `key` | the file's own AES-256 key, standard base64 |
+| `addedAt` | epoch milliseconds |
+| `sha256` | the SHA-256 of the bytes before encryption, 64 lower-case hex digits (written by the web vault; the duplicate finder reads it, see "Duplicate tags") |
+| `kemlockFile` | the id of the file on the server, from `POST /kem/v1/items/{id}/files` |
+
+A secure note (`note`) holds any number of them, in `attachments`, up to 100; no other kind has
+attachments. A File item holds one, in `file`. A client writes an entry it didn't change back
+exactly as it found it (a missing member stays missing, no value is filled in, no key moves), and an
+entry in `attachments` that it can't read stays where it is.
+
+The server takes a file only for an item that **exists**, and a body never names a file the server
+lacks. So a client saves the item first, without the files just chosen; asks for each upload with
+the exact length of the `KMA1` file; sends the bytes (`PUT /kem/v1/items/{id}/files/{fileId}`,
+always to the server's own route, even where the server also offers a pre-signed address); and
+saves the item again with `kemlockFile` and `sha256` on each entry. A try that fails after the item
+was saved goes on from that item, and does not send a file that the body already names (matched by
+the attachment `id`) again. It deletes from the server the files a person removed last, once no
+body names them. Files count against the person's attachment
+quota, and the server refuses a file over its size limit.
+
+The server keeps a file under one item's id, so a client that makes a new item from an old one (a
+copy of a note, a move to another owner, a merge of notes) sends each file again under the new item.
+It reads the sealed bytes (`GET /kem/v1/items/{id}/files/{fileId}`) and sends them as they are: the
+chunks of a `KMA1` file are not bound to the item, so they open with the same key, and nothing is
+decrypted. The new entry keeps `id`, `name`, `size`, `type`, `key`, `addedAt` and `sha256`, and
+names the file the server made for it in `kemlockFile`. As for any upload, the new item is saved
+first without the files, and a body never names a file the server lacks. A copy makes the new
+item's name the original's, unchanged, and leaves behind what belongs to the original alone: its
+`id`, `links`, `linkedLoginId`, `passkeys` and `passwordHistory`, and its dates.
+
+### Contact
+
+A contact is a person, with an optional OpenPGP public key:
+
+```
+{ "name", "company"?, "email"?, "phone"?, "address"?, "public"?, "source", "note"? }
+```
+
+`company`, `email`, `phone` and `address` (free text, with line breaks) are additions. `public` is
+the binary transferable public key in base64, as the Kemlock app writes it; a contact with no key
+has no `public` and `source` is `manual`. An app that expects a key reads `public` as empty for such
+a contact.
+
+### Card, identity, SSH key, PGP key and certificate
+
+These keep the members `kemlock-core` writes (`PaymentCard`, `Identity`, `VaultKey`) and gain
+only `links` and `fields`, above. The web vault no longer asks for a card's brand. It writes `brand` from the
+number (Visa, Mastercard, American Express, Discover, Diners Club, JCB, UnionPay, Maestro) only when
+the number changed or the card had no brand; otherwise `brand` stays as stored, as it does when the
+number names no brand.
 
 ## Space, collection and group names
 
@@ -1806,8 +2089,12 @@ tag       = HMAC-SHA256(dedup key, canonical input)
 ```
 
 The canonical input is a JSON array whose first element is the tag's name (`cred`, `account`,
-`secret`, `passkey`, `card`, `note`, `key`, `codes`), followed by the normalised values as strings,
-serialised as RFC 8785 (JCS) without whitespace. Tags are the full 32 bytes.
+`secret`, `passkey`, `card`, `note`, `key`, `codes`, `identity`, `contact`, `document`, `file`),
+followed by the normalised values as strings, serialised as RFC 8785 (JCS) without whitespace. Tags
+are the full 32 bytes.
+
+`contact`, `document` and `file` are later additions. A client that doesn't know a tag name makes
+none of that name, and the items that already have tags keep them unchanged.
 
 ### Normalisation
 
@@ -1829,6 +2116,9 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 | `key` | fingerprint |
 | `codes` | each code |
 | `identity` | full name, email |
+| `contact` | email, phone |
+| `document` | number |
+| `file` | content hash |
 
 - **site**: one per website: the registrable domain by the Public Suffix List (ICANN and private
   sections), lower case, Punycode; the whole host instead for an IP address or a host under the
@@ -1855,18 +2145,43 @@ property (U+FEFF is not one). Each tag's input is `[name, value…]` in this ord
 - **text** (note): NFC; CRLF and lone CR become LF; spaces and tabs at the end of each line
   removed; blank lines at the end removed.
 - **fingerprint**: an SSH key's OpenSSH `SHA256:…` fingerprint, or a PGP key's v4 or v6
-  fingerprint as upper-case hex.
+  fingerprint as upper-case hex. A certificate's fingerprint is the same: its SHA-256 (or SHA-1)
+  thumbprint of the DER, as upper-case hex with the colons, spaces and a leading `0x` left out, so
+  `AB:CD:…` and `abcd…` are one value. A certificate makes a `key` tag. A value that is neither
+  an `SHA256:…` fingerprint nor 40 or 64 hex digits has no tag.
 - **each code** (backup codes): trimmed, empty ones and duplicates dropped, sorted by code point,
   one value each.
 - **full name** and **email** (identity): trimmed, NFC, lower case.
+- **email** (contact): trimmed, NFC, lower case, as a username is. **phone**: its ASCII digits
+  only, so `+1 (555) 0142` and `15550142` are one value. A contact whose email and phone are both
+  empty has no tag; with one of them, the other is the empty string. The email is the contact's
+  own `email`; the address a public key was looked up by (`sourceEmail`) is not read. A contact
+  that holds a PGP public key also makes a `key` tag with that key's fingerprint, as a PGP key
+  item does.
+- **number** (`document`, one per identity document): NFC, lower case, and only its letters and
+  digits (Unicode alphabetic and numeric characters), so `X 1234-567` and `x1234567` are one
+  value. A number of fewer than four letters and digits has no tag.
+- **content hash** (`file`): the SHA-256 of the file's plaintext, as 64 hex digits in lower case
+  (any case on input). A File item's `file` entry may hold it as `sha256`, beside its `name`,
+  `size` and `key`; a file without one has no tag.
 
 A login has one `cred` and one `account` tag per site, each site once; a login with no site has
-none. A card, note, key, code or identity with nothing to hash (no digits, no text, an unreadable
-fingerprint or secret, no codes, an empty name and email) has no tag.
+none. An identity has one `identity` tag and one `document` tag per document number, each number
+once. A client that groups identities does so by `document`: two identities that share one are
+copies. An identity with no document is a copy of every identity with no document that shares its
+`identity` tag, and of the one identity with documents that shares it; with several identities with
+documents it is a copy of none of them (it could be of any), and two identities that both have
+documents are never copies by `identity` alone, since one person's passport and licence share a name
+and an email. A card, note, key, certificate, code, contact, file or identity with nothing to hash (no
+digits, no text, an unreadable fingerprint or secret, no codes, an empty name and email, an empty
+email and phone, no hash) has no tag.
 
 `dedup-normalise.json` in test-vectors pins raw values in and canonical inputs out, including
 `İstanbul`, `ΣΑΣ`, `Straße` against `STRASSE`, a decomposed `é`, a base32 secret with spaces,
-lower case and padding, a note with CRLF and trailing blanks, and duplicate backup codes.
+lower case and padding, a note with CRLF and trailing blanks, duplicate backup codes, a
+certificate's SHA-256 and SHA-1 thumbprints with colons, in lower case and after `0x`, a contact's
+phone with punctuation next to an email-only and a phone-only contact, a document number with
+spaces and dashes (and one too short to count), and a file's hash in upper case.
 
 ## Sync cursor
 

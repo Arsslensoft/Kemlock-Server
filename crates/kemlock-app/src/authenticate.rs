@@ -1,11 +1,12 @@
 //! Authenticate: turns an access token and the key that signed the request into an actor.
 //!
 //! The token's signature and expiry are checked by the `TokenSigner`; here its `cnf.jkt` must be
-//! the proof's key (a token copied off a phone is useless elsewhere), and its security stamp must
-//! still be the account's (a password change ends every session).
+//! the proof's key (a token copied off a phone is useless elsewhere), its security stamp must
+//! still be the account's (a password change ends every session), and its device must still be one
+//! of the account's (signing a device out ends its session at once, not when the token runs out).
 
 use crate::error::AppError;
-use crate::ports::{Clock, TokenSigner, TwoFactorRepo, UserRepo};
+use crate::ports::{Clock, DeviceRepo, TokenSigner, TwoFactorRepo, UserRepo};
 use kemlock_domain::{DeviceId, User, UserId};
 use subtle::ConstantTimeEq;
 
@@ -31,14 +32,17 @@ pub async fn is_effective_admin<F: TwoFactorRepo>(
 }
 
 #[derive(Debug)]
-pub struct Authenticate<U, F, K, C> {
+pub struct Authenticate<U, D, F, K, C> {
     pub users: U,
+    pub devices: D,
     pub two_factor: F,
     pub signer: K,
     pub clock: C,
 }
 
-impl<U: UserRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock> Authenticate<U, F, K, C> {
+impl<U: UserRepo, D: DeviceRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock>
+    Authenticate<U, D, F, K, C>
+{
     pub async fn execute(&self, token: &str, jkt: &str) -> Result<Actor, AppError> {
         let claims = self
             .signer
@@ -55,6 +59,13 @@ impl<U: UserRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock> Authenticate<U, F,
         if user.security_stamp != claims.security_stamp {
             return Err(AppError::SessionEnded("security-stamp-changed"));
         }
+        // A device that was signed out is gone from the account: its access token, which would
+        // otherwise live out its ten minutes, goes with it.
+        self.devices
+            .get(claims.device)
+            .await?
+            .filter(|device| device.user == claims.user)
+            .ok_or(AppError::SessionEnded("signed-out"))?;
         Ok(Actor {
             user: claims.user,
             device: claims.device,

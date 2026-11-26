@@ -6,8 +6,10 @@
 pub mod api_use;
 pub mod attachment;
 pub mod change;
+pub mod custom_field;
 pub mod dedup;
 pub mod device;
+pub mod email_change;
 pub mod ids;
 pub mod item;
 pub mod manifest;
@@ -28,9 +30,11 @@ pub use attachment::{
     BlobId,
 };
 pub use change::{BadCursor, ChangeId, Hlc, VersionVector};
+pub use custom_field::{CustomField, CustomFieldError, FieldKinds, FieldType};
 pub use dedup::{DedupTag, Dismissal, DismissalId, DuplicateGroup, MatchingSettings, TagSet};
 pub use device::{BROWSER_DEVICE_TYPES, Device, DeviceKind, browser_name};
-pub use ids::{DeviceId, ItemId, ServerId, SpaceId, UserId};
+pub use email_change::EmailChange;
+pub use ids::{CustomFieldId, DeviceId, ItemId, ServerId, SpaceId, UserId};
 pub use item::{
     Item, ItemDraft, ItemError, ItemFormat, ItemKind, ItemLimits, ItemWrite, Revision, Sealed,
 };

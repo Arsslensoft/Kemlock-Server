@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { SPACE, login, renderInRouter, vaultItem } from '@/test/tools-fixtures';
+import { VAULTS } from '@/test/vault-fixtures';
 import { type DuplicateGroup, findDuplicates } from './detect';
 import { type DuplicateFilter, DuplicatesView, matchesFilter } from './Duplicates';
 import { MergeView } from './DuplicateMerge';
@@ -28,6 +29,7 @@ function Harness({
   // render would carry new ids and lose the selection.
   const [all] = useState(groups);
   const [filter, setFilter] = useState<DuplicateFilter>('all');
+  const [vault, setVault] = useState('all');
   const [selected, setSelected] = useState<string | undefined>(all[0]?.id);
   return (
     <DuplicatesView
@@ -35,6 +37,9 @@ function Harness({
       total={6}
       filter={filter}
       onFilter={setFilter}
+      vault={vault}
+      onVault={setVault}
+      vaults={VAULTS}
       selectedId={selected}
       onSelect={setSelected}
       onMerge={onMerge}
@@ -110,6 +115,8 @@ describe('DuplicatesView', () => {
         total={0}
         filter="all"
         onFilter={vi.fn()}
+        onVault={vi.fn()}
+        vaults={VAULTS}
         selectedId={undefined}
         onSelect={vi.fn()}
         onMerge={vi.fn()}
@@ -149,7 +156,7 @@ describe('MergeView', () => {
   it('lets every field be chosen and shows the kept login as the choices change', async () => {
     const onMerge = vi.fn();
     await renderInRouter(
-      <MergeView group={pair} onMerge={onMerge} onDismiss={vi.fn()} onCancel={vi.fn()} />,
+      <MergeView group={pair} vaults={VAULTS} onMerge={onMerge} onDismiss={vi.fn()} onCancel={vi.fn()} />,
     );
     const user = userEvent.setup();
     expect(screen.getByRole('heading', { name: 'Merge 2 items into one', level: 1 })).toBeInTheDocument();
@@ -176,6 +183,7 @@ describe('MergeView', () => {
     await renderInRouter(
       <MergeView
         group={pair}
+        vaults={VAULTS}
         onMerge={vi.fn()}
         onDismiss={vi.fn()}
         onCancel={vi.fn()}

@@ -79,6 +79,8 @@ export interface DeviceEntryDto {
   current: boolean;
   /** Whether the device keeps a trusted-device copy of the root key on the server. */
   trusted: boolean;
+  /** When the device made that copy; null or absent when it holds none (an older server sends none). */
+  trustedSince?: string | null;
 }
 
 export interface DeviceListResponse {
@@ -116,6 +118,12 @@ export function createDevicesApi(http: Http) {
     putKeyCopy: (body: KeyCopyRequest) =>
       http.request<KeyCopyResponse>({ method: 'PUT', path: '/kem/v1/devices/key-copy', body }),
     deleteKeyCopy: () => http.send({ method: 'DELETE', path: '/kem/v1/devices/key-copy' }),
+    /**
+     * Stops trusting another device of the account: its copy of the root key goes and its session
+     * carries on. Only the device itself can make a copy, so there is no call to start trusting one.
+     */
+    untrustDevice: (deviceId: string) =>
+      http.send({ method: 'DELETE', path: `/kem/v1/devices/${encodeURIComponent(deviceId)}/key-copy` }),
     signOut: (deviceId: string) =>
       http.send({ method: 'POST', path: '/kem/v1/devices/sign-out', body: { deviceId } }),
     /** The account's devices, or null when an older server has no such list (a 404 or 405). */

@@ -9,22 +9,18 @@ import {
   useRouterState,
   useSearch,
 } from '@tanstack/react-router';
-import { useVault } from '@/features/vault/hooks';
+import { useKindCounts } from '@/features/vault/hooks';
+import { KIND_ORDER, kindIcon, kindPluralLabel } from '@/features/vault/kinds';
 import { FailoverBanner } from '@/features/failover/Banner';
 import { useT } from '@/i18n';
 import { Icon, type IconName, Wordmark } from '@/ui/Icon';
-import { buttonClass } from '@/ui/Button';
+import { AccountMenu } from './AccountMenu';
+import { NewItemMenu } from './NewItemMenu';
 import { lockVault, signOut } from './actions';
 import { session } from './services';
-import { isKindActive, withQuery } from './shellNav';
+import { initials, isKindActive, withQuery } from './shellNav';
 import { useSessionState } from './session';
-
-function initials(name: string | null, email: string | null): string {
-  const source = (name ?? email ?? '?').trim();
-  const words = source.split(/[\s@.]+/).filter(Boolean);
-  const letters = words.length > 1 ? `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}` : source.slice(0, 2);
-  return letters.toUpperCase();
-}
+import { useAccountName } from './useAccountName';
 
 /** The icon, label and optional count inside a nav link. */
 function Item({ icon, count, children }: { icon: IconName; count?: number; children: string }) {
@@ -38,7 +34,7 @@ function Item({ icon, count, children }: { icon: IconName; count?: number; child
 }
 
 /**
- * "All items", "Logins" and "Notes": the vault list filtered by kind. Which one is current depends
+ * "All items" and one link per type: the vault list filtered by kind. Which one is current depends
  * on the path and the kind only; the search box, the page and the favourites filter must not turn
  * the highlight off, so it is not the router's own match (which compares the whole search).
  */
@@ -66,10 +62,11 @@ export function VaultShell() {
   const navigate = useNavigate();
   const router = useRouter();
   const state = useSessionState(session);
+  useAccountName(state);
   const search = useSearch({ strict: false }) as { q?: string };
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const { active, trashed } = useVault();
-  const count = (kind: string) => active.filter((item) => item.kind === kind).length;
+  const { total, byKind, trashed } = useKindCounts();
+  const name = state.name?.trim() || state.email || '';
   return (
     <div className="shell">
       <a className="sr" href="#main">
@@ -103,34 +100,76 @@ export function VaultShell() {
           />
         </div>
         <div className="right">
-          <Link to="/vault/new" className={buttonClass({ variant: 'primary' })}>
-            <Icon name="plus" />
-            {t('action.newItem')}
-          </Link>
-          <Link
-            to="/security"
-            className="avatar"
-            aria-label={t('shell.account', {
-              initials: initials(state.name, state.email),
-              name: state.name ?? state.email ?? '',
-            })}
+          <NewItemMenu />
+          <AccountMenu
+            initials={initials(state.name, state.email)}
+            name={name}
+            subtitle={state.name?.trim() ? (state.email ?? '') : ''}
           >
-            {initials(state.name, state.email)}
-          </Link>
+            {(close) => (
+              <>
+                <Link to="/profile" activeOptions={{ exact: true }} onClick={close}>
+                  <Icon name="user" />
+                  {t('shell.menu.profile')}
+                </Link>
+                <Link to="/security" activeOptions={{ exact: true }} onClick={close}>
+                  <Icon name="shield" />
+                  {t('nav.security')}
+                </Link>
+                <Link to="/devices" activeOptions={{ exact: true }} onClick={close}>
+                  <Icon name="device" />
+                  {t('nav.devices')}
+                </Link>
+                {state.admin ? (
+                  <Link to="/admin" activeOptions={{ exact: true }} onClick={close}>
+                    <Icon name="server" />
+                    {t('nav.admin')}
+                    <span className="popup-tag">{t('shell.menu.adminTag')}</span>
+                  </Link>
+                ) : null}
+                <Link to="/about" activeOptions={{ exact: true }} onClick={close}>
+                  <Icon name="info" />
+                  {t('about.link')}
+                </Link>
+                <div className="popup-sep" role="separator" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    close();
+                    // The unlock screen brings the person back to the page they locked from.
+                    const next = router.state.location.href;
+                    void lockVault().then(() => navigate({ to: '/unlock', search: { next } }));
+                  }}
+                >
+                  <Icon name="lock" />
+                  {t('action.lock')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    close();
+                    void signOut().then(() => navigate({ to: '/sign-in' }));
+                  }}
+                >
+                  <Icon name="logout" />
+                  {t('action.signOut')}
+                </button>
+              </>
+            )}
+          </AccountMenu>
         </div>
       </header>
       <div className="shell-body">
         <nav className="nav" aria-label={t('shell.nav.vault')}>
           <h2>{t('shell.nav.vault')}</h2>
-          <KindLink icon="items" count={active.length}>
+          <KindLink icon="items" count={total}>
             {t('nav.all')}
           </KindLink>
-          <KindLink kind="login" icon="login" count={count('login')}>
-            {t('nav.logins')}
-          </KindLink>
-          <KindLink kind="note" icon="note" count={count('note')}>
-            {t('nav.notes')}
-          </KindLink>
+          {KIND_ORDER.map((kind) => (
+            <KindLink key={kind} kind={kind} icon={kindIcon(kind)} count={byKind[kind] ?? 0}>
+              {t(kindPluralLabel(kind))}
+            </KindLink>
+          ))}
           <h2>{t('shell.nav.spaces')}</h2>
           <Link to="/spaces">
             <Item icon="building">{t('nav.spaces')}</Item>
@@ -152,43 +191,8 @@ export function VaultShell() {
             <Item icon="server">{t('nav.storage')}</Item>
           </Link>
           <Link to="/trash" activeOptions={{ exact: true }}>
-            <Item icon="trash" count={trashed.length}>{t('nav.trash')}</Item>
+            <Item icon="trash" count={trashed}>{t('nav.trash')}</Item>
           </Link>
-          <h2>{t('shell.nav.account')}</h2>
-          <Link to="/security" activeOptions={{ exact: true }}>
-            <Item icon="shield">{t('nav.security')}</Item>
-          </Link>
-          <Link to="/devices" activeOptions={{ exact: true }}>
-            <Item icon="device">{t('nav.devices')}</Item>
-          </Link>
-          <Link to="/about" activeOptions={{ exact: true }}>
-            <Item icon="info">{t('about.link')}</Item>
-          </Link>
-          {state.admin ? (
-            <Link to="/admin" activeOptions={{ exact: true }}>
-            <Item icon="server">{t('nav.admin')}</Item>
-          </Link>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => {
-              // The unlock screen brings the person back to the page they locked from.
-              const next = router.state.location.href;
-              void lockVault().then(() => navigate({ to: '/unlock', search: { next } }));
-            }}
-          >
-            <Icon name="lock" />
-            {t('action.lock')}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              void signOut().then(() => navigate({ to: '/sign-in' }));
-            }}
-          >
-            <Icon name="logout" />
-            {t('action.signOut')}
-          </button>
         </nav>
         <main id="main" className="page" tabIndex={-1}>
           <FailoverBanner />
@@ -202,6 +206,9 @@ export function VaultShell() {
 export function AdminShell() {
   const t = useT();
   const navigate = useNavigate();
+  const state = useSessionState(session);
+  useAccountName(state);
+  const name = state.name?.trim() || state.email || '';
   return (
     <div className="shell">
       <a className="sr" href="#main">
@@ -213,16 +220,36 @@ export function AdminShell() {
           <span className="tag-chip amber">{t('brand.admin')}</span>
         </Link>
         <div className="right">
-          <Link to="/vault">{t('admin.openVault')}</Link>
-          <button
-            type="button"
-            className="btn s"
-            onClick={() => {
-              void signOut().then(() => navigate({ to: '/sign-in' }));
-            }}
+          <AccountMenu
+            tone="amber"
+            initials={initials(state.name, state.email)}
+            name={name}
+            subtitle={t('shell.menu.adminSub', { email: state.email ?? '' })}
           >
-            {t('admin.signOut')}
-          </button>
+            {(close) => (
+              <>
+                <Link to="/vault" onClick={close}>
+                  <Icon name="lock" />
+                  {t('admin.openVault')}
+                </Link>
+                <Link to="/about" activeOptions={{ exact: true }} onClick={close}>
+                  <Icon name="info" />
+                  {t('about.link')}
+                </Link>
+                <div className="popup-sep" role="separator" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    close();
+                    void signOut().then(() => navigate({ to: '/sign-in' }));
+                  }}
+                >
+                  <Icon name="logout" />
+                  {t('action.signOut')}
+                </button>
+              </>
+            )}
+          </AccountMenu>
         </div>
       </header>
       <div className="shell-body">
@@ -244,6 +271,9 @@ export function AdminShell() {
           <Link to="/admin/settings" activeOptions={{ exact: true }}>
             <Item icon="settings">{t('admin.settings')}</Item>
           </Link>
+          <Link to="/admin/fields" activeOptions={{ exact: true }}>
+            <Item icon="fields">{t('admin.fields')}</Item>
+          </Link>
           <h2>{t('admin.nav.federation')}</h2>
           <Link to="/admin/federation">
             <Item icon="globe">{t('admin.federation')}</Item>
@@ -251,10 +281,6 @@ export function AdminShell() {
           <h2>{t('admin.nav.data')}</h2>
           <Link to="/admin/migrate" activeOptions={{ exact: true }}>
             <Item icon="move">{t('admin.migrate')}</Item>
-          </Link>
-          <h2>{t('about.nav')}</h2>
-          <Link to="/about" activeOptions={{ exact: true }}>
-            <Item icon="info">{t('about.link')}</Item>
           </Link>
         </nav>
         <main id="main" className="page" tabIndex={-1}>

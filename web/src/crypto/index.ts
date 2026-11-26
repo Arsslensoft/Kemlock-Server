@@ -102,6 +102,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     deviceCopyReset: () => call('deviceCopyReset', []),
     newAccount: (accountId, masterKey, exportKey) =>
       call('newAccount', [accountId, masterKey, exportKey]),
+    rewrapRoot: (masterKey, exportKey) => call('rewrapRoot', [masterKey, exportKey]),
     unlock: (accountId, wrappedRootKey, masterKey, exportKey, options) =>
       call('unlock', [accountId, wrappedRootKey, masterKey, exportKey, options]),
     sealItem: (input) => call('sealItem', [input]),

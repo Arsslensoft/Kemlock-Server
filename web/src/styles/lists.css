@@ -1,0 +1,65 @@
+/* The vault list pages (All items, a type, Trash, Duplicates): the title with its round lock, the
+   Vault filter and the pill that names an item's vault. Built on the canvas tokens (tokens.css). */
+
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.title-row h1 {
+  margin: 0;
+}
+.subtitle {
+  margin: 6px 0 0;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.filter-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.filter-row label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.vault-select {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 11px;
+  border: 1px solid var(--border-input);
+  background: var(--raised);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.vault-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-input);
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.vault-pill .i {
+  width: 14px;
+  height: 14px;
+}
+
+.tbl .details,
+.tbl .when {
+  color: var(--text-2);
+}
+.tbl .when {
+  color: var(--muted);
+  white-space: nowrap;
+}

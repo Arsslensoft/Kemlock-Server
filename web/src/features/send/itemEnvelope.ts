@@ -8,7 +8,7 @@
 // Only the fields the person's item holds for its kind go in: never ids, history, favorite,
 // pinned, timestamps, or any key this table does not name.
 import type { MessageId } from '@/i18n';
-import type { EditableKind } from '@/features/vault/kinds';
+import type { SendableKind } from '@/features/vault/kinds';
 
 export const ENVELOPE_VERSION = 1;
 /** A larger envelope, or one with more fields, is shown as plain text. */
@@ -17,7 +17,7 @@ export const MAX_ENVELOPE_FIELDS = 32;
 
 export interface ItemEnvelope {
   kemlockSend: typeof ENVELOPE_VERSION;
-  kind: EditableKind;
+  kind: SendableKind;
   name: string;
   /** Field key to its text; fields with no value are left out. */
   fields: Record<string, string>;
@@ -41,7 +41,7 @@ const f = (key: string, label: MessageId, extra: { secret?: boolean; multiline?:
 const NOTE = f('note', 'sendItem.field.note', { multiline: true });
 
 /** The fields each kind sends, in the order they are shown. */
-export const FIELD_SPECS: Record<EditableKind, FieldSpec[]> = {
+export const FIELD_SPECS: Record<SendableKind, FieldSpec[]> = {
   login: [
     f('username', 'sendItem.field.username'),
     f('password', 'sendItem.field.password', { secret: true }),
@@ -111,9 +111,9 @@ export const FIELD_SPECS: Record<EditableKind, FieldSpec[]> = {
   contact: [f('public', 'sendItem.field.publicKey', { multiline: true }), NOTE],
 };
 
-export const SENDABLE_KINDS = Object.keys(FIELD_SPECS) as EditableKind[];
+export const SENDABLE_KINDS = Object.keys(FIELD_SPECS) as SendableKind[];
 
-export function isSendableKind(kind: string): kind is EditableKind {
+export function isSendableKind(kind: string): kind is SendableKind {
   return (SENDABLE_KINDS as string[]).includes(kind);
 }
 
@@ -135,7 +135,7 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 /** The text of one field of an item; `expiry`, `address` and `codes` are made from several keys. */
-function read(kind: EditableKind, data: Record<string, unknown>, key: string): string {
+function read(kind: SendableKind, data: Record<string, unknown>, key: string): string {
   if (kind === 'card' && key === 'expiry') {
     const { expMonth, expYear } = data;
     if (typeof expMonth !== 'number' || typeof expYear !== 'number') return '';

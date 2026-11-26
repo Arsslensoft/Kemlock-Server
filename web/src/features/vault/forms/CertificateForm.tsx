@@ -5,17 +5,20 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { useT } from '@/i18n';
-import { Field } from '@/ui/fields';
+import { CheckField, Field } from '@/ui/fields';
+import { type ItemData, type VaultItem, itemName } from '../vault';
+import { ExtrasSections } from './ExtrasSections';
+import { extrasDefaults, extrasFields, extrasShape } from './extras';
 import { type SshMaterial, fromB64, pemBlocks, readPastedSshKey } from './keyMaterial';
-import { FormActions, type KeyFormProps } from './shared';
-import type { ItemData, VaultItem } from '../vault';
-import { itemName } from '../vault';
+import { Actions, type FormProps, isPinned } from './parts';
 
 const base = {
   name: z.string().trim().min(1, 'error.required').max(200, 'error.tooLong'),
   note: z.string().max(10000, 'error.tooLong'),
+  pinned: z.boolean(),
   certificate: z.string().max(100000, 'error.tooLong'),
   privateKey: z.string().max(20000, 'error.tooLong'),
+  ...extrasShape,
 };
 
 export const certificateSchema = z
@@ -29,8 +32,10 @@ export function certificateDefaults(item?: VaultItem): CertificateValues {
   return {
     name: item ? itemName(item) : '',
     note: typeof item?.data?.['note'] === 'string' ? item.data['note'] : '',
+    pinned: isPinned(item),
     certificate: '',
     privateKey: '',
+    ...extrasDefaults(item),
   };
 }
 
@@ -57,14 +62,20 @@ export const certificateKey = readPastedSshKey;
  * The fields a certificate form owns; undefined when the certificate cannot be read. A certificate
  * is a key entry that carries a `certificate`, so it needs the key it belongs to: the model has no
  * entry without its private half. The key's own algorithm and halves are written, as for an SSH key.
+ * `existing` is the item being edited, whose key and certificate stay as they were.
  */
 export function certificateFields(
   values: CertificateValues,
-  editing: boolean,
+  existing: VaultItem | undefined,
   key?: SshMaterial,
 ): ItemData | undefined {
-  const fields: ItemData = { name: values.name, note: values.note === '' ? undefined : values.note };
-  if (editing) return fields;
+  const fields: ItemData = {
+    name: values.name,
+    note: values.note === '' ? undefined : values.note,
+    pinned: values.pinned ? true : undefined,
+    ...extrasFields(values, existing),
+  };
+  if (existing) return fields;
   const pem = certificatePem(values.certificate);
   if (!pem || !key) return undefined;
   return {
@@ -78,7 +89,7 @@ export function certificateFields(
   };
 }
 
-type Props = Omit<KeyFormProps<CertificateValues>, 'onSubmit'> & {
+type Props = Omit<FormProps<CertificateValues>, 'onSubmit'> & {
   onSubmit: (values: CertificateValues, key?: SshMaterial) => void;
 };
 
@@ -107,9 +118,7 @@ export function CertificateForm({ initial, editing, onSubmit, onCancel, pending,
       })}
     >
       <section className="card pad" aria-labelledby="h-cert">
-        <h2 id="h-cert" className="sr">
-          {t('keys.certificate.details')}
-        </h2>
+        <h2 id="h-cert">{t('keys.certificate.details')}</h2>
         <Field control={control} name="name" label={t('newItem.name')} autoFocus />
         {editing ? (
           <p className="hint">{t('keys.halvesFixed')}</p>
@@ -136,9 +145,18 @@ export function CertificateForm({ initial, editing, onSubmit, onCancel, pending,
             />
           </>
         )}
-        <Field control={control} name="note" label={t('item.notes')} multiline />
       </section>
-      <FormActions pending={pending} onCancel={onCancel} submitLabel={submitLabel} error={error} />
+      <ExtrasSections control={control} kind="certificate" />
+      <section className="card pad" aria-labelledby="h-cert-more">
+        <h2 id="h-cert-more" className="sr">
+          {t('newItem.more')}
+        </h2>
+        <Field control={control} name="note" label={t('item.notes')} multiline />
+        <CheckField control={control} name="pinned">
+          {t('newItem.favorite')}
+        </CheckField>
+      </section>
+      <Actions pending={pending} onCancel={onCancel} submitLabel={submitLabel} error={error} />
     </form>
   );
 }

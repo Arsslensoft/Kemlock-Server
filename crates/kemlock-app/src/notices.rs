@@ -79,6 +79,67 @@ impl fmt::Debug for ProtectedActionNotice {
     }
 }
 
+/// The link that makes an address the account's sign-in address. The token in it is the proof that
+/// the person owns the address, so it is never logged.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EmailChangeNotice {
+    /// The new address: the mail goes there.
+    pub to: Email,
+    /// The secret of the link, base64url.
+    pub token: String,
+}
+
+impl fmt::Debug for EmailChangeNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EmailChangeNotice")
+            .field("to", &self.to)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+/// A change of the sign-in address was asked for. The mail goes to the old address, so a change
+/// the owner didn't ask for doesn't go unnoticed. It carries no link and no secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailChangeRequestedNotice {
+    /// The address in force: the mail goes there.
+    pub to: Email,
+    /// The address asked for.
+    pub new_address: Email,
+    pub at: OffsetDateTime,
+}
+
+/// A change of the sign-in address was asked for, to an address that already has an account. The
+/// mail goes to that address and says so: it carries no link and no token, so it opens nothing, and
+/// whoever asked can't tell from the request that the address was taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailTakenNotice {
+    /// The address asked for: the mail goes there.
+    pub to: Email,
+    pub at: OffsetDateTime,
+}
+
+/// The sign-in address of the account changed. The mail goes to the address it had, so a change the
+/// owner didn't make doesn't go unnoticed. It carries no link and no secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmailChangedNotice {
+    /// The address the account had: the mail goes there.
+    pub to: Email,
+    /// The address the account signs in with now.
+    pub new_address: Email,
+    pub at: OffsetDateTime,
+}
+
+/// The master password of the account changed. The mail goes to the account's address, so a change
+/// the owner didn't make doesn't go unnoticed. It carries no password and no secret.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PasswordChangedNotice {
+    pub to: Email,
+    pub at: OffsetDateTime,
+    /// The account's other devices were signed out with the change.
+    pub others_signed_out: bool,
+}
+
 /// Everything the server emails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
@@ -94,6 +155,16 @@ pub enum Notice {
     TwoStepRecovered(TwoStepRecoveredNotice),
     /// A second step was turned on or off.
     TwoStepChanged(TwoStepChangedNotice),
+    /// The link that confirms a new sign-in address, mailed to that address.
+    EmailChange(EmailChangeNotice),
+    /// A new sign-in address was asked for, mailed to the one in force.
+    EmailChangeRequested(EmailChangeRequestedNotice),
+    /// A new sign-in address was asked for that another account has, mailed to that address.
+    EmailTaken(EmailTakenNotice),
+    /// The sign-in address changed, mailed to the address it had.
+    EmailChanged(EmailChangedNotice),
+    /// The master password changed, mailed to the account's address.
+    PasswordChanged(PasswordChangedNotice),
 }
 
 impl Notice {
@@ -108,6 +179,11 @@ impl Notice {
             Notice::ProtectedAction(_) => "protected-action",
             Notice::TwoStepRecovered(_) => "two-step-recovered",
             Notice::TwoStepChanged(_) => "two-step-changed",
+            Notice::EmailChange(_) => "email-change",
+            Notice::EmailChangeRequested(_) => "email-change-requested",
+            Notice::EmailTaken(_) => "email-taken",
+            Notice::EmailChanged(_) => "email-changed",
+            Notice::PasswordChanged(_) => "password-changed",
         }
     }
 }
@@ -297,5 +373,11 @@ mod tests {
         };
         assert!(!format!("{protected:?}").contains("654321"));
         assert!(!format!("{:?}", Notice::ProtectedAction(protected)).contains("654321"));
+        let change = EmailChangeNotice {
+            to: Email::parse("ada@example.com").expect("email"),
+            token: "s3cr3t-link-token".to_owned(),
+        };
+        assert!(!format!("{change:?}").contains("s3cr3t"));
+        assert!(!format!("{:?}", Notice::EmailChange(change)).contains("s3cr3t"));
     }
 }

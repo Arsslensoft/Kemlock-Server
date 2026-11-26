@@ -157,6 +157,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async newAccount(accountId, masterKey, exportKey) {
       return parse<NewAccount>((await current()).newAccount(accountId, masterKey, exportKey));
     },
+    async rewrapRoot(masterKey, exportKey) {
+      return (await current()).rewrapRoot(masterKey, exportKey);
+    },
     async unlock(accountId, wrappedRootKey, masterKey, exportKey, options) {
       (await current()).unlock(
         accountId,

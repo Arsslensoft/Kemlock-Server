@@ -72,7 +72,11 @@ export function readWebsites(data: ItemData | null | undefined): WebsiteRule[] {
   return list.map((uri) => ({ uri, match: 'default' as const }));
 }
 
-/** The fields to merge into the item: the three forms, in step. A blank website is dropped. */
+/**
+ * The fields to merge into the item: the three forms, in step. A blank website is dropped. `websites`
+ * lists the hosts the rules fill on, so a regular expression and the Never rule leave it; `urls`
+ * keeps the Never ones (they are the person's record) and leaves only the regular expressions out.
+ */
 export function writeWebsites(rules: WebsiteRule[]): {
   uris: Array<{ uri: string; match?: number }>;
   urls: string[];
@@ -81,7 +85,7 @@ export function writeWebsites(rules: WebsiteRule[]): {
   const kept = rules.map((r) => ({ ...r, uri: r.uri.trim() })).filter((r) => r.uri !== '');
   const hosts = new Set<string>();
   for (const rule of kept) {
-    if (rule.match === 'regex') continue;
+    if (rule.match === 'regex' || rule.match === 'never') continue;
     const host = hostOfWebsite(rule.uri);
     if (host !== '') hosts.add(host);
   }

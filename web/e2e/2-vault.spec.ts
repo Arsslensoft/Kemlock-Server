@@ -1,6 +1,6 @@
 import { type Page, expect, test } from '@playwright/test';
 import { expectAccessible, freshCode, watchForCspProblems } from './helpers';
-import { choosePassword } from './signin';
+import { choosePassword, chooseFromAccountMenu, newItem } from './signin';
 import { ADMIN, readState, saveState } from './state';
 
 async function signInWithPassword(page: Page, email: string, password: string): Promise<void> {
@@ -43,13 +43,13 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await expectAccessible(page);
 
   // NewItem: a login, with a generated password. The item is sealed in the worker.
-  await page.getByRole('link', { name: 'New item' }).first().click();
+  await newItem(page, 'Login');
   await expect(page.getByRole('heading', { name: 'New login' })).toBeVisible();
   await page.getByLabel('Name', { exact: true }).fill('GitHub');
   await page.getByLabel('Username').fill('sam@example.org');
   await page.getByRole('button', { name: 'Generate' }).click();
   await expect(page.getByLabel('Password', { exact: true })).toHaveValue(/^.{20}$/);
-  await page.getByLabel('Website').fill('https://github.com');
+  await page.getByLabel('Website 1', { exact: true }).fill('https://github.com');
   await page.getByRole('button', { name: 'Save' }).click();
 
   // Item: opened from what the server returned, then shown.
@@ -73,7 +73,8 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
 
   // Trash: delete, find it there, restore.
   await row.getByRole('link', { name: /GitHub/ }).click();
-  await page.getByRole('button', { name: 'Move to Trash' }).click();
+  await page.getByRole('button', { name: 'More actions for GitHub' }).click();
+  await page.getByRole('menuitem', { name: 'Move to Trash' }).click();
   await expect(page).toHaveURL(/\/vault$/);
   await expect(page.getByText('Nothing here yet')).toBeVisible();
   await page.getByRole('link', { name: /^Trash/ }).click();
@@ -84,7 +85,7 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await expect(page.getByText('The Trash is empty')).toBeVisible();
 
   // Lock: the keys are forgotten; the master password and a fresh code open the vault again.
-  await page.getByRole('button', { name: 'Lock the vault' }).click();
+  await chooseFromAccountMenu(page, 'Lock the vault');
   await expect(page).toHaveURL(/\/unlock/);
   await expect(page.getByRole('heading', { name: 'Open your vault' })).toBeVisible();
   await expectAccessible(page);
@@ -100,7 +101,7 @@ test('sign in, see the vault list, add an item, trash it and get it back', async
   await expect(page.getByRole('row', { name: /GitHub/ })).toBeVisible();
 
   // The admin console shell is there for an admin.
-  await page.getByRole('link', { name: 'Admin console' }).click();
+  await chooseFromAccountMenu(page, 'Admin console');
   await expect(page.getByRole('heading', { name: 'Overview', level: 1 })).toBeVisible();
   await expectAccessible(page);
 

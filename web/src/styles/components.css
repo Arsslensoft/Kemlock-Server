@@ -646,7 +646,6 @@
   display: flex;
   gap: 8px;
   align-items: flex-start;
-  max-width: 560px;
   font-size: 13px;
   color: var(--muted);
   text-wrap: pretty;
@@ -957,6 +956,10 @@
 .nav a[aria-current='page'] {
   background: var(--accent-wash-strong);
   color: var(--text);
+}
+/* On the blue wash the faint gray falls under 4.5:1. */
+.nav a[aria-current='page'] .n {
+  color: var(--muted);
 }
 .nav .n {
   margin-left: auto;

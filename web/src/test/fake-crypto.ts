@@ -45,6 +45,12 @@ export const crypto: CryptoPort = {
       wrappedRootKey: utf8(`wrapped:${accountId}`),
     };
   },
+  async rewrapRoot(masterKey, exportKey) {
+    calls.push('rewrapRoot');
+    if (locked) throw new Error('the vault is locked');
+    // The wrap follows both new keys, so a test sees that it was made for the new password.
+    return utf8(`rewrapped:${fromUtf8(masterKey)}:${fromUtf8(exportKey)}`);
+  },
   async unlock(accountId, wrappedRootKey) {
     calls.push('unlock');
     if (fromUtf8(wrappedRootKey) !== `wrapped:${accountId}`) throw new Error('wrong wrapped key');

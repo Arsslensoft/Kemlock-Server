@@ -5,7 +5,7 @@ import { copyText } from '@/lib/clipboard';
 import { renderWithIntl } from '@/test/render';
 import type { VaultItem } from '../vault';
 import { toB64 } from '../forms/keyMaterial';
-import { KindDetails, groupDigits, maskedNumber, sameFingerprint } from './KindDetails';
+import { KindDetails, maskedNumber, sameFingerprint } from './KindDetails';
 
 vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(() => Promise.resolve(true)) }));
 
@@ -23,7 +23,7 @@ describe('KindDetails', () => {
     expect(screen.getByText('GitHub')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('otp-code').textContent).toMatch(/^\d{3} \d{3}$/));
     expect(screen.getByRole('timer').textContent).toMatch(/\d+ s left/);
-    expect(screen.getByRole('button', { name: 'Copy code' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy the code' })).toBeInTheDocument();
   });
 
   it('masks the backup codes, then strikes the used ones through and counts the rest', async () => {
@@ -56,13 +56,13 @@ describe('KindDetails', () => {
     expect(screen.getByText('•••• •••• •••• 1111')).toBeInTheDocument();
     expect(screen.getByText('05/2029')).toBeInTheDocument();
     expect(screen.queryByText('123')).not.toBeInTheDocument();
-    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show card number' }));
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show the card number' }));
     expect(screen.getByText('4111 1111 1111 1111')).toBeInTheDocument();
   });
 
   it('copies the card number as its digits, without the spaces', async () => {
     renderWithIntl(<KindDetails item={item('card', { number: '4111111111111111' })} />);
-    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Copy card number' }));
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Copy the card number' }));
     expect(copyText).toHaveBeenCalledWith('4111111111111111', { secret: true });
   });
 
@@ -106,14 +106,14 @@ describe('KindDetails', () => {
     expect(screen.getByText('2030-01-02')).toBeInTheDocument();
     expect(screen.queryByText('doc-uuid-1')).not.toBeInTheDocument();
     expect(screen.queryByText('X1234567')).not.toBeInTheDocument();
-    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show document number' }));
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show the document number' }));
     expect(screen.getByText('X1234567')).toBeInTheDocument();
   });
 
   it('masks the private key of a certificate behind Show', async () => {
     renderWithIntl(<KindDetails item={item('certificate', { certificate: 'nope', private: 'MC4CAQAwBQYDK2VwBCIEIA==' })} />);
     expect(screen.queryByText('MC4CAQAwBQYDK2VwBCIEIA==')).not.toBeInTheDocument();
-    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show private key' }));
+    await userEvent.setup({ delay: null }).click(screen.getByRole('button', { name: 'Show the private key' }));
     expect(screen.getByText('MC4CAQAwBQYDK2VwBCIEIA==')).toBeInTheDocument();
   });
 
@@ -151,8 +151,8 @@ describe('KindDetails', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('groups and masks digits', () => {
-    expect(groupDigits('4111111111111111')).toBe('4111 1111 1111 1111');
-    expect(maskedNumber('378282246310005')).toBe('•••• •••• •••0 005');
+  it('masks all but the last four digits, grouped as the brand groups them', () => {
+    expect(maskedNumber('4111111111111111')).toBe('•••• •••• •••• 1111');
+    expect(maskedNumber('378282246310005')).toBe('•••• •••••• •0005');
   });
 });

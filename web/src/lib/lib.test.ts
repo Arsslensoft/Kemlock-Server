@@ -199,6 +199,9 @@ describe('error messages and links', () => {
       id: 'error.rateLimited',
       values: { seconds: 9 },
     });
+    expect(describeError(ApiErrorFixture(403, 'storage-disabled')).id).toBe('error.storageDisabled');
+    expect(describeError(ApiErrorFixture(413, 'storage-limit-reached')).id).toBe('error.storageFull');
+    expect(describeError(ApiErrorFixture(413, 'storage-limit-exceeded')).id).toBe('error.storageTooBig');
     expect(describeError(ApiErrorFixture(500, 'internal')).id).toBe('error.server');
     expect(describeError(new Error('x')).id).toBe('error.generic');
   });
