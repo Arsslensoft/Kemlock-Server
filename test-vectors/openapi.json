@@ -443,6 +443,30 @@
         ],
         "type": "object"
       },
+      "BundleAtDto": {
+        "description": "An account's public-key bundle at one key version (docs/crypto.md, \"Signed item writes\").",
+        "properties": {
+          "bundleSignature": {
+            "description": "The account's own `sig1` signature of the bundle, base64url.",
+            "type": "string"
+          },
+          "keyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "publicBundle": {
+            "description": "The bundle, base64url.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "keyVersion",
+          "publicBundle",
+          "bundleSignature"
+        ],
+        "type": "object"
+      },
       "CancelledDto": {
         "description": "What dropping the waiting changes did.",
         "properties": {
@@ -581,6 +605,36 @@
         },
         "type": "object"
       },
+      "ClearSignedWritesRequest": {
+        "additionalProperties": false,
+        "description": "Takes an owner off the signed-only list (docs/crypto.md, \"The signed-only flag\"): the password\nagain, as erasing the account asks for it, because turning the flag off lets unsigned writes in.",
+        "properties": {
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`.",
+            "type": "string"
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread.",
+            "type": "string"
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, needed beside the password when the account has a second step on."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "loginState",
+          "finalization"
+        ],
+        "type": "object"
+      },
       "CollectionDto": {
         "properties": {
           "id": {
@@ -630,6 +684,9 @@
           "sealed": {
             "type": "string"
           },
+          "signature": {
+            "type": "string"
+          },
           "user": {
             "format": "uuid",
             "type": "string"
@@ -638,7 +695,8 @@
         "required": [
           "collection",
           "user",
-          "sealed"
+          "sealed",
+          "signature"
         ],
         "type": "object"
       },
@@ -748,6 +806,10 @@
             "description": "The space key sealed to the member, base64url.",
             "type": "string"
           },
+          "sealedSpaceKeySignature": {
+            "description": "The confirmer's signature over that box, base64url.",
+            "type": "string"
+          },
           "signature": {
             "description": "The confirmer's `sig1` signature over the statement (context `\"confirm\"`), base64url. The\nserver verifies it with the key in the confirmer's bundle; 400 when it doesn't verify.",
             "type": "string"
@@ -761,7 +823,8 @@
           "fingerprint",
           "statement",
           "signature",
-          "sealedSpaceKey"
+          "sealedSpaceKey",
+          "sealedSpaceKeySignature"
         ],
         "type": "object"
       },
@@ -831,6 +894,22 @@
           "publicBundle",
           "bundleSignature",
           "keyVersion"
+        ],
+        "type": "object"
+      },
+      "ContactOf": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state"
         ],
         "type": "object"
       },
@@ -1019,12 +1098,16 @@
           },
           "sealedSpaceKey": {
             "type": "string"
+          },
+          "sealedSpaceKeySignature": {
+            "type": "string"
           }
         },
         "required": [
           "id",
           "name",
           "sealedSpaceKey",
+          "sealedSpaceKeySignature",
           "collection"
         ],
         "type": "object"
@@ -1149,6 +1232,23 @@
         ],
         "type": "object"
       },
+      "DeviceCopyDto": {
+        "additionalProperties": false,
+        "properties": {
+          "protection": {
+            "description": "`secure-enclave`, `keystore`, `web-crypto`, `software` or `browser`.",
+            "type": "string"
+          },
+          "wrappedKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "wrappedKey",
+          "protection"
+        ],
+        "type": "object"
+      },
       "DeviceDto": {
         "additionalProperties": false,
         "properties": {
@@ -1188,6 +1288,18 @@
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "DeviceHeld": {
+        "properties": {
+          "deviceId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deviceId"
         ],
         "type": "object"
       },
@@ -1613,6 +1725,23 @@
         ],
         "type": "object"
       },
+      "EmergencyBoxDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sealedKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sealedKey"
+        ],
+        "type": "object"
+      },
       "EmergencyConfirmRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1954,6 +2083,37 @@
         ],
         "type": "object"
       },
+      "FinishSpacesRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`, with the current password.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread. Needed when the account has a password.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof of the second step; with no password, a passkey's or security key's answer."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object"
+      },
       "FreshProof": {
         "description": "A fresh proof that it is the account's owner at a keyboard, not only a session. Either a code\n(the mailed one, a current code of the authenticator app, or, where the route takes it, the\nrecovery code) as a string, or the answer of a security key or passkey as\n`{ \"webauthn\": <PublicKeyCredential.toJSON()> }`, to the options at\n`POST /kem/v1/account/two-factor/proof/webauthn/options`.",
         "oneOf": [
@@ -1986,6 +2146,44 @@
           "collection",
           "grantee",
           "permission"
+        ],
+        "type": "object"
+      },
+      "GrantHeld": {
+        "properties": {
+          "granteeBundle": {
+            "description": "The contact's public bundle as the server holds it now, base64url. A client seals the new root\nkey to it only after the person compared its fingerprint with the contact's own screen.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "granteeEmail": {
+            "description": "The contact's address, when their account is known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "granteeId": {
+            "description": "The contact's account, once they accepted.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state"
         ],
         "type": "object"
       },
@@ -2124,6 +2322,171 @@
         ],
         "type": "object"
       },
+      "InstallRequestDto": {
+        "additionalProperties": false,
+        "properties": {
+          "bundleSignature": {
+            "type": "string"
+          },
+          "deviceCopy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DeviceCopyDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dropEmergency": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dropKit": {
+            "type": "boolean"
+          },
+          "dropPasskeys": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "dropRecovery": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "emergency": {
+            "items": {
+              "$ref": "#/components/schemas/EmergencyBoxDto"
+            },
+            "type": "array"
+          },
+          "finalization": {
+            "description": "The client's OPAQUE `CredentialFinalization`, with the current password.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fromVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KitDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "loginState": {
+            "description": "What `POST /auth/opaque/start` answered, unread. Needed when the account has a password.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "passkeys": {
+            "items": {
+              "$ref": "#/components/schemas/PasskeyWrapDto"
+            },
+            "type": "array"
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof of the second step, needed beside the password when one is on."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publicBundle": {
+            "type": "string"
+          },
+          "recovery": {
+            "items": {
+              "$ref": "#/components/schemas/RecoveryBoxDto"
+            },
+            "type": "array"
+          },
+          "rotationId": {
+            "description": "16 random bytes naming the attempt that staged the items, base64url.",
+            "type": "string"
+          },
+          "sealedPreviousPrivateKeys": {
+            "description": "The old private keys sealed under the new user key at the old key version.",
+            "type": "string"
+          },
+          "sealedPrivateKeys": {
+            "type": "string"
+          },
+          "sends": {
+            "items": {
+              "$ref": "#/components/schemas/SendWrapDto"
+            },
+            "type": "array"
+          },
+          "spacesHandled": {
+            "description": "The client moves the account's spaces to the new keys itself.",
+            "type": "boolean"
+          },
+          "toVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "wrappedRootKey": {
+            "description": "The new root key's password wrap, 92 bytes; present exactly when the account has one.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "rotationId",
+          "fromVersion",
+          "toVersion",
+          "publicBundle",
+          "bundleSignature",
+          "sealedPrivateKeys",
+          "sealedPreviousPrivateKeys"
+        ],
+        "type": "object"
+      },
+      "InviteLinkDto": {
+        "description": "The link of an invitation.",
+        "properties": {
+          "expiresAt": {
+            "description": "When the link stops working, in Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "link": {
+            "description": "The address to open in the web vault. Whoever opens it accepts for the invited account.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "link",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
       "InviteRequest": {
         "additionalProperties": false,
         "properties": {
@@ -2219,6 +2582,30 @@
             "format": "int64",
             "minimum": 0,
             "type": "integer"
+          },
+          "writeSignature": {
+            "description": "The writer's `sig1` signature of the write, 3373 bytes, base64url.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writer": {
+            "description": "The account that wrote this revision and signed it (docs/crypto.md, \"Signed item writes\").\nOn a write it must be the signed-in account; `writerKeyVersion` and `writeSignature` come\nwith it or not at all. Absent on an item written without one.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writerKeyVersion": {
+            "description": "The key version of the writer's bundle that signed.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2294,6 +2681,18 @@
         ],
         "description": "An item write as `PUT /kem/v1/items/{id}` and each entry of `POST /kem/v1/items:batch` take\nit: the item, and optionally the duplicate cleaner's tags."
       },
+      "ItemsHeld": {
+        "properties": {
+          "count": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "count"
+        ],
+        "type": "object"
+      },
       "KdfDto": {
         "additionalProperties": false,
         "properties": {
@@ -2352,6 +2751,17 @@
           },
           "sealed": {
             "type": "string"
+          },
+          "sealedBy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SealedByDto",
+                "description": "Who sealed this copy and their signature over it; null for a copy made before keys were signed."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -2532,48 +2942,29 @@
         ]
       },
       "KitDto": {
+        "additionalProperties": false,
         "properties": {
-          "createdAt": {
-            "description": "When the kit was made, RFC 3339.",
-            "type": "string"
-          },
-          "current": {
-            "description": "Whether the kit is for the account's current key version: only then do its pieces open the\nvault.",
-            "type": "boolean"
-          },
-          "keyVersion": {
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
           "kitId": {
             "type": "string"
           },
-          "shares": {
-            "description": "Pieces made.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "threshold": {
-            "description": "Pieces needed to unlock.",
-            "format": "int32",
-            "minimum": 0,
-            "type": "integer"
-          },
           "wrappedKey": {
-            "description": "The root key wrapped under the kit key, base64url: opaque to the server, and useless\nwithout the pieces.",
             "type": "string"
           }
         },
         "required": [
           "kitId",
-          "threshold",
-          "shares",
-          "keyVersion",
-          "createdAt",
-          "current",
           "wrappedKey"
+        ],
+        "type": "object"
+      },
+      "KitHeld": {
+        "properties": {
+          "kitId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kitId"
         ],
         "type": "object"
       },
@@ -2796,6 +3187,17 @@
           "role": {
             "type": "string"
           },
+          "sealedBy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SealedByDto",
+                "description": "Who sealed `sealedSpaceKey` and their signature over it; null for a copy made before keys were\nsigned and for a space with a chain."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "sealedSpaceKey": {
             "description": "The space key sealed to this member, base64url. Present only while confirmed.",
             "type": [
@@ -2829,6 +3231,10 @@
           },
           {
             "properties": {
+              "bitwardenInvitation": {
+                "description": "An invited member of a Bitwarden organization who has a Bitwarden invitation, so an owner or\nadmin can copy its link. False for a member invited through the Kemlock API alone.",
+                "type": "boolean"
+              },
               "bundleSignature": {
                 "type": "string"
               },
@@ -2860,7 +3266,8 @@
               "publicBundle",
               "bundleSignature",
               "userKeyVersion",
-              "needsReconfirmation"
+              "needsReconfirmation",
+              "bitwardenInvitation"
             ],
             "type": "object"
           }
@@ -2948,12 +3355,17 @@
           "sealedKey": {
             "description": "The collection key sealed to the maker, base64url.",
             "type": "string"
+          },
+          "sealedKeySignature": {
+            "description": "The maker's signature over that box, base64url.",
+            "type": "string"
           }
         },
         "required": [
           "id",
           "name",
-          "sealedKey"
+          "sealedKey",
+          "sealedKeySignature"
         ],
         "type": "object"
       },
@@ -3085,11 +3497,15 @@
           },
           "sealed": {
             "type": "string"
+          },
+          "signature": {
+            "type": "string"
           }
         },
         "required": [
           "collection",
-          "sealed"
+          "sealed",
+          "signature"
         ],
         "type": "object"
       },
@@ -3130,6 +3546,23 @@
           "name",
           "prf",
           "createdAt"
+        ],
+        "type": "object"
+      },
+      "PasskeyHeld": {
+        "properties": {
+          "credentialId": {
+            "description": "The WebAuthn credential id, base64url.",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "credentialId"
         ],
         "type": "object"
       },
@@ -3216,6 +3649,23 @@
           "challenge",
           "credential",
           "device"
+        ],
+        "type": "object"
+      },
+      "PasskeyWrapDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "wrappedKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "wrappedKey"
         ],
         "type": "object"
       },
@@ -3563,6 +4013,105 @@
         ],
         "type": "object"
       },
+      "PlanDto": {
+        "description": "What a rotation has to cover.",
+        "properties": {
+          "asContact": {
+            "description": "Grants in which this account is the contact and holds a box: they go back to waiting for\ntheir grantors to confirm the account's new keys.",
+            "items": {
+              "$ref": "#/components/schemas/ContactOf"
+            },
+            "type": "array"
+          },
+          "deviceCopies": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceHeld"
+            },
+            "type": "array"
+          },
+          "emergency": {
+            "description": "Grants that hold a box.",
+            "items": {
+              "$ref": "#/components/schemas/GrantHeld"
+            },
+            "type": "array"
+          },
+          "hasPassword": {
+            "type": "boolean"
+          },
+          "items": {
+            "$ref": "#/components/schemas/ItemsHeld"
+          },
+          "keyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "kit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/KitHeld"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "passkeys": {
+            "description": "Passkeys that have a PRF wrap.",
+            "items": {
+              "$ref": "#/components/schemas/PasskeyHeld"
+            },
+            "type": "array"
+          },
+          "previousKeys": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PreviousKeysDto"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "publicBundle": {
+            "description": "The account's public bundle, base64url.",
+            "type": "string"
+          },
+          "recovery": {
+            "items": {
+              "$ref": "#/components/schemas/RecoveryHeld"
+            },
+            "type": "array"
+          },
+          "sends": {
+            "items": {
+              "$ref": "#/components/schemas/SendHeld"
+            },
+            "type": "array"
+          },
+          "spaces": {
+            "description": "How many spaces the account is a member of.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "keyVersion",
+          "hasPassword",
+          "publicBundle",
+          "passkeys",
+          "deviceCopies",
+          "emergency",
+          "asContact",
+          "recovery",
+          "sends",
+          "items",
+          "spaces"
+        ],
+        "type": "object"
+      },
       "PoliciesDto": {
         "additionalProperties": false,
         "description": "A space's policies. Every setting defaults to off, so a `PUT` that leaves one out turns it off.",
@@ -3651,6 +4200,24 @@
         },
         "required": [
           "kdf"
+        ],
+        "type": "object"
+      },
+      "PreviousKeysDto": {
+        "properties": {
+          "keyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sealed": {
+            "description": "The old private keys sealed under the new user key, base64url.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "keyVersion",
+          "sealed"
         ],
         "type": "object"
       },
@@ -3972,6 +4539,25 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "RecoveryHeld": {
+        "properties": {
+          "keySeq": {
+            "description": "The `seq` of the chain record that set the recovery key the box is sealed to.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "space": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "space",
+          "keySeq"
+        ],
         "type": "object"
       },
       "RefreshRequest": {
@@ -4297,6 +4883,65 @@
         ],
         "type": "object"
       },
+      "ResealMemberDto": {
+        "additionalProperties": false,
+        "description": "One member's keys sealed again (`POST .../reseal`).",
+        "properties": {
+          "collectionKeys": {
+            "description": "The current key of each collection the member already holds a copy of, sealed to them.",
+            "items": {
+              "$ref": "#/components/schemas/OwnKeyDto"
+            },
+            "type": "array"
+          },
+          "sealedSpaceKey": {
+            "description": "The current space key sealed to the member, base64url.",
+            "type": "string"
+          },
+          "sealedSpaceKeySignature": {
+            "description": "The sealer's signature over that box, base64url.",
+            "type": "string"
+          },
+          "user": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user",
+          "sealedSpaceKey",
+          "sealedSpaceKeySignature"
+        ],
+        "type": "object"
+      },
+      "ResealRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/ResealMemberDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "members"
+        ],
+        "type": "object"
+      },
+      "ResealedDto": {
+        "properties": {
+          "resealed": {
+            "description": "How many members got new boxes.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "resealed"
+        ],
+        "type": "object"
+      },
       "ResolveResponse": {
         "description": "What resolving an item's siblings did.",
         "properties": {
@@ -4340,6 +4985,31 @@
         },
         "required": [
           "role"
+        ],
+        "type": "object"
+      },
+      "RotatedDto": {
+        "properties": {
+          "keyVersion": {
+            "description": "The account's key version now.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tokens": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TokenResponse",
+                "description": "New tokens for the device that asked, bound to its DPoP key: the new security stamp ended\nthe ones it held. Null when they could not be made: it signs in again."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "keyVersion"
         ],
         "type": "object"
       },
@@ -4410,6 +5080,29 @@
           "member",
           "sealHash",
           "version"
+        ],
+        "type": "object"
+      },
+      "SealedByDto": {
+        "description": "Who sealed a key copy and their signature over the box (docs/crypto.md, \"Signed key boxes\").",
+        "properties": {
+          "account": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "keyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signature": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "keyVersion",
+          "signature"
         ],
         "type": "object"
       },
@@ -4592,6 +5285,44 @@
         "required": [
           "size",
           "ready"
+        ],
+        "type": "object"
+      },
+      "SendHeld": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "`text` or `file`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "SendWrapDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "meta": {
+            "type": "string"
+          },
+          "sealedKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "sealedKey",
+          "meta"
         ],
         "type": "object"
       },
@@ -4799,6 +5530,18 @@
         ],
         "type": "object"
       },
+      "SignedWritesDto": {
+        "description": "Whether an owner takes signed writes only.",
+        "properties": {
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "required"
+        ],
+        "type": "object"
+      },
       "SpaceDto": {
         "properties": {
           "createdAt": {
@@ -4879,6 +5622,10 @@
       },
       "SpaceViewDto": {
         "properties": {
+          "bitwardenOrganization": {
+            "description": "Whether the space is a Bitwarden organization, so the page offers an invited member's\ninvitation link only where it applies. Always false in the answer to a create.",
+            "type": "boolean"
+          },
           "collectionKeys": {
             "description": "The collection keys sealed to the caller.",
             "items": {
@@ -4917,7 +5664,8 @@
           "collections",
           "groups",
           "grants",
-          "collectionKeys"
+          "collectionKeys",
+          "bitwardenOrganization"
         ],
         "type": "object"
       },
@@ -4930,6 +5678,100 @@
         },
         "required": [
           "providerName"
+        ],
+        "type": "object"
+      },
+      "StageRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "description": "1 to 200 items, and few enough to fit the JSON body limit.",
+            "items": {
+              "$ref": "#/components/schemas/StagedItemDto"
+            },
+            "type": "array"
+          },
+          "rotationId": {
+            "description": "16 random bytes naming this attempt, base64url.",
+            "type": "string"
+          },
+          "toVersion": {
+            "description": "The key version the rotation installs: the account's plus one.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rotationId",
+          "toVersion",
+          "items"
+        ],
+        "type": "object"
+      },
+      "StagedDto": {
+        "properties": {
+          "staged": {
+            "description": "How many items this attempt has staged now.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "staged"
+        ],
+        "type": "object"
+      },
+      "StagedItemDto": {
+        "additionalProperties": false,
+        "properties": {
+          "baseRevision": {
+            "description": "The revision the client read; the item is written at the next one.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ciphertext": {
+            "description": "`nonce ‖ ciphertext ‖ tag`, base64url, sealed at `baseRevision + 1`.",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "itemKey": {
+            "description": "The new item key wrapped under the new item-wrap key, base64url, 60 bytes.",
+            "type": "string"
+          },
+          "writeSignature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writer": {
+            "description": "The account that signed the write the rotation makes of this item, with the key version of\nthe bundle (the new one) and the `sig1` signature, base64url (docs/crypto.md, \"Rotating the\nroot key\"): all three or none. A vault that takes signed writes only is not installed without\nthem.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "writerKeyVersion": {
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "baseRevision",
+          "ciphertext",
+          "itemKey"
         ],
         "type": "object"
       },
@@ -5519,6 +6361,10 @@
             "description": "The key sealed to the member (a `kx1` sealed box), base64url.",
             "type": "string"
           },
+          "signature": {
+            "description": "The sealer's `sig1` signature over the box (context `\"key-box\"`), base64url; the sealer is the\nsigned-in account (docs/crypto.md, \"Signed key boxes\").",
+            "type": "string"
+          },
           "user": {
             "format": "uuid",
             "type": "string"
@@ -5526,7 +6372,8 @@
         },
         "required": [
           "user",
-          "sealed"
+          "sealed",
+          "signature"
         ],
         "type": "object"
       },
@@ -7901,6 +8748,455 @@
         ]
       }
     },
+    "/kem/v1/account/rotation": {
+      "delete": {
+        "operationId": "doc_abandon",
+        "responses": {
+          "204": {
+            "description": "The staged items are dropped"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "get": {
+        "operationId": "doc_plan",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanDto"
+                }
+              }
+            },
+            "description": "What the account holds that a rotation of its root key must cover"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`compatible-account`"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The account has no keys yet"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      },
+      "post": {
+        "operationId": "doc_install",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InstallRequestDto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedDto"
+                }
+              }
+            },
+            "description": "The new root key is installed and every wrap of the old one is gone, in one transaction; every other session ended with the new security stamp"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something sent is malformed"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`compatible-account`"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`rotation-incomplete`, `rotation-stale-version`, `rotation-unsupported-items`, `spaces-need-rekey` or `account-changed`; nothing was written"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/rotation/items": {
+      "put": {
+        "operationId": "doc_stage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StagedDto"
+                }
+              }
+            },
+            "description": "The items are staged, out of sight of every reader; a row for the same item is replaced"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "A sealed value or the request is malformed"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`rotation-incomplete` (an item changed since it was read) or `rotation-stale-version`"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
+    "/kem/v1/account/rotation/previous-keys": {
+      "delete": {
+        "operationId": "doc_previous_keys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishSpacesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The previous private keys are deleted, also when there were none"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The password or a passkey's answer is missing"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "account"
+        ]
+      }
+    },
     "/kem/v1/account/two-factor/duo": {
       "delete": {
         "operationId": "doc_duo_off",
@@ -9707,6 +11003,115 @@
         },
         "tags": [
           "accounts"
+        ]
+      }
+    },
+    "/kem/v1/accounts/{id}/bundles/{version}": {
+      "get": {
+        "operationId": "doc_bundle_at",
+        "parameters": [
+          {
+            "description": "The account's id, a UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The key version of the bundle",
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BundleAtDto"
+                }
+              }
+            },
+            "description": "The bundle the account had at that key version (docs/crypto.md, \"Signed item writes\"): for the account itself and a confirmed member of a space it is a confirmed member of"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "No such account or version, or the caller may not read it: the same answer"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "items"
         ]
       }
     },
@@ -14365,6 +15770,16 @@
             },
             "description": "Stale write: the current revision is in `currentRevision`; or a space item sealed under a replaced collection key"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`invalid-signature`: the write's signature is not the signed-in account's, or `signature-required`: the owner accepts signed writes only, or `key-version-stale`: the account replaced its keys after the device unlocked (`currentKeyVersion`)"
+          },
           "423": {
             "content": {
               "application/problem+json": {
@@ -15313,6 +16728,16 @@
             },
             "description": "A write was stale; nothing was stored. `itemId` names it"
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`invalid-signature`: a write's signature is not the signed-in account's, or `signature-required`: an owner accepts signed writes only; nothing was stored"
+          },
           "423": {
             "content": {
               "application/problem+json": {
@@ -15686,6 +17111,300 @@
         },
         "tags": [
           "server"
+        ]
+      }
+    },
+    "/kem/v1/owners/{owner}/signed-writes": {
+      "delete": {
+        "operationId": "doc_clear_signed_writes",
+        "parameters": [
+          {
+            "description": "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers",
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClearSignedWritesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Unsigned writes are accepted again (docs/crypto.md, \"The signed-only flag\"). Idempotent. Needs the password, and a fresh proof when a second step is on"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The login state was used before, or isn't well formed; or a second step is on and the proof is missing, wrong or spent"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Wrong password, or not signed in"
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Another account's vault, or a space the caller is neither owner nor admin of"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many wrong passwords"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "items"
+        ]
+      },
+      "get": {
+        "operationId": "doc_read_signed_writes",
+        "parameters": [
+          {
+            "description": "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers",
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedWritesDto"
+                }
+              }
+            },
+            "description": "Whether the owner takes signed writes only (docs/crypto.md, \"The signed-only flag\")"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Another account's vault, or a space the caller is neither owner nor admin of"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "A space the caller is not a member of"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "items"
+        ]
+      },
+      "put": {
+        "operationId": "doc_signed_writes",
+        "parameters": [
+          {
+            "description": "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers",
+            "in": "path",
+            "name": "owner",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The owner accepts signed writes only from now on (docs/crypto.md, \"The signed-only flag\"). Idempotent. Servers it replicates to learn it from the home server"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Another account's vault, or a space the caller is neither owner nor admin of"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "A space the caller is not a member of"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "items"
         ]
       }
     },
@@ -17276,7 +18995,7 @@
                 }
               }
             },
-            "description": "The space as its member sees it"
+            "description": "The space as its member sees it. `bitwardenOrganization` says whether it is a Bitwarden organization, so the page offers an invited member's invitation link (`.../members/{user}/invite-link`) only there"
           },
           "401": {
             "content": {
@@ -19228,7 +20947,7 @@
                 }
               }
             },
-            "description": "The members the caller's role may see"
+            "description": "The members the caller's role may see. `bitwardenInvitation` is true for an invited member of a Bitwarden organization who has a Bitwarden invitation, whose link `.../members/{user}/invite-link` can be copied"
           },
           "401": {
             "content": {
@@ -19659,6 +21378,133 @@
           },
           "423": {
             "description": "The space waits for its keys to be replaced"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "spaces"
+        ]
+      }
+    },
+    "/kem/v1/spaces/{id}/members/{user}/invite-link": {
+      "get": {
+        "operationId": "doc_invite_link",
+        "parameters": [
+          {
+            "description": "The space's UUID: a Bitwarden organization",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The invited member: an account id",
+            "in": "path",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteLinkDto"
+                }
+              }
+            },
+            "description": "The link that accepts the member's invitation, for a server that can't mail it. Whoever opens it accepts for that account, so the answer is `Cache-Control: no-store`"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The caller isn't a confirmed Owner or Admin of the organization, or is an Admin asking for the invitation of a Manager, Admin or Owner"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "No such space or member, the space isn't a Bitwarden organization, or the caller isn't in it"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "not-invited: the member has accepted already"
           },
           "429": {
             "content": {
@@ -20618,6 +22464,116 @@
         ],
         "tags": [
           "policies"
+        ]
+      }
+    },
+    "/kem/v1/spaces/{id}/reseal": {
+      "post": {
+        "operationId": "doc_reseal",
+        "parameters": [
+          {
+            "description": "A UUID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResealRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResealedDto"
+                }
+              }
+            },
+            "description": "The listed members hold the current keys in boxes signed by the caller"
+          },
+          "400": {
+            "description": "A box or its signature isn't what the server rebuilds"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "The access token or the DPoP proof is wrong or expired, or the session ended. A `use-dpop-nonce` problem (`error` is `use_dpop_nonce`) carries the server's nonce in `DPoP-Nonce`: sign the proof again with it",
+            "headers": {
+              "DPoP-Nonce": {
+                "description": "The nonce to put in the next proof, on a `use-dpop-nonce` problem",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "WWW-Authenticate": {
+                "description": "`DPoP error=\"invalid_dpop_proof\"` or `DPoP error=\"use_dpop_nonce\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only an owner or admin re-seals keys"
+          },
+          "409": {
+            "description": "The space has a chain"
+          },
+          "423": {
+            "description": "The space waits for its keys to be replaced"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "spaces"
         ]
       }
     },
