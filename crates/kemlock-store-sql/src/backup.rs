@@ -48,7 +48,8 @@ use crate::tables::{
     federation, federation_insight, federation_keys, federation_logs, federation_wiring, item_tags,
     items, passkeys, pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens,
     revoked_families, sends, server_meta, settings, sign_in_log, signed_manifests, sync_horizon,
-    two_factor, two_factor_recovery, two_step_versions, users, vw_rows, webauthn_challenges,
+    two_factor, two_factor_recovery, two_step_versions, users, vw_import_ids, vw_rows,
+    webauthn_challenges,
 };
 use kemlock_app::b64url;
 use kemlock_app::ports::StoreError;
@@ -216,6 +217,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         bw_attachments::Entity,
         bw_docs::Entity,
         vw_rows::Entity,
+        vw_import_ids::Entity,
         sends::Entity,
         signed_manifests::Entity,
         space_tables::spaces::Entity,

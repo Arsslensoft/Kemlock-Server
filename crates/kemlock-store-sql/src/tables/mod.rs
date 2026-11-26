@@ -53,5 +53,6 @@ pub(crate) mod two_factor;
 pub(crate) mod two_factor_recovery;
 pub(crate) mod two_step_versions;
 pub(crate) mod users;
+pub(crate) mod vw_import_ids;
 pub(crate) mod vw_rows;
 pub(crate) mod webauthn_challenges;

@@ -1,6 +1,7 @@
 //! Accounts, devices and two-step setups.
 
 use super::rows::{self, row_time, row_uuid};
+use super::scope::USER;
 use super::{Ctx, Res, invalid};
 use crate::convert::{unix_millis, utc};
 use crate::error::StoreResult;
@@ -64,6 +65,10 @@ pub(super) fn now_ms(ctx: &Ctx) -> i64 {
 
 pub(super) async fn put_accounts(ctx: &mut Ctx, accounts: &[MappedAccount]) -> Res<()> {
     for account in accounts {
+        // An account that exists and wasn't made by an import is not Vaultwarden's to rewrite.
+        if !ctx.claim(USER, account.id.0).await? {
+            continue;
+        }
         put_account(ctx, account).await?;
         ctx.touched.insert(account.id.0);
     }

@@ -8,6 +8,7 @@ use super::accounts::rebuild_two_factor;
 use super::org_docs;
 use super::orgs::{member_of, reconcile_item_collection};
 use super::rows::{self, row_uuid};
+use super::scope;
 use super::vault::{CIPHER_STATES, cipher_state_key, rewrite_attachments, tombstone};
 use super::{Ctx, Res, files};
 use crate::error::StoreResult;
@@ -36,6 +37,11 @@ pub(super) async fn delete_rows(ctx: &mut Ctx, table: &'static str, keys: &[RowK
         let first = row_uuid(key.first().map(String::as_str));
         let second = row_uuid(key.get(1).map(String::as_str));
         let stored_key = rows::key_text(key);
+        // Only what the import owns goes: a second pass can't delete another owner's rows.
+        if !scope::delete_allowed(ctx, table, first).await? {
+            ctx.refuse(table, &stored_key);
+            continue;
+        }
         match table {
             "users" => {
                 if let Some(user) = first {
@@ -155,8 +161,10 @@ pub(super) async fn delete_rows(ctx: &mut Ctx, table: &'static str, keys: &[RowK
             }
             "event" => {
                 if let Some(id) = first {
+                    // Only an event the import wrote, never one of the server's own.
                     events::Entity::delete_many()
                         .filter(events::Column::Id.eq(id))
+                        .filter(events::Column::Action.starts_with("vw-event-"))
                         .exec(&ctx.txn)
                         .await
                         .store()?;

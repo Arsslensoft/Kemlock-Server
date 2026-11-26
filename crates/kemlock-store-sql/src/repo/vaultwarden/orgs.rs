@@ -522,11 +522,13 @@ pub(super) async fn put_events(ctx: &Ctx, table: &Table) -> Res<()> {
 }
 
 /// `config.json` settings, under their Vaultwarden names: a string as it is, anything else as
-/// JSON text.
-pub(super) async fn put_settings(ctx: &Ctx, mapped: &MappedSettings) -> Res<()> {
+/// JSON text. Only the names of the admin settings registry are kept, and never a secret (those
+/// are sealed elsewhere): a `config.json` can't make this write any other row of `settings`,
+/// which also holds the move's own status and the server's markers.
+pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<()> {
     for (name, value) in &mapped.values {
-        // The key column is 128 characters.
-        if name.len() > 128 {
+        if !is_registered(name) {
+            ctx.refuse("setting", name);
             continue;
         }
         let text = match value {
@@ -548,9 +550,26 @@ pub(super) async fn put_settings(ctx: &Ctx, mapped: &MappedSettings) -> Res<()> 
     Ok(())
 }
 
+/// Whether `name` is a setting the admin console has (and not a secret one).
+fn is_registered(name: &str) -> bool {
+    kemlock_app::admin::settings::definition(name)
+        .is_some_and(|d| d.kind != kemlock_app::admin::settings::Kind::Secret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_registered_settings_are_kept() {
+        assert!(is_registered("signups_allowed"));
+        assert!(is_registered("smtp_host"));
+        assert!(!is_registered("smtp_password"), "a secret is sealed elsewhere");
+        assert!(!is_registered("domain"));
+        assert!(!is_registered("migration.status"));
+        assert!(!is_registered("setting.signups_allowed"));
+        assert!(!is_registered(""));
+    }
 
     #[test]
     fn member_types_and_statuses_map_to_roles_and_states() {
