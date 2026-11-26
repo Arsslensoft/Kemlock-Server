@@ -127,8 +127,8 @@ console, key records, the session), so they are checked before each connection:
   them are refused, and one private answer refuses the whole name. The connection then goes to
   exactly the addresses that were checked, so a second lookup can't answer differently.
 - Answers are read with a running cap (128 KiB for a descriptor or a pairing message), redirects are
-  not followed, and proxy variables of the environment still apply to the HTTP calls (a proxy
-  resolves names itself).
+  not followed, and the proxy variables of the environment are not used (a proxy resolves names
+  itself, past the addresses checked).
 
 ## The handshake
 

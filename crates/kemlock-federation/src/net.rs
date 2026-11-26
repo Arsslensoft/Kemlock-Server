@@ -89,6 +89,10 @@ impl Http {
             .timeout(TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
+            // The proxy variables of the environment are not used: a proxy resolves the name
+            // itself, past the addresses checked here, so the pin and the range check would mean
+            // nothing.
+            .no_proxy()
             .user_agent("kemlock-server");
         if let Some(Host::Domain(name)) = url.host() {
             builder = builder.resolve_to_addrs(name, addresses);
@@ -575,6 +579,20 @@ mod tests {
             connector.probe(&peer).await,
             Err(FedError::Refused(_))
         ));
+    }
+
+    #[test]
+    fn the_client_ignores_the_proxy_variables_so_the_checked_addresses_are_the_ones_used() {
+        // reqwest reads HTTP_PROXY, HTTPS_PROXY and ALL_PROXY unless told not to, and a proxy
+        // resolves the name itself. The builder is set up without it; this keeps it that way by
+        // reading the source of the builder the client is made from.
+        let source = include_str!("net.rs");
+        let client = source
+            .split("fn client(")
+            .nth(1)
+            .and_then(|rest| rest.split("fn read(").next())
+            .expect("the client builder");
+        assert!(client.contains(".no_proxy()"));
     }
 
 }
