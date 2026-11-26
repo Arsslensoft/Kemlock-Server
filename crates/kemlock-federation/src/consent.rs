@@ -315,6 +315,15 @@ impl<S: FedStore> Replica<S> {
             if account_predates_member(&existing, user) {
                 publisher.forget(members::KIND, user.0.as_bytes().to_vec());
             }
+            // A replica that doesn't read past bundles refuses the whole record, so they go only
+            // when every server of the vault says it does. The record is made again when they do.
+            let mut account = account;
+            if !self
+                .vault_advertises(vault, crate::writes::PAST_BUNDLES_CAPABILITY)
+                .await?
+            {
+                account.past_bundles.clear();
+            }
             self.publish(&mut publisher, members::KIND, account.to_payload())
                 .await?;
         }
@@ -623,5 +632,61 @@ mod tests {
             acct.past_bundles = bad;
             assert!(!past_bundles_are_signed(&acct));
         }
+    }
+
+    #[tokio::test]
+    async fn past_bundles_are_published_only_once_every_server_of_the_vault_reads_them() {
+        use crate::ports::{Peer, PeerRepo, PeerState};
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let a = Replica::new(MemoryStore::new(ia.server), Arc::new(ia));
+        let snapshot = crate::testing::space_snapshot(SpaceId::random());
+        let space = Owner::Space(snapshot.state.space.id);
+        let member = snapshot.state.members[0].clone();
+        let mut acct = account(member.user);
+        acct.key_version = 2;
+        acct.past_bundles = vec![bundle_of(member.user, 1, 5)];
+        let peer = ServerId::random();
+        let paired = |suites: Vec<String>| Peer {
+            id: peer,
+            operator: "Other".to_owned(),
+            identity_key: vec![1; 8],
+            addresses: vec!["https://other.example.org".to_owned()],
+            suites,
+            state: PeerState::Paired,
+            paired_at: NOW,
+            last_seen: None,
+        };
+        a.store.insert_peer(&paired(Vec::new())).await.expect("a peer");
+        a.federate(space, vec![peer]).await.expect("federate");
+        a.store.set_members(space, vec![member.user]);
+        a.store.set_member_account(acct.clone());
+
+        let published = |a: &Replica<MemoryStore>| {
+            let store = a.store.clone();
+            async move {
+                let records = store.home_records(space, 0, u32::MAX).await.expect("records");
+                let last = records
+                    .iter()
+                    .filter(|r| r.record.kind == members::KIND)
+                    .max_by_key(|r| r.record.index)
+                    .expect("an account record");
+                MemberAccount::from_payload(&last.record.payload)
+                    .expect("a payload")
+                    .past_bundles
+                    .len()
+            }
+        };
+        // A server that can't read them is in the vault's set: the record goes without.
+        a.publish_members(space).await.expect("published");
+        assert_eq!(published(&a).await, 0);
+
+        // It is upgraded: the record is made again, with them.
+        a.store.remove_peer(peer).await.expect("removed");
+        a.store
+            .insert_peer(&paired(vec![crate::writes::PAST_BUNDLES_CAPABILITY.to_owned()]))
+            .await
+            .expect("a peer");
+        assert_eq!(a.publish_members(space).await.expect("published"), 1);
+        assert_eq!(published(&a).await, 1);
     }
 }

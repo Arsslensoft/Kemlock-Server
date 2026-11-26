@@ -42,6 +42,8 @@ function peer(patch: Partial<WirePeer> = {}): WirePeer {
     lastChangeAt: 1_500,
     lastChangeVault: null,
     theySendLogs: false,
+    signedWrites: true,
+    pastBundles: true,
     ...patch,
   };
 }

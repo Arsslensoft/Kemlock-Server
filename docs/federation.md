@@ -365,6 +365,17 @@ record checks, before it applies it:
 
 A `bw` record is checked by neither rule.
 
+**Mixed versions.** A server that doesn't know field 15 refuses the record and, with it, the batch it came
+in, so it stops receiving the changes of a vault whose writes are signed. A vault's writes may be signed
+only after **every server of its set is upgraded**. A server says in its descriptor that it reads
+writer signatures and ranks heads by revision (`x-kemlock-signed-writes1`) and that it reads the past
+bundles of a member account (`x-kemlock-past-bundles1`), and the admin console marks each paired
+server that doesn't ("Upgrade needed"). The home leaves the past bundles out of a member account record
+while a server of the vault's set doesn't say so, and makes the record again, with them, when every
+server does: an older server would refuse the whole record for the unknown key. Nothing else is held
+back for an old server; it is the admin's part not to turn on signing (`PUT /kem/v1/owners/{owner}/signed-writes`,
+or a client that signs) before the set is upgraded.
+
 ### Rollback
 
 A version replaces the **head** only at a **higher revision**. A record whose lineage names the

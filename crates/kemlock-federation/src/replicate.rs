@@ -278,6 +278,21 @@ impl<S: FedStore> Replica<S> {
         self.identity().server
     }
 
+    /// Whether every paired server of `vault`'s set, this one aside, says in its descriptor that it
+    /// understands `capability`. A vault nobody else holds has no one to disagree.
+    pub async fn vault_advertises(&self, vault: Owner, capability: &str) -> Result<bool> {
+        let Some(settings) = self.store.get_vault(vault).await? else {
+            return Ok(true);
+        };
+        let me = self.server_id();
+        Ok(self.store.list_peers().await?.iter().all(|peer| {
+            peer.id == me
+                || peer.state != PeerState::Paired
+                || !settings.holds(peer.id)
+                || peer.advertises(capability)
+        }))
+    }
+
     /// The identity keys of the peers we are paired with: who may open a session.
     pub(crate) async fn peer_keys(&self) -> Result<HashMap<ServerId, sig1::PublicKey>> {
         let mut keys = HashMap::new();

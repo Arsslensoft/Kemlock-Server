@@ -429,6 +429,13 @@ struct PeerDto {
     /// This server holds event-log entries the peer sent. Whether the peer's own Send switch is on
     /// is not this server's to read, so this is what has arrived.
     they_send_logs: bool,
+    /// Whether the peer says it reads and ranks writer signatures (`x-kemlock-signed-writes1`).
+    /// Every server of a vault must before the vault's writes are signed: one that doesn't
+    /// refuses the changes of one that does.
+    signed_writes: bool,
+    /// Whether the peer says it reads the past bundles of a member account
+    /// (`x-kemlock-past-bundles1`).
+    past_bundles: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -682,6 +689,12 @@ fn peer_dto(view: &PeerView) -> PeerDto {
         last_change_at: view.activity.last_change_at,
         last_change_vault: view.activity.last_change_vault,
         they_send_logs: view.they_send_logs,
+        signed_writes: view
+            .peer
+            .advertises(kemlock_federation::writes::SIGNED_WRITES_CAPABILITY),
+        past_bundles: view
+            .peer
+            .advertises(kemlock_federation::writes::PAST_BUNDLES_CAPABILITY),
     }
 }
 

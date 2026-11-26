@@ -209,6 +209,14 @@ export function FederationView({
                         <span className="tag bad">{t('admin.fed.mismatch.tag')}</span>
                       </div>
                     ) : null}
+                    {!peer.signedWrites || !peer.pastBundles ? (
+                      <div>
+                        <span className="tag warn">{t('admin.fed.upgrade.tag')}</span>
+                        <div className="adm-cell-sub">
+                          {t(peer.signedWrites ? 'admin.fed.upgrade.bundles' : 'admin.fed.upgrade.signed')}
+                        </div>
+                      </div>
+                    ) : null}
                   </td>
                   <td>
                     {peer.lagSeconds === null

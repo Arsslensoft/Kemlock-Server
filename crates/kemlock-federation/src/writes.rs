@@ -12,6 +12,16 @@ use crate::ports::ReplicaStore;
 use kemlock_crypto::{item_write, owner::Owner as CryptoOwner};
 use kemlock_domain::{ItemFormat, Owner};
 
+/// What a server says in its descriptor when it understands a record with a writer signature
+/// (field 15 of a change record, `docs/federation.md`, "Writer signatures") and ranks the head of an
+/// item by revision first ("Rollback"). A server that doesn't refuses the records of a server that
+/// signs: every server of a vault must be upgraded before its writes are signed.
+pub const SIGNED_WRITES_CAPABILITY: &str = "x-kemlock-signed-writes1";
+
+/// What a server says when it reads the past bundles of a member account record (payload key 14,
+/// `docs/federation.md`, "Member accounts"). A server that doesn't refuses the whole record.
+pub const PAST_BUNDLES_CAPABILITY: &str = "x-kemlock-past-bundles1";
+
 /// What to do with a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
