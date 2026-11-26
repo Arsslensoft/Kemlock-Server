@@ -251,7 +251,7 @@ mod tests {
     fn file_url(path: &Path) -> String {
         format!(
             "sqlite://{}?mode=rwc",
-            path.to_string_lossy().replace('\', "/")
+            path.to_string_lossy().replace('\\', "/")
         )
     }
 

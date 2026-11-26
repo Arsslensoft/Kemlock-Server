@@ -608,6 +608,7 @@ pub fn drill_json(at: OffsetDateTime, outcome: &Result<DrillReport, String>) -> 
             "files": report.files,
             "serverStarted": report.server_started,
             "writesRefused": report.writes_refused,
+            "authenticated": report.authenticated,
         }),
         Err(message) => serde_json::json!({ "at": at, "ok": false, "error": message }),
     }
@@ -826,11 +827,13 @@ mod tests {
                 files: 2,
                 server_started: true,
                 writes_refused: true,
+                authenticated: true,
             }),
         );
         let parsed: serde_json::Value = serde_json::from_str(&ok).expect("json");
         assert_eq!(parsed["ok"], true);
         assert_eq!(parsed["rows"], 10);
+        assert_eq!(parsed["authenticated"], true);
         let failed = drill_json(at, &Err("boom".to_owned()));
         let parsed: serde_json::Value = serde_json::from_str(&failed).expect("json");
         assert_eq!(parsed["ok"], false);

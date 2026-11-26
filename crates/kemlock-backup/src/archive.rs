@@ -144,7 +144,7 @@ pub fn is_never_restored(name: &str) -> bool {
 pub fn is_restorable_config_name(name: &str) -> bool {
     name.len() > ".toml".len()
         && name.ends_with(".toml")
-        && !name.contains(['/', '\'])
+        && !name.contains(['/', '\\'])
         && !name.starts_with('.')
 }
 
@@ -1039,7 +1039,7 @@ mod tests {
             assert!(is_never_restored(never), "{never}");
         }
         assert!(is_restorable_config_name("kemlock.toml"));
-        for bad in ["server.key", ".toml", "a/b.toml", "..\x.toml", ".hidden.toml", "k.json"] {
+        for bad in ["server.key", ".toml", "a/b.toml", "..\\x.toml", ".hidden.toml", "k.json"] {
             assert!(!is_restorable_config_name(bad), "{bad}");
         }
     }
