@@ -933,41 +933,44 @@ impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
         space: SpaceId,
         append: ChainAppend,
     ) -> Result<AppendOutcome, StoreError> {
-        let mut g = self.lock();
-        let head = g
-            .chains
-            .get(&space)
-            .and_then(|c| c.last())
-            .map(|r| ChainHead {
+        // The lock is let go before the item store is awaited.
+        let (last, drafts, collections) = {
+            let mut g = self.lock();
+            let head = g
+                .chains
+                .get(&space)
+                .and_then(|c| c.last())
+                .map(|r| ChainHead {
+                    seq: r.seq,
+                    link: r.link,
+                    epoch: r.epoch,
+                });
+            if head != append.expected {
+                return Ok(AppendOutcome::Stale(head));
+            }
+            if foreign(&g, &append.changes) {
+                return Err(StoreError::Duplicate);
+            }
+            let last = append.records.last().map(|r| ChainHead {
                 seq: r.seq,
                 link: r.link,
                 epoch: r.epoch,
             });
-        if head != append.expected {
-            return Ok(AppendOutcome::Stale(head));
-        }
-        if foreign(&g, &append.changes) {
-            return Err(StoreError::Duplicate);
-        }
-        let last = append.records.last().map(|r| ChainHead {
-            seq: r.seq,
-            link: r.link,
-            epoch: r.epoch,
-        });
-        g.chains.entry(space).or_default().extend(append.records);
-        for seal in append.seals {
-            g.chain_seals.push((space, seal));
-        }
-        if let Some(id) = append.answers {
-            g.done.insert(id);
-            g.pending.retain(|p| p.id != id);
-        }
-        g.held.extend(append.held);
-        apply_in(&mut g, append.changes);
-        // The items a key replacement re-wrote, stored with the records.
-        let (drafts, collections): (Vec<ItemDraft>, Vec<CollectionId>) =
-            append.writes.into_iter().unzip();
-        drop(g);
+            g.chains.entry(space).or_default().extend(append.records);
+            for seal in append.seals {
+                g.chain_seals.push((space, seal));
+            }
+            if let Some(id) = append.answers {
+                g.done.insert(id);
+                g.pending.retain(|p| p.id != id);
+            }
+            g.held.extend(append.held);
+            apply_in(&mut g, append.changes);
+            // The items a key replacement re-wrote, stored with the records.
+            let (drafts, collections): (Vec<ItemDraft>, Vec<CollectionId>) =
+                append.writes.into_iter().unzip();
+            (last, drafts, collections)
+        };
         if !drafts.is_empty() {
             let stored = self.items.put_batch(drafts).await?;
             let mut g = self.lock();
