@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { createEmergencyApi, type GrantViewDto } from '@/api/emergency';
 import { createPasskeysApi } from '@/api/passkeys';
 import { createTwoStepApi, enabledMethods } from '@/api/twoStep';
@@ -10,7 +10,7 @@ import { useT } from '@/i18n';
 import { vaultCrypto } from '@/crypto-port';
 import { decodeB64 } from '@/lib/b64url';
 import { passkeysAvailable } from '@/lib/passkey';
-import { registerPasskey } from '@/lib/webauthn';
+import { type PreparedPasskey, preparePasskey } from '@/lib/webauthn';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
 import type { EmergencyConfirmState } from './EmergencyCard';
@@ -26,6 +26,9 @@ const emergencyApi = createEmergencyApi(api);
 const passkeysApi = createPasskeysApi(api);
 const twoStepApi = createTwoStepApi(api);
 
+/** How long a made passkey is kept for another try: the server's registration lasts five minutes. */
+const PREPARED_PASSKEY_MS = 4 * 60 * 1000;
+
 export default function Security() {
   const t = useT();
   const queryClient = useQueryClient();
@@ -40,6 +43,9 @@ export default function Security() {
   const methods = twoStepList.data ? enabledMethods(twoStepList.data) : undefined;
   const passkeys = useQuery({ queryKey: ['security', 'passkeys'], queryFn: () => passkeysApi.list() });
   const passkeyRun = useRun();
+  // The passkey made for the proof being asked for, so a wrong code is retried without the
+  // authenticator being touched again.
+  const preparedPasskey = useRef<{ made: PreparedPasskey; at: number } | null>(null);
   const overview = useQuery({ queryKey: ['security', 'emergency'], queryFn: () => emergencyApi.overview() });
   const [totp, setTotp] = useState<TotpState>({ open: false, enrol: undefined });
   const totpRun = useRun();
@@ -126,11 +132,34 @@ export default function Security() {
               // A passkey signs in without the second step, so with one on it is added on a fresh proof.
               proofNeeded: (methods?.length ?? 0) > 0,
               keyProof: secondSteps.props.keyProof,
+              // A code is mailed only beside a second step other than the app, as for the app itself.
+              mailsCode: methods?.some((m) => m !== 'totp') ?? false,
               onAskProof: () => void secondSteps.props.actions.askProof(),
+              onCancel: () => {
+                preparedPasskey.current = null;
+              },
               onAdd: (proof) =>
-                changePasskeys(() =>
-                  registerPasskey({ passkeys: passkeysApi, crypto: vaultCrypto }, t('security.passkeys.defaultName'), proof),
-                ).then((added) => added !== undefined),
+                changePasskeys(async () => {
+                  // The proof is asked for first; the passkey is made once and stored again with a new
+                  // proof if the server refuses the one given.
+                  let held = preparedPasskey.current;
+                  if (!held || Date.now() - held.at > PREPARED_PASSKEY_MS) {
+                    held = {
+                      made: await preparePasskey({ passkeys: passkeysApi, crypto: vaultCrypto }),
+                      at: Date.now(),
+                    };
+                    preparedPasskey.current = held;
+                  }
+                  try {
+                    const added = await held.made.register(t('security.passkeys.defaultName'), proof);
+                    preparedPasskey.current = null;
+                    return added;
+                  } catch (error) {
+                    // Without a proof there is nothing to retry: the server used the registration up.
+                    if (proof === undefined) preparedPasskey.current = null;
+                    throw error;
+                  }
+                }).then((added) => added !== undefined),
               onRemove: (id) => void changePasskeys(() => passkeysApi.remove(id).then(() => true)),
             }
           : undefined

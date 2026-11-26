@@ -16,8 +16,15 @@ export interface PasskeysCardProps {
   proofNeeded?: boolean;
   /** Answers the proof with a security key or passkey; undefined when the account has none. */
   keyProof?: KeyProof | undefined;
+  /**
+   * Whether a mailed code can be the proof, because a second step other than the authenticator app is
+   * on. With the app alone the proof is a current code of it, or the recovery code, and nothing is mailed.
+   */
+  mailsCode?: boolean;
   /** Mails the one-time code the proof can be. */
   onAskProof?: () => void;
+  /** The proof panel was closed without adding the passkey. */
+  onCancel?: () => void;
   /** Answers true when the passkey was added, so the proof panel can close. */
   onAdd: (proof?: Proof) => Promise<boolean> | void;
   onRemove: (id: string) => void;
@@ -29,7 +36,9 @@ export function PasskeysCard({
   busy,
   proofNeeded = false,
   keyProof,
+  mailsCode = true,
   onAskProof,
+  onCancel,
   onAdd,
   onRemove,
 }: PasskeysCardProps) {
@@ -59,7 +68,7 @@ export function PasskeysCard({
               }
               setProof('');
               setAsking(true);
-              onAskProof?.();
+              if (mailsCode) onAskProof?.();
             }}
           >
             {t('security.passkeys.add')}
@@ -80,16 +89,27 @@ export function PasskeysCard({
             });
           }}
         >
-          <p className="hint">{t('security.proofAdd.sent')}</p>
+          <p className="hint">
+            {t(mailsCode ? 'security.proofAdd.sent' : 'security.passkeys.proofApp')}
+          </p>
           <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} required={false} />
           <div className="actions">
             <Button type="submit" variant="primary" isDisabled={busy || proofBlank(proof)}>
               {t('security.passkeys.add')}
             </Button>
-            <Button isDisabled={busy} onPress={() => onAskProof?.()}>
-              {t('security.proof.again')}
+            {mailsCode ? (
+              <Button isDisabled={busy} onPress={() => onAskProof?.()}>
+                {t('security.proof.again')}
+              </Button>
+            ) : null}
+            <Button
+              onPress={() => {
+                setAsking(false);
+                onCancel?.();
+              }}
+            >
+              {t('action.cancel')}
             </Button>
-            <Button onPress={() => setAsking(false)}>{t('action.cancel')}</Button>
           </div>
         </form>
       ) : null}

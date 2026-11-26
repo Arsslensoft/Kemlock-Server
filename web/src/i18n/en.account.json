@@ -201,6 +201,7 @@
   "security.passkeys.opens": "Opens the vault",
   "security.passkeys.none": "No passkey yet",
   "security.passkeys.add": "Add a passkey",
+  "security.passkeys.proofApp": "A second step is on, so adding a passkey asks for a code too. Enter a current code from your authenticator app, or your recovery code. It works once.",
   "security.passkeys.defaultName": "Passkey",
   "security.passkeys.removeLabel": "Remove",
   "security.passkeys.remove": "Remove {name}",

@@ -39,3 +39,26 @@ describe('adding a passkey', () => {
     expect(props.onAdd).toHaveBeenCalledWith('731904');
   });
 });
+
+describe('the proof for a passkey beside an authenticator app only', () => {
+  it('mails nothing and says which codes work', async () => {
+    const props = card({ proofNeeded: true, mailsCode: false });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }));
+    expect(props.onAskProof).not.toHaveBeenCalled();
+    expect(screen.getByText(/current code from your authenticator app/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Send another code' })).not.toBeInTheDocument();
+    await user.type(screen.getByLabelText('The code from the email'), '731904');
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }));
+    expect(props.onAdd).toHaveBeenCalledWith('731904');
+  });
+
+  it('lets the person back out, and says so', async () => {
+    const props = card({ proofNeeded: true, onCancel: vi.fn() });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add a passkey' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(props.onCancel).toHaveBeenCalledOnce();
+    expect(props.onAdd).not.toHaveBeenCalled();
+  });
+});
