@@ -69,6 +69,11 @@ describe('a Send link in the address', () => {
       throw new Error('refused');
     });
     expect(() => absorbSendLinkFromAddress()).not.toThrow();
+    // The fragment is still there, and every render reads it again: the same object each time, or
+    // useSyncExternalStore would render without end.
+    const first = heldSendLink();
+    expect(heldSendLink()).toBe(first);
+    expect(heldSendLink()).toBe(first);
     spy.mockRestore();
     expect(heldSendLink()?.link?.key).toBe(KEY);
   });
