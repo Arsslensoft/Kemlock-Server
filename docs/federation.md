@@ -573,7 +573,7 @@ space that has held items or had them). A revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
-admins to redo or drop. Writes to the home-only parts of a federated space
+admins to redo or drop. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
 (`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement` and
 `policies`) are refused at a server that is not the home with `409`, a
 `urn:kemlock:problem:home-only` problem that names the home (`home.server`, `home.address`) and the

@@ -337,3 +337,73 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
         .expect("applied");
     assert!(replica.held_items(space).await.expect("held").is_empty());
 }
+
+#[tokio::test]
+async fn a_collection_or_group_of_another_space_is_reported_before_a_record_names_it() {
+    let store = memory().await;
+    let mine = SpaceId::random();
+    let theirs = SpaceId::random();
+    let owner = UserId::random();
+    let space = |id: SpaceId| Space {
+        id,
+        name: vec![1; 40],
+        key_version: 1,
+        keys_pending_since: None,
+        created_at: AT,
+        updated_at: AT,
+    };
+    let collection = Collection {
+        id: CollectionId::random(),
+        space: theirs,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: AT,
+    };
+    let group = Group {
+        id: GroupId::random(),
+        space: theirs,
+        name: vec![3; 40],
+        members: [owner].into_iter().collect(),
+        created_at: AT,
+    };
+    for (id, collections, groups) in [
+        (mine, Vec::new(), Vec::new()),
+        (theirs, vec![collection.clone()], vec![group.clone()]),
+    ] {
+        SpaceRepo::create(
+            &store,
+            SpaceChanges {
+                space: Some(space(id)),
+                members: vec![member(id, owner, SpaceRole::Owner, MemberState::Confirmed)],
+                groups,
+                collections,
+                ..SpaceChanges::new(id)
+            },
+        )
+        .await
+        .expect("a space");
+    }
+
+    // The other space's ids are taken, whichever kind a record names them as.
+    assert_eq!(
+        store.ids_held_elsewhere(mine, &[collection.id], &[]).await,
+        Ok(true)
+    );
+    assert_eq!(
+        store.ids_held_elsewhere(mine, &[], &[group.id]).await,
+        Ok(true)
+    );
+    // Its own ids and ids nobody has are fine.
+    assert_eq!(
+        store.ids_held_elsewhere(theirs, &[collection.id], &[group.id]).await,
+        Ok(false)
+    );
+    assert_eq!(
+        store
+            .ids_held_elsewhere(mine, &[CollectionId::random()], &[GroupId::random()])
+            .await,
+        Ok(false)
+    );
+}

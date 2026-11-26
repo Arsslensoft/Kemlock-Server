@@ -826,6 +826,27 @@ impl VaultErasure for MemoryStore {
 }
 
 impl SpaceMirror for MemoryStore {
+    async fn ids_held_elsewhere(
+        &self,
+        space: SpaceId,
+        collections: &[kemlock_domain::spaces::CollectionId],
+        groups: &[kemlock_domain::spaces::GroupId],
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .extras()
+            .snapshots
+            .iter()
+            .filter(|(other, _)| **other != space)
+            .any(|(_, snapshot)| {
+                snapshot
+                    .state
+                    .collections
+                    .iter()
+                    .any(|c| collections.contains(&c.id))
+                    || snapshot.state.groups.iter().any(|g| groups.contains(&g.id))
+            }))
+    }
+
     async fn space_snapshot(&self, space: SpaceId) -> Result<Option<SpaceSnapshot>, StoreError> {
         Ok(self.extras().snapshots.get(&space).cloned())
     }

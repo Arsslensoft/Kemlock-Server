@@ -149,6 +149,18 @@ pub trait SpaceMirror: Send + Sync {
         ready(Ok(()))
     }
 
+    /// Whether any of these collections or groups already exists in a space other than `space`.
+    /// A replica asks before it applies a record, because the home of one space may only change
+    /// its own entities: an id that is new, or already this space's, is fine.
+    fn ids_held_elsewhere(
+        &self,
+        _space: SpaceId,
+        _collections: &[CollectionId],
+        _groups: &[GroupId],
+    ) -> impl Future<Output = R<bool>> + Send {
+        ready(Ok(false))
+    }
+
     /// Applies one record a replica took from the home: an upsert, or a removal.
     fn apply_space_record(
         &self,
@@ -662,6 +674,36 @@ impl SpaceRecord {
         }
     }
 
+    /// The collections this record names (its own, a parent, the ones a key copy is for).
+    fn collection_ids(&self) -> Vec<CollectionId> {
+        match self {
+            SpaceRecord::Collection { collection, .. } => {
+                let mut ids = vec![collection.id];
+                ids.extend(collection.parent);
+                ids
+            }
+            SpaceRecord::CollectionGone(c) => vec![*c],
+            SpaceRecord::Keys { copies, .. } => copies.iter().map(|c| c.collection).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The groups this record names (its own, or the ones a grant is to).
+    fn group_ids(&self) -> Vec<GroupId> {
+        match self {
+            SpaceRecord::Group(g) => vec![g.id],
+            SpaceRecord::GroupGone(g) => vec![*g],
+            SpaceRecord::Collection { grants, .. } => grants
+                .iter()
+                .filter_map(|g| match g.grantee {
+                    Grantee::Group(id) => Some(id),
+                    Grantee::Member(_) => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The kind of home record that carries it.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -779,6 +821,23 @@ impl<S: FedStore> Replica<S> {
         };
         match SpaceRecord::from_record(space, kind, payload) {
             Ok(Some(record)) => {
+                // The home of this space may only change this space's collections and groups: a
+                // record that names one of another space's is refused, and only that record.
+                match self
+                    .store
+                    .ids_held_elsewhere(space, &record.collection_ids(), &record.group_ids())
+                    .await
+                {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        tracing::warn!(%kind, %space, "a space record names a collection or group of another space: refused");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, %kind, "a space record could not be checked: not applied");
+                        return;
+                    }
+                }
                 if let Err(e) = self.store.apply_space_record(space, &record).await {
                     tracing::warn!(error = %e, %kind, "a space record could not be applied");
                 }
@@ -1116,5 +1175,80 @@ mod tests {
         assert_eq!((sync.applied, sync.quarantined), (0, 8));
         assert!(b.store.applied_space_records().is_empty());
         assert_eq!(b.store.quarantined(vault).await.expect("held").len(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_record_naming_another_spaces_collection_or_group_applies_nothing() {
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib));
+        let space = SpaceId::random();
+        let vault = Owner::Space(space);
+        // B holds another space, with a collection and a group.
+        let other = space_snapshot(SpaceId::random());
+        b.store.set_space_snapshot(other.clone());
+        let theirs = other.state.collections[0].clone();
+        let their_group = other.state.groups[0].clone();
+        let mine = Collection {
+            space,
+            ..theirs.clone()
+        };
+        let apply = |kind: &'static str, payload: Vec<u8>| {
+            let b = &b;
+            async move { b.apply_space_home_record(vault, kind, &payload).await }
+        };
+
+        // This space's home re-states the other space's collection and group as its own, grants
+        // to the other space's group, key copies for its collection, and says they are gone.
+        apply(KIND_COLLECTION, encode_collection(&mine, &[])).await;
+        apply(
+            KIND_GROUP,
+            encode_group(&Group {
+                space,
+                ..their_group.clone()
+            }),
+        )
+        .await;
+        let grant = CollectionGrant {
+            collection: CollectionId::random(),
+            grantee: Grantee::Group(their_group.id),
+            permission: CollectionPermission::Edit,
+        };
+        let own_collection = Collection {
+            id: grant.collection,
+            parent: None,
+            ..mine.clone()
+        };
+        apply(KIND_COLLECTION, encode_collection(&own_collection, &[grant])).await;
+        let under_parent = Collection {
+            id: CollectionId::random(),
+            parent: Some(theirs.id),
+            ..mine.clone()
+        };
+        apply(KIND_COLLECTION, encode_collection(&under_parent, &[])).await;
+        let user = UserId::random();
+        apply(
+            KIND_KEYS,
+            encode_keys(
+                user,
+                &[KeyCopy {
+                    collection: theirs.id,
+                    user,
+                    key_version: 1,
+                    sealed: vec![1; 40],
+                }],
+            ),
+        )
+        .await;
+        apply(KIND_COLLECTION, gone_payload(theirs.id.0.as_bytes())).await;
+        apply(KIND_GROUP, gone_payload(their_group.id.0.as_bytes())).await;
+        assert!(b.store.applied_space_records().is_empty());
+
+        // Ids that are new, or this space's own, still apply.
+        let fresh = Collection {
+            id: CollectionId::random(),
+            ..mine
+        };
+        apply(KIND_COLLECTION, encode_collection(&fresh, &[])).await;
+        assert_eq!(b.store.applied_space_records().len(), 1);
     }
 }
