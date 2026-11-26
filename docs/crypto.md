@@ -297,6 +297,8 @@ The server keeps only the kit id, the key version, when the kit was made and the
 a piece, the kit key or the root key. The wrap is also the verifier: a wrong kit key fails the AEAD
 tag, so the worker knows whether the pieces it was given are right, and a kit made for an earlier key
 version does not open (`GET /kem/v1/account/recovery-kit` says whether the kit is `current`).
+That holds for the associated data only: the root key inside is the same until the root key is
+rotated ("Rotating the root key"), which also makes a new kit.
 Regenerating makes a new kit id and key and replaces the stored wrap, so every old piece stops
 working. Pieces are not recoverable: lose 2 of 3 and the kit is gone; make a new one while signed in.
 
@@ -349,6 +351,221 @@ answers 404. Once enrolled, such an account opens its vault with a trusted-devic
 PRF wrap, or another device's approval, and `GET /kem/v1/account/keys` answers with its keys and an
 empty `wrappedRootKey`, since there is no password wrap. Adding a password later is a separate
 change.
+
+### Rotating the root key
+
+The root key never changes by itself, so every copy ever made of it keeps opening the account's
+keys, and every ciphertext they protect, for as long as the copy and its unlocking pieces exist: an
+old Recovery Kit, a passkey's PRF wrap, a stolen trusted-device copy, a former emergency contact's
+box, a space recovery box. Deleting such a copy on the server only stops the server handing it out;
+anyone who kept the copy and later gets the ciphertext (a database leak, a backup) still opens the
+current root. **Rotation** is the one operation that ends that: it makes a new random root key `R′`
+at the next key version and moves everything `R` protected under it, so a copy of `R` opens only
+what existed before the rotation.
+
+The root key is the account's own, so a rotation is the person's own act, from a device that has
+the root key open. It cannot be made for an account shared with the Bitwarden apps (`compatible`:
+the root key is the Bitwarden user key, which those apps hold: `403 compatible-account`), nor for
+one that has no keys yet (`404`).
+
+**What changes.** With `N` the account's key version, a rotation installs `N′ = N + 1` (the
+version after `N`, at most `2^32 - 1`; nothing else is accepted):
+
+| What `R` protected | Under `R′` |
+| --- | --- |
+| The password wrap ("The password wrap of the root key") | A new wrap of `R′`, same master key and export key, `aad` with `u32be(N′)`. The OPAQUE record, the settings and the salt stay. Absent for an account with no password |
+| The account's `kx1` and `sig1` private keys | **A new pair.** Both private keys were sealed under `R`, so whoever opens an old wrap opens them; a pair that stayed would go on signing and decrypting for them. The new public keys are the bundle of key version `N′`, signed by the new `sig1` key, and the pair is sealed under `R′`'s user key as "The account's private keys" says, with `u32be(N′)` |
+| The old pair | Sealed once more, **under `R′`'s user key**, with the layout and label of the private keys and `u32be(N)` in the `aad` (`sealedPreviousPrivateKeys`). It is there for one reason: the signature of a `rekey` in a space must be made by the key the space has on record, which is the old one (see "Spaces", below). It is deleted on the client's say-so once that is done |
+| Every item of the vault (`kem1`, owner `user:`) | **A fresh item key**, the item sealed under it again at revision `r + 1` (the revision is in the `aad`, so the ciphertext is new), and the item key wrapped under `R′`'s `item-wrap` child with `u32be(N′)`. Re-wrapping the old item key alone would not do: `R`'s `item-wrap` child opens every old wrap in every backup, and the item key it yields would still open today's ciphertext. A tombstone has nothing to change and keeps its revision |
+| The Sends' `sealedKey` and `meta` ("Sends") | `sealedKey` wraps the same link key `K` under `R′`'s `item-wrap` child with `u32be(N′)`, and `meta` is sealed again under the meta key derived from it. The link key and the payload stay: `K` is in links already given out, and anyone with a link is meant to read it |
+| The Recovery Kit | A new kit (new id, new key, new pieces), wrapped for `N′`. The old kit's row is replaced or deleted |
+| The passkeys' PRF wraps | A new wrap of `R′` per passkey, for `N′`. It needs the passkey's PRF output, so the person must use each passkey once; one they cannot use now loses its wrap, and the passkey stays for signing in only |
+| The trusted-device copies | Only the copy of the device that rotates is re-sealed (`deviceCopy`). Every other device's copy is deleted, with the device (below) |
+| The emergency-access boxes | A new `"emergency-access"` box of `R′` to each contact's **current** bundle. A grant the client does not re-seal returns to `accepted` with no box, and the grantor confirms it again |
+| The space recovery boxes ("Using the state") | A new `"account-recovery"` box of `R′` per enrolment, to the chain's current recovery key, with the same `keySeq`. One not re-sealed is deleted; the member enrols again |
+| The duplicate tags ("Duplicate tags") | Deleted with the rewrite of the items: they are `HMAC` under a key of the user key |
+| The signed manifest ("Signed manifest") | Not part of the install: the revisions and hashes change, and the old signature was made by the old `sig1` key. The rotating client signs a new one with the new key at a counter above the stored one, and `PUT`s it as soon as the install is done |
+
+Not touched, because they do not come from the root key: the master password, its OPAQUE record and
+KDF settings; the second step; passkeys as credentials; the space and collection keys (their
+boxes are sealed *to* the old `kx1` key, see "Spaces" below); the contents of attachments and their
+own keys. **An attachment's file key is in the item body**, so the body is new but the file's
+ciphertext is the one the old body named: a person who must treat an old copy of `R` plus an old
+backup as a threat to a file has to upload it again under a new key, which is an ordinary attachment
+edit and no part of a rotation.
+
+**The new keys, in the worker.** `R′` is 64 random bytes; its user key and children are derived as
+for any root key. The new `kx1` and `sig1` pairs are fresh random keys (never derived from the old).
+The bundle is
+`"kemlock/v1/bundle" ‖ account id ‖ u32be(N′) ‖ kx1 public ‖ sig1 public`, signed by the new `sig1`
+key under context `"bundle"`. All wraps above are the existing formats with `R′` and `u32be(N′)`;
+nothing new is invented for them. A `kx1` or `sig1` public key equal to the old one is refused by
+the server.
+
+#### The re-encryption of an item
+
+For each live item of the vault, with its `id`, `owner`, `kind`, `revision r`, `ciphertext`,
+`itemKey` and `keyVersion v`:
+
+```
+old item key = unwrap(R's item-wrap child, itemKey, aad "kemlock/v1/item-key" ‖ id ‖ owner ‖ u32be(v))
+json         = AES-256-GCM-open(old item key, ciphertext, aad "kemlock/v1/item" ‖ id ‖ u64be(r) ‖ lp(kind) ‖ owner)
+new item key = 32 fresh random bytes
+ciphertext′  = AES-256-GCM(new item key, nonce, json, aad "kemlock/v1/item" ‖ id ‖ u64be(r + 1) ‖ lp(kind) ‖ owner)
+itemKey′     = AES-256-GCM(R′'s item-wrap child, nonce, new item key, aad "kemlock/v1/item-key" ‖ id ‖ owner ‖ u32be(N′))
+```
+
+An item that does not open under `R` (a body corrupted earlier) stops the rotation: the client
+reports which one and rotates nothing. The JSON is carried over byte for byte.
+
+#### Staging, and the install in one transaction
+
+The items are the only part that can be large, so they travel apart from the install and the server
+holds them **staged**, invisible to every reader and to sync:
+
+```
+PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRevision, ciphertext, itemKey}]}
+```
+
+- `rotationId` is 16 random bytes the client makes, base64url: it names one attempt. A request with
+  another `rotationId` than the account's staged rows discards those rows first.
+- 1 to 200 items per request; a row is replaced when the same `id` is staged again, so a request
+  that failed is simply sent again. `baseRevision` is the revision the client read; `ciphertext`
+  and `itemKey` are as above, at revision `baseRevision + 1`. The server cannot check that; it
+  checks the lengths (`ciphertext` 28 bytes up to the item limit, `itemKey` 60 bytes), that the item
+  is live, the account's own, in format `kem1`, and at `baseRevision` now, and that `toVersion` is
+  the account's version plus one.
+- `DELETE /kem/v1/account/rotation` discards the staged rows (abandoning); rows older than two hours
+  are ignored and deleted by the next request. Staged rows change nothing a device can see. A page
+  that is closed mid-rotation loses `R′` with it, and its staged rows are useless: the next attempt
+  starts over with a new `rotationId`.
+
+This is the **resumable** choice: the vault is never half rotated (no item exists under `R′` until
+the install), and a rotation that fails at any point leaves the account exactly as it was. Writing
+the items under `R′` one batch at a time through the ordinary item routes was rejected: until the
+last batch, the account would hold items its other devices cannot open, and an abandoned attempt
+would leave them unreadable for good.
+
+```
+POST /kem/v1/account/rotation
+{ "rotationId", "fromVersion": N, "toVersion": N′,
+  "loginState", "finalization", "proof"?,           the password again, as for PUT /account/password
+  "publicBundle", "bundleSignature",
+  "sealedPrivateKeys", "sealedPreviousPrivateKeys",
+  "wrappedRootKey"?,                                 the password wrap, 92 bytes
+  "kit"?: {"kitId", "wrappedKey"}, "dropKit"?: bool,
+  "deviceCopy"?: {"wrappedKey", "protection"},
+  "passkeys": [{"id", "wrappedKey"}], "dropPasskeys": [id],
+  "emergency": [{"id", "sealedKey"}], "dropEmergency": [id],
+  "recovery": [{"space", "keySeq", "box"}], "dropRecovery": [space],
+  "sends": [{"id", "sealedKey", "meta"}],
+  "spacesHandled": bool }
+```
+
+`GET /kem/v1/account/rotation` answers what the server holds that the install must cover, so the
+client builds the request from the server's own list: `{keyVersion, hasPassword, publicBundle,
+kit: {kitId} | null, passkeys: [{id, credentialId}], deviceCopies: [{deviceId}], emergency: [{id,
+state, granteeId}], recovery: [{space, keySeq}], sends: [{id, kind}], items: {count}, spaces: count,
+previousKeys: {keyVersion, sealed} | null}`. `passkeys` lists only the passkeys that have a PRF wrap;
+`emergency` only grants that hold a box.
+
+**What the server checks**, all of it inside the one transaction that writes, so a request that
+fails any check writes nothing and answers `409 rotation-incomplete` (what changed since the client
+read it) or `400 invalid-request` (what is malformed), and one that loses a race answers
+`409 account-changed`:
+
+1. The account is not `compatible`, has keys, and `fromVersion` is its `key_version` and
+   `toVersion` is the next one (`409 rotation-stale-version` otherwise).
+2. With a password, the password is right and, when a second step is on, a fresh `proof` is given
+   (both as `PUT /account/password` does, before the transaction); an account with no password needs
+   the proof only when a second step is on.
+3. The bundle parses, is for this account at key version `toVersion`, its signature verifies under
+   its own `sig1` key, and neither its `kx1` nor its `sig1` public key is the old bundle's. Both
+   sealed private-key blobs are 189 bytes.
+4. `wrappedRootKey` is present, and 92 bytes, exactly when the account has a password wrap.
+5. Every wrap is well formed by its own length rule: a kit's id is 8 base32 characters and its wrap
+   92 bytes; each passkey wrap 92 bytes; each emergency box and recovery box the length of its
+   format; a send's `sealedKey` 64 bytes beginning with `u32be(N′)`; a `meta` 28 bytes to 16 KiB; a
+   device copy as for any copy.
+6. **Every wrap of `R` the server holds is either replaced or named as dropped, and nothing else.**
+   For passkeys, emergency grants and recovery enrolments, the ids in the list and in its `drop…`
+   list are disjoint and together are exactly the set the server holds now; for the kit, `kit` or
+   `dropKit` when one exists; for sends, the list is exactly the account's Sends. An id the server
+   does not hold, or one it holds that the request does not name (a wrap another device added while
+   the client worked), is `409 rotation-incomplete`: the client reads the plan again and redoes
+   the missing part.
+7. `deviceCopy` is the calling device's own; every other device's copy is deleted.
+8. The staged rows of `rotationId` are exactly the account's live items, each at its `baseRevision`
+   now. An item written, deleted or created since the client read it makes the answer
+   `rotation-incomplete`, naming how many; the client stages those again (a round that stages only
+   the changed items) and installs again. A live item of format `bw` is `409
+   rotation-unsupported-items`.
+9. The account is in no space, or `spacesHandled` is true (`409 spaces-need-rekey`).
+
+**What the server writes**, in that transaction and not before: the account's row (bundle,
+signature, sealed private keys, password wrap, `key_version = N′`, a new **security stamp**, new
+`updated_at`), conditional on the `updated_at` and stamp it read; the previous private keys; the
+items (as the ordinary write does: revision `baseRevision + 1`, `keyVersion = N′`, a new change per
+item, the item's duplicate tags deleted); the sends; the kit; the passkey wraps (the dropped ones
+removed); the emergency boxes (dropped grants back to `accepted`); the recovery boxes; the device
+copies; the staged rows removed. Nothing refers to `R` afterwards: **no wrap of `R` stays in the
+database**. After the commit, and best effort, the other devices are signed out and their rows and
+tokens deleted as `PUT /account/password` with `signOutOthers` does, and the calling device gets new
+tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material).
+
+Other devices' sessions end with the stamp: each signs in again and sees at
+`GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,
+the new kit or another device's approval and makes its trusted-device copy again. A copy of the old
+version no longer opens (its `aad` has `u32be(N)`), and a device deletes the key and the local data
+it kept for `N`.
+
+**Spaces.** Space, collection and group keys are not under `R`, but the old `kx1` key is gone: the
+boxes sealed to it can no longer be opened by a device that has not already opened them, and the
+account's `sig1` key is new. A client that is in a space therefore, **after** the install and while
+it still holds the old keys (the previous private keys let another device continue):
+
+1. in each space with a chain, appends a `rekey` ("Space chain": the bundle at `N′`, signed with the
+   old `sig1` key and cosigned with the new one), then a `seal` of each key the member holds to its
+   own new bundle (it is Awaiting those keys, and as a holder it may seal them), or waits for
+   another holder's seal;
+2. in a space with none, seals the keys it holds to its own new bundle through the key routes;
+3. then deletes the previous keys (`DELETE /kem/v1/account/rotation/previous-keys`).
+
+Until then the member's confirmations are for the old key version, and "Member confirmation"
+applies: every other member sees "replaced their keys" and may compare the new fingerprint. A client
+that cannot do (1) and (2) must not rotate an account that is in a space; the server asks it to say
+so with `spacesHandled` and refuses with `409 spaces-need-rekey` otherwise. The web vault does not
+do it yet, and says so.
+
+`GET /kem/v1/account/rotation` answers `previousKeys` while they exist, so a second device that
+opens the vault with the new keys can finish the spaces: it opens `sealedPreviousPrivateKeys` with
+`R′`'s user key (`aad` with `u32be(previous version)`).
+
+**What a client must do** (the Kemlock app, the browser extension and any other):
+
+- Offer rotation only to an unlocked account that is not `compatible`; say that it signs every
+  other device out and needs each passkey's use and each emergency contact's current bundle; ask
+  for the password (or, with none, the account's way in).
+- Make `R′`, the new pair and the bundle, re-encrypt every item and Send in a worker and stage
+  the items in batches with progress; never send `R′`, a key or a plaintext. Show the new
+  fingerprint afterwards.
+- Seal every wrap of `R′` before the install, and send no wrap of `R`.
+- On `409 rotation-incomplete`, read the plan again, stage the items it names and any new wrap, and
+  install again; give up after five rounds.
+- After the install, sign and `PUT` a new manifest, show the new Recovery Kit once, make the
+  device's trusted-device copy, delete the key and local data of version `N` it still holds, and
+  do the spaces' part before it forgets the old keys.
+- A device that was not the one rotating treats a `keyVersion` it did not hold, on its next
+  sign-in, as "keys were rotated": it discards its copy of the root key, its sealed local data and
+  its derived keys.
+
+`rotation.json` in test-vectors pins: a root key `R` and `R′` with their user keys and `item-wrap`
+children; the item re-encryption (old ciphertext and wrap, the JSON, the new item key, ciphertext
+and wrap, with the `aad`s), and that the new envelope does not open under `R`'s keys, at revision
+`r`, or with the old item key; the Send re-wrap (`sealedKey` and `meta` under `N′`, and that the
+old ones do not open under `R′`); the password, kit and passkey wraps of `R′` at `N′`, and that the
+same wraps of `R` at `N` do not open at `N′`; the new bundle and sealed private keys at `N′`, and
+the previous private keys sealed under `R′` at `N`.
 
 ## `kx1`: the hybrid exchange key
 
