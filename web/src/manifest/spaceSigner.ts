@@ -135,7 +135,8 @@ async function unchained(
   try {
     await verifiedRecipient(
       { crypto: deps.trace.crypto, spaceId: space, members, me, pins: deps.trace.pins },
-      member,
+      // A member taken out is traced as the member they were when they signed.
+      member.state === 'revoked' ? { ...member, state: 'confirmed' } : member,
     );
   } catch (error) {
     if (error instanceof MemberNotVerified) return null;
