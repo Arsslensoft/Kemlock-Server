@@ -1534,6 +1534,47 @@ async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
 }
 
 #[tokio::test]
+async fn an_account_stops_taking_second_step_codes_after_ten_tries_from_any_address() {
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    let secret = [5u8; 20];
+    enrol_totp(&h, user, &secret).await;
+    let code = |h: &Harness| {
+        kemlock_crypto::totp::code_at(
+            &secret,
+            u64::try_from(h.env.time().unix_timestamp()).expect("a time"),
+        )
+    };
+    let try_code = |token: String| {
+        let h = &h;
+        async move {
+            let mut f = Harness::password_fields("ada@example.com", HASH);
+            f.push(("twoFactorProvider", "0"));
+            f.push(("twoFactorToken", token.as_str()));
+            h.token(&f).await
+        }
+    };
+
+    for _ in 0..10 {
+        let (status, body) = try_code("000000".to_owned()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    // The eleventh is refused, and so is the right code: the account is locked, not the address.
+    let (status, body) = try_code(code(&h)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(body["message"], "Too many login requests");
+
+    // The window runs out, and the right code works; it clears the count.
+    h.env.advance(Duration::minutes(16));
+    let (status, body) = try_code(code(&h)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for _ in 0..10 {
+        let (status, _) = try_code("000000".to_owned()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn a_request_for_an_emailed_code_is_limited_by_address_like_a_sign_in() {
     let h = Harness::with(|s| s.login_ratelimit_max_burst = 2).await;
     h.account("ada@example.com", HASH).await;

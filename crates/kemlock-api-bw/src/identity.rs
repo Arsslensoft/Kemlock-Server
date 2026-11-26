@@ -622,6 +622,20 @@ impl<S: BwStore> App<S> {
             return Err(self.two_factor_challenge(user, &usable, data).await?);
         };
 
+        // The try is counted before the code is looked at, so tries that arrive together each
+        // count, and a locked account refuses even the right code until its window ends.
+        let tries = BwTryRepo::count_try(
+            &self.store,
+            user.id,
+            SECOND_STEP_KIND,
+            self.now().unix_timestamp(),
+            TRIES_WINDOW_SECS,
+        )
+        .await?;
+        if tries > SECOND_STEP_MAX_TRIES {
+            return Err(too_many_logins());
+        }
+
         let now = self.now();
         match selected {
             0 => {
@@ -706,6 +720,7 @@ impl<S: BwStore> App<S> {
             }
             _ => return Err(BwError::msg("Invalid two factor provider")),
         }
+        BwTryRepo::forget_tries(&self.store, user.id, SECOND_STEP_KIND).await?;
 
         if data.two_factor_remember.unwrap_or(0) == 1 {
             let at = now.unix_timestamp();
@@ -824,6 +839,11 @@ async fn account_of<S: BwStore>(app: &App<S>, user: &User) -> BwResult<Option<Bw
     Ok(BwAccountRepo::get(&app.store, user.id).await?)
 }
 
+/// The second-step codes an account may try in a window (any address): a wrong code, a remember
+/// token and a recovery code each count. Persisted (`bw_tries`), so a restart or many addresses
+/// don't give the tries back; the window is the one the Kemlock API's second step uses.
+const SECOND_STEP_KIND: &str = "second-step";
+const SECOND_STEP_MAX_TRIES: u32 = 10;
 /// The mails with a sign-in code an account may ask for in the window.
 const EMAIL_LOGIN_KIND: &str = "email-login";
 const EMAIL_LOGIN_MAX_TRIES: u32 = 5;

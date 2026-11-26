@@ -7,8 +7,22 @@
 //! oldest half.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
+
+/// The address a client is followed by: an IPv6 client holds a whole /64 (what a household or a
+/// mobile device gets), so changing the low 64 bits is not a new client, and an IPv4-mapped
+/// address is the IPv4 one.
+fn bucket_key(ip: IpAddr) -> IpAddr {
+    match ip.to_canonical() {
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+        v4 => v4,
+    }
+}
 
 /// The most addresses followed at once.
 const MAX_ADDRESSES: usize = 10_000;
@@ -42,6 +56,7 @@ impl IpLimit {
     /// Takes one request of `ip` at `now` (Unix seconds). `Err(seconds)` is how long until one is
     /// given back.
     pub(crate) fn check(&self, ip: IpAddr, now: i64) -> Result<(), u64> {
+        let ip = bucket_key(ip);
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         if buckets.len() >= MAX_ADDRESSES && !buckets.contains_key(&ip) {
             let full_after = self.period.saturating_mul(i64::from(self.burst));
@@ -111,6 +126,26 @@ mod tests {
             assert_eq!(limit.check(ONE, 10_000), Ok(()));
         }
         assert_eq!(limit.check(ONE, 10_000), Err(10));
+    }
+
+    #[test]
+    fn an_ipv6_client_is_followed_by_its_64_bit_prefix() {
+        let limit = IpLimit::new(2, 60);
+        let a: IpAddr = "2001:db8:1:2::1".parse().expect("an address");
+        let b: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd".parse().expect("an address");
+        let elsewhere: IpAddr = "2001:db8:1:3::1".parse().expect("an address");
+        assert_eq!(limit.check(a, 0), Ok(()));
+        assert_eq!(limit.check(b, 0), Ok(()));
+        assert_eq!(limit.check(a, 0), Err(60), "one client, however it picks its low bits");
+        assert_eq!(limit.check(elsewhere, 0), Ok(()));
+    }
+
+    #[test]
+    fn an_ipv4_mapped_address_is_the_ipv4_one() {
+        let limit = IpLimit::new(1, 60);
+        let mapped: IpAddr = "::ffff:203.0.113.1".parse().expect("an address");
+        assert_eq!(limit.check(ONE, 0), Ok(()));
+        assert_eq!(limit.check(mapped, 0), Err(60));
     }
 
     #[test]
