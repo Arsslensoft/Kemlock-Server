@@ -348,7 +348,7 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
 ## The web vault on a shared computer
 
 The web vault keeps the person signed in, with the vault open, across a reload of the tab, and only
-that. What it keeps lives in the tab's : the tokens and the root key, both sealed
+that. What it keeps lives in the tab's session storage: the tokens and the root key, both sealed
 in a Web Worker under a key that belongs to that tab alone (non-extractable, in IndexedDB), and
 honoured only for a reload within 10 seconds of the page leaving. A tab that was closed and restored,
 or duplicated, has to sign in again. Every page of the vault stamps its tab's key every few seconds
