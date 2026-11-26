@@ -35,7 +35,7 @@ use crate::sendsync::SendSync;
 use crate::signed::Signed;
 use crate::spaces::SpaceMirror;
 use crate::tagsync::TagSync;
-use crate::writes::{self, Verdict};
+use crate::writes;
 use kemlock_app::ports::StoreError;
 use kemlock_crypto::sig1;
 use kemlock_domain::{ItemId, Owner, ServerId, VersionVector};
@@ -694,7 +694,7 @@ impl<S: FedStore> Replica<S> {
             }
             // The writing account's signature: the origin's signature says which server accepted
             // the write, this says who made it.
-            if let Verdict::Refuse(why) = writes::judge(&self.store, &record).await? {
+            if let writes::Verdict::Refuse(why) = writes::judge(&self.store, &record).await? {
                 tracing::warn!(%origin, why, "a change was refused");
                 counts.refused += 1;
                 continue;
