@@ -14,6 +14,7 @@
 // that can write to IndexedDB can't make a value the worker opens. A value that doesn't open is an
 // error, never "none". Where IndexedDB isn't available the memory is the page's, and an unsigned box
 // is accepted once more next time: safe, only more asking.
+import { type Reseal, registerLocalStore } from '@/local/registry';
 import type { LocalSeal } from './anchors';
 
 /** What was accepted for one (space, key, version). */
@@ -132,6 +133,51 @@ export function indexedDbBoxStore(seal: LocalSeal, factory: IDBFactory = indexed
   };
   return store;
 }
+
+/** The account a kept key belongs to: its second segment (`box/<account>/…`, `signed/<account>/…`). */
+const accountOf = (key: string) => key.split('/')[1];
+
+/**
+ * Seals again, through `reseal`, every value kept for `account` in the database of accepted boxes.
+ * A value that doesn't open is left as it is. Used by a rotation, while the worker holds both the
+ * old and the new keys.
+ */
+export async function resealBoxStore(factory: IDBFactory, account: string, reseal: Reseal): Promise<void> {
+  const db = await open(factory);
+  try {
+    const keys = await request<IDBValidKey[]>(db.transaction(BOXES, 'readonly').objectStore(BOXES).getAllKeys());
+    const values = await request<unknown[]>(db.transaction(BOXES, 'readonly').objectStore(BOXES).getAll());
+    const moved: Array<[string, string]> = [];
+    for (const [i, key] of keys.entries()) {
+      const value = values[i];
+      if (typeof key !== 'string' || accountOf(key) !== account || typeof value !== 'string') continue;
+      try {
+        moved.push([key, await reseal(key, value)]);
+      } catch {
+        // Doesn't open now: not this account's, or damaged. Left as it is.
+      }
+    }
+    if (moved.length === 0) return;
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(BOXES, 'readwrite');
+      const objects = tx.objectStore(BOXES);
+      for (const [key, value] of moved) objects.put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('indexeddb'));
+      tx.onabort = () => reject(tx.error ?? new Error('indexeddb'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+registerLocalStore({
+  name: 'space-key-boxes',
+  async resealAll(account, reseal) {
+    if (typeof indexedDB === 'undefined') return;
+    await resealBoxStore(indexedDB, account, reseal);
+  },
+});
 
 /** The store the app uses: IndexedDB where there is one, memory otherwise. */
 export function defaultBoxStore(seal: LocalSeal): BoxStore {
