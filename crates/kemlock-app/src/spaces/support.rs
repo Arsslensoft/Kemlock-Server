@@ -107,6 +107,7 @@ pub(crate) fn key_changes(
             user: key.user,
             key_version: collection.key_version,
             sealed: key.sealed,
+            sealed_by: None,
         });
     }
 

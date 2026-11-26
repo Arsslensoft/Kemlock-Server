@@ -13,10 +13,10 @@
 //! | Kind | Entity (key 1) | Other fields |
 //! | --- | --- | --- |
 //! | `space` | the space id | 2 name, 3 key version, 4 keys pending since, 5 created, 6 updated |
-//! | `space-member` | the user id | 2 role, 3 custom permission bits, 4 state, 5 invited by, 6 invited at, 7 accepted at, 8 sealed space key, 9 its key version, 10 confirmation `{0 by, 1 at, 2 fingerprint, 3 member key version, 4 statement, 5 signature}`, 11 revoked at |
+//! | `space-member` | the user id | 2 role, 3 custom permission bits, 4 state, 5 invited by, 6 invited at, 7 accepted at, 8 sealed space key, 9 its key version, 10 confirmation `{0 by, 1 at, 2 fingerprint, 3 member key version, 4 statement, 5 signature}`, 11 revoked at, 12 who sealed the space key `{0 account, 1 key version, 2 signature}`, left out when none |
 //! | `space-group` | the group id | 2 name, 3 member user ids, 4 created |
 //! | `space-collection` | the collection id | 2 parent, 3 name, 4 key version, 5 stale since, 6 created, 7 grants `[[0 member / 1 group, id, permission]]` |
-//! | `space-keys` | the user id | 2 key copies `[[collection id, key version, sealed key]]` |
+//! | `space-keys` | the user id | 2 key copies `[[collection id, key version, sealed key]]`, each with a fourth part `{0 account, 1 key version, 2 signature}` when someone signed it |
 //! | `space-policies` | the space id | 2 updated by, 3 updated at, 4 to 12 the switches, 13 master password rules, 14 timeout minutes, 16 timeout action |
 //! | `space-held` | the space id | 2 the ids of the live items a key replacement left held (docs/crypto.md, I3), sorted |
 //!
@@ -37,7 +37,8 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
-    CustomPermissions, Grantee, Group, GroupId, KeyCopy, Member, MemberState, Space, SpaceRole,
+    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState, Space,
+    SpaceRole,
     SpaceState,
 };
 use kemlock_domain::{ItemId, Owner, SpaceId, UserId};
@@ -211,6 +212,25 @@ pub fn encode_space(space: &Space) -> Vec<u8> {
     Value::map(e).encode()
 }
 
+/// Who sealed a key copy, as a map: `{0 account, 1 key version, 2 signature}`.
+fn sealed_by_value(by: &KeyBoxSignature) -> Value {
+    Value::map(vec![
+        (0, uuid_value(&by.by.0)),
+        (1, Value::Uint(u64::from(by.key_version))),
+        (2, Value::bytes(&by.signature)),
+    ])
+}
+
+fn decode_sealed_by(v: &Value) -> Result<KeyBoxSignature> {
+    let f = v.as_fields()?;
+    f.only(&[0, 1, 2])?;
+    Ok(KeyBoxSignature {
+        by: UserId(uuid_at(&f, 0)?),
+        key_version: small(f.uint(1)?)?,
+        signature: f.bytes(2)?.to_vec(),
+    })
+}
+
 pub fn encode_member(member: &Member) -> Vec<u8> {
     let mut e = head(&member.user.0);
     e.push((2, Value::text(member.role.as_str())));
@@ -239,6 +259,9 @@ pub fn encode_member(member: &Member) -> Vec<u8> {
         ));
     }
     push_time(&mut e, 11, member.revoked_at);
+    if let Some(by) = &member.sealed_by {
+        e.push((12, sealed_by_value(by)));
+    }
     Value::map(e).encode()
 }
 
@@ -304,11 +327,15 @@ pub fn encode_keys(user: UserId, copies: &[KeyCopy]) -> Vec<u8> {
             sorted
                 .into_iter()
                 .map(|c| {
-                    Value::Array(vec![
+                    let mut parts = vec![
                         uuid_value(&c.collection.0),
                         Value::Uint(u64::from(c.key_version)),
                         Value::bytes(&c.sealed),
-                    ])
+                    ];
+                    if let Some(by) = &c.sealed_by {
+                        parts.push(sealed_by_value(by));
+                    }
+                    Value::Array(parts)
                 })
                 .collect(),
         ),
@@ -421,7 +448,7 @@ fn list<'a>(f: &Fields<'a>, key: u64) -> Result<&'a [Value]> {
 }
 
 fn decode_member(space: SpaceId, f: &Fields<'_>) -> Result<Member> {
-    f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])?;
+    f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
     let confirmation = match f.get(10) {
         None => None,
         Some(v) => {
@@ -454,6 +481,7 @@ fn decode_member(space: SpaceId, f: &Fields<'_>) -> Result<Member> {
             .get(8)
             .map(|v| v.as_bytes().map(<[u8]>::to_vec))
             .transpose()?,
+        sealed_by: f.get(12).map(decode_sealed_by).transpose()?,
         key_version: opt_u32_at(f, 9)?,
         confirmation,
         revoked_at: opt_time_at(f, 11)?,
@@ -522,8 +550,10 @@ fn decode_keys(f: &Fields<'_>) -> Result<SpaceRecord> {
     f.only(&[0, 1, 2])?;
     let mut copies = Vec::new();
     for v in list(f, 2)? {
-        let [collection, version, sealed] = v.as_array()? else {
-            return Err(FedError::Malformed("a key copy has three parts"));
+        let (collection, version, sealed, by) = match v.as_array()? {
+            [collection, version, sealed] => (collection, version, sealed, None),
+            [collection, version, sealed, by] => (collection, version, sealed, Some(by)),
+            _ => return Err(FedError::Malformed("a key copy has three or four parts")),
         };
         let b: [u8; 16] = collection
             .as_bytes()?
@@ -534,6 +564,7 @@ fn decode_keys(f: &Fields<'_>) -> Result<SpaceRecord> {
             user: UserId(uuid_at(f, 1)?),
             key_version: small(version.as_uint()?)?,
             sealed: sealed.as_bytes()?.to_vec(),
+            sealed_by: by.map(decode_sealed_by).transpose()?,
         });
     }
     Ok(SpaceRecord::Keys {
@@ -1264,6 +1295,7 @@ mod tests {
                     user,
                     key_version: 1,
                     sealed: vec![1; 40],
+                    sealed_by: None,
                 }],
             ),
         )

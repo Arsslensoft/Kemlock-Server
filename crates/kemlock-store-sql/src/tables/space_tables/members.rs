@@ -3,7 +3,9 @@
 
 use crate::convert::{corrupt, from_i64_u32, utc};
 use kemlock_app::ports::StoreError;
-use kemlock_domain::spaces::{Confirmation, CustomPermissions, Member, MemberState, SpaceRole};
+use kemlock_domain::spaces::{
+    Confirmation, CustomPermissions, KeyBoxSignature, Member, MemberState, SpaceRole,
+};
 use kemlock_domain::{SpaceId, UserId};
 use sea_orm::ActiveValue::Set;
 use sea_orm::entity::prelude::*;
@@ -24,6 +26,9 @@ pub struct Model {
     pub invited_at: TimeDateTimeWithTimeZone,
     pub accepted_at: Option<TimeDateTimeWithTimeZone>,
     pub sealed_space_key: Option<Vec<u8>>,
+    pub sealed_by: Option<Uuid>,
+    pub sealed_by_key_version: Option<i64>,
+    pub sealed_signature: Option<Vec<u8>>,
     pub key_version: Option<i64>,
     pub revoked_at: Option<TimeDateTimeWithTimeZone>,
     pub confirmed_by: Option<Uuid>,
@@ -81,6 +86,7 @@ impl Model {
             invited_at: self.invited_at,
             accepted_at: self.accepted_at,
             sealed_space_key: self.sealed_space_key,
+            sealed_by: sealed_by_of(self.sealed_by, self.sealed_by_key_version, self.sealed_signature)?,
             key_version: self
                 .key_version
                 .map(|v| from_i64_u32(v, "member key version"))
@@ -103,6 +109,9 @@ pub(crate) fn active(member: &Member) -> ActiveModel {
         invited_at: Set(utc(member.invited_at)),
         accepted_at: Set(member.accepted_at.map(utc)),
         sealed_space_key: Set(member.sealed_space_key.clone()),
+        sealed_by: Set(member.sealed_by.as_ref().map(|s| s.by.0)),
+        sealed_by_key_version: Set(member.sealed_by.as_ref().map(|s| i64::from(s.key_version))),
+        sealed_signature: Set(member.sealed_by.as_ref().map(|s| s.signature.clone())),
         key_version: Set(member.key_version.map(i64::from)),
         revoked_at: Set(member.revoked_at.map(utc)),
         confirmed_by: Set(confirmation.map(|c| c.by.0)),
@@ -111,5 +120,22 @@ pub(crate) fn active(member: &Member) -> ActiveModel {
         confirmed_key_version: Set(confirmation.map(|c| i64::from(c.member_key_version))),
         confirmation_statement: Set(confirmation.map(|c| c.statement.clone())),
         confirmation_signature: Set(confirmation.map(|c| c.signature.clone())),
+    }
+}
+
+/// Who sealed a key copy: all three columns or none.
+pub(crate) fn sealed_by_of(
+    by: Option<Uuid>,
+    key_version: Option<i64>,
+    signature: Option<Vec<u8>>,
+) -> Result<Option<KeyBoxSignature>, StoreError> {
+    match (by, key_version, signature) {
+        (Some(by), Some(version), Some(signature)) => Ok(Some(KeyBoxSignature {
+            by: UserId(by),
+            key_version: from_i64_u32(version, "sealer key version")?,
+            signature,
+        })),
+        (None, None, None) => Ok(None),
+        _ => Err(corrupt("key box signature")),
     }
 }

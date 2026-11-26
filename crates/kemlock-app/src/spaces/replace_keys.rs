@@ -147,6 +147,7 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
             for member in state.confirmed_members() {
                 let mut updated = member.clone();
                 updated.sealed_space_key = sealed.get(&member.user).map(|s| (*s).clone());
+                updated.sealed_by = None;
                 updated.key_version = Some(version);
                 changes.members.push(updated);
             }
@@ -229,6 +230,7 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
                     user,
                     key_version: version,
                     sealed: sealed.clone(),
+                    sealed_by: None,
                 });
             }
             new_versions.insert(*id, version);

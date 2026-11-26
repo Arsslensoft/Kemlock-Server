@@ -84,6 +84,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
             invited_at: now,
             accepted_at: Some(now),
             sealed_space_key: Some(input.sealed_space_key),
+            sealed_by: None,
             key_version: Some(FIRST_KEY_VERSION),
             confirmation: None,
             revoked_at: None,
@@ -108,6 +109,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
             user: actor.user,
             key_version: FIRST_KEY_VERSION,
             sealed: input.collection.sealed_key,
+            sealed_by: None,
         };
 
         let state = SpaceState {

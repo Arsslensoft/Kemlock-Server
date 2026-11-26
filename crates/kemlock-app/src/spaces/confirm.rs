@@ -121,6 +121,7 @@ impl<R: SpaceRepo, U: UserRepo, F: BundleFingerprints, V: EventLog, C: Clock>
         let mut confirmed = target.clone();
         confirmed.state = MemberState::Confirmed;
         confirmed.sealed_space_key = Some(input.sealed_space_key);
+        confirmed.sealed_by = None;
         confirmed.key_version = Some(state.space.key_version);
         confirmed.confirmation = Some(Confirmation {
             by: actor.user,

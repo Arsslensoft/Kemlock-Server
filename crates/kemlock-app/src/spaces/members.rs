@@ -103,6 +103,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> Offboard<R, V, C> {
         revoked.state = MemberState::Revoked;
         revoked.revoked_at = Some(now);
         revoked.sealed_space_key = None;
+        revoked.sealed_by = None;
         revoked.key_version = None;
         revoked.confirmation = None;
 
