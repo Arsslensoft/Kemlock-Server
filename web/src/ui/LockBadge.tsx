@@ -1,9 +1,10 @@
 // The round lock beside a page title. It says the page is end-to-end encrypted in a tooltip that
 // shows on hover and on keyboard focus, stays while the pointer is over it, and goes with Escape
-// (WCAG 1.4.13). A press toggles it too, which is how a touch screen, with no hover, opens it. The
-// button holds the text through aria-describedby, so a screen reader reads it when the lock takes
+// (WCAG 1.4.13). A press toggles it too, which is how a touch screen, with no hover, opens it, and a
+// press anywhere else closes it again (Safari never focuses a button on a tap, so no blur does it).
+// The button holds the text through aria-describedby, so a screen reader reads it when the lock takes
 // focus. A page that explains more says so with `body`; the title is always "End-to-end encrypted".
-import { type KeyboardEvent, useId, useRef, useState } from 'react';
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react';
 import { type MessageId, useT } from '@/i18n';
 import '@/styles/lock-badge.css';
 import { Icon } from './Icon';
@@ -25,7 +26,21 @@ export function LockBadge({
   // A press moves focus to the button before it clicks: that focus must not open the tooltip, or
   // the click that follows would close it again.
   const pressing = useRef(false);
+  const root = useRef<HTMLSpanElement>(null);
   const open = (hover || focus || pinned) && !dismissed;
+
+  // A press anywhere outside the lock and its tooltip closes it, whatever opened it.
+  useEffect(() => {
+    if (!open) return;
+    function onPressOutside(event: PointerEvent) {
+      if (event.target instanceof Node && root.current?.contains(event.target)) return;
+      setPinned(false);
+      setFocus(false);
+      setHover(false);
+    }
+    document.addEventListener('pointerdown', onPressOutside, true);
+    return () => document.removeEventListener('pointerdown', onPressOutside, true);
+  }, [open]);
 
   function onKeyDown(event: KeyboardEvent) {
     if (event.key !== 'Escape' || !open) return;
@@ -47,6 +62,7 @@ export function LockBadge({
 
   return (
     <span
+      ref={root}
       className={className ? `enc ${className}` : 'enc'}
       data-open={open ? '' : undefined}
       // A finger has no hover: a tap only presses.

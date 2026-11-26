@@ -1,4 +1,4 @@
-import { fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { renderWithIntl } from '@/test/render';
@@ -73,11 +73,45 @@ describe('LockBadge', () => {
     expect(shown()).toBe(false);
   });
 
-  it('closes when the person taps elsewhere', () => {
+  it('closes when the person taps elsewhere, though Safari never focused the lock', () => {
+    renderWithIntl(
+      <>
+        <LockBadge />
+        <p>Somewhere else</p>
+      </>,
+    );
+    const button = screen.getByRole('button', { name: 'End-to-end encrypted' });
+    fireEvent.pointerDown(button, { pointerType: 'touch' });
+    fireEvent.pointerUp(button, { pointerType: 'touch' });
+    fireEvent.click(button);
+    expect(shown()).toBe(true);
+    // A press on the tooltip itself is not elsewhere.
+    fireEvent.pointerDown(tooltip(), { pointerType: 'touch' });
+    expect(shown()).toBe(true);
+    fireEvent.pointerDown(screen.getByText('Somewhere else'), { pointerType: 'touch' });
+    expect(shown()).toBe(false);
+  });
+
+  it('closes when the lock loses focus after a tap', () => {
     renderWithIntl(<LockBadge />);
     const button = screen.getByRole('button', { name: 'End-to-end encrypted' });
     tap(button);
-    button.blur();
+    expect(shown()).toBe(true);
+    act(() => button.blur());
+    expect(shown()).toBe(false);
+  });
+
+  it('closes a tooltip that hovering opened when the pointer presses elsewhere', async () => {
+    renderWithIntl(
+      <>
+        <LockBadge />
+        <p>Somewhere else</p>
+      </>,
+    );
+    const user = userEvent.setup();
+    await user.hover(screen.getByRole('button', { name: 'End-to-end encrypted' }));
+    expect(shown()).toBe(true);
+    await user.click(screen.getByText('Somewhere else'));
     expect(shown()).toBe(false);
   });
 
