@@ -11,8 +11,10 @@
 //! - `KEMLOCK_ATTACHMENT_MAX_SIZE`: the most bytes one file may have, default 100 MiB.
 //! - `KEMLOCK_ATTACHMENT_PRESIGN` (default false): on the Kemlock API only, let clients send and
 //!   fetch files straight to and from the bucket through pre-signed URLs that live
-//!   `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 900). Needs a bucket the clients can
-//!   reach. The Bitwarden API always streams through the server.
+//!   `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 300). Needs a bucket the clients can
+//!   reach. The bytes arrive under `staging/<blob id>`, which the server checks and moves when the
+//!   client finishes the upload (see `BlobStore::verify`); a bucket should expire `staging/` after a
+//!   day by a lifecycle rule too. The Bitwarden API always streams through the server.
 //!
 //! A setting saved from the admin console will replace these when the console exists.
 
@@ -78,7 +80,7 @@ pub enum ConfigError {
 
 /// 100 MiB.
 const DEFAULT_MAX_SIZE: u64 = 100 * 1024 * 1024;
-const DEFAULT_PRESIGN_TTL_SECS: u64 = 900;
+const DEFAULT_PRESIGN_TTL_SECS: u64 = 300;
 
 fn flag(name: &'static str, value: Option<String>, default: bool) -> Result<bool, ConfigError> {
     match value.as_deref().map(str::trim) {
@@ -200,7 +202,7 @@ mod tests {
         );
         assert_eq!(c.max_size, 100 * 1024 * 1024);
         assert!(!c.presign);
-        assert_eq!(c.presign_ttl, Duration::from_secs(900));
+        assert_eq!(c.presign_ttl, Duration::from_secs(300));
     }
 
     #[test]

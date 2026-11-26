@@ -1,7 +1,8 @@
 //! Finish upload: settles a file the client sent straight to the bucket through a pre-signed URL.
 //! The server never saw those bytes, so it looks at what arrived: the blob must be the announced
-//! size and start like a `KMA1` file. A blob that isn't is deleted. A file uploaded through the
-//! server is ready already, and finishing it again changes nothing.
+//! size and start like a `KMA1` file (the store moves it from its staging name to the blob's own
+//! as it checks it, so the signed URL can't change it afterwards). A blob that isn't is deleted. A
+//! file uploaded through the server is ready already, and finishing it again changes nothing.
 
 use super::ports::{AttachmentRepo, BlobError, BlobStore};
 use super::{FileError, own_attachment};

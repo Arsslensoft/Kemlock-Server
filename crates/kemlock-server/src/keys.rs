@@ -77,7 +77,7 @@ pub fn parse_server_key(text: &str) -> Result<[u8; 32], KeyError> {
 }
 
 /// Opens a new file for private data: it must not exist, and on Unix only its owner can read it.
-fn create_private(path: &Path) -> io::Result<std::fs::File> {
+pub(crate) fn create_private(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -86,6 +86,46 @@ fn create_private(path: &Path) -> io::Result<std::fs::File> {
         options.mode(0o600);
     }
     options.open(path)
+}
+
+/// Whether people other than the owner and the owner's group can enter or read `path` (Unix; never
+/// on other systems).
+fn open_to_others(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o007 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
+/// Makes the data folder. One the server creates is 0700 on Unix, so `server.key`, the database
+/// and the sealed secrets in it are not for other local users to list or read. A folder that is
+/// already there is left as it is (the operator, a container runtime or an installer chose its
+/// mode), with a warning when others can read it.
+pub fn create_data_folder(path: &Path) -> io::Result<()> {
+    if path.is_dir() {
+        if open_to_others(path) {
+            tracing::warn!(
+                folder = %path.display(),
+                "the data folder can be read by other users of this machine; `chmod 700` it, \
+                 since server.key and the database are in it"
+            );
+        }
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
 }
 
 /// The server key: `from_env` when set, else `<data>/server.key`, made if it doesn't exist.
@@ -217,6 +257,33 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_data_folder_the_server_makes_is_private_and_one_that_exists_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| std::fs::metadata(path).expect("a folder").permissions().mode() & 0o777;
+        let dir = TempDir::new("data-folder");
+
+        let made = dir.0.join("made").join("data");
+        create_data_folder(&made).expect("created");
+        assert_eq!(mode(&made), 0o700);
+        assert!(!open_to_others(&made));
+        // Again, it is there: nothing changes.
+        create_data_folder(&made).expect("already there");
+        assert_eq!(mode(&made), 0o700);
+
+        let shared = dir.0.join("shared");
+        std::fs::create_dir(&shared).expect("a folder");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).expect("755");
+        assert!(open_to_others(&shared));
+        create_data_folder(&shared).expect("already there");
+        assert_eq!(mode(&shared), 0o755, "an existing folder is not chmodded");
+
+        // Group access alone isn't "others".
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o770)).expect("770");
+        assert!(!open_to_others(&shared));
     }
 
     #[test]

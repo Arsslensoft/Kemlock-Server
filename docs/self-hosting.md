@@ -361,8 +361,26 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   with `tailscale serve`, and nothing is open to the internet. A Cloudflare Tunnel needs no open
   port either, but Cloudflare then sees decrypted requests: vault data stays end-to-end encrypted
   and OPAQUE never sends the password, but a Compatible account's password hash passes through.
-- No proxy. Set `KEMLOCK_ACME_DOMAIN` and Kemlock gets and renews its own Let's Encrypt
-  certificate, kept in `/data/acme`.
+- No TLS of its own. Kemlock listens on plain HTTP only and gets no certificate itself, so put one
+  of the proxies above, or a tunnel, in front of any address that isn't on a network you trust.
+  A `DOMAIN` that starts with `http://` and isn't `localhost` or a loopback address makes the
+  server log a warning at start-up.
+- Slow clients and floods. A connection that hasn't delivered the head of its first request
+  within 10 seconds is dropped, even if it sent nothing at all, and so is one whose write makes no
+  progress for 60 seconds (a client that never reads its response). The head of a later request on
+  a kept-alive connection may take 125 seconds, which is also how long such a connection may sit
+  idle: set above what a proxy keeps an idle upstream connection for, so the proxy closes it
+  first (Caddy's `reverse_proxy` keeps one for 2 minutes, nginx's `keepalive_timeout` in an
+  `upstream` block defaults to 60 seconds; if you raise those past 125 seconds, a request can be
+  sent down a connection that is closing and fail with a 502). One client address may hold
+  `KEMLOCK_MAX_CONNECTIONS_PER_IP` connections at once (default 64, `max_connections_per_ip` in
+  `kemlock.toml`, 0 for no limit; an IPv6 address counts by its /64), and further connections from
+  it are closed. The addresses in `KEMLOCK_TRUSTED_PROXIES` are exempt, because behind a proxy
+  every connection comes from the proxy. `KEMLOCK_MAX_CONNECTIONS` caps all connections together
+  (default 0, no limit): further clients wait in the operating system's queue until one ends, so
+  one client can fill it, which is why the per-address limit is the one on by default. Both count
+  WebSockets for as long as their socket is open. Raise the open-file limit with them
+  (`LimitNOFILE` in systemd, `--ulimit nofile` in Docker).
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
   /56 (the failed-password limit per account counts by /64), so a host that rotates through the
   /64s of its site shares one count.
@@ -373,6 +391,21 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   migrations and file storage. The image's `HEALTHCHECK` runs `kemlock-server healthcheck`, because
   the image has no shell or curl.
 - Logs: text, or `KEMLOCK_LOG_FORMAT=json`.
+- Direct uploads to a bucket. With `KEMLOCK_ATTACHMENT_PRESIGN=true` (off by default; Kemlock API
+  only, bucket storage only) clients `PUT` files straight to the bucket through a pre-signed URL
+  that lives `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 300). A signed URL can't fix the
+  length of what is sent, so the URL names `staging/<blob id>`, not the file's own name. When the
+  client finishes the upload the server checks the object there (it must be the size announced
+  and a `KMA1` file), writes it again under the file's own name and deletes the staging object; a
+  `PUT` to the URL after that only makes a new staging object that nothing reads. Set a lifecycle
+  rule on the bucket that expires `staging/` after a day, so such objects, and the ones of
+  uploads that never finish, don't pile up (the orphan purge also deletes the staging object of
+  an upload nobody finished).
+- File permissions. On Unix a data folder the server creates is `0700`, and the SQLite database
+  (with its `-wal` and `-shm` files and the copy made before a migration) and `server.key` are
+  `0600`. A data folder that already exists keeps its mode, and the server warns at start-up when
+  other users can read it: `chmod 700` it. SQLite runs with `secure_delete`, so deleted rows are
+  overwritten with zeros rather than left in free pages.
 - Reports of problems: the server answers `/.well-known/security.txt` (RFC 9116). Set who should
   hear about a problem with your server in the console (Settings, Security) or with
   `KEMLOCK_SECURITY_CONTACT` (an email address, or a `mailto:`, `tel:` or `https:` address)
@@ -425,6 +458,32 @@ restore drill) is `docs/backups.md`. The image carries only the server; the CLI 
 the `tools` build target (`docker build --target tools`), run with `--entrypoint /usr/local/bin/kemlock-cli`
 and `/data` mounted, and in the release archives. Until `kemlock-cli backup` ships, stop the container and
 copy the data folder (cold), or use the database's own dump for PostgreSQL and MySQL.
+
+A backup archive is age-encrypted to a public recipient, so the encryption says nobody else can read
+it, not who wrote it: anyone who can write to the backup destination can plant an archive. Each
+archive therefore carries `manifest.mac`, right after `manifest.json`: the hex HMAC-SHA-256 of the
+manifest's bytes, under a key derived from `server.key` (HMAC-SHA-256 of the label
+`kemlock/v1/backup-manifest-mac` under the server key). The manifest lists every file's SHA-256, so
+the code authenticates the whole archive. A restore (and the drill, `restore --check`) checks the
+code with the `server.key` it is given, with `--server-key` or the data folder's own, and refuses
+an archive whose code is missing or wrong, or that it has no key to check. For an archive you
+made yourself before archives carried a code, check it with the drill and restore it with
+`--allow-unauthenticated`; the restore then says in its notes that it did not authenticate the
+archive. A server with no `server.key` at hand writes archives with no code and logs a warning.
+
+A restore also limits what an archive can do. It refuses an archive that names `server.key` or a
+database file, and installs only the sealed secrets (`*.sealed`), `rsa_key.pem` and `config.json`
+from the data folder, and a `config/<name>.toml` (put beside an existing configuration file as
+`.from-backup`, never over it); it says what it skipped. Every file it writes is readable by its
+owner only. It unpacks at most 16 GiB for one file, 50 times the archive's own size in total
+(between 1 GiB and 4 TiB) and 2 million files.
+
+The manifest, and with it the authentication code, is the last entry of an archive, so a restore
+unpacks the whole archive into a scratch folder in the data folder before it can check the code.
+The limits above are what bounds that: an archive somebody planted can use up to 50 times its own
+size (at least 1 GiB) of disk until the check fails and the scratch folder is removed. Keep the
+free space of the data folder's disk above that when the backup destination isn't one only you
+write to.
 
 ## Verify what you downloaded
 

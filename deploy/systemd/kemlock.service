@@ -52,6 +52,7 @@ ProtectHostname=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
+LimitNOFILE=65535
 UMask=0077
 
 [Install]

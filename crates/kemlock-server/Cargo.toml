@@ -25,6 +25,10 @@ fips = ["kemlock-crypto/fips"]
 
 [dependencies]
 axum.workspace = true
+# The listener is hyper-util's server builder, for its header-read timeout (see app.rs); both are
+# already in the lock file through axum.
+hyper = { version = "1.12.0", features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", features = ["tokio", "http1", "server-auto"] }
 kemlock-api-admin = { path = "../kemlock-api-admin" }
 kemlock-api-bw = { path = "../kemlock-api-bw" }
 kemlock-api-fed = { path = "../kemlock-api-fed" }
@@ -47,6 +51,7 @@ thiserror.workspace = true
 time.workspace = true
 tokio = { workspace = true, features = ["io-util"] }
 toml.workspace = true
+tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -58,7 +63,6 @@ kemlock-domain.workspace = true
 # The Vaultwarden fixture builder of kemlock-vaultwarden's tests (a SQLite database made by
 # running Vaultwarden's migrations) is shared with the migration test.
 sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "sqlite"] }
-tower.workspace = true
 
 [lints]
 workspace = true

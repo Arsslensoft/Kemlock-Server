@@ -125,12 +125,41 @@ impl std::fmt::Debug for PushInstallation {
 /// The seal purpose of the installation key.
 pub const PURPOSE_PUSH_INSTALLATION_KEY: &str = "push-installation-key";
 
+/// An account already holds the most push tokens of a kind it may.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PushCapReached;
+
 pub trait PushRepo: Send + Sync {
     /// Stores or replaces the device's token. `NotFound` when the device doesn't exist.
     fn put_registration(
         &self,
         registration: &PushRegistration,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Stores or replaces the device's token unless the account already holds `cap` tokens of
+    /// the same kind on other devices, in which case it stores nothing and says so. A store makes
+    /// the count and the write one step, so registrations that arrive together can't each see
+    /// room that only one of them may take. The provided method does them one after the other,
+    /// which only a store with no concurrent callers may use.
+    fn put_registration_within_cap(
+        &self,
+        registration: &PushRegistration,
+        cap: usize,
+    ) -> impl Future<Output = Result<Result<(), PushCapReached>, StoreError>> + Send {
+        async move {
+            let held = self
+                .registrations_for(&[registration.user])
+                .await?
+                .iter()
+                .filter(|r| r.kind == registration.kind && r.device != registration.device)
+                .count();
+            if held >= cap {
+                return Ok(Err(PushCapReached));
+            }
+            self.put_registration(registration).await?;
+            Ok(Ok(()))
+        }
+    }
 
     /// Forgets the device's token, if it has one.
     fn remove_registration(
@@ -228,31 +257,30 @@ impl<D: DeviceRepo, R: PushRepo, C: Clock> RegisterPushToken<D, R, C> {
             .await?
             .filter(|d| d.user == actor.user)
             .ok_or(AppError::NotFound)?;
+        let registration = PushRegistration {
+            device: device.id,
+            user: device.user,
+            kind,
+            token: token.to_owned(),
+            updated_at: self.clock.now(),
+        };
         if kind == PushKind::UnifiedPush {
             // Each endpoint is a connection the server makes on every nudge, so an account may
-            // hold only so many. A device replacing its own endpoint doesn't count twice.
-            let held = self
-                .push
-                .registrations_for(&[device.user])
+            // hold only so many. A device replacing its own endpoint doesn't count twice. The
+            // store counts and writes in one step, so registrations that arrive together can't
+            // each find room for one more.
+            self.push
+                .put_registration_within_cap(&registration, MAX_UNIFIEDPUSH_PER_USER)
                 .await?
-                .iter()
-                .filter(|r| r.kind == PushKind::UnifiedPush && r.device != device.id)
-                .count();
-            if held >= MAX_UNIFIEDPUSH_PER_USER {
-                return Err(AppError::Invalid(
-                    "the account already has 20 UnifiedPush endpoints; sign out of a device first",
-                ));
-            }
+                .map_err(|PushCapReached| {
+                    AppError::Invalid(
+                        "the account already has 20 UnifiedPush endpoints; sign out of a device \
+                         first",
+                    )
+                })?;
+        } else {
+            self.push.put_registration(&registration).await?;
         }
-        self.push
-            .put_registration(&PushRegistration {
-                device: device.id,
-                user: device.user,
-                kind,
-                token: token.to_owned(),
-                updated_at: self.clock.now(),
-            })
-            .await?;
         Ok(())
     }
 

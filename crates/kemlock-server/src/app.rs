@@ -8,6 +8,7 @@ use crate::files::{self, Files};
 use crate::health::{self, HealthState};
 use crate::jobs;
 use crate::keys::{self, KeyError};
+use crate::listener::{ServeLimits, serve};
 use crate::live::{self, Layered, SettingsWatch, SwitchMailer};
 use crate::migration::VaultwardenMove;
 use crate::notify;
@@ -29,11 +30,27 @@ use kemlock_crypto::hash;
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_federation::{Connector, PairingLink, Replica};
 use kemlock_store_sql::SqlStore;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{MakeSpan, TraceLayer};
+
+/// The span of a request: the method and the path, never the query. Several routes carry a secret
+/// in the query (`/notifications/hub?access_token=<JWT>`, `?token=` on attachments and invites,
+/// `?t=` on Sends), and tower-http's default span records the whole URI at DEBUG.
+#[derive(Debug, Clone, Copy, Default)]
+struct PathOnlySpan;
+
+impl<B> MakeSpan<B> for PathOnlySpan {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> tracing::Span {
+        tracing::debug_span!(
+            "request",
+            method = %request.method(),
+            path = %request.uri().path(),
+            version = ?request.version(),
+        )
+    }
+}
 
 /// How long a request may take before it is answered 408. WebSockets are upgraded long before.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -133,7 +150,7 @@ where
     // A FIPS build serves nothing until the module says it is in FIPS mode.
     #[cfg(feature = "fips")]
     refuse_unless_fips(kemlock_crypto::fips::verify())?;
-    std::fs::create_dir_all(&config.data_folder).map_err(|source| RunError::DataFolder {
+    keys::create_data_folder(&config.data_folder).map_err(|source| RunError::DataFolder {
         path: config.data_folder.display().to_string(),
         source,
     })?;
@@ -390,7 +407,7 @@ where
         // After the timeout above: the file routes have a longer one of their own.
         .merge(files_router)
         .merge(sends_router)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(PathOnlySpan))
         // Outermost, so every route (both APIs, the admin console, federation) has its client
         // address settled and every event a request writes carries it.
         .layer(axum::middleware::from_fn_with_state(
@@ -458,8 +475,44 @@ async fn bind(config: &Config) -> Result<tokio::net::TcpListener, RunError> {
     }
 }
 
+/// Whether `domain` is a plain `http://` address that isn't on this machine. Kemlock serves plain
+/// HTTP only, so a public address needs a TLS proxy or tunnel in front; `localhost` and loopback
+/// addresses are the development setup and don't count.
+fn is_remote_plain_http(domain: &str) -> bool {
+    let domain = domain.trim();
+    let Some(prefix) = domain.get(.."http://".len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case("http://") {
+        return false;
+    }
+    let rest = &domain["http://".len()..];
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        Err(_) => true,
+    }
+}
+
 /// Runs the server until it is asked to stop.
 pub async fn run(config: Config) -> Result<(), RunError> {
+    if is_remote_plain_http(&config.domain) {
+        tracing::warn!(
+            domain = %config.domain,
+            "DOMAIN is a plain http:// address. Kemlock Server has no TLS of its own: put a TLS \
+             proxy or a tunnel in front of it, or sign-ins and vault data cross the network in \
+             the clear"
+        );
+    }
     if !config.ignored.is_empty() {
         tracing::warn!(
             settings = %config.ignored.join(", "),
@@ -531,11 +584,12 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     crate::backups::settings(&config).map_err(RunError::Config)?;
     let layout = crate::backups::layout(&config).map_err(RunError::Config)?;
     let backups = crate::backups::spawn_backups(store.clone(), settings.clone(), layout);
-    let served = axum::serve(
+    serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router,
+        ServeLimits::from_config(&config),
+        shutdown_signal(),
     )
-    .with_graceful_shutdown(shutdown_signal())
     .await;
     background.abort();
     retention.abort();
@@ -549,12 +603,76 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     if let Err(e) = store.close().await {
         tracing::warn!(error = %e, "couldn't close the database cleanly");
     }
-    served.map_err(RunError::Serve)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_plain_http_domain_off_this_machine_is_flagged() {
+        for remote in [
+            "http://vault.example.com",
+            "http://vault.example.com:8080/",
+            "HTTP://192.168.1.20:8080",
+            "http://[2001:db8::1]:8080",
+            "http://user@vault.example.com",
+        ] {
+            assert!(is_remote_plain_http(remote), "{remote}");
+        }
+        for fine in [
+            "https://vault.example.com",
+            "http://localhost:8080",
+            "http://app.localhost",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+            "",
+        ] {
+            assert!(!is_remote_plain_http(fine), "{fine}");
+        }
+    }
+
+    #[test]
+    fn the_request_span_has_the_path_and_never_the_query() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NEW)
+            .with_writer({
+                let captured = captured.clone();
+                move || captured.clone()
+            })
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let request = axum::http::Request::builder()
+                .uri("/notifications/hub?access_token=eyJsecret.jwt.value&token=abc&t=xyz")
+                .body(())
+                .expect("request");
+            let _span = PathOnlySpan.make_span(&request);
+        });
+        let log = String::from_utf8(captured.0.lock().expect("buffer").clone()).expect("utf-8");
+        assert!(log.contains("/notifications/hub"), "the path is logged: {log}");
+        assert!(!log.contains("secret"), "the access token leaked: {log}");
+        assert!(!log.contains("token"), "the query leaked: {log}");
+        assert!(!log.contains("xyz"), "the query leaked: {log}");
+    }
 
     #[test]
     fn a_failed_fips_check_stops_the_server_and_says_why() {

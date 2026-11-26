@@ -1,7 +1,9 @@
 //! The archive: a tar, compressed with zstd, encrypted to an age recipient.
 //!
 //! ```text
-//! manifest.json             row counts and file hashes (the last entry)
+//! manifest.json             row counts and file hashes
+//! manifest.mac              HMAC-SHA-256 of manifest.json's bytes, hex, under a key derived from
+//!                           server.key (the last entry; absent when no key was at hand)
 //! db/<table>.jsonl          the database as plain rows (kemlock-store-sql's snapshot)
 //! data/<name>               the data folder's files: the sealed key files, the TOML file's
 //!                           neighbours; never server.key and never the database file itself
@@ -13,17 +15,23 @@
 //! is never in one: a restore needs the operator to bring it, because it seals the OPAQUE server
 //! secret and the other secrets the server must read.
 //!
+//! The recipient is public, so it proves nothing about who wrote an archive: anyone who can write
+//! the backup destination can make one. `manifest.mac` is what ties an archive to the server that
+//! made it. Its key is HMAC-SHA-256(server.key, "kemlock/v1/backup-manifest-mac"), and the
+//! manifest it covers lists every file's SHA-256, so a restore that holds the matching
+//! `server.key` knows that nobody who lacks that key changed or made the archive.
+//!
 //! Everything here is blocking: call it from `spawn_blocking`.
 
 use crate::error::BackupError;
 use crate::manifest::{
-    Attachments, FileEntry, HashingReader, MANIFEST_FORMAT, MANIFEST_NAME, Manifest, TableEntry,
-    hash_bytes, hash_file,
+    Attachments, FileEntry, HashingReader, MAC_NAME, MANIFEST_FORMAT, MANIFEST_NAME, MacKey,
+    Manifest, TableEntry, hash_bytes, hash_file, manifest_mac,
 };
 use age::x25519::{Identity, Recipient};
 use kemlock_store_sql::Snapshot;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 use time::OffsetDateTime;
@@ -47,6 +55,9 @@ pub struct ArchiveSpec<'a> {
     pub attachments: Option<&'a Path>,
     pub config_file: Option<&'a Path>,
     pub recipient: &'a Recipient,
+    /// The key the manifest is authenticated with (see [`MacKey`]). `None` writes an archive
+    /// that a restore accepts only when the operator says to take it unauthenticated.
+    pub mac_key: Option<&'a MacKey>,
     /// zstd's level: 3 by default, 1 on a small machine.
     pub zstd_level: i32,
     pub created_at: OffsetDateTime,
@@ -77,6 +88,64 @@ pub fn parse_identity(text: &str) -> Result<Identity, BackupError> {
 
 fn age_error(e: impl std::fmt::Display) -> BackupError {
     BackupError::Age(e.to_string())
+}
+
+/// Creates `path` (or empties it) for private data: on Unix only its owner can read or write it,
+/// whatever the umask and whatever mode the file had before. A restore unpacks and copies
+/// `rsa_key.pem` and the sealed secrets this way, so they never sit readable by other users.
+pub fn create_private_file(path: &Path) -> std::io::Result<File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
+}
+
+/// Whether a restore puts `data/<name>` back into the data folder. A backup writes the sealed
+/// secrets (`*.sealed`), the Bitwarden token key (`rsa_key.pem`) and the Vaultwarden settings file
+/// (`config.json`) there; any other name is not something a restore installs, so an archive
+/// can't use it to replace the configuration, the database or the next start's files.
+pub fn is_restorable_data_file(name: &str) -> bool {
+    let sealed_name = |stem: &str| {
+        !stem.is_empty()
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'))
+    };
+    matches!(name, "rsa_key.pem" | "config.json")
+        || name.strip_suffix(".sealed").is_some_and(sealed_name)
+}
+
+/// Whether `name` is a file that never goes in an archive and a restore refuses outright: the
+/// server key, and the database (SQLite's file, its `-wal`, `-shm` and `-journal` files). The
+/// database comes back as rows; a database file in an archive replaces the one the restore has
+/// just filled.
+pub fn is_never_restored(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == SERVER_KEY_FILE
+        || lower.contains(".sqlite")
+        || lower.ends_with(".db")
+        || lower.ends_with("-wal")
+        || lower.ends_with("-shm")
+        || lower.ends_with("-journal")
+}
+
+/// Whether a restore puts `config/<name>` in place of the TOML configuration file: a plain name
+/// ending in `.toml`.
+pub fn is_restorable_config_name(name: &str) -> bool {
+    name.len() > ".toml".len()
+        && name.ends_with(".toml")
+        && !name.contains(['/', '\\'])
+        && !name.starts_with('.')
 }
 
 /// A path as it is written in an archive: `/`-separated.
@@ -130,7 +199,10 @@ fn data_files(spec: &ArchiveSpec<'_>) -> Result<Vec<PathBuf>, BackupError> {
         let name = entry.file_name();
         let skipped = spec.skip.iter().any(|s| s == &path);
         let temporary = name.to_string_lossy().ends_with(".tmp");
-        if is_file && name != SERVER_KEY_FILE && !skipped && !temporary {
+        // A database file (SQLite beside a PostgreSQL server, a stray .db) is never restored, so it is
+        // not written: the database goes in as rows.
+        let database = is_never_restored(&name.to_string_lossy());
+        if is_file && name != SERVER_KEY_FILE && !skipped && !temporary && !database {
             out.push(path);
         }
     }
@@ -268,7 +340,20 @@ pub fn write_archive(spec: &ArchiveSpec<'_>, out: &Path) -> Result<Manifest, Bac
             Attachments::External
         },
     };
-    append_bytes(&mut tar, MANIFEST_NAME, &manifest.to_json()?)?;
+    let manifest_json = manifest.to_json()?;
+    append_bytes(&mut tar, MANIFEST_NAME, &manifest_json)?;
+    // Right after the manifest, over its exact bytes: it lists every file's SHA-256, so the code
+    // authenticates the whole archive.
+    match spec.mac_key {
+        Some(key) => {
+            let code = manifest_mac(key, &manifest_json);
+            append_bytes(&mut tar, MAC_NAME, code.as_bytes())?;
+        }
+        None => tracing::warn!(
+            "writing a backup archive without an authentication code: no server key is \
+             available here, so a restore will refuse it unless told to take it as it is"
+        ),
+    }
 
     let compressed = tar
         .into_inner()
@@ -299,9 +384,61 @@ fn safe_relative(path: &Path) -> Option<PathBuf> {
     (!out.as_os_str().is_empty()).then_some(out)
 }
 
-/// Decrypts, decompresses and unpacks `archive` into `dest`. Only plain files go out, and only to
-/// paths inside `dest`; anything else in the archive stops the restore.
+/// How much an archive may unpack to. Backups are age-encrypted to a public key, so anyone who can
+/// write the backup destination can make an archive; without a limit a small one (zstd squeezes
+/// zeros a thousandfold) fills the disk of whoever restores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnpackLimits {
+    /// The most one file may hold.
+    pub max_file_bytes: u64,
+    /// The most all the files together may hold.
+    pub max_total_bytes: u64,
+    /// The most files and folders the archive may have.
+    pub max_entries: u64,
+}
+
+impl UnpackLimits {
+    /// The most a single file of a real backup holds: an attachment.
+    pub const MAX_FILE_BYTES: u64 = 16 << 30;
+    /// The most a restore unpacks whatever the archive's size: 4 TiB.
+    pub const MAX_TOTAL_BYTES: u64 = 4 << 40;
+    /// What a small archive may still unpack to.
+    pub const MIN_TOTAL_BYTES: u64 = 1 << 30;
+    /// How many times its own size an archive may unpack to. Rows and attachments are already
+    /// compressed or compress a few times over; a ratio beyond this is a bomb.
+    pub const RATIO: u64 = 50;
+    /// The most entries an archive may have.
+    pub const MAX_ENTRIES: u64 = 2_000_000;
+
+    /// The limits for an archive of `archive_bytes`: 50 times its size, between 1 GiB and 4 TiB.
+    pub fn for_archive(archive_bytes: u64) -> Self {
+        UnpackLimits {
+            max_file_bytes: Self::MAX_FILE_BYTES,
+            max_total_bytes: archive_bytes
+                .saturating_mul(Self::RATIO)
+                .clamp(Self::MIN_TOTAL_BYTES, Self::MAX_TOTAL_BYTES),
+            max_entries: Self::MAX_ENTRIES,
+        }
+    }
+}
+
+/// Decrypts, decompresses and unpacks `archive` into `dest`, within [`UnpackLimits::for_archive`].
+/// Only plain files go out, and only to paths inside `dest`; anything else in the archive stops
+/// the restore.
 pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<(), BackupError> {
+    let size = std::fs::metadata(archive)
+        .map_err(|e| BackupError::io(format!("can't read {}", archive.display()), e))?
+        .len();
+    read_archive_within(archive, identity, dest, &UnpackLimits::for_archive(size))
+}
+
+/// [`read_archive`] with the limits given.
+pub fn read_archive_within(
+    archive: &Path,
+    identity: &Identity,
+    dest: &Path,
+    limits: &UnpackLimits,
+) -> Result<(), BackupError> {
     let file = File::open(archive)
         .map_err(|e| BackupError::io(format!("can't read {}", archive.display()), e))?;
     let decryptor = age::Decryptor::new(BufReader::new(file)).map_err(age_error)?;
@@ -314,13 +451,23 @@ pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<
     let entries = tar
         .entries()
         .map_err(|e| BackupError::io("can't read the archive", e))?;
+    let mut count = 0u64;
+    let mut total = 0u64;
     for entry in entries {
         let mut entry = entry.map_err(|e| BackupError::io("can't read the archive", e))?;
+        count += 1;
+        if count > limits.max_entries {
+            return Err(BackupError::Verify(format!(
+                "the archive has more than {} files",
+                limits.max_entries
+            )));
+        }
         let path = entry
             .path()
             .map_err(|e| BackupError::io("can't read an entry's name", e))?
             .into_owned();
-        if !entry.header().entry_type().is_file() {
+        // Only plain files: a sparse entry would read back far more than it stores.
+        if entry.header().entry_type() != tar::EntryType::Regular {
             return Err(BackupError::Verify(format!(
                 "{} is not a plain file",
                 path.display()
@@ -334,10 +481,30 @@ pub fn read_archive(archive: &Path, identity: &Identity, dest: &Path) -> Result<
             std::fs::create_dir_all(parent)
                 .map_err(|e| BackupError::io(format!("can't make {}", parent.display()), e))?;
         }
-        let mut out = File::create(&target)
+        let mut out = create_private_file(&target)
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
-        std::io::copy(&mut entry, &mut out)
+        // What is copied is counted, not what the header claims, and the copy stops one byte past
+        // the room left, so an entry can't write more than the limits allow.
+        let room = limits
+            .max_file_bytes
+            .min(limits.max_total_bytes.saturating_sub(total));
+        let written = std::io::copy(&mut (&mut entry).take(room.saturating_add(1)), &mut out)
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
+        if written > room {
+            return Err(BackupError::Verify(if written > limits.max_file_bytes {
+                format!(
+                    "{} holds more than {} bytes, the most one file of an archive may",
+                    path.display(),
+                    limits.max_file_bytes
+                )
+            } else {
+                format!(
+                    "the archive unpacks to more than {} bytes, the most it may",
+                    limits.max_total_bytes
+                )
+            }));
+        }
+        total += written;
         out.flush()
             .map_err(|e| BackupError::io(format!("can't write {}", target.display()), e))?;
     }
@@ -433,6 +600,8 @@ mod tests {
         std::fs::write(data.join("db.sqlite3"), b"the database").expect("db");
         std::fs::write(data.join("db.sqlite3-wal"), b"wal").expect("wal");
         std::fs::write(data.join("half.tmp"), b"tmp").expect("tmp");
+        std::fs::write(data.join("legacy.db"), b"a stray database").expect("a db");
+        std::fs::write(data.join("db.sqlite3-shm"), b"shm").expect("shm");
         std::fs::create_dir_all(data.join("backups")).expect("a folder");
         std::fs::write(data.join("backups").join("old.age"), b"old").expect("old");
         let attachments = data.join("attachments");
@@ -466,6 +635,8 @@ mod tests {
         }
     }
 
+    static TEST_MAC_KEY: MacKey = MacKey::new([7; 32]);
+
     fn spec<'a>(f: &'a Fixture, recipient: &'a Recipient, skip: &'a [PathBuf]) -> ArchiveSpec<'a> {
         ArchiveSpec {
             snapshot: &f.snapshot,
@@ -475,6 +646,7 @@ mod tests {
             attachments: Some(&f.attachments),
             config_file: Some(&f.config),
             recipient,
+            mac_key: Some(&TEST_MAC_KEY),
             zstd_level: 1,
             created_at: datetime!(2026-11-23 03:00 UTC),
         }
@@ -509,6 +681,8 @@ mod tests {
             "data/db.sqlite3-wal",
             "data/half.tmp",
             "data/old.age",
+            "data/legacy.db",
+            "data/db.sqlite3-shm",
         ] {
             assert!(!paths.contains(&left_out), "{left_out}");
         }
@@ -522,6 +696,137 @@ mod tests {
             b"blob bytes"
         );
         assert!(!unpacked.join("data/server.key").exists());
+        // The manifest's authentication code is there, and only this key makes it right.
+        crate::manifest::check_manifest_mac(&unpacked, &TEST_MAC_KEY).expect("authentic");
+        assert!(crate::manifest::check_manifest_mac(&unpacked, &MacKey::new([8; 32])).is_err());
+    }
+
+    #[test]
+    fn an_archive_written_without_a_key_has_no_code() {
+        let f = fixture();
+        let identity = Identity::generate();
+        let recipient = identity.to_public();
+        let skip = skip_list(&f);
+        let out = f._root.path().join("out.age");
+        let spec = ArchiveSpec {
+            mac_key: None,
+            ..spec(&f, &recipient, &skip)
+        };
+        write_archive(&spec, &out).expect("written");
+        let unpacked = f._root.path().join("unpacked");
+        read_archive(&out, &identity, &unpacked).expect("read");
+        assert!(!unpacked.join(MAC_NAME).exists());
+        let err = crate::manifest::check_manifest_mac(&unpacked, &TEST_MAC_KEY).expect_err("none");
+        assert!(matches!(err, BackupError::Unauthenticated(_)), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unpacked_files_are_readable_by_their_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fixture();
+        let identity = Identity::generate();
+        let skip = skip_list(&f);
+        let out = f._root.path().join("out.age");
+        write_archive(&spec(&f, &identity.to_public(), &skip), &out).expect("written");
+        let unpacked = f._root.path().join("unpacked");
+        // A file that is already there with a loose mode is tightened, not just kept.
+        std::fs::create_dir_all(unpacked.join("data")).expect("a folder");
+        let existing = unpacked.join("data/opaque-setup.sealed");
+        std::fs::write(&existing, b"old").expect("an old file");
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o666))
+            .expect("loosened");
+
+        read_archive(&out, &identity, &unpacked).expect("read");
+
+        for path in ["data/opaque-setup.sealed", "attachments/ab/abcdef", MANIFEST_NAME] {
+            let mode = std::fs::metadata(unpacked.join(path))
+                .expect("a file")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{path} is {mode:o}");
+        }
+    }
+
+    #[test]
+    fn an_archive_that_unpacks_to_more_than_the_limits_allow_is_refused() {
+        let f = fixture();
+        // 100 kB of zeros: tiny in the archive, big on disk.
+        std::fs::write(f.data.join("big.sealed"), vec![0u8; 100_000]).expect("a big file");
+        let identity = Identity::generate();
+        let skip = skip_list(&f);
+        let out = f._root.path().join("out.age");
+        write_archive(&spec(&f, &identity.to_public(), &skip), &out).expect("written");
+        let roomy = UnpackLimits {
+            max_file_bytes: 1 << 20,
+            max_total_bytes: 1 << 30,
+            max_entries: 1000,
+        };
+        let unpack = |name: &str, limits: &UnpackLimits| {
+            read_archive_within(&out, &identity, &f._root.path().join(name), limits)
+        };
+        unpack("roomy", &roomy).expect("within the limits");
+        assert_eq!(
+            std::fs::metadata(f._root.path().join("roomy/data/big.sealed"))
+                .expect("a file")
+                .len(),
+            100_000
+        );
+
+        let err = unpack(
+            "one-file",
+            &UnpackLimits {
+                max_file_bytes: 50_000,
+                ..roomy
+            },
+        )
+        .expect_err("a file over the limit");
+        assert!(
+            matches!(&err, BackupError::Verify(m) if m.contains("one file")),
+            "{err}"
+        );
+        // Nothing past the limit was written.
+        let written = std::fs::metadata(f._root.path().join("one-file/data/big.sealed"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        assert!(written <= 50_001, "{written}");
+
+        let err = unpack(
+            "total",
+            &UnpackLimits {
+                max_total_bytes: 60_000,
+                ..roomy
+            },
+        )
+        .expect_err("a total over the limit");
+        assert!(
+            matches!(&err, BackupError::Verify(m) if m.contains("unpacks to more than")),
+            "{err}"
+        );
+
+        let err = unpack(
+            "entries",
+            &UnpackLimits {
+                max_entries: 2,
+                ..roomy
+            },
+        )
+        .expect_err("too many files");
+        assert!(
+            matches!(&err, BackupError::Verify(m) if m.contains("more than 2 files")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_unpack_limit_follows_the_archive_but_stays_between_its_bounds() {
+        let small = UnpackLimits::for_archive(10);
+        assert_eq!(small.max_total_bytes, UnpackLimits::MIN_TOTAL_BYTES);
+        let middle = UnpackLimits::for_archive(10 << 30);
+        assert_eq!(middle.max_total_bytes, (10 << 30) * UnpackLimits::RATIO);
+        let huge = UnpackLimits::for_archive(u64::MAX);
+        assert_eq!(huge.max_total_bytes, UnpackLimits::MAX_TOTAL_BYTES);
+        assert_eq!(huge.max_file_bytes, UnpackLimits::MAX_FILE_BYTES);
     }
 
     #[test]
@@ -702,6 +1007,48 @@ mod tests {
         }
         assert!(!TableEntry::is_valid_name(&"a".repeat(65)));
         assert!(TableEntry::is_valid_name("item_revisions2"));
+    }
+
+    #[test]
+    fn only_the_files_a_backup_writes_are_restored() {
+        for ok in [
+            "opaque-setup.sealed",
+            "token-signing-key.sealed",
+            "federation-identity.sealed",
+            "rsa_key.pem",
+            "config.json",
+        ] {
+            assert!(is_restorable_data_file(ok), "{ok}");
+            assert!(!is_never_restored(ok), "{ok}");
+        }
+        for other in [
+            "server.key",
+            "db.sqlite3",
+            "kemlock.toml",
+            "authorized_keys",
+            ".sealed",
+            "UPPER.sealed",
+            "a b.sealed",
+            "rsa_key.pem.bak",
+        ] {
+            assert!(!is_restorable_data_file(other), "{other}");
+        }
+        for never in [
+            "server.key",
+            "SERVER.KEY",
+            "db.sqlite3",
+            "db.sqlite3-wal",
+            "db.sqlite3-shm",
+            "vault.db",
+            "vault.db-journal",
+            "x.sqlite",
+        ] {
+            assert!(is_never_restored(never), "{never}");
+        }
+        assert!(is_restorable_config_name("kemlock.toml"));
+        for bad in ["server.key", ".toml", "a/b.toml", "..\\x.toml", ".hidden.toml", "k.json"] {
+            assert!(!is_restorable_config_name(bad), "{bad}");
+        }
     }
 
     #[test]

@@ -49,8 +49,10 @@ The engine itself (`build.func` and the rest) comes from community-scripts/core.
 - A hardened systemd unit (`kemlock-server.service`) on Debian, an OpenRC service on Alpine.
 - Caddy from the distribution's packages, as the HTTPS front on port **8443**.
 
-The cosign signature of the archive is not checked by the script. To check it by hand, use the
-`cosign verify-blob` line in `docs/self-hosting.md` on the archive and its `.sigstore.json`.
+The script checks the archive's SHA-256 against `SHA256SUMS`, and its cosign signature too when `cosign`
+happens to be installed in the container (a bad signature stops the install). Otherwise check the
+signature by hand with the `cosign verify-blob` line in `docs/self-hosting.md` on the archive and
+its `.sigstore.json`.
 
 ## HTTPS
 

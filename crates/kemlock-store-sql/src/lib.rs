@@ -23,6 +23,7 @@ mod fanout;
 mod lease;
 mod migrate;
 mod migration;
+mod owner_lock;
 mod repo;
 mod request_ip;
 mod store;

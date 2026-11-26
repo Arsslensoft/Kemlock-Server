@@ -5,7 +5,7 @@
 use age::x25519::Identity;
 use kemlock_app::ports::UserRepo;
 use kemlock_backup::{
-    BackupSettings, DataLayout, Destination, DestinationConfig, Kind, Schedule, Source,
+    BackupSettings, DataLayout, Destination, DestinationConfig, Kind, MacKey, Schedule, Source,
     create_backup, read_archive, verify_unpacked,
 };
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
@@ -68,6 +68,7 @@ fn setup(keep: u32) -> Setup {
         attachments_folder: Some(data.join("attachments")),
         config_file: None,
         skip: vec![data.join("db.sqlite3")],
+        mac_key: Some(MacKey::new([5; 32])),
     };
     Setup {
         root,
@@ -153,6 +154,10 @@ async fn a_backup_lands_encrypted_and_restores_into_another_database() {
         b"attachment bytes"
     );
     assert!(manifest.files.iter().all(|f| f.path != "data/server.key"));
+
+    // The manifest carries an authentication code that only the job's key makes right.
+    kemlock_backup::check_manifest_mac(&unpacked, &MacKey::new([5; 32])).expect("authentic");
+    assert!(kemlock_backup::check_manifest_mac(&unpacked, &MacKey::new([6; 32])).is_err());
 
     // Its rows restore into a database of their own.
     let other = SqlStore::connect("sqlite::memory:")
