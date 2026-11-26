@@ -365,6 +365,17 @@ person their own browser profile or account, sign out when you leave, and lock t
 locks by itself after 15 minutes idle and 5 hidden, sooner when a space's session timeout policy says
 so, and a sign-out ends the session on the server too (the device and its trusted-device copy stay).
 
+Tabs closed under an earlier version of the web vault are a remaining risk. That version kept the
+tokens in the clear in the tab's session storage and sealed the open vault's root key under the
+browser's shared trusted-device key. The first time a browser that was in use before signs in or
+restores a tab on this version, the vault asks the server to end the device's other sessions and
+keep the current one, so the tokens in old closed tabs stop working. The trusted-device key is not
+reset, since other accounts that sign in on the same browser may depend on it. A root key sealed
+under it in an old closed tab can still be opened by someone who runs script on the vault's origin,
+but with no live token it can fetch nothing, and the web vault keeps no vault data in the browser to
+decrypt instead: there is no service worker, no Cache API and no stored query cache, and IndexedDB
+holds keys only. Closing the tab or signing out of an old session by hand does the same.
+
 ## Operations
 
 - Health: `/alive` is 200 while the process serves requests; `/health` also checks the database,
