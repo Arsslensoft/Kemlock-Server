@@ -6,11 +6,12 @@
 //!
 //! The code is the authentication, so the routes are open, and they say as little as they can: any
 //! refusal is the same bare 400, so a wrong code teaches the other side nothing. A code is good for
-//! one attempt (the hub takes it by value), but only a message that could be an attempt uses it up:
-//! a message 1 that is not even well formed is refused first and leaves the code waiting. Bodies are
-//! capped at 64 KiB and the routes answer 429 past 20 requests a minute from one source address
-//! (and 300 across all of them), so one host can't use up the limit, or the code, of the admin who
-//! is pairing.
+//! one attempt (the hub takes it by value). A message 1 that is malformed (not the CBOR map with its
+//! four fields, or naming this server as the initiator) is refused first and leaves the code
+//! waiting; a well-formed one uses the code up, whoever sends it, so a stranger who can send one
+//! still can. Bodies are capped at 64 KiB and the routes answer 429 past 20 requests a minute from
+//! one source address (an IPv6 one by its /64) and past 300 across all of them, so one host can't
+//! use up the limit of the admin who is pairing.
 
 use axum::Router;
 use axum::body::Bytes;
@@ -76,6 +77,7 @@ impl Limits {
     /// Counts one request from `source` (`None` when the server doesn't say where it came from,
     /// as in tests); false when it is over a limit.
     fn allow(&mut self, source: Option<IpAddr>, now: u64) -> bool {
+        let source = source.map(network_of);
         if self.by_source.len() >= MAX_SOURCES {
             self.by_source
                 .retain(|_, w| now < w.started.saturating_add(60));
@@ -121,6 +123,20 @@ impl<S: Send + Sync> FromRequestParts<S> for Source {
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Source, Infallible> {
         Ok(Source(parts.extensions.get::<ClientAddr>().map(|a| a.0)))
+    }
+}
+
+/// The network a source address is counted as: an IPv6 address by its /64, which is what one
+/// subscriber is given, so one host can't take a fresh address for each request; an IPv4 address
+/// as it is.
+fn network_of(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => ip,
+        IpAddr::V6(v6) => {
+            let mut octets = v6.octets();
+            octets[8..].fill(0);
+            IpAddr::V6(octets.into())
+        }
     }
 }
 
@@ -224,6 +240,19 @@ mod tests {
         assert!(limits.allow(ip("198.51.100.4"), 101));
         // A minute later the noisy host may try again.
         assert!(limits.allow(noisy, 161));
+    }
+
+    #[test]
+    fn an_ipv6_host_is_counted_by_its_64_not_by_each_address() {
+        let mut limits = Limits::default();
+        for n in 0..MAX_PER_MINUTE {
+            // A fresh address in the same /64 each time.
+            assert!(limits.allow(ip(&format!("2001:db8:1:2::{:x}", n + 1)), 100));
+        }
+        assert!(!limits.allow(ip("2001:db8:1:2::ffff"), 101));
+        // Another /64 is another subscriber, and IPv4 addresses stay as they are.
+        assert!(limits.allow(ip("2001:db8:1:3::1"), 101));
+        assert!(limits.allow(ip("192.0.2.1"), 101));
     }
 
     #[test]

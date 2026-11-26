@@ -788,12 +788,12 @@ the vault and the peer and holds no name or email.
 The three pairing messages travel between the two servers as plain HTTP bodies, authenticated by
 the code alone: `POST /fed/v1/pair/start` (message 1 in, message 2 out) and
 `POST /fed/v1/pair/finish?initiator=<server id>` (message 3 in). The code is good for one attempt
-and 10 minutes, kept in memory. A message 1 that could not be an attempt (not the CBOR map of the table above, a missing field, a
-version other than 1, the receiver's own id as the initiator) is refused without using the code up;
-one that is well formed uses it, right or wrong. The two routes answer 429 past 20 requests a minute
+and 10 minutes, kept in memory. A message 1 that is malformed (not the CBOR map of the table above, a missing field, a version
+other than 1, the receiver's own id as the initiator) is refused without using the code up; one
+that is well formed uses it, right or wrong, so a stranger able to send one can still use the code up. The two routes answer 429 past 20 requests a minute
 from one source address (the address the server's request layer settled, which honours a trusted
-proxy) and past 300 a minute from all of them together, so a stranger can neither use up the limit
-nor hold the code. After a successful exchange each side holds the other's verified
+proxy; an IPv6 address counts by its /64) and past 300 a minute from all of them together, so one
+host can't use up the limit of the admin who is pairing. After a successful exchange each side holds the other's verified
 descriptor and the fingerprint but pins nothing: its admin compares the six words and confirms
 (`POST /admin/v1/federation/pairings/{peer}/confirm`), and for a peer whose operator is not this
 server's the admin also acknowledges the three points of "Peers run by other organisations", which
