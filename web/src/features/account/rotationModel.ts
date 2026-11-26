@@ -233,10 +233,13 @@ async function stageItems(
       ciphertext: entry.ciphertext,
       itemKey: entry.itemKey,
     });
+    // Keep the request under the body limit: send what is held before this item would pass it.
+    const size = entry.ciphertext.length + entry.itemKey.length + 120;
+    if (batch.length > 0 && bytes + size > BATCH_BYTES) await flush();
     batch.push(entry);
-    bytes += entry.ciphertext.length + entry.itemKey.length + 120;
+    bytes += size;
     done += 1;
-    if (batch.length >= BATCH_ITEMS || bytes >= BATCH_BYTES) await flush();
+    if (batch.length >= BATCH_ITEMS) await flush();
     report(done, items.length);
   }
   await flush();

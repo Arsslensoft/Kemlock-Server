@@ -60,14 +60,24 @@ function incomplete(): ApiError {
 function setup(overrides: { plans?: RotationPlanDto[]; pages?: ItemDto[][]; install?: () => Promise<unknown> } = {}) {
   const plans = overrides.plans ?? [plan()];
   const pages = overrides.pages ?? [[item(A, 1), item(B, 3)]];
-  const staged: Array<{ rotationId: string; toVersion: number; ids: string[] }> = [];
+  const staged: Array<{ rotationId: string; toVersion: number; ids: string[]; bytes: number }> = [];
   const installs: InstallRequest[] = [];
   let planCalls = 0;
   let syncCalls = 0;
   const api = {
     plan: vi.fn(async () => plans[Math.min(planCalls++, plans.length - 1)] as RotationPlanDto),
-    stage: vi.fn(async (request: { rotationId: string; toVersion: number; items: Array<{ id: string }> }) => {
-      staged.push({ rotationId: request.rotationId, toVersion: request.toVersion, ids: request.items.map((i) => i.id) });
+    stage: vi.fn(
+      async (request: {
+        rotationId: string;
+        toVersion: number;
+        items: Array<{ id: string; ciphertext: string; itemKey: string }>;
+      }) => {
+      staged.push({
+        rotationId: request.rotationId,
+        toVersion: request.toVersion,
+        ids: request.items.map((i) => i.id),
+        bytes: request.items.reduce((sum, i) => sum + i.ciphertext.length + i.itemKey.length, 0),
+      });
       return { staged: request.items.length };
     }),
     abandon: vi.fn(async () => undefined),
@@ -137,6 +147,22 @@ describe('rotateKeys', () => {
     expect(fakeCalls.filter((call) => call === 'rotationResealItem')).toHaveLength(2);
     expect(fakeCalls.indexOf('rotationCommit')).toBeGreaterThan(fakeCalls.indexOf('rotationWrapPassword'));
     expect(fakeCalls).not.toContain('rotationAbort');
+  });
+
+  it('keeps every staging request under the body limit, however large the items', async () => {
+    const big = (id: string) => {
+      const base = item(id, 1);
+      return {
+        ...base,
+        ciphertext: encodeB64(utf8(JSON.stringify([id, OWNER, 'login', 1, 'x'.repeat(700_000)]))),
+      };
+    };
+    const ids = [A, B, '00000000-0000-4000-8000-00000000000c'];
+    const { deps, staged } = setup({ pages: [ids.map(big)] });
+    await rotateKeys(deps, { email: 'sam@example.org', password: 'pw', makeKit: false });
+    // Each item is about 0.93 MB encoded: two would pass 1.2 MB, so each goes alone.
+    expect(staged.map((request) => request.ids.length)).toEqual([1, 1, 1]);
+    for (const request of staged) expect(request.bytes).toBeLessThanOrEqual(1_200_000);
   });
 
   it('seals again what this browser keeps for the account, after the install and before the new keys are committed', async () => {
