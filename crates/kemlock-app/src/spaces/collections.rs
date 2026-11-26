@@ -98,6 +98,14 @@ impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> CreateCollection<R,
         let listed = input.grants.iter().any(|(g, _)| *g == creator);
         let implicit = (!listed).then_some((creator, CollectionPermission::Manage));
         for (grantee, permission) in input.grants.into_iter().chain(implicit) {
+            // The creator always holds Manage: they seal the key to the grantees, and a grantee's
+            // client accepts that box only from a member who may manage the collection (docs/crypto.md,
+            // "Signed key boxes"), which a Custom member gets from nowhere else.
+            let permission = if grantee == creator {
+                CollectionPermission::Manage
+            } else {
+                permission
+            };
             check_grantee(&state, grantee)?;
             if !seen.insert(grantee) {
                 return Err(SpaceError::Invalid("a grantee is listed twice").into());

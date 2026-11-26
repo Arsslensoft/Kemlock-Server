@@ -208,3 +208,38 @@ async fn a_collection_key_copy_is_signed_by_whoever_sealed_it() {
     let copy = w.spaces.copy(id, sam).expect("Sam's copy");
     assert_eq!(copy.sealed_by, signed_by(sam));
 }
+
+#[tokio::test]
+async fn the_creator_of_a_collection_always_holds_manage_on_it() {
+    let w = SpaceWorld::new();
+    let sam = w.user("sam@example.org").await;
+    let (space, _) = w.make_space(sam).await;
+
+    // Listing themselves below Manage doesn't take it away: the grantees' clients accept the
+    // creator's key boxes only from a member who may manage the collection.
+    let id = CollectionId::random();
+    w.create_collection()
+        .execute(
+            &actor(sam),
+            space,
+            CreateCollectionInput {
+                id,
+                parent: None,
+                name: name(10),
+                grants: vec![(Grantee::Member(sam), CollectionPermission::View)],
+                keys: vec![key_for(id, sam, 6)],
+            },
+        )
+        .await
+        .expect("the collection is made");
+    let grants: Vec<_> = w
+        .spaces
+        .state(space)
+        .grants
+        .into_iter()
+        .filter(|g| g.collection == id)
+        .collect();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].grantee, Grantee::Member(sam));
+    assert_eq!(grants[0].permission, CollectionPermission::Manage);
+}
