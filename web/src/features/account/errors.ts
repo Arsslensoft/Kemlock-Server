@@ -43,6 +43,8 @@ export function describeAccountError(error: unknown): Described {
         return { id: 'profile.error.mailFailed' };
       case 'wrong-state':
         return { id: 'space.error.wrongState' };
+      case 'no-account':
+        return { id: 'space.error.noAccount' };
       case 'stale-key-version':
         return { id: 'space.error.staleKey' };
       default:

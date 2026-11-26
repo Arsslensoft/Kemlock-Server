@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MemberViewDto, OffboardedDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
@@ -12,15 +12,23 @@ import { acceptFirstContact } from './chain';
 import { refreshSpaces } from './refresh';
 import {
   type SpaceDetail as Detail,
+  ChainConflict,
+  ChainRefused,
+  SpaceNotChecked,
+  changeRole,
   confirmMember,
   createCollection,
   createGroup,
+  deleteCollection,
+  deleteGroup,
   grantAccess,
   inviteMember,
-  SpaceNotChecked,
   loadSpaceDetail,
+  offboardMember,
   pinMember,
   renameCollection,
+  revokeGrant,
+  sealPending,
   setGroupMembers,
 } from './model';
 import { type ConfirmState, SpaceDetailView } from './SpaceDetailView';
@@ -37,6 +45,10 @@ function describeSpaceError(error: unknown): Described {
   if (error instanceof SpaceNotChecked) {
     return { id: error.kind === 'verified' ? 'space.error.chained' : 'space.error.unchecked' };
   }
+  if (error instanceof ChainRefused) {
+    return { id: 'space.error.chainRefused', values: { reason: error.reason } };
+  }
+  if (error instanceof ChainConflict) return { id: 'space.error.chainConflict' };
   return describeAccountError(error);
 }
 
@@ -51,6 +63,21 @@ export default function SpaceDetail() {
   const [offboarded, setOffboarded] = useState<{ name: string; outcome: OffboardedDto } | null>(null);
   const detail: Detail | undefined = query.data;
   const { api } = spaceDeps;
+
+  // A member who is awaiting a key this account holds is sealed it now ("Using the state",
+  // "Sealing"): once for each state of the chain this browser has loaded, and only by a member
+  // who holds keys, so a reader of a space is never asked anything.
+  const sealedAt = useRef('');
+  useEffect(() => {
+    if (!detail || detail.trust?.kind !== 'verified' || !detail.readable) return;
+    const head = detail.trust.view.head;
+    const at = `${spaceId}:${head?.seq ?? ''}:${head?.link ?? ''}`;
+    if (sealedAt.current === at) return;
+    sealedAt.current = at;
+    void sealPending(spaceDeps, detail)
+      .then((sealed) => (sealed ? refreshSpaces(queryClient) : undefined))
+      .catch(() => undefined);
+  }, [detail, spaceId, queryClient]);
 
   /**
    * Runs a change, then reads the space again. A member the browser wouldn't seal to is asked to
@@ -111,7 +138,7 @@ export default function SpaceDetail() {
       cryptoAvailable={spaceDeps.crypto.available}
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
-        invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input)),
+        invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input, detail)),
         acceptFirstContact: () => {
           if (!detail) return;
           void change(() => acceptFirstContact(spaceDeps, spaceId, detail.view.me.user));
@@ -133,34 +160,43 @@ export default function SpaceDetail() {
             if (done) setConfirming(null);
           });
         },
-        changeRole: (user, role, custom) => worked(() => api.changeRole(spaceId, user, role, custom)),
+        changeRole: async (user, role, custom) =>
+          !!detail && (await worked(() => changeRole(spaceDeps, detail, user, role, custom))),
         revoke: (user) =>
-          change(() => api.revoke(spaceId, user)).then((outcome) => {
-            if (outcome) setOffboarded({ name: nameOf(user), outcome });
-            return outcome !== undefined;
-          }),
+          detail
+            ? change(() => offboardMember(spaceDeps, detail, user, 'revoke')).then((outcome) => {
+                if (outcome) setOffboarded({ name: nameOf(user), outcome });
+                return outcome !== undefined;
+              })
+            : Promise.resolve(false),
         restore: (user) => void change(() => api.restore(spaceId, user)),
         remove: (user) =>
-          change(() => api.remove(spaceId, user)).then((outcome) => {
-            if (outcome) setOffboarded({ name: nameOf(user), outcome });
-            return outcome !== undefined;
-          }),
+          detail
+            ? change(() => offboardMember(spaceDeps, detail, user, 'remove')).then((outcome) => {
+                if (outcome) setOffboarded({ name: nameOf(user), outcome });
+                return outcome !== undefined;
+              })
+            : Promise.resolve(false),
         createCollection: async (name, parent) =>
           !!detail && (await worked(() => createCollection(spaceDeps, detail, parent ? { name, parent } : { name }))),
         renameCollection: async (id, name) =>
           !!detail && (await worked(() => renameCollection(spaceDeps, detail, id, name))),
-        deleteCollection: (id) => worked(() => api.deleteCollection(spaceId, id).then(() => true)),
+        deleteCollection: async (id) =>
+          !!detail && (await worked(() => deleteCollection(spaceDeps, detail, id))),
         createGroup: async (name, members) =>
           !!detail && (await worked(() => createGroup(spaceDeps, detail, { name, members }))),
         setGroupMembers: async (id, members) =>
           !!detail && (await worked(() => setGroupMembers(spaceDeps, detail, id, members))),
-        deleteGroup: (id) => worked(() => api.deleteGroup(spaceId, id).then(() => true)),
+        deleteGroup: async (id) =>
+          !!detail && (await worked(() => deleteGroup(spaceDeps, detail, id))),
         grant: (collection, grantee, permission) => {
           if (!detail) return;
           void change(() => grantAccess(spaceDeps, detail, { collection, grantee, permission }));
         },
-        revokeGrant: (collection, grantee) =>
-          void change(() => api.revokeGrant(spaceId, collection, grantee).then(() => true)),
+        revokeGrant: (collection, grantee) => {
+          if (!detail) return;
+          void change(() => revokeGrant(spaceDeps, detail, collection, grantee));
+        },
       }}
     />
   );
