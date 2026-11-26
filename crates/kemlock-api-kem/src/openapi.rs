@@ -411,6 +411,7 @@ fn doc_put_item() {}
     request_body = TaggedBatchRequest,
     responses(
         (status = 200, description = "Every write was stored; `tags` says what became of the tags of the writes that carried some", body = TaggedBatchResponse),
+        (status = 422, description = "`invalid-signature`: a write's signature is not the signed-in account's, or `signature-required`: an owner accepts signed writes only; nothing was stored", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "A space item the caller may not write; nothing was stored", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 423, description = "A space waits for its keys to be replaced; nothing was stored", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "A write was stale; nothing was stored. `itemId` names it", body = ProblemDoc, content_type = "application/problem+json"),
