@@ -31,6 +31,10 @@ pub struct BwSettings {
     /// `SIGNUPS_VERIFY`: an address is proven by a mailed link before its account is made. Only
     /// when the server mails; the start value, which `live` replaces while the server runs.
     pub signups_verify: bool,
+    /// `KEMLOCK_BW_INVITES_AUTO_ACCEPT`: an invitation to an existing account with a password counts
+    /// as accepted at once, when the server doesn't mail, as Vaultwarden does. The start value, which
+    /// `live` replaces while the server runs.
+    pub bw_invites_auto_accept: bool,
     /// `KEMLOCK_BITWARDEN_COMPAT`: with it off, every Bitwarden route answers 404.
     pub compat: bool,
     /// Rounds for new password hashes; an account hashed with fewer is upgraded at its next sign-in.
@@ -69,6 +73,7 @@ impl BwSettings {
             origin,
             signups_allowed,
             signups_verify: false,
+            bw_invites_auto_accept: false,
             compat: true,
             password_iterations: PASSWORD_ITERATIONS,
             login_ratelimit_seconds: 60,
@@ -123,6 +128,13 @@ impl BwSettings {
         self.live
             .as_ref()
             .map_or(self.signups_allowed, Live::signups_allowed)
+    }
+
+    /// Whether a Bitwarden invitation to an existing account is taken as accepted at once.
+    pub fn bw_invites_auto_accept(&self) -> bool {
+        self.live
+            .as_ref()
+            .map_or(self.bw_invites_auto_accept, Live::bw_invites_auto_accept)
     }
 
     /// Whether registration has to prove the address with a mailed link first.

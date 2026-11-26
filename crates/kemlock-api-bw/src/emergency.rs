@@ -410,8 +410,14 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
         Err(e) => return Err(e.into()),
     }
     // The contact accepts for themselves, from the Kemlock web vault or with the link of the
-    // mail, so nobody is made a grantee of someone who named them.
+    // mail, so nobody is made a grantee of someone who named them. (An operator who asked for
+    // Vaultwarden's mail-off behaviour has an existing account accepted at once.)
     if let Some(user) = &existing {
+        if crate::orgs::members::auto_accepts(app, user.id).await? {
+            let mut accepted = grant.clone();
+            accepted.accept(user.id, now).map_err(|_| not_valid())?;
+            save(app, &accepted, EmergencyState::Invited).await?;
+        }
         touch_quiet(app, user.id).await;
     }
     notify_contact(app, &grant).await;
@@ -540,6 +546,16 @@ async fn resend_invite<S: BwStore>(
         ));
     }
     // The grantee accepts for themselves; a resend only mails them again, when the server mails.
+    // (An operator who asked for Vaultwarden's mail-off behaviour has an existing account accepted.)
+    if let Some(contact) = UserRepo::by_email(&app.store, &grant.grantee_email).await?
+        && crate::orgs::members::auto_accepts(&app, contact.id).await?
+    {
+        let mut next = grant.clone();
+        next.accept(contact.id, app.now()).map_err(|_| not_valid())?;
+        save(&app, &next, EmergencyState::Invited).await?;
+        touch_quiet(&app, contact.id).await;
+        return Ok(axum::http::StatusCode::OK);
+    }
     notify_contact(&app, &grant).await;
     Ok(axum::http::StatusCode::OK)
 }

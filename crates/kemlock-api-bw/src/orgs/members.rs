@@ -10,6 +10,7 @@ use super::policy::check_user_allowed;
 use crate::app::{App, Authed, BwStore};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
+use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::notices::{BwOrgInviteNotice, InvitationNotice, Notice};
 use kemlock_app::ports::UserRepo;
 use kemlock_domain::spaces::{CollectionGrant, CollectionId, Grantee, GroupId};
@@ -114,6 +115,19 @@ fn group_ids_of(org: &Org, groups: &[String]) -> BwResult<Vec<GroupId>> {
                 .ok_or_else(|| BwError::msg("Group not found in Organization"))
         })
         .collect()
+}
+
+/// Whether an invitation to this existing account is taken as accepted at once, as Vaultwarden does
+/// with its mailer off: only when the operator set `KEMLOCK_BW_INVITES_AUTO_ACCEPT`, the server
+/// doesn't mail, and the account has a password. The invitee has not agreed to anything then; the
+/// default is that they accept for themselves.
+pub(crate) async fn auto_accepts<S: BwStore>(app: &App<S>, user: UserId) -> BwResult<bool> {
+    if !app.settings.bw_invites_auto_accept() || app.notices.mails() {
+        return Ok(false);
+    }
+    Ok(BwAccountRepo::get(&app.store, user)
+        .await?
+        .is_some_and(|account| !account.password_hash.is_empty()))
 }
 
 /// How long the link of an invitation works: Vaultwarden's `INVITATION_EXPIRATION_HOURS`, 120.
@@ -264,7 +278,12 @@ pub(crate) async fn invite<S: BwStore>(
                 // organization they have not agreed to, so the invitee accepts, with the mail or
                 // from the web vault's spaces. (Vaultwarden with its mailer off would take an
                 // account with a password as accepted at once.)
-                let mut doc = MemberDoc::new(new_type, access_all, INVITED);
+                let status = if auto_accepts(app, user.id).await? {
+                    ACCEPTED
+                } else {
+                    INVITED
+                };
+                let mut doc = MemberDoc::new(new_type, access_all, status);
                 doc.invited_by_email = Some(inviter_email.to_owned());
                 app.put_member(&org, user.id, &doc, ctx.me).await?;
                 if !access_all {
@@ -326,6 +345,12 @@ pub(crate) async fn reinvite<S: BwStore>(app: &App<S>, ctx: &Ctx, member_id: &st
             return Err(BwError::msg(
                 "The user is already accepted or confirmed to the organization",
             ));
+        }
+        if auto_accepts(app, user).await? {
+            let mut accepted = doc.clone();
+            accepted.status = ACCEPTED;
+            app.put_member(org, user, &accepted, ctx.me).await?;
+            return Ok(());
         }
         if let Some(account) = UserRepo::by_id(&app.store, user).await? {
             let inviter = doc.invited_by_email.clone().unwrap_or_default();

@@ -442,7 +442,13 @@ impl<S: BwStore> App<S> {
             // The person who registers the address may not be the one who was invited (an address
             // is only proven when the server verifies sign-ups), so they only become invited, and
             // accept for themselves, as any invitee does.
-            let mut member = MemberDoc::new(pending.atype, pending.access_all, INVITED);
+            // (An operator who asked for Vaultwarden's mail-off behaviour has them accepted.)
+            let status = if self.settings.bw_invites_auto_accept() && !self.notices.mails() {
+                ACCEPTED
+            } else {
+                INVITED
+            };
+            let mut member = MemberDoc::new(pending.atype, pending.access_all, status);
             member.invited_by_email = pending.invited_by_email.clone();
             member.external_id = pending.external_id.clone();
             self.put_member(&org, user.id, &member, invited_by).await?;

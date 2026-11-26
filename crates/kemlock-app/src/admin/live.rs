@@ -27,6 +27,9 @@ struct Shared {
     signups_allowed: AtomicBool,
     /// `SIGNUPS_VERIFY`: an address is proven by a mailed link before its account is made.
     signups_verify: AtomicBool,
+    /// `KEMLOCK_BW_INVITES_AUTO_ACCEPT`: an invitation of the Bitwarden API to an existing account with
+    /// a password counts as accepted at once, when the server doesn't mail.
+    bw_invites_auto_accept: AtomicBool,
     invitations_allowed: AtomicBool,
     /// Lower-case domains; empty means no whitelist.
     signup_domains: RwLock<Vec<String>>,
@@ -69,6 +72,7 @@ impl Live {
         Live(Arc::new(Shared {
             signups_allowed: AtomicBool::new(signups_allowed),
             signups_verify: AtomicBool::new(false),
+            bw_invites_auto_accept: AtomicBool::new(false),
             invitations_allowed: AtomicBool::new(true),
             signup_domains: RwLock::new(Vec::new()),
             max_file_size: AtomicU64::new(0),
@@ -94,6 +98,16 @@ impl Live {
 
     pub fn set_signups_verify(&self, verify: bool) {
         self.0.signups_verify.store(verify, Ordering::Relaxed);
+    }
+
+    /// Whether a Bitwarden invitation to an existing account is taken as accepted at once, as
+    /// Vaultwarden does with its mailer off. Off by default: the invitee accepts for themselves.
+    pub fn bw_invites_auto_accept(&self) -> bool {
+        self.0.bw_invites_auto_accept.load(Ordering::Relaxed)
+    }
+
+    pub fn set_bw_invites_auto_accept(&self, on: bool) {
+        self.0.bw_invites_auto_accept.store(on, Ordering::Relaxed);
     }
 
     pub fn invitations_allowed(&self) -> bool {
@@ -219,6 +233,15 @@ mod tests {
         assert!(other.signups_allowed());
         assert_eq!(live, other);
         assert_ne!(live, Live::new(true));
+    }
+
+    #[test]
+    fn bitwarden_invitations_are_not_auto_accepted_until_set() {
+        let live = Live::new(true);
+        let other = live.clone();
+        assert!(!other.bw_invites_auto_accept());
+        live.set_bw_invites_auto_accept(true);
+        assert!(other.bw_invites_auto_accept());
     }
 
     #[test]

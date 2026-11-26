@@ -127,6 +127,13 @@ pub const DEFINITIONS: &[Definition] = &[
         env: "SIGNUPS_VERIFY",
     },
     Definition {
+        key: "bw_invites_auto_accept",
+        group: "signups",
+        kind: Kind::Bool,
+        default: "false",
+        env: "KEMLOCK_BW_INVITES_AUTO_ACCEPT",
+    },
+    Definition {
         key: "signups_domains_whitelist",
         group: "signups",
         kind: Kind::Domains,
@@ -778,6 +785,14 @@ mod tests {
             }
             assert!(validate(d, d.default).is_ok(), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn bitwarden_invitations_are_not_taken_for_accepted_unless_the_operator_says_so() {
+        let d = def("bw_invites_auto_accept");
+        assert_eq!(d.kind, Kind::Bool);
+        assert_eq!(d.default, "false");
+        assert_eq!(d.env, "KEMLOCK_BW_INVITES_AUTO_ACCEPT");
     }
 
     #[test]

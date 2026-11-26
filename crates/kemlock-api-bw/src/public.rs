@@ -11,7 +11,7 @@ use crate::app::{App, BwStore};
 use crate::error::{BwError, BwResult};
 use crate::orgs::api_key;
 use crate::orgs::model::{
-    GroupDoc, INVITED, KIND_GROUP, KIND_PENDING, MemberDoc, OWNER, Org, PendingDoc, USER,
+    ACCEPTED, GroupDoc, INVITED, KIND_GROUP, KIND_PENDING, MemberDoc, OWNER, Org, PendingDoc, USER,
 };
 use crate::orgs::policy::check_user_allowed;
 use crate::routes::{EmptyResult, empty, parse};
@@ -152,7 +152,12 @@ async fn import_member<S: BwStore>(
     match account {
         Some(user) => {
             // Invited, as every invitation is: the account accepts for itself.
-            let mut doc = MemberDoc::new(USER, false, INVITED);
+            let status = if crate::orgs::members::auto_accepts(app, user.id).await? {
+                ACCEPTED
+            } else {
+                INVITED
+            };
+            let mut doc = MemberDoc::new(USER, false, status);
             doc.invited_by_email = Some(billing.clone());
             set_external(&mut doc.external_id, &data.external_id);
             save_member(app, org, owner, user.id, doc).await?;
