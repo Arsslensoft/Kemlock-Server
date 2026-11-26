@@ -158,6 +158,16 @@ impl<S: BwStore> App<S> {
         }
     }
 
+    /// The account's other sessions ended: their live connections close and their apps sign in
+    /// again. The device that asked (`authed`) stays signed in.
+    pub(crate) fn sessions_ended(&self, authed: &Authed) {
+        self.events.publish(BwEvent::LogOut {
+            user: authed.user.id,
+            device: acting_of(authed),
+            at: self.now(),
+        });
+    }
+
     /// A member joined or left an organization: their clients should fetch its keys again.
     pub(crate) fn org_keys_changed(&self, user: UserId) {
         self.events.publish(BwEvent::Sync {
