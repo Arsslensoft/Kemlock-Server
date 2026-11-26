@@ -1466,6 +1466,7 @@ pub(crate) fn write(
             ciphertext: filler(64, 0xaa),
             item_key: filler(kemlock_domain::item::ITEM_KEY_LEN, 0xbb),
         }),
+        signature: None,
     }
 }
 

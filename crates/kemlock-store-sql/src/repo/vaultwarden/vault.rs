@@ -70,6 +70,7 @@ fn draft(
         ciphertext: body,
         item_key: None,
         updated_at,
+        signature: None,
     })
 }
 

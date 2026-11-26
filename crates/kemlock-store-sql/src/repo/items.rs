@@ -799,6 +799,7 @@ mod tests {
             item_key: Some(vec![4; 60]),
             deleted_at: None,
             updated_at: time::macros::datetime!(2026-06-02 12:00:00 UTC),
+            signature: None,
         };
         let txn = store.writer().begin().await.expect("begins");
         let mut hlc = Hlc(0);

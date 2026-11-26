@@ -103,6 +103,7 @@ impl ChangeRecord {
             deleted_at: self.deleted.then_some(updated_at),
             updated_at,
             change: self.change,
+            signature: None,
         })
     }
 

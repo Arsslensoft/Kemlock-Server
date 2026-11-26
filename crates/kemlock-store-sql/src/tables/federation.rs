@@ -485,6 +485,7 @@ pub(crate) mod item_siblings {
                     seq: from_i64(self.seq, "sequence number")?,
                     hlc: Hlc(from_i64(self.hlc, "hlc")?),
                 },
+                signature: None,
             })
         }
     }
@@ -535,6 +536,7 @@ pub(crate) mod item_siblings {
                     seq: 12,
                     hlc: Hlc::from_parts(1_700_000_000_123, 3),
                 },
+                signature: None,
             };
             let row = active(&item).expect("fits");
             assert_eq!(row.updated_at_ms, Set(1_700_000_000_123));

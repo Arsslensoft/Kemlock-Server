@@ -599,6 +599,7 @@ impl ItemDto {
             revision: Revision(self.revision),
             key_version: self.key_version,
             sealed,
+            signature: None,
         })
     }
 }
@@ -801,6 +802,7 @@ mod tests {
                 seq: 9,
                 hlc: Hlc(1),
             },
+            signature: None,
         }
     }
 

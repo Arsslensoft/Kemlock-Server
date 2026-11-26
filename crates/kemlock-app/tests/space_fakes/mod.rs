@@ -837,6 +837,7 @@ impl SpaceWorld {
                 ciphertext: vec![0xaa; 64],
                 item_key: vec![0xbb; kemlock_domain::item::ITEM_KEY_LEN],
             }),
+            signature: None,
         }
     }
 }

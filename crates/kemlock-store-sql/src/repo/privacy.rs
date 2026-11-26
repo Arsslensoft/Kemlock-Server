@@ -1063,6 +1063,7 @@ impl RetentionStore for SqlStore {
                     item_key: None,
                     deleted_at: Some(now),
                     updated_at: now,
+                    signature: None,
                 };
                 match ItemStore::put(self, tombstone).await {
                     Ok(_) => {}

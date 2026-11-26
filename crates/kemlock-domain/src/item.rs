@@ -73,6 +73,50 @@ impl From<ItemKind> for String {
     }
 }
 
+/// The writing account's signature of a `kem1` write (docs/crypto.md, "Signed item writes"). The
+/// server stores it with the item's change and serves it back, so any device or peer can check it;
+/// it never makes one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteSignature {
+    /// The account that wrote, and whose `sig1` key made the signature.
+    pub writer: UserId,
+    /// The key version of the bundle that signed.
+    pub key_version: u32,
+    /// The `sig1` signature, 3373 bytes.
+    pub signature: Vec<u8>,
+}
+
+impl WriteSignature {
+    /// A `sig1` signature: ML-DSA-65 (3309) and Ed25519 (64).
+    pub const SIGNATURE_LEN: usize = 3309 + 64;
+    /// The stored and federated form: `writer (16) ‖ u32be(key version) ‖ signature`.
+    pub const STORED_LEN: usize = 16 + 4 + Self::SIGNATURE_LEN;
+
+    pub fn to_stored(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(Self::STORED_LEN);
+        out.extend_from_slice(self.writer.as_bytes());
+        out.extend_from_slice(&self.key_version.to_be_bytes());
+        out.extend_from_slice(&self.signature);
+        out
+    }
+
+    /// Parses the stored form, refusing any other length.
+    pub fn from_stored(bytes: &[u8]) -> Option<WriteSignature> {
+        if bytes.len() != Self::STORED_LEN {
+            return None;
+        }
+        let mut writer = [0u8; 16];
+        writer.copy_from_slice(&bytes[..16]);
+        let mut version = [0u8; 4];
+        version.copy_from_slice(&bytes[16..20]);
+        Some(WriteSignature {
+            writer: UserId(uuid::Uuid::from_bytes(writer)),
+            key_version: u32::from_be_bytes(version),
+            signature: bytes[20..].to_vec(),
+        })
+    }
+}
+
 /// An item as stored. A tombstone has `deleted_at` set and no ciphertext or item key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
@@ -88,6 +132,8 @@ pub struct Item {
     pub updated_at: OffsetDateTime,
     /// The change that wrote this revision.
     pub change: ChangeId,
+    /// The writing account's signature of this revision, when it came signed.
+    pub signature: Option<WriteSignature>,
 }
 
 impl Item {
@@ -115,6 +161,9 @@ pub struct ItemWrite {
     pub key_version: u32,
     /// `None` deletes the item, leaving a tombstone.
     pub sealed: Option<Sealed>,
+    /// The writer's signature (docs/crypto.md, "Signed item writes"). Checked against the
+    /// writer's bundle by the layer that holds it, not here.
+    pub signature: Option<WriteSignature>,
 }
 
 /// An item's ciphertext and wrapped item key, both `nonce ‖ ciphertext ‖ tag` values.
@@ -170,6 +219,13 @@ pub enum ItemError {
     Malformed,
     #[error("the item is larger than this server allows")]
     TooLarge,
+    /// The write carries a signature that can't be the actor's: wrong writer, wrong format or wrong
+    /// length. The signature itself is checked where the writer's bundle is.
+    #[error("the write signature is not valid")]
+    BadSignature,
+    /// The owner accepts signed writes only (docs/crypto.md, "Signed item writes").
+    #[error("this owner accepts signed writes only")]
+    SignatureRequired,
 }
 
 impl ItemWrite {
@@ -218,6 +274,13 @@ impl ItemWrite {
         {
             return Err(ItemError::Immutable);
         }
+        if let Some(signature) = &self.signature
+            && (self.format != ItemFormat::Kem1
+                || signature.writer != actor
+                || signature.signature.len() != WriteSignature::SIGNATURE_LEN)
+        {
+            return Err(ItemError::BadSignature);
+        }
         if let Some(sealed) = &self.sealed {
             if sealed.ciphertext.len() < MIN_SEALED_LEN || sealed.item_key.len() != ITEM_KEY_LEN {
                 return Err(ItemError::Malformed);
@@ -242,6 +305,7 @@ impl ItemWrite {
             item_key,
             deleted_at,
             updated_at: now,
+            signature: self.signature,
         })
     }
 }
@@ -261,6 +325,8 @@ pub struct ItemDraft {
     pub item_key: Option<Vec<u8>>,
     pub deleted_at: Option<OffsetDateTime>,
     pub updated_at: OffsetDateTime,
+    /// The writer's signature, kept with the change.
+    pub signature: Option<WriteSignature>,
 }
 
 impl ItemDraft {
@@ -277,6 +343,7 @@ impl ItemDraft {
             deleted_at: self.deleted_at,
             updated_at: self.updated_at,
             change,
+            signature: self.signature,
         }
     }
 }
@@ -304,6 +371,7 @@ mod tests {
                 ciphertext: vec![7; 64],
                 item_key: vec![1; ITEM_KEY_LEN],
             }),
+            signature: None,
         }
     }
 
@@ -324,6 +392,7 @@ mod tests {
                 seq: 1,
                 hlc: Hlc::default(),
             },
+            signature: None,
         }
     }
 
@@ -487,5 +556,63 @@ mod tests {
             ),
             Err(ItemError::TooLarge)
         );
+    }
+
+    fn signature(writer: UserId) -> WriteSignature {
+        WriteSignature {
+            writer,
+            key_version: 1,
+            signature: vec![9; WriteSignature::SIGNATURE_LEN],
+        }
+    }
+
+    #[test]
+    fn a_signature_by_the_actor_travels_with_the_draft() {
+        let me = UserId::random();
+        let mut w = write(me, None, 1);
+        w.signature = Some(signature(me));
+        let draft = w
+            .apply(None, me, ItemLimits::default(), OffsetDateTime::UNIX_EPOCH)
+            .expect("applies");
+        assert_eq!(draft.signature, Some(signature(me)));
+        let item = draft.into_item(ChangeId {
+            origin: ServerId::random(),
+            seq: 1,
+            hlc: Hlc::default(),
+        });
+        assert_eq!(item.signature, Some(signature(me)));
+    }
+
+    #[test]
+    fn a_signature_that_cannot_be_the_actors_is_refused() {
+        let me = UserId::random();
+        let apply = |w: ItemWrite| {
+            w.apply(None, me, ItemLimits::default(), OffsetDateTime::UNIX_EPOCH)
+        };
+        // Another writer.
+        let mut w = write(me, None, 1);
+        w.signature = Some(signature(UserId::random()));
+        assert_eq!(apply(w), Err(ItemError::BadSignature));
+        // The wrong length.
+        let mut w = write(me, None, 1);
+        let mut short = signature(me);
+        short.signature.pop();
+        w.signature = Some(short);
+        assert_eq!(apply(w), Err(ItemError::BadSignature));
+        // Only kem1 envelopes are signed.
+        let mut w = write(me, None, 1);
+        w.format = ItemFormat::Bw;
+        w.signature = Some(signature(me));
+        assert_eq!(apply(w), Err(ItemError::BadSignature));
+    }
+
+    #[test]
+    fn the_stored_form_of_a_signature_round_trips() {
+        let sig = signature(UserId::random());
+        let bytes = sig.to_stored();
+        assert_eq!(bytes.len(), WriteSignature::STORED_LEN);
+        assert_eq!(WriteSignature::from_stored(&bytes), Some(sig));
+        assert_eq!(WriteSignature::from_stored(&bytes[1..]), None);
+        assert_eq!(WriteSignature::from_stored(&[]), None);
     }
 }

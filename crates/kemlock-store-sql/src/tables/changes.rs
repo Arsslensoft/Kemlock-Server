@@ -72,6 +72,7 @@ mod tests {
                 seq: 5,
                 hlc: Hlc(6),
             },
+            signature: None,
         };
         let row = active(&item).expect("fits");
         assert_eq!(row.deleted, Set(true));

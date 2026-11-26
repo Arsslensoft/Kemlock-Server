@@ -83,6 +83,7 @@ impl Model {
                 seq: from_i64(self.seq, "sequence number")?,
                 hlc: Hlc(from_i64(self.hlc, "hlc")?),
             },
+            signature: None,
         })
     }
 }
@@ -131,6 +132,7 @@ mod tests {
                 seq: 12,
                 hlc: Hlc::from_parts(1_700_000_000_000, 3),
             },
+            signature: None,
         }
     }
 
