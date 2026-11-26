@@ -237,7 +237,10 @@ async fn pass(
     mapped: &MappedImport,
     deletions: &[Deletion],
 ) -> ApplyReport {
-    pass_with(store, files, blobs, now, retention, mapped, deletions, false).await
+    pass_with(
+        store, files, blobs, now, retention, mapped, deletions, false,
+    )
+    .await
 }
 
 /// [`pass`], with the operator's `--adopt-existing`: rows the API changed since the last pass

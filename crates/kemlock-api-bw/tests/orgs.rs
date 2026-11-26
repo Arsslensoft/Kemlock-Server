@@ -69,7 +69,7 @@ async fn add_member(h: &Harness, owner: &str, org: &str, member: UserId, email: 
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    h.accept_in_space(&org, member).await;
+    h.accept_in_space(org, member).await;
     let (status, body) = h
         .json(
             "POST",

@@ -325,7 +325,11 @@ async fn erasing_a_replica_vault_clears_its_event_log_tags_and_matching_switch()
     let ada_id = UserId::random();
     assert_eq!(
         store
-            .apply_member_account(Owner::User(ada_id), peer, &copy_of(ada_id, &unique_email("ada")))
+            .apply_member_account(
+                Owner::User(ada_id),
+                peer,
+                &copy_of(ada_id, &unique_email("ada"))
+            )
             .await,
         Ok(MemberApply::Applied)
     );

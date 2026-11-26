@@ -390,12 +390,12 @@ async fn a_collection_of_another_space_is_not_moved_into_an_imported_one() {
     let own_collection = CollectionId::random();
     let mapped = MappedImport {
         carried: vec![
-        organizations(&[(imported_space, "Imported")]),
-        collections(&[
-            (native_collection, imported_space),
-            (own_collection, imported_space),
-        ]),
-    ],
+            organizations(&[(imported_space, "Imported")]),
+            collections(&[
+                (native_collection, imported_space),
+                (own_collection, imported_space),
+            ]),
+        ],
         ..Default::default()
     };
     let report = pass(&store, &mapped, false).await;
@@ -693,9 +693,9 @@ async fn an_id_a_pass_only_names_is_not_marked_as_the_imports() {
     // ... and a later move can't rename it or add members.
     let later = MappedImport {
         carried: vec![
-        organizations(&[(space, "Hijacked")]),
-        memberships(&[(space, user)]),
-    ],
+            organizations(&[(space, "Hijacked")]),
+            memberships(&[(space, user)]),
+        ],
         ..Default::default()
     };
     let report = pass(&store, &later, false).await;
