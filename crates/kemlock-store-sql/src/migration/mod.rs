@@ -62,6 +62,7 @@ mod m20261201_080001_imported_manager_collections;
 mod m20261201_090001_vault_home_history;
 mod m20261201_100001_peer_key_history;
 mod m20261201_110001_peer_trusted_addresses;
+mod m20261202_010001_root_rotation;
 
 use sea_orm_migration::prelude::*;
 
@@ -129,6 +130,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261201_090001_vault_home_history::Migration),
             Box::new(m20261201_100001_peer_key_history::Migration),
             Box::new(m20261201_110001_peer_trusted_addresses::Migration),
+            Box::new(m20261202_010001_root_rotation::Migration),
         ]
     }
 }

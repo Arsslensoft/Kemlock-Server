@@ -44,6 +44,7 @@ pub mod push;
 pub mod put_batch;
 pub mod put_item;
 pub mod quota;
+pub mod rotation;
 pub mod recovery_kit;
 pub mod refresh;
 pub mod register;

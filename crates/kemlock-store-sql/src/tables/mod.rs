@@ -39,6 +39,8 @@ pub(crate) mod pending_erasures;
 pub(crate) mod policies;
 pub(crate) mod push_tokens;
 pub(crate) mod recovery_kits;
+pub(crate) mod rotation_previous_keys;
+pub(crate) mod rotation_staged_items;
 pub(crate) mod refresh_tokens;
 pub(crate) mod revoked_families;
 pub(crate) mod second_step_attempts;
