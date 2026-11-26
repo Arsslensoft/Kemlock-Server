@@ -54,6 +54,7 @@ mod m20261130_020001_custom_fields;
 mod m20261201_010001_bw_tries;
 mod m20261201_020001_forget_email_new_tokens;
 mod m20261201_030001_bw_api_key_width;
+mod m20261201_040001_imported_manager_collections;
 
 use sea_orm_migration::prelude::*;
 
@@ -113,6 +114,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261201_010001_bw_tries::Migration),
             Box::new(m20261201_020001_forget_email_new_tokens::Migration),
             Box::new(m20261201_030001_bw_api_key_width::Migration),
+            Box::new(m20261201_040001_imported_manager_collections::Migration),
         ]
     }
 }
