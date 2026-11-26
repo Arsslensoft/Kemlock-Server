@@ -1709,9 +1709,15 @@ made as a chain wherever the client can build one.
 "names": [{"name", "seq", "target"}…]}`: 1 to 16 records to append in order, the boxes their
 commitments cover and the sealed names their hashes cover. It appends all or none, and answers `201`
 with the new head `{"link", "seq"}`, `409` with the current head when `seq` or `prev` isn't the
-next, and `422` with the reason of "Verification" otherwise. The route that replaces keys carries its
-`keys` record the same way, beside its re-written items. The server refuses a record unless all of
-these hold:
+next, and `422` with the reason of "Verification" otherwise. A `keys` record that replaces collection
+keys is sent here, beside its re-written items: the request may also carry `"held": [uuid…]`, the
+live items the record leaves held (I3), and `"writes": [{"collection", "expectedRevision",
+"item"}…]`, the items it re-writes, each as the next revision under the collection's new key
+version (an `item` is written as `PUT /kem/v1/items/{id}` takes it). They are stored in the same transaction as the records. A write is of a live item of a
+collection whose key a `keys` record of the request replaces, by a member with edit on it; an item
+is written once and is not also held; any other write is refused (`400`, or `422`
+`held-not-rotated` for a collection the request does not replace). The server refuses a record
+unless all of these hold:
 
 - A1. Its bytes are canonical and within "Limits", and its body has its kind's exact shape.
 - A2. `space` is the route's space.

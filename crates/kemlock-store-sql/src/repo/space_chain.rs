@@ -7,7 +7,8 @@
 //! `apply_in` every other space change goes through). Of two racing appends one wins; the other
 //! finds the head moved, or loses the unique key of `(space, seq)`, and is `Stale`.
 
-use super::spaces::{apply_in, finish};
+use super::items::write_in;
+use super::spaces::{apply_in, finish, link_item};
 use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::settings;
@@ -21,7 +22,7 @@ use kemlock_app::spaces::{
 use kemlock_crypto::space_chain::KeyRef;
 use kemlock_crypto::space_chain::State;
 use kemlock_domain::spaces::{CollectionId, CollectionPermission, CustomPermissions, SpaceRole};
-use kemlock_domain::{ItemId, Owner, SpaceId, UserId};
+use kemlock_domain::{ItemDraft, ItemId, Owner, SpaceId, UserId};
 use kemlock_federation::chain::{ChainWire, WireName, WireSeal};
 use kemlock_federation::home::Policy;
 use kemlock_federation::ports::{ReplicaStore, VaultRepo};
@@ -276,6 +277,15 @@ impl SpaceChainRepo for SqlStore {
                     .store()?;
             }
             apply_in(&txn, append.changes, append.creating).await?;
+            // The items a key replacement re-wrote, stored with the records as a replacement's are.
+            if !append.writes.is_empty() {
+                let (drafts, collections): (Vec<ItemDraft>, Vec<CollectionId>) =
+                    append.writes.into_iter().unzip();
+                let stored = write_in(&txn, self.origin(), drafts).await?;
+                for (item, collection) in stored.iter().zip(collections) {
+                    link_item(&txn, item.id, space, collection).await?;
+                }
+            }
             let head = last.ok_or_else(|| bad("an append with no records"))?;
             Ok::<AppendOutcome, StoreError>(AppendOutcome::Appended(head))
         }

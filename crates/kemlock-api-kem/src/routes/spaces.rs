@@ -657,10 +657,10 @@ pub(crate) struct RekeyDto {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ReplacementWriteDto {
-    collection: Uuid,
+    pub(crate) collection: Uuid,
     /// The revision being replaced; the item is written as the next one.
-    expected_revision: u64,
-    item: ItemDto,
+    pub(crate) expected_revision: u64,
+    pub(crate) item: ItemDto,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

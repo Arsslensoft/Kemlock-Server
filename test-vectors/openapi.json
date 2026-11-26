@@ -203,6 +203,13 @@
               "$ref": "#/components/schemas/SealDto"
             },
             "type": "array"
+          },
+          "writes": {
+            "description": "Items a `keys` record in the request re-writes under the collection's new key version.",
+            "items": {
+              "$ref": "#/components/schemas/ReplacementWriteDto"
+            },
+            "type": "array"
           }
         },
         "required": [

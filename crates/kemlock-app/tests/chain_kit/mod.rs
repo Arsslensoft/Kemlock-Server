@@ -431,6 +431,7 @@ pub(crate) fn invited_chain(
         changes: SpaceChanges::new(space),
         creating: false,
         held: Vec::new(),
+        writes: Vec::new(),
         answers: None,
         state: None,
     }
@@ -473,6 +474,7 @@ pub(crate) fn append_of(
         changes: SpaceChanges::new(space),
         creating: false,
         held: Vec::new(),
+        writes: Vec::new(),
         answers: None,
         state: None,
     }
