@@ -9,7 +9,7 @@ use common::*;
 use kemlock_app::api_use::ApiUseRepo;
 use kemlock_app::bitwarden::BwAccount;
 use kemlock_app::ports::Clock;
-use kemlock_app::register::{BUNDLE_SIGNATURE_LEN, WRAPPED_ROOT_KEY_LEN};
+use kemlock_app::register::WRAPPED_ROOT_KEY_LEN;
 use kemlock_crypto::bundle::Bundle;
 use kemlock_crypto::manifest::{Entry, Manifest};
 use kemlock_crypto::owner::Owner as CryptoOwner;
@@ -607,7 +607,7 @@ fn finish_body(user: UserId, ticket: &Value, upload: &[u8]) -> Value {
         "upload": b64(upload),
         "kdf": {"memoryKib": 65536, "iterations": 3, "parallelism": 4, "salt": b64(&[4u8; 16])},
         "publicBundle": b64(&fakes::bundle(user)),
-        "bundleSignature": b64(&vec![0x11u8; BUNDLE_SIGNATURE_LEN]),
+        "bundleSignature": b64(&fakes::bundle_signature(user)),
         "sealedPrivateKeys": b64(&[0x22u8; 64]),
         "wrappedRootKey": b64(&[0x33u8; WRAPPED_ROOT_KEY_LEN]),
     })
@@ -676,7 +676,7 @@ async fn a_compatible_account_enrols_opaque_in_one_exchange_and_signs_in_with_it
     assert_eq!(keys["publicBundle"], b64(&fakes::bundle(user)));
     assert_eq!(
         keys["bundleSignature"],
-        b64(&vec![0x11u8; BUNDLE_SIGNATURE_LEN])
+        b64(&fakes::bundle_signature(user))
     );
     assert_eq!(keys["sealedPrivateKeys"], b64(&[0x22u8; 64]));
     assert_eq!(keys["kdf"]["iterations"], 3);
@@ -795,7 +795,7 @@ async fn the_account_keys_need_a_token_and_keys_to_give() {
 fn enrol_body(user: UserId) -> Value {
     json!({
         "publicBundle": b64(&fakes::bundle(user)),
-        "bundleSignature": b64(&vec![0x11u8; BUNDLE_SIGNATURE_LEN]),
+        "bundleSignature": b64(&fakes::bundle_signature(user)),
         "sealedPrivateKeys": b64(&[0x22u8; 64]),
         "deviceCopy": {"wrappedKey": b64(&[0xc3u8; 93]), "protection": "web-crypto"},
     })

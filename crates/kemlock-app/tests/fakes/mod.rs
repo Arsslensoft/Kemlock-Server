@@ -1165,13 +1165,51 @@ impl SpaceRepo for NoSpaceStore {
 /// The password input OPAQUE takes: a 32-byte master key (docs/crypto.md).
 pub(crate) const PASSWORD: [u8; 32] = [5u8; 32];
 
-/// A public-key bundle with docs/crypto.md's layout and filler keys.
+/// The `sig1` key behind every fake account's bundle.
+pub(crate) fn bundle_key() -> kemlock_crypto::sig1::SigningKey {
+    kemlock_crypto::sig1::SigningKey::from_bytes(&[0x5a; 64])
+}
+
+/// A public-key bundle for `user` with docs/crypto.md's layout, `signing`'s public key and a
+/// filler exchange key, and the signature `signing` makes of it (the server checks it).
+pub(crate) fn signed_bundle(
+    user: UserId,
+    signing: &kemlock_crypto::sig1::SigningKey,
+) -> (Vec<u8>, Vec<u8>) {
+    let bundle = kemlock_crypto::bundle::Bundle {
+        account_id: *user.as_bytes(),
+        key_version: FIRST_KEY_VERSION,
+        kx1_public: kemlock_crypto::kx1::PublicKey::from_bytes(&[0x42; 1600]).expect("a length"),
+        sig1_public: signing.public_key().expect("a public key"),
+    };
+    let signature = bundle.sign(signing).expect("the bundle signs");
+    (bundle.to_bytes(), signature)
+}
+
+/// A signed public-key bundle for `user`; see [`bundle_signature`] for its signature.
 pub(crate) fn bundle(user: UserId) -> Vec<u8> {
-    let mut bundle = BUNDLE_PREFIX.to_vec();
-    bundle.extend_from_slice(user.as_bytes());
-    bundle.extend_from_slice(&FIRST_KEY_VERSION.to_be_bytes());
-    bundle.resize(BUNDLE_LEN, 0x42);
-    bundle
+    signed_bundle(user, &bundle_key()).0
+}
+
+/// [`bundle`] and its signature, for a registration.
+pub(crate) fn bundle_and_signature(user: UserId) -> (Vec<u8>, Vec<u8>) {
+    (bundle(user), bundle_signature(user))
+}
+
+/// The signature of [`bundle`]`(user)`. ML-DSA signing may be hedged, so the first one made for a
+/// user is kept: a test that sends it and reads it back sees the same bytes.
+pub(crate) fn bundle_signature(user: UserId) -> Vec<u8> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static SIGNATURES: OnceLock<Mutex<HashMap<[u8; 16], Vec<u8>>>> = OnceLock::new();
+    let mut known = SIGNATURES
+        .get_or_init(Mutex::default)
+        .lock()
+        .expect("no test panics holding this");
+    known
+        .entry(*user.as_bytes())
+        .or_insert_with(|| signed_bundle(user, &bundle_key()).1)
+        .clone()
 }
 
 pub(crate) fn register_input(
@@ -1187,7 +1225,7 @@ pub(crate) fn register_input(
         upload,
         kdf: KdfParams::new_account([4u8; 16]),
         public_bundle: bundle(user),
-        bundle_signature: vec![0x11; BUNDLE_SIGNATURE_LEN],
+        bundle_signature: bundle_signature(user),
         sealed_private_keys: vec![0x22; 64],
         wrapped_root_key: vec![0x33; WRAPPED_ROOT_KEY_LEN],
         setup_grant,

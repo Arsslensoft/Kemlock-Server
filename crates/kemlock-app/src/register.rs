@@ -7,8 +7,9 @@
 //! make the master key OPAQUE takes as its password); the KDF settings must be the defaults (64
 //! MiB, 3 passes, 4 lanes) and the salt exactly 16 bytes, so that no account's prelogin answer
 //! differs from the fake one an unknown email gets.
-//! It checks the layout and length of every key blob (docs/crypto.md) but can't open any of them.
-//! Verifying the bundle's `sig1` signature needs ML-DSA, which this slice leaves to clients.
+//! It checks the layout and length of every key blob (docs/crypto.md) and that the bundle's own
+//! `sig1` signature verifies under the key the bundle carries, but can't open any of the sealed
+//! blobs.
 
 use crate::config::AuthConfig;
 use crate::error::AppError;
@@ -193,6 +194,7 @@ pub(crate) fn check_keys(input: &RegisterInput) -> Result<(), AppError> {
     if input.bundle_signature.len() != BUNDLE_SIGNATURE_LEN {
         return Err(AppError::Invalid("the bundle signature is malformed"));
     }
+    check_bundle_signature(bundle, &input.bundle_signature)?;
     if input.wrapped_root_key.len() != WRAPPED_ROOT_KEY_LEN {
         return Err(AppError::Invalid("the wrapped root key is malformed"));
     }
@@ -202,24 +204,48 @@ pub(crate) fn check_keys(input: &RegisterInput) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Refuses a bundle that doesn't parse (a weak Ed25519 key is refused there) or whose signature
+/// doesn't verify under the `sig1` key the bundle itself carries (context `"bundle"`).
+///
+/// A bundle is served to every account that looks this one up, and a space chain carries it as a
+/// member's key. One that can't be verified, or that holds a key a client would refuse, would be
+/// accepted here and rejected by them, so it is never stored.
+pub(crate) fn check_bundle_signature(bundle: &[u8], signature: &[u8]) -> Result<(), AppError> {
+    kemlock_crypto::bundle::Bundle::from_bytes(bundle)
+        .and_then(|parsed| parsed.verify_self_signature(signature))
+        .map_err(|_| AppError::Invalid("the bundle signature doesn't verify"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use kemlock_crypto::{bundle::Bundle, kx1, sig1};
+
+    /// A bundle for `user` with `signing`'s public key and the signature that key makes of it.
+    fn signed_bundle(user: UserId, signing: &sig1::SigningKey) -> (Vec<u8>, Vec<u8>) {
+        let bundle = Bundle {
+            account_id: *user.as_bytes(),
+            key_version: FIRST_KEY_VERSION,
+            kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a length"),
+            sig1_public: signing.public_key().expect("a public key"),
+        };
+        let signature = bundle.sign(signing).expect("signs");
+        (bundle.to_bytes(), signature)
+    }
+
     fn input() -> RegisterInput {
         let user = UserId::random();
-        let mut bundle = BUNDLE_PREFIX.to_vec();
-        bundle.extend_from_slice(user.as_bytes());
-        bundle.extend_from_slice(&FIRST_KEY_VERSION.to_be_bytes());
-        bundle.resize(BUNDLE_LEN, 1);
+        let (public_bundle, bundle_signature) =
+            signed_bundle(user, &sig1::SigningKey::from_bytes(&[8; 64]));
         RegisterInput {
             user,
             email: "a@b.co".into(),
             name: None,
             upload: vec![],
             kdf: KdfParams::new_account([3; 16]),
-            public_bundle: bundle,
-            bundle_signature: vec![0; BUNDLE_SIGNATURE_LEN],
+            public_bundle,
+            bundle_signature,
             sealed_private_keys: vec![0; 40],
             wrapped_root_key: vec![0; WRAPPED_ROOT_KEY_LEN],
             setup_grant: None,
@@ -235,6 +261,53 @@ mod tests {
     fn a_bundle_for_another_account_is_refused() {
         let mut i = input();
         i.public_bundle[20] ^= 1;
+        assert!(check_keys(&i).is_err());
+    }
+
+    #[test]
+    fn a_bundle_signature_that_does_not_verify_is_refused() {
+        // Filler, a flipped byte in each half, the signature of another account's bundle and
+        // the signature of another key.
+        let mut filler = input();
+        filler.bundle_signature = vec![0x11; BUNDLE_SIGNATURE_LEN];
+        assert_eq!(
+            check_keys(&filler),
+            Err(AppError::Invalid("the bundle signature doesn't verify"))
+        );
+        for index in [0, 3308, 3309, BUNDLE_SIGNATURE_LEN - 1] {
+            let mut flipped = input();
+            flipped.bundle_signature[index] ^= 1;
+            assert!(check_keys(&flipped).is_err(), "byte {index}");
+        }
+        let other_user = signed_bundle(UserId::random(), &sig1::SigningKey::from_bytes(&[8; 64]));
+        let mut other_bundle = input();
+        other_bundle.bundle_signature = other_user.1;
+        assert!(check_keys(&other_bundle).is_err());
+        let mut by_other_key = input();
+        by_other_key.bundle_signature = Bundle::from_bytes(&by_other_key.public_bundle)
+            .expect("parses")
+            .sign(&sig1::SigningKey::from_bytes(&[9; 64]))
+            .expect("signs");
+        assert!(check_keys(&by_other_key).is_err());
+    }
+
+    #[test]
+    fn a_bundle_with_a_weak_ed25519_key_is_refused_even_when_signed() {
+        // The identity point verifies any message as Ed25519, so an attacker could "sign" with
+        // it; the bundle is refused when it is parsed, whatever its signature.
+        let user = UserId::random();
+        let (mut bundle, signature) = signed_bundle(user, &sig1::SigningKey::from_bytes(&[8; 64]));
+        let end = bundle.len();
+        bundle[end - 32..].fill(0);
+        bundle[end - 32] = 1;
+        let mut forged = signature;
+        let at = forged.len() - 64;
+        forged[at..].fill(0);
+        forged[at] = 1;
+        let mut i = input();
+        i.user = user;
+        i.public_bundle = bundle;
+        i.bundle_signature = forged;
         assert!(check_keys(&i).is_err());
     }
 

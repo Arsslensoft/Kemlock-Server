@@ -61,7 +61,7 @@ fn enrol(world: &World) -> EnrolKeys<FakeStore, FakeStore, FakeStore, FakeEnv, F
 fn input(user: UserId) -> EnrolKeysInput {
     EnrolKeysInput {
         public_bundle: bundle(user),
-        bundle_signature: vec![0x11; BUNDLE_SIGNATURE_LEN],
+        bundle_signature: bundle_signature(user),
         sealed_private_keys: vec![0x22; 64],
         device_copy: vec![0xc3; 93],
         protection: KeyProtection::SecureEnclave,
@@ -180,6 +180,19 @@ async fn a_malformed_or_foreign_bundle_is_refused_and_nothing_is_stored() {
     let mut no_private_keys = input(s.user);
     no_private_keys.sealed_private_keys.clear();
     cases.push(no_private_keys);
+    // The right length, but not the bundle's own signature: filler, a flipped byte in each half,
+    // and a signature of another account's bundle.
+    let mut filler = input(s.user);
+    filler.bundle_signature = vec![0x11; BUNDLE_SIGNATURE_LEN];
+    cases.push(filler);
+    for index in [0, BUNDLE_SIGNATURE_LEN - 1] {
+        let mut flipped = input(s.user);
+        flipped.bundle_signature[index] ^= 1;
+        cases.push(flipped);
+    }
+    let mut foreign_signature = input(s.user);
+    foreign_signature.bundle_signature = bundle_signature(UserId::random());
+    cases.push(foreign_signature);
     for bad in cases {
         let result = enrol(&s.world).execute(&s.me, bad).await;
         assert!(matches!(result, Err(AppError::Invalid(_))), "{result:?}");

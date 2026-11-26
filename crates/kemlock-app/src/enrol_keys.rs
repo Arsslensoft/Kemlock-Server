@@ -15,6 +15,7 @@ use crate::error::AppError;
 use crate::ports::{Clock, DeviceRepo, Event, EventLog, UserRepo};
 use crate::register::{
     BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN, FIRST_KEY_VERSION, SEALED_PRIVATE_KEYS_RANGE,
+    check_bundle_signature,
 };
 use crate::sso::finish::NO_KEYS_YET;
 use kemlock_domain::unlock::{KeyProtection, MAX_WRAPPED_KEY_LEN};
@@ -105,8 +106,9 @@ where
     }
 }
 
-/// The layout of what the device sends. The server can't open any of it, but a malformed bundle
-/// would be served to every other account that looks the account up.
+/// The layout of what the device sends, and the bundle's own signature. The server can't open the
+/// sealed parts, but a malformed bundle would be served to every other account that looks the
+/// account up.
 fn check(actor: &Actor, input: &EnrolKeysInput) -> Result<(), AppError> {
     let bundle = &input.public_bundle;
     let layout_ok = bundle.len() == BUNDLE_LEN
@@ -119,6 +121,7 @@ fn check(actor: &Actor, input: &EnrolKeysInput) -> Result<(), AppError> {
     if input.bundle_signature.len() != BUNDLE_SIGNATURE_LEN {
         return Err(AppError::Invalid("the bundle signature is malformed"));
     }
+    check_bundle_signature(bundle, &input.bundle_signature)?;
     if !SEALED_PRIVATE_KEYS_RANGE.contains(&input.sealed_private_keys.len()) {
         return Err(AppError::Invalid("the sealed private keys are malformed"));
     }

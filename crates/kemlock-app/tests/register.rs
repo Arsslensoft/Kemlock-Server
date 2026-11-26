@@ -98,6 +98,20 @@ async fn weak_kdf_settings_and_malformed_keys_are_refused() {
         Err(AppError::Invalid(_))
     ));
 
+    // The right length, but not a signature of the bundle by the key in it.
+    let mut unsigned = register_input(user, "sam@example.org", upload.clone(), None);
+    unsigned.bundle_signature = vec![0x11; kemlock_app::register::BUNDLE_SIGNATURE_LEN];
+    assert!(matches!(
+        world.register().finish(unsigned).await,
+        Err(AppError::Invalid(_))
+    ));
+    let mut foreign_signature = register_input(user, "sam@example.org", upload.clone(), None);
+    foreign_signature.bundle_signature = bundle_signature(UserId::random());
+    assert!(matches!(
+        world.register().finish(foreign_signature).await,
+        Err(AppError::Invalid(_))
+    ));
+
     let mut short_wrap = register_input(user, "sam@example.org", upload, None);
     short_wrap.wrapped_root_key.truncate(10);
     assert!(matches!(
