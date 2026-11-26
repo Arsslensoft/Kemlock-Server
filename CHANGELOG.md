@@ -10,6 +10,54 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-26
+
+### Added
+
+- An avatar menu at the top right: Profile, Security, Devices & apps, Admin console for admins,
+  About, Lock the vault and Sign out. The admin console has its own, with My Vault, About and
+  Sign out.
+- A New menu with every item type, each with its own form. Edit opens the same form, filled in.
+- The sidebar lists All items and the 12 types with their counts. Each type has its own page.
+- A Vault column and filter on All items, every type page, Trash (with "Deleted from") and
+  Duplicates.
+- Duplicates covers every type and gives a reason for each group. For an item in two places, you
+  pick which vault keeps it.
+- New item kinds: File (encrypted in the browser and counted against the quota) and Contact (a
+  person, with an optional PGP public key).
+- Linked items. A link shows on both items, and unlinking either side removes both ends.
+- Card numbers are grouped by brand and checked with Luhn, and the brand is found from the number.
+- Profile changes your name, your sign-in email and your master password. A new email applies once
+  the link sent to it is opened. When two-step is on, the password and email changes ask for its
+  code. Accounts that sign in with SSO can't edit their name or email.
+- Devices & apps marks trusted Kemlock apps with a shield, and each device has a menu. Connect shows
+  the server's public address, with Copy.
+- An admin Custom fields page for fields every item can use, with up to 100 fields, and a setting
+  for whether people may add their own. Every custom field is optional.
+
+### Changed
+
+- "Code" is now "MFA code" everywhere. The stored kind is still `otp`.
+- An item page has one main button, Edit. The other actions are in a ⋯ menu.
+- A round lock with a tooltip replaces the "End-to-end encrypted" card.
+- Only secure notes take attachments.
+- The admin Overview's stats are reworked, and each switch in Server settings has a hint under it.
+- Items get new optional members: links, the `file` kind, a contact's person fields and references
+  to admin fields. Existing items stay byte for byte. `docs/crypto.md` lists every addition.
+
+### Fixed
+
+- "Confirm it's you" asks only for the second steps the account has set up, and takes a security
+  key. An admin whose only second step is a security key can confirm admin changes again.
+- Setup makes the passkey that was ticked when the second step is a security key, and saves the key
+  as "Security key".
+- "Go to the admin console" after setup opens the console instead of the vault.
+- When a password or email changes, refresh tokens and the security stamp are rotated, and tokens
+  of removed devices are refused.
+- A change of email can't show whether another account already has the address.
+- Emergency access grants follow an email change.
+- Concurrent requests can't undo a password change or a rename.
+
 ## [0.1.3] - 2026-11-25
 
 ### Added
@@ -171,7 +219,8 @@ The first release.
   - Contributing guide, DCO, code of conduct, governance, maintainers, support page, issue forms,
     a pull request template and code owners.
 
-[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.0...v0.1.1
