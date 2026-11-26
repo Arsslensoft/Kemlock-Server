@@ -14,6 +14,7 @@
 
 use crate::{
     Error,
+    bundle::Bundle,
     hash::sha256,
     owner::{self, Owner},
     sig1::{self, context::ITEM_WRITE},
@@ -90,6 +91,20 @@ impl Statement<'_> {
     pub fn verify(&self, writer_public: &sig1::PublicKey, signature: &[u8]) -> Result<(), Error> {
         writer_public.verify(ITEM_WRITE, &self.to_bytes()?, signature)
     }
+}
+
+/// Checks `signature` against the writer's `bundle`: the bundle must be the writer's own, at the
+/// key version the statement names, and its `sig1` key must have made the signature.
+pub fn verify_with_bundle(
+    statement: &Statement<'_>,
+    bundle: &[u8],
+    signature: &[u8],
+) -> Result<(), Error> {
+    let bundle = Bundle::from_bytes(bundle)?;
+    if bundle.account_id != statement.writer || bundle.key_version != statement.writer_key_version {
+        return Err(Error::invalid());
+    }
+    statement.verify(&bundle.sig1_public, signature)
 }
 
 /// The stored and federated form of a write's signature: `writer (16) ‖ u32be(key version) ‖
@@ -259,5 +274,39 @@ mod tests {
         );
         assert!(to_stored(&[1; 16], 9, &signature[1..]).is_err());
         assert!(from_stored(&stored[1..]).is_err());
+    }
+
+    #[test]
+    fn a_write_verifies_against_the_writers_bundle_only() {
+        use crate::kx1;
+        let key = sig1::SigningKey::from_bytes(&[31; 64]);
+        let bundle = Bundle {
+            account_id: [0xA1; 16],
+            key_version: 2,
+            kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("length"),
+            sig1_public: key.public_key().expect("public key"),
+        };
+        let signature = live().sign(&key).expect("sign");
+        verify_with_bundle(&live(), &bundle.to_bytes(), &signature).expect("verifies");
+
+        // Another account's bundle, another key version of it, and another key all fail.
+        let other_account = Bundle {
+            account_id: [0xA2; 16],
+            ..bundle.clone()
+        };
+        let other_version = Bundle {
+            key_version: 3,
+            ..bundle.clone()
+        };
+        let other_key = Bundle {
+            sig1_public: sig1::SigningKey::from_bytes(&[32; 64])
+                .public_key()
+                .expect("public key"),
+            ..bundle.clone()
+        };
+        for other in [other_account, other_version, other_key] {
+            assert!(verify_with_bundle(&live(), &other.to_bytes(), &signature).is_err());
+        }
+        assert!(verify_with_bundle(&live(), &[1, 2, 3], &signature).is_err());
     }
 }
