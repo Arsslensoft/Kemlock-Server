@@ -17,6 +17,7 @@ import { CheckList, SelectInput, TextInput } from '../account/controls';
 import type { Described } from '../account/errors';
 import { type SpaceDetail, type InviteInput, canManageUsers, memberLabel } from './model';
 import { type Done, succeeded, useAsk } from './outcome';
+import { InviteLinkAction } from './InviteLinkAction';
 import { SpaceStructure, type StructureActions } from './SpaceStructure';
 
 export interface ConfirmState {
@@ -41,6 +42,11 @@ export interface SpaceActions extends StructureActions {
   revoke: (user: string) => Done;
   restore: (user: string) => void;
   remove: (user: string) => Done;
+  /**
+   * The link that accepts a Bitwarden organization's invitation, for a server that can't mail it.
+   * Left out where the page has no such route, and the action isn't offered.
+   */
+  inviteLink?: (user: string) => Promise<string>;
 }
 
 export interface SpaceDetailViewProps {
@@ -363,6 +369,8 @@ export function SpaceDetailView({
   const members = waiting ? [] : detail.members;
   const me = view.me;
   const manage = canManageUsers(me);
+  // Only an owner or admin may hand an invitation link over (the server says 403 to anyone else).
+  const handsOver = me.role === 'owner' || me.role === 'admin';
   const pendingKeys =
     view.space.keysPendingSince !== null || view.collections.some((c) => c.staleSince !== null);
   const title = detail.name ?? t('space.detail.locked');
@@ -454,6 +462,7 @@ export function SpaceDetailView({
               {members.map((member) => {
                 const name = member.name || member.email;
                 const isMe = member.user === me.user;
+                const inviteLink = actions.inviteLink;
                 const unverified = detail.unverified?.find((u) => u.user === member.user);
                 const compareWith = unverified?.compare
                   ? members.find((m) => m.user === unverified.compare)
@@ -488,6 +497,12 @@ export function SpaceDetailView({
                           <Button size="small" variant="primary" isDisabled={busy} onPress={actions.accept}>
                             {t('space.members.accept')}
                           </Button>
+                        ) : null}
+                        {!isMe && handsOver && member.state === 'invited' && inviteLink ? (
+                          <InviteLinkAction
+                            name={name}
+                            fetchLink={() => inviteLink(member.user)}
+                          />
                         ) : null}
                         {!isMe && manage && unverified ? (
                           <>

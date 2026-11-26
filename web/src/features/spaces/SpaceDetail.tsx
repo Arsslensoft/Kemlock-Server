@@ -1,7 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from '@tanstack/react-router';
 import { useState } from 'react';
+import { createInviteLinkApi } from '@/api/inviteLink';
 import type { MemberViewDto, OffboardedDto } from '@/api/spaces';
+import { api as http } from '@/app/services';
 import { decodeB64 } from '@/lib/b64url';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
@@ -25,6 +27,8 @@ import {
 } from './model';
 import { type ConfirmState, SpaceDetailView } from './SpaceDetailView';
 import { MemberNotVerified } from './verify';
+
+const inviteLinks = createInviteLinkApi(http);
 
 /** A member whose keys weren't sealed to gets words of their own; everything else the account screens'. */
 function describeSpaceError(error: unknown): Described {
@@ -140,6 +144,8 @@ export default function SpaceDetail() {
             return outcome !== undefined;
           }),
         restore: (user) => void change(() => api.restore(spaceId, user)),
+        // The link of an invitation to a Bitwarden organization; the server refuses any other space.
+        inviteLink: async (user) => (await inviteLinks.get(spaceId, user)).link,
         remove: (user) =>
           change(() => api.remove(spaceId, user)).then((outcome) => {
             if (outcome) setOffboarded({ name: nameOf(user), outcome });
