@@ -229,6 +229,20 @@ pub fn ip_key(ip: IpAddr) -> String {
     }
 }
 
+/// Every value of the header `name`, in the order the request carried them, joined with commas
+/// as HTTP says a repeated header may be. A proxy that appends to a forwarded header (HAProxy's
+/// `option forwardfor`) adds its own line instead of extending the client's, and the proxy's line
+/// is last, so a reader that looks at the first line only reads what the client wrote. `None`
+/// when the header is absent or no line is text.
+pub fn joined_header(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let values: Vec<&str> = headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    (!values.is_empty()).then(|| values.join(","))
+}
+
 /// The real client address: the peer's, or, when the peer is a trusted proxy and the configured
 /// header names the client, the right-most address in that header that isn't itself a trusted
 /// proxy (`KEMLOCK_TRUSTED_PROXIES`, `IP_HEADER`). Every address is canonicalised first, so an
@@ -476,6 +490,32 @@ mod tests {
         assert_eq!(client_ip(outsider, Some(header), &[proxy]), outsider);
         assert_eq!(client_ip(proxy, None, &[proxy]), proxy);
         assert_eq!(client_ip(proxy, Some("garbage"), &[proxy]), proxy);
+    }
+
+    #[test]
+    fn every_line_of_a_repeated_header_is_read_in_order() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(joined_header(&headers, "x-forwarded-for"), None);
+        headers.append("x-forwarded-for", "1.2.3.4".parse().expect("value"));
+        headers.append("x-forwarded-for", "198.51.100.4".parse().expect("value"));
+        assert_eq!(
+            joined_header(&headers, "x-forwarded-for").as_deref(),
+            Some("1.2.3.4,198.51.100.4")
+        );
+        // HAProxy's `option forwardfor` adds its own line after the client's: the client's own
+        // line must not decide the address.
+        let proxy: IpAddr = "10.0.0.1".parse().expect("ip");
+        let real: IpAddr = "198.51.100.4".parse().expect("ip");
+        let joined = joined_header(&headers, "x-forwarded-for");
+        assert_eq!(client_ip(proxy, joined.as_deref(), &[proxy]), real);
+        let first_only = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(
+            client_ip(proxy, first_only, &[proxy]),
+            "1.2.3.4".parse::<IpAddr>().expect("ip"),
+            "the first line alone is only the client's own claim"
+        );
     }
 
     #[test]

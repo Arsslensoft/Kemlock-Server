@@ -3,7 +3,7 @@
 
 use crate::dpop::DpopError;
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{client_ip, ip_key};
+use crate::ratelimit::{client_ip, ip_key, joined_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, Bytes};
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
@@ -60,13 +60,13 @@ fn peer_and_header<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
     api: &Api<S, P, K>,
 ) -> IpAddr {
     let peer = peer_address(parts);
+    // Every line of the header, not the first: a proxy may append its own line after the client's.
     let header = api
         .config
         .ip_header
         .as_deref()
-        .and_then(|name| parts.headers.get(name))
-        .and_then(|value| value.to_str().ok());
-    client_ip(peer, header, &api.config.trusted_proxies)
+        .and_then(|name| joined_header(&parts.headers, name));
+    client_ip(peer, header.as_deref(), &api.config.trusted_proxies)
 }
 
 /// Headers that say a proxy forwarded the request.

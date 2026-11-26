@@ -21,6 +21,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use kemlock_app::notices::BoxFuture;
+use kemlock_app::privacy::ClientAddr;
 use kemlock_domain::{DeviceId, Owner, UserId};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -471,13 +472,19 @@ struct HubState {
     auth: Arc<dyn HubAuth>,
 }
 
-/// The connecting address: the configured proxy header, else the socket's peer.
+/// The connecting address: the one the server's request layer settled (the peer, or the address a
+/// trusted proxy forwarded), else the configured proxy header, else the socket's peer. The header
+/// is read only when no layer settled an address, because on its own it is whatever the client
+/// wrote: only the layer knows which peers are trusted proxies.
 struct ClientIp(IpAddr);
 
 impl FromRequestParts<HubState> for ClientIp {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, state: &HubState) -> Result<Self, Infallible> {
+        if let Some(settled) = parts.extensions.get::<ClientAddr>() {
+            return Ok(ClientIp(settled.0));
+        }
         let from_header = state
             .hub
             .inner
