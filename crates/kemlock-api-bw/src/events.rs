@@ -169,7 +169,8 @@ pub(crate) mod kind {
     pub(crate) const ORGANIZATION_UPDATED: i32 = 1600;
     pub(crate) const POLICY_UPDATED: i32 = 1700;
     /// `EventType::UserRecovered2fa`: the recovery code switched the account's two-step login off.
-    pub(crate) const USER_RECOVERED_2FA: i32 = 1005;
+    /// Vaultwarden's 1005 is `UserFailedLogIn`, which is what a client shows for that number.
+    pub(crate) const USER_RECOVERED_2FA: i32 = 1004;
 }
 
 /// Vaultwarden's `log_event`: an organization event made by the server, logged only when
@@ -542,6 +543,13 @@ mod tests {
             serde_json::from_str(&target_json(1602, Some("x"), Some(org), None, ip)).expect("json");
         assert!(org_event.get("cipherId").is_none());
         assert_eq!(org_event["organizationId"], org.to_string());
+    }
+
+    #[test]
+    fn a_two_step_recovery_is_vaultwardens_user_recovered_2fa() {
+        // `EventType::UserRecovered2fa` in Vaultwarden's src/db/models/event.rs; 1005 next to it is
+        // `UserFailedLogIn`, which a client would show instead.
+        assert_eq!(kind::USER_RECOVERED_2FA, 1004);
     }
 
     #[test]

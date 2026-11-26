@@ -266,7 +266,7 @@ export interface AdminEvent {
   actor: string | null;
   actorEmail: string | null;
   device: string | null;
-  /** A code such as `signin.ok`; the console words it. Unknown codes are shown as is. */
+  /** A code such as `item.put`; the console words it (features/admin/eventText.ts). */
   action: string;
   /** An item id, an address or a space: what the action was about. Never an item's contents. */
   target: string | null;
