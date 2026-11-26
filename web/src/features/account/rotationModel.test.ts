@@ -5,10 +5,12 @@ import type { ItemDto } from '@/api/types';
 import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import { makeBundleB64 } from '@/test/bundles';
 import { crypto as fakeCrypto, fakeCalls, resetFakeCrypto } from '@/test/fake-crypto';
+import { PasskeyError } from '@/lib/passkey';
 import {
   RotationBlockedError,
   RotationPasswordError,
   type RotationDeps,
+  readdPasskeyUnlock,
   rotateKeys,
 } from './rotationModel';
 
@@ -290,3 +292,34 @@ function decodeWrapped(value: string | undefined): Uint8Array {
   const bytes = value ? atob(value.replace(/-/g, '+').replace(/_/g, '/')) : '';
   return Uint8Array.from(bytes, (c) => c.charCodeAt(0));
 }
+
+describe('readdPasskeyUnlock', () => {
+  const CREDENTIAL = encodeB64(utf8('credential'));
+
+  beforeEach(async () => {
+    resetFakeCrypto();
+    await fakeCrypto.unlock(USER, utf8(`wrapped:${USER}`), utf8('mk'), utf8('ek'));
+  });
+
+  it('touches only that passkey and keeps the new root key wrapped under its PRF output', async () => {
+    const putPrf = vi.fn(async () => undefined);
+    const assert = vi.fn(async () => ({ credentialId: utf8('credential'), prfOutput: utf8('prf-output') }));
+    await readdPasskeyUnlock({ api: { putPrf }, crypto: fakeCrypto, assert, randomBytes: (n) => new Uint8Array(n) }, { id: 'p1', credentialId: CREDENTIAL });
+    expect(assert).toHaveBeenCalledWith(
+      expect.objectContaining({ allowCredentials: [{ type: 'public-key', id: CREDENTIAL }] }),
+    );
+    expect(putPrf).toHaveBeenCalledWith('p1', { wrappedKey: expect.any(String), keyVersion: 1 });
+  });
+
+  it('refuses another passkey, or one that gives no PRF output', async () => {
+    const putPrf = vi.fn(async () => undefined);
+    const other = vi.fn(async () => ({ credentialId: utf8('someone-else'), prfOutput: utf8('prf') }));
+    const none = vi.fn(async () => ({ credentialId: utf8('credential') }));
+    for (const assert of [other, none]) {
+      await expect(
+        readdPasskeyUnlock({ api: { putPrf }, crypto: fakeCrypto, assert }, { id: 'p1', credentialId: CREDENTIAL }),
+      ).rejects.toBeInstanceOf(PasskeyError);
+    }
+    expect(putPrf).not.toHaveBeenCalled();
+  });
+});

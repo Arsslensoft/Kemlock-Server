@@ -2,11 +2,13 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { tokensFromResponse } from '@/api/client';
 import { ApiError, isApiError } from '@/api/errors';
+import { createPasskeysApi } from '@/api/passkeys';
 import { createRotationApi } from '@/api/rotation';
 import { createSendsApi } from '@/api/sends';
 import { api, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { vaultCrypto } from '@/crypto-port';
+import { assertWithPasskeyAndPrf } from '@/lib/passkey';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { manifestKeeper } from '@/manifest/instance';
 import { describeProfileError } from './profileErrors';
@@ -14,6 +16,7 @@ import type { RotateDone, RotateImpact, RotateKeysProps } from './RotateKeysCard
 import {
   type RotationDeps,
   type RotationProgress,
+  readdPasskeyUnlock,
   RotationBlockedError,
   RotationPasswordError,
   rotateKeys,
@@ -24,6 +27,7 @@ import type { Described } from './errors';
 
 const rotationApi = createRotationApi(api);
 const sendsApi = createSendsApi(api);
+const passkeysApi = createPasskeysApi(api);
 const planKey = ['security', 'rotation-plan'] as const;
 
 /** What the person is told of a failure of the rotation: its own cases first. */
@@ -73,6 +77,8 @@ export function useRotateKeys(email: string, twoStep: boolean) {
   const keyProof = useKeyProof(run);
   const [progress, setProgress] = useState<RotationProgress | null>(null);
   const [done, setDone] = useState<RotateDone | null>(null);
+  /** The passkeys whose unlock the last rotation removed, with the credential to touch for each. */
+  const [removed, setRemoved] = useState<Array<{ id: string; credentialId: string }>>([]);
 
   const planError = plan.error instanceof ApiError ? plan.error : undefined;
   const blocked: RotateKeysProps['blocked'] =
@@ -103,6 +109,17 @@ export function useRotateKeys(email: string, twoStep: boolean) {
           .then(() => true)
           .catch(() => false),
       dismiss: () => setDone(null),
+      readdPasskey: async (id) => {
+        const target = removed.find((passkey) => passkey.id === id);
+        if (!target) return false;
+        const kept = await run(() =>
+          readdPasskeyUnlock({ api: passkeysApi, crypto: vaultCrypto, assert: assertWithPasskeyAndPrf }, target).then(
+            () => true,
+          ),
+        );
+        if (kept) await queryClient.invalidateQueries({ queryKey: ['security', 'passkeys'] });
+        return kept === true;
+      },
       start: async ({ password, makeKit, emergencyKeep, proof }) => {
         const { userId, deviceId } = state;
         if (!userId || !deviceId) return false;
@@ -145,7 +162,22 @@ export function useRotateKeys(email: string, twoStep: boolean) {
         } catch {
           // The keeper shows a failed publish itself, and tries again after the next write.
         }
-        setDone({ fingerprint: result.fingerprint, kit: result.kit, removed: result.removed });
+        setRemoved(result.removed.passkeys);
+        const names = new Map<string, string>();
+        try {
+          for (const passkey of await passkeysApi.list()) names.set(passkey.id, passkey.name);
+        } catch {
+          // Without the names the list says "Passkey".
+        }
+        setDone({
+          fingerprint: result.fingerprint,
+          kit: result.kit,
+          removed: result.removed,
+          passkeys: result.removed.passkeys.map((passkey) => ({
+            id: passkey.id,
+            name: names.get(passkey.id) ?? 'Passkey',
+          })),
+        });
         await queryClient.invalidateQueries();
         return true;
       },

@@ -24,11 +24,13 @@ import { ApiError } from '@/api/errors';
 import type { Api } from '@/api/client';
 import type { Proof } from '@/api/twoStep';
 import type { InstallRequest, RotationApi, RotationPlanDto, Rotated } from '@/api/rotation';
+import type { PasskeysApi } from '@/api/passkeys';
 import type { SendsApi } from '@/api/sends';
 import type { ItemDto } from '@/api/types';
 import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { CredentialsError } from '@/lib/errors';
+import { PasskeyError } from '@/lib/passkey';
 import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 /** The page can't rotate this account. */
@@ -412,5 +414,40 @@ export async function rotateKeys(
       await deps.crypto.rotationAbort().catch(() => undefined);
       await deps.api.abandon().catch(() => undefined);
     }
+  }
+}
+
+export interface PasskeyUnlockDeps {
+  api: Pick<PasskeysApi, 'putPrf'>;
+  crypto: Pick<CryptoPort, 'prfWrapRoot'>;
+  /** Asks the authenticator for its PRF output (`assertWithPasskeyAndPrf`). */
+  assert: (options: Record<string, unknown>) => Promise<{ credentialId: Uint8Array; prfOutput?: Uint8Array }>;
+  randomBytes?: (length: number) => Uint8Array;
+}
+
+/**
+ * Adds a passkey's unlock back after a rotation removed it: the person touches that passkey, it
+ * answers with its PRF output, the worker wraps the new root key under it and the server keeps the
+ * wrap. Throws a `PasskeyError` when the authenticator gives no PRF output or is another passkey.
+ */
+export async function readdPasskeyUnlock(
+  deps: PasskeyUnlockDeps,
+  passkey: { id: string; credentialId: string },
+): Promise<void> {
+  const random = deps.randomBytes ?? ((n: number) => globalThis.crypto.getRandomValues(new Uint8Array(n)));
+  const answer = await deps.assert({
+    challenge: encodeB64(random(32)),
+    allowCredentials: [{ type: 'public-key', id: passkey.credentialId }],
+    userVerification: 'preferred',
+    timeout: 60_000,
+  });
+  const asked = decodeB64(passkey.credentialId);
+  const same = answer.credentialId.length === asked.length && answer.credentialId.every((byte, i) => byte === asked[i]);
+  if (!answer.prfOutput || !same) throw new PasskeyError('unavailable');
+  try {
+    const wrap = await deps.crypto.prfWrapRoot(answer.prfOutput, answer.credentialId);
+    await deps.api.putPrf(passkey.id, { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion });
+  } finally {
+    answer.prfOutput.fill(0);
   }
 }

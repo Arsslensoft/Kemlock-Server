@@ -35,6 +35,8 @@ export interface RotateDone {
   fingerprint: string;
   kit: { kitId: string; pieces: string[] } | null;
   removed: { passkeys: Array<{ id: string; credentialId: string }>; emergency: number; recovery: number };
+  /** The passkeys whose unlock was removed, to add back one by one. */
+  passkeys: Array<{ id: string; name: string }>;
 }
 
 export interface RotateKeysProps {
@@ -57,6 +59,8 @@ export interface RotateKeysProps {
     }) => Promise<boolean>;
     /** Mails the one-time code that proves the owner. */
     askProof: () => Promise<boolean>;
+    /** Touches the passkey and keeps its unlock again; true when it was kept. */
+    readdPasskey: (id: string) => Promise<boolean>;
     dismiss: () => void;
   };
 }
@@ -69,6 +73,7 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
   const [makeKit, setMakeKit] = useState(true);
   const [proof, setProof] = useState<Proof>('');
   const [compared, setCompared] = useState<Set<string>>(new Set());
+  const [readded, setReadded] = useState<Set<string>>(new Set());
 
   async function submit() {
     const emergencyKeep: Record<string, string> = {};
@@ -192,6 +197,30 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
               })}
             </Notice>
           ) : null}
+          {done.passkeys.map((passkey) => (
+            <div className="row" key={passkey.id} data-testid="readd-passkey">
+              <div className="grow">
+                <div>{passkey.name}</div>
+                <div className="hint">{t('security.rotate.readd.hint')}</div>
+              </div>
+              {readded.has(passkey.id) ? (
+                <span className="tag ok">{t('security.passkeys.opens')}</span>
+              ) : (
+                <Button
+                  size="small"
+                  isDisabled={busy}
+                  aria-label={t('security.rotate.readd', { name: passkey.name })}
+                  onPress={() =>
+                    void actions.readdPasskey(passkey.id).then((kept) => {
+                      if (kept) setReadded((held) => new Set(held).add(passkey.id));
+                    })
+                  }
+                >
+                  {t('security.rotate.readd.button')}
+                </Button>
+              )}
+            </div>
+          ))}
           {done.kit ? (
             <>
               <Notice tone="warn">{t('security.kit.once')}</Notice>

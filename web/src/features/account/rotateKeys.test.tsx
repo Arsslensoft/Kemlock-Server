@@ -17,6 +17,7 @@ function card(over: Partial<RotateKeysProps> = {}) {
     actions: {
       start: vi.fn(async () => true),
       askProof: vi.fn(async () => true),
+      readdPasskey: vi.fn(async () => true),
       dismiss: vi.fn(),
     },
     ...over,
@@ -49,7 +50,12 @@ describe('RotateKeysCard', () => {
 
   it('keeps the form open when the rotation failed, so the password can be fixed', async () => {
     const props = card({
-      actions: { start: vi.fn(async () => false), askProof: vi.fn(async () => true), dismiss: vi.fn() },
+      actions: {
+        start: vi.fn(async () => false),
+        askProof: vi.fn(async () => true),
+        readdPasskey: vi.fn(async () => true),
+        dismiss: vi.fn(),
+      },
     });
     await userEvent.click(screen.getByRole('button', { name: 'Rotate keys' }));
     await userEvent.type(screen.getByLabelText('Master password'), 'wrong');
@@ -102,12 +108,16 @@ describe('RotateKeysCard', () => {
         fingerprint: '11111 22222',
         kit: { kitId: 'NEWKIT22', pieces: PIECES },
         removed: { passkeys: [{ id: 'p1', credentialId: 'Y3JlZA' }], emergency: 0, recovery: 0 },
+        passkeys: [{ id: 'p1', name: 'Work laptop' }],
       },
     });
     expect(screen.getByTestId('rotated')).toBeTruthy();
     expect(screen.getByText(/11111 22222/)).toBeTruthy();
     expect(screen.getByText(/1 passkey wrap/)).toBeTruthy();
     expect(screen.getByTestId('rotated-kit-piece-2')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Add the unlock of Work laptop back' }));
+    expect(props.actions.readdPasskey).toHaveBeenCalledWith('p1');
+    expect(await screen.findByText('Opens the vault')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'I have saved it' }));
     expect(props.actions.dismiss).toHaveBeenCalled();
   });

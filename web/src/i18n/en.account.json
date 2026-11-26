@@ -408,6 +408,9 @@
   "security.rotate.phase.items": "Encrypting items again: {done} of {total}",
   "security.rotate.phase.sends": "Encrypting Sends again: {done} of {total}",
   "security.rotate.phase.install": "Installing the new keys",
+  "security.rotate.readd": "Add the unlock of {name} back",
+  "security.rotate.readd.hint": "Rotation removed this passkey's unlock of the vault. Touch it to add it back.",
+  "security.rotate.readd.button": "Add unlock",
   "security.rotate.phase.done": "Done",
   "security.rotate.error.incomplete": "Your account kept changing while the keys were being rotated, so nothing was changed. Try again when your other devices are quiet.",
   "security.rotate.error.items": "An item of your vault can't be rotated here. Nothing was changed."
