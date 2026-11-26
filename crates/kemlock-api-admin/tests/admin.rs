@@ -24,7 +24,8 @@ use kemlock_app::ports::{TwoFactorMethod, TwoFactorRepo};
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_domain::spaces::{CustomPermissions, Member, MemberState, Space, SpaceRole};
 use kemlock_domain::{SpaceId, UserId};
-use rig::{Rig, slug};
+use kemlock_app::bitwarden::{Asker, InviteLinkError};
+use rig::{FakeInviteLinks, Rig, slug};
 use serde_json::{Value, json};
 use time::Duration;
 use uuid::Uuid;
@@ -70,6 +71,14 @@ fn writes(target: &str) -> Vec<(&'static str, String, Option<Value>)> {
             "PUT",
             format!("/admin/v1/spaces/{}/owner", Uuid::new_v4()),
             Some(json!({"newOwner": Uuid::new_v4()})),
+        ),
+        (
+            "GET",
+            format!(
+                "/admin/v1/spaces/{}/members/{target}/invite-link",
+                Uuid::new_v4()
+            ),
+            None,
         ),
         ("GET", "/admin/v1/events.csv".into(), None),
         (
@@ -2281,6 +2290,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             operations += 1;
             let uri = path
                 .replace("{id}", &Uuid::new_v4().to_string())
+                .replace("{user}", &Uuid::new_v4().to_string())
                 .replace("{domain}", "example.org");
             let reply = client
                 .send(&method.to_uppercase(), &uri, Req::default())
@@ -2293,7 +2303,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             }
         }
     }
-    assert_eq!(operations, 46, "every operation is documented once");
+    assert_eq!(operations, 47, "every operation is documented once");
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"
@@ -2311,7 +2321,9 @@ async fn every_write_in_the_document_asks_for_a_step_up_token() {
                 .map(|p| p.iter().filter_map(|p| p["name"].as_str()).collect())
                 .unwrap_or_default();
             let has_step_up = names.contains(&"Step-Up-Token");
-            let is_write = method != "get" || path.ends_with(".csv");
+            // The invitation link is a read that hands out a secret, so it asks like a write.
+            let is_write =
+                method != "get" || path.ends_with(".csv") || path.ends_with("/invite-link");
             let is_step_up_route = path.starts_with("/admin/v1/step-up/");
             if is_write && !is_step_up_route {
                 writes_seen += 1;
@@ -2321,7 +2333,7 @@ async fn every_write_in_the_document_asks_for_a_step_up_token() {
             }
         }
     }
-    assert!(writes_seen >= 18, "{writes_seen}");
+    assert!(writes_seen >= 19, "{writes_seen}");
 }
 
 #[tokio::test]
@@ -3025,4 +3037,110 @@ async fn the_document_describes_the_custom_fields_routes() {
             "{schema} is in the components"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The accept link of a Bitwarden invitation
+
+fn invite_link_uri(space: SpaceId, member: UserId) -> String {
+    format!("/admin/v1/spaces/{space}/members/{member}/invite-link")
+}
+
+#[tokio::test]
+async fn an_admin_with_a_step_up_copies_an_invitation_link_and_it_is_logged() {
+    let links = FakeInviteLinks::working();
+    let rig = Rig::new().with_invite_links(links.shared());
+    let root = rig.admin(ADMIN).await;
+    let invited = rig.user("invited@kemlock.test").await;
+    let space = SpaceId::random();
+    let uri = invite_link_uri(space, invited.id);
+
+    // The link accepts for the account, so a read without a step-up is refused.
+    let bare = root.get(&uri).await;
+    assert_eq!(bare.status, StatusCode::FORBIDDEN);
+    assert_eq!(slug(&bare), "step-up-required");
+    assert!(links.asked().is_empty());
+    assert!(rig.admin.actions().is_empty());
+
+    let token = root.step_up(&rig).await;
+    let reply = root.write("GET", &uri, None, &token).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    assert_eq!(
+        reply.json()["link"],
+        "https://vault.test/#/accept-organization/?token=secret"
+    );
+    assert_eq!(reply.json()["expiresAt"], 1_800_000_000);
+    assert_eq!(reply.header("cache-control"), Some("no-store"));
+    assert_eq!(links.asked(), [(space, invited.id, Asker::Server)]);
+    assert_eq!(rig.admin.actions(), ["admin.space.invite_link"]);
+    let events = rig.admin.events();
+    assert_eq!(
+        events[0].target.as_deref(),
+        Some(format!("{space}/{}", invited.id).as_str())
+    );
+}
+
+#[tokio::test]
+async fn the_invitation_link_is_refused_for_what_isnt_an_invitation() {
+    let space = SpaceId::random();
+    let member = UserId::random();
+    let uri = invite_link_uri(space, member);
+    for (answer, status, kind) in [
+        (
+            InviteLinkError::NotOrganization,
+            StatusCode::CONFLICT,
+            "wrong-state",
+        ),
+        (
+            InviteLinkError::NotInvited,
+            StatusCode::CONFLICT,
+            "wrong-state",
+        ),
+        (InviteLinkError::NotFound, StatusCode::NOT_FOUND, ""),
+    ] {
+        let links = FakeInviteLinks::answering(Err(answer.clone()));
+        let rig = Rig::new().with_invite_links(links.shared());
+        let root = rig.admin(ADMIN).await;
+        let token = root.step_up(&rig).await;
+        let reply = root.write("GET", &uri, None, &token).await;
+        assert_eq!(reply.status, status, "{answer:?}: {:?}", reply.json());
+        if !kind.is_empty() {
+            assert_eq!(slug(&reply), kind, "{answer:?}");
+        }
+        assert!(
+            rig.admin.actions().is_empty(),
+            "a refused read isn't logged"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_server_without_the_bitwarden_api_has_no_invitation_link_to_give() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let reply = root
+        .write(
+            "GET",
+            &invite_link_uri(SpaceId::random(), UserId::random()),
+            None,
+            &token,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(slug(&reply), "not-configured");
+    assert!(rig.admin.actions().is_empty());
+}
+
+#[tokio::test]
+async fn a_non_admin_is_refused_the_invitation_link() {
+    let links = FakeInviteLinks::working();
+    let rig = Rig::new().with_invite_links(links.shared());
+    let _root = rig.admin(ADMIN).await;
+    let sam = rig.user("sam@kemlock.test").await;
+    let uri = invite_link_uri(SpaceId::random(), sam.id);
+    let reply = sam.send("GET", &uri, None, Some("made-up")).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(slug(&reply), "forbidden");
+    assert!(links.asked().is_empty());
 }
