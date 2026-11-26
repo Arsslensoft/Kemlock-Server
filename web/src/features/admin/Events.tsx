@@ -11,7 +11,7 @@ import { useReauth } from './reauth';
 import { ErrorNotice, Loading, PageHead, SelectBox } from './ui';
 
 export type When = '24h' | '7d' | '30d';
-export type Kind = 'all' | 'item' | 'space' | 'send' | 'device' | 'account' | 'admin';
+export type Kind = 'all' | 'auth' | 'item' | 'space' | 'send' | 'device' | 'account' | 'admin';
 
 export interface EventFilters {
   kind: Kind;
@@ -39,6 +39,7 @@ export function queryFor(filters: EventFilters, nowSeconds: number): EventsQuery
 
 const KINDS: Array<[Kind, MessageId]> = [
   ['all', 'admin.events.kind.all'],
+  ['auth', 'admin.events.kind.signIn'],
   ['item', 'admin.events.kind.item'],
   ['space', 'admin.events.kind.space'],
   ['send', 'admin.events.kind.send'],
