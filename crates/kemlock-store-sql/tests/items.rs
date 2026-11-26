@@ -554,6 +554,23 @@ async fn clock(store: &SqlStore) {
     assert!(batch[2].change.hlc > batch[1].change.hlc);
 }
 
+/// A draft made far in the future (a wrong or hostile client clock) doesn't pull the HLC with it.
+async fn clock_ignores_a_far_future_draft(store: &SqlStore) {
+    let owner = user_owner();
+    let mut ahead = draft(ItemId::random(), owner, None, 1);
+    ahead.updated_at = datetime!(2100-01-01 00:00:00 UTC);
+    let written = put(store, ahead).await;
+    let now_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000).expect("a time");
+    assert!(
+        written.change.hlc.millis() <= now_ms + 61_000,
+        "the clock stayed near the server's, at {}",
+        written.change.hlc.millis()
+    );
+    // And a later write still orders after it.
+    let next = put(store, draft(ItemId::random(), owner, None, 1)).await;
+    assert!(next.change.hlc > written.change.hlc);
+}
+
 /// A cursor per owner: an owner the device has just joined is read from empty, whatever sequence
 /// numbers of this server the device has seen of other owners.
 async fn owner_cursors(store: &SqlStore) {
@@ -652,6 +669,7 @@ async fn run_all(store: &SqlStore) {
     owner_cursors(store).await;
     tombstones(store).await;
     clock(store).await;
+    clock_ignores_a_far_future_draft(store).await;
 }
 
 #[tokio::test]

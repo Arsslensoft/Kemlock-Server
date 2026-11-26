@@ -34,6 +34,19 @@ impl std::fmt::Debug for Overlay {
     }
 }
 
+/// What the server says a setting is, with the environment, the config file and the saved values
+/// layered: `None` for a setting it doesn't follow.
+type SettingOverlay = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+#[derive(Default)]
+struct SettingLookup(RwLock<Option<SettingOverlay>>);
+
+impl std::fmt::Debug for SettingLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SettingLookup").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     /// Every write goes through here; on SQLite this pool holds a single connection.
@@ -43,6 +56,8 @@ struct Inner {
     server_id: ServerId,
     /// Applied over the saved retention settings each time they are read.
     retention_overlay: Overlay,
+    /// The layered value of the few settings the store itself reads.
+    setting_overlay: SettingLookup,
     /// The verified state of the space chains in use, each under the link of its head.
     chain_states: crate::repo::ChainStates,
     /// Seals the secrets the store keeps that the server must show again (a personal API key),
@@ -73,6 +88,7 @@ impl SqlStore {
         let Pools { writer, reader } = connect::open(url, &options).await?;
         migrate::run(&writer).await?;
         let server_id = migrate::load_or_create_server_id(&writer).await?;
+        migrate::repair_future_clock(&writer, time::OffsetDateTime::now_utc()).await?;
         tracing::info!(%server_id, "database ready");
         Ok(SqlStore {
             inner: Arc::new(Inner {
@@ -80,6 +96,7 @@ impl SqlStore {
                 reader,
                 server_id,
                 retention_overlay: Overlay::default(),
+                setting_overlay: SettingLookup::default(),
                 chain_states: crate::repo::ChainStates::default(),
                 secret_seal: OnceLock::new(),
                 quota_gate: tokio::sync::Mutex::new(()),
@@ -145,6 +162,36 @@ impl SqlStore {
         if let Some(overlay) = overlay {
             overlay(retention);
         }
+    }
+
+    /// Sets how the settings the store reads itself (`federation_promotion`,
+    /// `space_chain_external_changes`) are looked up: the server gives it the environment, the
+    /// config file and the saved settings, layered, so a value in `kemlock.toml` counts. Without
+    /// it the store reads the environment variable and then the saved value. Replaces an earlier
+    /// lookup.
+    pub fn set_setting_overlay(
+        &self,
+        lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) {
+        *self
+            .inner
+            .setting_overlay
+            .0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(lookup));
+    }
+
+    /// The layered value of the setting `key` (its name, as the console shows it), if the server
+    /// set a lookup and follows it.
+    pub(crate) fn overlaid_setting(&self, key: &str) -> Option<String> {
+        let lookup = self
+            .inner
+            .setting_overlay
+            .0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        lookup.and_then(|lookup| lookup(key))
     }
 
     /// Applies pending migrations, if any. Idempotent; `connect` already calls it.

@@ -650,8 +650,8 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         kdf: KdfParams::new_account([1; 16]),
         opaque_record: Some(vec![7; 96]),
         wrapped_root_key: vec![1; 80],
-        public_bundle: vec![2; 200],
-        bundle_signature: vec![3; 100],
+        public_bundle: signed_bundle().0,
+        bundle_signature: signed_bundle().1,
         sealed_private_keys: vec![4; 120],
         key_version: 1,
         security_stamp: Uuid::new_v4(),
@@ -863,12 +863,20 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("the vault");
     assert_eq!((after.home, after.epoch), (b.id, 2));
     assert_eq!(after.replicas, vec![c.id, a.id], "the old home goes last");
-    // C takes the promotion when B visits it.
+    // C holds the promotion for its own admin, as every replica does by default (an admin can
+    // set `federation_promotion` to `auto`); it applies it when the admin accepts.
     b.visit(&c).await;
     let at_c = VaultRepo::get_vault(c.store(), owner)
         .await
         .expect("a read")
         .expect("the vault");
+    assert_eq!((at_c.home, at_c.epoch), (a.id, 1), "C waits for its admin");
+    assert!(!at_c.held_demotion.is_empty(), "C holds the promotion");
+    let at_c = c
+        .facade
+        .accept_demotion(owner)
+        .await
+        .expect("C's admin accepts");
     assert_eq!((at_c.home, at_c.epoch), (b.id, 2));
 
     // The old home, cut off and unaware, makes a home-only write under epoch 1.
@@ -901,7 +909,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("a read")
         .expect("the vault");
     assert_eq!((at_a.home, at_a.epoch), (a.id, 1), "A waits for its admin");
-    assert!(at_a.held_demotion.is_some(), "A holds the promotion");
+    assert!(!at_a.held_demotion.is_empty(), "A holds the promotion");
     // A's admin accepts it (the HTTP route asks for a fresh check).
     let at_a = a
         .facade
@@ -909,7 +917,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .await
         .expect("A's admin accepts");
     assert_eq!((at_a.home, at_a.epoch), (b.id, 2), "A took the promotion");
-    assert!(at_a.held_demotion.is_none());
+    assert!(at_a.held_demotion.is_empty());
     assert_eq!(at_a.replicas, vec![c.id, a.id]);
     // Second visit: B pulls what A wrote while it was cut off. The home-only write is of an older
     // epoch, so it is kept for the admins and applied nowhere.
@@ -968,6 +976,22 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
 
 // ---- a space: roles, keys and policies are home-only ----
 
+/// A public-key bundle and its signature by its own key: a federated copy of an account is kept
+/// only when the bundle verifies.
+fn signed_bundle() -> (Vec<u8>, Vec<u8>) {
+    use kemlock_crypto::bundle::Bundle;
+    use kemlock_crypto::{kx1, sig1};
+    let key = sig1::SigningKey::from_bytes(&[5; 64]);
+    let bundle = Bundle {
+        account_id: [1; 16],
+        key_version: 1,
+        kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+        sig1_public: key.public_key().expect("a public key"),
+    };
+    let signature = bundle.sign(&key).expect("a signature");
+    (bundle.to_bytes(), signature)
+}
+
 fn new_user(email: &str) -> User {
     User {
         id: UserId::random(),
@@ -978,8 +1002,8 @@ fn new_user(email: &str) -> User {
         kdf: KdfParams::new_account([1; 16]),
         opaque_record: Some(vec![7; 96]),
         wrapped_root_key: vec![1; 80],
-        public_bundle: vec![2; 200],
-        bundle_signature: vec![3; 100],
+        public_bundle: signed_bundle().0,
+        bundle_signature: signed_bundle().1,
         sealed_private_keys: vec![4; 120],
         key_version: 1,
         security_stamp: Uuid::new_v4(),

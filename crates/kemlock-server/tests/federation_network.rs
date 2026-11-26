@@ -19,7 +19,7 @@ use kemlock_app::ports::{ItemStore, UserRepo};
 use kemlock_domain::{
     AccountMode, Email, ItemId, KdfParams, Owner, Role, ServerId, User, UserId, VersionVector,
 };
-use kemlock_federation::extra::Acknowledgement;
+use kemlock_federation::extra::{Acknowledgement, FedAdminRepo};
 use kemlock_federation::home::Policy;
 use kemlock_federation::hub::Confirmation;
 use kemlock_federation::job::RunOutcome;
@@ -168,6 +168,22 @@ fn ack() -> Acknowledgement {
     }
 }
 
+/// A public-key bundle and its signature by its own key: a federated copy of an account is kept
+/// only when the bundle verifies.
+fn signed_bundle() -> (Vec<u8>, Vec<u8>) {
+    use kemlock_crypto::bundle::Bundle;
+    use kemlock_crypto::{kx1, sig1};
+    let key = sig1::SigningKey::from_bytes(&[5; 64]);
+    let bundle = Bundle {
+        account_id: [1; 16],
+        key_version: 1,
+        kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+        sig1_public: key.public_key().expect("a public key"),
+    };
+    let signature = bundle.sign(&key).expect("a signature");
+    (bundle.to_bytes(), signature)
+}
+
 fn new_user(email: &str) -> User {
     User {
         id: UserId::random(),
@@ -178,8 +194,8 @@ fn new_user(email: &str) -> User {
         kdf: KdfParams::new_account([1; 16]),
         opaque_record: Some(vec![7; 96]),
         wrapped_root_key: vec![1; 80],
-        public_bundle: vec![2; 200],
-        bundle_signature: vec![3; 100],
+        public_bundle: signed_bundle().0,
+        bundle_signature: signed_bundle().1,
         sealed_private_keys: vec![4; 120],
         key_version: 1,
         security_stamp: Uuid::new_v4(),
@@ -196,7 +212,8 @@ async fn two_servers_on_loopback_pair_over_http_and_replicate_an_item_over_a_web
 
     // The descriptor is served over HTTP and verifies against the key the server holds.
     let http = Http::new().expect("an HTTP client");
-    let descriptor = http.descriptor(&a.domain).await.expect("A's descriptor");
+    let descriptor = http
+        .descriptor(&a.domain, kemlock_federation::addr::Trust::Admin).await.expect("A's descriptor");
     descriptor
         .verify(unix_now(), Some(&a.built.replica.identity().public))
         .expect("signed by A's identity key");
@@ -225,6 +242,14 @@ async fn two_servers_on_loopback_pair_over_http_and_replicate_an_item_over_a_web
             )
             .await
             .expect("the pairing is confirmed");
+    }
+    // The addresses the other server's descriptor lists are not trusted for private or `http`
+    // dialling by themselves; each admin approves them (the console's list of address changes).
+    for (node, other) in [(&a, &b), (&b, &a)] {
+        node.store()
+            .trust_addresses(other.id, &[other.domain.clone()])
+            .await
+            .expect("the admin approves the listed address");
     }
     let peers = a.facade.peers().await.expect("peers");
     assert_eq!(peers.len(), 1);

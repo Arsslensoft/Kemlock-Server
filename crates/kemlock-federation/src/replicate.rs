@@ -14,7 +14,9 @@ use crate::change::{self, ChangeRecord};
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
 use crate::eventsync::EventSync;
-use crate::extra::{BlobSync, ErasureOutbox, FedAdminRepo, MemberStore, VaultErasure};
+use crate::extra::{
+    BlobSync, ErasureOutbox, FedAdminRepo, MemberStore, PromotionMode, VaultErasure,
+};
 use crate::forget::Forgetting;
 use crate::frame::Padding;
 use crate::hashtree::{self, Tree};
@@ -84,6 +86,12 @@ impl<
 const PAGE_BYTES: usize = 1_500_000;
 /// How many items one fetch asks for.
 const FETCH_CHUNK: usize = 256;
+/// The most quarantined home records one vault keeps; a stale-epoch record past it is dropped.
+const MAX_QUARANTINED: usize = 256;
+/// The most of them one signer may hold when who was the home of the record's epoch isn't known
+/// (a missed promotion): any member of the set could sign such records, so one can't fill the
+/// quarantine and push out the others'.
+const MAX_QUARANTINED_PER_SIGNER: usize = 32;
 
 /// Sends a request to a peer and returns its response.
 pub trait Channel: Send {
@@ -135,6 +143,10 @@ pub struct ReconcileReport {
 pub struct HomeSync {
     pub applied: usize,
     pub quarantined: usize,
+    /// Records left out: an index that doesn't belong to its epoch, a stale-epoch record from a
+    /// server that wasn't the home of that epoch, one that collides with another server's record
+    /// at the same index, and ones past the quarantine cap.
+    pub refused: usize,
     /// A record came from a newer epoch than ours: a promotion was missed.
     pub behind: bool,
 }
@@ -485,17 +497,36 @@ impl<S: FedStore> Replica<S> {
                 // admin. Applied at once, any replica (or anyone holding its key) could make
                 // itself the home of every vault it holds, and then, as the home, erase this
                 // server's copy.
-                if current.home == self.server_id() {
-                    if current.held_demotion.as_deref() != Some(record.as_slice()) {
+                // Every other replica holds it too, unless the setting `federation_promotion` says
+                // `auto`: a replica that signs a promotion unasked (or whose key was stolen)
+                // would otherwise become the home of the vault here at once, and "first to
+                // arrive wins" would let it win.
+                let is_home = current.home == self.server_id();
+                if is_home || self.store.promotion_mode().await? == PromotionMode::Hold {
+                    // One promotion is held for each server that would become the home. A later
+                    // one from the same server replaces its own, never another's, so repeating an
+                    // announcement can't push the legitimate one out; one that no longer fits the
+                    // vault (an epoch already passed) is dropped.
+                    let mut held = current.held_demotion.clone();
+                    held.retain(|r| {
+                        home::peek_promotion(r).is_ok_and(|p| {
+                            p.new_home != promotion.new_home
+                                && home::apply_promotion(&current, &p).is_ok()
+                        })
+                    });
+                    held.push(record.clone());
+                    if held != current.held_demotion {
                         let held = VaultFederation {
-                            held_demotion: Some(record.clone()),
+                            held_demotion: held,
                             ..current
                         };
                         self.store.put_vault(&held).await?;
                     }
-                    return Err(FedError::Refused(
-                        "this server is the vault's home: its admin must accept the promotion",
-                    ));
+                    return Err(FedError::Refused(if is_home {
+                        "this server is the vault's home: its admin must accept the promotion"
+                    } else {
+                        "this server's admin must accept the promotion"
+                    }));
                 }
                 next.promotion = Some(record.clone());
                 self.store.put_vault(&next).await?;
@@ -613,11 +644,20 @@ impl<S: FedStore> Replica<S> {
             .await?
             .ok_or(FedError::UnknownVault)?;
         let me = self.server_id();
+        let now_ms = crate::session::unix_now().saturating_mul(1000);
         let mut counts = Counts::default();
         for envelope in envelopes {
             let record = change::open(envelope, &keys)?;
             if record.owner != vault {
                 return Err(FedError::Invalid("a record for another vault"));
+            }
+            // A time far ahead of our clock would raise it with the record. The record is left
+            // out and the rest of the batch goes on, so one bad record doesn't stop the sync; a
+            // later comparison fetches it again, once the clock has caught up.
+            if change::check_not_future(&record, now_ms).is_err() {
+                tracing::warn!(origin = %record.change.origin, "a change with a time far ahead of this server's clock was refused");
+                counts.refused += 1;
+                continue;
             }
             // A relayed change is accepted from an origin we are paired with or one in the vault's
             // set (whose key a peer vouched for), and from no other.
@@ -772,6 +812,7 @@ impl<S: FedStore> Replica<S> {
         let mut sync = HomeSync {
             applied: 0,
             quarantined: 0,
+            refused: 0,
             behind: false,
         };
         let mut after = self
@@ -812,6 +853,14 @@ impl<S: FedStore> Replica<S> {
                     return Err(FedError::Invalid("a home record for another vault"));
                 }
                 after = after.max(record.index);
+                // An index carries the epoch it was made under. A record whose index lies in
+                // another epoch's range would sit where a later home's record belongs and keep
+                // that one from being stored.
+                if home::index_epoch(record.index) != record.epoch {
+                    tracing::warn!(%peer, index = record.index, epoch = record.epoch, "a home record whose index is not of its epoch was refused");
+                    sync.refused += 1;
+                    continue;
+                }
                 let current = self
                     .store
                     .get_vault(vault)
@@ -819,12 +868,55 @@ impl<S: FedStore> Replica<S> {
                     .ok_or(FedError::UnknownVault)?;
                 let status = match home::judge(&current, &record)? {
                     Verdict::Apply => HomeStatus::Applied,
-                    Verdict::Quarantine => HomeStatus::Quarantined,
+                    Verdict::Quarantine => {
+                        // Only the server that was the home of that epoch could have made it.
+                        if current
+                            .epoch_home(record.epoch)
+                            .is_some_and(|home| home != record.signer)
+                        {
+                            tracing::warn!(%peer, epoch = record.epoch, "a stale home record from a server that was not the home of its epoch was refused");
+                            sync.refused += 1;
+                            continue;
+                        }
+                        let held = self.store.quarantined(vault).await?;
+                        if held.len() >= MAX_QUARANTINED {
+                            tracing::warn!(%peer, "the vault's quarantine is full: a stale home record was dropped");
+                            sync.refused += 1;
+                            continue;
+                        }
+                        if current.epoch_home(record.epoch).is_none()
+                            && held
+                                .iter()
+                                .filter(|r| r.record.signer == record.signer)
+                                .count()
+                                >= MAX_QUARANTINED_PER_SIGNER
+                        {
+                            tracing::warn!(%peer, "a signer holds its share of the quarantine: a stale home record was dropped");
+                            sync.refused += 1;
+                            continue;
+                        }
+                        HomeStatus::Quarantined
+                    }
                     Verdict::Behind => {
                         sync.behind = true;
                         return Ok(sync);
                     }
                 };
+                // Two servers' records at one index can't both be kept: the first stays, and the
+                // second is refused out loud instead of being dropped without a word.
+                if let Some(held) = self
+                    .store
+                    .home_records(vault, record.index - 1, 1)
+                    .await?
+                    .first()
+                    .filter(|held| held.record.index == record.index)
+                {
+                    if held.record.signer != record.signer {
+                        tracing::warn!(%peer, index = record.index, "a home record collides with another server's record at its index: refused");
+                        sync.refused += 1;
+                    }
+                    continue;
+                }
                 let stored = StoredHomeRecord {
                     signed: envelope,
                     record,
@@ -871,21 +963,74 @@ impl<S: FedStore> Replica<S> {
     /// the admin with a fresh passkey or password. The record is checked again as it was when it
     /// arrived: signed by the new home, for the next epoch, from this server as the home.
     pub async fn accept_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        self.accept_promotion_of(vault, None).await
+    }
+
+    /// [`accept_demotion`](Self::accept_demotion) for the promotion of `new_home`. `None` names it
+    /// only when exactly one waits.
+    pub async fn accept_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
         let current = self
             .store
             .get_vault(vault)
             .await?
             .ok_or(FedError::UnknownVault)?;
-        let record = current
-            .held_demotion
-            .clone()
-            .ok_or(FedError::Refused("no promotion waits for this vault"))?;
+        let record = pick_held(&current, new_home)?;
         let keys = self.directory().await?;
         let promotion = home::open_promotion(&record, &keys)?;
         let mut next = home::apply_promotion(&current, &promotion)?;
         next.promotion = Some(record);
         self.store.put_vault(&next).await?;
         Ok(next)
+    }
+
+    /// The admin refuses the promotion held for `vault`: it is dropped and nothing changes. The
+    /// server that signed it announces it again at its next run of this process, and it is held
+    /// again; the way to stop that is to unpair it, or to take it out of the vault's set.
+    pub async fn refuse_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        self.refuse_promotion_of(vault, None).await
+    }
+
+    /// [`refuse_demotion`](Self::refuse_demotion) for the promotion of `new_home`. `None` names it
+    /// only when exactly one waits.
+    pub async fn refuse_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
+        let current = self
+            .store
+            .get_vault(vault)
+            .await?
+            .ok_or(FedError::UnknownVault)?;
+        let record = pick_held(&current, new_home)?;
+        let next = VaultFederation {
+            held_demotion: current
+                .held_demotion
+                .iter()
+                .filter(|r| **r != record)
+                .cloned()
+                .collect(),
+            ..current
+        };
+        self.store.put_vault(&next).await?;
+        Ok(next)
+    }
+
+    /// The vaults that hold a promotion for this server's admin, with the promotion's fields.
+    pub async fn held_promotions(&self) -> Result<Vec<(Owner, PromotionRecord)>> {
+        let mut out = Vec::new();
+        for vault in self.store.list_vaults().await? {
+            for record in &vault.held_demotion {
+                if let Ok(promotion) = home::peek_promotion(record) {
+                    out.push((vault.owner, promotion));
+                }
+            }
+        }
+        Ok(out)
     }
 
     /// Sends a signed promotion record to a peer.
@@ -895,6 +1040,22 @@ impl<S: FedStore> Replica<S> {
             Response::Error { detail, .. } => Err(FedError::Remote(detail)),
             _ => Err(FedError::Malformed("an unexpected response to a promotion")),
         }
+    }
+}
+
+/// The held promotion `new_home` signed, or the only one held when none is named.
+fn pick_held(vault: &VaultFederation, new_home: Option<ServerId>) -> Result<Vec<u8>> {
+    let mut found = vault.held_demotion.iter().filter(|record| {
+        new_home.is_none_or(|wanted| {
+            home::peek_promotion(record).is_ok_and(|p| p.new_home == wanted)
+        })
+    });
+    match (found.next(), found.next()) {
+        (Some(record), None) => Ok(record.clone()),
+        (None, _) => Err(FedError::Refused("no promotion waits for this vault")),
+        (Some(_), Some(_)) => Err(FedError::Refused(
+            "several promotions wait for this vault: name the server",
+        )),
     }
 }
 
@@ -1057,6 +1218,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_change_from_far_in_the_future_is_left_out_and_the_rest_still_sync() {
+        let t = two().await;
+        let ahead = crate::session::unix_now() * 1000 + 3_600_000;
+        t.a.store
+            .put(draft(ItemId::random(), t.vault, None, 1, 1_000))
+            .expect("put");
+        t.a.store
+            .put(draft(ItemId::random(), t.vault, None, 1, ahead))
+            .expect("put");
+        let mut channel = Direct {
+            remote: &t.a,
+            caller: t.b.server_id(),
+        };
+        let report =
+            t.b.pull(&mut channel, t.a.server_id(), t.vault)
+                .await
+                .expect("pull");
+        assert_eq!((report.counts.applied, report.counts.refused), (1, 1));
+        assert_eq!(t.b.store.len(), 1);
+        // B's clock was not raised with it, so B's next write gets an ordinary time.
+        let written =
+            t.b.store
+                .put(draft(ItemId::random(), t.vault, None, 1, 2_000))
+                .expect("put");
+        assert!(written.change.hlc.millis() < ahead);
+    }
+
+    #[tokio::test]
     async fn reconcile_finds_what_a_pull_missed() {
         let t = two().await;
         let id = ItemId::random();
@@ -1138,7 +1327,7 @@ mod tests {
         // The home (A) writes a home record under epoch 1.
         let record = HomeRecord {
             vault: t.vault,
-            index: 1,
+            index: home::home_index(1, 1),
             epoch: 1,
             kind: "member-added".to_owned(),
             payload: vec![1],
@@ -1186,7 +1375,7 @@ mod tests {
         assert_eq!(at_a.epoch, 2);
         // A late epoch-1 write by the old home, arriving at B, is quarantined, not applied.
         let late = HomeRecord {
-            index: 2,
+            index: home::home_index(1, 2),
             payload: vec![2],
             ..record
         };
@@ -1213,7 +1402,7 @@ mod tests {
         assert_eq!((sync.applied, sync.quarantined), (0, 1));
         let held = t.b.store.quarantined(t.vault).await.expect("quarantined");
         assert_eq!(held.len(), 1);
-        assert_eq!(held[0].record.index, 2);
+        assert_eq!(held[0].record.index, home::home_index(1, 2));
     }
 
     #[tokio::test]
@@ -1240,7 +1429,7 @@ mod tests {
                 .expect("get")
                 .expect("vault");
         assert_eq!((at_a.home, at_a.epoch), (a_id, 1));
-        assert_eq!(at_a.held_demotion.as_deref(), Some(promotion.as_slice()));
+        assert_eq!(at_a.held_demotion, vec![promotion.clone()]);
         // So B, not A's home, can't have A erase its copy.
         let answer = to_a
             .call(&Request::Erase { vault: t.vault })
@@ -1286,7 +1475,7 @@ mod tests {
         let mut bad = promotion.clone();
         let last = bad.len() - 1;
         bad[last] ^= 1;
-        tampered.held_demotion = Some(bad);
+        tampered.held_demotion = vec![bad];
         t.a.store.put_vault(&tampered).await.expect("put");
         assert!(t.a.accept_demotion(t.vault).await.is_err());
         let at_a =
@@ -1391,6 +1580,341 @@ mod tests {
                 .any(|r| r.record.epoch == 2 && r.status == HomeStatus::Applied),
             "A holds the new home's record"
         );
+    }
+
+    /// A home `a` and a replica `b` that both hold a vault at epoch 2 (who was the home of epoch 1
+    /// is not known), with a third server `ic` in its set.
+    async fn stale_world() -> (Replica<MemoryStore>, Replica<MemoryStore>, LocalIdentity, Owner) {
+        let ia = identity(1, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ic = identity(3, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let a = Replica::new(MemoryStore::new(ia.server), Arc::new(ia.clone()));
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        a.pin_peer(&ib.descriptor, NOW).await.expect("pin");
+        b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        let settings = VaultFederation {
+            epoch: 2,
+            ..VaultFederation::federated(vault, ia.server, vec![ib.server, ic.server])
+        };
+        a.store.put_vault(&settings).await.expect("put");
+        b.store.put_vault(&settings).await.expect("put");
+        (a, b, ic, vault)
+    }
+
+    async fn keep(
+        replica: &Replica<MemoryStore>,
+        key: &LocalIdentity,
+        record: &HomeRecord,
+        status: HomeStatus,
+    ) {
+        let signed = record.sign(&key.signing).expect("sign").encode();
+        replica
+            .store
+            .put_home_record(&StoredHomeRecord {
+                signed,
+                record: record.clone(),
+                status,
+            })
+            .await
+            .expect("put");
+    }
+
+    fn stale(vault: Owner, signer: ServerId, index: u64, epoch: u64) -> HomeRecord {
+        HomeRecord {
+            vault,
+            index,
+            epoch,
+            kind: "k".to_owned(),
+            payload: vec![index as u8],
+            signer,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_record_squatting_a_future_index_or_colliding_with_another_servers_is_refused() {
+        let (a, b, ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // A stale-epoch record that claims an index in epoch 7's range would sit where the home
+        // of epoch 7 will put its first record.
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, home::home_index(7, 1), 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.applied, sync.quarantined, sync.refused), (0, 0, 1));
+        assert!(
+            b.store.home_records(vault, 0, 10).await.expect("held").is_empty(),
+            "the squatted index stays free"
+        );
+
+        // Another server's record already holds an index (epoch 1's history isn't known here):
+        // a second one at that index is refused, not dropped without a word.
+        let at = home::home_index(1, 1);
+        keep(
+            &b,
+            &ic,
+            &stale(vault, ic.server, at, 1),
+            HomeStatus::Quarantined,
+        )
+        .await;
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, at, 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.applied, sync.quarantined, sync.refused), (0, 0, 2));
+        let held = b.store.home_records(vault, 0, 10).await.expect("held");
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].record.signer, ic.server, "the first one stays");
+    }
+
+    #[tokio::test]
+    async fn a_stale_record_must_come_from_the_server_that_was_the_home_of_its_epoch() {
+        let (a, b, ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // B now knows that A was the home of epoch 1.
+        let mut settings = b.store.get_vault(vault).await.expect("get").expect("vault");
+        settings.home_history = vec![(1, a_id)];
+        b.store.put_vault(&settings).await.expect("put");
+        a.store.put_vault(&settings).await.expect("put");
+        // A relays a stale record that C signed: C was never the home of epoch 1.
+        let forged = stale(vault, ic.server, home::home_index(1, 1), 1);
+        let signed = forged.sign(&ic.signing).expect("sign").encode();
+        a.store
+            .put_home_record(&StoredHomeRecord {
+                signed,
+                record: forged,
+                status: HomeStatus::Applied,
+            })
+            .await
+            .expect("put");
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        // C's key isn't in B's directory, so the relayed record can't even be opened; give B the
+        // key the way a pairing would.
+        b.pin_peer(&ic.descriptor, NOW).await.expect("pin");
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.quarantined, sync.refused), (0, 1));
+        assert!(b.store.quarantined(vault).await.expect("held").is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_signer_cannot_fill_the_quarantine_when_the_epochs_home_is_unknown() {
+        let (a, b, _ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // A already holds its share of stale records at B (B never saw who was home in epoch 1).
+        for n in 1..=MAX_QUARANTINED_PER_SIGNER as u64 {
+            keep(
+                &b,
+                &a.identity(),
+                &stale(vault, a_id, home::home_index(1, n), 1),
+                HomeStatus::Quarantined,
+            )
+            .await;
+        }
+        let over = MAX_QUARANTINED_PER_SIGNER as u64 + 1;
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, home::home_index(1, over), 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.quarantined, sync.refused), (0, 1));
+        assert_eq!(
+            b.store.quarantined(vault).await.expect("held").len(),
+            MAX_QUARANTINED_PER_SIGNER,
+            "the room left is for the others"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vault_keeps_a_bounded_quarantine() {
+        let (a, b, _ic, vault) = stale_world().await;
+        let a_id = a.server_id();
+        // Records of many members of the set, so the per-signer share isn't what stops this one.
+        let signers: Vec<ServerId> = (0..MAX_QUARANTINED / MAX_QUARANTINED_PER_SIGNER)
+            .map(|_| ServerId::random())
+            .collect();
+        for n in 1..=MAX_QUARANTINED as u64 {
+            let signer = signers[(n as usize - 1) / MAX_QUARANTINED_PER_SIGNER];
+            keep(
+                &b,
+                &a.identity(),
+                &stale(vault, signer, home::home_index(1, n), 1),
+                HomeStatus::Quarantined,
+            )
+            .await;
+        }
+        let over = MAX_QUARANTINED as u64 + 1;
+        keep(
+            &a,
+            &a.identity(),
+            &stale(vault, a_id, home::home_index(1, over), 1),
+            HomeStatus::Applied,
+        )
+        .await;
+        let mut channel = Direct {
+            remote: &a,
+            caller: b.server_id(),
+        };
+        let sync = b
+            .pull_home_records(&mut channel, a_id, vault)
+            .await
+            .expect("sync");
+        assert_eq!((sync.quarantined, sync.refused), (0, 1));
+        assert_eq!(
+            b.store.quarantined(vault).await.expect("held").len(),
+            MAX_QUARANTINED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replica_holds_a_promotion_it_didnt_ask_for_unless_the_setting_is_auto() {
+        use crate::extra::PromotionMode;
+        let ia = identity(1, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ic = identity(3, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        let c = Replica::new(MemoryStore::new(ic.server), Arc::new(ic.clone()));
+        c.pin_peer(&ib.descriptor, NOW).await.expect("pin");
+        let make = || {
+            let vault = Owner::User(UserId::random());
+            VaultFederation::federated(vault, ia.server, vec![ib.server, ic.server])
+        };
+        let held_vault = make();
+        let auto_vault = make();
+        for settings in [&held_vault, &auto_vault] {
+            b.store.put_vault(settings).await.expect("put");
+            c.store.put_vault(settings).await.expect("put");
+        }
+
+        // B promotes itself and tells C. C holds the record for its admin.
+        let promotion = b.promote(held_vault.owner, NOW).await.expect("promote");
+        let mut to_c = Direct {
+            remote: &c,
+            caller: ib.server,
+        };
+        let refused = b.announce(&mut to_c, promotion.clone()).await;
+        assert!(
+            matches!(&refused, Err(FedError::Remote(d)) if d.contains("admin must accept")),
+            "{refused:?}"
+        );
+        let at_c = c.store.get_vault(held_vault.owner).await.expect("get").expect("vault");
+        assert_eq!((at_c.home, at_c.epoch), (ia.server, 1), "the vault stays where it was");
+        assert_eq!(at_c.held_demotion, vec![promotion.clone()]);
+        let held = c.held_promotions().await.expect("held");
+        assert_eq!(held.len(), 1);
+        assert_eq!((held[0].0, held[0].1.new_home), (held_vault.owner, ib.server));
+
+        // The admin refuses it: gone, and nothing changed.
+        c.refuse_demotion(held_vault.owner).await.expect("refused");
+        assert!(c.held_promotions().await.expect("held").is_empty());
+        assert!(c.refuse_demotion(held_vault.owner).await.is_err(), "nothing left to refuse");
+        let at_c = c.store.get_vault(held_vault.owner).await.expect("get").expect("vault");
+        assert_eq!((at_c.home, at_c.epoch), (ia.server, 1));
+
+        // Announced again and accepted this time.
+        b.announce(&mut to_c, promotion).await.expect_err("held again");
+        let next = c.accept_demotion(held_vault.owner).await.expect("accepted");
+        assert_eq!((next.home, next.epoch), (ib.server, 2));
+        assert!(next.held_demotion.is_empty());
+
+        // With the setting on auto, the same announcement applies at once.
+        c.store.set_promotion_mode(PromotionMode::Auto);
+        let promotion = b.promote(auto_vault.owner, NOW).await.expect("promote");
+        b.announce(&mut to_c, promotion).await.expect("applied");
+        let at_c = c.store.get_vault(auto_vault.owner).await.expect("get").expect("vault");
+        assert_eq!((at_c.home, at_c.epoch), (ib.server, 2));
+        assert!(at_c.held_demotion.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_vault_holds_one_promotion_for_each_server_that_announced_one() {
+        let ia = identity(1, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ic = identity(3, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let id = identity(4, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        let c = Replica::new(MemoryStore::new(ic.server), Arc::new(ic.clone()));
+        let d = Replica::new(MemoryStore::new(id.server), Arc::new(id.clone()));
+        d.pin_peer(&ib.descriptor, NOW).await.expect("pin");
+        d.pin_peer(&ic.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        let settings = VaultFederation::federated(
+            vault,
+            ia.server,
+            vec![ib.server, ic.server, id.server],
+        );
+        for replica in [&b, &c, &d] {
+            replica.store.put_vault(&settings).await.expect("put");
+        }
+        // Two replicas each sign a promotion for themselves, and a replica announces them.
+        let by_b = b.promote(vault, NOW).await.expect("promote");
+        let by_c = c.promote(vault, NOW).await.expect("promote");
+        let mut from_b = Direct {
+            remote: &d,
+            caller: ib.server,
+        };
+        let mut from_c = Direct {
+            remote: &d,
+            caller: ic.server,
+        };
+        b.announce(&mut from_b, by_b.clone()).await.expect_err("held");
+        c.announce(&mut from_c, by_c.clone()).await.expect_err("held");
+        // The same one again, and again: it can't push the other out, or pile up.
+        for _ in 0..3 {
+            b.announce(&mut from_b, by_b.clone()).await.expect_err("held");
+        }
+        let held = d.store.get_vault(vault).await.expect("get").expect("vault");
+        assert_eq!(held.held_demotion.len(), 2, "one for each server");
+        assert!(held.held_demotion.contains(&by_b) && held.held_demotion.contains(&by_c));
+        assert_eq!(d.held_promotions().await.expect("list").len(), 2);
+
+        // Naming none is ambiguous; naming one picks it.
+        assert!(d.refuse_demotion(vault).await.is_err());
+        assert!(d.accept_demotion(vault).await.is_err());
+        d.refuse_promotion_of(vault, Some(ib.server))
+            .await
+            .expect("refused");
+        let left = d.store.get_vault(vault).await.expect("get").expect("vault");
+        assert_eq!(left.held_demotion, vec![by_c]);
+        let next = d
+            .accept_promotion_of(vault, Some(ic.server))
+            .await
+            .expect("accepted");
+        assert_eq!((next.home, next.epoch), (ic.server, 2));
+        assert!(next.held_demotion.is_empty());
     }
 
     #[tokio::test]

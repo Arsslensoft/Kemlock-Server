@@ -108,6 +108,28 @@ Published at `GET /fed/v1/descriptor` and `GET /.well-known/kemlock-federation` 
   which to use.
 - A different identity key from the pinned one is a key mismatch (below), never a rotation.
 
+**Addresses.** An address is a plain base URL: `http` or `https`, a host, optionally a port and a path
+prefix, and no user name, password, query or fragment (a request path is joined to the URL as a path,
+so no address can reach a different URL than the one asked for). A descriptor's addresses are chosen
+by the peer, and this server connects to them (a probe every minute, a visit, the peer's page in the
+console, key records, the session), so they are checked before each connection:
+
+- The addresses the admin chose, which are the one typed at pairing and any approved later
+  (`peer_trusted_addresses`), may be `http` and may name a private network. The addresses a peer's
+  descriptor lists are the peer's say, even at pairing and on the side that only showed the code.
+- Any address of a peer that is refused by these rules puts the peer's addresses in the admin's list
+  of address changes (the one a rotation's new addresses wait in), and approving it there trusts
+  them. Peers paired before this rule start with none trusted, so a peer on a private network is
+  listed the first time it is dialled.
+- Any other address, one a later descriptor lists or a rotation brings, must be `https` and must resolve
+  to public addresses only: loopback, private, link-local (the cloud metadata address included),
+  carrier-grade NAT, documentation, multicast, reserved ranges and IPv6 addresses that carry one of
+  them are refused, and one private answer refuses the whole name. The connection then goes to
+  exactly the addresses that were checked, so a second lookup can't answer differently.
+- Answers are read with a running cap (128 KiB for a descriptor or a pairing message), redirects are
+  not followed, and the proxy variables of the environment are not used (a proxy resolves names
+  itself, past the addresses checked).
+
 ## The handshake
 
 Server A (the initiator) has fetched B's descriptor and checked it against B's pinned key.
@@ -303,6 +325,22 @@ A change key is `origin (16) ‖ u64be(seq)` (24 bytes). A record is refused whe
 sequence or revision, a tombstone with ciphertext, a live item without it, or a lineage that names
 the record itself. The ciphertext and item key are exactly as stored and servers can't read them.
 
+**HLC times are bounded.** A receiver leaves out a record whose HLC time (the milliseconds in its
+high 48 bits) is more than 300 seconds ahead of its own clock, the skew every check here allows;
+the rest of the page is applied, the cursor moves on, and a later comparison fetches the record
+again, when it is accepted if the clock has caught up. Old times are normal and never refused.
+Without the bound one record could carry a server's clock to the top of its range, where every
+later local write would fail. A server's own writes are held to a tighter bound: the time a device puts on an item pulls the
+clock forward only as far as 60 seconds past the server's own, so a wrong or hostile device clock
+can't pin it, and a record made on a clock that runs a little fast stays well inside what peers
+accept. A server's own clock also stops at `2^63 - 1` instead of overflowing,
+and at start-up it sets a stored clock more than a day ahead of the wall clock back to it (and logs
+that it did), which repairs a server a record already damaged. The repair moves the clock, not the
+changes already stamped with a far time: an HLC time is part of the record its origin signed and
+that peers already hold, so a peer's change can't be re-stamped, and re-stamping a local one would
+invalidate a signature peers may have taken. They stay as they are; such an item keeps winning the
+head against older versions until a write that names it in its lineage replaces it.
+
 ### Lineage, versions and siblings
 
 The **lineage** of a version is the versions it replaced. The origin works it out once, for a
@@ -346,6 +384,16 @@ epoch, from the home, is applied; an older epoch is **quarantined** for the vaul
 drop and applies nothing; a newer epoch means a promotion was missed and stops the sync; a record
 from outside the set, or of the current epoch from a server that isn't the home, is refused.
 
+A home record's index must belong to its epoch (`index >> 32 == epoch`): a record whose index lies in
+another epoch's range is refused, so a server can't claim the indexes a later home will use. A
+stale-epoch record is kept for the admins only when its signer was the home of that epoch, as far as
+the receiver knows (each promotion adds the home it replaced to the vault's history, and an epoch the
+receiver never saw is not checked), and a vault keeps at most 256 quarantined records; a later one is
+dropped and logged. For an epoch whose home the receiver never saw, one signer may hold at most 32 of
+them, so one member of the set can't fill the quarantine and push out the others'. Two records by
+different servers at one index are not both kept: the first
+stays and the second is refused and logged.
+
 **Promotion record**, an envelope signed with `sig1("federation-promotion", body)` by the *new*
 home:
 
@@ -362,20 +410,31 @@ home:
 A peer applies it only if it is for a federated vault it holds, its epoch is the next one, its
 previous home is the home the peer knows, its signer is a replica the peer already knows, and it
 keeps exactly the servers the peer knows. Two replicas that promote themselves at once both make a
-record for the next epoch; the first to arrive wins and the other fails the previous-home check,
-which is why an admin does it, after a fresh passkey or password check.
+record for the next epoch; the first one a peer takes wins and the other fails the previous-home
+check, which is why an admin does it, after a fresh passkey or password check.
 
-**The home a promotion takes the vault from holds it for its own admin.** A peer that is the
-vault's home by what it knows does not apply a promotion that names another server as the new
-home: it checks it as above, keeps it beside the vault's settings (`held_demotion`) and answers
-the announcement with a refusal that says so. Until its admin accepts it
-(`POST /admin/v1/federation/vaults/{owner}/demotion`, after a fresh passkey or password check;
-the console lists it beside the vault), the vault stays at this server's epoch, the other side's
-newer home records stop the sync as a missed promotion does, and nothing the other server sends as
-the home is taken. Accepting checks the record again and applies it as above. Without this, any
-replica, or anyone holding a replica's identity key, could make itself the home of every vault it
-holds and then, as the home, `Erase` the old home's copy. A changed set of servers drops a held
-promotion, which no longer fits it.
+**A promotion nobody asked for is held, at every server.** What a server does with a promotion
+another server announces is the admin setting `federation_promotion` (environment
+`KEMLOCK_FEDERATION_PROMOTION`): `hold`, the default, or `auto`.
+
+- With `hold`, a replica checks the record as above, keeps it beside the vault's settings
+  (`held_demotion`, one for each server that announced one: a later announcement replaces its
+  server's own, never another's, so repeating one can't push the legitimate one out) and answers the announcement with a refusal that says so. Until its admin
+  accepts it, the vault stays at this server's epoch, the other side's newer home records stop the
+  sync as a missed promotion does, and nothing the other server sends as the home is taken.
+  Without this, any replica, or anyone holding a replica's identity key, could make itself the home
+  of every vault it holds, at every server at once, and then, as the home, `Erase` the old home's
+  copy.
+- With `auto`, a replica applies it at once, as before ("the first to arrive wins").
+- A peer that is the vault's home by what it knows holds it whatever the setting says: it is the
+  server a promotion takes the vault from.
+
+The admin sees the held promotions at `GET /admin/v1/federation/promotions` (and as `heldPromotions`
+beside each vault), accepts one with `POST /admin/v1/federation/vaults/{owner}/demotion` (after a
+fresh passkey or password check) and refuses it with `DELETE` on the same path (with a step-up
+token), naming the server with `?newHome=<server id>` when more than one waits; the console shows both beside the vault. Accepting checks the record again and applies it
+as above; refusing drops it, and the other server announces it again when it restarts. A changed
+set of servers drops a held promotion, which no longer fits it.
 
 ## Pairing
 
@@ -485,7 +544,9 @@ These are additions to version 1: no byte of an earlier type or field changes.
 replicas, and a replica holds it only after its own admin accepts. The home sends each replica an
 `Offer` at every session until the answer is `accepted` (a replica's admin may also decline). Only
 the vault's home may offer it, the offer must name the receiver as a replica, and a server that
-already holds the vault under another home or epoch refuses. An accepted vault takes a new replica
+already holds the vault under another home or epoch, or whose account or space it is, answers
+`pending` like any other offer and keeps nothing, so an offer can't tell a peer which ids exist
+here. An accepted vault takes a new replica
 order the home sends under the same epoch; nothing is copied to a replica that hasn't accepted.
 
 **Files.** `Blobs` pages through the ready attachments of a vault in attachment id order; a replica
@@ -493,7 +554,9 @@ adds a row for each it lacks and, for a file of at most 50 MiB, fetches it with 
 at most 2 MiB each and stores it (the blob store checks it is a `KMA1` file as it does for an
 upload). A larger file gets its row only, and its bytes are fetched from a peer the first time it
 is downloaded. A peer serves a blob only of a vault it may read, and the file's owner must be that
-vault.
+vault. A replica leaves out an entry whose item it doesn't hold in that vault, or whose file
+another row (an attachment, or a Send's file) already holds, and never deletes a file another row
+holds when an erasure or an unpairing removes the rows of a vault.
 
 **Sends.** A Send of a personal vault (a space has none) travels with the vault, as ciphertext,
 so a Send link keeps working when the vault fails over to a replica. `Sends` pages through the
@@ -514,9 +577,12 @@ row only and is fetched from a peer the first time someone opens the Send. A fil
 MiB is not taken. A `kma1` file is stored through the blob store's `KMA1` check, as an upload is; an
 `opaque` file (a Bitwarden app's own format, which the server can't read) is held to the announced
 size alone. A file that can't be fetched or fails its check leaves its Send out until the next
-visit, and the other Sends go on. A row already held takes the peer's newer revision (the options
-and the password, never the owner, key or file) and the larger of the two view counts, so a view
-limit used up at one server stays used up at the other. At a visit to the Send's home, a replica
+visit, and the other Sends go on. A row already held takes the larger of the two view counts from any server in the vault's set, so
+a view limit used up at one server stays used up at the others. It takes a newer revision (the
+options and the password, never the owner, key or file) only from the server the copy came from or
+from the vault's current home, which a promotion moves. Any other server's revision, or any
+revision of a Send made here by a server that isn't its home, changes nothing: a server in the
+vault's set can't clear a password or end a Send it didn't make. At a visit to the Send's home, a replica
 deletes the copies it made that the home no longer holds (the owner deleted the Send there) and
 their files; a Send made at the replica itself is never deleted this way (table
 `federation_replicated_sends` records which rows are copies).
@@ -546,8 +612,18 @@ There is no OPAQUE record, security stamp, role, two-step method or token in it,
 secret is shared, and a copy signs in only with a registered device key
 (`POST /kem/v1/auth/device-key/challenge` and `/verify`). A replica applies a record only when it is
 of the vault's current epoch and signed by its home; a copy never replaces an account that lives on
-the replica (same id or email: refused and logged). A stale-epoch record is quarantined like any
-home-only write.
+the replica (same id or email: refused and logged). A record is applied only for an account that
+belongs to its vault: the owner of a personal vault, or a confirmed member of a space as the
+replica already knows it (so the home publishes a space's own records before its members'
+accounts), and a copy follows the one server it came from: another home's record for it is
+refused. A member whose account record came before the member's own record is not lost: when the
+replica applies the member record it applies that account record again, and a space's home makes
+an account record once more for a member whose latest one is older than the member's first record
+(homes made them in that order before). The home of an account's personal vault speaks for the
+account: it replaces a copy that came in through a space, and a space's home may not publish an
+account whose personal vault the replica federates. The copy's public-key bundle must verify under its own `sig1` key (an account with no
+keys yet has an empty one), as it must where the account lives: a record whose bundle doesn't is
+refused. A stale-epoch record is quarantined like any home-only write.
 
 **Space roles, policies and keys.** The home of a space also publishes the rest of what only it may
 change, one home record per entity whenever the entity changes, and a record saying it is gone when
@@ -561,7 +637,7 @@ space that has held items or had them). A revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
-admins to redo or drop. Writes to the home-only parts of a federated space
+admins to redo or drop. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
 (`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement` and
 `policies`) are refused at a server that is not the home with `409`, a
 `urn:kemlock:problem:home-only` problem that names the home (`home.server`, `home.address`) and the
@@ -617,13 +693,30 @@ every peer. Both are envelopes whose body is deterministic CBOR:
 | 5 | rotation only: the new descriptor, its envelope bytes, self-signed by the new key |
 
 A **rotation** is signed with `sig1("federation-key-rotation", body)` by the *old* key. The receiver
-accepts it only when the old key is the one it holds for that server, and the new descriptor is for
-the same server, verifies under its own key and carries another key; it then pins the new key and
-takes the descriptor's addresses and operator. A **revocation** is signed with
-`sig1("federation-key-revocation", body)` by the key it revokes (a thief can sign one too, which
-only revokes a key that is stolen anyway); a receiver that holds that key stops trusting the server
-(`revoked`) until it is paired again with a new code. A record about a key the receiver no longer
-holds does nothing, and the same record twice does nothing.
+accepts it only when the old key is the one it holds for that server, `issued at` is not more than
+300 seconds ahead of its clock (nor older than a descriptor lives, 37 days), and the new descriptor
+is for the same server, verifies under its own key and carries another key; it then pins the new
+key and remembers the old one, with when it replaced it. A rotation that keeps the server's
+addresses takes the descriptor's operator and suites at once. One that **brings other addresses**
+does not: this server keeps dialling the addresses it knew, and the new addresses, operator and
+suites wait for its admin (`GET /admin/v1/federation/address-changes`; `POST` on
+`/admin/v1/federation/peers/{id}/address-change` follows the server, `DELETE` keeps the old
+addresses, both with a step-up token). The key that signed a rotation may be a stolen one, and the
+addresses decide where this server connects.
+
+A **revocation** is signed with `sig1("federation-key-revocation", body)` by the key it revokes. A
+receiver that holds that key stops trusting the server (`revoked`) until it is paired again with a
+new code. A revocation also counts when it is signed by a key the receiver **replaced** in the last
+30 days: that is how the owner of a stolen key answers a thief who rotated it away. A rotation
+signed by a key that turns out to be stolen can't be told from the thief's, and a copy of an old
+key that leaks within 30 days of an honest rotation can sign the same revocation, so the server is
+not revoked but **contested** (peer state `contested`): no session is accepted from it or opened to
+it, so nothing syncs either way, nothing it sent or holds is deleted, and the console shows it in a
+card of its own. Its admin settles it: unpair it and pair again with a new code, or, knowing the
+rotation was honest, trust it again (`DELETE /admin/v1/federation/peers/{id}/contest`, with a
+step-up token). A revocation signed by the key the receiver holds still revokes outright. A revocation of any other key (one never held, or replaced longer
+ago) does nothing, and so does the same record twice. The history of a peer's keys goes when the
+peer is unpaired.
 
 Records are posted to `POST /fed/v1/keys` (204, or a bare 400), not sent over a session, because
 after a rotation the new key's sessions are refused until the record is applied: a server delivers
@@ -685,8 +778,11 @@ A replica accepts `Erase` only from a paired peer that is the vault's home by th
 (or by the offer, for a vault its admin never accepted). It then deletes, in one transaction, the
 vault's items and every version of them, the change log, attachment rows, home records, cursors,
 the offer and the federation settings, and, for a personal vault, the copied account with its
-devices (never an account that lives on the replica); then it deletes the attachment files. A
-replica that holds nothing of the vault answers `Ack` too, so a repeated erasure (a lost
+devices; then it deletes the attachment files. A personal vault whose account lives on the
+replica (is not a copy) is never erased by a peer: the replica refuses, with the detail "this server
+holds that vault's account itself", and deletes nothing, however the sender came to be taken for
+its home. The home takes that answer as final: it drops the queued erasure and logs it, instead of
+asking at every visit. A replica that holds nothing of the vault answers `Ack` too, so a repeated erasure (a lost
 acknowledgement) is harmless. Both servers log it, and each writes an event
 (`federation.erasure_forwarded` at the home, `federation.vault_erased` at the replica) that names
 the vault and the peer and holds no name or email.
@@ -696,7 +792,12 @@ the vault and the peer and holds no name or email.
 The three pairing messages travel between the two servers as plain HTTP bodies, authenticated by
 the code alone: `POST /fed/v1/pair/start` (message 1 in, message 2 out) and
 `POST /fed/v1/pair/finish?initiator=<server id>` (message 3 in). The code is good for one attempt
-and 10 minutes, kept in memory. After a successful exchange each side holds the other's verified
+and 10 minutes, kept in memory. A message 1 that is malformed (not the CBOR map of the table above, a missing field, a version
+other than 1, the receiver's own id as the initiator) is refused without using the code up; one
+that is well formed uses it, right or wrong, so a stranger able to send one can still use the code up. The two routes answer 429 past 20 requests a minute
+from one source address (the address the server's request layer settled, which honours a trusted
+proxy; an IPv6 address counts by its /64) and past 300 a minute from all of them together, so one
+host can't use up the limit of the admin who is pairing. After a successful exchange each side holds the other's verified
 descriptor and the fingerprint but pins nothing: its admin compares the six words and confirms
 (`POST /admin/v1/federation/pairings/{peer}/confirm`), and for a peer whose operator is not this
 server's the admin also acknowledges the three points of "Peers run by other organisations", which

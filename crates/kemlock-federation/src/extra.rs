@@ -49,7 +49,35 @@ pub struct StoredOffer {
     pub received_at: u64,
 }
 
+/// What a server does with a promotion a replica signed for itself and announces unasked. The
+/// setting `federation_promotion` (environment `KEMLOCK_FEDERATION_PROMOTION`) chooses it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PromotionMode {
+    /// Keep it, unapplied, for this server's admin to accept or refuse. The default.
+    #[default]
+    Hold,
+    /// Apply it at once, when it checks out. (The home of a vault still holds one that would
+    /// take the vault from it.)
+    Auto,
+}
+
+impl PromotionMode {
+    /// `auto` is the one word that turns holding off; anything else holds.
+    pub fn parse(text: &str) -> PromotionMode {
+        if text.trim().eq_ignore_ascii_case("auto") {
+            PromotionMode::Auto
+        } else {
+            PromotionMode::Hold
+        }
+    }
+}
+
 pub trait FedAdminRepo: Send + Sync {
+    /// What to do with a promotion another server signed for itself: see [`PromotionMode`].
+    fn promotion_mode(&self) -> impl Future<Output = R<PromotionMode>> + Send {
+        ready(Ok(PromotionMode::Hold))
+    }
+
     /// Refreshes what a peer's descriptor says: operator, addresses and suites. The identity key
     /// is never changed here. A peer that isn't known is not an error.
     fn update_peer_descriptor(
@@ -58,6 +86,22 @@ pub trait FedAdminRepo: Send + Sync {
         _operator: &str,
         _addresses: &[String],
         _suites: &[String],
+    ) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
+    }
+
+    /// The addresses of `peer` the admin chose: typed at pairing, listed by its descriptor when the
+    /// pairing was confirmed, or approved since. Only these may be `http` or on a private network
+    /// (see [`crate::addr`]).
+    fn trusted_addresses(&self, _peer: ServerId) -> impl Future<Output = R<Vec<String>>> + Send {
+        ready(Ok(Vec::new()))
+    }
+
+    /// Adds addresses the admin chose to `peer`'s trusted ones.
+    fn trust_addresses(
+        &self,
+        _peer: ServerId,
+        _addresses: &[String],
     ) -> impl Future<Output = R<()>> + Send {
         ready(Ok(()))
     }
@@ -176,9 +220,13 @@ pub trait MemberStore: Send + Sync {
         ready(Ok(None))
     }
 
-    /// Stores a copy of an account made at `home`, replacing an earlier copy.
+    /// Stores a copy of an account, published by `home` as the home of `vault`, replacing an
+    /// earlier copy. The home of the account's own personal vault may replace a copy that came
+    /// in through a space; the home of a space may not (and creates one only while this server
+    /// doesn't federate that personal vault at all).
     fn apply_member_account(
         &self,
+        _vault: Owner,
         _home: ServerId,
         _account: &MemberAccount,
     ) -> impl Future<Output = R<MemberApply>> + Send {

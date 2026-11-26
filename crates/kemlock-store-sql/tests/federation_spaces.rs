@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::memory;
+use common::{draft, memory, put};
 use kemlock_app::policies::PolicyRepo;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_domain::policies::SpacePolicies;
@@ -287,6 +287,10 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
     .expect("a space");
     let mut items = [ItemId::random(), ItemId::random(), ItemId::random()];
     items.sort();
+    // The replica holds the space's items (they are pulled before the home records).
+    for item in items {
+        put(&replica, draft(item, kemlock_domain::Owner::Space(space), None, 1)).await;
+    }
 
     // The home's snapshot says which items its key replacement left held.
     let none = SpaceMirror::space_snapshot(&home, space)
@@ -336,4 +340,110 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
         .await
         .expect("applied");
     assert!(replica.held_items(space).await.expect("held").is_empty());
+}
+
+#[tokio::test]
+async fn a_collection_or_group_of_another_space_is_reported_before_a_record_names_it() {
+    let store = memory().await;
+    let mine = SpaceId::random();
+    let theirs = SpaceId::random();
+    let owner = UserId::random();
+    let space = |id: SpaceId| Space {
+        id,
+        name: vec![1; 40],
+        key_version: 1,
+        keys_pending_since: None,
+        created_at: AT,
+        updated_at: AT,
+    };
+    let collection = Collection {
+        id: CollectionId::random(),
+        space: theirs,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: AT,
+    };
+    let group = Group {
+        id: GroupId::random(),
+        space: theirs,
+        name: vec![3; 40],
+        members: [owner].into_iter().collect(),
+        created_at: AT,
+    };
+    for (id, collections, groups) in [
+        (mine, Vec::new(), Vec::new()),
+        (theirs, vec![collection.clone()], vec![group.clone()]),
+    ] {
+        SpaceRepo::create(
+            &store,
+            SpaceChanges {
+                space: Some(space(id)),
+                members: vec![member(id, owner, SpaceRole::Owner, MemberState::Confirmed)],
+                groups,
+                collections,
+                ..SpaceChanges::new(id)
+            },
+        )
+        .await
+        .expect("a space");
+    }
+
+    // The other space's ids are taken, whichever kind a record names them as.
+    assert_eq!(
+        store.ids_held_elsewhere(mine, &[collection.id], &[]).await,
+        Ok(true)
+    );
+    assert_eq!(
+        store.ids_held_elsewhere(mine, &[], &[group.id]).await,
+        Ok(true)
+    );
+    // Its own ids and ids nobody has are fine.
+    assert_eq!(
+        store.ids_held_elsewhere(theirs, &[collection.id], &[group.id]).await,
+        Ok(false)
+    );
+    assert_eq!(
+        store
+            .ids_held_elsewhere(mine, &[CollectionId::random()], &[GroupId::random()])
+            .await,
+        Ok(false)
+    );
+}
+
+#[tokio::test]
+async fn a_held_record_only_touches_the_items_of_its_own_space() {
+    let replica = memory().await;
+    let (mine, theirs) = (SpaceId::random(), SpaceId::random());
+    let (own_item, their_item) = (ItemId::random(), ItemId::random());
+    put(&replica, draft(own_item, kemlock_domain::Owner::Space(mine), None, 1)).await;
+    put(&replica, draft(their_item, kemlock_domain::Owner::Space(theirs), None, 1)).await;
+    // The other space's home holds its item.
+    SpaceMirror::apply_space_record(&replica, theirs, &SpaceRecord::Held(vec![their_item]))
+        .await
+        .expect("held");
+
+    // This space's home names both, and an id nobody has: only its own item is held, and the
+    // other space's hold stays.
+    SpaceMirror::apply_space_record(
+        &replica,
+        mine,
+        &SpaceRecord::Held(vec![own_item, their_item, ItemId::random()]),
+    )
+    .await
+    .expect("applied");
+    assert_eq!(replica.held_items(mine).await.expect("held"), vec![own_item]);
+    assert_eq!(
+        replica.held_items(theirs).await.expect("held"),
+        vec![their_item]
+    );
+    // And an empty set from this space doesn't release the other's item.
+    SpaceMirror::apply_space_record(&replica, mine, &SpaceRecord::Held(Vec::new()))
+        .await
+        .expect("applied");
+    assert_eq!(
+        replica.held_items(theirs).await.expect("held"),
+        vec![their_item]
+    );
 }

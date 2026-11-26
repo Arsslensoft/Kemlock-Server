@@ -139,6 +139,10 @@ impl<S: FedStore> Replica<S> {
         let gone = self.store.forget_peer(peer).await?;
         if let Some(files) = &self.files {
             for blob in &gone.blobs {
+                // A file another row holds (a Send's) is not the peer's to have deleted.
+                if self.blob_in_use(*blob).await? {
+                    continue;
+                }
                 if let Err(e) = files.delete(*blob).await {
                     tracing::warn!(error = %e, "an attachment file of an unpaired peer was not deleted");
                 }

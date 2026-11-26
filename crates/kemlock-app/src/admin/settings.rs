@@ -46,7 +46,7 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Definition {
     pub key: &'static str,
-    /// The console's section: `smtp`, `signups`, `files`, `trash`, `retention`, `rate-limits`, `security`.
+    /// The console's section: `smtp`, `signups`, `files`, `trash`, `retention`, `rate-limits`, `security`, `federation`.
     pub group: &'static str,
     pub kind: Kind,
     /// The value when nothing sets one; empty for "unset".
@@ -368,6 +368,17 @@ pub const DEFINITIONS: &[Definition] = &[
         kind: Kind::Choice(&["queue", "refuse", "unchained"]),
         default: "queue",
         env: "KEMLOCK_SPACE_CHAIN_EXTERNAL_CHANGES",
+    },
+    // What this server does with a promotion a replica signed for itself and announces unasked
+    // (docs/federation.md, "Home epochs, promotion and the fence"): keep it for this server's admin
+    // to accept or refuse (the default), or apply it at once. The home of a vault always holds a
+    // promotion that would take the vault from it.
+    Definition {
+        key: "federation_promotion",
+        group: "federation",
+        kind: Kind::Choice(&["hold", "auto"]),
+        default: "hold",
+        env: "KEMLOCK_FEDERATION_PROMOTION",
     },
 ];
 
@@ -921,6 +932,17 @@ mod tests {
             assert!(validate(d, &"x".repeat(255)).is_err());
             assert!(validate(d, "a\nb").is_err());
         }
+    }
+
+
+    #[test]
+    fn a_promotion_is_held_for_the_admin_unless_the_setting_says_auto() {
+        let d = def("federation_promotion");
+        assert_eq!((d.default, d.env), ("hold", "KEMLOCK_FEDERATION_PROMOTION"));
+        assert_eq!(d.group, "federation");
+        assert_eq!(validate(d, " Auto "), Ok("auto".into()));
+        assert_eq!(validate(d, "hold"), Ok("hold".into()));
+        assert!(validate(d, "yes").is_err());
     }
 
     #[test]

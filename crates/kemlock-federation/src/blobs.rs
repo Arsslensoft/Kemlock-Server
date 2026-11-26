@@ -234,6 +234,8 @@ pub struct BlobReport {
     pub fetched: usize,
     /// Files left for their first use, because they are over the threshold.
     pub deferred: usize,
+    /// Entries left out: an item this vault doesn't hold, or a file another row already holds.
+    pub skipped: usize,
 }
 
 fn blob_error(e: &BlobError) -> FedError {
@@ -384,6 +386,12 @@ impl<S: FedStore> Replica<S> {
         stored.map_err(|e| blob_error(&e))
     }
 
+    /// Whether a row of this server, an attachment or a Send, already holds the file `blob`.
+    pub(crate) async fn blob_in_use(&self, blob: BlobId) -> Result<bool> {
+        Ok(self.store.attachment_of_blob(blob).await?.is_some()
+            || self.store.send_of_blob(blob).await?.is_some())
+    }
+
     /// Copies the attachments of `vault` that `peer` holds: a row for each one we lack, and the
     /// file too when it is small enough and we don't have it.
     pub async fn sync_blobs<C: Channel>(
@@ -418,6 +426,22 @@ impl<S: FedStore> Replica<S> {
             after = *last.attachment.0.as_bytes();
             for entry in &entries {
                 if self.store.attachment(entry.attachment).await?.is_none() {
+                    // The peer says which item the file belongs to and which file it is, and
+                    // neither is checked by its signature: the item must be one of this vault's,
+                    // and the file one no other row (an attachment, or a Send's) holds, or the
+                    // peer could hang a file on an item it doesn't own or make this server
+                    // serve, and later delete, a file that belongs to another row.
+                    if self
+                        .store
+                        .export_items(vault, &[entry.item])
+                        .await?
+                        .is_empty()
+                        || self.blob_in_use(entry.blob).await?
+                    {
+                        tracing::info!(%peer, attachment = ?entry.attachment, "an attachment of a peer was left out: its item isn't this vault's, or its file is another row's");
+                        report.skipped += 1;
+                        continue;
+                    }
                     let added = self
                         .store
                         .add_replicated_attachment(&Attachment {
@@ -497,4 +521,69 @@ mod tests {
         let (_, data) = read_range(read, 9, 10).await.expect("a range");
         assert!(data.is_empty());
     }
+    /// A channel that answers each request with the next canned response.
+    struct Canned(Vec<Response>);
+
+    impl Channel for Canned {
+        async fn call(&mut self, _request: &Request) -> Result<Response> {
+            Ok(self.0.remove(0))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peers_attachment_must_name_an_item_of_the_vault_and_a_file_no_other_row_holds() {
+        use crate::memory::MemoryStore;
+        use crate::message::BlobEntry;
+        use crate::suite::Suite;
+        use crate::testing::{draft, identity};
+        use kemlock_domain::{ItemId, UserId};
+
+        const NOW: u64 = 1_800_000_000;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let home = ia.server;
+        let me = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        me.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        me.accept_vault(vault, home, vec![ib.server])
+            .await
+            .expect("accept");
+        let item = ItemId::random();
+        me.store
+            .put(draft(item, vault, None, 1, 1_000))
+            .expect("an item");
+        // A file another attachment already holds.
+        let held_blob = BlobId::random();
+        me.store.put_attachment(Attachment {
+            id: AttachmentId(uuid::Uuid::new_v4()),
+            item,
+            owner: vault,
+            blob: held_blob,
+            size: 10,
+            status: AttachmentStatus::Ready,
+            created_at: OffsetDateTime::now_utc(),
+        });
+        let entry = |item: ItemId, blob: BlobId| BlobEntry {
+            attachment: AttachmentId(uuid::Uuid::new_v4()),
+            item,
+            blob,
+            size: 10,
+        };
+        let good = entry(item, BlobId::random());
+        let unknown_item = entry(ItemId::random(), BlobId::random());
+        let stolen_file = entry(item, held_blob);
+        let mut channel = Canned(vec![Response::Blobs {
+            vault,
+            entries: vec![unknown_item.clone(), stolen_file.clone(), good.clone()],
+            more: false,
+        }]);
+
+        let report = me.sync_blobs(&mut channel, home, vault).await.expect("sync");
+        assert_eq!((report.rows, report.skipped), (1, 2));
+        let held: Vec<AttachmentId> = me.store.attachments().iter().map(|a| a.id).collect();
+        assert!(held.contains(&good.attachment));
+        assert!(!held.contains(&unknown_item.attachment));
+        assert!(!held.contains(&stolen_file.attachment));
+    }
+
 }

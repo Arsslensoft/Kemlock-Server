@@ -14,7 +14,7 @@
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{FromRequestParts, Path, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -455,12 +455,15 @@ struct VaultDto {
     /// Versions waiting to reach the vault's other servers, counted to a limit.
     waiting_changes: u64,
     waiting_note: Option<String>,
-    /// Another server signed a promotion that would make it this vault's home. It waits for this
-    /// server's admin (`POST …/vaults/{owner}/demotion`); until then the vault doesn't sync.
+    /// The first promotion another server signed that would make it this vault's home. It waits
+    /// for this server's admin (`POST …/vaults/{owner}/demotion`); until then the vault doesn't
+    /// sync. Every one that waits is in `heldPromotions`.
     held_demotion: Option<HeldDemotionDto>,
+    /// All the promotions that wait, one for each server that would become the home.
+    held_promotions: Vec<HeldDemotionDto>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HeldDemotionDto {
     /// The server that would become the home.
@@ -470,6 +473,33 @@ pub(crate) struct HeldDemotionDto {
     epoch: u64,
     /// When it signed the promotion, in Unix seconds.
     issued_at: u64,
+}
+
+/// A promotion held for this server's admin: the vault, the server that would become its home and
+/// the epoch it would start.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HeldPromotionDto {
+    #[schema(value_type = String)]
+    vault: Owner,
+    #[schema(value_type = String)]
+    new_home: ServerId,
+    epoch: u64,
+    /// When the new home signed it, in Unix seconds.
+    issued_at: u64,
+}
+
+/// A change of addresses that came with a peer's key rotation and waits for this server's admin.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AddressChangeDto {
+    #[schema(value_type = String)]
+    peer: ServerId,
+    operator: String,
+    addresses: Vec<String>,
+    suites: Vec<String>,
+    /// When the rotation was applied, in Unix seconds.
+    received_at: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -656,6 +686,16 @@ fn peer_dto(view: &PeerView) -> PeerDto {
 }
 
 fn settings_dto(settings: &VaultFederation, is_home: bool) -> VaultDto {
+    let held: Vec<HeldDemotionDto> = settings
+        .held_demotion
+        .iter()
+        .filter_map(|record| kemlock_federation::home::peek_promotion(record).ok())
+        .map(|p| HeldDemotionDto {
+            new_home: p.new_home,
+            epoch: p.epoch,
+            issued_at: p.issued_at,
+        })
+        .collect();
     VaultDto {
         vault: settings.owner,
         policy: settings.policy.as_str(),
@@ -669,15 +709,8 @@ fn settings_dto(settings: &VaultFederation, is_home: bool) -> VaultDto {
         size_bytes: None,
         waiting_changes: 0,
         waiting_note: None,
-        held_demotion: settings
-            .held_demotion
-            .as_deref()
-            .and_then(|record| kemlock_federation::home::peek_promotion(record).ok())
-            .map(|p| HeldDemotionDto {
-                new_home: p.new_home,
-                epoch: p.epoch,
-                issued_at: p.issued_at,
-            }),
+        held_demotion: held.first().cloned(),
+        held_promotions: held,
     }
 }
 
@@ -864,12 +897,14 @@ where
 
 async fn new_code<S, C>(
     State(state): State<AdminState<S, C>>,
-    _admin: Admin,
+    Admin(actor): Admin,
 ) -> Result<Json<CodeDto>, ApiError>
 where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
+    // Every write needs a step-up token, and this one makes the secret that lets a stranger pair.
+    require_step_up(&actor)?;
     let (code, expires_at) = state.federation.pairings().new_code(unix_now());
     Ok(Json(CodeDto { code, expires_at }))
 }
@@ -1196,10 +1231,22 @@ where
     }))
 }
 
+/// Which held promotion a route means: the one `newHome` names, or the only one that waits.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromotionPick {
+    new_home: Option<String>,
+}
+
+fn pick_of(pick: &PromotionPick) -> Result<Option<ServerId>, ApiError> {
+    pick.new_home.as_deref().map(parse_server).transpose()
+}
+
 async fn accept_demotion<S, C>(
     State(state): State<AdminState<S, C>>,
     Admin(actor): Admin,
     Path(owner): Path<String>,
+    Query(pick): Query<PromotionPick>,
 ) -> Result<Json<VaultDto>, ApiError>
 where
     S: FedStore + Leases + 'static,
@@ -1207,8 +1254,131 @@ where
 {
     let owner = parse_owner(&owner)?;
     require_fresh(&actor)?;
-    let next = state.federation.accept_demotion(owner).await?;
+    let next = state
+        .federation
+        .accept_promotion_of(owner, pick_of(&pick)?)
+        .await?;
     Ok(Json(settings_dto(&next, false)))
+}
+
+/// `GET …/promotions`: the promotions held for this server's admin, whether this server is the
+/// vault's home or one of its replicas.
+async fn held_promotions<S, C>(
+    State(state): State<AdminState<S, C>>,
+    _admin: Admin,
+) -> Result<Json<Vec<HeldPromotionDto>>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    Ok(Json(
+        state
+            .federation
+            .held_promotions()
+            .await?
+            .into_iter()
+            .map(|(vault, p)| HeldPromotionDto {
+                vault,
+                new_home: p.new_home,
+                epoch: p.epoch,
+                issued_at: p.issued_at,
+            })
+            .collect(),
+    ))
+}
+
+/// `DELETE …/vaults/{owner}/demotion`: drops the held promotion without applying it.
+async fn refuse_demotion<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(owner): Path<String>,
+    Query(pick): Query<PromotionPick>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let owner = parse_owner(&owner)?;
+    require_step_up(&actor)?;
+    state
+        .federation
+        .refuse_promotion_of(owner, pick_of(&pick)?)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `GET …/address-changes`: the address changes that came with key rotations, held for the admin.
+async fn address_changes<S, C>(
+    State(state): State<AdminState<S, C>>,
+    _admin: Admin,
+) -> Result<Json<Vec<AddressChangeDto>>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    Ok(Json(
+        state
+            .federation
+            .pending_address_changes()
+            .await?
+            .into_iter()
+            .map(|p| AddressChangeDto {
+                peer: p.peer,
+                operator: p.operator,
+                addresses: p.addresses,
+                suites: p.suites,
+                received_at: p.received_at,
+            })
+            .collect(),
+    ))
+}
+
+/// `POST …/peers/{id}/address-change`: follow the server to its new addresses.
+async fn approve_address_change<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.approve_address_change(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE …/peers/{id}/contest`: trust a contested peer again.
+async fn clear_contest<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.clear_contest(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE …/peers/{id}/address-change`: keep the addresses this server knows.
+async fn refuse_address_change<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.refuse_address_change(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn offers<S, C>(
@@ -1308,7 +1478,17 @@ where
         )
         .route(
             &format!("{BASE}/vaults/{{owner}}/demotion"),
-            post(accept_demotion::<S, C>),
+            post(accept_demotion::<S, C>).delete(refuse_demotion::<S, C>),
+        )
+        .route(&format!("{BASE}/promotions"), get(held_promotions::<S, C>))
+        .route(&format!("{BASE}/address-changes"), get(address_changes::<S, C>))
+        .route(
+            &format!("{BASE}/peers/{{id}}/address-change"),
+            post(approve_address_change::<S, C>).delete(refuse_address_change::<S, C>),
+        )
+        .route(
+            &format!("{BASE}/peers/{{id}}/contest"),
+            delete(clear_contest::<S, C>),
         )
         .route(
             &format!("{BASE}/vaults/{{owner}}/events"),

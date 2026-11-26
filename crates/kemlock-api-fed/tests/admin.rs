@@ -233,6 +233,25 @@ async fn the_code_route_shows_a_displayable_code() {
 }
 
 #[tokio::test]
+async fn a_new_code_needs_a_step_up_token_like_every_other_write() {
+    let e = env(1, Arc::new(Dead));
+    let uri = "/admin/v1/federation/pairing/code";
+    for headers in [
+        &[("x-admin", "1")][..],
+        &[("x-admin", "1"), ("x-fresh", "1")][..],
+    ] {
+        let (status, _, bytes) = call(&e.app, Method::POST, uri, None, headers).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+        assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+    }
+    assert!(
+        !e.pairings.code_waiting(unix_now()),
+        "no code was made without the token"
+    );
+}
+
+#[tokio::test]
 async fn two_servers_pair_through_their_admin_routes() {
     let b = env(2, Arc::new(Dead));
     let a = env(1, Arc::new(Loop(b.pairings.clone())));
@@ -584,4 +603,157 @@ async fn every_federation_write_asks_for_a_step_up_token() {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn held_promotions_are_listed_and_refusing_one_needs_a_step_up_token() {
+    use kemlock_domain::Owner;
+    use kemlock_federation::home::{PromotionRecord, VaultFederation};
+    use kemlock_federation::ports::VaultRepo;
+
+    let e = env(1, Arc::new(Dead));
+    let me = e.replica.server_id();
+    let vault = Owner::User(UserId::random());
+    // Another server is the home; a third one (not this server) signed a promotion for itself,
+    // which this replica holds for its admin.
+    let home = ServerId::random();
+    let other = ServerId::random();
+    let settings = VaultFederation::federated(vault, home, vec![other, me]);
+    let record = PromotionRecord::build(&settings, other, unix_now()).expect("a promotion");
+    let signer = kemlock_federation::testing::identity(9, unix_now(), &Suite::IMPLEMENTED);
+    let held = VaultFederation {
+        held_demotion: vec![record.sign(&signer.signing).expect("sign").encode()],
+        ..settings
+    };
+    e.replica.store().put_vault(&held).await.expect("put");
+
+    let listing = "/admin/v1/federation/promotions";
+    let (status, listed) = admin(&e.app, Method::GET, listing, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed[0]["vault"], vault.to_string());
+    assert_eq!(listed[0]["newHome"], other.0.to_string());
+    assert_eq!(listed[0]["epoch"], 2);
+
+    let uri = format!("/admin/v1/federation/vaults/{vault}/demotion");
+    // A recent sign-in is not enough to refuse: a step-up token is.
+    let (status, _, bytes) = call(
+        &e.app,
+        Method::DELETE,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+    assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, listed) = admin(&e.app, Method::GET, listing, None).await;
+    assert_eq!(listed, json!([]));
+    // Nothing is left to refuse.
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn an_address_change_that_came_with_a_rotation_waits_for_a_step_up_token() {
+    use kemlock_federation::keyrecs::{KeyStore, PendingAddresses};
+    use kemlock_federation::ports::PeerRepo;
+
+    let e = env(1, Arc::new(Dead));
+    let other = identity(2, unix_now(), &Suite::IMPLEMENTED);
+    e.replica
+        .pin_peer(&other.descriptor, unix_now())
+        .await
+        .expect("pin");
+    e.replica
+        .store()
+        .put_pending_addresses(&PendingAddresses {
+            peer: other.server,
+            operator: "Operator 2".to_owned(),
+            addresses: vec!["https://moved.example.org".to_owned()],
+            suites: other.descriptor.descriptor.suites.clone(),
+            received_at: unix_now(),
+        })
+        .await
+        .expect("put");
+
+    let (status, listed) = admin(&e.app, Method::GET, "/admin/v1/federation/address-changes", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed[0]["peer"], other.server.0.to_string());
+    assert_eq!(listed[0]["addresses"], json!(["https://moved.example.org"]));
+
+    let uri = format!("/admin/v1/federation/peers/{}/address-change", other.server.0);
+    let (status, _, _) = call(
+        &e.app,
+        Method::POST,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a recent sign-in is not enough");
+    let (status, _) = admin(&e.app, Method::POST, &uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let moved = e
+        .replica
+        .store()
+        .get_peer(other.server)
+        .await
+        .expect("get")
+        .expect("peer");
+    assert_eq!(moved.addresses, vec!["https://moved.example.org".to_owned()]);
+    let (_, listed) = admin(&e.app, Method::GET, "/admin/v1/federation/address-changes", None).await;
+    assert_eq!(listed, json!([]));
+    // Nothing is left to approve or refuse.
+    let (status, _) = admin(&e.app, Method::POST, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn a_contested_peer_shows_as_such_and_is_trusted_again_only_with_a_step_up_token() {
+    use kemlock_federation::ports::{PeerRepo, PeerState};
+
+    let e = env(1, Arc::new(Dead));
+    let other = identity(2, unix_now(), &Suite::IMPLEMENTED);
+    e.replica
+        .pin_peer(&other.descriptor, unix_now())
+        .await
+        .expect("pin");
+    e.replica
+        .store()
+        .set_peer_state(other.server, PeerState::Contested)
+        .await
+        .expect("contested");
+
+    let (_, peers) = admin(&e.app, Method::GET, "/admin/v1/federation/peers", None).await;
+    assert_eq!(peers[0]["state"], "contested");
+
+    let uri = format!("/admin/v1/federation/peers/{}/contest", other.server.0);
+    let (status, _, _) = call(
+        &e.app,
+        Method::DELETE,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a recent sign-in is not enough");
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let held = e
+        .replica
+        .store()
+        .get_peer(other.server)
+        .await
+        .expect("get")
+        .expect("peer");
+    assert_eq!(held.state, PeerState::Paired);
+    // Nothing is left to settle.
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }

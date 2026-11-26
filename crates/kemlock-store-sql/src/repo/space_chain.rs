@@ -502,6 +502,10 @@ impl SqlStore {
     /// The setting `space_chain_external_changes`: the environment, then what the console saved,
     /// then `queue`.
     pub(crate) async fn read_external_mode(&self) -> Result<ExternalChangeMode, StoreError> {
+        // The server's layered value (environment, `kemlock.toml`, saved) when it gave one.
+        if let Some(value) = self.overlaid_setting("space_chain_external_changes") {
+            return Ok(ExternalChangeMode::parse(&value));
+        }
         if let Ok(value) = std::env::var(MODE_ENV)
             && !value.trim().is_empty()
         {
@@ -614,9 +618,24 @@ impl SqlStore {
                 .exec(&txn)
                 .await
                 .store()?;
-            for item in items {
+            // Only the space's own items can be held by it: the home of one space can't lift or
+            // set the hold of an item of another.
+            let (owner_type, owner_id) = crate::tables::items::owner_parts(Owner::Space(space));
+            let ids: Vec<Uuid> = items.iter().map(|i| i.0).collect();
+            let owned: Vec<Uuid> = crate::tables::items::Entity::find()
+                .filter(crate::tables::items::Column::OwnerType.eq(owner_type))
+                .filter(crate::tables::items::Column::OwnerId.eq(owner_id))
+                .filter(crate::tables::items::Column::Id.is_in(ids))
+                .all(&txn)
+                .await
+                .store()?
+                .into_iter()
+                .map(|row| row.id)
+                .collect();
+            for item in items.iter().filter(|i| owned.contains(&i.0)) {
                 held::Entity::delete_many()
                     .filter(held::Column::ItemId.eq(item.0))
+                    .filter(held::Column::SpaceId.eq(space.0))
                     .exec(&txn)
                     .await
                     .store()?;

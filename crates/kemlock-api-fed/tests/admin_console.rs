@@ -89,7 +89,11 @@ impl Served {
 }
 
 impl DescriptorSource for Served {
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor, FedError>> {
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        _trust: kemlock_federation::addr::Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor, FedError>> {
         Box::pin(async move {
             self.0
                 .lock()
@@ -876,8 +880,8 @@ async fn the_document_names_routes_the_router_answers_and_every_write_names_the_
             }
         }
     }
-    assert_eq!(operations, 16, "every operation is documented once");
-    assert_eq!(writes, 8);
+    assert_eq!(operations, 22, "every operation is documented once");
+    assert_eq!(writes, 12);
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"

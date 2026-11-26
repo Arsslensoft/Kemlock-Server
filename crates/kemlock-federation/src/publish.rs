@@ -56,6 +56,14 @@ impl Publisher {
     }
 }
 
+impl Publisher {
+    /// Forgets the last payload made for the entity `key` of `kind`, so the next one is made even
+    /// if it is the same.
+    pub(crate) fn forget(&mut self, kind: &str, key: Vec<u8>) {
+        self.latest.remove(&(kind.to_owned(), key));
+    }
+}
+
 impl<S: FedStore> Replica<S> {
     /// Starts publishing for `vault`, or `None` unless this server is the home of a federated
     /// vault: a replica makes no home records.

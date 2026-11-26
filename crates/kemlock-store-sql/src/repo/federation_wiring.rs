@@ -13,7 +13,9 @@ use crate::tables::federation::{item_siblings, peers};
 use crate::tables::federation_wiring::{
     federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
 };
+use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::items::{owner_from, owner_parts};
+use crate::tables::settings;
 use kemlock_app::ports::{DeviceRepo, Event, StoreError, UserRepo};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_domain::spaces::MemberState;
@@ -23,16 +25,22 @@ use kemlock_domain::{
 };
 use kemlock_federation::extra::{
     Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply, MemberStore,
-    PendingErasure, StoredOffer, VaultErased, VaultErasure,
+    PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
 };
+use kemlock_federation::home::Policy;
 use kemlock_federation::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use kemlock_federation::members::{MemberAccount, MemberDevice};
+use kemlock_federation::ports::VaultRepo;
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
 use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// The setting `federation_promotion` as the console saves it, and the variable that overrides it.
+const PROMOTION_SETTING: &str = "setting.federation_promotion";
+const PROMOTION_ENV: &str = "KEMLOCK_FEDERATION_PROMOTION";
 
 fn now_secs() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
@@ -43,6 +51,63 @@ fn from_secs(secs: i64, what: &str) -> Result<OffsetDateTime, StoreError> {
 }
 
 impl FedAdminRepo for SqlStore {
+    async fn trusted_addresses(&self, peer: ServerId) -> Result<Vec<String>, StoreError> {
+        Ok(peer_trusted_addresses::Entity::find()
+            .filter(peer_trusted_addresses::Column::Peer.eq(peer.0))
+            .order_by_asc(peer_trusted_addresses::Column::Address)
+            .all(self.reader())
+            .await
+            .store()?
+            .into_iter()
+            .map(|row| row.address)
+            .collect())
+    }
+
+    async fn trust_addresses(&self, peer: ServerId, addresses: &[String]) -> Result<(), StoreError> {
+        let held = self.trusted_addresses(peer).await?;
+        for address in addresses {
+            let address = address.trim();
+            // The column is a key, so it has a length; a longer address is never trusted.
+            if address.is_empty()
+                || address.len() > 512
+                || held.iter().any(|h| h == address)
+            {
+                continue;
+            }
+            let inserted = peer_trusted_addresses::Entity::insert(peer_trusted_addresses::ActiveModel {
+                peer: Set(peer.0),
+                address: Set(address.to_owned()),
+            })
+            .exec(self.writer())
+            .await;
+            match inserted {
+                Ok(_) => {}
+                // Another write put it there between the read and this one.
+                Err(err) if is_unique_violation(&err) => {}
+                Err(err) => return Err(map_db(err)),
+            }
+        }
+        Ok(())
+    }
+
+    async fn promotion_mode(&self) -> Result<PromotionMode, StoreError> {
+        // The server's layered value (environment, `kemlock.toml`, saved) when it gave one.
+        if let Some(value) = self.overlaid_setting("federation_promotion") {
+            return Ok(PromotionMode::parse(&value));
+        }
+        // The environment, then what the console saved, then `hold`: anything but `auto` holds.
+        if let Ok(value) = std::env::var(PROMOTION_ENV)
+            && !value.trim().is_empty()
+        {
+            return Ok(PromotionMode::parse(&value));
+        }
+        let saved = settings::Entity::find_by_id(PROMOTION_SETTING.to_owned())
+            .one(self.reader())
+            .await
+            .store()?;
+        Ok(saved.map_or(PromotionMode::Hold, |row| PromotionMode::parse(&row.value)))
+    }
+
     async fn update_peer_descriptor(
         &self,
         peer: ServerId,
@@ -293,14 +358,36 @@ impl MemberStore for SqlStore {
 
     async fn apply_member_account(
         &self,
+        vault: Owner,
         home: ServerId,
         account: &MemberAccount,
     ) -> Result<MemberApply, StoreError> {
         let existing = UserRepo::by_id(self, account.id).await?;
-        let replicated = MemberStore::is_replica_account(self, account.id).await?;
+        let copy = replicated_accounts::Entity::find_by_id(account.id.0)
+            .one(self.writer())
+            .await
+            .store()?;
+        let replicated = copy.is_some();
         if existing.is_some() && !replicated {
             // An account of this server: a copy never replaces it.
             return Ok(MemberApply::Refused);
+        }
+        match vault {
+            // The home of the account's own personal vault is its authority, and replaces a copy
+            // that came in some other way (through a space).
+            Owner::User(_) => {}
+            Owner::Space(_) => {
+                // A space's home may not speak for an account whose personal vault this server
+                // federates: that vault's home does. Where it doesn't, a copy follows the
+                // server it came from, and no other: the home of one vault must not take over
+                // the copy of an account that belongs to another.
+                let personal = VaultRepo::get_vault(self, Owner::User(account.id)).await?;
+                if personal.is_some_and(|v| v.policy == Policy::Federated)
+                    || copy.is_some_and(|c| c.home != home.0)
+                {
+                    return Ok(MemberApply::Refused);
+                }
+            }
         }
         let user = user_of(account, existing.as_ref())?;
         if let Some(other) = UserRepo::by_email(self, &user.email).await?
@@ -354,6 +441,15 @@ impl MemberStore for SqlStore {
         for registration in &account.devices {
             let created_at = from_secs(registration.created_at, "a copied device's creation time")?;
             let previous = current.iter().find(|d| d.id == registration.id);
+            if previous.is_none()
+                && let Some(other) = DeviceRepo::get(self, registration.id).await?
+                && other.user != account.id
+            {
+                // A device id is global, and the upsert would move that device, with the key it
+                // registered, to this account: a home can't take another account's device.
+                tracing::warn!(user = %account.id, "a copied account listed a device of another account: skipped");
+                continue;
+            }
             let device = Device {
                 id: registration.id,
                 user: account.id,

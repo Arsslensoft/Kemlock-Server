@@ -813,6 +813,13 @@ pub(crate) async fn erase_replica_vault(
             .is_some(),
         Owner::Space(_) => false,
     };
+    // A personal vault whose account is not a copy is this server's own: its items are the
+    // account's, and a new home (an admin here accepted its promotion) must not wipe them.
+    if matches!(vault, Owner::User(_)) && !copied {
+        // `Duplicate` is how the store says "this account is yours": the replica answers a refusal
+        // the home takes as final (`kemlock_federation::erasure::ERASE_LOCAL_ACCOUNT`).
+        return Err(StoreError::Duplicate);
+    }
     let mut rows = ErasedRows::default();
     let mut accounts = 0;
     let account = if copied {

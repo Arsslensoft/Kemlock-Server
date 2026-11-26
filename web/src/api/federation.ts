@@ -83,7 +83,7 @@ export interface WirePeer {
   name: string;
   operator: string;
   addresses: string[];
-  state: 'paired' | 'revoked';
+  state: 'paired' | 'revoked' | 'contested';
   /** The pinned `sig1` identity key, hex. */
   identityKey: string;
   pairedAt: number;
@@ -149,6 +149,8 @@ export interface WireVault {
   waitingNote: string | null;
   /** A promotion another server signed to become this vault's home, waiting for this server's admin. */
   heldDemotion?: { newHome: string; epoch: number; issuedAt: number } | null;
+  /** Every promotion that waits, one for each server that would become the home. */
+  heldPromotions?: Array<{ newHome: string; epoch: number; issuedAt: number }>;
 }
 
 export interface WireOffer {
@@ -331,6 +333,7 @@ function serverView(
 
 function peerState(peer: WirePeer): PeerState {
   if (peer.state === 'revoked') return 'revoked';
+  if (peer.state === 'contested') return 'contested';
   const status = peer.status;
   if (peer.health === 'offline') return 'offline';
   if (status?.downSince !== null && status?.downSince !== undefined) return 'offline';
@@ -378,6 +381,7 @@ function vaultOf(vault: WireVault): FedVault {
     heldDemotion: vault.heldDemotion
       ? { newHomeId: vault.heldDemotion.newHome, epoch: vault.heldDemotion.epoch, at: vault.heldDemotion.issuedAt }
       : null,
+    heldPromotions: (vault.heldPromotions ?? []).map((p) => ({ newHomeId: p.newHome, epoch: p.epoch, at: p.issuedAt })),
   };
 }
 

@@ -100,6 +100,7 @@ async fn vault_settings_cursors_and_home_records_round_trip() {
     // A promotion replaces the row.
     settings.epoch = 2;
     settings.promotion = Some(vec![9, 9]);
+    settings.home_history = vec![(1, ServerId::random())];
     settings.replicas.reverse();
     store.put_vault(&settings).await.expect("put again");
     assert_eq!(
@@ -382,4 +383,145 @@ async fn a_signature_is_kept_once_and_an_item_id_of_another_owner_is_refused() {
     let records = records_of(&a, owner).await;
     let outcome = ReplicaStore::apply(&b, &records[0].0, &records[0].1).await;
     assert!(matches!(outcome, Err(StoreError::Duplicate)));
+}
+
+/// A peer's record with an HLC time at the top of the range used to raise `last_hlc` to it, and
+/// the next local write then took a time the column can't hold: every write failed, across
+/// restarts. The clock stops at the limit now, and the start-up repair sets it back.
+#[tokio::test]
+async fn a_record_with_a_huge_hlc_time_neither_stops_local_writes_nor_survives_a_restart() {
+    let (store, dir) = common::file().await;
+    let source = memory().await;
+    let owner = user_owner();
+    put(&source, draft(ItemId::random(), owner, None, 1)).await;
+    let (mut record, signature) = records_of(&source, owner).await.remove(0);
+    record.change.hlc = Hlc(u64::MAX >> 1);
+    assert_eq!(
+        ReplicaStore::apply(&store, &record, &signature)
+            .await
+            .expect("apply"),
+        ApplyOutcome::Applied
+    );
+
+    // The clock is at the limit: a local write still goes through, at the limit.
+    let written = put(&store, draft(ItemId::random(), user_owner(), None, 1)).await;
+    assert_eq!(written.change.hlc, Hlc::MAX);
+
+    // After a restart the clock is back at the wall clock.
+    let url = common::file_url(&dir.path().join("kemlock.db"));
+    drop(store);
+    let store = SqlStore::connect(&url).await.expect("reconnect");
+    let written = put(&store, draft(ItemId::random(), user_owner(), None, 1)).await;
+    let now_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000)
+        .expect("a time after 1970");
+    assert!(
+        written.change.hlc.millis() <= now_ms + 60_000,
+        "the repaired clock is near the wall clock, not at {}",
+        written.change.hlc.millis()
+    );
+    assert!(written.change.hlc.millis() >= now_ms - 60_000);
+}
+
+#[tokio::test]
+async fn a_promotion_is_held_unless_the_saved_setting_says_auto() {
+    use kemlock_federation::extra::{FedAdminRepo, PromotionMode};
+    let store = memory().await;
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+    store
+        .put_setting("setting.federation_promotion", "auto")
+        .await
+        .expect("saved");
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Auto));
+    // Anything else, a misspelling included, holds.
+    store
+        .put_setting("setting.federation_promotion", "atuo")
+        .await
+        .expect("saved");
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+}
+
+#[tokio::test]
+async fn past_keys_and_pending_addresses_are_kept_per_peer_and_go_with_the_peer() {
+    use kemlock_federation::keyrecs::{KeyStore, PendingAddresses};
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    assert!(store.past_keys(p.id).await.expect("keys").is_empty());
+
+    store.push_past_key(p.id, &[1; 1984], 100).await.expect("push");
+    store.push_past_key(p.id, &[2; 1984], 200).await.expect("push");
+    let kept = store.past_keys(p.id).await.expect("keys");
+    assert_eq!(
+        kept.iter().map(|k| (k.key[0], k.replaced_at)).collect::<Vec<_>>(),
+        vec![(1, 100), (2, 200)],
+        "oldest first"
+    );
+
+    let pending = PendingAddresses {
+        peer: p.id,
+        operator: "Operator 1".to_owned(),
+        addresses: vec!["https://moved.example.org".to_owned()],
+        suites: vec!["kfed1-mlkem1024x25519-aes256gcm".to_owned()],
+        received_at: 300,
+    };
+    store.put_pending_addresses(&pending).await.expect("put");
+    assert_eq!(store.pending_addresses(p.id).await, Ok(Some(pending.clone())));
+    assert_eq!(store.list_pending_addresses().await, Ok(vec![pending.clone()]));
+    // A second change replaces the first.
+    let newer = PendingAddresses {
+        received_at: 400,
+        ..pending
+    };
+    store.put_pending_addresses(&newer).await.expect("replace");
+    assert_eq!(store.list_pending_addresses().await, Ok(vec![newer]));
+    store.clear_pending_addresses(p.id).await.expect("clear");
+    assert_eq!(store.pending_addresses(p.id).await, Ok(None));
+
+    // Unpairing forgets the history, so a later pairing starts clean.
+    store.put_pending_addresses(&PendingAddresses {
+        peer: p.id,
+        operator: String::new(),
+        addresses: Vec::new(),
+        suites: Vec::new(),
+        received_at: 500,
+    })
+    .await
+    .expect("put");
+    assert!(store.remove_peer(p.id).await.expect("remove"));
+    assert!(store.past_keys(p.id).await.expect("keys").is_empty());
+    assert_eq!(store.list_pending_addresses().await, Ok(Vec::new()));
+}
+
+#[tokio::test]
+async fn the_addresses_the_admin_chose_are_kept_per_peer_and_go_with_the_peer() {
+    use kemlock_federation::extra::FedAdminRepo;
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    assert!(store.trusted_addresses(p.id).await.expect("read").is_empty());
+    let lan = "http://192.168.1.5:8080".to_owned();
+    let public = "https://s1.example.org".to_owned();
+    store
+        .trust_addresses(p.id, &[lan.clone(), public.clone()])
+        .await
+        .expect("trust");
+    // Again, and with a blank: no duplicates, nothing empty.
+    store
+        .trust_addresses(p.id, &[lan.clone(), String::new()])
+        .await
+        .expect("trust again");
+    assert_eq!(
+        store.trusted_addresses(p.id).await,
+        Ok(vec![lan.clone(), public.clone()]),
+        "sorted, once each"
+    );
+    assert!(
+        store
+            .trusted_addresses(ServerId::random())
+            .await
+            .expect("read")
+            .is_empty()
+    );
+    assert!(store.remove_peer(p.id).await.expect("remove"));
+    assert!(store.trusted_addresses(p.id).await.expect("read").is_empty());
 }

@@ -9,7 +9,9 @@ use crate::tables::sends::{self, active, untouched};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::sends::{SendId, SendRecord};
 use kemlock_domain::{BlobId, Owner, ServerId};
+use kemlock_federation::home::Policy;
 use kemlock_federation::sendsync::{SendApply, SendSync};
+use kemlock_federation::ports::VaultRepo;
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 
@@ -110,7 +112,21 @@ impl SendSync for SqlStore {
         if held.owner != send.owner {
             return Ok(SendApply::Unchanged);
         }
-        let newer = send.revised_at > held.revised_at;
+        // The revision (its password, view limit, expiry, deletion date) may only be changed by
+        // the server a copy came from, or by the vault's home, which a promotion can move: a Send
+        // made here has no mark, and a copy from one peer isn't for another peer to rewrite. The
+        // view count is another matter: the larger of any server's is taken, so a limit used up at
+        // one server stays used up at the others.
+        let copied_from = replicated::Entity::find_by_id(send.id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .map(|mark| mark.from_server);
+        let from_home = VaultRepo::get_vault(self, Owner::User(send.owner))
+            .await?
+            .is_some_and(|v| v.policy == Policy::Federated && v.home == from);
+        let may_revise = copied_from == Some(from.0) || from_home;
+        let newer = may_revise && send.revised_at > held.revised_at;
         let more_views = send.access_count > held.access_count;
         if !newer && !more_views {
             return Ok(SendApply::Unchanged);

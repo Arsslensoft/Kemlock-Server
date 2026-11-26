@@ -403,6 +403,28 @@ impl fmt::Debug for PendingPairing {
     }
 }
 
+/// Whether `message` is a well-formed message 1 from another server: what [`respond`] reads before
+/// it uses the code. The hub checks it first, so a message that could not be an attempt at the code
+/// (not CBOR, a missing field, our own id) doesn't use the code up.
+pub fn check_first_message(message: &[u8], local: ServerId) -> Result<()> {
+    if message.len() > MAX_MESSAGE {
+        return Err(FedError::Pairing);
+    }
+    let value = Value::decode(message).map_err(|_| FedError::Pairing)?;
+    let f = value.as_fields().map_err(|_| FedError::Pairing)?;
+    f.only(&[0, 1, 2, 3]).map_err(|_| FedError::Pairing)?;
+    if f.uint(0).map_err(|_| FedError::Pairing)? != VERSION {
+        return Err(FedError::Pairing);
+    }
+    f.fixed::<16>(1).map_err(|_| FedError::Pairing)?;
+    f.bytes(2).map_err(|_| FedError::Pairing)?;
+    let initiator = server_id(f.fixed::<16>(3).map_err(|_| FedError::Pairing)?);
+    if initiator == local {
+        return Err(FedError::Pairing);
+    }
+    Ok(())
+}
+
 /// Answers message 1 with the code that was shown. The code is used up. Returns the state to
 /// finish with message 3, and message 2.
 pub fn respond(

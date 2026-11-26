@@ -8,17 +8,18 @@
 //! `kemlock-api-fed` puts HTTP routes (`/admin/v1/federation`) over it; the console and the CLI
 //! are its other users. Pairing is in [`crate::hub`].
 
+use crate::addr::{self, Trust};
 use crate::descriptor::{Descriptor, KEM_ROTATION_SECS, SignedDescriptor, kem_key_id};
 use crate::error::{FedError, Result};
 use crate::eventsync::PeerEvent;
 use crate::extra::{Acknowledgement, Leases, StoredOffer};
 use crate::forget::{CANT_FORCE, PeerReport};
 use crate::health::{HealthStatus, PeerHealth};
-use crate::home::{MAX_REPLICAS, Policy, VaultFederation};
+use crate::home::{MAX_REPLICAS, Policy, PromotionRecord, VaultFederation};
 use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::job::{Connector, LEASE_SECS, PeerRunner, PeerStatus, RunOutcome, lease_name};
-use crate::keyrecs::{IdentityRotator, revocation_record, rotation_record};
+use crate::keyrecs::{IdentityRotator, PendingAddresses, revocation_record, rotation_record};
 use crate::net::Http;
 use crate::pairing::Fingerprint;
 use crate::ports::{HomeStatus, LogSwitches, Peer, PeerState, StoredHomeRecord};
@@ -38,8 +39,12 @@ const EVENTS_LOOKED_AT: u32 = 200;
 /// Where the console reads a peer's published descriptor from. The network in production; the
 /// tests give it fixed ones.
 pub trait DescriptorSource: Send + Sync {
-    /// The descriptor published at `address`, parsed but not checked.
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor>>;
+    /// The descriptor published at `address`, parsed but not checked, reached as `trust` allows.
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        trust: Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor>>;
 }
 
 /// [`DescriptorSource`] over `GET /fed/v1/descriptor`.
@@ -47,8 +52,12 @@ pub trait DescriptorSource: Send + Sync {
 struct HttpDescriptors;
 
 impl DescriptorSource for HttpDescriptors {
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor>> {
-        Box::pin(async move { Http::new()?.descriptor(address).await })
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        trust: Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor>> {
+        Box::pin(async move { Http::new()?.descriptor(address, trust).await })
     }
 }
 
@@ -719,6 +728,10 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
         }
         let epoch = existing.as_ref().map_or(1, |v| v.epoch);
         let promotion = existing.as_ref().and_then(|v| v.promotion.clone());
+        let home_history = existing
+            .as_ref()
+            .map(|v| v.home_history.clone())
+            .unwrap_or_default();
         let vault = match policy {
             Policy::Local => VaultFederation {
                 owner,
@@ -728,7 +741,8 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                 replicas: Vec::new(),
                 promotion,
                 // A changed set no longer fits a held demotion's record, so it goes.
-                held_demotion: None,
+                held_demotion: Vec::new(),
+                home_history,
             },
             Policy::Federated => {
                 if replicas.is_empty() || replicas.len() > MAX_REPLICAS {
@@ -761,7 +775,8 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                     replicas,
                     promotion,
                     // A changed set no longer fits a held demotion's record, so it goes.
-                    held_demotion: None,
+                    held_demotion: Vec::new(),
+                    home_history,
                 }
             }
         };
@@ -804,13 +819,69 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// applying the promotion it sent ([`VaultFederation::held_demotion`]). The caller has checked
     /// the admin with a fresh passkey or password first. This server becomes the last replica.
     pub async fn accept_demotion(&self, vault: Owner) -> Result<VaultFederation> {
-        let next = self.replica.accept_demotion(vault).await?;
+        self.accept_promotion_of(vault, None).await
+    }
+
+    /// [`accept_demotion`](Self::accept_demotion) for the promotion `new_home` signed; `None` names
+    /// it only when exactly one waits.
+    pub async fn accept_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
+        let next = self.replica.accept_promotion_of(vault, new_home).await?;
         for server in next.order() {
             if server != self.me() {
                 self.runner.mark_dirty(server);
             }
         }
         Ok(next)
+    }
+
+    /// Drops the promotion held for `vault` ([`VaultFederation::held_demotion`]) without applying
+    /// it. The caller has checked the admin with a fresh passkey or password first.
+    pub async fn refuse_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        self.replica.refuse_demotion(vault).await
+    }
+
+    /// [`refuse_demotion`](Self::refuse_demotion) for the promotion `new_home` signed.
+    pub async fn refuse_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
+        self.replica.refuse_promotion_of(vault, new_home).await
+    }
+
+    /// Every promotion held for this server's admin: the vault and what the record says.
+    pub async fn held_promotions(&self) -> Result<Vec<(Owner, PromotionRecord)>> {
+        self.replica.held_promotions().await
+    }
+
+    /// Trusts a contested peer again: its keys said it was stolen and rotated away, and the admin
+    /// decided it wasn't. The caller has checked the admin with a step-up token.
+    pub async fn clear_contest(&self, peer: ServerId) -> Result<()> {
+        self.replica.clear_contest(peer).await?;
+        self.runner.mark_dirty(peer);
+        Ok(())
+    }
+
+    /// The address changes that came with peers' key rotations and wait for this server's admin.
+    pub async fn pending_address_changes(&self) -> Result<Vec<PendingAddresses>> {
+        self.replica.pending_address_changes().await
+    }
+
+    /// Accepts the address change that came with `peer`'s rotation: this server dials the new
+    /// addresses from now on. The caller has checked the admin with a step-up token.
+    pub async fn approve_address_change(&self, peer: ServerId) -> Result<()> {
+        self.replica.approve_address_change(peer).await?;
+        self.runner.mark_dirty(peer);
+        Ok(())
+    }
+
+    /// Refuses the address change that came with `peer`'s rotation: the addresses stay.
+    pub async fn refuse_address_change(&self, peer: ServerId) -> Result<()> {
+        self.replica.refuse_address_change(peer).await
     }
 
     /// The event log entries peers sent for `vault`, newest first: what the switches allowed.
@@ -950,8 +1021,19 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// The descriptor published by `peer`, read from the first of its addresses that answers.
     async fn fetch_descriptor(&self, peer: &Peer) -> Result<SignedDescriptor> {
         let mut last = FedError::Remote("the peer has no address".to_owned());
+        let trusted = self
+            .replica
+            .store()
+            .trusted_addresses(peer.id)
+            .await
+            .unwrap_or_default();
         for address in &peer.addresses {
-            match self.descriptors.fetch(address).await {
+            let trust = if trusted.iter().any(|t| addr::same_address(t, address)) {
+                Trust::Admin
+            } else {
+                Trust::Descriptor
+            };
+            match self.descriptors.fetch(address, trust).await {
                 Ok(descriptor) => return Ok(descriptor),
                 Err(e) => last = e,
             }

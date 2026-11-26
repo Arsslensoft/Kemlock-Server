@@ -41,3 +41,70 @@ pub(crate) mod learned_keys {
 
     impl ActiveModelBehavior for ActiveModel {}
 }
+
+/// `peer_key_history`: the identity keys a peer used before its current one.
+pub(crate) mod peer_key_history {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "peer_key_history")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub peer: Uuid,
+        /// 0 for the oldest.
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub position: i64,
+        pub identity_key: Vec<u8>,
+        /// Unix seconds this server replaced the key.
+        pub replaced_at: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// `peer_pending_addresses`: the address change a peer's rotation brought, held for the admin.
+pub(crate) mod peer_pending_addresses {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "peer_pending_addresses")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub peer: Uuid,
+        pub operator: String,
+        /// One address a line.
+        pub addresses: String,
+        /// One suite a line.
+        pub suites: String,
+        /// Unix seconds.
+        pub received_at: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+/// `peer_trusted_addresses`: the addresses of a peer the admin chose, which may be `http` or on a
+/// private network.
+pub(crate) mod peer_trusted_addresses {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "peer_trusted_addresses")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub peer: Uuid,
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub address: String,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}

@@ -672,8 +672,10 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         if vault.home == replica.server_id() && vault.replicas.contains(&peer.id) {
             let offer = replica.offer_vault(channel, peer.id, owner).await?;
             status.offer = Some(offer);
-            replica.publish_members(owner).await?;
+            // The space's own records first: a replica applies a member's account only once it
+            // knows the member belongs to the space.
             replica.publish_space_state(owner).await?;
+            replica.publish_members(owner).await?;
             if offer != OfferState::Accepted {
                 status.note = Some(
                     match offer {

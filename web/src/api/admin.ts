@@ -461,7 +461,7 @@ export interface UpdateRequestRequest {
 
 // ---- Federation ---------------------------------------------------------------------------
 
-export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked';
+export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked' | 'contested';
 export type PeerOperator = 'own' | 'other';
 
 /** A server's identity as the console shows it. `identityKey` is the `sig1` public key, base64url. */
@@ -519,6 +519,8 @@ export interface FedVault {
    * server's admin, and the vault doesn't sync until then (absent from servers that predate it).
    */
   heldDemotion?: { newHomeId: string; epoch: number; at: number } | null;
+  /** Every promotion that waits, one for each server that would become the home. */
+  heldPromotions?: Array<{ newHomeId: string; epoch: number; at: number }>;
 }
 
 export interface ConsistencyEntry {
@@ -648,6 +650,20 @@ export interface SelfSecurity {
   suites: SuiteSetting[];
 }
 
+/**
+ * The addresses a peer's key rotation brought, held for this server's admin (`GET
+ * /federation/address-changes`). This server keeps using the addresses it knew until the admin
+ * decides.
+ */
+export interface AddressChange {
+  peerId: string;
+  operator: string;
+  addresses: string[];
+  suites: string[];
+  /** Unix seconds the rotation was applied. */
+  receivedAt: number;
+}
+
 /** How a visit to one peer went (`POST /federation/check`). */
 export interface PeerCheck {
   peerId: string;
@@ -712,6 +728,11 @@ function query(values: Record<string, string | number | undefined>): FeatureCall
 
 function withToken(token: string | undefined): Record<string, string> | undefined {
   return token ? { [STEP_UP_HEADER]: token } : undefined;
+}
+
+/** The query that names which held promotion a route means, when the caller says. */
+function pickOf(newHome: string | undefined): string {
+  return newHome ? `?newHome=${encodeURIComponent(newHome)}` : '';
 }
 
 /**
@@ -931,8 +952,35 @@ export function createAdminApi(api: AdminTransport) {
      * promotion is held become the home of a vault this server is the home of. Needs a fresh
      * check or a step-up token.
      */
-    acceptDemotion: (owner: string, grant?: string) =>
-      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    acceptDemotion: (owner: string, grant?: string, newHome?: string) =>
+      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion${pickOf(newHome)}`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/vaults/{owner}/demotion`: drops the held promotion without
+     * applying it, at the home or at a replica that holds promotions for its admin. Needs a
+     * step-up token.
+     */
+    refuseDemotion: (owner: string, grant?: string, newHome?: string) =>
+      act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion${pickOf(newHome)}`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/peers/{id}/contest`: trusts a contested peer again (a key this
+     * server replaced for it said it was stolen). Needs a step-up token.
+     */
+    clearContest: (peerId: string, grant?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/contest`, undefined, grant),
+    /** `POST /admin/v1/federation/peers/{id}/unpair`: stops copying and asks the peer to delete. Needs a step-up token. */
+    unpairPeer: (peerId: string, grant?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/unpair`, undefined, grant),
+    /** `GET /admin/v1/federation/address-changes`: what key rotations said about where a peer lives, held for the admin. */
+    addressChanges: () =>
+      get<Array<Omit<AddressChange, 'peerId'> & { peer: string }>>('/federation/address-changes').then((all) =>
+        all.map(({ peer, ...rest }): AddressChange => ({ peerId: peer, ...rest })),
+      ),
+    /** `POST /admin/v1/federation/peers/{id}/address-change`: follow the peer to its new addresses. Needs a step-up token. */
+    approveAddressChange: (peerId: string, grant?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/address-change`, undefined, grant),
+    /** `DELETE /admin/v1/federation/peers/{id}/address-change`: keep the addresses this server knew. Needs a step-up token. */
+    refuseAddressChange: (peerId: string, grant?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/address-change`, undefined, grant),
     /** `PUT /admin/v1/federation/vaults/{owner} { policy, replicas }`: a vault's policy at its home. */
     setVaultPolicy: (
       owner: string,
@@ -960,8 +1008,11 @@ export function createAdminApi(api: AdminTransport) {
       if (overview.pairings.length === 0) return pairingOf(overview);
       return pairingOf(overview, await get<WireShareable[]>('/federation/shareable'));
     },
-    /** `POST /admin/v1/federation/pairing/code`: a new one-time code (the old one stops working). */
-    newPairingCode: () => post<PairingCode>('/federation/pairing/code'),
+    /**
+     * `POST /admin/v1/federation/pairing/code`: a new one-time code (the old one stops working).
+     * Needs a step-up token.
+     */
+    newPairingCode: (token?: string) => post<PairingCode>('/federation/pairing/code', undefined, token),
     /** `POST /admin/v1/federation/pairing { address, code }`: runs the exchange, then waits for the words. */
     connectPairing: async (address: string, code: string, grant?: string): Promise<PairingSession> => {
       const awaiting = await post<WireAwaiting>('/federation/pairing', { address, code }, grant);
