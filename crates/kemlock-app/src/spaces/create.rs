@@ -55,6 +55,15 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateSpace<R, V, C> {
         check_sealed_name(&input.collection.name)?;
         check_sealed_key(&input.sealed_space_key)?;
         check_sealed_key(&input.collection.sealed_key)?;
+        // Collection ids are unique across spaces: another space's id is taken too.
+        if self
+            .spaces
+            .collection_space(input.collection.id)
+            .await?
+            .is_some()
+        {
+            return Err(SpacesError::Duplicate);
+        }
         let now = self.clock.now();
 
         let space = Space {

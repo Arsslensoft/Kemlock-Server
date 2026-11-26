@@ -146,9 +146,10 @@ pub struct Limits {
     /// Asking to change the sign-in address: 3 an hour per account, whether or not the address is
     /// free. Each ask mails someone, and trying addresses is how an account would be probed.
     pub email_change: Limiter,
-    /// Account lookups by email before an invitation, per caller: 30 in 10 minutes, then
-    /// doubling delays. Only a space's admins may look, so this stops one of them harvesting
-    /// which emails have accounts.
+    /// Account lookups by email before an invitation, per caller: 10 in 10 minutes, then
+    /// doubling delays. Whoever manages users in some space may look (anyone can make a space), so
+    /// this slows one account harvesting which emails have accounts; inviting by email makes the
+    /// answer part of the product (see `lookup_account`). An invitation takes a lookup or two.
     pub lookup: Limiter,
 }
 
@@ -162,7 +163,7 @@ impl Default for Limits {
             setup: Limiter::new(5, 60),
             register: Limiter::new(10, 3600),
             email_change: Limiter::new(3, 3600),
-            lookup: Limiter::new(30, 600),
+            lookup: Limiter::new(10, 600),
         }
     }
 }

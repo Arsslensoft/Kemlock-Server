@@ -4,7 +4,9 @@
 //! The server cannot make a manifest and cannot read what it protects. It checks what it can: the
 //! bytes parse as docs/crypto.md's manifest for this owner, the `sig1` signature verifies under the
 //! signer's published bundle, and the counter is above the stored one (a manifest only goes
-//! forward, so a replayed older one cannot take the newest's place). A device checks the rest.
+//! forward, so a replayed older one cannot take the newest's place) and not more than
+//! [`SignedManifest::MAX_STEP`] above it, so no writer can freeze the counter. A device checks the
+//! rest.
 //!
 //! A manifest is kept per owner, each with its own counter. An account writes its own manifest; a
 //! space's is written by a confirmed member with edit on one of its collections and read by any
@@ -232,6 +234,16 @@ impl<M: ManifestRepo, U: UserRepo, V: ManifestVerifier, C: Clock, A: ManifestAcc
         }
         if header.counter > SignedManifest::MAX_COUNTER {
             return Err(AppError::Invalid("the counter is out of range").into());
+        }
+        // One write raises the counter by a bounded step, so a writer can't use up the counter for
+        // every other writer of the owner.
+        let stored = self
+            .manifests
+            .manifest(header.owner)
+            .await?
+            .map_or(0, |stored| stored.counter);
+        if header.counter > stored.saturating_add(SignedManifest::MAX_STEP) {
+            return Err(AppError::Invalid("the counter is too far above the stored one").into());
         }
         let manifest = SignedManifest {
             owner: header.owner,

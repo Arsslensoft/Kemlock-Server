@@ -32,4 +32,8 @@ impl SignedManifest {
     pub const SIGNATURE_LEN: usize = 3309 + 64;
     /// The counter is kept in a signed 64-bit column, so it can't pass `i64::MAX`.
     pub const MAX_COUNTER: u64 = i64::MAX as u64;
+    /// How far one write may raise the counter above the stored one. A device raises it by one, but
+    /// a member of a space who may write its manifest could otherwise set it to `MAX_COUNTER`, and
+    /// every later write would be stale for good.
+    pub const MAX_STEP: u64 = 1 << 32;
 }

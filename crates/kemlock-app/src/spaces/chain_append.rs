@@ -193,6 +193,19 @@ where
             None => (None, sc::State::empty()),
         };
 
+        // G3: a space that exists is for its members; an outsider is told nothing of it, not even
+        // its head.
+        let existing = self.spaces.load(space).await?;
+        if head.is_some() || existing.is_some() {
+            let is_member = existing
+                .as_ref()
+                .and_then(|s| s.member(actor.user))
+                .is_some_and(|m| m.state != MemberState::Revoked);
+            if !is_member {
+                return Err(AppendError::NotFound);
+            }
+        }
+
         // A3: the first record must follow the head. This is a conflict, not a refusal: the
         // caller learns the head and tries again.
         let first =
@@ -212,10 +225,11 @@ where
         let now = self.clock.now();
         let now_secs = u64::try_from(now.unix_timestamp()).unwrap_or(0);
         let gate = self.spaces.chain_home_gate(space).await?;
-        let existing = self.spaces.load(space).await?;
         let me = id_of(actor.user);
 
         let mut accepted: Vec<(Record, sc::Applied, &SignedRecord)> = Vec::new();
+        // The members this request invites: they accept again before a confirm.
+        let mut invited_here: BTreeSet<sc::Id> = BTreeSet::new();
         for signed in &request.records {
             let rec = Record::parse(&signed.entry).map_err(|reason| AppendError::Refused {
                 error: ChainError {
@@ -270,6 +284,28 @@ where
                         error,
                         detail: None,
                     })?;
+            // A12: the invitee consents, by the server's own accept step, before a confirm.
+            match &rec.body {
+                Body::Invite { member, .. } => {
+                    invited_here.insert(*member);
+                }
+                Body::Confirm { member, .. } => {
+                    let accepted_row = existing
+                        .as_ref()
+                        .and_then(|s| s.member(user_of(member)))
+                        .is_some_and(|m| {
+                            matches!(m.state, MemberState::Accepted | MemberState::Confirmed)
+                        });
+                    if invited_here.contains(member) || !accepted_row {
+                        return Err(refuse(
+                            at,
+                            Reason::NotAllowed,
+                            "a member is confirmed only after they accepted the invitation",
+                        ));
+                    }
+                }
+                _ => {}
+            }
             state = applied.state.clone();
             accepted.push((rec, applied, signed));
         }
@@ -333,7 +369,14 @@ where
                     state: Some(state_after),
                 },
             )
-            .await?;
+            .await
+            .map_err(|e| match e {
+                // The tables are shared by every space: a collection or group id of another space.
+                StoreError::Duplicate => AppendError::Invalid(
+                    "a collection or group id is already used by another space",
+                ),
+                other => other.into(),
+            })?;
         match outcome {
             AppendOutcome::Appended(new_head) => {
                 record(

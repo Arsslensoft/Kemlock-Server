@@ -192,6 +192,7 @@ impl SpaceChainRepo for SqlStore {
         append: ChainAppend,
     ) -> Result<AppendOutcome, StoreError> {
         let kept_state = append.state.clone();
+        let expected = append.expected;
         let txn = self.writer().begin().await.store()?;
         let outcome = async {
             let stored = head_in(&txn, space).await?;
@@ -285,9 +286,17 @@ impl SpaceChainRepo for SqlStore {
             self.chain_states().put(space, *head, state);
         }
         match outcome {
-            // The `(space, seq)` key says another append got there first.
+            // The `(space, seq)` key says another append got there first, when the head has moved.
+            // A duplicate with the head where the records were checked is something else, such as
+            // a collection or group id another space holds, and is the caller's to answer: it is
+            // not a lost race to retry.
             Err(StoreError::Duplicate) => {
-                Ok(AppendOutcome::Stale(head_in(self.reader(), space).await?))
+                let current = head_in(self.writer(), space).await?;
+                if current == expected {
+                    Err(StoreError::Duplicate)
+                } else {
+                    Ok(AppendOutcome::Stale(current))
+                }
             }
             other => other,
         }
@@ -525,15 +534,18 @@ impl SqlStore {
         creating: bool,
     ) -> Result<(), StoreError> {
         let space = changes.space_id;
-        if creating || !self.space_has_chain(space).await? {
-            return self.write_changes(changes, creating).await;
+        if creating {
+            return self.write_changes(changes, true).await;
+        }
+        if !self.space_has_chain(space).await? {
+            return self.write_changes_keeping_owner(changes).await;
         }
         let Some(state) = kemlock_app::spaces::SpaceRepo::load(self, space).await? else {
             return Err(StoreError::NotFound);
         };
         let (queued, other) = pending_from_changes(&state, &changes);
         if queued.is_empty() && !other {
-            return self.write_changes(changes, false).await;
+            return self.write_changes_keeping_owner(changes).await;
         }
         if self.read_external_mode().await? != ExternalChangeMode::Queue {
             return Err(StoreError::Backend(

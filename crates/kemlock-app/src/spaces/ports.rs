@@ -21,6 +21,8 @@ use std::future::Future;
 ///   its members and the grants made to it.
 /// - `collections` are inserted or replaced; `collections_removed` delete the collection, its
 ///   grants, its key copies and the item-to-collection rows that point at it.
+/// - Collection and group ids are unique across spaces: a store refuses (`Duplicate`) changes that
+///   name a collection or group of another space, in any field, rather than take it over.
 /// - `grants` and `key_copies` are inserted or replaced by their keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpaceChanges {
@@ -58,6 +60,12 @@ impl SpaceChanges {
         }
     }
 }
+
+/// What a store says (as `StoreError::Backend`) when it refuses `SpaceRepo::apply` because it would
+/// leave a space that had a confirmed owner without one. Two owners removing each other at once
+/// each pass the use case's check against the state they read; the store checks the state it
+/// writes. [`SpacesError`](super::SpacesError) turns it into `SpaceError::LastOwner`.
+pub const OWNER_REQUIRED: &str = "a space needs at least one confirmed owner";
 
 /// What the server knows about one item of a space without opening it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +107,20 @@ pub trait SpaceRepo: Send + Sync {
         &self,
         ids: &[SpaceId],
     ) -> impl Future<Output = Result<Vec<Space>, StoreError>> + Send;
+
+    /// The space that holds the collection with this id, if any does. Collection ids are chosen by
+    /// clients and are unique across spaces, so creating one checks every space, not only the
+    /// caller's.
+    fn collection_space(
+        &self,
+        id: CollectionId,
+    ) -> impl Future<Output = Result<Option<SpaceId>, StoreError>> + Send;
+
+    /// The space that holds the group with this id, if any does; see `collection_space`.
+    fn group_space(
+        &self,
+        id: GroupId,
+    ) -> impl Future<Output = Result<Option<SpaceId>, StoreError>> + Send;
 
     /// The collection keys sealed to one member.
     fn key_copies(

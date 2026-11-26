@@ -49,6 +49,10 @@ struct Inner {
     /// transaction alone lets two announces each read the sum before either has inserted; on SQLite
     /// the single writer connection does it already.
     quota_gate: tokio::sync::Mutex<()>,
+    /// Held across a space change that must leave the space an owner: the check reads the owners
+    /// before and after, and on PostgreSQL and MySQL two transactions could each see two owners,
+    /// each delete the other, and both commit. One server owns a database, as for `quota_gate`.
+    owner_gate: tokio::sync::Mutex<()>,
 }
 
 impl SqlStore {
@@ -73,6 +77,7 @@ impl SqlStore {
                 retention_overlay: Overlay::default(),
                 chain_states: crate::repo::ChainStates::default(),
                 quota_gate: tokio::sync::Mutex::new(()),
+                owner_gate: tokio::sync::Mutex::new(()),
             }),
         })
     }
@@ -151,6 +156,11 @@ impl SqlStore {
     /// Lock this around a quota's sum and the insert it guards.
     pub(crate) async fn quota_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.quota_gate.lock().await
+    }
+
+    /// Lock this around a space change that must leave the space a confirmed owner.
+    pub(crate) async fn owner_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.owner_gate.lock().await
     }
 
     pub(crate) fn reader(&self) -> &DatabaseConnection {

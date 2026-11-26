@@ -126,7 +126,10 @@ where
         )
             .into_response(),
         Some(tags) => {
-            let mut answer = env.api.answer_with_tags(&item, tags).await;
+            let mut answer = env
+                .api
+                .answer_with_tags(env.spaces.clone(), &actor, &item, tags)
+                .await;
             if let Some(c) = collection {
                 answer["collectionId"] = serde_json::json!(c);
             }
@@ -173,7 +176,11 @@ where
             })
             .into_response());
         }
-        return Ok(Json(env.api.answer_batch_with_tags(&stored, tags).await).into_response());
+        let answer = env
+            .api
+            .answer_batch_with_tags(env.spaces.clone(), &actor, &stored, tags)
+            .await;
+        return Ok(Json(answer).into_response());
     }
     let collections: BTreeMap<ItemId, CollectionId> = writes
         .iter()
@@ -185,7 +192,10 @@ where
         .execute(&actor, writes)
         .await?;
     if !tags.is_empty() {
-        let mut answer = env.api.answer_batch_with_tags(&stored, tags).await;
+        let mut answer = env
+            .api
+            .answer_batch_with_tags(env.spaces.clone(), &actor, &stored, tags)
+            .await;
         if let Some(items) = answer
             .get_mut("items")
             .and_then(serde_json::Value::as_array_mut)

@@ -4,12 +4,13 @@
 //! The server never makes a tag. A write without tags clears the item's tags (the store does it in
 //! the write's own transaction), so a tag always belongs to the revision it was made for.
 
-use super::access::{Need, authorize, authorize_item_write};
+use super::access::{Need, authorize, authorize_item_write, visible};
 use super::error::DedupError;
 use super::ports::TagStore;
 use crate::authenticate::Actor;
 use crate::ports::ItemStore;
 use crate::spaces::SpaceRepo;
+use kemlock_domain::spaces::SpaceState;
 use kemlock_domain::{Item, ItemId, MatchingSettings, Owner, Revision, TagSet};
 use std::collections::HashMap;
 
@@ -19,7 +20,9 @@ pub struct TagOutcome {
     /// Whether the tags were stored. They are not when server matching is off for the owner or
     /// the tags were made under another dedup key version; the item itself was written either way.
     pub stored: bool,
-    /// The other items of the owner that share a tag with this one.
+    /// The other items of the owner that share a tag with this one, and that the writer may see:
+    /// in a space, only items of collections they hold a grant on. Ids of the others would tell a
+    /// member with edit on one collection which guesses match items they can't see.
     pub matches: Vec<ItemId>,
 }
 
@@ -34,21 +37,28 @@ impl TagOutcome {
 
 /// Stores the tags that came with item writes.
 #[derive(Debug)]
-pub struct StoreTags<T> {
+pub struct StoreTags<T, R> {
     pub tags: T,
+    pub spaces: R,
 }
 
-impl<T: TagStore> StoreTags<T> {
+impl<T: TagStore, R: SpaceRepo> StoreTags<T, R> {
     /// Stores `tags` for `item`, which was just written. Nothing is stored for a deleted item.
-    pub async fn after_write(&self, item: &Item, tags: TagSet) -> Result<TagOutcome, DedupError> {
+    pub async fn after_write(
+        &self,
+        actor: &Actor,
+        item: &Item,
+        tags: TagSet,
+    ) -> Result<TagOutcome, DedupError> {
         let settings = self.tags.settings(item.owner).await?;
-        self.store(&settings, item, tags).await
+        self.store(actor, &settings, item, tags).await
     }
 
     /// [`after_write`](Self::after_write) for a batch: the writes that carried tags, by item id.
     /// Returns an outcome for each of those items, in the order of `items`.
     pub async fn after_batch(
         &self,
+        actor: &Actor,
         items: &[Item],
         mut tags: HashMap<ItemId, TagSet>,
     ) -> Result<Vec<(ItemId, TagOutcome)>, DedupError> {
@@ -64,13 +74,14 @@ impl<T: TagStore> StoreTags<T> {
             let Some(current) = settings.get(&item.owner) else {
                 continue;
             };
-            out.push((item.id, self.store(current, item, set).await?));
+            out.push((item.id, self.store(actor, current, item, set).await?));
         }
         Ok(out)
     }
 
     async fn store(
         &self,
+        actor: &Actor,
         settings: &MatchingSettings,
         item: &Item,
         tags: TagSet,
@@ -78,6 +89,12 @@ impl<T: TagStore> StoreTags<T> {
         if item.is_tombstone() || !settings.enabled || tags.version != settings.version {
             return Ok(TagOutcome::ignored());
         }
+        // Who may see the matches is settled before anything is stored: a failure here must not
+        // leave stored tags that the answer then calls not stored.
+        let state = match item.owner {
+            Owner::Space(_) => authorize(&self.spaces, actor.user, item.owner, Need::Read).await?,
+            Owner::User(_) => None,
+        };
         let stored = self
             .tags
             .put_tags(item.owner, item.id, item.revision, &tags)
@@ -89,6 +106,7 @@ impl<T: TagStore> StoreTags<T> {
             .tags
             .matches(item.owner, settings.version, item.id)
             .await?;
+        let matches = narrow(&self.spaces, actor, state.as_ref(), matches).await?;
         Ok(TagOutcome {
             stored: true,
             matches,
@@ -146,6 +164,29 @@ impl<T: TagStore, I: ItemStore, R: SpaceRepo> BackfillTags<T, I, R> {
             let current = self.items.get(id).await?.map(|i| i.revision);
             return Err(DedupError::StaleItem { item: id, current });
         }
-        Ok(self.tags.matches(item.owner, settings.version, id).await?)
+        let matches = self.tags.matches(item.owner, settings.version, id).await?;
+        narrow(&self.spaces, actor, state.as_ref(), matches).await
     }
+}
+
+/// The matches `actor` may see. In a vault they are the owner's own; in a space they are the
+/// items of collections the actor holds a grant on, as `ListDuplicates` shows them.
+async fn narrow<R: SpaceRepo>(
+    spaces: &R,
+    actor: &Actor,
+    state: Option<&SpaceState>,
+    matches: Vec<ItemId>,
+) -> Result<Vec<ItemId>, DedupError> {
+    // No state: a vault, whose matches are all the owner's own, and the owner is the only writer.
+    let Some(state) = state else {
+        return Ok(matches);
+    };
+    if matches.is_empty() {
+        return Ok(matches);
+    }
+    let seen = visible(spaces, state, actor.user, &matches).await?;
+    Ok(matches
+        .into_iter()
+        .filter(|item| seen.contains(item))
+        .collect())
 }

@@ -727,7 +727,11 @@ manifest = "kemlock/v1/manifest" ‖ owner (17) ‖ u64be(counter) ‖ u32be(n)
 ```
 
 Entries are sorted by item id bytes. A tombstone's hash is 32 zero bytes. The writer signs it with
-`sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen.
+`sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen. A server
+refuses a write whose counter is more than 2^32 above the one it stores for that owner (`400`), so
+no writer can set it near its limit and make every later write stale. A space's manifest may be
+written by any confirmed member with edit on a collection ("Using the state"), so this bound is what
+keeps one of them from freezing it.
 
 ## Space chain
 
@@ -1568,6 +1572,10 @@ that the `confirm` records its own bundle, byte for byte.
   its revoke and remove are both `remove`, and its restore is a new `invite`.
 - S3. With each record that commits seals or names, it keeps the boxes and sealed names the record
   committed, by `seq`.
+- S4. A collection id and a group id belong to one space on a server. Clients choose them, so the
+  server refuses a create, a record or a change that names an id another space holds (`409`
+  `already-exists`, and `400` for a chain request), and never moves, replaces or deletes a row of another
+  space. A client chooses a fresh random UUID for each.
 
 **Serving**
 
@@ -1577,7 +1585,8 @@ that the `confirm` records its own bundle, byte for byte.
 - G2. `?from=<seq>` answers the records with `seq ≥ from`: an empty array past the head, and `400` for
   a value that isn't an integer from `0`.
 - G3. Only an invited or confirmed member gets the chain. Any other account, a removed member
-  included, gets `404`, as for every other space route.
+  included, gets `404`, as for every other space route. This holds for a `POST` too: it answers `404`, not
+  a `409` with the head, to anyone but a member of a space that exists or has a chain.
 - G4. The home and the space's replicas may serve the chain; records are signed, so a replica needs
   no trust. Only the home accepts records.
 - G5. `GET /kem/v1/spaces/{id}/chain/{seq}/seals` answers the seal hashes record `seq` committed:
@@ -1618,6 +1627,16 @@ these hold:
 - A11. For each seal commitment, the request carries exactly one box per recipient the chain derives,
   each 1661 bytes starting with `u8(1)`, and `count` and the digest recomputed from them match. For
   each name hash, it carries the sealed name, 28 to 4096 bytes, whose `SHA-256` matches.
+- A12. A `confirm` is for a member who has accepted the invitation: the server's own "accepted" step
+  (S2), which comes after the `invite` record in an earlier request and before the `confirm`, and a
+  `confirm` that follows an `invite` of the same member in its own request is refused. A member the
+  server holds only as invited (never accepted) is not a member for any policy, key or sync, even
+  if the chain says `confirmed`. A later `confirm` of a member who is already confirmed (a new key
+  version) needs no new acceptance. Refused as "not allowed" (`422`).
+  A server that ran before this rule may hold members a chain confirmed who never accepted. It can't
+  tell them from the rest: the row's accepted time was written when the confirm landed, so it records
+  no consent. It repairs nothing; an Owner or Admin who finds such a member (a confirmed member they
+  never invited, or one whose invitation was never accepted) removes them with a `remove` record.
 
 **Items**
 

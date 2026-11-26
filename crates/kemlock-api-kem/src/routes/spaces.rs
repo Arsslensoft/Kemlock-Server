@@ -1019,6 +1019,15 @@ pub(crate) struct AccountLookupDto {
     key_version: u32,
 }
 
+/// `GET /kem/v1/spaces/{id}/lookup?email=`: the account an admin may invite, for the chain's `invite`
+/// record.
+///
+/// This tells anyone who manages users in some space whether an email has an account, and anyone
+/// signed in can make a space and so manage its users. That is inherent to inviting by email: the
+/// inviter needs the invitee's id and key bundle, and the server can't say "no account" any other
+/// way. What limits it: the caller must manage users of the space (checked before the email is
+/// looked at), it is limited per caller (`Limits::lookup`, 10 in 10 minutes with doubling delays),
+/// and an account with no published keys reads as absent.
 async fn lookup_account<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
