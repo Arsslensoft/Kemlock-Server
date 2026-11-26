@@ -590,7 +590,10 @@ signature = sig1 signature of the sealer's own key, context "key-box", over the 
   commits) don't change.
 
 **What the server does.** Every route that takes a sealed space key or collection key for a space
-with no chain also takes the signature (`signature`, base64url). The server rebuilds the statement
+with no chain also takes the signature, base64url, next to the box: `signature` in each `{user, sealed}`,
+`{collection, user, sealed}` and `{collection, sealed}` entry of a request, `sealedSpaceKeySignature` beside
+`sealedSpaceKey` (creating a space, confirming a member) and `sealedKeySignature` beside the first
+collection's `sealedKey`. The server rebuilds the statement
 from the route (the space, the collection, the key version it will store, the recipient and the box)
 with the signed-in account as sealer and that account's registered key version, and refuses the
 request (invalid, `400`) unless the signature verifies under the `sig1` key of the sealer's
