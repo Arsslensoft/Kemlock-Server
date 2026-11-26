@@ -466,9 +466,11 @@ POST /kem/v1/account/rotation
 `GET /kem/v1/account/rotation` answers what the server holds that the install must cover, so the
 client builds the request from the server's own list: `{keyVersion, hasPassword, publicBundle,
 kit: {kitId} | null, passkeys: [{id, credentialId}], deviceCopies: [{deviceId}], emergency: [{id,
-state, granteeId}], recovery: [{space, keySeq}], sends: [{id, kind}], items: {count}, spaces: count,
+state, granteeId, granteeEmail, granteeBundle}], recovery: [{space, keySeq}], sends: [{id, kind}], items: {count}, spaces: count,
 previousKeys: {keyVersion, sealed} | null}`. `passkeys` lists only the passkeys that have a PRF wrap;
-`emergency` only grants that hold a box.
+`emergency` only grants that hold a box. `granteeBundle` is the contact's bundle as the server holds it now; a client
+seals the new root key to it only after the person compared its fingerprint with the one on the
+contact's own screen, and otherwise drops the grant, because the server could have swapped it.
 
 **What the server checks**, all of it inside the one transaction that writes, so a request that
 fails any check writes nothing and answers `409 rotation-incomplete` (what changed since the client

@@ -30,13 +30,13 @@ use axum::{Extension, Json, Router, middleware};
 use kemlock_app::AppError;
 use kemlock_app::b64url;
 use kemlock_app::devices::KeyCopyRepo;
-use kemlock_app::ports::TokenSigner;
+use kemlock_app::ports::{TokenSigner, UserRepo};
 use kemlock_app::rotation::{
     InstallRequest, Plan, Rotation, RotationError, RotationStore, StagedItem,
 };
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{GrantId, KeyProtection};
-use kemlock_domain::{ItemId, PasskeyId, Revision, SpaceId};
+use kemlock_domain::{ItemId, PasskeyId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
@@ -111,6 +111,11 @@ pub(crate) struct GrantHeld {
     state: String,
     /// The contact's account, once they accepted.
     grantee_id: Option<Uuid>,
+    /// The contact's address, when their account is known.
+    grantee_email: Option<String>,
+    /// The contact's public bundle as the server holds it now, base64url. A client seals the new root
+    /// key to it only after the person compared its fingerprint with the contact's own screen.
+    grantee_bundle: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -193,6 +198,8 @@ impl PlanDto {
                     id: id.0,
                     state: state.as_str().to_owned(),
                     grantee_id: grantee.map(|user| user.0),
+                    grantee_email: None,
+                    grantee_bundle: None,
                 })
                 .collect(),
             recovery: holdings
@@ -463,7 +470,23 @@ where
     R: RotationStore + Clone + 'static,
 {
     let plan = rotation(&api, &repos).plan(authed.actor.user).await?;
-    Ok(Json(PlanDto::of(&plan)))
+    let mut dto = PlanDto::of(&plan);
+    // The contacts as they are now: the page shows each one's fingerprint for the person to compare.
+    for grant in &mut dto.emergency {
+        let Some(grantee) = grant.grantee_id else {
+            continue;
+        };
+        let known = UserRepo::by_id(&api.store, UserId(grantee))
+            .await
+            .map_err(AppError::from)?;
+        if let Some(contact) = known {
+            grant.grantee_email = Some(contact.email.as_str().to_owned());
+            if !contact.public_bundle.is_empty() {
+                grant.grantee_bundle = Some(b64url::encode(&contact.public_bundle));
+            }
+        }
+    }
+    Ok(Json(dto))
 }
 
 async fn handle_stage<S, P, K, R>(

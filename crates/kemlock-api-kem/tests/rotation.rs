@@ -16,6 +16,7 @@ use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::rotation::{
     Holdings, Install, PreviousKeys, RotationError, RotationStore, StagedItem, check_install,
 };
+use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{ChangeId, PasskeyId, UserId};
 use serde_json::{Value, json};
 use std::net::SocketAddr;
@@ -255,6 +256,12 @@ async fn the_plan_says_what_the_account_holds() {
     assert_eq!(plan["hasPassword"], true);
     assert_eq!(plan["passkeys"][0]["id"], passkey.to_string());
     assert_eq!(plan["items"]["count"], 0);
+    // A contact is shown with the address and the bundle the server holds for them now.
+    rig.repo.holdings.lock().expect("lock").emergency =
+        vec![(GrantId::random(), EmergencyState::Confirmed, Some(sam.id))];
+    let plan = sam.call("GET", "/kem/v1/account/rotation", None).await.json();
+    assert_eq!(plan["emergency"][0]["granteeEmail"], EMAIL);
+    assert!(plan["emergency"][0]["granteeBundle"].is_string(), "{plan}");
     assert!(plan["previousKeys"].is_null());
 }
 
