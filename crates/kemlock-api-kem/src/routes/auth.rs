@@ -153,8 +153,17 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
                 setup_grant: request.setup_grant,
             })
             .await?;
+        // "Verify the email of a new account": one made on a sign-up is held until the link mailed to
+        // its address is opened. Not the first admin (made at setup), and not one that came by an
+        // invitation, which was mailed to the address and so proved it. A failure leaves the account
+        // held with no link: it asks for one from the sign-in screen.
+        let held = api.live.signups_verify() && !registered.admin && !invited;
+        if held {
+            api.signup_verify().begin(registered.user).await?;
+        }
         // The account exists: the invitation is spent. A failure here leaves it pending, which
         // can't let anyone register again (the address is taken), so it is only logged.
+        let invited = invitation.is_some();
         if let Some(invitation) = invitation {
             invitation.consume().await;
         }
@@ -163,6 +172,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             Json(RegisterFinishResponse {
                 user_id: registered.user.0,
                 admin: registered.admin,
+                email_confirmation_required: held,
             }),
         ))
     }
@@ -212,6 +222,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .map_err(rate_limited)?;
         let device = request.device.into_info()?;
         let login_state = decode("loginState", &request.login_state)?;
+        let address = Email::parse(&request.email).ok();
         // A login state finishes once, whether the password was right or not. Only a genuine,
         // fresh state is remembered, so made-up ones take no room.
         api.sign_in().check_login_state(&login_state)?;
@@ -236,6 +247,14 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             Err(AppError::Unauthorized) => api.limits.account.fail(&account, api.now()),
             Ok(_) => api.limits.account.clear(&account),
             Err(_) => {}
+        }
+        // The password was right but the address of a new account isn't confirmed: a new link is
+        // mailed when one is due, so the person isn't left with a mail that ran out.
+        if matches!(&finished, Err(AppError::EmailNotConfirmed))
+            && let Some(address) = address
+            && let Err(error) = api.signup_verify().resend(&address).await
+        {
+            tracing::warn!(%error, "couldn't send a new link to confirm an address");
         }
         api.log_attempt(api.attempt("password", None, &finished, proof.ip, signed_in_ids))
             .await;

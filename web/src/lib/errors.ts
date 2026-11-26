@@ -41,6 +41,9 @@ export function describeError(error: unknown): Described {
         return { id: 'error.stale' };
       case 'forbidden':
         return { id: 'error.forbidden' };
+      // "Verify the email of a new account" is on and the link in the mail hasn't been opened.
+      case 'email-not-confirmed':
+        return { id: 'error.emailNotConfirmed' };
       // The attachment quota (crates/kemlock-api-kem/src/routes/files.rs).
       case 'storage-disabled':
         return { id: 'error.storageDisabled' };

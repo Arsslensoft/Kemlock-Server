@@ -27,6 +27,11 @@ pub enum AppError {
     /// cancels the deletion or the account is erased. Said only to whoever proved the credentials.
     #[error("the account is being deleted")]
     AccountBeingDeleted,
+    /// The account was made while "verify the email of a new account" was on and its address isn't
+    /// confirmed yet: no session and no use until the link mailed to it is opened. Said only to
+    /// whoever proved the credentials.
+    #[error("the account's email address isn't confirmed")]
+    EmailNotConfirmed,
     /// A space the account is an ordinary member of requires single sign-on, so this way in is
     /// closed to it.
     #[error("space {space} requires single sign-on")]

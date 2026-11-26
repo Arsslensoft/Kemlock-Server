@@ -229,3 +229,31 @@ async fn an_access_token_dies_with_a_refresh_token_used_twice() {
         Err(AppError::SessionEnded("signed-out"))
     );
 }
+
+#[tokio::test]
+async fn a_token_of_an_account_held_for_its_email_is_refused_until_it_is_confirmed() {
+    use kemlock_app::ports::{Clock, UserRepo};
+    let (world, user, tokens) = signed_in().await;
+    let now = Clock::now(&world.env);
+    UserRepo::hold_unconfirmed(&world.store, user, [1; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
+        Err(AppError::EmailNotConfirmed)
+    );
+
+    // Opening the link releases it: the same token works again.
+    assert_eq!(
+        UserRepo::spend_confirmation(&world.store, [1; 32], now).await,
+        Ok(Some(user))
+    );
+    world
+        .authenticate()
+        .execute(&tokens.access_token, JKT)
+        .await
+        .expect("authenticates");
+}

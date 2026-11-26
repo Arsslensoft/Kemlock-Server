@@ -763,6 +763,23 @@ async fn an_existing_account_with_the_same_verified_email_is_linked_and_left_alo
 }
 
 #[tokio::test]
+async fn an_account_whose_email_isnt_confirmed_is_not_linked_by_email() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    let now = sso.world.env.now();
+    UserRepo::hold_unconfirmed(&sso.world.store, existing, [1; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+
+    assert_eq!(
+        sso.sign_in("provider-code-1").await,
+        Err(SsoError::App(AppError::EmailNotConfirmed))
+    );
+    assert!(sso.repos.identities().is_empty(), "nothing is linked");
+    assert!(sso.world.store.devices_of(existing).is_empty());
+}
+
+#[tokio::test]
 async fn a_disabled_account_is_refused_once_the_provider_has_said_who_it_is() {
     let sso = Sso::new();
     let existing = make_user(&sso.world, "ada@example.org").await;

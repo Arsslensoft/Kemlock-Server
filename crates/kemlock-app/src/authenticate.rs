@@ -60,6 +60,11 @@ impl<U: UserRepo, D: DeviceRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock>
         if user.security_stamp != claims.security_stamp {
             return Err(AppError::SessionEnded("security-stamp-changed"));
         }
+        // An account made on a sign-up that asks for a confirmed address is not used until the link
+        // mailed to it is opened, whatever tokens it holds.
+        if self.users.email_unconfirmed(user.id).await? {
+            return Err(AppError::EmailNotConfirmed);
+        }
         // A device that was signed out is gone from the account: its access token, which would
         // otherwise live out its ten minutes, goes with it. So does one whose key no longer
         // vouches for it (a refresh token used twice, or sessions ended everywhere, clear the

@@ -259,12 +259,35 @@ fn doc_register_start() {}
     post, path = "/kem/v1/accounts/register/finish", tag = "accounts",
     request_body = RegisterFinishRequest,
     responses(
-        (status = 201, description = "The account exists", body = RegisterFinishResponse),
+        (status = 201, description = "The account exists. When the server verifies the address of a new account, `emailConfirmationRequired` is true: the account can't sign in until the link mailed to it is opened", body = RegisterFinishResponse),
         (status = 409, description = "The email is taken", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn doc_register_finish() {}
+
+#[utoipa::path(
+    get, path = "/kem/v1/accounts/confirm-email", tag = "accounts",
+    params(("token" = String, Query, description = "The token in the link of the mail, base64url")),
+    responses(
+        (status = 200, description = "A small HTML page: the address is confirmed and the account can sign in", body = String, content_type = "text/html"),
+        (status = 400, description = "A small HTML page: the link is unknown, opened already or out of time", body = String, content_type = "text/html"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_confirm_email() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/accounts/confirm-email/resend", tag = "accounts",
+    request_body = EmailRequest,
+    responses(
+        (status = 202, description = "Asked for, whatever the address: a new link is mailed only to an address whose account is held back and has had none for five minutes"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_resend_confirm_email() {}
 
 #[utoipa::path(
     post, path = "/kem/v1/auth/opaque/start", tag = "auth",
@@ -436,7 +459,7 @@ fn doc_live() {}
     ),
     paths(
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
-        doc_register_start, doc_register_finish, doc_opaque_start, doc_opaque_finish,
+        doc_register_start, doc_register_finish, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
         doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live
     ),

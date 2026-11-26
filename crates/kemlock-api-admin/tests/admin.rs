@@ -1468,6 +1468,48 @@ async fn the_server_is_told_when_settings_are_saved_and_only_then() {
 }
 
 #[tokio::test]
+async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+
+    let refused = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "true"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
+
+    // With the mail server in the same save it is taken, and then it can be changed on its own.
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "true", "smtp_host": "mail.example.org"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    assert_eq!(
+        rig.admin.saved_setting("setting.signups_verify").as_deref(),
+        Some("true")
+    );
+    let off = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "false"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
+}
+
+#[tokio::test]
 async fn settings_refuse_what_is_out_of_bounds_all_or_none() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;

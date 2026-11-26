@@ -27,7 +27,8 @@
 //!   `auth_requests.sealed_key`, `emergency_access.sealed_key`, `members.sealed_space_key`,
 //!   `collection_keys.sealed`, `space_recovery_boxes.sealed`, `sends.sealed_key` and
 //!   `passkeys.prf_wrapped_key`.
-//! - **Hashes**: `refresh_tokens`, `admin_invites.token_hash`, `email_changes.token_hash` and
+//! - **Hashes**: `refresh_tokens`, `admin_invites.token_hash`, `email_changes.token_hash`,
+//!   `email_confirmations.token_hash` and
 //!   `sends.password_hash`.
 //! - **Plain**: `push_tokens.token`, `bw_devices.push_token` and `webauthn_challenges.state` (a
 //!   short-lived ceremony state)
@@ -44,7 +45,8 @@ use crate::tables::sso;
 use crate::tables::{
     admin, attachments, auth_requests, bw_account_extras, bw_accounts, bw_attachments, bw_devices,
     bw_docs, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
-    device_key_copies, devices, duplicate_dismissals, email_changes, emergency_access, events,
+    device_key_copies, devices, duplicate_dismissals, email_changes, email_confirmations,
+    emergency_access, events,
     federation, federation_insight, federation_keys, federation_logs, federation_wiring, item_tags,
     items, passkeys, pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens,
     revoked_families, sends, server_meta, settings, sign_in_log, signed_manifests, sync_horizon,
@@ -187,6 +189,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         passkeys::Entity,
         recovery_kits::Entity,
         email_changes::Entity,
+        email_confirmations::Entity,
         webauthn_challenges::Entity,
         bw_accounts::Entity,
         bw_account_extras::Entity,

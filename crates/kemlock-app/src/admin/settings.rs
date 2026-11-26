@@ -732,6 +732,7 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
     /// [`AdminError::Invalid`].
     pub async fn apply(&self, changes: &BTreeMap<String, Change>) -> Result<(), AdminError> {
         let mut writes: Vec<(&'static str, Option<String>)> = Vec::with_capacity(changes.len());
+        let mut verifies = false;
         for (key, change) in changes {
             let d = definition(key)
                 .ok_or_else(|| AdminError::Invalid(format!("{key} isn't a setting")))?;
@@ -742,6 +743,9 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                 Change::Reset => writes.push((d.key, None)),
                 Change::Set(value) => {
                     let value = validate(d, value)?;
+                    if d.key == "signups_verify" && value == "true" {
+                        verifies = true;
+                    }
                     let stored = if d.kind == Kind::Secret {
                         b64url::encode(&self.seal.seal(&purpose(d.key), value.as_bytes()))
                     } else {
@@ -749,6 +753,20 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                     };
                     writes.push((d.key, Some(stored)));
                 }
+            }
+        }
+        // A link can't be mailed without a mail server, and an account held back for one that never
+        // comes can't be used: turning the setting on needs an SMTP host, saved with it or already set.
+        if verifies {
+            let host = match changes.get("smtp_host") {
+                Some(Change::Set(host)) => host.trim().to_owned(),
+                Some(Change::Reset) => String::new(),
+                None => self.get("smtp_host").await?.unwrap_or_default(),
+            };
+            if host.trim().is_empty() {
+                return Err(AdminError::Invalid(
+                    "verifying new accounts needs mail: set the SMTP host first".to_owned(),
+                ));
             }
         }
         for (key, value) in writes {

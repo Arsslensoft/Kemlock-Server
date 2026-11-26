@@ -53,6 +53,7 @@ pub mod sends;
 pub mod session;
 pub mod setup_basics;
 pub mod sign_in;
+pub mod signup_verify;
 pub mod spaces;
 pub mod sso;
 pub mod sync_delta;

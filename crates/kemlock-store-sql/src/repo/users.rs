@@ -1,12 +1,14 @@
 //! `UserRepo` on `users`.
 
-use crate::error::StoreResult;
+use crate::convert::utc;
+use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::admin::user_state;
-use crate::tables::{bw_account_extras, pending_erasures, users};
-use kemlock_app::ports::{StoreError, UserRepo};
+use crate::tables::{bw_account_extras, email_confirmations, pending_erasures, users};
+use kemlock_app::ports::{EmailConfirmation, StoreError, UserRepo};
 use kemlock_domain::{Email, User, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
+use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter};
 use time::OffsetDateTime;
 
@@ -121,5 +123,84 @@ impl UserRepo for SqlStore {
             .await
             .store()?
             .map(|row| row.due_at))
+    }
+
+    /// Read from the writer: a hold made a moment ago must be seen, or a stale read would let an
+    /// unconfirmed account in.
+    async fn email_unconfirmed(&self, id: UserId) -> Result<bool, StoreError> {
+        Ok(email_confirmations::Entity::find_by_id(id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some())
+    }
+
+    /// An upsert on the account: a new link replaces the one before, which stops working.
+    async fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let row = email_confirmations::ActiveModel {
+            user_id: Set(id.0),
+            token_hash: Set(token_hash.to_vec()),
+            requested_at: Set(utc(requested_at)),
+            expires_at: Set(utc(expires_at)),
+        };
+        let conflict = OnConflict::column(email_confirmations::Column::UserId)
+            .update_columns([
+                email_confirmations::Column::TokenHash,
+                email_confirmations::Column::RequestedAt,
+                email_confirmations::Column::ExpiresAt,
+            ])
+            .to_owned();
+        let written = email_confirmations::Entity::insert(row)
+            .on_conflict(conflict)
+            .exec(self.writer())
+            .await;
+        match written {
+            Ok(_) => Ok(()),
+            // MySQL counts a replaced row with identical values as zero rows affected.
+            Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+            Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
+            Err(err) => Err(map_db(err)),
+        }
+    }
+
+    async fn confirmation_of(&self, id: UserId) -> Result<Option<EmailConfirmation>, StoreError> {
+        Ok(email_confirmations::Entity::find_by_id(id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .map(email_confirmations::Model::into_domain))
+    }
+
+    /// The delete is the claim: of two openings of one link, one finds the row to remove.
+    async fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> Result<Option<UserId>, StoreError> {
+        let Some(row) = email_confirmations::Entity::find()
+            .filter(email_confirmations::Column::TokenHash.eq(token_hash.to_vec()))
+            .one(self.writer())
+            .await
+            .store()?
+        else {
+            return Ok(None);
+        };
+        if row.expires_at <= now {
+            return Ok(None);
+        }
+        let spent = email_confirmations::Entity::delete_many()
+            .filter(email_confirmations::Column::UserId.eq(row.user_id))
+            .filter(email_confirmations::Column::TokenHash.eq(token_hash.to_vec()))
+            .exec(self.writer())
+            .await
+            .store()?
+            .rows_affected;
+        Ok((spent == 1).then_some(UserId(row.user_id)))
     }
 }

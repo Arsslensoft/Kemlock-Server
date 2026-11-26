@@ -169,6 +169,10 @@ where
         if self.users.account_disabled(user.id).await? {
             return Err(AppError::AccountDisabled);
         }
+        // Said only to whoever proved the password: a new account whose address isn't confirmed.
+        if self.users.email_unconfirmed(user.id).await? {
+            return Err(AppError::EmailNotConfirmed);
+        }
         ensure_not_pending(&self.users, user.id).await?;
         // Only now, with the password proved: the answer never tells a stranger which accounts
         // a space has locked to single sign-on.

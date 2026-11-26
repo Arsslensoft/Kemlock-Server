@@ -307,6 +307,10 @@ pub struct RegisterFinishResponse {
     pub user_id: Uuid,
     /// Whether the account is the first admin.
     pub admin: bool,
+    /// Present (true) only when the server verifies the address of a new account and this one is
+    /// held back: it can't sign in until the link mailed to its address is opened.
+    #[serde(skip_serializing_if = "is_false")]
+    pub email_confirmation_required: bool,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

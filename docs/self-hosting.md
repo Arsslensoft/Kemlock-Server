@@ -99,6 +99,24 @@ name or a link that opens anything without signing in.
 A bad value stops the start and names the setting. The admin console shows whether mail is set up.
 The Kemlock API mails from a task of its own, so a slow SMTP server does not hold up a sign-in.
 
+### Verifying the email of a new account (`SIGNUPS_VERIFY`)
+
+Off by default. When it is on and the server can send mail (`SMTP_HOST` is set), an account made on
+a sign-up is held back until the link mailed to its address is opened: it can't sign in or be used,
+the Kemlock API answers `email-not-confirmed` (403), and single sign-on does not link to it by
+email. The link works once and runs out in 24 hours; `POST /kem/v1/accounts/confirm-email/resend`
+(the sign-in screen's "send it again") mails a new one, at most one in five minutes. An account made
+from an invitation (its token was mailed to the address) or as the first admin is not held, and
+accounts that existed before the setting was turned on are confirmed. The Kemlock API's
+`register/finish` answer then carries `"emailConfirmationRequired": true`; with the setting off it
+is the answer it always was. The Bitwarden API follows the same setting for its own registration.
+
+Without a mail server the setting can't work, so the console refuses to turn it on until an SMTP host
+is saved, and a server started with `SIGNUPS_VERIFY=true` and no `SMTP_HOST` logs a warning and
+holds no one back. Without it anyone can register any address first: with sign-ups limited to
+`@corp.com`, someone could take `ceo@corp.com` before its owner does. Turn it on whenever sign-ups
+are open to people you don't know, or limited to a domain.
+
 ### Push to phones
 
 The server wakes the Kemlock apps itself, with a push that says only "sync now": no email, account

@@ -10,8 +10,8 @@ use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
     EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice,
-    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, TwoStepChangedNotice,
-    TwoStepCodeNotice, TwoStepRecoveredNotice,
+    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, SignupVerifyNotice,
+    TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -385,6 +385,26 @@ fn email_change(notice: &EmailChangeNotice, brand: &Branding) -> Rendered {
     )
 }
 
+fn signup_verify(notice: &SignupVerifyNotice, brand: &Branding) -> Rendered {
+    // The token is base64url, so it needs no escaping in an address.
+    let link = format!(
+        "{}/kem/v1/accounts/confirm-email?token={}",
+        brand.domain.trim_end_matches('/'),
+        notice.token
+    );
+    let body = Body::new(&[
+        "Open this link to confirm that this is your address and finish making your account:",
+        &link,
+        "It works once and runs out in 24 hours. Until you open it the account can't be used. If you didn't make an account, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("Confirm your {} account", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
 fn email_change_requested(notice: &EmailChangeRequestedNotice, brand: &Branding) -> Rendered {
     let lead = format!(
         "On {}, a change of the sign-in address of your account to {} was asked for.",
@@ -487,6 +507,7 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::EmailTaken(n) => email_taken(n, brand),
         Notice::EmailChanged(n) => email_changed(n, brand),
         Notice::PasswordChanged(n) => password_changed(n, brand),
+        Notice::SignupVerify(n) => signup_verify(n, brand),
     }
 }
 
@@ -746,6 +767,24 @@ mod tests {
         assert_eq!(r.to, "new@example.com");
         assert_eq!(r.subject, "Confirm your new Kemlock sign-in address");
         let link = "https://vault.example.com/confirm-email?token=tok_en-123";
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.html.contains(link), "{}", r.html);
+        assert!(!r.subject.contains("tok_en"));
+        assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_mail_to_a_new_account_carries_the_link_and_the_token_nowhere_else() {
+        let r = render(
+            &Notice::SignupVerify(SignupVerifyNotice {
+                to: email(),
+                token: "tok_en-456".to_owned(),
+            }),
+            &Branding::new("https://vault.example.com/"),
+        );
+        assert_eq!(r.to, "ada@example.com");
+        assert_eq!(r.subject, "Confirm your Kemlock account");
+        let link = "https://vault.example.com/kem/v1/accounts/confirm-email?token=tok_en-456";
         assert!(r.text.contains(link), "{}", r.text);
         assert!(r.html.contains(link), "{}", r.html);
         assert!(!r.subject.contains("tok_en"));

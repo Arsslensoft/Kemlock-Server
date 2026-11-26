@@ -1,7 +1,7 @@
 mod fakes;
 
 use fakes::*;
-use kemlock_app::ports::{Clock, SecretSeal, TokenSigner, TwoFactorMethod};
+use kemlockapp::ports::{Clock, SecretSeal, TokenSigner, TwoFactorMethod};
 use kemlock_app::{
     AppError, DeviceInfo, OpaqueFinishInput, OpaqueStartInput, SecondStepInput, SignedIn, b64url,
 };
@@ -762,4 +762,26 @@ async fn a_secret_copied_from_another_accounts_row_does_not_sign_in() {
     let result = second_step_with(&world, challenge_for(&world).await, code).await;
     assert!(result.is_err(), "the copied secret does not open here");
     assert_eq!(world.store.devices_of(user).len(), 0);
+}
+
+#[tokio::test]
+async fn an_account_held_for_its_email_is_refused_once_the_password_checks_out() {
+    use kemlock_app::ports::{Clock, UserRepo};
+    let (world, user) = signed_in_world().await;
+    let now = Clock::now(&world.env);
+    UserRepo::hold_unconfirmed(&world.store, user, [2; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+
+    let result = sign_in_with(&world, EMAIL, &PASSWORD, device("Pixel"), "jkt-1").await;
+    assert_eq!(result.map(|_| ()), Err(AppError::EmailNotConfirmed));
+    assert!(world.store.devices_of(user).is_empty());
+    assert!(world.store.refresh_tokens().is_empty());
+
+    UserRepo::spend_confirmation(&world.store, [2; 32], now)
+        .await
+        .expect("opened");
+    sign_in_with(&world, EMAIL, &PASSWORD, device("Pixel"), "jkt-1")
+        .await
+        .expect("signs in once confirmed");
 }

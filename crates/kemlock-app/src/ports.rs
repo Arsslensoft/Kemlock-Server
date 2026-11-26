@@ -60,6 +60,16 @@ pub trait ServerInfo: Send + Sync {
     fn server_id(&self) -> ServerId;
 }
 
+/// A hold on an account until the link mailed to its address is opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmailConfirmation {
+    pub user: UserId,
+    /// When the link was made.
+    pub requested_at: OffsetDateTime,
+    /// When it stops working.
+    pub expires_at: OffsetDateTime,
+}
+
 pub trait UserRepo: Send + Sync {
     fn by_id(&self, id: UserId) -> impl Future<Output = Result<Option<User>, StoreError>> + Send;
     fn by_email(
@@ -107,6 +117,55 @@ pub trait UserRepo: Send + Sync {
         id: UserId,
     ) -> impl Future<Output = Result<Option<OffsetDateTime>, StoreError>> + Send {
         let _ = id;
+        async { Ok(None) }
+    }
+
+    /// Whether the account is held back until the link mailed to its address is opened (the
+    /// "verify the email of a new account" setting): it may not sign in or act until then. An
+    /// account with no hold is confirmed, as every account is that existed before the setting.
+    /// A store with no such holds keeps this default: nothing is held.
+    fn email_unconfirmed(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        let _ = id;
+        async { Ok(false) }
+    }
+
+    /// Holds the account until its link is opened, in place of any hold it had: `token_hash` is
+    /// the SHA-256 of the link's token, which stops working at `expires_at`.
+    fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = (id, token_hash, requested_at, expires_at);
+        async {
+            Err(StoreError::Backend(
+                "this store can't hold an account until its email is confirmed".to_owned(),
+            ))
+        }
+    }
+
+    /// The account's hold, if it has one: when its link was made and when it runs out.
+    fn confirmation_of(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<Option<EmailConfirmation>, StoreError>> + Send {
+        let _ = id;
+        async { Ok(None) }
+    }
+
+    /// Spends the link whose token has this SHA-256: the hold is removed and the account is
+    /// said. `None` for a link that is unknown, spent or out of time at `now`.
+    fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> impl Future<Output = Result<Option<UserId>, StoreError>> + Send {
+        let _ = (token_hash, now);
         async { Ok(None) }
     }
 }

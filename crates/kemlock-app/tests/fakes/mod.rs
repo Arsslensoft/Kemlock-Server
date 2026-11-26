@@ -6,7 +6,8 @@
 #![allow(dead_code, unused_imports)]
 
 use kemlock_app::ports::{
-    AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, Event, EventLog, ItemStore, Notifier,
+    AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, EmailConfirmation, Event, EventLog,
+    ItemStore, Notifier,
     PasswordAuth, Random, RefreshToken, SecretSeal, ServerInfo, StoreError, TokenRepo, TokenSigner,
     Totp, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
@@ -82,6 +83,9 @@ struct StoreInner {
     disabled: HashSet<UserId>,
     /// The accounts whose deletion is pending (the grace period), with when it is due.
     erasing: HashMap<UserId, OffsetDateTime>,
+    /// The accounts held back until the link mailed to their address is opened: the SHA-256 of the
+    /// link's token, when it was made and when it runs out.
+    unconfirmed: HashMap<UserId, ([u8; 32], OffsetDateTime, OffsetDateTime)>,
     /// The `settings` table.
     settings: std::collections::BTreeMap<String, String>,
 }
@@ -375,6 +379,52 @@ impl UserRepo for FakeStore {
 
     async fn erasure_pending(&self, id: UserId) -> Result<Option<OffsetDateTime>, StoreError> {
         Ok(self.lock().erasing.get(&id).copied())
+    }
+
+    async fn email_unconfirmed(&self, id: UserId) -> Result<bool, StoreError> {
+        Ok(self.lock().unconfirmed.contains_key(&id))
+    }
+
+    async fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .unconfirmed
+            .insert(id, (token_hash, requested_at, expires_at));
+        Ok(())
+    }
+
+    async fn confirmation_of(&self, id: UserId) -> Result<Option<EmailConfirmation>, StoreError> {
+        Ok(self
+            .lock()
+            .unconfirmed
+            .get(&id)
+            .map(|(_, requested_at, expires_at)| EmailConfirmation {
+                user: id,
+                requested_at: *requested_at,
+                expires_at: *expires_at,
+            }))
+    }
+
+    async fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> Result<Option<UserId>, StoreError> {
+        let mut g = self.lock();
+        let found = g
+            .unconfirmed
+            .iter()
+            .find(|(_, (hash, _, expires_at))| *hash == token_hash && *expires_at > now)
+            .map(|(id, _)| *id);
+        if let Some(id) = found {
+            g.unconfirmed.remove(&id);
+        }
+        Ok(found)
     }
 }
 

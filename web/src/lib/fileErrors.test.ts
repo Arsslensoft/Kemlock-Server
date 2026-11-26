@@ -13,3 +13,9 @@ describe('what the files route refuses', () => {
     expect(describeError(ApiErrorFixture(413, 'file-too-large', { maxSize: 1000 })).id).toBe('itemForm.error.fileTooLarge');
   });
 });
+
+describe('what an account whose email is not confirmed is told', () => {
+  it('says to open the link in the mail', () => {
+    expect(describeError(ApiErrorFixture(403, 'email-not-confirmed')).id).toBe('error.emailNotConfirmed');
+  });
+});
