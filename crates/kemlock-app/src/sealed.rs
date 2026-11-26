@@ -1,4 +1,8 @@
-//! The two values the server hands to a client sealed instead of keeping state: the OPAQUE login
+//! The two         Err(_) if bare_secrets_allowed() => seal.open(purpose, sealed).map(|value| OpenedBound {
+            value,
+            legacy: true,
+        }),
+        Err(error) => Err(error),s the server hands to a client sealed instead of keeping state: the OPAQUE login
 //! state and the two-step challenge. Each carries its own expiry, is sealed under `server.key`
 //! with its own purpose, and is checked when it comes back.
 
@@ -12,6 +16,28 @@ pub const PURPOSE_LOGIN: &str = "opaque-login";
 pub const PURPOSE_CHALLENGE: &str = "two-factor-challenge";
 /// `SecretSeal` purpose of a stored TOTP secret.
 pub const PURPOSE_TOTP: &str = "totp";
+
+/// The `settings` key that says the stored per-account secrets were sealed again, bound
+/// ([`bound_purpose`]), by the start-up pass; the restore of a backup clears it, since the archive
+/// may bring back secrets sealed the old way.
+pub const SECRETS_BOUND_KEY: &str = "secrets_bound";
+
+/// Whether [`open_bound`] still falls back to the bare purpose. On until the server has sealed every
+/// stored secret again, bound: a fallback that stays on for good lets someone who can write the
+/// database keep a copy of a secret sealed the old way (their own, say) and paste it into any
+/// account's row later.
+static BARE_FALLBACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turns the fallback to the bare purpose on or off (the server turns it off once its start-up
+/// pass has sealed every stored secret again, bound).
+pub fn allow_bare_secrets(allowed: bool) {
+    BARE_FALLBACK.store(allowed, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether [`open_bound`] falls back to the bare purpose now.
+pub fn bare_secrets_allowed() -> bool {
+    BARE_FALLBACK.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// The purpose a per-account secret is sealed under: the secret's own purpose and the account's
 /// id, so a sealed value copied into another account's row (by someone who can write the database
@@ -49,7 +75,8 @@ impl std::fmt::Debug for OpenedBound {
 }
 
 /// Opens a per-account secret: sealed for this account, or, for what was stored before secrets
-/// were bound to accounts, under the bare purpose (`legacy` is then set).
+/// were bound to accounts, under the bare purpose (`legacy` is then set) while
+/// [`bare_secrets_allowed`].
 pub fn open_bound<S: SecretSeal + ?Sized>(
     seal: &S,
     purpose: &str,
@@ -61,10 +88,11 @@ pub fn open_bound<S: SecretSeal + ?Sized>(
             value,
             legacy: false,
         }),
-        Err(_) => seal.open(purpose, sealed).map(|value| OpenedBound {
+        Err(_) if bare_secrets_allowed() => seal.open(purpose, sealed).map(|value| OpenedBound {
             value,
             legacy: true,
         }),
+        Err(error) => Err(error),
     }
 }
 
