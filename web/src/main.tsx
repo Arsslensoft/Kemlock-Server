@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Root } from '@/app/Root';
 import { keepRootSealed, restoreSession } from '@/app/persistence';
+import { hashLinkToPath } from '@/app/hashLinks';
 import { createAppRouter } from '@/app/router';
 import { forgetEndedSession } from '@/app/actions';
 import { sessionEndedTarget } from '@/app/sessionEnded';
@@ -22,6 +23,10 @@ try {
 
 // Reading and writing import and export files happens in a worker of its own.
 installImportWorker();
+
+// The links Bitwarden's mails carry keep their route in the hash; the router reads paths.
+const fromHash = hashLinkToPath(window.location);
+if (fromHash) window.history.replaceState(null, '', fromHash);
 
 const router = createAppRouter({ queryClient, session });
 const root = document.getElementById('root');
