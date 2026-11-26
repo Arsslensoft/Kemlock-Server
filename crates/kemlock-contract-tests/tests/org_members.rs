@@ -2,8 +2,9 @@
 //! organization, as Vaultwarden 1.37.5 (with mail off, its default) answers.
 //!
 //! The source is Vaultwarden's `src/api/core/organizations.rs` and the organization parts of
-//! `ciphers.rs`. With no mail, an invited account that has a password is accepted at once, so two
-//! registered accounts need no invitation link. Groups are left out: Vaultwarden has them off
+//! `ciphers.rs`. With no mail, Vaultwarden takes an invited account that has a password as accepted
+//! at once; Kemlock Server leaves it invited until it accepts, so a test accepts first when the
+//! member is still waiting (`accept_if_waiting`). Groups are left out: Vaultwarden has them off
 //! unless `ORG_GROUPS_ENABLED` is set.
 
 use kemlock_contract_tests::account::login_cipher;
@@ -77,6 +78,7 @@ async fn add_member(owner: &Session, org: &str, member: &Session) {
         reply.status,
         reply.text()
     );
+    accept_if_waiting(owner, org, member).await;
     let reply = owner
         .post(
             &format!(
@@ -112,8 +114,51 @@ async fn member_id(owner: &Session, org: &str, member: &Session) -> String {
         .to_owned()
 }
 
+/// The token of an invitation link.
+fn token_of(link: &str) -> &str {
+    link.rsplit_once("token=")
+        .map(|(_, token)| token)
+        .expect("a link with a token")
+}
+
+/// Accepts the invitation of `member` when it is still waiting for that. Vaultwarden with mail off
+/// has taken an existing account as accepted already (status 1) and has nothing to accept; Kemlock
+/// Server leaves it invited (status 0) until the invitee follows the link, which an administrator
+/// can copy from `.../invite-link`, and which accepts by itself.
+async fn accept_if_waiting(owner: &Session, org: &str, member: &Session) {
+    let id = member_id(owner, org, member).await;
+    let list = owner
+        .get(&format!("/api/organizations/{org}/users"))
+        .await
+        .ok_json("GET users");
+    let status = list["data"]
+        .as_array()
+        .and_then(|all| all.iter().find(|m| m["id"] == json!(id)))
+        .map(|m| m["status"].clone());
+    if status != Some(json!(0)) {
+        return;
+    }
+    let link = owner
+        .get(&format!("/api/organizations/{org}/users/{id}/invite-link"))
+        .await
+        .ok_json("GET invite-link");
+    let token = token_of(link["link"].as_str().expect("a link")).to_owned();
+    let reply = member
+        .post(
+            &format!("/api/organizations/{org}/users/{id}/accept"),
+            &json!({"token": token}),
+        )
+        .await;
+    assert!(
+        reply.is_success(),
+        "accept: got {} {}",
+        reply.status,
+        reply.text()
+    );
+}
+
 #[tokio::test]
-async fn an_invited_account_is_accepted_then_confirmed_and_sees_the_organization() {
+async fn an_invited_account_accepts_then_is_confirmed_and_sees_the_organization() {
     let owner = fresh_session().await;
     let member = fresh_session().await;
     let (org, _) = organization(&owner).await;
@@ -165,10 +210,11 @@ async fn an_invited_account_is_accepted_then_confirmed_and_sees_the_organization
         "a member as an admin sees them"
     );
     assert_eq!(row["object"], json!("organizationUserUserDetails"));
-    assert_eq!(
-        row["status"],
-        json!(1),
-        "mail is off, so the account has accepted"
+    // Vaultwarden with mail off takes the account as accepted (1); Kemlock Server leaves it invited
+    // (0) until it follows its link.
+    assert!(
+        row["status"] == json!(0) || row["status"] == json!(1),
+        "{row}"
     );
     assert_eq!(row["type"], json!(2));
 
@@ -178,7 +224,17 @@ async fn an_invited_account_is_accepted_then_confirmed_and_sees_the_organization
         json!([]),
         "only confirmed memberships are in `organizations`"
     );
-    assert_eq!(before["profile"]["organizationsNew"][0]["status"], json!(1));
+    assert_eq!(
+        before["profile"]["organizationsNew"][0]["status"],
+        row["status"]
+    );
+
+    accept_if_waiting(&owner, &org, &member).await;
+    let accepted = member.sync().await;
+    assert_eq!(
+        accepted["profile"]["organizationsNew"][0]["status"],
+        json!(1)
+    );
 
     let id = row["id"].as_str().expect("an id");
     let key = wrapped_key();

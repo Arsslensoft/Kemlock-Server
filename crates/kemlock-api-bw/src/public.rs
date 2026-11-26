@@ -156,7 +156,7 @@ async fn import_member<S: BwStore>(
             doc.invited_by_email = Some(billing.clone());
             set_external(&mut doc.external_id, &data.external_id);
             save_member(app, org, owner, user.id, doc).await?;
-            crate::orgs::members::mail_invitation(app, org, &parsed, &billing).await;
+            crate::orgs::members::mail_invitation(app, org, &user, &billing).await;
             Ok(())
         }
         None => {

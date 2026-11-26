@@ -11,7 +11,8 @@ use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
     EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice,
-    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice,
+    BwEmergencyInviteNotice, BwOrgInviteNotice, InvitationNotice, Notice, PasswordChangedNotice,
+    ProtectedActionNotice, RegisterVerifyNotice,
     TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
@@ -495,6 +496,58 @@ fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered 
     )
 }
 
+/// The invitation of the Bitwarden API to an organization. The link carries the signed token that
+/// accepts it, so opening it is all the person has to do; it runs out in five days.
+fn bw_org_invite(notice: &BwOrgInviteNotice, brand: &Branding) -> Rendered {
+    let who = notice
+        .inviter
+        .as_deref()
+        .map(plain)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Someone".to_owned());
+    let lead = format!(
+        "{who} invited you to join the organization \"{}\" on {}.",
+        plain(&notice.organization),
+        brand.app_name
+    );
+    let body = Body::new(&[
+        &lead,
+        "Open this link to accept the invitation:",
+        &notice.link,
+        "It runs out in five days. An administrator then confirms you before you can see anything in it. If you don't know who this is from, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("You were invited to an organization on {}", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+/// The invitation of the Bitwarden API to be an emergency contact.
+fn bw_emergency_invite(notice: &BwEmergencyInviteNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "{} named you as an emergency contact on {}.",
+        plain(&notice.grantor),
+        brand.app_name
+    );
+    let body = Body::new(&[
+        &lead,
+        "Open this link to accept:",
+        &notice.link,
+        "It runs out in five days. Accepting gives you nothing yet: they confirm you, and you may later ask for access, which they can refuse during the wait they chose. If you don't know who this is from, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!(
+            "You were named an emergency contact on {}",
+            brand.app_name
+        ),
+        &body,
+        brand,
+    )
+}
+
 /// Writes a notice out as a mail.
 pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
     match notice {
@@ -512,6 +565,8 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::EmailChanged(n) => email_changed(n, brand),
         Notice::PasswordChanged(n) => password_changed(n, brand),
         Notice::RegisterVerify(n) => register_verify(n, brand),
+        Notice::BwOrgInvite(n) => bw_org_invite(n, brand),
+        Notice::BwEmergencyInvite(n) => bw_emergency_invite(n, brand),
     }
 }
 
@@ -792,6 +847,39 @@ mod tests {
         assert!(r.text.contains(link), "{}", r.text);
         assert!(!r.subject.contains("tok_en"));
         assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_bitwarden_invitations_carry_their_links() {
+        let link = "https://vault.example.com/#/accept-organization/?organizationId=o&token=tok.en";
+        let r = render(
+            &Notice::BwOrgInvite(BwOrgInviteNotice {
+                to: email(),
+                organization: "Family".to_owned(),
+                inviter: Some("sam@example.com".to_owned()),
+                link: link.to_owned(),
+            }),
+            &brand(),
+        );
+        assert_eq!(r.to, "ada@example.com");
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.text.contains("sam@example.com invited you"), "{}", r.text);
+        assert!(r.text.contains("\"Family\""));
+        assert!(!r.subject.contains("tok.en"));
+        assert!(!format!("{r:?}").contains("tok.en"));
+
+        let link = "https://vault.example.com/#/accept-emergency/?id=g&token=tok.en";
+        let r = render(
+            &Notice::BwEmergencyInvite(BwEmergencyInviteNotice {
+                to: email(),
+                grantor: "Sam".to_owned(),
+                link: link.to_owned(),
+            }),
+            &brand(),
+        );
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.text.contains("Sam named you as an emergency contact"));
+        assert!(!r.subject.contains("tok.en"));
     }
 
     #[test]

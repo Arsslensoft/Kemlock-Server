@@ -599,3 +599,52 @@ async fn the_policies_of_a_takeover_are_a_list() {
     assert_eq!(list["object"], "list");
     assert_eq!(list["data"], json!([]));
 }
+
+#[tokio::test]
+async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (bob, _) = h.signed_in("bob@example.com").await;
+    assert_eq!(
+        invite(&h, &ada, "bob@example.com", 0, 7).await,
+        StatusCode::OK
+    );
+    let id = id_of(&first_contact(&h, &ada).await);
+
+    // The grantor copies the link; the contact is not given it.
+    let uri = format!("/api/emergency-access/{id}/invite-link");
+    let (status, _) = h.json("GET", &uri, Some(&bob), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "only the grantor's grant");
+    let (status, body) = h.json("GET", &uri, Some(&ada), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let link = body["link"].as_str().expect("a link").to_owned();
+    assert!(
+        link.starts_with(&format!("{DOMAIN}/#/accept-emergency/?id={id}&name=")),
+        "{link}"
+    );
+    let token = body["token"].as_str().expect("a token").to_owned();
+    assert!(link.ends_with(&format!("&token={token}")), "{link}");
+
+    // The token alone accepts, for the address it names, once.
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/emergency-access/{id}/accept"),
+            None,
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(first_contact(&h, &ada).await["status"], 1);
+    let (status, _) = h
+        .json(
+            "POST",
+            &format!("/api/emergency-access/{id}/accept"),
+            None,
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = h.json("GET", &uri, Some(&ada), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "nothing left to hand over");
+}

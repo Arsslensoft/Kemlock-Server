@@ -10,10 +10,10 @@ use super::policy::check_user_allowed;
 use crate::app::{App, Authed, BwStore};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
-use kemlock_app::notices::{InvitationNotice, Notice};
+use kemlock_app::notices::{BwOrgInviteNotice, InvitationNotice, Notice};
 use kemlock_app::ports::UserRepo;
 use kemlock_domain::spaces::{CollectionGrant, CollectionId, Grantee, GroupId};
-use kemlock_domain::{Email, UserId};
+use kemlock_domain::{Email, User, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -116,28 +116,94 @@ fn group_ids_of(org: &Org, groups: &[String]) -> BwResult<Vec<GroupId>> {
         .collect()
 }
 
-/// Mails an account its invitation to an organization, when the server mails: the notice the
-/// Kemlock API sends for a space, with the link to the web vault's space page, where the invitee
-/// signs in and accepts. The mail is best effort; the invitation stands without it, and the
-/// invitee finds it in their spaces.
+/// How long the link of an invitation works: Vaultwarden's `INVITATION_EXPIRATION_HOURS`, 120.
+const INVITE_DAYS: i64 = 5;
+
+/// The signed token of an invitation and the link that carries it, in the shape Vaultwarden's
+/// mail has (`/#/accept-organization/?organizationId=...&token=...`), which the web vault opens.
+/// The token alone accepts the invitation, so the link is a secret.
+#[derive(Clone)]
+pub(crate) struct InviteLink {
+    pub token: String,
+    pub link: String,
+}
+
+pub(crate) fn invite_link<S: BwStore>(
+    app: &App<S>,
+    org: &Org,
+    user: UserId,
+    email: &str,
+    invited_by_email: Option<&str>,
+) -> BwResult<InviteLink> {
+    let now = app.now_secs();
+    let claims = InviteClaims {
+        nbf: now,
+        exp: now + INVITE_DAYS * 24 * 3600,
+        iss: app.settings.issuer("invite"),
+        sub: user.to_string(),
+        email: email.to_owned(),
+        org_id: org.id.to_string(),
+        member_id: user.to_string(),
+        invited_by_email: invited_by_email.map(str::to_owned),
+    };
+    let token = app
+        .keys
+        .encode(&claims)
+        .map_err(|e| BwError::Server(e.to_string()))?;
+    let encoded = |text: &str| -> String {
+        url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+    };
+    let link = format!(
+        "{}/#/accept-organization/?organizationId={}&organizationUserId={}&email={}&organizationName={}&token={}",
+        app.host(),
+        org.id,
+        user,
+        encoded(email),
+        encoded(&org.name),
+        token
+    );
+    Ok(InviteLink { token, link })
+}
+
+/// Mails an account its invitation to an organization, when the server mails. An account that can
+/// sign in to the web vault is sent the Kemlock space invitation, which links to its space page; one
+/// that can't (an account made through the Bitwarden API has no OPAQUE record) is sent the link
+/// that carries the token, which accepts the invitation by itself. The mail is best effort; the
+/// invitation stands without it, and an administrator can copy the link to hand over.
 pub(crate) async fn mail_invitation<S: BwStore>(
     app: &App<S>,
     org: &Org,
-    to: &Email,
+    to: &User,
     inviter_email: &str,
 ) {
     if !app.notices.mails() {
         return;
     }
-    app.notices
-        .send(Notice::Invitation(InvitationNotice {
-            to: to.clone(),
+    let notice = if to.opaque_record.is_some() {
+        Notice::Invitation(InvitationNotice {
+            to: to.email.clone(),
             space: Some(org.name.clone()),
             inviter: Some(inviter_email.to_owned()),
             space_id: Some(org.id),
-        }))
-        .await;
+        })
+    } else {
+        let link = match invite_link(app, org, to.id, to.email.as_str(), Some(inviter_email)) {
+            Ok(link) => link,
+            Err(error) => {
+                tracing::warn!(?error, "couldn't make an invitation link");
+                return;
+            }
+        };
+        Notice::BwOrgInvite(BwOrgInviteNotice {
+            to: to.email.clone(),
+            organization: org.name.clone(),
+            inviter: Some(inviter_email.to_owned()).filter(|s| !s.is_empty()),
+            link: link.link,
+        })
+    };
+    app.notices.send(notice).await;
 }
+
 
 /// `POST /api/organizations/{id}/users/invite`.
 pub(crate) async fn invite<S: BwStore>(
@@ -212,7 +278,7 @@ pub(crate) async fn invite<S: BwStore>(
                 app.touch_quiet(user.id).await?;
                 ctx.log(app, kind::MEMBER_INVITED, &user.id.to_string())
                     .await;
-                mail_invitation(app, &org, &parsed, inviter_email).await;
+                mail_invitation(app, &org, &user, inviter_email).await;
             }
             None => {
                 if org.pending.iter().any(|p| p.email == parsed.as_str()) {
@@ -263,7 +329,7 @@ pub(crate) async fn reinvite<S: BwStore>(app: &App<S>, ctx: &Ctx, member_id: &st
         }
         if let Some(account) = UserRepo::by_id(&app.store, user).await? {
             let inviter = doc.invited_by_email.clone().unwrap_or_default();
-            mail_invitation(app, org, &account.email, &inviter).await;
+            mail_invitation(app, org, &account, &inviter).await;
         }
         return Ok(());
     }
@@ -275,10 +341,55 @@ pub(crate) async fn reinvite<S: BwStore>(app: &App<S>, ctx: &Ctx, member_id: &st
     ))
 }
 
-/// `POST /api/organizations/{id}/users/{member}/accept`.
+/// `GET /api/organizations/{id}/users/{member}/invite-link` (not Vaultwarden's): the link of a
+/// pending invitation of an existing account, for an administrator of a server that doesn't mail to
+/// hand over themselves. Whoever opens it accepts for that account, so it is the invitation's
+/// secret and goes only to the administrators who could remove the member.
+pub(crate) async fn pending_link<S: BwStore>(
+    app: &App<S>,
+    ctx: &Ctx,
+    member_id: &str,
+) -> BwResult<Value> {
+    let Some(user) = parse_member(member_id).filter(|u| ctx.org.member(*u).is_some()) else {
+        return Err(BwError::msg(
+            "The user hasn't been invited to the organization.",
+        ));
+    };
+    let Some(doc) = ctx.org.member(user) else {
+        return Err(BwError::msg(
+            "The user hasn't been invited to the organization.",
+        ));
+    };
+    if doc.status != INVITED {
+        return Err(BwError::msg(
+            "The user is already accepted or confirmed to the organization",
+        ));
+    }
+    if doc.atype != USER && ctx.doc.atype != OWNER {
+        return Err(BwError::msg(
+            "Only Owners can invite Managers, Admins or Owners",
+        ));
+    }
+    let Some(account) = UserRepo::by_id(&app.store, user).await? else {
+        return Err(BwError::msg(
+            "The user hasn't been invited to the organization.",
+        ));
+    };
+    let link = invite_link(
+        app,
+        &ctx.org,
+        user,
+        account.email.as_str(),
+        doc.invited_by_email.as_deref(),
+    )?;
+    Ok(json!({"object": "inviteLink", "link": link.link, "token": link.token}))
+}
+
+/// `POST /api/organizations/{id}/users/{member}/accept`. The token of the link is the proof: a
+/// caller who signed in must be the account it was made for, and one who didn't is that account.
 pub(crate) async fn accept<S: BwStore>(
     app: &App<S>,
-    authed: &Authed,
+    authed: Option<&Authed>,
     org_id: &str,
     member_id: &str,
     token: &str,
@@ -288,14 +399,24 @@ pub(crate) async fn accept<S: BwStore>(
         .keys
         .decode(token, &app.settings.issuer("invite"), app.now_secs())
         .map_err(|e| BwError::msg(e.to_string()))?;
+    let account = match authed {
+        Some(authed) => authed.user.clone(),
+        None => {
+            let id = parse_member(&claims.member_id)
+                .ok_or_else(|| BwError::msg("Error accepting the invitation"))?;
+            UserRepo::by_id(&app.store, id)
+                .await?
+                .ok_or_else(|| BwError::msg("Error accepting the invitation"))?
+        }
+    };
     // An invitation is for the account it was made for.
-    if claims.email != authed.user.email.as_str() {
+    if claims.email != account.email.as_str() {
         return Err(BwError::msg("Invitation was issued to a different account"));
     }
     if claims.org_id != org_id || claims.member_id != member_id {
         return Err(BwError::msg("Error accepting the invitation"));
     }
-    let user = authed.user.id;
+    let user = account.id;
     let org_space = super::guard::space_id(&claims.org_id)?;
     let Some(org) = app.load_org(org_space).await? else {
         return Err(BwError::msg("Error accepting the invitation"));

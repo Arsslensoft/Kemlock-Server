@@ -18,7 +18,7 @@
 //! - `/policies` lists the policies of the grantor's organizations.
 
 use crate::account::user_name;
-use crate::app::{App, Authed, BwStore};
+use crate::app::{App, Authed, BwStore, MaybeAuthed};
 use crate::cipher::{FOLDER_KIND, StoredCipher};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
@@ -30,7 +30,7 @@ use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice, EmergencyRepo};
-use kemlock_app::notices::Notice;
+use kemlock_app::notices::{BwEmergencyInviteNotice, Notice};
 use kemlock_app::ports::{
     ChangePage, DeviceRepo, ItemStore, StoreError, TokenRepo, TwoFactorRepo, UserRepo,
 };
@@ -419,20 +419,104 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
     Ok(())
 }
 
-/// Mails the contact that someone named them, when the server mails.
+/// The signed token of an invitation to be an emergency contact and the link that carries it, in
+/// the shape Vaultwarden's mail has (`/#/accept-emergency/?id=...&token=...`). Accepting needs the
+/// token and nothing else, so the link is a secret.
+async fn invite_link<S: BwStore>(
+    app: &App<S>,
+    grant: &EmergencyGrant,
+) -> BwResult<(String, String)> {
+    let Some(grantor) = UserRepo::by_id(&app.store, grant.grantor).await? else {
+        return Err(BwError::msg("Grantor user not found."));
+    };
+    let now = app.now_secs();
+    let name = user_name(&grantor);
+    let token = app
+        .keys
+        .encode(&json!({
+            "nbf": now,
+            "exp": now + 5 * 24 * 3600,
+            "iss": app.settings.issuer("emergencyaccessinvite"),
+            "sub": grant.id.to_string(),
+            "email": grant.grantee_email.as_str(),
+            "emer_id": grant.id.to_string(),
+            "grantor_name": name,
+            "grantor_email": grantor.email.as_str(),
+        }))
+        .map_err(|e| BwError::Server(e.to_string()))?;
+    let encoded = |text: &str| -> String {
+        url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+    };
+    let link = format!(
+        "{}/#/accept-emergency/?id={}&name={}&email={}&token={}",
+        app.host(),
+        grant.id,
+        encoded(&name),
+        encoded(grant.grantee_email.as_str()),
+        token
+    );
+    Ok((token, link))
+}
+
+/// Mails the contact that someone named them, when the server mails. A contact who can sign in to
+/// the web vault is sent the Kemlock notice; any other, the link that carries the token, which
+/// accepts by itself.
 async fn notify_contact<S: BwStore>(app: &App<S>, grant: &EmergencyGrant) {
     if !app.notices.mails() {
         return;
     }
-    app.notices
-        .send(Notice::Emergency(EmergencyNotice {
-            to: grant.grantee_email.clone(),
-            grant: grant.id,
-            event: EmergencyEvent::Invited,
-            kind: grant.kind,
-            wait_days: grant.wait_days,
-        }))
-        .await;
+    let contact = match UserRepo::by_email(&app.store, &grant.grantee_email).await {
+        Ok(contact) => contact,
+        Err(error) => {
+            tracing::warn!(?error, "couldn't read an emergency contact");
+            return;
+        }
+    };
+    if contact.is_some_and(|c| c.opaque_record.is_some()) {
+        app.notices
+            .send(Notice::Emergency(EmergencyNotice {
+                to: grant.grantee_email.clone(),
+                grant: grant.id,
+                event: EmergencyEvent::Invited,
+                kind: grant.kind,
+                wait_days: grant.wait_days,
+            }))
+            .await;
+        return;
+    }
+    let grantor = match UserRepo::by_id(&app.store, grant.grantor).await {
+        Ok(Some(grantor)) => user_name(&grantor),
+        _ => return,
+    };
+    match invite_link(app, grant).await {
+        Ok((_, link)) => {
+            app.notices
+                .send(Notice::BwEmergencyInvite(BwEmergencyInviteNotice {
+                    to: grant.grantee_email.clone(),
+                    grantor,
+                    link,
+                }))
+                .await;
+        }
+        Err(error) => tracing::warn!(?error, "couldn't make an emergency invitation link"),
+    }
+}
+
+/// `GET /api/emergency-access/{id}/invite-link` (not Vaultwarden's): the link of a pending
+/// invitation, for the grantor of a server that doesn't mail to hand over themselves.
+async fn invite_link_route<S: BwStore>(
+    State(app): State<App<S>>,
+    authed: Authed,
+    Path(id): Path<String>,
+) -> JsonResult {
+    let grant = owned(&app, authed.user.id, &id).await?;
+    if grant.state != EmergencyState::Invited {
+        return Err(BwError::msg(
+            "The grantee user is already accepted or confirmed for emergency access",
+        ));
+    }
+    let (token, link) = invite_link(&app, &grant).await?;
+    ok(json!({"object": "inviteLink", "link": link, "token": token}))
 }
 
 async fn send_invite<S: BwStore>(
@@ -475,9 +559,11 @@ struct InviteClaims {
     grantor_email: String,
 }
 
+/// `POST /api/emergency-access/{id}/accept`. The token of the link is the proof: a caller who
+/// signed in must be the contact it was made for, and one who didn't is the account of that address.
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
-    authed: Authed,
+    MaybeAuthed(authed): MaybeAuthed,
     Path(id): Path<String>,
     body: Bytes,
 ) -> EmptyResult {
@@ -490,7 +576,26 @@ async fn accept_invite<S: BwStore>(
             app.now_secs(),
         )
         .map_err(|e| BwError::msg(e.to_string()))?;
-    let me = &authed.user;
+    let signed_in;
+    let me = match authed {
+        Some(authed) => {
+            signed_in = authed.user;
+            &signed_in
+        }
+        None => {
+            let by_address = match Email::parse(&claims.email) {
+                Ok(email) => UserRepo::by_email(&app.store, &email).await?,
+                Err(_) => None,
+            };
+            let Some(account) = by_address else {
+                return Err(BwError::msg(
+                    "Create an account with the address the invitation was sent to, then open the link again",
+                ));
+            };
+            signed_in = account;
+            &signed_in
+        }
+    };
     if claims.email != me.email.as_str() {
         return Err(BwError::msg(
             "Claim email does not match current users email",
@@ -850,6 +955,10 @@ pub(crate) fn routes<S: BwStore>() -> Router<App<S>> {
         .route(
             "/api/emergency-access/{id}/accept",
             post(accept_invite::<S>),
+        )
+        .route(
+            "/api/emergency-access/{id}/invite-link",
+            get(invite_link_route::<S>),
         )
         .route("/api/emergency-access/{id}/confirm", post(confirm::<S>))
         .route("/api/emergency-access/{id}/initiate", post(initiate::<S>))

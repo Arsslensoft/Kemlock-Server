@@ -1,8 +1,10 @@
 //! Emergency access: the routes the web vault and the mobile apps call, as Vaultwarden 1.37.5
 //! (with mail off, its default) answers them.
 //!
-//! The source is Vaultwarden's `src/api/core/emergency_access.rs`. With no mail, an invited account
-//! that has a password is accepted at once, so two registered accounts need no invitation link.
+//! The source is Vaultwarden's `src/api/core/emergency_access.rs`. With no mail, Vaultwarden takes an
+//! invited account that has a password as accepted at once. Kemlock Server leaves it invited until it
+//! accepts, so a test accepts first when the grant is still waiting (`accept_if_waiting`), with the
+//! link the grantor can copy from `.../invite-link`, which Vaultwarden doesn't have and needn't.
 
 use kemlock_contract_tests::account::login_cipher;
 use kemlock_contract_tests::enc::{b64, random_bytes};
@@ -47,6 +49,40 @@ async fn first_contact(grantor: &Session) -> Value {
     list["data"][0].clone()
 }
 
+/// The token of an invitation link.
+fn token_of(link: &str) -> &str {
+    link.rsplit_once("token=")
+        .map(|(_, token)| token)
+        .expect("a link with a token")
+}
+
+/// Accepts the grant `id` as `contact` when it is still waiting for that. Vaultwarden with mail off
+/// has taken an existing account as accepted already (status 1) and has nothing to accept; Kemlock
+/// Server leaves it invited (status 0) until the contact follows the link, which the grantor can
+/// copy.
+async fn accept_if_waiting(grantor: &Session, contact: &Session, id: &str) {
+    if first_contact(grantor).await["status"] != 0 {
+        return;
+    }
+    let link = grantor
+        .get(&format!("/api/emergency-access/{id}/invite-link"))
+        .await
+        .ok_json("GET invite-link");
+    let token = token_of(link["link"].as_str().expect("a link")).to_owned();
+    let reply = contact
+        .post(
+            &format!("/api/emergency-access/{id}/accept"),
+            &json!({"token": token}),
+        )
+        .await;
+    assert!(
+        reply.is_success(),
+        "accept: got {} {}",
+        reply.status,
+        reply.text()
+    );
+}
+
 /// A grant of `grantor` to `contact`, accepted and confirmed; its id.
 async fn confirmed(grantor: &Session, contact: &Session, kind: i64) -> String {
     let reply = invite(grantor, contact, kind, 7).await;
@@ -60,6 +96,7 @@ async fn confirmed(grantor: &Session, contact: &Session, kind: i64) -> String {
         .as_str()
         .expect("the grant has an id")
         .to_owned();
+    accept_if_waiting(grantor, contact, &id).await;
     let confirm = grantor
         .post(
             &format!("/api/emergency-access/{id}/confirm"),
@@ -75,11 +112,14 @@ async fn confirmed(grantor: &Session, contact: &Session, kind: i64) -> String {
 }
 
 #[tokio::test]
-async fn an_invited_account_is_accepted_at_once_and_both_lists_show_it() {
+async fn an_invited_account_that_accepted_is_listed_on_both_sides() {
     let grantor = fresh_session().await;
     let contact = fresh_session().await;
     let reply = invite(&grantor, &contact, 0, 7).await;
     assert!(reply.is_success(), "{} {}", reply.status, reply.text());
+    let waiting = first_contact(&grantor).await;
+    let id = waiting["id"].as_str().expect("an id").to_owned();
+    accept_if_waiting(&grantor, &contact, &id).await;
 
     let trusted = first_contact(&grantor).await;
     assert_eq!(
@@ -100,7 +140,7 @@ async fn an_invited_account_is_accepted_at_once_and_both_lists_show_it() {
     assert_eq!(trusted["object"], "emergencyAccessGranteeDetails");
     assert_eq!(
         trusted["status"], 1,
-        "with no mail an existing account is accepted at once: {trusted}"
+        "an existing account has accepted, at once on Vaultwarden and by the link here: {trusted}"
     );
     assert_eq!(trusted["type"], 0);
     assert_eq!(trusted["waitTimeDays"], 7);
