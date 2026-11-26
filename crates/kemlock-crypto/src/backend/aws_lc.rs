@@ -25,7 +25,7 @@ use aws_lc_rs::{
     signature::{self, KeyPair, UnparsedPublicKey},
 };
 
-use super::{Backend, MLDSA_SEED_LEN, MLKEM_SEED_LEN, mlkem_seed};
+use super::{Backend, MLDSA_SEED_LEN, MLKEM_SEED_LEN, ed25519_rule, mlkem_seed};
 use crate::{Error, wire::fixed};
 
 /// ML-DSA-65: aws-lc-rs where it has it, the RustCrypto module where it doesn't.
@@ -234,6 +234,10 @@ impl Backend for AwsLc {
     }
 
     fn ed25519_verify(public: &[u8; 32], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        // aws-lc alone is not known to refuse small-order keys, non-canonical encodings or an S
+        // between L and 2^253. The rule (docs/crypto.md, "Ed25519 verification rule") refuses
+        // them first, so this verifies exactly as RustCrypto's `verify_strict` does.
+        ed25519_rule::check_inputs(public, sig)?;
         UnparsedPublicKey::new(&signature::ED25519, public)
             .verify(msg, sig)
             .map_err(invalid)

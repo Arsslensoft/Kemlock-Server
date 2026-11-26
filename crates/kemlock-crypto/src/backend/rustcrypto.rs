@@ -9,7 +9,7 @@ use sha2::{Digest as _, Sha256, Sha512};
 use subtle::ConstantTimeEq as _;
 use zeroize::Zeroizing;
 
-use super::{Backend, MLDSA_SEED_LEN, MLKEM_SEED_LEN, mldsa_soft, mlkem_seed};
+use super::{Backend, MLDSA_SEED_LEN, MLKEM_SEED_LEN, ed25519_rule, mldsa_soft, mlkem_seed};
 use crate::{Error, wire::fixed};
 
 #[allow(dead_code)]
@@ -176,9 +176,14 @@ impl Backend for RustCrypto {
     }
 
     fn ed25519_verify(public: &[u8; 32], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
+        // The rule's byte checks (canonical points, S below L) run here too, so that both backends
+        // are held to the same list in one place and a library change can't loosen it.
+        ed25519_rule::check_inputs(public, sig)?;
         let key = ed25519_dalek::VerifyingKey::from_bytes(public).map_err(invalid)?;
         let sig = ed25519_dalek::Signature::from_slice(sig).map_err(invalid)?;
-        // Strict verification refuses small-order keys and non-canonical signatures, as aws-lc does.
+        // `verify_strict` refuses a small-order key or R and any S not below L, and compares the
+        // recomputed R with the one sent byte for byte. aws-lc isn't known to do the first two on
+        // its own, so its backend runs the checks of `ed25519_rule` first.
         key.verify_strict(msg, &sig).map_err(invalid)
     }
 

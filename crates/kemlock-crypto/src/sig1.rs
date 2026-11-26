@@ -11,7 +11,7 @@ use core::fmt;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::{
-    Error,
+    Error, ed25519,
     backend::{Active, Backend, MLDSA_PUBLIC_LEN, MLDSA_SEED_LEN, MLDSA_SIGNATURE_LEN},
     rand,
     wire::{array, array_ref, lp},
@@ -45,9 +45,13 @@ pub mod context {
 pub struct PublicKey(Box<[u8; PUBLIC_KEY_LEN]>);
 
 impl PublicKey {
-    /// Takes the 1984 bytes of a public key.
+    /// Takes the 1984 bytes of a public key. The Ed25519 half must be a canonical encoding of a
+    /// point that does not have small order (docs/crypto.md, "Ed25519 verification rule"): a key
+    /// that isn't is refused here, so that no record can carry one.
     pub fn from_bytes(bytes: &[u8]) -> Result<PublicKey, Error> {
-        Ok(PublicKey(Box::new(array(bytes)?)))
+        let key: Box<[u8; PUBLIC_KEY_LEN]> = Box::new(array(bytes)?);
+        ed25519::check_public_key(array_ref(&key[MLDSA_PUBLIC_LEN..])?)?;
+        Ok(PublicKey(key))
     }
 
     pub fn as_bytes(&self) -> &[u8; PUBLIC_KEY_LEN] {
@@ -239,6 +243,49 @@ mod tests {
             mixed[..MLDSA_PUBLIC_LEN].copy_from_slice(&other_public.as_bytes()[..MLDSA_PUBLIC_LEN]);
             let mixed = PublicKey::from_bytes(&mixed).expect("length");
             assert!(verify_in::<B>(&mixed, "bundle", b"hello", &sig).is_err());
+        });
+    }
+
+    /// The identity point: an Ed25519 key under which R = identity, S = 0 verifies on any message.
+    const IDENTITY: [u8; ED25519_LEN] = {
+        let mut point = [0u8; ED25519_LEN];
+        point[0] = 1;
+        point
+    };
+
+    #[test]
+    fn a_weak_ed25519_key_is_refused_when_a_public_key_is_parsed() {
+        let public = public_key_in::<Active>(&SigningKey::from_bytes(&[11; 64])).expect("public");
+        assert!(PublicKey::from_bytes(public.as_bytes()).is_ok());
+        let mut non_canonical = [0xffu8; ED25519_LEN];
+        non_canonical[0] = 0xee;
+        non_canonical[ED25519_LEN - 1] = 0x7f;
+        for weak in [IDENTITY, non_canonical, [0u8; ED25519_LEN]] {
+            let mut bytes = *public.as_bytes();
+            bytes[MLDSA_PUBLIC_LEN..].copy_from_slice(&weak);
+            assert!(PublicKey::from_bytes(&bytes).is_err(), "{weak:?}");
+        }
+    }
+
+    #[test]
+    fn a_genuine_ml_dsa_half_does_not_rescue_an_identity_ed25519_key() {
+        for_backends!(B => {
+            let key = SigningKey::from_bytes(&[11; 64]);
+            let honest = public_key_in::<B>(&key).expect("public key");
+            let sig = sign_in::<B>(&key, "space-chain", b"record").expect("sign");
+            // The genuine ML-DSA half, and an Ed25519 half that the identity point verifies for
+            // any message; built here, past `from_bytes`, to check verification refuses it too.
+            let mut forged_key = *honest.as_bytes();
+            forged_key[MLDSA_PUBLIC_LEN..].copy_from_slice(&IDENTITY);
+            let forged_key = PublicKey(Box::new(forged_key));
+            let mut forged = sig.clone();
+            forged[MLDSA_SIGNATURE_LEN..MLDSA_SIGNATURE_LEN + ED25519_LEN].copy_from_slice(&IDENTITY);
+            forged[MLDSA_SIGNATURE_LEN + ED25519_LEN..].fill(0);
+            assert!(
+                verify_in::<B>(&forged_key, "space-chain", b"record", &forged).is_err(),
+                "{}",
+                B::NAME
+            );
         });
     }
 

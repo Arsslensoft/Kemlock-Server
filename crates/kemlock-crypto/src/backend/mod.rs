@@ -13,6 +13,7 @@ use crate::Error;
 
 #[cfg(feature = "aws-lc")]
 pub(crate) mod aws_lc;
+pub(crate) mod ed25519_rule;
 #[cfg(any(test, feature = "rustcrypto", feature = "fips"))]
 pub(crate) mod mldsa_soft;
 #[cfg(any(test, feature = "aws-lc", feature = "rustcrypto"))]
