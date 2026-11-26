@@ -18,6 +18,10 @@ let openedFor = '';
 /** The tabs that have a reload key, as IndexedDB would keep them: a test deletes one to age it out. */
 export const fakeTabKeys = new Set<string>();
 
+/** The key version of the open account and the one a started rotation would install. */
+let fakeKeyVersion = 1;
+let fakePendingVersion: number | undefined;
+
 export const crypto: CryptoPort = {
   async masterKey(password, kdf) {
     calls.push('masterKey');
@@ -250,6 +254,103 @@ export const crypto: CryptoPort = {
       wrappedRootKey: new Uint8Array(),
     };
   },
+  // Rotating the root key: the fake keeps the same failure points (an item moves only under the
+  // id, revision, kind and owner it was sealed with, once, at the next revision).
+  async rotationStart() {
+    calls.push('rotationStart');
+    if (locked) throw new Error('the vault is locked');
+    fakePendingVersion = fakeKeyVersion + 1;
+    return {
+      keyVersion: fakePendingVersion,
+      publicBundle: utf8(`bundle:${openedFor}:v${fakePendingVersion}`),
+      bundleSignature: utf8('sig'),
+      sealedPrivateKeys: utf8(`sealed:v${fakePendingVersion}`),
+      sealedPreviousPrivateKeys: utf8(`sealed:v${fakeKeyVersion}`),
+      fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 11111 22222',
+    };
+  },
+  async rotationResealItem({ id, owner, kind, revision, ciphertext }) {
+    calls.push('rotationResealItem');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    const [sid, sowner, skind, srevision, json] = JSON.parse(fromUtf8(ciphertext)) as [
+      string,
+      string,
+      string,
+      number,
+      string,
+    ];
+    if (sid !== id || sowner !== owner || skind !== kind || srevision !== revision) {
+      throw new Error('the item does not open under these details');
+    }
+    return {
+      ciphertext: utf8(JSON.stringify([id, owner, kind, revision + 1, json])),
+      itemKey: utf8(`item-key:v${fakePendingVersion}`),
+      revision: revision + 1,
+      keyVersion: fakePendingVersion,
+    };
+  },
+  async rotationResealSend({ id, kind, sealedKey, meta }) {
+    calls.push('rotationResealSend');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return {
+      sealedKey: utf8(`${id}:${kind}:${fromUtf8(sealedKey)}:v${fakePendingVersion}`),
+      meta: utf8(`${fromUtf8(meta)}:v${fakePendingVersion}`),
+    };
+  },
+  async rotationWrapPassword(masterKey, exportKey) {
+    calls.push('rotationWrapPassword');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return utf8(`wrapped:v${fakePendingVersion}:${fromUtf8(masterKey)}:${fromUtf8(exportKey)}`);
+  },
+  async rotationPrfWrap(prfOutput, credentialId) {
+    calls.push('rotationPrfWrap');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return {
+      wrappedKey: utf8(JSON.stringify(['prf', fromUtf8(prfOutput), fromUtf8(credentialId)])),
+      keyVersion: fakePendingVersion,
+    };
+  },
+  async rotationKitMake() {
+    calls.push('rotationKitMake');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    const pieces = ['D', 'E', 'F'].map((c, i) => `BMCKIT1-NEWKIT22-23${i + 1}-${c.repeat(52)}-ABCD`);
+    return {
+      kitId: 'NEWKIT22',
+      pieces,
+      wrappedKey: utf8(JSON.stringify(['kit', 'NEWKIT22'])),
+      keyVersion: fakePendingVersion,
+    };
+  },
+  async rotationDeviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+    calls.push('rotationDeviceCopySeal');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return utf8(
+      JSON.stringify([tabId === undefined ? 'device-copy' : `tab-copy:${tabId}`, accountId, deviceId, keyVersion]),
+    );
+  },
+  async rotationSealRootKey(recipientKx1, context, aad) {
+    calls.push('rotationSealRootKey');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return utf8(`box:${context}:${fromUtf8(recipientKx1)}:${fromUtf8(aad)}`);
+  },
+  async rotationCommit() {
+    calls.push('rotationCommit');
+    if (fakePendingVersion === undefined) throw new Error('no rotation is started');
+    fakeKeyVersion = fakePendingVersion;
+    fakePendingVersion = undefined;
+    return {
+      keyVersion: fakeKeyVersion,
+      fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 11111 22222',
+    };
+  },
+  async rotationAbort() {
+    calls.push('rotationAbort');
+    fakePendingVersion = undefined;
+  },
+  async rotationSign(previous, context, message) {
+    calls.push('rotationSign');
+    return utf8(`${previous ? 'old' : 'new'}:${context}:${fromUtf8(message)}`);
+  },
   // The trusted-device copy and a tab's reload copy are sealed under different keys: a copy opens
   // only under the key it was made with, and a tab's only while that tab's key still exists.
   async deviceCopySeal(accountId, deviceId, keyVersion, tabId) {
@@ -396,6 +497,8 @@ export function resetFakeCrypto(): void {
   locked = true;
   fakeTabKeys.clear();
   openedFor = '';
+  fakeKeyVersion = 1;
+  fakePendingVersion = undefined;
   sendKeys.count = 0;
   deviceKeys.count = 0;
   deviceKeys.spent.clear();

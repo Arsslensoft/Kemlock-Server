@@ -182,6 +182,33 @@ export interface WasmVault {
     sealed: string,
     list?: string,
   ): void;
+  /** `{keyVersion, publicBundle, bundleSignature, sealedPrivateKeys, sealedPreviousPrivateKeys, fingerprint}`. */
+  rotationStart(): string;
+  /** `{ciphertext, itemKey, revision, keyVersion}`: the item under a fresh key, at revision + 1. */
+  rotationResealItem(
+    id: string,
+    owner: string,
+    kind: string,
+    revision: bigint,
+    ciphertext: string,
+    itemKey: string,
+    keyVersion?: number,
+  ): string;
+  /** `{sealedKey, meta}` under the new keys. */
+  rotationResealSend(id: string, kind: string, sealedKey: string, meta: string): string;
+  /** The new root key's password wrap, base64url, 92 bytes; consumes both handles. */
+  rotationWrapPassword(master: number, exportKey: number): string;
+  /** `{wrappedKey, keyVersion}` for the new root key. */
+  rotationPrfWrap(prfOutput: string, credentialId: string): string;
+  /** `{kitId, pieces, wrappedKey, keyVersion}` for the new root key. */
+  rotationKitMake(): string;
+  /** The new root key, base64url: for the worker to seal under the device's key. */
+  rotationExportRoot(): string;
+  rotationSealRootKey(recipientKx1: string, context: string, aad: string): string;
+  /** `{keyVersion, fingerprint}`. */
+  rotationCommit(): string;
+  rotationAbort(): void;
+  rotationSign(previous: boolean, context: string, message: string): string;
   lock(): void;
   /** Frees the instance's WebAssembly memory (wasm-bindgen). */
   free?(): void;

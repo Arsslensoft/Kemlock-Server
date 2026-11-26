@@ -365,6 +365,53 @@ export interface NameAddress {
   id: string;
 }
 
+/** What the server stores of the new keys of a rotation, and the fingerprint to show. */
+export interface RotationStart {
+  /** The key version the rotation installs: the account's plus one. */
+  keyVersion: number;
+  /** base64url */
+  publicBundle: string;
+  bundleSignature: string;
+  sealedPrivateKeys: string;
+  /** The old pair sealed under the new user key, at the old key version. */
+  sealedPreviousPrivateKeys: string;
+  /** 12 groups of 5 digits, joined by spaces */
+  fingerprint: string;
+}
+
+/** An item sealed again under the new keys: a fresh item key, at the next revision. */
+export interface ResealedItem {
+  ciphertext: string;
+  itemKey: string;
+  /** The revision it is sealed at: the old one plus one. */
+  revision: number;
+  keyVersion: number;
+}
+
+/** A Send's sealed key and meta under the new keys. */
+export interface ResealedSend {
+  sealedKey: string;
+  meta: string;
+}
+
+export interface ResealSendInput {
+  id: string;
+  /** `text` or `file` */
+  kind: string;
+  /** base64url */
+  sealedKey: string;
+  meta: string;
+}
+
+/** What a rotation's commit says: the new key version and fingerprint. */
+export interface RotationCommit {
+  keyVersion: number;
+  fingerprint: string;
+}
+
+/** The root key's sealed-box contexts a rotation seals under. */
+export type RotationBoxContext = 'emergency-access' | 'account-recovery';
+
 /**
  * Why an operation failed, and no more: a wrong password, a wrong key and a tampered byte all
  * look the same on purpose.
@@ -689,6 +736,47 @@ export interface CryptoApi {
     sealed: string;
     list?: SealHashEntry[];
   }): Promise<void>;
+
+  // Rotating the root key (docs/crypto.md, "Rotating the root key"): a new root key and key pair
+  // held in the worker, and each piece asked for in turn. Nothing but wraps and boxes leaves it.
+
+  /** Starts a rotation of the unlocked account (opened with its private keys). */
+  rotationStart(): Promise<RotationStart>;
+  /** Moves an item of the account's own vault to the new keys: a fresh item key, revision + 1. */
+  rotationResealItem(input: OpenItemInput): Promise<ResealedItem>;
+  /** Moves a Send's sealed key and meta to the new keys. */
+  rotationResealSend(input: ResealSendInput): Promise<ResealedSend>;
+  /** The new root key under a fresh sign-in's master key and export key; consumes both handles. */
+  rotationWrapPassword(masterKey: MasterKeyHandle, exportKey: ExportKeyHandle): Promise<string>;
+  /** The new root key under a passkey's PRF output and credential id, at the new key version. */
+  rotationPrfWrap(prfOutput: string, credentialId: string): Promise<PrfWrap>;
+  /** A new Recovery Kit for the new root key. */
+  rotationKitMake(): Promise<MadeKit>;
+  /**
+   * This browser's copy of the new root key (docs/crypto.md, "The trusted-device copy of the root
+   * key"), at the new key version. The root key does not reach the page.
+   */
+  rotationDeviceCopySeal(
+    accountId: string,
+    deviceId: string,
+    keyVersion: number,
+    tabId?: string,
+  ): Promise<string>;
+  /** Seals the new root key to a kx1 public key under `emergency-access` or `account-recovery`. */
+  rotationSealRootKey(
+    recipientKx1: string,
+    context: RotationBoxContext,
+    aad: string,
+  ): Promise<string>;
+  /** Makes the new keys the account's; the old private keys are kept for the spaces. */
+  rotationCommit(): Promise<RotationCommit>;
+  /** Forgets a rotation that was started and not committed. */
+  rotationAbort(): Promise<void>;
+  /**
+   * A sig1 signature over a space-chain signing input (context `space-chain`) by the key before the
+   * last rotation (`previous`) or the new one: the two signatures of a `rekey` record.
+   */
+  rotationSign(previous: boolean, context: string, message: string): Promise<string>;
 }
 
 /** Every operation the worker answers, with its arguments and result. */
@@ -852,6 +940,26 @@ export interface Ops {
     ];
     result: void;
   };
+  rotationStart: { args: []; result: RotationStart };
+  rotationResealItem: { args: [input: OpenItemInput]; result: ResealedItem };
+  rotationResealSend: { args: [input: ResealSendInput]; result: ResealedSend };
+  rotationWrapPassword: {
+    args: [masterKey: MasterKeyHandle, exportKey: ExportKeyHandle];
+    result: string;
+  };
+  rotationPrfWrap: { args: [prfOutput: string, credentialId: string]; result: PrfWrap };
+  rotationKitMake: { args: []; result: MadeKit };
+  rotationDeviceCopySeal: {
+    args: [accountId: string, deviceId: string, keyVersion: number, tabId?: string];
+    result: string;
+  };
+  rotationSealRootKey: {
+    args: [recipientKx1: string, context: RotationBoxContext, aad: string];
+    result: string;
+  };
+  rotationCommit: { args: []; result: RotationCommit };
+  rotationAbort: { args: []; result: void };
+  rotationSign: { args: [previous: boolean, context: string, message: string]; result: string };
 }
 
 export type OpName = keyof Ops;

@@ -155,6 +155,20 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     prfOpenRoot: (prfOutput, credentialId, accountId, keyVersion, wrapped) =>
       call('prfOpenRoot', [prfOutput, credentialId, accountId, keyVersion, wrapped]),
     kitMake: () => call('kitMake', []),
+    rotationStart: () => call('rotationStart', []),
+    rotationResealItem: (input) => call('rotationResealItem', [input]),
+    rotationResealSend: (input) => call('rotationResealSend', [input]),
+    rotationWrapPassword: (masterKey, exportKey) =>
+      call('rotationWrapPassword', [masterKey, exportKey]),
+    rotationPrfWrap: (prfOutput, credentialId) => call('rotationPrfWrap', [prfOutput, credentialId]),
+    rotationKitMake: () => call('rotationKitMake', []),
+    rotationDeviceCopySeal: (accountId, deviceId, keyVersion, tabId) =>
+      call('rotationDeviceCopySeal', [accountId, deviceId, keyVersion, tabId]),
+    rotationSealRootKey: (recipientKx1, context, aad) =>
+      call('rotationSealRootKey', [recipientKx1, context, aad]),
+    rotationCommit: () => call('rotationCommit', []),
+    rotationAbort: () => call('rotationAbort', []),
+    rotationSign: (previous, context, message) => call('rotationSign', [previous, context, message]),
     kitReadPiece: (text) => call('kitReadPiece', [text]),
     kitCheckPieces: (pieces) => call('kitCheckPieces', [pieces]),
     kitOpenRoot: (pieces, kitId, accountId, keyVersion, wrapped) =>
