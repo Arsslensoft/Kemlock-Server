@@ -1475,6 +1475,13 @@ once per space and device, before the device trusts the chain.
   needs no comparison: its own key vouches for the chain.
 - The creator's device made `create` itself and is its own anchor.
 
+So a client's answer is one of three, never a bare "none": **no comparison** (the creator's device, or
+an account whose own current key signed a `rekey`), **compare with `P`**, or **pick an Owner**. "Pick an
+Owner" also covers an account the chain doesn't have, a removed member, and a confirmed member nobody
+confirmed who isn't the creator; it is never read as "no comparison". Even for the first, the client
+checks that the bundle the chain records for its own account is the one it holds itself: a chain that
+records another one vouches for nothing, and the client treats it as the third answer.
+
 **What is confirmed.** The fingerprint `SHA-512("kemlock/v1/fingerprint" ‖ bundle)` of `P`'s bundle
 **as the verified chain records it at its head**, shown as the 12 groups of 5 digits or compared
 from `P`'s QR code in constant time, against what `P`'s own app shows under Settings › Account
