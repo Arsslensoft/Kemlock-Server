@@ -97,8 +97,9 @@ impl Http {
             .map_err(|_| FedError::Invalid("the HTTP client could not be built"))
     }
 
-    /// The body of a successful answer, at most [`MAX_HTTP_BODY`] bytes.
-    async fn read(response: reqwest::Response) -> Result<Vec<u8>> {
+    /// The body of a successful answer, at most [`MAX_HTTP_BODY`] bytes: read as it arrives, so a
+    /// peer that sends more is cut off, not buffered.
+    async fn read(mut response: reqwest::Response) -> Result<Vec<u8>> {
         if !response.status().is_success() {
             return Err(unreachable_peer("the peer answered with an error status"));
         }
@@ -108,14 +109,18 @@ impl Http {
         {
             return Err(FedError::Malformed("an HTTP body is too large"));
         }
-        let bytes = response
-            .bytes()
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|_| unreachable_peer("the peer's answer could not be read"))?;
-        if bytes.len() > MAX_HTTP_BODY {
-            return Err(FedError::Malformed("an HTTP body is too large"));
+            .map_err(|_| unreachable_peer("the peer's answer could not be read"))?
+        {
+            if body.len() + chunk.len() > MAX_HTTP_BODY {
+                return Err(FedError::Malformed("an HTTP body is too large"));
+            }
+            body.extend_from_slice(&chunk);
         }
-        Ok(bytes.to_vec())
+        Ok(body)
     }
 
     /// `GET` `path` below `address`.
@@ -450,4 +455,47 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn an_answer_without_a_length_is_cut_off_at_the_cap_not_read_whole() {
+        use std::io::{Read, Write};
+        // A server that never says how long its answer is, and sends far more than a descriptor
+        // can be.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        let server = std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n");
+            let block = vec![b'x'; 64 * 1024];
+            for _ in 0..8 {
+                let sent = stream
+                    .write_all(format!("{:x}\r\n", block.len()).as_bytes())
+                    .and_then(|()| stream.write_all(&block))
+                    .and_then(|()| stream.write_all(b"\r\n"));
+                if sent.is_err() {
+                    return;
+                }
+            }
+            let _ = stream.write_all(b"0\r\n\r\n");
+        });
+        let http = Http::new().expect("a client");
+        // The admin typed this one, so a loopback address is allowed.
+        let answer = http
+            .get(
+                &format!("http://127.0.0.1:{port}"),
+                DESCRIPTOR_PATH,
+                Trust::Admin,
+            )
+            .await;
+        assert!(
+            matches!(answer, Err(FedError::Malformed(_))),
+            "{answer:?}"
+        );
+        let _ = server.join();
+    }
+
 }
