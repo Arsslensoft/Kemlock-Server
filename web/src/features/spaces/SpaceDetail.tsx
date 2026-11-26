@@ -19,6 +19,7 @@ import {
   inviteMember,
   SpaceNotChecked,
   loadSpaceDetail,
+  pinMember,
   renameCollection,
   setGroupMembers,
 } from './model';
@@ -60,8 +61,11 @@ export default function SpaceDetail() {
       try {
         return await action();
       } catch (caught) {
-        if (caught instanceof MemberNotVerified && caught.member.needsReconfirmation) {
-          void startConfirm(caught.member);
+        if (caught instanceof MemberNotVerified) {
+          // What would put it right: compare the fingerprint of the member the walk ended at, or
+          // confirm this member again when their keys changed.
+          if (caught.compare) void startConfirm(caught.compare, 'pin');
+          else if (caught.member.needsReconfirmation) void startConfirm(caught.member);
         }
         throw caught;
       }
@@ -82,8 +86,8 @@ export default function SpaceDetail() {
     return member ? member.name || member.email : user;
   }
 
-  async function startConfirm(member: MemberViewDto) {
-    setConfirming({ member, fingerprint: undefined });
+  async function startConfirm(member: MemberViewDto, mode: 'confirm' | 'pin' = 'confirm') {
+    setConfirming({ member, fingerprint: undefined, mode });
     let fingerprint: Fingerprint | null = null;
     try {
       fingerprint = await checkedFingerprint(decodeB64(member.publicBundle), (bundle) =>
@@ -92,7 +96,7 @@ export default function SpaceDetail() {
     } catch {
       fingerprint = null;
     }
-    setConfirming({ member, fingerprint });
+    setConfirming({ member, fingerprint, mode });
   }
 
   return (
@@ -114,13 +118,18 @@ export default function SpaceDetail() {
         },
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
+        startPin: (member) => void startConfirm(member, 'pin'),
         cancelConfirm: () => setConfirming(null),
         confirm: () => {
           const current = confirming;
           if (!detail || !current?.fingerprint) return;
           const member = current.member;
           const fingerprint = current.fingerprint;
-          void change(() => confirmMember(spaceDeps, detail, member, fingerprint)).then((done) => {
+          const act = (): Promise<unknown> =>
+            current.mode === 'pin'
+              ? pinMember(spaceDeps, detail.view.me.user, member, fingerprint).then(() => true)
+              : confirmMember(spaceDeps, detail, member, fingerprint);
+          void change(act).then((done) => {
             if (done) setConfirming(null);
           });
         },

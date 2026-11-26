@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { MemberViewDto } from '@/api/spaces';
 import { decodeB64, encodeB64, utf8 } from '@/lib/b64url';
 import { parseBundle } from '@/sharing/bundle';
+import { type PinStore, memoryPinStore } from '@/spaces/anchors';
 import { makeBundleB64 } from '@/test/bundles';
 import { fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import { LEE, ME, SPACE, THEO, confirmedBy, fingerprintTextOf, memberView } from './fixtures';
@@ -16,17 +17,26 @@ async function roster(extra: MemberViewDto[] = []) {
   crypto.ownFingerprintText = await fingerprintTextOf(me);
   const lee = await confirmedBy(ME, memberView(LEE, 'lee@example.co'));
   const members = [me, lee, ...extra];
-  const ctx: RosterContext = { crypto, spaceId: SPACE, members, me: ME };
-  return { crypto, ctx, me, lee };
+  const pins = memoryPinStore();
+  const ctx: RosterContext = { crypto, spaceId: SPACE, members, me: ME, pins };
+  return { crypto, ctx, me, lee, pins };
 }
 
-async function refused(ctx: RosterContext, member: MemberViewDto) {
+async function failure(ctx: RosterContext, member: MemberViewDto): Promise<MemberNotVerified> {
   const error = await verifiedRecipient(ctx, member).then(
     () => null,
     (caught: unknown) => caught,
   );
   expect(error).toBeInstanceOf(MemberNotVerified);
-  return (error as MemberNotVerified).reason;
+  return error as MemberNotVerified;
+}
+
+async function refused(ctx: RosterContext, member: MemberViewDto) {
+  return (await failure(ctx, member)).reason;
+}
+
+async function pin(pins: PinStore, view: MemberViewDto) {
+  await pins.save(ME, view.user, await fingerprintTextOf(view));
 }
 
 describe('who a key may be sealed to', () => {
@@ -45,13 +55,39 @@ describe('who a key may be sealed to', () => {
     await expect(verifiedRecipient(ctx, theo)).resolves.toBeDefined();
   });
 
-  it('accepts a confirmation by the creator, who nobody confirmed, as a root', async () => {
+  it('does not take a listed creator, whom nobody confirmed, for a root', async () => {
     const creator = memberView(ADMIN, 'ada@example.co', { role: 'owner', invitedBy: ADMIN });
     const theo = await confirmedBy(ADMIN, memberView(THEO, 'theo@example.co'));
     const { ctx } = await roster([creator, theo]);
+    // Everything about the creator is the server's word, so Theo isn't traced, and what would
+    // help is a person comparing the creator's fingerprint.
+    const failed = await failure(ctx, theo);
+    expect(failed.reason).toBe('unknown-confirmer');
+    expect(failed.compare?.user).toBe(ADMIN);
+    expect((await failure(ctx, creator)).compare?.user).toBe(ADMIN);
+  });
+
+  it('takes a member whose fingerprint a person compared here for a root, and only while it is that one', async () => {
+    const creator = memberView(ADMIN, 'ada@example.co', { role: 'owner', invitedBy: ADMIN });
+    const theo = await confirmedBy(ADMIN, memberView(THEO, 'theo@example.co'));
+    const { ctx, pins } = await roster([creator, theo]);
+    await pin(pins, creator);
     await expect(verifiedRecipient(ctx, theo)).resolves.toBeDefined();
-    // But the creator's own keys are not a recipient on that word alone.
-    expect(await refused(ctx, creator)).toBe('no-confirmation');
+    await expect(verifiedRecipient(ctx, creator)).resolves.toBeDefined();
+    // The server lists other keys under the same id: the pin is of the keys compared.
+    const swapped = { ...creator, publicBundle: makeBundleB64(ADMIN, 1, 0x66) };
+    expect(await refused({ ...ctx, members: [...ctx.members.filter((m) => m.user !== ADMIN), swapped] }, theo)).toBe(
+      'unknown-confirmer',
+    );
+  });
+
+  it('is not fooled by two members whose bundles the server swapped, and a confirmation signed for the first', async () => {
+    // Alice is the real creator and Bob a member she confirmed. The server lists Alice's id with
+    // its own bundle, and signs "Bob" (also its own bundle) as confirmed by that fake Alice.
+    const alice = memberView(ADMIN, 'alice@example.co', { role: 'owner', invitedBy: ADMIN, publicBundle: makeBundleB64(ADMIN, 1, 0x31) });
+    const bob = await confirmedBy(ADMIN, memberView(THEO, 'bob@example.co', { publicBundle: makeBundleB64(THEO, 1, 0x32) }));
+    const { ctx } = await roster([alice, bob]);
+    expect(await refused(ctx, bob)).toBe('unknown-confirmer');
   });
 
   it('refuses a bundle swapped under a confirmation of the old one', async () => {
@@ -140,5 +176,13 @@ describe('who a key may be sealed to', () => {
     const b = await confirmedBy(ADMIN, memberView(THEO, 'theo@example.co', { role: 'admin' }));
     const { ctx } = await roster([a, b]);
     expect(await refused(ctx, a)).toBe('unknown-confirmer');
+  });
+
+  it('can tell a person which member to compare, through a confirmer that was itself confirmed', async () => {
+    const root = memberView(ADMIN, 'ada@example.co', { role: 'owner', invitedBy: ADMIN });
+    const admin = await confirmedBy(ADMIN, memberView('20000000-0000-4000-8000-00000000000a', 'bo@example.co', { role: 'admin' }));
+    const theo = await confirmedBy(admin.user, memberView(THEO, 'theo@example.co'));
+    const { ctx } = await roster([root, admin, theo]);
+    expect((await failure(ctx, theo)).compare?.user).toBe(ADMIN);
   });
 });

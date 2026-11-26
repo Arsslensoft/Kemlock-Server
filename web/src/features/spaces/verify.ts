@@ -9,15 +9,19 @@
 //  2. the member is confirmed, and their stored confirmation covers exactly this bundle: its
 //     fingerprint is the bundle's, and its key version the bundle's;
 //  3. the confirmer's signature over the confirmation verifies against the confirmer's own bundle,
-//     which passes the same bundle checks, and the confirmer is me (against my own fingerprint,
-//     not the server's copy of it), or an owner or admin whose own confirmation verifies the same
-//     way, down to the space's creator.
+//     which passes the same bundle checks, and the confirmer is trusted: me (against my own
+//     fingerprint, not the server's copy of it), a member whose fingerprint a person compared in
+//     this browser (a **pin**), or an owner, admin or manage-users member whose own confirmation
+//     verifies the same way, down to one of those two.
 //
-// A server that swaps a member's bundle for its own fails step 2; one that invents a confirmer has
-// to invent an owner or admin of the space too, which the member list shows. Only a space chain
+// Every field the server lists, the creator and the roles included, is the server's word, so none
+// of them makes a root: the walk ends at me or at a pin, and nowhere else. A server that swaps a
+// member's bundle for its own fails step 2, and one that swaps two members' bundles and signs a
+// confirmation with its own key for the first can't make the first one a pin. Only a space chain
 // ties the roster itself to people (docs/crypto.md, "Space chain": "First contact"); this is what
-// a space without one can check. A member who doesn't pass is not sealed to: they are asked to be
-// confirmed again.
+// a space without one can check, and it trusts the server for which key version is current. A
+// member who doesn't pass is not sealed to, and the error names the member whose fingerprint a
+// person can compare to make them pass (`compare`), or they are confirmed again.
 import type { MemberViewDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
 import {
@@ -27,6 +31,7 @@ import {
   parseBundle,
   uuidBytes,
 } from '@/sharing/bundle';
+import type { PinStore } from '@/spaces/anchors';
 import type { SpaceCrypto } from '@/spaces/crypto';
 
 export type NotVerifiedReason =
@@ -55,12 +60,18 @@ export type NotVerifiedReason =
 export class MemberNotVerified extends Error {
   readonly member: MemberViewDto;
   readonly reason: NotVerifiedReason;
+  /**
+   * The member whose fingerprint a person could compare so this one passes: the confirmer the walk
+   * ended at, which nobody here has compared. Absent when only confirming the member again helps.
+   */
+  readonly compare: MemberViewDto | undefined;
 
-  constructor(member: MemberViewDto, reason: NotVerifiedReason) {
+  constructor(member: MemberViewDto, reason: NotVerifiedReason, compare?: MemberViewDto) {
     super(`the keys of ${member.user} can't be verified (${reason})`);
     this.name = 'MemberNotVerified';
     this.member = member;
     this.reason = reason;
+    this.compare = compare;
   }
 }
 
@@ -78,6 +89,8 @@ export interface RosterContext {
   members: MemberViewDto[];
   /** This account's id. */
   me: string;
+  /** The members whose fingerprint a person compared in this browser; none are when left out. */
+  pins?: PinStore | undefined;
 }
 
 /** The longest run of confirmers followed, so a long or looping roster ends. */
@@ -142,15 +155,15 @@ async function verifyConfirmed(
     return parsed;
   }
 
+  // A member whose fingerprint a person compared here, and whose keys are still those.
+  if (ctx.pins && (await ctx.pins.load(ctx.me, member.user)) === fingerprintText(fingerprint)) {
+    return parsed;
+  }
+
   const confirmation = member.confirmation;
   if (member.needsReconfirmation) throw new MemberNotVerified(member, 'confirmation-differs');
-  if (!confirmation) {
-    // The creator made the space and nobody confirmed them: they are a root only when they are
-    // their own inviter and an owner, and only as someone else's confirmer, never as a recipient
-    // on their own word (the caller decides which).
-    if (member.invitedBy === member.user && member.role === 'owner' && depth > 0) return parsed;
-    throw new MemberNotVerified(member, 'no-confirmation');
-  }
+  // Nobody confirmed them: only a person comparing their fingerprint here makes them a root.
+  if (!confirmation) throw new MemberNotVerified(member, 'no-confirmation', member);
 
   let confirmed: Uint8Array;
   try {
@@ -183,7 +196,7 @@ async function verifyConfirmed(
     await verifyConfirmed(ctx, confirmer, depth + 1, new Set(seen).add(member.user));
   } catch (error) {
     if (error instanceof MemberNotVerified) {
-      throw new MemberNotVerified(member, 'unknown-confirmer');
+      throw new MemberNotVerified(member, 'unknown-confirmer', error.compare);
     }
     throw error;
   }

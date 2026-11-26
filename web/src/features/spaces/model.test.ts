@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { MemberViewDto } from '@/api/spaces';
 import { decodeB64, fromUtf8 } from '@/lib/b64url';
 import { checkedFingerprint, fingerprintText, fingerprintBytes } from '@/sharing/bundle';
+import { memoryPinStore } from '@/spaces/anchors';
 import { makeBundleB64 } from '@/test/bundles';
 import { fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
@@ -31,6 +32,7 @@ import {
   inviteMember,
   loadSpaceDetail,
   loadSpaceList,
+  pinMember,
   reachedBy,
   renameCollection,
   setGroupMembers,
@@ -207,6 +209,40 @@ async function sealable() {
   crypto.ownFingerprintText = await fingerprintTextOf(roster[0] as MemberViewDto);
   return { crypto, loaded: detail({ members: roster }) };
 }
+
+describe('pinning a member', () => {
+  async function shown(user: string, fill = 0x11) {
+    const bundle = decodeB64(memberView(user, 'x@example.co', { publicBundle: makeBundleB64(user, 1, fill) }).publicBundle);
+    const bytes = await fingerprintBytes(bundle);
+    return { text: fingerprintText(bytes), bytes, consistent: true };
+  }
+
+  it('keeps the fingerprint a person compared, and nothing else', async () => {
+    const { spaceDeps } = deps();
+    const pins = memoryPinStore();
+    const lee = memberView(LEE, 'lee@example.co');
+    await pinMember({ ...spaceDeps, pins }, ME, lee, await shown(LEE));
+    expect(await pins.load(ME, LEE)).toBe((await shown(LEE)).text);
+    // The fingerprint on screen must be of the bundle listed now, and worked out the same twice.
+    await expect(pinMember({ ...spaceDeps, pins }, ME, lee, await shown(LEE, 0x44))).rejects.toBeInstanceOf(
+      MemberNotVerified,
+    );
+    await expect(
+      pinMember({ ...spaceDeps, pins }, ME, lee, { ...(await shown(LEE)), consistent: false }),
+    ).rejects.toThrow();
+  });
+
+  it('lists the confirmed members it can not trace, and who to compare', async () => {
+    const { spaceDeps, crypto } = deps();
+    crypto.ownFingerprintText = await fingerprintTextOf(memberView(ME, 'sam@example.co'));
+    const loaded = await loadSpaceDetail(spaceDeps, SPACE);
+    // Lee has no confirmation: comparing Lee's own fingerprint puts it right.
+    expect(loaded.unverified).toEqual([{ user: LEE, compare: LEE }]);
+    const pins = memoryPinStore();
+    await pinMember({ ...spaceDeps, pins }, ME, memberView(LEE, 'lee@example.co'), await shown(LEE));
+    expect((await loadSpaceDetail({ ...spaceDeps, pins }, SPACE)).unverified).toBeUndefined();
+  });
+});
 
 describe('collections, groups and grants', () => {
   it('invites with the custom permissions only for the custom role', async () => {

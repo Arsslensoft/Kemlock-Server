@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { NO_CHAIN } from '@/test/fake-space-crypto';
-import { detail, ME, THEO } from './fixtures';
+import { detail, LEE, ME, THEO } from './fixtures';
 import { type SpaceActions, type SpaceDetailViewProps, SpaceDetailView } from './SpaceDetailView';
 import { SpaceListView } from './SpaceListView';
 
@@ -288,6 +288,20 @@ describe('SpaceDetailView', () => {
     expect(deleteGroup).toHaveBeenCalledOnce();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(within(screen.getByRole('dialog')).getByRole('alert')).toHaveTextContent('Something went wrong');
+  });
+
+  it('offers to confirm again, or compare the confirmer, for a member whose keys can not be traced', async () => {
+    const startPin = vi.fn();
+    const props = view({
+      detail: detail({ unverified: [{ user: LEE, compare: ME }] }),
+      actions: { ...actions(), startPin },
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Confirm Lee Wong' }));
+    expect(props.actions.startConfirm).toHaveBeenCalledWith(expect.objectContaining({ user: LEE }));
+    await user.click(screen.getByRole('button', { name: 'Compare the fingerprint of Sam Rivera' }));
+    expect(startPin).toHaveBeenCalledWith(expect.objectContaining({ user: ME }));
+    expect(screen.getByText('Keys not traced')).toBeInTheDocument();
   });
 
   it('shows a plain notice when the space can not be opened here', () => {

@@ -23,6 +23,8 @@ export interface ConfirmState {
   member: MemberViewDto;
   /** undefined while it is being worked out, null when the bundle can't be read. */
   fingerprint: Fingerprint | null | undefined;
+  /** `pin`: only compare, so this browser trusts the confirmations they made; default `confirm`. */
+  mode?: 'confirm' | 'pin';
 }
 
 export interface SpaceActions extends StructureActions {
@@ -31,6 +33,8 @@ export interface SpaceActions extends StructureActions {
   invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
+  /** Compares a member's fingerprint without confirming them, so their confirmations are trusted here. */
+  startPin?: (member: MemberViewDto) => void;
   cancelConfirm: () => void;
   confirm: () => void;
   changeRole: (user: string, role: SpaceRole, custom: CustomPermission[]) => Done;
@@ -195,8 +199,8 @@ function ConfirmPanel({
   const ready = fp !== undefined && fp !== null && fp.consistent;
   return (
     <section className="confirm-panel" aria-labelledby="h-confirm">
-      <h2 id="h-confirm">{t('space.confirm.title', { name })}</h2>
-      <p>{t('space.confirm.body', { name })}</p>
+      <h2 id="h-confirm">{t(state.mode === 'pin' ? 'space.pin.title' : 'space.confirm.title', { name })}</h2>
+      <p>{t(state.mode === 'pin' ? 'space.pin.body' : 'space.confirm.body', { name })}</p>
       {fp === undefined ? (
         <p role="status">{t('space.confirm.working')}</p>
       ) : fp === null ? (
@@ -352,7 +356,8 @@ export function SpaceDetailView({
     );
   }
 
-  const { view, members } = detail;
+  const { view } = detail;
+  const members = detail.members;
   const me = view.me;
   const manage = canManageUsers(me);
   const pendingKeys =
@@ -446,6 +451,11 @@ export function SpaceDetailView({
               {members.map((member) => {
                 const name = member.name || member.email;
                 const isMe = member.user === me.user;
+                const unverified = detail.unverified?.find((u) => u.user === member.user);
+                const compareWith = unverified?.compare
+                  ? members.find((m) => m.user === unverified.compare)
+                  : undefined;
+                const compareName = compareWith ? compareWith.name || compareWith.email : '';
                 return (
                   <tr key={member.user}>
                     <td>
@@ -467,6 +477,7 @@ export function SpaceDetailView({
                       {member.needsReconfirmation ? (
                         <span className="tag warn">{t('space.members.reconfirm')}</span>
                       ) : null}
+                      {unverified ? <span className="tag warn">{t('space.members.untraced')}</span> : null}
                     </td>
                     <td>
                       <div className="actions">
@@ -475,7 +486,22 @@ export function SpaceDetailView({
                             {t('space.members.accept')}
                           </Button>
                         ) : null}
-                        {!isMe && manage && (member.state === 'accepted' || member.needsReconfirmation) ? (
+                        {!isMe && manage && unverified ? (
+                          <>
+                            {compareWith && actions.startPin ? (
+                              <Button
+                                size="small"
+                                aria-label={t('space.members.compareFor', { name: compareName })}
+                                onPress={() => actions.startPin?.(compareWith)}
+                              >
+                                {t('space.members.compare')}
+                              </Button>
+                            ) : null}
+                          </>
+                        ) : null}
+                        {!isMe &&
+                        manage &&
+                        (member.state === 'accepted' || member.needsReconfirmation || unverified) ? (
                           <Button
                             size="small"
                             variant="primary"

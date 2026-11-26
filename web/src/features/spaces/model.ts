@@ -182,6 +182,12 @@ export interface SpaceDetail {
    * is in a test that doesn't care, the space is taken as one with no chain.
    */
   trust?: SpaceTrust;
+  /**
+   * The confirmed members of a space with no chain whose keys this browser can't trace to a
+   * confirmation it trusts (src/features/spaces/verify.ts), and, for each, the member whose
+   * fingerprint a person could compare to put that right. Confirming them again does too.
+   */
+  unverified?: Array<{ user: string; compare?: string }>;
 }
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
@@ -222,6 +228,21 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
       readable = false;
     }
   }
+  const unverified: NonNullable<SpaceDetail['unverified']> = [];
+  if (trust.kind === 'unchained') {
+    for (const member of members) {
+      if (member.state !== 'confirmed' || member.user === view.me.user) continue;
+      try {
+        await recipientOf(deps, { view, members }, member);
+      } catch (error) {
+        if (!(error instanceof MemberNotVerified)) throw error;
+        unverified.push({
+          user: member.user,
+          ...(error.compare ? { compare: error.compare.user } : {}),
+        });
+      }
+    }
+  }
   const { space } = view;
   const title = async (kind: 'space' | 'collection' | 'group', id: string, name: string) => {
     if (!readable) return null;
@@ -242,6 +263,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     members,
     readable,
     trust,
+    ...(unverified.length > 0 ? { unverified } : {}),
     name: await title('space', space.id, space.name),
     collections: await Promise.all(
       view.collections.map(async (c) => ({ ...c, title: await title('collection', c.id, c.name) })),
@@ -329,6 +351,7 @@ function recipientOf(
         spaceId: detail.view.space.id,
         members: detail.members,
         me: detail.view.me.user,
+        pins: deps.pins,
       },
       member,
     );
@@ -428,6 +451,29 @@ export async function confirmMember(
     sealedSpaceKey: encodeB64(sealedSpaceKey),
     collectionKeys,
   });
+}
+
+/**
+ * Pins a member: a person compared their fingerprint, here, with what their own app shows, and it
+ * matched. Confirmations they made are then trusted in this browser, and so are they as a
+ * recipient, for as long as their keys are the ones compared.
+ */
+export async function pinMember(
+  deps: SpaceDeps,
+  me: string,
+  member: MemberViewDto,
+  fingerprint: Fingerprint,
+): Promise<void> {
+  if (!fingerprint.consistent) {
+    throw new Error('the fingerprint worked out here differs from the worker’s');
+  }
+  if (!deps.pins) throw new Error('this browser keeps no pins');
+  const { bytes } = await checkBundle(deps.crypto, member);
+  const shown = await fingerprintBytes(bytes);
+  if (shown.length !== fingerprint.bytes.length || shown.some((byte, i) => byte !== fingerprint.bytes[i])) {
+    throw new MemberNotVerified(member, 'confirmation-differs');
+  }
+  await deps.pins.save(me, member.user, fingerprint.text);
 }
 
 // ---- collections, groups, grants -------------------------------------------------------------
