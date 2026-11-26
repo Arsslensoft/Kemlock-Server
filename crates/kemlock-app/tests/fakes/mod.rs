@@ -1331,10 +1331,10 @@ pub(crate) fn totp_code(world: &World, user: UserId) -> String {
         .into_iter()
         .find(|t| t.method == TwoFactorMethod::Totp)
         .expect("the user has a TOTP enrolment");
-    let secret = world
-        .seal
-        .open(&kemlock_app::sealed::bound_purpose("totp", user), &row.sealed_secret)
-        .expect("the secret opens");
+    // Sealed to the account, or the old way under the bare purpose, as a test may leave it.
+    let secret = kemlock_app::sealed::open_bound(&world.seal, "totp", user, &row.sealed_secret)
+        .expect("the secret opens")
+        .value;
     kemlock_crypto::totp::code_at(&secret, unix(world.env.now()))
 }
 

@@ -798,20 +798,44 @@ async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_
 }
 
 #[tokio::test]
-async fn an_administrators_account_is_not_linked_by_email() {
+async fn linking_to_an_administrators_account_by_email_asks_for_its_second_step_first() {
     let sso = Sso::new();
     let existing = make_user(&sso.world, "ada@example.org").await;
     let mut account = sso.world.store.user(existing).expect("the account");
     account.role = Role::Admin;
     sso.world.store.put_user(account);
+    enable_totp(&sso.world, existing).await;
+    // The provider says its user did multi-factor authentication: no help for the admin's account.
+    sso.provider.say({
+        let mut c = claims("sub-1", "ada@example.org");
+        c.amr = vec!["mfa".to_owned()];
+        c
+    });
 
-    assert_eq!(
-        sso.sign_in("provider-code-1").await,
-        Err(SsoError::AdminLinkingRefused)
-    );
-    assert!(sso.repos.identities().is_empty(), "nothing is linked");
+    let signed_in = sso.sign_in("provider-code-1").await.expect("links");
+    assert_eq!(signed_in.user, existing);
+    assert!(!signed_in.mfa_via_sso);
+    let SignedIn::SecondStep(step) = &signed_in.outcome else {
+        panic!("the admin's second step is owed, not tokens");
+    };
+    assert_eq!(step.methods, vec![TwoFactorMethod::Totp]);
     assert!(sso.world.store.devices_of(existing).is_empty());
     assert!(sso.world.store.refresh_tokens().is_empty());
+
+    // The second step then issues the tokens, with the admin's rights.
+    let tokens = sso
+        .world
+        .sign_in()
+        .second_step(SecondStepInput {
+            challenge: step.challenge.clone(),
+            method: TwoFactorMethod::Totp,
+            code: totp_code(&sso.world, existing),
+            jkt: JKT.to_owned(),
+        })
+        .await
+        .expect("the second step completes");
+    assert_eq!(tokens.user, existing);
+    assert!(tokens.admin);
 }
 
 #[tokio::test]

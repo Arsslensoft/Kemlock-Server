@@ -316,12 +316,6 @@ where
                 return Err(AppError::AccountDisabled.into());
             }
             ensure_not_pending(&self.users, user.id).await?;
-            // An administrator's account is not given to whoever the provider says has its
-            // address: there is no one to ask, and the console and its second step are what stand
-            // between the account and the server.
-            if user.is_admin() {
-                return Err(SsoError::AdminLinkingRefused);
-            }
             // An account whose address was never confirmed may have been made by someone who
             // doesn't own it.
             if self.users.email_unconfirmed(user.id).await? {

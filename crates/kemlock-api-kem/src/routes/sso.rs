@@ -172,10 +172,6 @@ impl From<SsoError> for Problem {
                 "sso-linking-off",
                 "An account with this email exists and linking by email is off",
             ),
-            SsoError::AdminLinkingRefused => forbidden(
-                "sso-admin-linking",
-                "An administrator's account isn't linked to a provider by email; it signs in with its password",
-            ),
             SsoError::NoAccount => forbidden(
                 "sso-no-account",
                 "There is no account for this sign-in, and accounts aren't made automatically",

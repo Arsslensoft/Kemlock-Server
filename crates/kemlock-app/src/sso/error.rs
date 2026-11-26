@@ -32,11 +32,6 @@ pub enum SsoError {
     /// An account with this email exists and linking by email is off.
     #[error("an account with this email exists; linking by email is off")]
     LinkingNotAllowed,
-    /// The account with this email is a server administrator's, which is never linked by email:
-    /// whoever the provider says owns the address would be given the console. It signs in with its
-    /// password and second step.
-    #[error("an administrator's account isn't linked by email")]
-    AdminLinkingRefused,
     /// No account matches and the admin turned automatic sign-up off.
     #[error("no account matches and new accounts aren't created")]
     NoAccount,
@@ -77,7 +72,6 @@ impl From<SsoError> for AppError {
             SsoError::EmailNotVerified
             | SsoError::DomainNotVerified
             | SsoError::LinkingNotAllowed
-            | SsoError::AdminLinkingRefused
             | SsoError::NoAccount => AppError::Forbidden,
             SsoError::SsoRequired { space } => AppError::SsoRequired { space },
             SsoError::DomainProofMissing => AppError::Invalid("the DNS record isn't there yet"),
