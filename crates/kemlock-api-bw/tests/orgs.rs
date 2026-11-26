@@ -69,6 +69,7 @@ async fn add_member(h: &Harness, owner: &str, org: &str, member: UserId, email: 
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, member).await;
     let (status, body) = h
         .json(
             "POST",
@@ -78,6 +79,23 @@ async fn add_member(h: &Harness, owner: &str, org: &str, member: UserId, email: 
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// What Require SSO needs before it can be turned on: the server has a provider, and the
+/// organization has Single organization on.
+async fn sso_prerequisites(h: &Harness, owner: &str, org: &str) {
+    h.configure_sso().await;
+    for ptype in [3] {
+        let (status, body) = h
+            .json(
+                "PUT",
+                &format!("/api/organizations/{org}/policies/{ptype}"),
+                Some(owner),
+                Some(json!({"policy": {"enabled": true, "data": null}})),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
 }
 
 #[tokio::test]
@@ -204,8 +222,9 @@ async fn an_invited_member_is_confirmed_and_then_sees_the_organization() {
     assert_eq!(row["object"], "organizationUserUserDetails");
     assert_eq!(row["id"], bob_id.to_string());
     assert_eq!(row["userId"], bob_id.to_string());
-    // No mail goes out, so an account with a password has accepted.
-    assert_eq!(row["status"], 1);
+    // An existing account is invited, and stays so until it accepts: nobody is put into an
+    // organization they have not agreed to join.
+    assert_eq!(row["status"], 0);
     assert_eq!(row["type"], 2);
     assert_eq!(row["name"], "Kemlock test");
     assert_eq!(row["twoFactorEnabled"], false);
@@ -214,8 +233,34 @@ async fn an_invited_member_is_confirmed_and_then_sees_the_organization() {
 
     let before = sync(&h, &bob).await;
     assert_eq!(before["profile"]["organizations"], json!([]));
-    assert_eq!(before["profile"]["organizationsNew"][0]["status"], 1);
+    assert_eq!(before["profile"]["organizationsNew"][0]["status"], 0);
     assert!(before["profile"]["organizationsNew"][0]["key"].is_null());
+
+    // No one can confirm an invitation nobody accepted.
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{bob_id}/confirm"),
+            Some(&ada),
+            Some(json!({"key": "4.bobskey"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["message"], "User in invalid state");
+
+    // Bob accepts with the link of the invitation.
+    let token = h.invite_token(&org, bob_id, "bob@example.com");
+    let (status, body) = h
+        .json(
+            "POST",
+            &format!("/api/organizations/{org}/users/{bob_id}/accept"),
+            Some(&bob),
+            Some(json!({"token": token})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let accepted = sync(&h, &bob).await;
+    assert_eq!(accepted["profile"]["organizationsNew"][0]["status"], 1);
 
     let (status, body) = h
         .json(
@@ -458,6 +503,7 @@ async fn policies_are_set_read_and_served_to_members() {
     let (org, _) = organization(&h, &ada).await;
     add_member(&h, &ada, &org, bob_id, "bob@example.com").await;
 
+    sso_prerequisites(&h, &ada, &org).await;
     let (status, policy) = h
         .json(
             "PUT",
@@ -486,8 +532,8 @@ async fn policies_are_set_read_and_served_to_members() {
 
     let (_, listed) = get(&h, &ada, &format!("/api/organizations/{org}/policies")).await;
     assert_eq!(listed["object"], "list");
-    assert_eq!(listed["data"].as_array().map(Vec::len), Some(2));
-    let (_, blank) = get(&h, &ada, &format!("/api/organizations/{org}/policies/3")).await;
+    assert_eq!(listed["data"].as_array().map(Vec::len), Some(3));
+    let (_, blank) = get(&h, &ada, &format!("/api/organizations/{org}/policies/7")).await;
     assert_eq!(blank["enabled"], false);
     assert!(blank["data"].is_null());
     let (status, body) = get(&h, &ada, &format!("/api/organizations/{org}/policies/9")).await;
@@ -496,8 +542,8 @@ async fn policies_are_set_read_and_served_to_members() {
 
     // Members get the policies in their sync, and read the master password one.
     let synced = sync(&h, &bob).await;
-    assert_eq!(synced["policies"].as_array().map(Vec::len), Some(2));
-    assert_eq!(synced["policiesNew"].as_array().map(Vec::len), Some(2));
+    assert_eq!(synced["policies"].as_array().map(Vec::len), Some(3));
+    assert_eq!(synced["policiesNew"].as_array().map(Vec::len), Some(3));
     let (status, mine) = get(
         &h,
         &bob,
@@ -873,6 +919,7 @@ async fn require_sso_closes_the_password_to_members_and_not_to_owners() {
     let (org, _) = organization(&h, &ada).await;
     add_member(&h, &ada, &org, bob_id, "bob@example.com").await;
 
+    sso_prerequisites(&h, &ada, &org).await;
     let (status, _) = h
         .json(
             "PUT",
@@ -953,6 +1000,7 @@ async fn require_sso_closes_the_api_key_to_members_and_not_to_owners() {
         }
     };
 
+    sso_prerequisites(&h, &ada, &org).await;
     let (status, _) = h
         .json(
             "PUT",

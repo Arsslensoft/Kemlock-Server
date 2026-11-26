@@ -126,6 +126,7 @@ async fn only_an_owner_has_the_key() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, bob_id).await;
     let (status, body) = h
         .json(
             "POST",
@@ -213,7 +214,7 @@ async fn the_import_makes_members_and_groups_match_the_directory() {
         }
     };
 
-    // Bob has an account and joins accepted; Cleo has none and waits for her registration. Both
+    // Bob has an account and is invited, to accept for himself; Cleo has none and waits for her registration. Both
     // are in the group.
     let (status, body) = import(json!({
         "groups": [{"name": "Engineering", "externalId": "g1", "memberExternalIds": ["b1", "c1"]}],
@@ -228,7 +229,7 @@ async fn the_import_makes_members_and_groups_match_the_directory() {
     let rows = members(&h, &ada, &org).await;
     assert_eq!(rows.len(), 3);
     let bob = find(&rows, "bob@example.com").expect("bob is a member");
-    assert_eq!(bob["status"], 1);
+    assert_eq!(bob["status"], 0);
     assert_eq!(bob["type"], 2);
     assert_eq!(bob["externalId"], "b1");
     assert_eq!(bob["id"], bob_id.to_string());
@@ -315,7 +316,7 @@ async fn the_import_makes_members_and_groups_match_the_directory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let rows = members(&h, &ada, &org).await;
-    assert_eq!(find(&rows, "bob@example.com").expect("bob")["status"], 1);
+    assert_eq!(find(&rows, "bob@example.com").expect("bob")["status"], 0);
 }
 
 #[tokio::test]

@@ -24,6 +24,7 @@ use kemlock_app::ports::{
 };
 use kemlock_app::privacy::{OwnErasure, PrivacyLog};
 use kemlock_app::spaces::SpaceRepo;
+use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_app::two_step::RecoveryCodeRepo;
 use kemlock_crypto::hash;
 use kemlock_crypto::seal::ServerSeal;
@@ -50,6 +51,7 @@ pub trait BwStore:
     + ChallengeRepo
     + BwOrgStore
     + SpaceRepo
+    + SsoSettingsRepo
     + EmergencyRepo
     + RecoveryCodeRepo
     + EventLog
@@ -73,6 +75,7 @@ impl<T> BwStore for T where
         + ChallengeRepo
         + BwOrgStore
         + SpaceRepo
+        + SsoSettingsRepo
         + EmergencyRepo
         + RecoveryCodeRepo
         + EventLog

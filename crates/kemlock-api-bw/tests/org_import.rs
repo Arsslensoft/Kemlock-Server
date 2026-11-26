@@ -68,6 +68,7 @@ async fn fixture() -> Fixture {
             )
             .await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        h.accept_in_space(&org, id).await;
         let (status, body) = h
             .json(
                 "POST",

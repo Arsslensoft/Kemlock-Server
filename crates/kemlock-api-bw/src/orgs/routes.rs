@@ -270,13 +270,10 @@ async fn leave_organization<S: BwStore>(
     authed: Authed,
     Path(org_id): Path<String>,
 ) -> EmptyResult {
+    // Any member who is not revoked may leave: that is how an invitation, or a membership still
+    // waiting for its confirmation, is turned down.
     let ctx = app.guard(&authed, &org_id, Need::Member).await?;
-    if !ctx.doc.confirmed() {
-        return Err(BwError::msg(
-            "You need to be a Member of the Organization to call this endpoint",
-        ));
-    }
-    if ctx.doc.atype == OWNER && ctx.org.confirmed_owners() <= 1 {
+    if ctx.doc.confirmed() && ctx.doc.atype == OWNER && ctx.org.confirmed_owners() <= 1 {
         return Err(BwError::msg("The last owner can't leave"));
     }
     app.remove_member(&ctx.org, ctx.me).await?;

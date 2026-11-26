@@ -10,7 +10,7 @@ use super::policy::check_user_allowed;
 use crate::app::{App, Authed, BwStore};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
-use kemlock_app::bitwarden::BwAccountRepo;
+use kemlock_app::notices::{InvitationNotice, Notice};
 use kemlock_app::ports::UserRepo;
 use kemlock_domain::spaces::{CollectionGrant, CollectionId, Grantee, GroupId};
 use kemlock_domain::{Email, UserId};
@@ -116,6 +116,29 @@ fn group_ids_of(org: &Org, groups: &[String]) -> BwResult<Vec<GroupId>> {
         .collect()
 }
 
+/// Mails an account its invitation to an organization, when the server mails: the notice the
+/// Kemlock API sends for a space, with the link to the web vault's space page, where the invitee
+/// signs in and accepts. The mail is best effort; the invitation stands without it, and the
+/// invitee finds it in their spaces.
+pub(crate) async fn mail_invitation<S: BwStore>(
+    app: &App<S>,
+    org: &Org,
+    to: &Email,
+    inviter_email: &str,
+) {
+    if !app.notices.mails() {
+        return;
+    }
+    app.notices
+        .send(Notice::Invitation(InvitationNotice {
+            to: to.clone(),
+            space: Some(org.name.clone()),
+            inviter: Some(inviter_email.to_owned()),
+            space_id: Some(org.id),
+        }))
+        .await;
+}
+
 /// `POST /api/organizations/{id}/users/invite`.
 pub(crate) async fn invite<S: BwStore>(
     app: &App<S>,
@@ -171,13 +194,11 @@ pub(crate) async fn invite<S: BwStore>(
                         email.escape_debug()
                     )));
                 }
-                // No mail goes out, so an existing account with a password has accepted already,
-                // as Vaultwarden does with its mailer off.
-                let has_password = BwAccountRepo::get(&app.store, user.id)
-                    .await?
-                    .is_some_and(|a| !a.password_hash.is_empty());
-                let status = if has_password { ACCEPTED } else { INVITED };
-                let mut doc = MemberDoc::new(new_type, access_all, status);
+                // An account that already exists is invited and waits: nobody joins an
+                // organization they have not agreed to, so the invitee accepts, with the mail or
+                // from the web vault's spaces. (Vaultwarden with its mailer off would take an
+                // account with a password as accepted at once.)
+                let mut doc = MemberDoc::new(new_type, access_all, INVITED);
                 doc.invited_by_email = Some(inviter_email.to_owned());
                 app.put_member(&org, user.id, &doc, ctx.me).await?;
                 if !access_all {
@@ -191,6 +212,7 @@ pub(crate) async fn invite<S: BwStore>(
                 app.touch_quiet(user.id).await?;
                 ctx.log(app, kind::MEMBER_INVITED, &user.id.to_string())
                     .await;
+                mail_invitation(app, &org, &parsed, inviter_email).await;
             }
             None => {
                 if org.pending.iter().any(|p| p.email == parsed.as_str()) {
@@ -223,12 +245,13 @@ pub(crate) async fn invite<S: BwStore>(
     Ok(())
 }
 
-/// `POST /api/organizations/{id}/users/{member}/reinvite`: with no mail, an invited account with
-/// a password is taken as accepted; an invitation to an address with no account stays.
+/// `POST /api/organizations/{id}/users/{member}/reinvite`: an invited account is mailed the
+/// invitation again, when the server mails, and stays invited until it accepts; an invitation to
+/// an address with no account stays.
 pub(crate) async fn reinvite<S: BwStore>(app: &App<S>, ctx: &Ctx, member_id: &str) -> BwResult<()> {
     let org = &ctx.org;
     if let Some(user) = parse_member(member_id).filter(|u| org.member(*u).is_some()) {
-        let Some(mut doc) = org.member(user).cloned() else {
+        let Some(doc) = org.member(user) else {
             return Err(BwError::msg(
                 "The user hasn't been invited to the organization.",
             ));
@@ -238,12 +261,9 @@ pub(crate) async fn reinvite<S: BwStore>(app: &App<S>, ctx: &Ctx, member_id: &st
                 "The user is already accepted or confirmed to the organization",
             ));
         }
-        let has_password = BwAccountRepo::get(&app.store, user)
-            .await?
-            .is_some_and(|a| !a.password_hash.is_empty());
-        if has_password {
-            doc.status = ACCEPTED;
-            app.put_member(org, user, &doc, ctx.me).await?;
+        if let Some(account) = UserRepo::by_id(&app.store, user).await? {
+            let inviter = doc.invited_by_email.clone().unwrap_or_default();
+            mail_invitation(app, org, &account.email, &inviter).await;
         }
         return Ok(());
     }

@@ -17,6 +17,7 @@ use kemlock_app::platform::Hasher;
 use kemlock_app::ports::{Clock, Random, StoreError, UserRepo};
 use kemlock_app::privacy::{EraseAccount, ErasureFiles, NoSends};
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
+use kemlock_app::sso::{SsoSettings, SsoSettingsRepo};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::BlobId;
 use kemlock_domain::SpaceId;
@@ -486,6 +487,31 @@ impl Harness {
             row.accepted_at = Some(now);
         })
         .await;
+    }
+
+    /// The token of an invitation link, as the mail of a server would carry it.
+    pub(crate) fn invite_token(&self, org: &str, member: UserId, email: &str) -> String {
+        let now = self.env.time().unix_timestamp();
+        keys()
+            .encode(&json!({
+                "nbf": now,
+                "exp": now + 3600,
+                "iss": format!("{DOMAIN}|invite"),
+                "sub": member.to_string(),
+                "email": email,
+                "org_id": org,
+                "member_id": member.to_string(),
+                "invited_by_email": null,
+            }))
+            .expect("a token")
+    }
+
+    /// Gives the server a single sign-on provider, which Require SSO needs.
+    pub(crate) async fn configure_sso(&self) {
+        let settings = SsoSettings::new("https://idp.example.org", "kemlock", self.env.time());
+        SsoSettingsRepo::put_sso_settings(&self.store, &settings)
+            .await
+            .expect("the provider is stored");
     }
 
     /// A signed-in account: its access token and its user id.

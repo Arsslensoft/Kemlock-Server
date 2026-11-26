@@ -7,9 +7,10 @@
 //! a `kx1` box). On the wire the domain's `Rejected` is Bitwarden's `Confirmed`, as a refused
 //! request in Vaultwarden goes back to `Confirmed`.
 //!
-//! - There is no mailer: an invite to an account that has a password is accepted at once, as
-//!   Vaultwarden does with mail off; an invite to an address with no account waits as `Invited`
-//!   (Vaultwarden makes an empty account for it, the domain keeps the address).
+//! - An invite stays `Invited` until the contact accepts it, with the link of the mail or from the
+//!   Kemlock web vault, whether or not the address has an account (Vaultwarden with mail off would
+//!   accept an account that has a password at once; this server asks for the contact's consent).
+//!   The domain keeps the address of a contact with no account.
 //! - The wait is run out by kemlock-app's `ApproveDue` job (kemlock-server `jobs.rs`); a grant
 //!   whose wait has ended is also approved when it is read here, with the same compare-and-set.
 //! - The `/password` takeover sets the grantor's password hash and wrapped key, ends their
@@ -28,7 +29,8 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::routing::{get, post};
 use kemlock_app::bitwarden::BwAccountRepo;
-use kemlock_app::emergency::EmergencyRepo;
+use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice, EmergencyRepo};
+use kemlock_app::notices::Notice;
 use kemlock_app::ports::{
     ChangePage, DeviceRepo, ItemStore, StoreError, TokenRepo, TwoFactorRepo, UserRepo,
 };
@@ -375,13 +377,6 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
         ))
     })?;
     let existing = UserRepo::by_email(&app.store, &contact).await?;
-    let has_password = match &existing {
-        Some(user) => BwAccountRepo::get(&app.store, user.id)
-            .await?
-            .is_some_and(|a| !a.password_hash.is_empty()),
-        None => false,
-    };
-
     let mine = EmergencyRepo::grants_of_grantor(&app.store, authed.user.id).await?;
     let taken = mine.iter().any(|g| {
         g.grantee_email == contact
@@ -396,7 +391,7 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
     }
 
     let now = app.now();
-    let mut grant = EmergencyGrant::invite(
+    let grant = EmergencyGrant::invite(
         GrantId(random_uuid(app.env.as_ref())),
         authed.user.id,
         contact,
@@ -414,14 +409,30 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
         }
         Err(e) => return Err(e.into()),
     }
-    // With no mail to carry a link, an existing account accepts at once.
-    if has_password && let Some(user) = &existing {
-        grant.accept(user.id, now).map_err(|_| not_valid())?;
-        save(app, &grant, EmergencyState::Invited).await?;
+    // The contact accepts for themselves, from the Kemlock web vault or with the link of the
+    // mail, so nobody is made a grantee of someone who named them.
+    if let Some(user) = &existing {
         touch_quiet(app, user.id).await;
     }
+    notify_contact(app, &grant).await;
     touch_quiet(app, authed.user.id).await;
     Ok(())
+}
+
+/// Mails the contact that someone named them, when the server mails.
+async fn notify_contact<S: BwStore>(app: &App<S>, grant: &EmergencyGrant) {
+    if !app.notices.mails() {
+        return;
+    }
+    app.notices
+        .send(Notice::Emergency(EmergencyNotice {
+            to: grant.grantee_email.clone(),
+            grant: grant.id,
+            event: EmergencyEvent::Invited,
+            kind: grant.kind,
+            wait_days: grant.wait_days,
+        }))
+        .await;
 }
 
 async fn send_invite<S: BwStore>(
@@ -444,20 +455,8 @@ async fn resend_invite<S: BwStore>(
             "The grantee user is already accepted or confirmed for emergency access",
         ));
     }
-    let Some(contact) = UserRepo::by_email(&app.store, &grant.grantee_email).await? else {
-        // Vaultwarden would record an invitation for the address; there is no mail to send.
-        return Ok(axum::http::StatusCode::OK);
-    };
-    let has_password = BwAccountRepo::get(&app.store, contact.id)
-        .await?
-        .is_some_and(|a| !a.password_hash.is_empty());
-    if has_password {
-        let mut next = grant.clone();
-        next.accept(contact.id, app.now())
-            .map_err(|_| not_valid())?;
-        save(&app, &next, EmergencyState::Invited).await?;
-        touch_quiet(&app, contact.id).await;
-    }
+    // The grantee accepts for themselves; a resend only mails them again, when the server mails.
+    notify_contact(&app, &grant).await;
     Ok(axum::http::StatusCode::OK)
 }
 
@@ -887,7 +886,7 @@ mod tests {
 
     #[test]
     fn a_rejected_request_reads_as_confirmed() {
-        let mut grant = EmergencyGrant::invite(
+        let grant = EmergencyGrant::invite(
             GrantId::random(),
             UserId::random(),
             Email::parse("a@example.com").expect("an email"),
