@@ -217,7 +217,7 @@ pub fn describe(report: &ApplyReport) -> String {
     let refused = refused_text(&refused);
     if !refused.is_empty() {
         text.push_str(&format!(
-            ". Left alone, because the import didn't create them: {refused}. To overwrite them \
+            ". Left alone, because the import didn't create them or this server changed them since: {refused}. To overwrite them \
              on purpose, run kemlock-cli import-vaultwarden --adopt-existing"
         ));
     }
@@ -448,7 +448,9 @@ mod tests {
         };
         let text = describe(&report);
         assert!(
-            text.contains(&format!("Left alone, because the import didn't create them: user 1 ({id})")),
+            text.contains(&format!(
+                "Left alone, because the import didn't create them or this server changed them                  since: user 1 ({id})"
+            )),
             "{text}"
         );
         assert!(text.contains("--adopt-existing"), "{text}");

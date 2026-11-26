@@ -276,6 +276,7 @@ impl ImportSink for SqlImportSink {
         let ctx = self.ctx.take().ok_or(ImportError::Finished)?;
         org_docs::sync(&ctx).await?;
         vault::bump_revisions(&ctx).await?;
+        scope::refresh_marks(&ctx).await?;
         ctx.txn.commit().await.store()?;
         Ok(())
     }

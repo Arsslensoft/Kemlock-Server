@@ -106,7 +106,7 @@ pub(super) async fn put_folders(ctx: &mut Ctx, folders: &[MappedFolder]) -> Res<
     for folder in folders {
         let body = json!({ "name": folder.name }).to_string().into_bytes();
         let owner = Owner::User(folder.user);
-        if !ctx.item_allowed(folder.id, owner).await? {
+        if !ctx.item_allowed(folder.id, owner, folder.updated_at).await? {
             ctx.refuse("folder", folder.id);
             continue;
         }
@@ -161,7 +161,7 @@ pub(super) async fn put_items(ctx: &mut Ctx, items: &[MappedItem]) -> Res<()> {
         let ids: Vec<Uuid> = chunk.iter().map(|item| item.id.0).collect();
         let attachments = attachment_lists(ctx, &ids).await?;
         for item in chunk {
-            if !ctx.item_allowed(item.id.0, item.owner).await? {
+            if !ctx.item_allowed(item.id.0, item.owner, item.updated_at).await? {
                 ctx.refuse("item", item.id.0);
                 continue;
             }

@@ -11,6 +11,11 @@ pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub id: Uuid,
     pub imported_at: TimeDateTimeWithTimeZone,
+    /// When the import last wrote it.
+    pub written_at: TimeDateTimeWithTimeZone,
+    /// For an account: the revision date of its Bitwarden record after that write, so a later
+    /// change by the API shows. Absent for a space and for a backfilled account.
+    pub revision_ms: Option<i64>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

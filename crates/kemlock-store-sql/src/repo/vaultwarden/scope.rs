@@ -11,6 +11,10 @@
 //! - everything that hangs off a user or space (devices, two-step setups, memberships, items,
 //!   collections, groups, Sends, events, files) is written only for users and spaces that are the
 //!   import's, and never over an id that belongs to another owner;
+//! - an account or space the server's own API changed since the import last wrote it (a later
+//!   `updated_at`, another revision date, a changed member) is left alone as well, so a rerun
+//!   can't roll it back to Vaultwarden's state; an item the API revised after the source's date
+//!   likewise;
 //! - an id that fails the test is skipped, remembered in `Ctx::refused` and reported by
 //!   `ImportSink::refused`, and the rest of the pass carries on.
 //!
@@ -23,13 +27,17 @@ use super::{Ctx, Res};
 use crate::convert::utc;
 use crate::error::StoreResult;
 use crate::tables::items as item_rows;
-use crate::tables::space_tables::{collections, groups, spaces};
-use crate::tables::{bw_attachments, devices, emergency_access, sends, users, vw_import_ids};
+use crate::tables::space_tables::{collections, groups, members, spaces};
+use crate::tables::{
+    bw_accounts, bw_attachments, devices, emergency_access, sends, users, vw_import_ids,
+};
 use kemlock_domain::Owner;
 use kemlock_vaultwarden::snapshot::{RowRef, Table};
 use sea_orm::ActiveValue::Set;
-use sea_orm::EntityTrait;
+use sea_orm::sea_query::Expr;
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter};
 use std::collections::BTreeSet;
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 /// The `vw_import_ids.kind` of an account, and the refused kind that names one.
@@ -74,14 +82,17 @@ impl Ctx {
         })
     }
 
-    async fn marked(&self, kind: &str, id: Uuid) -> Res<bool> {
+    async fn mark_row(&self, kind: &str, id: Uuid) -> Res<Option<vw_import_ids::Model>> {
         Ok(
             vw_import_ids::Entity::find_by_id((kind.to_owned(), id))
                 .one(&self.txn)
                 .await
-                .store()?
-                .is_some(),
+                .store()?,
         )
+    }
+
+    async fn marked(&self, kind: &str, id: Uuid) -> Res<bool> {
+        Ok(self.mark_row(kind, id).await?.is_some())
     }
 
     async fn mark(&self, kind: &str, id: Uuid) -> Res<()> {
@@ -89,11 +100,61 @@ impl Ctx {
             kind: Set(kind.to_owned()),
             id: Set(id),
             imported_at: Set(utc(self.opts.now)),
+            written_at: Set(utc(self.opts.now)),
+            revision_ms: Set(None),
         })
         .exec(&self.txn)
         .await
         .store()?;
         Ok(())
+    }
+
+    /// Whether the server's own API changed the user or space since the import last wrote it.
+    async fn changed_since(
+        &self,
+        kind: &str,
+        id: Uuid,
+        mark: &vw_import_ids::Model,
+    ) -> Res<bool> {
+        let written = utc(mark.written_at);
+        if kind == SPACE {
+            let space = spaces::Entity::find_by_id(id)
+                .one(&self.txn)
+                .await
+                .store()?;
+            if space.is_some_and(|s| utc(s.updated_at) > written) {
+                return Ok(true);
+            }
+            // A member invited, accepted, revoked or confirmed by the API since.
+            let moved = members::Entity::find()
+                .filter(members::Column::SpaceId.eq(id))
+                .filter(
+                    Condition::any()
+                        .add(members::Column::InvitedAt.gt(written))
+                        .add(members::Column::AcceptedAt.gt(written))
+                        .add(members::Column::RevokedAt.gt(written))
+                        .add(members::Column::ConfirmedAt.gt(written)),
+                )
+                .one(&self.txn)
+                .await
+                .store()?;
+            return Ok(moved.is_some());
+        }
+        let user = users::Entity::find_by_id(id)
+            .one(&self.txn)
+            .await
+            .store()?;
+        if user.is_some_and(|u| utc(u.updated_at) > written) {
+            return Ok(true);
+        }
+        if let Some(stored) = mark.revision_ms {
+            let record = bw_accounts::Entity::find_by_id(id)
+                .one(&self.txn)
+                .await
+                .store()?;
+            return Ok(record.is_some_and(|r| r.revision_ms != stored));
+        }
+        Ok(false)
     }
 
     /// Whether `id` is a `kind` the import owns: one this pass took, one an earlier pass made, or
@@ -103,15 +164,24 @@ impl Ctx {
         if self.owned_set(kind).contains(&id) {
             return Ok(true);
         }
+        let changed = changed_kind(kind);
+        if self.was_refused(changed, id) {
+            return Ok(false);
+        }
         if !self.exists(kind, id).await? {
             return Ok(false);
         }
-        let marked = self.marked(kind, id).await?;
-        if !marked && !self.opts.adopt_existing {
-            return Ok(false);
-        }
-        if !marked {
-            self.mark(kind, id).await?;
+        match self.mark_row(kind, id).await? {
+            None if !self.opts.adopt_existing => return Ok(false),
+            None => self.mark(kind, id).await?,
+            Some(mark) => {
+                // Changed here since the import wrote it: not rolled back, unless the operator
+                // says so.
+                if !self.opts.adopt_existing && self.changed_since(kind, id, &mark).await? {
+                    self.refuse(changed, id);
+                    return Ok(false);
+                }
+            }
         }
         self.owned_set(kind).insert(id);
         Ok(true)
@@ -147,6 +217,9 @@ impl Ctx {
         if self.owns(kind, id).await? {
             return Ok(true);
         }
+        if self.was_refused(changed_kind(kind), id) {
+            return Ok(false);
+        }
         let other = if kind == SPACE { USER } else { SPACE };
         if self.exists(kind, id).await? || self.exists(other, id).await? {
             self.refuse(kind, id);
@@ -158,8 +231,13 @@ impl Ctx {
 
     /// Whether the import may write the item `id` for `owner`: the owner is the import's (a space
     /// that doesn't exist yet is taken, as its row comes later in the pass), and an item of that id
-    /// that already exists is the same owner's.
-    pub(super) async fn item_allowed(&mut self, id: Uuid, owner: Owner) -> Res<bool> {
+    /// that already exists is the same owner's and not newer than `incoming`, the source's date.
+    pub(super) async fn item_allowed(
+        &mut self,
+        id: Uuid,
+        owner: Owner,
+        incoming: OffsetDateTime,
+    ) -> Res<bool> {
         let owner_ok = match owner {
             Owner::User(user) => self.owns(USER, user.0).await?,
             Owner::Space(space) => self.claim(SPACE, space.0).await?,
@@ -172,7 +250,12 @@ impl Ctx {
             .one(&self.txn)
             .await
             .store()?;
-        Ok(existing.is_none_or(|row| row.owner_type == owner_type && row.owner_id == owner_id))
+        // An item the API revised after the source's own date is newer than what the source has.
+        Ok(existing.is_none_or(|row| {
+            row.owner_type == owner_type
+                && row.owner_id == owner_id
+                && (self.opts.adopt_existing || utc(row.updated_at) <= utc(incoming))
+        }))
     }
 
     /// Whether the stored item `item` belongs to a user or space the import owns.
@@ -214,6 +297,47 @@ impl Ctx {
             _ => Ok(false),
         }
     }
+}
+
+/// The refused kind of a user or space the API changed since the import wrote it.
+fn changed_kind(kind: &str) -> &'static str {
+    if kind == SPACE {
+        "space-changed"
+    } else {
+        "user-changed"
+    }
+}
+
+/// At the end of a pass: records that the import has just written every user and space it owns in
+/// it, and the revision date each account's Bitwarden record has now (after the pass moved it), so
+/// that a change made later shows.
+pub(super) async fn refresh_marks(ctx: &Ctx) -> Res<()> {
+    let now = utc(ctx.opts.now);
+    for user in &ctx.users {
+        let revision = bw_accounts::Entity::find_by_id(*user)
+            .one(&ctx.txn)
+            .await
+            .store()?
+            .map(|record| record.revision_ms);
+        vw_import_ids::Entity::update_many()
+            .col_expr(vw_import_ids::Column::WrittenAt, Expr::value(now))
+            .col_expr(vw_import_ids::Column::RevisionMs, Expr::value(revision))
+            .filter(vw_import_ids::Column::Kind.eq(USER))
+            .filter(vw_import_ids::Column::Id.eq(*user))
+            .exec(&ctx.txn)
+            .await
+            .store()?;
+    }
+    for space in &ctx.spaces {
+        vw_import_ids::Entity::update_many()
+            .col_expr(vw_import_ids::Column::WrittenAt, Expr::value(now))
+            .filter(vw_import_ids::Column::Kind.eq(SPACE))
+            .filter(vw_import_ids::Column::Id.eq(*space))
+            .exec(&ctx.txn)
+            .await
+            .store()?;
+    }
+    Ok(())
 }
 
 async fn user_ok(ctx: &mut Ctx, id: Option<Uuid>) -> Res<bool> {

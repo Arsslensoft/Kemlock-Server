@@ -817,3 +817,88 @@ async fn a_second_pass_cannot_delete_rows_that_hang_off_what_the_import_does_not
         .expect("the item");
     assert!(kept.deleted_at.is_none(), "the item was not turned into a tombstone");
 }
+
+#[tokio::test]
+async fn an_account_the_api_changed_since_is_not_rolled_back_by_a_rerun() {
+    let store = memory().await;
+    let user = UserId::random();
+    let device = Uuid::new_v4();
+    let mut mapped = MappedImport::default();
+    mapped.accounts.push(account(user, &unique_email("moved"), "Moved"));
+    mapped.carried = vec![devices(&[(device, user)]), twofactor(&[user])];
+    let first = pass(&store, &mapped, false).await;
+    assert!(first.refused.is_empty(), "{:?}", first.refused);
+
+    // The person changes their account here, and removes the planted-looking device.
+    let mut changed = UserRepo::by_id(&store, user)
+        .await
+        .expect("a read")
+        .expect("the account");
+    changed.name = Some("Changed here".to_owned());
+    changed.updated_at = NOW + time::Duration::hours(1);
+    UserRepo::update(&store, &changed).await.expect("updated");
+    DeviceRepo::remove(&store, DeviceId(device))
+        .await
+        .expect("removed");
+
+    // A later pass over the same snapshot leaves it all as it is now.
+    let rerun = pass(&store, &mapped, false).await;
+    assert_eq!(refused(&rerun, "user-changed"), vec![user.0.to_string()]);
+    assert_eq!(rerun.accounts, 0);
+    let after = UserRepo::by_id(&store, user)
+        .await
+        .expect("a read")
+        .expect("the account");
+    assert_eq!(after.name.as_deref(), Some("Changed here"));
+    assert!(DeviceRepo::list(&store, user).await.expect("a read").is_empty());
+
+    // An operator who means it adopts, and the snapshot wins again.
+    let adopted = pass(&store, &mapped, true).await;
+    assert!(adopted.refused.is_empty(), "{:?}", adopted.refused);
+    assert_eq!(
+        UserRepo::by_id(&store, user)
+            .await
+            .expect("a read")
+            .expect("the account")
+            .name
+            .as_deref(),
+        Some("Moved")
+    );
+    assert_eq!(DeviceRepo::list(&store, user).await.expect("a read").len(), 1);
+
+    // The vault moving on (any change to the Bitwarden record's revision) counts too.
+    BwAccountRepo::touch(&store, user, 9_999_999_999_999)
+        .await
+        .expect("touched");
+    let again = pass(&store, &mapped, false).await;
+    assert_eq!(refused(&again, "user-changed"), vec![user.0.to_string()]);
+}
+
+#[tokio::test]
+async fn an_item_the_api_revised_after_the_source_is_not_overwritten() {
+    let store = memory().await;
+    let user = UserId::random();
+    let item = ItemId::random();
+    let mut mapped = MappedImport::default();
+    mapped.accounts.push(account(user, &unique_email("vault"), "Vault"));
+    mapped.items.push(cipher(item, Owner::User(user), NOW));
+    let first = pass(&store, &mapped, false).await;
+    assert_eq!(first.items, 1);
+
+    // A newer revision made here.
+    let newer = kemlock_domain::ItemDraft {
+        updated_at: NOW + time::Duration::hours(1),
+        ..draft(item, Owner::User(user), Some(1), 2)
+    };
+    let stored = common::put(&store, newer).await;
+
+    let rerun = pass(&store, &mapped, false).await;
+    assert_eq!(refused(&rerun, "item"), vec![item.0.to_string()]);
+    assert_eq!(rerun.items, 0);
+    let after = ItemStore::get(&store, item)
+        .await
+        .expect("a read")
+        .expect("the item");
+    assert_eq!(after.revision, stored.revision);
+    assert_eq!(after.ciphertext, stored.ciphertext);
+}
