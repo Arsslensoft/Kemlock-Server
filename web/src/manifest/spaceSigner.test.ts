@@ -35,7 +35,7 @@ const member = (
     userKeyVersion: 0,
     publicBundle: encodeB64(bundle),
     bundleSignature: encodeB64(utf8(signature)),
-  }) as MemberViewDto;
+  }) as unknown as MemberViewDto;
 
 interface View {
   collections: Array<{ id: string }>;

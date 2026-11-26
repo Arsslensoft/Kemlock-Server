@@ -107,7 +107,7 @@ describe('checking a space’s chain', () => {
       trusted: false,
       firstContact: { kind: 'compare', person: ME, fingerprint: '12345 67890', owners: [] },
     });
-    const { deps, anchors } = setup(waiting);
+    const { deps, anchors, crypto } = setup(waiting);
     const trust = await checkSpaceChain(deps, SPACE, ME);
     expect(trust.kind).toBe('first-contact');
     expect(await anchors.load(ME, SPACE)).toBeUndefined();
@@ -130,7 +130,7 @@ describe('checking a space’s chain', () => {
       trusted: false,
       firstContact: { kind: 'pick', owners: [] },
     });
-    const { deps, anchors, crypto } = setup(waiting);
+    const { deps, anchors } = setup(waiting);
     expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('first-contact');
     expect(await anchors.load(ME, SPACE)).toBeUndefined();
     expect(await anchors.seen(ME, SPACE)).toBe(true);

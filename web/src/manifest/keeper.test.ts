@@ -364,7 +364,7 @@ describe('a space’s manifest', () => {
     ]);
   });
 
-  it('is checked for a space whose items the server withheld altogether, from the account's space list', async () => {
+  it("is checked for a space whose items the server withheld altogether, from the account's space list", async () => {
     const run = setup({ spaceSigner: async () => utf8(MEMBER), spaces: async () => [SPACE_ID] });
     run.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [await listed(A, 2, 'one')] }, MEMBER));
     await run.sync([]);

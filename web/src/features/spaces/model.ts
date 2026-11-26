@@ -831,7 +831,6 @@ async function keysForNewcomers(
   before: Set<string>,
   after: Set<string>,
 ): Promise<Array<{ collection: string; user: string; sealed: string; signature: string }>> {
-  requireUnchained(detail);
   const keys: Array<{ collection: string; user: string; sealed: string; signature: string }> = [];
   for (const user of after) {
     if (before.has(user)) continue;

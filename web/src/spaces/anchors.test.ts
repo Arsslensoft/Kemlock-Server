@@ -70,8 +70,10 @@ describe('the anchors this browser keeps', () => {
 });
 
 /** Just enough of IndexedDB for the anchors: two object stores and requests that answer later. */
-function fakeIndexedDb(): { factory: IDBFactory; stores: Record<string, Map<string, unknown>> } {
-  const stores: Record<string, Map<string, unknown>> = { anchors: new Map(), pins: new Map() };
+type FakeStores = { anchors: Map<string, unknown>; pins: Map<string, unknown> } & Record<string, Map<string, unknown>>;
+
+function fakeIndexedDb(): { factory: IDBFactory; stores: FakeStores } {
+  const stores: FakeStores = { anchors: new Map(), pins: new Map() };
   const factory = {
     open() {
       const req: { result?: unknown; onsuccess?: () => void; onupgradeneeded?: () => void } = {};

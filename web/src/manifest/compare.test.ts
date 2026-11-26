@@ -93,7 +93,7 @@ describe('compareLedger, for what the server could be making up', () => {
     expect(compareLedger(manifest([tomb(A, 2)]), {}, ledger({ [A]: gone(3) }))).toEqual([]);
   });
 
-  it('flags a revision more than 2^32 above the entry's, but not one of this browser's own', () => {
+  it("flags a revision more than 2^32 above the entry's, but not one of this browser's own", () => {
     const far = 2 + 2 ** 32 + 1;
     expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far) }))[0]?.verdict).toBe('implausible');
     expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(far) }))[0]?.verdict).toBe('implausible');
@@ -133,7 +133,7 @@ describe('mergeEntries, for what must not be signed', () => {
     expect(merged).toHaveLength(2);
   });
 
-  it('takes in a tombstone only for this browser's own deletion or an entry already deleted', () => {
+  it("takes in a tombstone only for this browser's own deletion or an entry already deleted", () => {
     const base = [entry(A, 2), tomb(B, 2)];
     const merged = mergeEntries(base, ledger({ [A]: gone(3), [B]: gone(4), [C]: gone(5) }), {}, NONE);
     expect(merged).toEqual(expect.arrayContaining([entry(A, 2), tomb(B, 4)]));
@@ -154,7 +154,7 @@ describe('mergeEntries, for what must not be signed', () => {
     ]);
   });
 
-  it('refuses a revision more than 2^32 above the entry's that is not its own', () => {
+  it("refuses a revision more than 2^32 above the entry's that is not its own", () => {
     expect(mergeEntries([entry(A, 2)], ledger({ [A]: live(3 + 2 ** 32, H2) }), {}, NONE)).toEqual([entry(A, 2)]);
   });
 
