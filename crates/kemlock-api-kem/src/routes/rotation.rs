@@ -18,6 +18,7 @@ use super::devices::token_response;
 use super::profile::{account_of, other_devices, proof_needed, record};
 use super::reauth::reauthenticate;
 use super::two_step::{nonce_header, require_proof_via_api};
+use super::view::MaybeView;
 use crate::dto::{FreshProof, TokenResponse, decode};
 use crate::extract::{Authed, Body};
 use crate::openapi::ProblemDoc;
@@ -36,7 +37,7 @@ use kemlock_app::rotation::{
 };
 use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{GrantId, KeyProtection};
-use kemlock_domain::{ItemId, PasskeyId, Revision, SpaceId, UserId};
+use kemlock_domain::{ItemId, Owner, PasskeyId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
@@ -67,6 +68,10 @@ impl From<RotationError> for Problem {
             RotationError::UnsupportedItems => conflict(
                 "rotation-unsupported-items",
                 "An item of the vault is in a format that can't be rotated",
+            ),
+            RotationError::Federated => conflict(
+                "rotation-federated",
+                "This account's vault is federated: its keys can't be rotated while other servers hold it",
             ),
             RotationError::CompatibleAccount => Problem::new(
                 StatusCode::FORBIDDEN,
@@ -449,6 +454,32 @@ impl InstallRequestDto {
     }
 }
 
+// ---- federation ----
+
+/// Refuses an account whose vault is federated: a replica holds a copy of the account (its wraps and
+/// its ciphertext), or the personal vault has replicas. Another server's copies of the old root
+/// key's wraps and of the items can't be replaced from here, and an account that is itself a
+/// replica copy has no authority to rotate. A server with no federation answers nothing, so none
+/// is refused.
+async fn refuse_federated(view: &MaybeView, user: UserId) -> Result<(), Problem> {
+    let Some(view) = &view.0 else {
+        return Ok(());
+    };
+    let copied = view
+        .is_replica_account(user)
+        .await
+        .map_err(|e| Problem::from(AppError::from(e)))?;
+    let shared = view
+        .vault_servers(Owner::User(user))
+        .await
+        .map_err(|e| Problem::from(AppError::from(e)))?
+        .is_some();
+    if copied || shared {
+        return Err(RotationError::Federated.into());
+    }
+    Ok(())
+}
+
 // ---- wiring ----
 
 fn rotation<S, P, K, R>(
@@ -478,6 +509,7 @@ async fn handle_plan<S, P, K, R>(
     State(api): State<Api<S, P, K>>,
     Extension(repos): Extension<Arc<Repos<R>>>,
     authed: Authed,
+    view: MaybeView,
 ) -> Result<Json<PlanDto>, Problem>
 where
     S: Store + KeyCopyRepo,
@@ -485,6 +517,7 @@ where
     K: TokenSigner + Clone + 'static,
     R: RotationStore + Clone + 'static,
 {
+    refuse_federated(&view, authed.actor.user).await?;
     let plan = rotation(&api, &repos).plan(authed.actor.user).await?;
     let mut dto = PlanDto::of(&plan);
     // The contacts as they are now: the page shows each one's fingerprint for the person to compare.
@@ -509,6 +542,7 @@ async fn handle_stage<S, P, K, R>(
     State(api): State<Api<S, P, K>>,
     Extension(repos): Extension<Arc<Repos<R>>>,
     authed: Authed,
+    view: MaybeView,
     body: Body,
 ) -> Result<Json<StagedDto>, Problem>
 where
@@ -517,6 +551,7 @@ where
     K: TokenSigner + Clone + 'static,
     R: RotationStore + Clone + 'static,
 {
+    refuse_federated(&view, authed.actor.user).await?;
     let request: StageRequest = body.json()?;
     let rotation_id = rotation_id(&request.rotation_id)?;
     let items = request
@@ -573,6 +608,7 @@ async fn handle_install<S, P, K, R>(
     State(api): State<Api<S, P, K>>,
     Extension(repos): Extension<Arc<Repos<R>>>,
     authed: Authed,
+    view: MaybeView,
     body: Body,
 ) -> Result<Json<RotatedDto>, Problem>
 where
@@ -581,6 +617,7 @@ where
     K: TokenSigner + Clone + 'static,
     R: RotationStore + Clone + 'static,
 {
+    refuse_federated(&view, authed.actor.user).await?;
     let dto: InstallRequestDto = body.json()?;
     let request = dto.decoded()?;
     let user = authed.actor.user;

@@ -190,6 +190,10 @@ pub enum RotationError {
     /// A live item is not in `kem1` format, so it cannot be re-encrypted.
     #[error("an item of the vault is in a format that can't be rotated")]
     UnsupportedItems,
+    /// The account's vault is federated (a replica holds a copy of the account, or the personal
+    /// vault has replicas): another server holds wraps and ciphertext this one can't replace.
+    #[error("the account's vault is federated")]
+    Federated,
     /// The account is shared with the Bitwarden apps, which hold its root key.
     #[error("the account is shared with Bitwarden apps")]
     CompatibleAccount,

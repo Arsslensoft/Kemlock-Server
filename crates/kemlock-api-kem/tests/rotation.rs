@@ -431,3 +431,102 @@ fn the_document_names_every_rotation_route() {
     assert!(paths["/kem/v1/account/rotation"].get("get").is_some());
     assert!(paths["/kem/v1/account/rotation"].get("delete").is_some());
 }
+
+/// A federation view whose answers a test sets.
+#[derive(Default)]
+struct FakeFed {
+    replica: std::sync::atomic::AtomicBool,
+    shared: std::sync::atomic::AtomicBool,
+}
+
+impl kemlock_app::federation_view::FederationView for FakeFed {
+    fn vault_servers(
+        &self,
+        vault: kemlock_domain::Owner,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Option<kemlock_app::federation_view::VaultServers>, StoreError>,
+    > {
+        Box::pin(async move {
+            Ok(self
+                .shared
+                .load(Ordering::Relaxed)
+                .then(|| kemlock_app::federation_view::VaultServers {
+                    vault,
+                    epoch: 1,
+                    servers: Vec::new(),
+                    promotion: None,
+                }))
+        })
+    }
+
+    fn siblings(
+        &self,
+        _owner: kemlock_domain::Owner,
+    ) -> kemlock_app::federation_view::BoxFut<
+        '_,
+        Result<Vec<kemlock_app::federation_view::SiblingSet>, StoreError>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn resolve_siblings(
+        &self,
+        _owner: kemlock_domain::Owner,
+        _item: kemlock_domain::ItemId,
+    ) -> kemlock_app::federation_view::BoxFut<'_, Result<u64, StoreError>> {
+        Box::pin(async { Ok(0) })
+    }
+
+    fn is_replica_account(
+        &self,
+        _user: UserId,
+    ) -> kemlock_app::federation_view::BoxFut<'_, Result<bool, StoreError>> {
+        Box::pin(async move { Ok(self.replica.load(Ordering::Relaxed)) })
+    }
+}
+
+#[tokio::test]
+async fn a_federated_account_is_refused_by_every_rotation_route() {
+    let rig = rig();
+    let fed = Arc::new(FakeFed::default());
+    let view: kemlock_app::federation_view::SharedView = fed.clone();
+    let router = rig.router.clone().layer(axum::Extension(view));
+    let mut client = Client::new(router, rig.app.clock.clone(), DpopSigner::es256());
+    client.peer = Some(next_peer());
+    let session = register_and_sign_in(&client, EMAIL).await;
+    let id = UserId(session.user_id.parse().expect("a user id"));
+    let sam = Person {
+        client,
+        session,
+        id,
+    };
+
+    // On its own server, with nothing federated, the plan is served.
+    let plan = sam.call("GET", "/kem/v1/account/rotation", None).await;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+
+    for (replica, shared) in [(true, false), (false, true)] {
+        fed.replica.store(replica, Ordering::Relaxed);
+        fed.shared.store(shared, Ordering::Relaxed);
+        for (method, uri) in [
+            ("GET", "/kem/v1/account/rotation"),
+            ("PUT", "/kem/v1/account/rotation/items"),
+        ] {
+            let body = (method == "PUT")
+                .then(|| json!({"rotationId": b64(&[7u8; 16]), "toVersion": 2, "items": []}));
+            let reply = sam.call(method, uri, body).await;
+            assert_eq!(reply.status, StatusCode::CONFLICT, "{method} {uri} {replica} {shared}");
+            assert_eq!(reply.problem(), "rotation-federated");
+        }
+        let install = sam
+            .call(
+                "POST",
+                "/kem/v1/account/rotation",
+                Some(sam.install_body().await),
+            )
+            .await;
+        assert_eq!(install.problem(), "rotation-federated");
+        assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
+    }
+}
