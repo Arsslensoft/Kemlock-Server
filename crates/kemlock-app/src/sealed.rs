@@ -1,8 +1,4 @@
-//! The two         Err(_) if bare_secrets_allowed() => seal.open(purpose, sealed).map(|value| OpenedBound {
-            value,
-            legacy: true,
-        }),
-        Err(error) => Err(error),s the server hands to a client sealed instead of keeping state: the OPAQUE login
+//! The two values the server hands to a client sealed instead of keeping state: the OPAQUE login
 //! state and the two-step challenge. Each carries its own expiry, is sealed under `server.key`
 //! with its own purpose, and is checked when it comes back.
 
