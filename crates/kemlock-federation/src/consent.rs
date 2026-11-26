@@ -17,6 +17,13 @@ use crate::ports::PeerState;
 use crate::replicate::{Channel, FedStore, Replica};
 use kemlock_domain::{Owner, ServerId};
 
+/// Whether the account's bundle parses and carries a valid signature of its own `sig1` key.
+fn bundle_is_signed(account: &MemberAccount) -> bool {
+    kemlock_crypto::bundle::Bundle::from_bytes(&account.public_bundle)
+        .and_then(|bundle| bundle.verify_self_signature(&account.bundle_signature))
+        .is_ok()
+}
+
 impl<S: FedStore> Replica<S> {
     /// Handles an offer from `peer`, which must be the vault's home: remembers it for the admin, or
     /// says where it stands.
@@ -207,6 +214,15 @@ impl<S: FedStore> Replica<S> {
             );
             return;
         }
+        // The server keeps only a public-key bundle whose own signature verifies (docs/crypto.md),
+        // and a peer's copy is no exception. An account with no keys yet has an empty bundle.
+        if !account.public_bundle.is_empty() && !bundle_is_signed(&account) {
+            tracing::warn!(
+                user = %account.id,
+                "a member account record whose public-key bundle does not verify was refused"
+            );
+            return;
+        }
         match self
             .store
             .apply_member_account(record.signer, &account)
@@ -249,7 +265,22 @@ mod tests {
 
     const NOW: u64 = 1_800_000_000;
 
+    /// A public-key bundle and its signature by its own key, as an account has.
+    fn signed_bundle() -> (Vec<u8>, Vec<u8>) {
+        use kemlock_crypto::{bundle::Bundle, kx1, sig1};
+        let key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let bundle = Bundle {
+            account_id: [1; 16],
+            key_version: 1,
+            kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+            sig1_public: crate::crypto::sign_public(&key).expect("a public key"),
+        };
+        let signature = bundle.sign(&key).expect("a signature");
+        (bundle.to_bytes(), signature)
+    }
+
     fn account(id: UserId) -> MemberAccount {
+        let (public_bundle, bundle_signature) = signed_bundle();
         MemberAccount {
             id,
             email: "ada@example.org".to_owned(),
@@ -257,8 +288,8 @@ mod tests {
             mode: AccountMode::KemlockOnly,
             kdf: KdfParams::new_account([3; 16]),
             wrapped_root_key: vec![1; 80],
-            public_bundle: vec![2; 300],
-            bundle_signature: vec![3; 100],
+            public_bundle,
+            bundle_signature,
             sealed_private_keys: vec![4; 200],
             key_version: 1,
             created_at: 1_700_000_000,
@@ -320,4 +351,41 @@ mod tests {
             .await;
         assert_eq!(r.store.applied_accounts(), vec![(home, member)]);
     }
+    #[tokio::test]
+    async fn a_copy_whose_bundle_does_not_verify_under_its_own_key_is_refused() {
+        let r = replica();
+        let home = ServerId::random();
+        let owner = UserId::random();
+        let vault = Owner::User(owner);
+
+        let mut forged = account(owner);
+        let last = forged.bundle_signature.len() - 1;
+        forged.bundle_signature[last] ^= 1;
+        r.apply_home_record(&record(vault, home, &forged)).await;
+        let mut garbled = account(owner);
+        garbled.public_bundle = vec![2; 300];
+        r.apply_home_record(&record(vault, home, &garbled)).await;
+        // A bundle signed by another key than the one it carries.
+        let mut swapped = account(owner);
+        swapped.bundle_signature = {
+            use kemlock_crypto::{bundle::Bundle, sig1};
+            let other = sig1::SigningKey::from_bytes(&[6; 64]);
+            Bundle::from_bytes(&swapped.public_bundle)
+                .expect("a bundle")
+                .sign(&other)
+                .expect("a signature")
+        };
+        r.apply_home_record(&record(vault, home, &swapped)).await;
+        assert!(r.store.applied_accounts().is_empty());
+
+        // The real one, and an account with no keys yet, are taken.
+        r.apply_home_record(&record(vault, home, &account(owner)))
+            .await;
+        let mut keyless = account(owner);
+        keyless.public_bundle = Vec::new();
+        keyless.bundle_signature = Vec::new();
+        r.apply_home_record(&record(vault, home, &keyless)).await;
+        assert_eq!(r.store.applied_accounts().len(), 2);
+    }
+
 }

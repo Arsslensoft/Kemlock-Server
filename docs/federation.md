@@ -595,6 +595,8 @@ the replica (same id or email: refused and logged). A record is applied only for
 belongs to its vault: the owner of a personal vault, or a confirmed member of a space as the
 replica already knows it (so the home publishes a space's own records before its members'
 accounts), and a copy follows the one server it came from: another home's record for it is
+refused. The copy's public-key bundle must verify under its own `sig1` key (an account with no
+keys yet has an empty one), as it must where the account lives: a record whose bundle doesn't is
 refused. A stale-epoch record is quarantined like any home-only write.
 
 **Space roles, policies and keys.** The home of a space also publishes the rest of what only it may
