@@ -2378,3 +2378,14 @@ fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
         Err(Error::Invalid)
     );
 }
+
+#[wasm_bindgen_test]
+fn committing_without_the_private_keys_takes_nothing() {
+    // Unlocked with the root key only: no private keys to rotate from or to.
+    let root = RootKey::from_bytes(&[0x61; 64]);
+    let mut session = unlocked_with(&root, &[0xAC; 16], 1);
+    assert_eq!(session.rotation_commit(), Err(Error::Locked));
+    assert_eq!(session.rotation_start().err(), Some(Error::Locked));
+    // And the root key it holds is still the one it was opened with.
+    assert_eq!(&session.export_root().expect("root")[..], root.as_bytes().as_slice());
+}

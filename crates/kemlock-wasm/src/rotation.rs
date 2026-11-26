@@ -273,6 +273,20 @@ impl Session {
     /// the key version. The old private keys are kept (see [`Previous`]); the space and collection
     /// keys already opened stay. Returns the key version and the new fingerprint.
     pub(crate) fn rotation_commit(&mut self) -> Result<(u32, String), Error> {
+        // Everything that can fail is done before anything is taken: a failure leaves the rotation
+        // pending and the old private keys where they are.
+        let account_id = self.unlocked()?.account_id;
+        if self.unlocked()?.private.is_none() {
+            return Err(Error::Locked);
+        }
+        let pending = self.pending.as_ref().ok_or(Error::Invalid)?;
+        let bundle = Bundle {
+            account_id,
+            key_version: pending.key_version,
+            kx1_public: pending.private.0.public_key()?,
+            sig1_public: pending.private.1.public_key()?,
+        };
+        let fingerprint = bundle.fingerprint_text();
         let pending = self.pending.take().ok_or(Error::Invalid)?;
         let Some(unlocked) = self.unlocked.as_mut() else {
             self.pending = Some(pending);
@@ -282,12 +296,6 @@ impl Session {
             self.pending = Some(pending);
             return Err(Error::Locked);
         };
-        let bundle = Bundle {
-            account_id: unlocked.account_id,
-            key_version: pending.key_version,
-            kx1_public: pending.private.0.public_key()?,
-            sig1_public: pending.private.1.public_key()?,
-        };
         let previous = Previous {
             private: old_private,
         };
@@ -295,8 +303,9 @@ impl Session {
         unlocked.item_wrap = pending.item_wrap;
         unlocked.private = Some(pending.private);
         unlocked.key_version = pending.key_version;
+        let key_version = unlocked.key_version;
         self.previous = Some(previous);
-        Ok((unlocked.key_version, bundle.fingerprint_text()))
+        Ok((key_version, fingerprint))
     }
 
     /// Moves one value this browser keeps for the account (`seal_local`) from the key it is sealed
