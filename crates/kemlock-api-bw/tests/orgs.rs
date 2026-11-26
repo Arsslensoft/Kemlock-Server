@@ -226,7 +226,8 @@ async fn an_invited_member_is_confirmed_and_then_sees_the_organization() {
     // organization they have not agreed to join.
     assert_eq!(row["status"], 0);
     assert_eq!(row["type"], 2);
-    assert_eq!(row["name"], "Kemlock test");
+    // Vaultwarden shows a member's name only once they have accepted.
+    assert_eq!(row["name"], Value::Null);
     assert_eq!(row["twoFactorEnabled"], false);
     assert_eq!(row["hasMasterPassword"], true);
     assert!(row["permissions"].is_null());
