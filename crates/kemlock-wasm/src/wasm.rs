@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 use kemlock_crypto::space_chain::KeyRef;
 
 use crate::{
-    b64, chain,
+    b64, chain, chain_build,
     error::Error,
     ids, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
@@ -1248,6 +1248,58 @@ impl Vault {
             .verify_space_chain(&space, &records, anchor.as_ref())
             .map_err(fail)?;
         json(&verdict)
+    }
+
+    /// A new space as a chain: JSON `{ok: true, records, seals, names}`, the body of
+    /// `POST /kem/v1/spaces/{id}/chain`. The `create` record is signed with this account's
+    /// `sig1` key, the space key and the first collection's key are sealed to this account, and
+    /// both names are under the space key. No key is kept: the space opens through its chain once
+    /// the record is appended. `at` is the time in Unix seconds.
+    #[wasm_bindgen(js_name = newChainedSpace)]
+    pub fn new_chained_space(
+        &self,
+        space_id: &str,
+        collection_id: &str,
+        space_name: &str,
+        collection_name: &str,
+        at: u32,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let collection = ids::parse_uuid(collection_id).map_err(fail)?;
+        let built = self
+            .session
+            .create_chained_space(
+                &space,
+                &collection,
+                space_name,
+                collection_name,
+                u64::from(at),
+            )
+            .map_err(fail)?;
+        json(&built)
+    }
+
+    /// The records of one change to a chained space, made from the verified state this unlock
+    /// holds for it (first contact done) and signed with this account's `sig1` key. `change` is
+    /// the JSON of one change (`{action: "invite" | "confirm" | ..., ...}`, see
+    /// src/chain_build.rs). Answers JSON: `{ok: true, records, seals, names}`, the body of
+    /// `POST /kem/v1/spaces/{id}/chain` (no records when there is nothing to do), or `{ok: false,
+    /// reason, seq}` with the verifier's reason when the chain's rules refuse the change.
+    #[wasm_bindgen(js_name = buildChainRecords)]
+    pub fn build_chain_records(
+        &self,
+        space_id: &str,
+        at: u32,
+        change: &str,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let change: chain_build::Change =
+            serde_json::from_str(change).map_err(|_| fail(Error::Invalid))?;
+        let built = self
+            .session
+            .build_chain_records(&space, u64::from(at), &change)
+            .map_err(fail)?;
+        json(&built)
     }
 
     /// The view of the chain this unlock verified for a space, as `verifySpaceChain` answers it,
