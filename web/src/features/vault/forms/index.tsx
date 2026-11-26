@@ -19,6 +19,7 @@ import type { Described } from './parts';
 import { PasskeyPage } from './passkey';
 import { PgpKeyForm, pgpKeyDefaults, pgpKeyFields } from './PgpKeyForm';
 import { SshKeyForm, sshKeyDefaults, sshKeyFields } from './SshKeyForm';
+import { useUnsavedMark } from './unsaved';
 
 interface Props {
   kind: KnownKind;
@@ -45,7 +46,20 @@ function plain(fields: ItemData, links: string[], entry: boolean): FormResult {
   return { fields, entry, links, files: [], uploads: [], withUploaded: () => ({}), rollbackOnFailure: false };
 }
 
-export function KindForm({
+/**
+ * The form for a kind. Input anywhere in it marks it as holding unsaved changes (unsaved.ts), which
+ * keeps the vault from locking on the hidden-tab limit under it. The wrapper has no box of its own.
+ */
+export function KindForm(props: Props) {
+  const mark = useUnsavedMark();
+  return (
+    <div style={{ display: 'contents' }} onInput={mark} onChange={mark}>
+      <KindFormBody {...props} />
+    </div>
+  );
+}
+
+function KindFormBody({
   kind,
   item,
   existing,

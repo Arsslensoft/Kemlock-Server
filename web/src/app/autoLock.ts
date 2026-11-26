@@ -54,6 +54,8 @@ export interface AutoLockClock {
 export function createAutoLock(options: {
   expire: (action: TimeoutAction) => void;
   now?: () => number;
+  /** True while something unsaved is open: the hidden-tab limit waits, the idle limit does not. */
+  holdHidden?: () => boolean;
 }): AutoLockClock {
   const now = options.now ?? (() => Date.now());
   let limits = limitsFor();
@@ -64,7 +66,8 @@ export function createAutoLock(options: {
 
   function deadline(): number {
     const idle = lastActivity + limits.idleMs;
-    return hiddenSince === undefined ? idle : Math.min(idle, hiddenSince + limits.hiddenMs);
+    if (hiddenSince === undefined || options.holdHidden?.()) return idle;
+    return Math.min(idle, hiddenSince + limits.hiddenMs);
   }
 
   function check(): void {
@@ -128,8 +131,13 @@ export function startAutoLock(deps: {
   session: Pick<Session, 'getState' | 'subscribe'>;
   policies: Pick<PoliciesApi, 'mine'>;
   expire: (action: TimeoutAction) => void;
+  /** True while an item form holds changes that locking would throw away. */
+  holdHidden?: () => boolean;
 }): () => void {
-  const clock = createAutoLock({ expire: deps.expire });
+  const clock = createAutoLock({
+    expire: deps.expire,
+    ...(deps.holdHidden ? { holdHidden: deps.holdHidden } : {}),
+  });
   const isHidden = () => document.visibilityState === 'hidden';
   let open = false;
   let epoch = 0;

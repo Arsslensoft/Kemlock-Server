@@ -121,6 +121,29 @@ describe('the clock', () => {
     expect(expire).toHaveBeenCalledWith('logOut');
   });
 
+  it('holds the hidden limit while something is unsaved, but not the idle limit', () => {
+    const expire = vi.fn();
+    let unsaved = true;
+    const clock = createAutoLock({ expire, holdHidden: () => unsaved });
+    clock.start(limitsFor(), false);
+    clock.hidden(true);
+    vi.advanceTimersByTime(10 * MIN);
+    expect(expire).not.toHaveBeenCalled();
+    // The form is saved: the time already spent hidden counts at the next check.
+    unsaved = false;
+    clock.check();
+    expect(expire).toHaveBeenCalledTimes(1);
+  });
+
+  it('still expires on the idle limit with something unsaved', () => {
+    const expire = vi.fn();
+    const clock = createAutoLock({ expire, holdHidden: () => true });
+    clock.start(limitsFor(), false);
+    clock.hidden(true);
+    vi.advanceTimersByTime(15 * MIN);
+    expect(expire).toHaveBeenCalledTimes(1);
+  });
+
   it('stops, and does nothing once stopped', () => {
     const { expire, clock } = make();
     clock.start(limitsFor(), false);

@@ -7,6 +7,7 @@ import { createAppRouter } from '@/app/router';
 import { forgetEndedSession, lockVault, signOut } from '@/app/actions';
 import { startAutoLock } from '@/app/autoLock';
 import { createPoliciesApi } from '@/api/policies';
+import { hasUnsavedItemForm } from '@/features/vault/forms/unsaved';
 import { sessionEndedTarget } from '@/app/sessionEnded';
 import { api, onSessionEndedPage, queryClient, session } from '@/app/services';
 import { keepTabKeyAlive, purgeClosedTabKeys } from '@/app/tabKey';
@@ -50,6 +51,8 @@ void restored.then(() =>
   startAutoLock({
     session,
     policies: createPoliciesApi(api),
+    // A form with unsaved changes is not thrown away because the tab was in the background.
+    holdHidden: hasUnsavedItemForm,
     expire: (action) => {
       if (action === 'logOut') {
         void signOut().then(() => router.navigate({ to: '/sign-in' }));
