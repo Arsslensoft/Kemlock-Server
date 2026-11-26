@@ -486,6 +486,19 @@ pub(crate) struct HeldPromotionDto {
     issued_at: u64,
 }
 
+/// A change of addresses that came with a peer's key rotation and waits for this server's admin.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AddressChangeDto {
+    #[schema(value_type = String)]
+    peer: ServerId,
+    operator: String,
+    addresses: Vec<String>,
+    suites: Vec<String>,
+    /// When the rotation was applied, in Unix seconds.
+    received_at: u64,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct OfferDto {
@@ -1267,6 +1280,64 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `GET …/address-changes`: the address changes that came with key rotations, held for the admin.
+async fn address_changes<S, C>(
+    State(state): State<AdminState<S, C>>,
+    _admin: Admin,
+) -> Result<Json<Vec<AddressChangeDto>>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    Ok(Json(
+        state
+            .federation
+            .pending_address_changes()
+            .await?
+            .into_iter()
+            .map(|p| AddressChangeDto {
+                peer: p.peer,
+                operator: p.operator,
+                addresses: p.addresses,
+                suites: p.suites,
+                received_at: p.received_at,
+            })
+            .collect(),
+    ))
+}
+
+/// `POST …/peers/{id}/address-change`: follow the server to its new addresses.
+async fn approve_address_change<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.approve_address_change(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE …/peers/{id}/address-change`: keep the addresses this server knows.
+async fn refuse_address_change<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.refuse_address_change(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn offers<S, C>(
     State(state): State<AdminState<S, C>>,
     _admin: Admin,
@@ -1367,6 +1438,11 @@ where
             post(accept_demotion::<S, C>).delete(refuse_demotion::<S, C>),
         )
         .route(&format!("{BASE}/promotions"), get(held_promotions::<S, C>))
+        .route(&format!("{BASE}/address-changes"), get(address_changes::<S, C>))
+        .route(
+            &format!("{BASE}/peers/{{id}}/address-change"),
+            post(approve_address_change::<S, C>).delete(refuse_address_change::<S, C>),
+        )
         .route(
             &format!("{BASE}/vaults/{{owner}}/events"),
             get(peer_events::<S, C>),

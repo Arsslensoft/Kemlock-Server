@@ -243,6 +243,8 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         federation_logs::peer_events::Entity,
         federation_keys::key_records::Entity,
         federation_keys::learned_keys::Entity,
+        federation_keys::peer_key_history::Entity,
+        federation_keys::peer_pending_addresses::Entity,
         federation_insight::peer_security::Entity,
         federation_insight::peer_mismatches::Entity,
         space_chain::records::Entity,

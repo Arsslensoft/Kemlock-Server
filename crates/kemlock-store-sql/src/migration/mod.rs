@@ -52,6 +52,7 @@ mod m20261129_040001_withheld_changes;
 mod m20261130_010001_email_changes;
 mod m20261130_020001_custom_fields;
 mod m20261201_010001_vault_home_history;
+mod m20261201_020001_peer_key_history;
 
 use sea_orm_migration::prelude::*;
 
@@ -109,6 +110,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261130_010001_email_changes::Migration),
             Box::new(m20261130_020001_custom_fields::Migration),
             Box::new(m20261201_010001_vault_home_history::Migration),
+            Box::new(m20261201_020001_peer_key_history::Migration),
         ]
     }
 }

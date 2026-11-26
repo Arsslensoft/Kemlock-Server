@@ -18,7 +18,7 @@ use crate::home::{MAX_REPLICAS, Policy, PromotionRecord, VaultFederation};
 use crate::hub::Pairings;
 use crate::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use crate::job::{Connector, LEASE_SECS, PeerRunner, PeerStatus, RunOutcome, lease_name};
-use crate::keyrecs::{IdentityRotator, revocation_record, rotation_record};
+use crate::keyrecs::{IdentityRotator, PendingAddresses, revocation_record, rotation_record};
 use crate::net::Http;
 use crate::pairing::Fingerprint;
 use crate::ports::{HomeStatus, LogSwitches, Peer, PeerState, StoredHomeRecord};
@@ -828,6 +828,24 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// Every promotion held for this server's admin: the vault and what the record says.
     pub async fn held_promotions(&self) -> Result<Vec<(Owner, PromotionRecord)>> {
         self.replica.held_promotions().await
+    }
+
+    /// The address changes that came with peers' key rotations and wait for this server's admin.
+    pub async fn pending_address_changes(&self) -> Result<Vec<PendingAddresses>> {
+        self.replica.pending_address_changes().await
+    }
+
+    /// Accepts the address change that came with `peer`'s rotation: this server dials the new
+    /// addresses from now on. The caller has checked the admin with a step-up token.
+    pub async fn approve_address_change(&self, peer: ServerId) -> Result<()> {
+        self.replica.approve_address_change(peer).await?;
+        self.runner.mark_dirty(peer);
+        Ok(())
+    }
+
+    /// Refuses the address change that came with `peer`'s rotation: the addresses stay.
+    pub async fn refuse_address_change(&self, peer: ServerId) -> Result<()> {
+        self.replica.refuse_address_change(peer).await
     }
 
     /// The event log entries peers sent for `vault`, newest first: what the switches allowed.

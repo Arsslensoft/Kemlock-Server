@@ -12,8 +12,9 @@ use super::console::{
     PeerSecurityDto, SelfDto, ShareableDto, SuiteChoice, SuiteRowDto, SuiteSettingDto, SuitesBody,
 };
 use super::{
-    AckDto, AwaitingDto, HeldDemotionDto, HeldPromotionDto, KeyChangeDto, OfferDto, OverviewDto,
-    PeerDto, PromotionDto, PulledDto, ServerDto, StatusDto, SwitchesDto, VaultDto, VaultStatusDto,
+    AckDto, AddressChangeDto, AwaitingDto, HeldDemotionDto, HeldPromotionDto, KeyChangeDto,
+    OfferDto, OverviewDto, PeerDto, PromotionDto, PulledDto, ServerDto, StatusDto, SwitchesDto,
+    VaultDto, VaultStatusDto,
 };
 use serde::Serialize;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
@@ -221,6 +222,70 @@ doc!(
         (
             status = 403,
             description = "No step-up token",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
+    doc_address_changes,
+    get,
+    path = "/admin/v1/federation/address-changes",
+    tag = "federation",
+    security(("dpop" = [])),
+    responses((
+        status = 200,
+        description = "The address changes that came with a peer's key rotation. This server \
+                       still dials the addresses it knew until its admin accepts them",
+        body = Vec<AddressChangeDto>
+    ))
+);
+
+doc!(
+    doc_approve_address_change,
+    post,
+    path = "/admin/v1/federation/peers/{id}/address-change",
+    tag = "federation",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The peer's server id"),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A step-up token"
+        ),
+    ),
+    responses(
+        (status = 204, description = "This server dials the new addresses from now on"),
+        (
+            status = 409,
+            description = "No address change waits for this peer",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
+    doc_refuse_address_change,
+    delete,
+    path = "/admin/v1/federation/peers/{id}/address-change",
+    tag = "federation",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The peer's server id"),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A step-up token"
+        ),
+    ),
+    responses(
+        (status = 204, description = "The addresses this server knew stay"),
+        (
+            status = 409,
+            description = "No address change waits for this peer",
             body = ProblemDoc,
             content_type = "application/problem+json"
         ),
@@ -490,7 +555,8 @@ doc!(
     ),
     paths(
         doc_openapi, doc_overview, doc_peers, doc_promote, doc_accept_demotion, doc_held_promotions,
-        doc_refuse_demotion, doc_shareable, doc_check,
+        doc_refuse_demotion, doc_address_changes, doc_approve_address_change,
+        doc_refuse_address_change, doc_shareable, doc_check,
         doc_consistency, doc_peer_security, doc_peer_descriptor, doc_self, doc_self_kem_rotation,
         doc_self_identity_rotation, doc_self_suites, doc_mismatch, doc_keep_blocking
     ),
@@ -499,7 +565,7 @@ doc!(
         SwitchesDto, StatusDto, VaultStatusDto, PulledDto, PromotionDto, KeyChangeDto,
         ShareableDto, PeerCheckDto, ConsistencyDto, ComparisonDto, PeerSecurityDto, DescriptorDto,
         KemDto, SuiteRowDto, SelfDto, SuiteSettingDto, SuitesBody, SuiteChoice, MismatchDto,
-        PausedDto, HeldDemotionDto, HeldPromotionDto
+        PausedDto, HeldDemotionDto, HeldPromotionDto, AddressChangeDto
     )),
     modifiers(&SecurityAddon)
 )]

@@ -637,3 +637,60 @@ async fn held_promotions_are_listed_and_refusing_one_needs_a_step_up_token() {
     let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn an_address_change_that_came_with_a_rotation_waits_for_a_step_up_token() {
+    use kemlock_federation::keyrecs::{KeyStore, PendingAddresses};
+    use kemlock_federation::ports::PeerRepo;
+
+    let e = env(1, Arc::new(Dead));
+    let other = identity(2, unix_now(), &Suite::IMPLEMENTED);
+    e.replica
+        .pin_peer(&other.descriptor, unix_now())
+        .await
+        .expect("pin");
+    e.replica
+        .store()
+        .put_pending_addresses(&PendingAddresses {
+            peer: other.server,
+            operator: "Operator 2".to_owned(),
+            addresses: vec!["https://moved.example.org".to_owned()],
+            suites: other.descriptor.descriptor.suites.clone(),
+            received_at: unix_now(),
+        })
+        .await
+        .expect("put");
+
+    let (status, listed) = admin(&e.app, Method::GET, "/admin/v1/federation/address-changes", None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed[0]["peer"], other.server.0.to_string());
+    assert_eq!(listed[0]["addresses"], json!(["https://moved.example.org"]));
+
+    let uri = format!("/admin/v1/federation/peers/{}/address-change", other.server.0);
+    let (status, _, _) = call(
+        &e.app,
+        Method::POST,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a recent sign-in is not enough");
+    let (status, _) = admin(&e.app, Method::POST, &uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let moved = e
+        .replica
+        .store()
+        .get_peer(other.server)
+        .await
+        .expect("get")
+        .expect("peer");
+    assert_eq!(moved.addresses, vec!["https://moved.example.org".to_owned()]);
+    let (_, listed) = admin(&e.app, Method::GET, "/admin/v1/federation/address-changes", None).await;
+    assert_eq!(listed, json!([]));
+    // Nothing is left to approve or refuse.
+    let (status, _) = admin(&e.app, Method::POST, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}

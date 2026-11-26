@@ -170,6 +170,10 @@ struct Extras {
     accounts_applied: Vec<(ServerId, UserId)>,
     /// What a promotion from another server does here; holds unless a test says otherwise.
     promotion_mode: crate::extra::PromotionMode,
+    /// The keys each peer used before its current one.
+    past_keys: HashMap<ServerId, Vec<crate::keyrecs::PastKey>>,
+    /// Address changes that came with rotations, for the admin.
+    pending_addresses: Vec<crate::keyrecs::PendingAddresses>,
 }
 
 impl MemoryStore {
@@ -358,6 +362,11 @@ impl PeerRepo for MemoryStore {
     }
 
     async fn remove_peer(&self, id: ServerId) -> Result<bool, StoreError> {
+        {
+            let mut extras = self.extras();
+            extras.past_keys.remove(&id);
+            extras.pending_addresses.retain(|p| p.peer != id);
+        }
         let mut st = self.lock();
         st.switches.remove(&id);
         st.cursors.retain(|(peer, _), _| *peer != id);
@@ -708,6 +717,21 @@ impl MemoryStore {
 }
 
 impl crate::extra::FedAdminRepo for MemoryStore {
+    async fn update_peer_descriptor(
+        &self,
+        peer: ServerId,
+        operator: &str,
+        addresses: &[String],
+        suites: &[String],
+    ) -> Result<(), StoreError> {
+        if let Some(held) = self.lock().peers.get_mut(&peer) {
+            operator.clone_into(&mut held.operator);
+            held.addresses = addresses.to_vec();
+            held.suites = suites.to_vec();
+        }
+        Ok(())
+    }
+
     async fn promotion_mode(&self) -> Result<crate::extra::PromotionMode, StoreError> {
         Ok(self.extras().promotion_mode)
     }
@@ -935,6 +959,65 @@ impl KeyStore for MemoryStore {
             }
             None => Err(StoreError::NotFound),
         }
+    }
+
+    async fn past_keys(&self, peer: ServerId) -> Result<Vec<crate::keyrecs::PastKey>, StoreError> {
+        Ok(self
+            .extras()
+            .past_keys
+            .get(&peer)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn push_past_key(
+        &self,
+        peer: ServerId,
+        key: &[u8],
+        replaced_at: u64,
+    ) -> Result<(), StoreError> {
+        self.extras()
+            .past_keys
+            .entry(peer)
+            .or_default()
+            .push(crate::keyrecs::PastKey {
+                key: key.to_vec(),
+                replaced_at,
+            });
+        Ok(())
+    }
+
+    async fn put_pending_addresses(
+        &self,
+        pending: &crate::keyrecs::PendingAddresses,
+    ) -> Result<(), StoreError> {
+        let mut extras = self.extras();
+        extras.pending_addresses.retain(|p| p.peer != pending.peer);
+        extras.pending_addresses.push(pending.clone());
+        Ok(())
+    }
+
+    async fn pending_addresses(
+        &self,
+        peer: ServerId,
+    ) -> Result<Option<crate::keyrecs::PendingAddresses>, StoreError> {
+        Ok(self
+            .extras()
+            .pending_addresses
+            .iter()
+            .find(|p| p.peer == peer)
+            .cloned())
+    }
+
+    async fn list_pending_addresses(
+        &self,
+    ) -> Result<Vec<crate::keyrecs::PendingAddresses>, StoreError> {
+        Ok(self.extras().pending_addresses.clone())
+    }
+
+    async fn clear_pending_addresses(&self, peer: ServerId) -> Result<(), StoreError> {
+        self.extras().pending_addresses.retain(|p| p.peer != peer);
+        Ok(())
     }
 }
 

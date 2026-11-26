@@ -647,13 +647,27 @@ every peer. Both are envelopes whose body is deterministic CBOR:
 | 5 | rotation only: the new descriptor, its envelope bytes, self-signed by the new key |
 
 A **rotation** is signed with `sig1("federation-key-rotation", body)` by the *old* key. The receiver
-accepts it only when the old key is the one it holds for that server, and the new descriptor is for
-the same server, verifies under its own key and carries another key; it then pins the new key and
-takes the descriptor's addresses and operator. A **revocation** is signed with
-`sig1("federation-key-revocation", body)` by the key it revokes (a thief can sign one too, which
-only revokes a key that is stolen anyway); a receiver that holds that key stops trusting the server
-(`revoked`) until it is paired again with a new code. A record about a key the receiver no longer
-holds does nothing, and the same record twice does nothing.
+accepts it only when the old key is the one it holds for that server, `issued at` is not more than
+300 seconds ahead of its clock (nor older than a descriptor lives, 37 days), and the new descriptor
+is for the same server, verifies under its own key and carries another key; it then pins the new
+key and remembers the old one, with when it replaced it. A rotation that keeps the server's
+addresses takes the descriptor's operator and suites at once. One that **brings other addresses**
+does not: this server keeps dialling the addresses it knew, and the new addresses, operator and
+suites wait for its admin (`GET /admin/v1/federation/address-changes`; `POST` on
+`/admin/v1/federation/peers/{id}/address-change` follows the server, `DELETE` keeps the old
+addresses, both with a step-up token). The key that signed a rotation may be a stolen one, and the
+addresses decide where this server connects.
+
+A **revocation** is signed with `sig1("federation-key-revocation", body)` by the key it revokes. A
+receiver that holds that key stops trusting the server (`revoked`) until it is paired again with a
+new code. A revocation also counts when it is signed by a key the receiver **replaced** in the last
+30 days: that is how the owner of a stolen key answers a thief who rotated it away (a rotation
+signed by a key that turns out to be stolen can't be told from the thief's, so everything after it
+is distrusted, and the server is revoked, not rolled back). The cost is that a copy of an old key
+that leaks within 30 days of an honest rotation can revoke the server, which then has to be paired
+again; it can't impersonate it. A revocation of any other key (one never held, or replaced longer
+ago) does nothing, and so does the same record twice. The history of a peer's keys goes when the
+peer is unpaired.
 
 Records are posted to `POST /fed/v1/keys` (204, or a bare 400), not sent over a session, because
 after a rotation the new key's sessions are refused until the record is applied: a server delivers

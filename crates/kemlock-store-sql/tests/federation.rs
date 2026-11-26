@@ -439,3 +439,55 @@ async fn a_promotion_is_held_unless_the_saved_setting_says_auto() {
         .expect("saved");
     assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
 }
+
+#[tokio::test]
+async fn past_keys_and_pending_addresses_are_kept_per_peer_and_go_with_the_peer() {
+    use kemlock_federation::keyrecs::{KeyStore, PendingAddresses};
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    assert!(store.past_keys(p.id).await.expect("keys").is_empty());
+
+    store.push_past_key(p.id, &[1; 1984], 100).await.expect("push");
+    store.push_past_key(p.id, &[2; 1984], 200).await.expect("push");
+    let kept = store.past_keys(p.id).await.expect("keys");
+    assert_eq!(
+        kept.iter().map(|k| (k.key[0], k.replaced_at)).collect::<Vec<_>>(),
+        vec![(1, 100), (2, 200)],
+        "oldest first"
+    );
+
+    let pending = PendingAddresses {
+        peer: p.id,
+        operator: "Operator 1".to_owned(),
+        addresses: vec!["https://moved.example.org".to_owned()],
+        suites: vec!["kfed1-mlkem1024x25519-aes256gcm".to_owned()],
+        received_at: 300,
+    };
+    store.put_pending_addresses(&pending).await.expect("put");
+    assert_eq!(store.pending_addresses(p.id).await, Ok(Some(pending.clone())));
+    assert_eq!(store.list_pending_addresses().await, Ok(vec![pending.clone()]));
+    // A second change replaces the first.
+    let newer = PendingAddresses {
+        received_at: 400,
+        ..pending
+    };
+    store.put_pending_addresses(&newer).await.expect("replace");
+    assert_eq!(store.list_pending_addresses().await, Ok(vec![newer]));
+    store.clear_pending_addresses(p.id).await.expect("clear");
+    assert_eq!(store.pending_addresses(p.id).await, Ok(None));
+
+    // Unpairing forgets the history, so a later pairing starts clean.
+    store.put_pending_addresses(&PendingAddresses {
+        peer: p.id,
+        operator: String::new(),
+        addresses: Vec::new(),
+        suites: Vec::new(),
+        received_at: 500,
+    })
+    .await
+    .expect("put");
+    assert!(store.remove_peer(p.id).await.expect("remove"));
+    assert!(store.past_keys(p.id).await.expect("keys").is_empty());
+    assert_eq!(store.list_pending_addresses().await, Ok(Vec::new()));
+}

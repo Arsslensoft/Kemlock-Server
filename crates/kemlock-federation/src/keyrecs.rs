@@ -170,6 +170,33 @@ impl KeyRecord {
     }
 }
 
+/// How long after a server's key was replaced a revocation signed by that old key still counts, in
+/// seconds. A thief who rotates a stolen key away from its owner is answered by the owner's
+/// revocation of that key; after this time the old key is forgotten, so a copy of it that leaks
+/// much later can't revoke the server.
+pub const PAST_KEY_REVOKES_SECS: u64 = 30 * 86_400;
+
+/// An identity key a peer used before its current one, with when this server replaced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PastKey {
+    pub key: Vec<u8>,
+    /// Unix seconds.
+    pub replaced_at: u64,
+}
+
+/// The addresses, operator and suites a peer's rotation brought, kept until this server's admin
+/// approves them: a rotation is signed by a key that may be stolen, and the addresses decide where
+/// this server connects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingAddresses {
+    pub peer: ServerId,
+    pub operator: String,
+    pub addresses: Vec<String>,
+    pub suites: Vec<String>,
+    /// Unix seconds the rotation was applied.
+    pub received_at: u64,
+}
+
 /// A key record as stored, to pass on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredKeyRecord {
@@ -203,6 +230,46 @@ pub trait KeyStore: Send + Sync {
         _key: &[u8],
     ) -> impl Future<Output = R<()>> + Send {
         ready(Err(StoreError::NotFound))
+    }
+
+    /// The keys a peer used before its current one, oldest first. Forgotten with the peer.
+    fn past_keys(&self, _peer: ServerId) -> impl Future<Output = R<Vec<PastKey>>> + Send {
+        ready(Ok(Vec::new()))
+    }
+
+    /// Adds a key the peer no longer uses.
+    fn push_past_key(
+        &self,
+        _peer: ServerId,
+        _key: &[u8],
+        _replaced_at: u64,
+    ) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
+    }
+
+    /// Keeps (or replaces) the address change a rotation of `peer` brought, for its admin.
+    fn put_pending_addresses(
+        &self,
+        _pending: &PendingAddresses,
+    ) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
+    }
+
+    fn pending_addresses(
+        &self,
+        _peer: ServerId,
+    ) -> impl Future<Output = R<Option<PendingAddresses>>> + Send {
+        ready(Ok(None))
+    }
+
+    /// Every address change waiting for the admin.
+    fn list_pending_addresses(&self) -> impl Future<Output = R<Vec<PendingAddresses>>> + Send {
+        ready(Ok(Vec::new()))
+    }
+
+    /// Drops the address change waiting for `peer`, if any.
+    fn clear_pending_addresses(&self, _peer: ServerId) -> impl Future<Output = R<()>> + Send {
+        ready(Ok(()))
     }
 }
 
@@ -244,6 +311,20 @@ pub enum KeyRecordOutcome {
     Known,
 }
 
+/// Whether two address lists name the same places: ignoring order, case and a trailing slash.
+fn same_addresses(a: &[String], b: &[String]) -> bool {
+    let normal = |list: &[String]| {
+        let mut out: Vec<String> = list
+            .iter()
+            .map(|s| s.trim().trim_end_matches('/').to_ascii_lowercase())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    };
+    normal(a) == normal(b)
+}
+
 fn public_key(bytes: &[u8]) -> Result<sig1::PublicKey> {
     sig1::PublicKey::from_bytes(bytes)
         .map_err(|_| FedError::Malformed("an identity key is not valid"))
@@ -251,8 +332,17 @@ fn public_key(bytes: &[u8]) -> Result<sig1::PublicKey> {
 
 impl<S: FedStore> Replica<S> {
     /// Takes a signed key record, from a peer or relayed, and applies it. A record about a server
-    /// this server holds no key for, about this server itself, or signed by a key other than the
-    /// one held is refused.
+    /// this server holds no key for, about this server itself, from the future, or signed by a key
+    /// other than the one held (or, for a revocation, one it replaced lately) is refused.
+    ///
+    /// - A **rotation** pins the new key and remembers the old one. The addresses, operator and
+    ///   suites of the new descriptor take effect at once only when the addresses are the ones
+    ///   already known; otherwise they wait for the admin ([`PendingAddresses`]), because a thief
+    ///   holding the old key could otherwise send this server wherever it likes.
+    /// - A **revocation** of the held key revokes the peer. So does one signed by a key this server
+    ///   replaced in the last [`PAST_KEY_REVOKES_SECS`]: that is how the owner of a stolen key
+    ///   answers a thief's rotation, and a rotation signed by a key that turned out stolen can't be
+    ///   told from the thief's. The peer must be paired again.
     pub async fn accept_key_record(&self, envelope: &[u8], now: u64) -> Result<KeyRecordOutcome> {
         if envelope.len() > MAX_RECORD {
             return Err(FedError::Malformed("a key record is too large"));
@@ -261,6 +351,19 @@ impl<S: FedStore> Replica<S> {
         let record = KeyRecord::from_body(&signed.body)?;
         if record.to_body() != signed.body {
             return Err(FedError::Invalid("the key record body is not canonical"));
+        }
+        // A record is as old as the key change it describes. A rotation older than a descriptor
+        // lives carries a descriptor that has expired anyway.
+        if record.issued_at() > now.saturating_add(crate::descriptor::SKEW_SECS) {
+            return Err(FedError::Refused("a key record from the future"));
+        }
+        if matches!(record, KeyRecord::Rotation { .. })
+            && record
+                .issued_at()
+                .saturating_add(crate::descriptor::VALIDITY_SECS)
+                < now
+        {
+            return Err(FedError::Refused("a rotation too old to take"));
         }
         let server = record.server();
         if server == self.server_id() {
@@ -315,14 +418,30 @@ impl<S: FedStore> Replica<S> {
                 if new.descriptor.identity_key.as_bytes().as_slice() == held.as_slice() {
                     return Err(FedError::Refused("a rotation to the same key"));
                 }
-                if peer.is_some() {
+                if let Some(known) = &peer {
                     self.store
                         .set_peer_identity(server, new.descriptor.identity_key.as_bytes())
                         .await?;
+                    self.store.push_past_key(server, &held, now).await?;
                     let d = &new.descriptor;
-                    self.store
-                        .update_peer_descriptor(server, &d.operator, &d.addresses, &d.suites)
-                        .await?;
+                    if same_addresses(&d.addresses, &known.addresses) {
+                        self.store
+                            .update_peer_descriptor(server, &d.operator, &d.addresses, &d.suites)
+                            .await?;
+                        self.store.clear_pending_addresses(server).await?;
+                    } else {
+                        // The rotation moves the server: its admin decides whether to follow.
+                        self.store
+                            .put_pending_addresses(&PendingAddresses {
+                                peer: server,
+                                operator: d.operator.clone(),
+                                addresses: d.addresses.clone(),
+                                suites: d.suites.clone(),
+                                received_at: now,
+                            })
+                            .await?;
+                        tracing::warn!(%server, "a rotation brought other addresses: held for the admin");
+                    }
                 } else if let Some(vouched) = &learned {
                     self.store
                         .put_learned_key(&LearnedKey {
@@ -337,18 +456,35 @@ impl<S: FedStore> Replica<S> {
                 KeyRecordOutcome::Applied
             }
             KeyRecord::Revocation { key, .. } => {
-                if *key != held {
+                // The key that revokes: the held one, or a paired peer's earlier one, lately.
+                let revoker = if *key == held {
+                    Some(held.clone())
+                } else if peer.is_some() {
+                    self.store
+                        .past_keys(server)
+                        .await?
+                        .into_iter()
+                        .find(|past| {
+                            past.key == *key
+                                && now <= past.replaced_at.saturating_add(PAST_KEY_REVOKES_SECS)
+                        })
+                        .map(|past| past.key)
+                } else {
+                    None
+                };
+                let Some(revoker) = revoker else {
                     return Ok(KeyRecordOutcome::Known);
-                }
-                signed.verify(&public_key(&held)?, REVOCATION_CONTEXT)?;
+                };
+                signed.verify(&public_key(&revoker)?, REVOCATION_CONTEXT)?;
                 let paired = peer.as_ref().is_some_and(|p| p.state == PeerState::Paired);
                 if paired {
                     self.store
                         .set_peer_state(server, PeerState::Revoked)
                         .await?;
+                    self.store.clear_pending_addresses(server).await?;
                     tracing::warn!(%server, "a peer revoked its identity key: it is no longer trusted");
                     KeyRecordOutcome::Applied
-                } else if learned.is_some() {
+                } else if learned.is_some() && *key == held {
                     self.store.remove_learned_key(server).await?;
                     tracing::warn!(%server, "a server revoked its identity key: its learned key was dropped");
                     KeyRecordOutcome::Applied
@@ -366,6 +502,42 @@ impl<S: FedStore> Replica<S> {
             })
             .await?;
         Ok(outcome)
+    }
+
+    /// The address changes that came with rotations and wait for the admin.
+    pub async fn pending_address_changes(&self) -> Result<Vec<PendingAddresses>> {
+        Ok(self.store.list_pending_addresses().await?)
+    }
+
+    /// The admin accepts the address change that came with `peer`'s rotation: it takes effect now.
+    /// `Refused` when none waits.
+    pub async fn approve_address_change(&self, peer: ServerId) -> Result<()> {
+        let pending = self
+            .store
+            .pending_addresses(peer)
+            .await?
+            .ok_or(FedError::Refused("no address change waits for this peer"))?;
+        self.store
+            .update_peer_descriptor(
+                peer,
+                &pending.operator,
+                &pending.addresses,
+                &pending.suites,
+            )
+            .await?;
+        self.store.clear_pending_addresses(peer).await?;
+        Ok(())
+    }
+
+    /// The admin refuses the address change that came with `peer`'s rotation: the addresses this
+    /// server knows stay. `Refused` when none waits.
+    pub async fn refuse_address_change(&self, peer: ServerId) -> Result<()> {
+        self.store
+            .pending_addresses(peer)
+            .await?
+            .ok_or(FedError::Refused("no address change waits for this peer"))?;
+        self.store.clear_pending_addresses(peer).await?;
+        Ok(())
     }
 
     /// Replaces this server's identity with `identity`, which has a new signing key, and makes the
@@ -551,6 +723,197 @@ mod tests {
         assert_eq!(kept[0].kind, "rotation");
     }
 
+    /// A new identity for the same server, with another signing key and these addresses.
+    fn moved(old: &LocalIdentity, seed: u8, addresses: &[&str]) -> LocalIdentity {
+        let fresh = identity(seed, NOW, &Suite::IMPLEMENTED);
+        LocalIdentity::new(
+            old.server,
+            fresh.signing.clone(),
+            fresh.kems.clone(),
+            crate::identity::DescriptorParams {
+                suites: Suite::IMPLEMENTED.to_vec(),
+                addresses: addresses.iter().map(|a| (*a).to_owned()).collect(),
+                operator: old.descriptor.descriptor.operator.clone(),
+                not_before: NOW,
+                not_after: NOW + crate::descriptor::VALIDITY_SECS,
+            },
+        )
+        .expect("an identity")
+    }
+
+    async fn peer_of(p: &Pair) -> crate::ports::Peer {
+        p.b.store
+            .get_peer(p.old.server)
+            .await
+            .expect("get")
+            .expect("peer")
+    }
+
+    #[tokio::test]
+    async fn a_rotation_that_moves_the_server_waits_for_the_admin_before_the_addresses_change() {
+        let p = pair().await;
+        let before = peer_of(&p).await;
+        // A thief holding the old key rotates it to its own, and says it lives elsewhere.
+        let thief = moved(&p.old, 5, &["https://thief.example.net"]);
+        let (_, rotation) = rotation_record(&p.old, &thief, NOW).expect("a record");
+        assert_eq!(
+            p.b.accept_key_record(&rotation.encode(), NOW).await,
+            Ok(KeyRecordOutcome::Applied)
+        );
+        // The key is pinned (the rotation is signed by the held one), but this server still dials
+        // the addresses it knew.
+        let after = peer_of(&p).await;
+        assert_eq!(after.identity_key, thief.public.as_bytes().to_vec());
+        assert_eq!(after.addresses, before.addresses);
+        let waiting = p.b.pending_address_changes().await.expect("list");
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].peer, p.old.server);
+        assert_eq!(waiting[0].addresses, vec!["https://thief.example.net"]);
+
+        // The admin refuses it: the addresses stay, nothing waits.
+        p.b.refuse_address_change(p.old.server)
+            .await
+            .expect("refused");
+        assert!(
+            p.b.pending_address_changes()
+                .await
+                .expect("list")
+                .is_empty()
+        );
+        assert_eq!(peer_of(&p).await.addresses, before.addresses);
+        assert!(p.b.refuse_address_change(p.old.server).await.is_err());
+        assert!(p.b.approve_address_change(p.old.server).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_admin_can_follow_a_server_that_moved() {
+        let p = pair().await;
+        let moved_to = moved(&p.old, 5, &["https://new-home.example.org"]);
+        let (_, rotation) = rotation_record(&p.old, &moved_to, NOW).expect("a record");
+        p.b.accept_key_record(&rotation.encode(), NOW)
+            .await
+            .expect("rotated");
+        assert_ne!(
+            peer_of(&p).await.addresses,
+            vec!["https://new-home.example.org".to_owned()]
+        );
+        p.b.approve_address_change(p.old.server)
+            .await
+            .expect("approved");
+        assert_eq!(
+            peer_of(&p).await.addresses,
+            vec!["https://new-home.example.org".to_owned()]
+        );
+        assert!(
+            p.b.pending_address_changes()
+                .await
+                .expect("list")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owners_revocation_of_a_stolen_key_still_counts_after_a_thief_rotated_it_away() {
+        let p = pair().await;
+        let thief = moved(&p.old, 5, &["https://thief.example.net"]);
+        let (_, rotation) = rotation_record(&p.old, &thief, NOW).expect("a record");
+        p.b.accept_key_record(&rotation.encode(), NOW)
+            .await
+            .expect("rotated");
+        // The real operator, who still holds the old key, revokes it.
+        let (_, revocation) = revocation_record(&p.old, NOW + 60).expect("a record");
+        assert_eq!(
+            p.b.accept_key_record(&revocation.encode(), NOW + 60).await,
+            Ok(KeyRecordOutcome::Applied)
+        );
+        assert_eq!(peer_of(&p).await.state, PeerState::Revoked);
+        assert!(
+            p.b.pending_address_changes()
+                .await
+                .expect("list")
+                .is_empty(),
+            "the thief's addresses go with it"
+        );
+
+        // Someone who never held a key of the server can't revoke it this way.
+        let p = pair().await;
+        let thief = moved(&p.old, 5, &["https://thief.example.net"]);
+        let (_, rotation) = rotation_record(&p.old, &thief, NOW).expect("a record");
+        p.b.accept_key_record(&rotation.encode(), NOW)
+            .await
+            .expect("rotated");
+        let stranger = identity(9, NOW, &Suite::IMPLEMENTED);
+        let forged = KeyRecord::Revocation {
+            server: p.old.server,
+            key: p.old.public.as_bytes().to_vec(),
+            issued_at: NOW + 60,
+        }
+        .sign(&stranger.signing)
+        .expect("sign")
+        .encode();
+        assert!(p.b.accept_key_record(&forged, NOW + 60).await.is_err());
+        assert_eq!(peer_of(&p).await.state, PeerState::Paired);
+    }
+
+    #[tokio::test]
+    async fn an_old_key_revokes_nothing_once_the_window_has_passed() {
+        let p = pair().await;
+        let new = next(&p.old, 5);
+        let (_, rotation) = rotation_record(&p.old, &new, NOW).expect("a record");
+        p.b.accept_key_record(&rotation.encode(), NOW)
+            .await
+            .expect("rotated");
+        let later = NOW + PAST_KEY_REVOKES_SECS + 10;
+        let (_, revocation) = revocation_record(&p.old, later).expect("a record");
+        assert_eq!(
+            p.b.accept_key_record(&revocation.encode(), later).await,
+            Ok(KeyRecordOutcome::Known)
+        );
+        assert_eq!(peer_of(&p).await.state, PeerState::Paired);
+        // A key this server never held, however it signs, revokes nothing.
+        let stranger = identity(9, NOW, &Suite::IMPLEMENTED);
+        let about_it = KeyRecord::Revocation {
+            server: p.old.server,
+            key: stranger.public.as_bytes().to_vec(),
+            issued_at: NOW,
+        }
+        .sign(&stranger.signing)
+        .expect("sign")
+        .encode();
+        assert_eq!(
+            p.b.accept_key_record(&about_it, NOW).await,
+            Ok(KeyRecordOutcome::Known)
+        );
+        assert_eq!(peer_of(&p).await.state, PeerState::Paired);
+    }
+
+    #[tokio::test]
+    async fn a_record_from_the_future_or_a_rotation_gone_stale_is_refused() {
+        let p = pair().await;
+        let new = next(&p.old, 5);
+        let future = NOW + crate::descriptor::SKEW_SECS + 1;
+        let (_, rotation) = rotation_record(&p.old, &new, future).expect("a record");
+        assert!(matches!(
+            p.b.accept_key_record(&rotation.encode(), NOW).await,
+            Err(FedError::Refused(_))
+        ));
+        let (_, revocation) = revocation_record(&p.old, future).expect("a record");
+        assert!(matches!(
+            p.b.accept_key_record(&revocation.encode(), NOW).await,
+            Err(FedError::Refused(_))
+        ));
+        let (_, rotation) = rotation_record(&p.old, &new, NOW).expect("a record");
+        let stale = NOW + crate::descriptor::VALIDITY_SECS + 1;
+        assert!(matches!(
+            p.b.accept_key_record(&rotation.encode(), stale).await,
+            Err(FedError::Refused(_))
+        ));
+        assert_eq!(
+            peer_of(&p).await.identity_key,
+            p.old.public.as_bytes().to_vec()
+        );
+    }
+
     #[tokio::test]
     async fn a_rotation_to_another_servers_descriptor_or_the_same_key_is_refused() {
         let p = pair().await;
@@ -625,7 +988,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_revocation_of_a_key_that_was_already_replaced_does_nothing() {
+    async fn a_revocation_by_the_replaced_key_counts_for_a_while() {
         let p = pair().await;
         let new = next(&p.old, 5);
         let (_, rotation) = rotation_record(&p.old, &new, NOW).expect("a record");
@@ -635,16 +998,8 @@ mod tests {
         let (_, revocation) = revocation_record(&p.old, NOW + 1).expect("a record");
         assert_eq!(
             p.b.accept_key_record(&revocation.encode(), NOW).await,
-            Ok(KeyRecordOutcome::Known)
+            Ok(KeyRecordOutcome::Applied)
         );
-        assert_eq!(
-            p.b.store
-                .get_peer(p.old.server)
-                .await
-                .expect("get")
-                .expect("peer")
-                .state,
-            PeerState::Paired
-        );
+        assert_eq!(peer_of(&p).await.state, PeerState::Revoked);
     }
 }

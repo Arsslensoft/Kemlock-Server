@@ -16,6 +16,7 @@ use crate::tables::federation::{
     vault_federation,
 };
 use crate::tables::federation_wiring::federation_erasures;
+use crate::tables::federation_keys::{peer_key_history, peer_pending_addresses};
 use crate::tables::items::{self, owner_parts};
 use crate::tables::{changes, server_meta};
 use kemlock_app::ports::StoreError;
@@ -747,6 +748,16 @@ impl PeerRepo for SqlStore {
             .await
             .store()?;
         self.insight_forget(id).await?;
+        peer_key_history::Entity::delete_many()
+            .filter(peer_key_history::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_pending_addresses::Entity::delete_many()
+            .filter(peer_pending_addresses::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
         peer_log_switches::Entity::delete_by_id(id.0)
             .exec(self.writer())
             .await
