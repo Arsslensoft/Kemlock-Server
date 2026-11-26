@@ -374,9 +374,21 @@ pub(crate) struct InstallRequestDto {
     spaces_handled: bool,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FinishSpacesRequest {
+    /// What `POST /auth/opaque/start` answered, unread. Needed when the account has a password.
+    login_state: Option<String>,
+    /// The client's OPAQUE `CredentialFinalization`, with the current password.
+    finalization: Option<String>,
+    /// A fresh proof of the second step; with no password, a passkey's or security key's answer.
+    proof: Option<FreshProof>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RotatedDto {
+
     /// The account's key version now.
     key_version: u32,
     /// New tokens for the device that asked, bound to its DPoP key: the new security stamp ended
@@ -521,6 +533,83 @@ where
     }
 }
 
+// ---- who may do it ----
+
+/// What the person must give before the account's keys change: its password again, and a fresh
+/// proof of the second step, or, with no password, a fresh answer of a passkey or security key.
+struct Gate<'a> {
+    password: Option<(&'a str, &'a str)>,
+    proof: Option<&'a FreshProof>,
+    passwordless: bool,
+}
+
+/// What is asked of the person, checked without spending anything: a missing part is said now.
+async fn gate<'a, S, P, K>(
+    api: &Api<S, P, K>,
+    user: UserId,
+    passwordless: bool,
+    login_state: Option<&'a String>,
+    finalization: Option<&'a String>,
+    proof: Option<&'a FreshProof>,
+) -> Result<Gate<'a>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let proof = if passwordless {
+        // With no password there is nothing to prove but a key in the person's hand: a session
+        // alone must never replace the account's keys, so a fresh answer of a passkey or a
+        // security key is required, whether or not a second step is on.
+        match proof {
+            Some(proof @ FreshProof::Assertion(_)) => Some(proof),
+            _ => {
+                return Err(AppError::Invalid(
+                    "an account with no password needs a fresh answer of a passkey or security key",
+                )
+                .into());
+            }
+        }
+    } else {
+        proof_needed(api, user, proof).await?
+    };
+    let password = if passwordless {
+        None
+    } else {
+        let (Some(login_state), Some(finalization)) = (login_state, finalization) else {
+            return Err(AppError::Invalid("the password is needed").into());
+        };
+        Some((login_state.as_str(), finalization.as_str()))
+    };
+    Ok(Gate {
+        password,
+        proof,
+        passwordless,
+    })
+}
+
+/// Spends the password and the proof. With a second step on, the password alone is not enough: a
+/// stolen session and a guessed password must not replace the account's keys.
+async fn spend<S, P, K>(
+    api: &Api<S, P, K>,
+    authed: &Authed,
+    gate: Gate<'_>,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    if let Some((login_state, finalization)) = gate.password {
+        let account = account_of(api, authed).await?;
+        reauthenticate(api, authed, &account, login_state, finalization).await?;
+    }
+    if let Some(proof) = gate.proof {
+        require_proof_via_api(api, authed.actor.user, proof, !gate.passwordless).await?;
+    }
+    Ok(())
+}
+
 // ---- handlers ----
 
 async fn handle_plan<S, P, K, R>(
@@ -609,6 +698,7 @@ async fn handle_previous_keys_done<S, P, K, R>(
     State(api): State<Api<S, P, K>>,
     Extension(repos): Extension<Arc<Repos<R>>>,
     authed: Authed,
+    body: Body,
 ) -> Result<StatusCode, Problem>
 where
     S: Store + KeyCopyRepo,
@@ -616,9 +706,22 @@ where
     K: TokenSigner + Clone + 'static,
     R: RotationStore + Clone + 'static,
 {
-    rotation(&api, &repos)
-        .finish_spaces(authed.actor.user)
-        .await?;
+    // Deleting the previous keys ends the one way to finish the spaces' `rekey`, so it takes what
+    // a rotation takes: the password again, or a passkey's answer, and the second step's proof.
+    let dto: FinishSpacesRequest = body.json()?;
+    let user = authed.actor.user;
+    let account = account_of(&api, &authed).await?;
+    let gated = gate(
+        &api,
+        user,
+        account.wrapped_root_key.is_empty(),
+        dto.login_state.as_ref(),
+        dto.finalization.as_ref(),
+        dto.proof.as_ref(),
+    )
+    .await?;
+    spend(&api, &authed, gated).await?;
+    rotation(&api, &repos).finish_spaces(user).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -642,44 +745,20 @@ where
     let rotation = rotation(&api, &repos);
     // What can be known to be wrong is said before anything one-time is spent.
     let account = rotation.check(user, &request).await?;
-    let passwordless = account.wrapped_root_key.is_empty();
-    let proof = if passwordless {
-        // With no password there is nothing to prove but a key in the person's hand: a session
-        // alone must never replace the account's keys, so a fresh answer of a passkey or a
-        // security key is required, whether or not a second step is on.
-        match dto.proof.as_ref() {
-            Some(proof @ FreshProof::Assertion(_)) => Some(proof),
-            _ => {
-                return Err(AppError::Invalid(
-                    "an account with no password needs a fresh answer of a passkey or security key to rotate its keys",
-                )
-                .into());
-            }
-        }
-    } else {
-        proof_needed(&api, user, dto.proof.as_ref()).await?
-    };
-    let password = if passwordless {
-        None
-    } else {
-        let (Some(login_state), Some(finalization)) = (&dto.login_state, &dto.finalization) else {
-            return Err(AppError::Invalid("the password is needed to rotate the keys").into());
-        };
-        Some((login_state, finalization))
-    };
+    let gated = gate(
+        &api,
+        user,
+        account.wrapped_root_key.is_empty(),
+        dto.login_state.as_ref(),
+        dto.finalization.as_ref(),
+        dto.proof.as_ref(),
+    )
+    .await?;
     // The install's own checks on what the account holds, run on a plain read before the password
     // and the proof are spent: another device's write makes the install incomplete, and that
     // must not burn a login state or a one-time code.
     rotation.precheck(&authed.actor, &request).await?;
-    if let Some((login_state, finalization)) = password {
-        let account = account_of(&api, &authed).await?;
-        reauthenticate(&api, &authed, &account, login_state, finalization).await?;
-    }
-    // With a second step on, the password alone is not enough: a stolen session and a guessed
-    // password must not replace the account's keys.
-    if let Some(proof) = proof {
-        require_proof_via_api(&api, user, proof, !passwordless).await?;
-    }
+    spend(&api, &authed, gated).await?;
     let after = rotation.install(&authed.actor, request).await?;
     // The keys are rotated: nothing from here on can say they were not. The new security stamp
     // ended every session, this device's too, so it gets new ones.
@@ -788,7 +867,12 @@ fn doc_install() {}
 #[utoipa::path(
     delete, path = "/kem/v1/account/rotation/previous-keys", tag = "account",
     security(("dpop" = [])),
-    responses((status = 204, description = "The previous private keys are deleted, also when there were none"))
+    request_body = FinishSpacesRequest,
+    responses(
+        (status = 204, description = "The previous private keys are deleted, also when there were none"),
+        (status = 400, description = "The password or a passkey's answer is missing", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
+    )
 )]
 #[allow(dead_code)]
 fn doc_previous_keys() {}
@@ -818,7 +902,8 @@ fn doc_previous_keys() {}
         EmergencyBoxDto,
         RecoveryBoxDto,
         SendWrapDto,
-        RotatedDto
+        RotatedDto,
+        FinishSpacesRequest
     ))
 )]
 pub struct RotationApiDoc;

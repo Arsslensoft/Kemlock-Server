@@ -91,8 +91,13 @@ export function createRotationApi(http: Http) {
       http.request<{ staged: number }>({ method: 'PUT', path: `${path}/items`, body: request }),
     abandon: () => http.send({ method: 'DELETE', path }),
     install: (request: InstallRequest) => http.request<Rotated>({ method: 'POST', path, body: request }),
-    /** The account's spaces have moved to the new keys: the previous private keys are deleted. */
-    finishSpaces: () => http.send({ method: 'DELETE', path: `${path}/previous-keys` }),
+    /**
+     * The account's spaces have moved to the new keys: the previous private keys are deleted. It
+     * takes what a rotation takes: the password again, a second step's proof, or, with no
+     * password, a passkey's answer.
+     */
+    finishSpaces: (proof: Partial<PasswordProof> & { proof?: Proof }) =>
+      http.send({ method: 'DELETE', path: `${path}/previous-keys`, body: proof }),
   };
 }
 

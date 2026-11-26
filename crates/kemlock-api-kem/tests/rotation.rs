@@ -428,10 +428,19 @@ async fn staging_and_abandoning() {
     );
     let reply = sam.call("DELETE", "/kem/v1/account/rotation", None).await;
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
-    let reply = sam
-        .call("DELETE", "/kem/v1/account/rotation/previous-keys", None)
+    // Deleting the previous keys takes the password again, as the rotation did.
+    let bare = sam
+        .call("DELETE", "/kem/v1/account/rotation/previous-keys", Some(json!({})))
         .await;
-    assert_eq!(reply.status, StatusCode::NO_CONTENT);
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST, "{:?}", bare.body);
+    let reply = sam
+        .call(
+            "DELETE",
+            "/kem/v1/account/rotation/previous-keys",
+            Some(sam.reauth_body().await),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NO_CONTENT, "{:?}", reply.body);
 }
 
 #[test]
