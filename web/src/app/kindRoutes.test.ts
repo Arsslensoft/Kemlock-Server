@@ -16,7 +16,10 @@ async function visit(entry: string) {
   queryClient.setQueryData(['config'], { setup: 'complete' });
   const router = createAppRouter({ queryClient, session }, createMemoryHistory({ initialEntries: [entry] }));
   await router.load();
-  const { pathname, search } = router.state.location;
+  // The search the route understood (validateSearch applied), which is what the pages read; location.search is
+  // the address as typed.
+  const { pathname } = router.state.location;
+  const search = router.state.matches.at(-1)?.search ?? {};
   return { pathname, search: search as Record<string, unknown>, router };
 }
 
