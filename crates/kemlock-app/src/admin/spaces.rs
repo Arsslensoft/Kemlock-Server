@@ -11,6 +11,8 @@ use super::ports::{
     AdminEventRepo, AdminSpaceRepo, AdminSpaceRow, AdminUserRepo, Mailer, SpacePage,
 };
 use crate::authenticate::Actor;
+use crate::bitwarden::{Asker, BwInviteLinks, InviteLinkError, MemberInviteLink};
+use crate::error::AppError;
 use crate::ports::Clock;
 use crate::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_domain::spaces::{Member, SpaceRole};
@@ -111,5 +113,48 @@ where
             )
             .await;
         self.get(space).await
+    }
+
+    /// The link that accepts a member's invitation to a Bitwarden organization, for a server that
+    /// can't mail it: the admin copies it and hands it over. Whoever opens it accepts for that
+    /// account, so it is a secret and the read is recorded like a write.
+    pub async fn invite_link(
+        &self,
+        links: &dyn BwInviteLinks,
+        actor: &Actor,
+        ip: Option<IpAddr>,
+        space: SpaceId,
+        member: UserId,
+    ) -> Result<MemberInviteLink, AdminError> {
+        let link = links
+            .member_link(space, member, Asker::Server)
+            .await
+            .map_err(|e| match e {
+                InviteLinkError::NotOrganization => {
+                    AdminError::State("that space isn't a Bitwarden organization")
+                }
+                InviteLinkError::NotFound => AdminError::NotFound,
+                InviteLinkError::Forbidden(why) => AdminError::Forbidden(why),
+                InviteLinkError::NotInvited => {
+                    AdminError::State("that member has accepted the invitation already")
+                }
+                InviteLinkError::Server(message) => AdminError::App(AppError::Store(message)),
+            })?;
+        let audit = Audit {
+            events: self.repos.clone(),
+            users: self.repos.clone(),
+            mail: self.mail.clone(),
+            clock: self.clock.clone(),
+        };
+        audit
+            .record(
+                actor,
+                ip,
+                "admin.space.invite_link",
+                Some(format!("{space}/{member}")),
+                "copied the link that accepts a member's invitation to a Bitwarden organization",
+            )
+            .await;
+        Ok(link)
     }
 }
