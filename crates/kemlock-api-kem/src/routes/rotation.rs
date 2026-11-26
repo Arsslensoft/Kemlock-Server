@@ -61,6 +61,10 @@ impl From<RotationError> for Problem {
                 "rotation-stale-version",
                 "The key version is not the account's: read the plan again",
             ),
+            RotationError::SpacesPending => conflict(
+                "rotation-spaces-pending",
+                "The spaces of the last rotation have not moved to its keys yet: finish them first",
+            ),
             RotationError::SpacesNeedRekey => conflict(
                 "spaces-need-rekey",
                 "The account is in a space whose keys must move to the new keys too",

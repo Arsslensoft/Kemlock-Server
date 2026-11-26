@@ -78,6 +78,9 @@ pub struct Holdings {
     pub live_items: Vec<(ItemId, Revision, ItemFormat)>,
     /// How many spaces the account is a member of.
     pub spaces: u64,
+    /// The previous private keys of an earlier rotation are still kept: its spaces have not all
+    /// moved to the keys it made.
+    pub previous_keys: bool,
 }
 
 /// The Recovery Kit's previous keys, kept until the spaces have moved on.
@@ -189,6 +192,11 @@ pub enum RotationError {
     /// `fromVersion` or `toVersion` is not the account's version and the next one.
     #[error("the key version is not the account's")]
     StaleVersion,
+    /// An earlier rotation's previous keys are still kept for the spaces, and a new one would
+    /// replace them: a `rekey` must be signed by the key a space has on record, so they are not
+    /// replaced until the spaces have moved (`DELETE .../previous-keys`).
+    #[error("the spaces of the last rotation have not moved yet")]
+    SpacesPending,
     /// The account is in a space and the client did not say it moves the space's keys.
     #[error("the account is in a space whose keys must move too")]
     SpacesNeedRekey,
@@ -419,6 +427,9 @@ pub fn check_install(
 
     if holdings.spaces > 0 && !request.spaces_handled {
         return Err(RotationError::SpacesNeedRekey);
+    }
+    if holdings.spaces > 0 && holdings.previous_keys {
+        return Err(RotationError::SpacesPending);
     }
     Ok(())
 }
@@ -925,6 +936,27 @@ mod tests {
         );
         r.spaces_handled = true;
         assert_eq!(check_install(&install(r), &holdings, &[]), Ok(()));
+    }
+
+    #[test]
+    fn a_second_rotation_waits_for_the_spaces_of_the_first() {
+        let mut r = request();
+        r.spaces_handled = true;
+        let pending = Holdings {
+            spaces: 1,
+            previous_keys: true,
+            ..Holdings::default()
+        };
+        assert_eq!(
+            check_install(&install(r.clone()), &pending, &[]),
+            Err(RotationError::SpacesPending)
+        );
+        // Previous keys of an account with no spaces are of no use and never block.
+        let idle = Holdings {
+            previous_keys: true,
+            ..Holdings::default()
+        };
+        assert_eq!(check_install(&install(r), &idle, &[]), Ok(()));
     }
 
     #[test]

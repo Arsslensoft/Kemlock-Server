@@ -198,15 +198,8 @@ async fn rotation(store: &SqlStore) {
         Ok(None),
         "the old kit is gone"
     );
-    let previous = RotationStore::previous_keys(store, sam.id)
-        .await
-        .expect("read")
-        .expect("the previous keys are kept");
-    assert_eq!((previous.key_version, previous.sealed), (1, vec![11; 189]));
-    assert_eq!(
-        RotationStore::clear_previous_keys(store, sam.id).await,
-        Ok(true)
-    );
+    // An account in no space has nothing to sign a rekey with: the old keys are not kept.
+    assert_eq!(RotationStore::previous_keys(store, sam.id).await, Ok(None));
     assert_eq!(
         RotationStore::clear_previous_keys(store, sam.id).await,
         Ok(false)

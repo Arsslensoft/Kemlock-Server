@@ -156,6 +156,12 @@ async fn holdings_in<C: ConnectionTrait>(db: &C, user: UserId) -> Result<Holding
         .await
         .store()?;
 
+    let previous_keys = rotation_previous_keys::Entity::find_by_id(user.0)
+        .one(db)
+        .await
+        .store()?
+        .is_some();
+
     Ok(Holdings {
         kit,
         passkeys,
@@ -166,6 +172,7 @@ async fn holdings_in<C: ConnectionTrait>(db: &C, user: UserId) -> Result<Holding
         sends,
         live_items,
         spaces,
+        previous_keys,
     })
 }
 
@@ -634,20 +641,24 @@ impl SqlStore {
             .await)?;
 
         // The old private keys, sealed under the new user key, until the spaces have moved.
+        // They are kept only for an account in a space, whose `rekey` needs them; one that is in
+        // none has nothing to sign with them.
         db(rotation_previous_keys::Entity::delete_many()
             .filter(rotation_previous_keys::Column::UserId.eq(user.0))
             .exec(txn)
             .await)?;
-        db(
-            rotation_previous_keys::Entity::insert(rotation_previous_keys::ActiveModel {
-                user_id: Set(user.0),
-                key_version: Set(i64::from(install.before.key_version)),
-                sealed: Set(request.sealed_previous_private_keys.clone()),
-                created_at: Set(utc(now)),
-            })
-            .exec(txn)
-            .await,
-        )?;
+        if holdings.spaces > 0 {
+            db(
+                rotation_previous_keys::Entity::insert(rotation_previous_keys::ActiveModel {
+                    user_id: Set(user.0),
+                    key_version: Set(i64::from(install.before.key_version)),
+                    sealed: Set(request.sealed_previous_private_keys.clone()),
+                    created_at: Set(utc(now)),
+                })
+                .exec(txn)
+                .await,
+            )?;
+        }
 
         // The staged rows have done their work.
         db(rotation_staged_items::Entity::delete_many()
