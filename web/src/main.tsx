@@ -6,6 +6,9 @@ import { keepRootSealed, restoreSession } from '@/app/persistence';
 import { createAppRouter } from '@/app/router';
 import { forgetEndedSession, lockVault, signOut } from '@/app/actions';
 import { startAutoLock } from '@/app/autoLock';
+import { startDeviceKeyCleanup } from '@/app/deviceKeyCleanup';
+import { createDevicesApi } from '@/api/devices';
+import { getDeviceId } from '@/lib/device';
 import { createPoliciesApi } from '@/api/policies';
 import { hasUnsavedItemForm } from '@/features/vault/forms/unsaved';
 import { sessionEndedTarget } from '@/app/sessionEnded';
@@ -49,6 +52,16 @@ const restored = purged
 // Only once the restore has settled does this page say its tab is open: before that the tab id in
 // the storage may be a closed tab's, which must not look alive.
 void restored.then(() => keepTabKeyAlive(session));
+
+// A browser that used an earlier version drops its old trusted-device key once, if it holds no copy.
+void restored.then(() =>
+  startDeviceKeyCleanup({
+    session,
+    devices: createDevicesApi(api),
+    crypto: vaultCrypto,
+    usedBefore: getDeviceId() !== null,
+  }),
+);
 
 // An open vault shuts itself after a while idle or out of sight, sooner if a space's policy says so.
 void restored.then(() =>
