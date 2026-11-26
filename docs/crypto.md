@@ -648,9 +648,9 @@ who made them. The rule keeps existing spaces usable without opening the door to
   signed". The mark is shown to the person on the space ("Some keys of this space were sealed before
   keys were signed; ask an owner to confirm you again"), and goes when the box is replaced.
 - An unsigned box that differs from the one remembered for that (space, key, version) is refused.
-- An unsigned box is refused for a (space, key) once the client has accepted a **signed** box of it
-  at the same or a later version, so a server can't take a signature away. Signed boxes are
-  accepted at any version.
+- An unsigned box is refused for a (space, key) once the client has accepted a **signed** box of it, at
+  any version: every box made since signatures began carries one, so an unsigned box after a signed
+  one is a signature taken away. Signed boxes are accepted at any version.
 - A box is replaced by a signed one when the key is replaced (the next key version is sealed and
   signed by whoever replaces it) or when an owner or admin confirms the member again, which seals
   the current space key and the member's collection keys anew. Nothing else is needed: there is no
