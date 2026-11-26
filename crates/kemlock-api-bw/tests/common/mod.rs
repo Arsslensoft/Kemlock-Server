@@ -148,6 +148,8 @@ pub(crate) struct Harness {
     pub blobs: Arc<MemoryBlobStore>,
     /// What the API told the live channels.
     pub events: Arc<Recorder>,
+    /// The invitation links the Kemlock API and the admin API are given.
+    pub links: kemlock_app::bitwarden::SharedInviteLinks,
 }
 
 impl Harness {
@@ -309,12 +311,14 @@ impl Harness {
                 })),
             },
         });
+        let links = kemlock_api_bw::invite_links(&app);
         Harness {
             router: router(app),
             store,
             env,
             blobs,
             events,
+            links,
         }
     }
 
