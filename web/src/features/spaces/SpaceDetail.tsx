@@ -5,7 +5,7 @@ import type { MemberViewDto, OffboardedDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
 import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
-import { describeAccountError } from '../account/errors';
+import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
 import { spaceDeps } from './deps';
 import { refreshSpaces } from './refresh';
@@ -21,6 +21,18 @@ import {
   setGroupMembers,
 } from './model';
 import { type ConfirmState, SpaceDetailView } from './SpaceDetailView';
+import { MemberNotVerified } from './verify';
+
+/** A member whose keys weren't sealed to gets words of their own; everything else the account screens'. */
+function describeSpaceError(error: unknown): Described {
+  if (error instanceof MemberNotVerified) {
+    return {
+      id: 'space.error.notVerified',
+      values: { name: error.member.name || error.member.email },
+    };
+  }
+  return describeAccountError(error);
+}
 
 export default function SpaceDetail() {
   const { spaceId = '' } = useParams({ strict: false }) as { spaceId?: string };
@@ -28,15 +40,27 @@ export default function SpaceDetail() {
   const queryClient = useQueryClient();
   const key = ['spaces', spaceId] as const;
   const query = useQuery({ queryKey: key, queryFn: () => loadSpaceDetail(spaceDeps, spaceId) });
-  const { run, pending, error } = useRun();
+  const { run, pending, error } = useRun(describeSpaceError);
   const [confirming, setConfirming] = useState<ConfirmState | null>(null);
   const [offboarded, setOffboarded] = useState<{ name: string; outcome: OffboardedDto } | null>(null);
   const detail: Detail | undefined = query.data;
   const { api } = spaceDeps;
 
-  /** Runs a change, then reads the space again. */
+  /**
+   * Runs a change, then reads the space again. A member the browser wouldn't seal to is asked to
+   * be confirmed again, when the server lets them be.
+   */
   async function change<T>(action: () => Promise<T>): Promise<T | undefined> {
-    const result = await run(action);
+    const result = await run(async () => {
+      try {
+        return await action();
+      } catch (caught) {
+        if (caught instanceof MemberNotVerified && caught.member.needsReconfirmation) {
+          void startConfirm(caught.member);
+        }
+        throw caught;
+      }
+    });
     if (result !== undefined) {
       await refreshSpaces(queryClient);
     }

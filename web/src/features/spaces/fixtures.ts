@@ -8,7 +8,8 @@ import type {
   SpaceViewDto,
   SpacesApi,
 } from '@/api/spaces';
-import { encodeB64, utf8 } from '@/lib/b64url';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { fingerprintBytes, fingerprintText } from '@/sharing/bundle';
 import { makeBundleB64 } from '@/test/bundles';
 import { vi } from 'vitest';
 import type { SpaceDetail } from './model';
@@ -92,6 +93,36 @@ export function members(): MemberViewDto[] {
     memberView(THEO, 'theo@example.co', { state: 'accepted', name: 'Theo Grant' }),
     memberView(LEE, 'lee@example.co', { name: 'Lee Wong' }),
   ];
+}
+
+/**
+ * The member as someone else's confirmation would leave them: `by` signed (as the fake crypto
+ * signs) that they compared this member's bundle.
+ */
+export async function confirmedBy(by: string, view: MemberViewDto): Promise<MemberViewDto> {
+  const fingerprint = await fingerprintBytes(decodeB64(view.publicBundle));
+  const statement = utf8(JSON.stringify(['confirm', SPACE, view.user, view.userKeyVersion]));
+  return {
+    ...view,
+    confirmation: {
+      by,
+      at: 1_700_000_200,
+      fingerprint: encodeB64(fingerprint),
+      memberKeyVersion: view.userKeyVersion,
+      statement: encodeB64(statement),
+      signature: encodeB64(utf8(`sig>confirm>${fromUtf8(statement)}`)),
+    },
+  };
+}
+
+/** The fingerprint text of a member's listed bundle: what the fake crypto answers as my own. */
+export async function fingerprintTextOf(view: MemberViewDto): Promise<string> {
+  return fingerprintText(await fingerprintBytes(decodeB64(view.publicBundle)));
+}
+
+/** The members with Lee confirmed by me, so a key may be sealed to either. */
+export async function confirmedMembers(): Promise<MemberViewDto[]> {
+  return Promise.all(members().map((m) => (m.user === LEE ? confirmedBy(ME, m) : m)));
 }
 
 /** A loaded detail, names already open, for the view tests. */

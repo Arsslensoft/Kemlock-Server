@@ -18,8 +18,9 @@ import type {
   SpacesApi,
 } from '@/api/spaces';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
-import { type Fingerprint, parseBundle, uuidBytes } from '@/sharing/bundle';
+import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
 import type { SpaceCrypto } from '@/spaces/crypto';
+import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
   api: SpacesApi;
@@ -227,24 +228,52 @@ export function memberLabel(members: MemberViewDto[], user: string): string {
 
 // ---- keys for someone -----------------------------------------------------------------------
 
-function kx1Of(member: MemberViewDto): Uint8Array {
-  const parsed = parseBundle(decodeB64(member.publicBundle));
-  if (!parsed) throw new Error("the member's key bundle can't be read");
-  return parsed.kx1;
+/**
+ * The key a member's keys are sealed to, once checked: their bundle is theirs, at their key
+ * version, and someone I can trace confirmed exactly these keys (src/features/spaces/verify.ts).
+ * Throws MemberNotVerified otherwise, and nothing is sealed.
+ */
+const verifiedBefore = new WeakMap<MemberViewDto[], Map<string, Promise<Recipient>>>();
+
+function recipientOf(
+  deps: SpaceDeps,
+  detail: Pick<SpaceDetail, 'view' | 'members'>,
+  member: MemberViewDto,
+): Promise<Recipient> {
+  // One check per member for one loaded roster, however many collections a change touches.
+  let known = verifiedBefore.get(detail.members);
+  if (!known) {
+    known = new Map();
+    verifiedBefore.set(detail.members, known);
+  }
+  let checked = known.get(member.user);
+  if (!checked) {
+    checked = verifiedRecipient(
+      {
+        crypto: deps.crypto,
+        spaceId: detail.view.space.id,
+        members: detail.members,
+        me: detail.view.me.user,
+      },
+      member,
+    );
+    known.set(member.user, checked);
+  }
+  return checked;
 }
 
 async function collectionKeyFor(
   deps: SpaceDeps,
   spaceId: string,
   collectionId: string,
-  member: MemberViewDto,
+  recipient: Recipient,
 ): Promise<string> {
   return encodeB64(
     await deps.crypto.sealCollectionKeyTo({
       spaceId,
       collectionId,
-      recipientKx1: kx1Of(member),
-      recipientId: uuidBytes(member.user),
+      recipientKx1: recipient.kx1,
+      recipientId: recipient.id,
     }),
   );
 }
@@ -277,9 +306,23 @@ export async function confirmMember(
     throw new Error('the fingerprint worked out here differs from the worker’s');
   }
   const spaceId = detail.view.space.id;
-  const recipientKx1 = kx1Of(member);
-  const recipientId = uuidBytes(member.user);
-  const sealedSpaceKey = await deps.crypto.sealSpaceKeyTo({ spaceId, recipientKx1, recipientId });
+  // The bundle the person compared is the member's own at their current key version, and is what
+  // the fingerprint on screen is of; a bundle that is another account's, or has since changed,
+  // gets no key.
+  const { bytes, parsed } = await checkBundle(deps.crypto, member);
+  const shown = await fingerprintBytes(bytes);
+  if (
+    shown.length !== fingerprint.bytes.length ||
+    shown.some((byte, i) => byte !== fingerprint.bytes[i])
+  ) {
+    throw new MemberNotVerified(member, 'confirmation-differs');
+  }
+  const recipient: Recipient = { kx1: parsed.kx1, id: parsed.accountId };
+  const sealedSpaceKey = await deps.crypto.sealSpaceKeyTo({
+    spaceId,
+    recipientKx1: recipient.kx1,
+    recipientId: recipient.id,
+  });
   const collectionKeys: Array<{ collection: string; sealed: string }> = [];
   for (const collection of collectionsOfMember(
     member.user,
@@ -289,7 +332,7 @@ export async function confirmMember(
   )) {
     collectionKeys.push({
       collection,
-      sealed: await collectionKeyFor(deps, spaceId, collection, member),
+      sealed: await collectionKeyFor(deps, spaceId, collection, recipient),
     });
   }
   // What the confirmer signs (docs/crypto.md, "Member confirmation"): that they compared this
@@ -298,7 +341,7 @@ export async function confirmMember(
   const statement = await deps.crypto.confirmationStatement({
     space: spaceId,
     member: member.user,
-    memberKeyVersion: member.userKeyVersion,
+    memberKeyVersion: parsed.keyVersion,
     fingerprint: fingerprint.bytes,
   });
   const signature = await deps.crypto.signStatement(statement, 'confirm');
@@ -377,10 +420,13 @@ async function keysForNewcomers(
     if (before.has(user)) continue;
     const member = detail.members.find((m) => m.user === user);
     if (!member || member.state !== 'confirmed') continue;
+    // Checked before anything is sealed: a member whose keys can't be traced to a confirmation
+    // stops the whole change, and the person is asked to confirm them again.
+    const recipient = await recipientOf(deps, detail, member);
     keys.push({
       collection,
       user,
-      sealed: await collectionKeyFor(deps, detail.view.space.id, collection, member),
+      sealed: await collectionKeyFor(deps, detail.view.space.id, collection, recipient),
     });
   }
   return keys;

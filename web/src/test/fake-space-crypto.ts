@@ -33,6 +33,8 @@ export function fakeSharingCrypto(): FakeSharing {
 
 export interface FakeSpaces extends SpaceCrypto {
   calls: string[];
+  /** What `ownFingerprint` answers: set it to the fingerprint of the test's own bundle. */
+  ownFingerprintText: string;
 }
 
 function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string, name: string) {
@@ -42,8 +44,9 @@ function nameBytes(spaceId: string, keyVersion: number, kind: string, id: string
 export function fakeSpaceCrypto(): FakeSpaces {
   const base = fakeSharingCrypto();
   const calls = base.calls;
-  return {
+  const fake: FakeSpaces = {
     ...base,
+    ownFingerprintText: '',
     async newSpace({ spaceId, collectionId, spaceName, collectionName }) {
       calls.push('newSpace');
       return {
@@ -96,8 +99,21 @@ export function fakeSpaceCrypto(): FakeSpaces {
       calls.push('confirmationStatement');
       return utf8(JSON.stringify(['confirm', space, member, memberKeyVersion]));
     },
-    async verifyConfirmation({ statement, signature }) {
-      return fromUtf8(signature) === `sig>confirm>${fromUtf8(statement)}`;
+    async verifyBundle(_bundle, signature) {
+      calls.push('verifyBundle');
+      return fromUtf8(signature) !== 'bad-bundle-signature';
+    },
+    async ownFingerprint() {
+      return fake.ownFingerprintText;
+    },
+    async verifyConfirmation({ space, member, memberKeyVersion, statement, signature }) {
+      calls.push('verifyConfirmation');
+      // Like the worker: the statement must be the one these facts give, and the signature theirs.
+      return (
+        fromUtf8(statement) === JSON.stringify(['confirm', space, member, memberKeyVersion]) &&
+        fromUtf8(signature) === `sig>confirm>${fromUtf8(statement)}`
+      );
     },
   };
+  return fake;
 }

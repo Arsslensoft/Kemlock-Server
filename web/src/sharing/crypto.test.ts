@@ -31,6 +31,8 @@ function worker() {
     sealSpaceKeyTo: vi.fn(async () => encodeB64(utf8('space-box'))),
     sealCollectionKeyTo: vi.fn(async () => encodeB64(utf8('coll-box'))),
     confirmationStatement: vi.fn(async () => encodeB64(utf8('statement'))),
+    verifyBundle: vi.fn(async (_bundle: string, _signature: string) => true),
+    ownFingerprint: vi.fn(async () => '11111 22222'),
     verifyConfirmation: vi.fn(async () => true),
   };
 }
@@ -110,6 +112,16 @@ describe('spaces over the worker', () => {
       spaceName: 'Family',
       collectionName: 'Everyone',
     });
+  });
+
+  it('checks a bundle’s own signature and reads my own fingerprint', async () => {
+    const api = worker();
+    const spaces = createSpaceCrypto(api);
+    const bundle = utf8('bundle');
+    const signature = utf8('signature');
+    await expect(spaces.verifyBundle(bundle, signature)).resolves.toBe(true);
+    expect(api.verifyBundle).toHaveBeenCalledWith(encodeB64(bundle), encodeB64(signature));
+    await expect(spaces.ownFingerprint()).resolves.toBe('11111 22222');
   });
 
   it('opens keys and names from bytes', async () => {

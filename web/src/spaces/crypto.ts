@@ -80,6 +80,10 @@ export interface SpaceCrypto extends SharingCrypto {
   }): Promise<Uint8Array>;
   /** The 134-byte statement the unlocked account signs to confirm a member (it is the confirmer). */
   confirmationStatement(input: ConfirmationFacts): Promise<Uint8Array>;
+  /** Whether the signature is the bundle's own sig1 signature: it proves the key made the bundle, not whose it is. */
+  verifyBundle(bundle: Uint8Array, signature: Uint8Array): Promise<boolean>;
+  /** The unlocked account's own fingerprint, as 12 groups of 5 digits. */
+  ownFingerprint(): Promise<string>;
   /** Whether a stored confirmation is the confirmer's own signature over exactly these facts. */
   verifyConfirmation(
     input: ConfirmationFacts & {
@@ -105,6 +109,8 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   sealSpaceKeyTo: () => unavailable(),
   sealCollectionKeyTo: () => unavailable(),
   confirmationStatement: () => unavailable(),
+  verifyBundle: () => unavailable(),
+  ownFingerprint: () => unavailable(),
   verifyConfirmation: () => unavailable(),
 };
 
@@ -121,6 +127,8 @@ type SpaceWorker = Pick<
   | 'sealSpaceKeyTo'
   | 'sealCollectionKeyTo'
   | 'confirmationStatement'
+  | 'verifyBundle'
+  | 'ownFingerprint'
   | 'verifyConfirmation'
 >;
 
@@ -181,6 +189,8 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
         }),
       );
     },
+    verifyBundle: (bundle, signature) => api.verifyBundle(encodeB64(bundle), encodeB64(signature)),
+    ownFingerprint: () => api.ownFingerprint(),
     verifyConfirmation: ({
       space,
       member,

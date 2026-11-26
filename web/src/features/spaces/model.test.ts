@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import type { MemberViewDto } from '@/api/spaces';
 import { decodeB64, fromUtf8 } from '@/lib/b64url';
 import { checkedFingerprint, fingerprintText, fingerprintBytes } from '@/sharing/bundle';
+import { makeBundleB64 } from '@/test/bundles';
 import { fakeSpaceCrypto } from '@/test/fake-space-crypto';
 import {
   FINANCE,
@@ -11,8 +13,10 @@ import {
   OPS,
   SPACE,
   THEO,
+  confirmedMembers,
   detail,
   fakeSpacesApi,
+  fingerprintTextOf,
   memberView,
   members,
 } from './fixtures';
@@ -31,6 +35,7 @@ import {
   renameCollection,
   setGroupMembers,
 } from './model';
+import { MemberNotVerified } from './verify';
 
 function deps() {
   const api = fakeSpacesApi();
@@ -154,7 +159,54 @@ describe('confirming a member', () => {
     expect(api.confirm).not.toHaveBeenCalled();
   });
 
+  it('seals nothing to a bundle that is another account’s', async () => {
+    const { spaceDeps, api, crypto } = deps();
+    const fp = await fingerprintOf(THEO);
+    if (!fp) throw new Error('fixture');
+    // Theo's entry carries Lee's bundle: the fingerprint on screen is of Lee's keys.
+    const theo = memberView(THEO, 'theo@example.co', { state: 'accepted', publicBundle: memberView(LEE, 'x').publicBundle });
+    const lees = await fingerprintBytes(decodeB64(theo.publicBundle));
+    await expect(
+      confirmMember(spaceDeps, detail(), theo, { ...fp, bytes: lees, text: fingerprintText(lees) }),
+    ).rejects.toMatchObject({ reason: 'wrong-account' });
+    expect(api.confirm).not.toHaveBeenCalled();
+    expect(crypto.calls.some((c) => c.startsWith('seal'))).toBe(false);
+  });
+
+  it('seals nothing when the bundle changed after the fingerprint was shown', async () => {
+    const { spaceDeps, api } = deps();
+    const fp = await fingerprintOf(THEO);
+    if (!fp) throw new Error('fixture');
+    const theo = memberView(THEO, 'theo@example.co', { state: 'accepted', publicBundle: makeBundleB64(THEO, 1, 0x55) });
+    await expect(confirmMember(spaceDeps, detail(), theo, fp)).rejects.toMatchObject({
+      reason: 'confirmation-differs',
+    });
+    expect(api.confirm).not.toHaveBeenCalled();
+  });
+
+  it('seals nothing to a bundle at another key version than the member’s', async () => {
+    const { spaceDeps, api } = deps();
+    const theo = memberView(THEO, 'theo@example.co', {
+      state: 'accepted',
+      publicBundle: makeBundleB64(THEO, 2),
+      userKeyVersion: 1,
+    });
+    const bytes = await fingerprintBytes(decodeB64(theo.publicBundle));
+    await expect(
+      confirmMember(spaceDeps, detail(), theo, { bytes, text: fingerprintText(bytes), consistent: true }),
+    ).rejects.toMatchObject({ reason: 'wrong-key-version' });
+    expect(api.confirm).not.toHaveBeenCalled();
+  });
+
 });
+
+/** A detail whose members can be sealed to: Lee's confirmation is mine, and my own keys are mine. */
+async function sealable() {
+  const crypto = fakeSpaceCrypto();
+  const roster = await confirmedMembers();
+  crypto.ownFingerprintText = await fingerprintTextOf(roster[0] as MemberViewDto);
+  return { crypto, loaded: detail({ members: roster }) };
+}
 
 describe('collections, groups and grants', () => {
   it('invites with the custom permissions only for the custom role', async () => {
@@ -190,18 +242,56 @@ describe('collections, groups and grants', () => {
 
   it('seals a collection key only to confirmed members a grant newly reaches', async () => {
     const { spaceDeps, api } = deps();
+    const { crypto, loaded } = await sealable();
+    const withCrypto = { ...spaceDeps, crypto };
     // Lee already reaches Infrastructure through Ops; Theo (not confirmed) and Sam are new.
-    await grantAccess(spaceDeps, detail(), { collection: INFRA, grantee: `user:${THEO}`, permission: 'view' });
+    await grantAccess(withCrypto, loaded, { collection: INFRA, grantee: `user:${THEO}`, permission: 'view' });
     expect(api.grant.mock.calls[0]?.[1].keys).toEqual([]);
-    await grantAccess(spaceDeps, detail(), { collection: INFRA, grantee: `user:${ME}`, permission: 'manage' });
+    await grantAccess(withCrypto, loaded, { collection: INFRA, grantee: `user:${ME}`, permission: 'manage' });
     expect(api.grant.mock.calls[1]?.[1].keys?.map((k) => k.user)).toEqual([ME]);
   });
 
   it('seals the keys of a group’s collections to the members it adds', async () => {
     const { spaceDeps, api } = deps();
-    await setGroupMembers(spaceDeps, detail(), OPS, [LEE, ME]);
+    const { crypto, loaded } = await sealable();
+    await setGroupMembers({ ...spaceDeps, crypto }, loaded, OPS, [LEE, ME]);
     const body = api.editGroup.mock.calls[0]?.[2];
     expect(body?.keys?.map((k) => [k.collection, k.user])).toEqual([[INFRA, ME]]);
     expect(body?.members).toEqual([LEE, ME]);
+  });
+
+  it('seals nothing to a member whose listed keys are not the ones confirmed', async () => {
+    const { spaceDeps, api } = deps();
+    // The server lists a bundle of its own for Lee, under Lee's id, with Lee's old confirmation.
+    const { crypto, loaded } = await sealable();
+    const swapped = loaded.members.map((m) =>
+      m.user === LEE ? { ...m, publicBundle: makeBundleB64(LEE, 1, 0x77) } : m,
+    );
+    const grant = grantAccess({ ...spaceDeps, crypto }, { ...loaded, members: swapped }, {
+      collection: FINANCE,
+      grantee: `user:${LEE}`,
+      permission: 'view',
+    });
+    await expect(grant).rejects.toBeInstanceOf(MemberNotVerified);
+    await expect(grant).rejects.toMatchObject({ reason: 'confirmation-differs' });
+    expect(crypto.calls.some((c) => c.startsWith('sealCollectionKeyTo'))).toBe(false);
+    expect(api.grant).not.toHaveBeenCalled();
+  });
+
+  it('seals nothing when a group change would add a member nobody confirmed', async () => {
+    const { spaceDeps, api } = deps();
+    const { crypto, loaded } = await sealable();
+    const unconfirmed = loaded.members.map((m) => (m.user === LEE ? { ...m, confirmation: null } : m));
+    await expect(
+      setGroupMembers({ ...spaceDeps, crypto }, { ...loaded, members: unconfirmed }, OPS, [ME, LEE, THEO]),
+    ).resolves.toBeDefined();
+    // Lee was already in the group, Theo isn't confirmed, and I am me: nothing new to check for Lee.
+    expect(api.editGroup).toHaveBeenCalledTimes(1);
+    api.editGroup.mockClear();
+    const other = unconfirmed.map((m) => (m.user === THEO ? { ...m, state: 'confirmed' as const } : m));
+    await expect(
+      setGroupMembers({ ...spaceDeps, crypto }, { ...loaded, members: other }, OPS, [LEE, THEO]),
+    ).rejects.toMatchObject({ reason: 'no-confirmation' });
+    expect(api.editGroup).not.toHaveBeenCalled();
   });
 });

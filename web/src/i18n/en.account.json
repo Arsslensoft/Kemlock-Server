@@ -10,6 +10,7 @@
   "space.error.lastOwner": "A space needs at least one confirmed owner.",
   "space.error.wrongState": "That isn't possible in the member's or the space's current state.",
   "space.error.staleKey": "A collection's key was replaced meanwhile. Reload the space and try again.",
+  "space.error.notVerified": "{name}'s keys can't be traced to a confirmation this browser can check, so no key was sealed to them. Compare their fingerprint and confirm them again.",
 
   "space.role.owner": "Owner",
   "space.role.admin": "Admin",
