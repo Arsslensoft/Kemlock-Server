@@ -31,50 +31,46 @@ describe('compareLedger', () => {
       manifest([entry(A, 2), entry(B, 1)]),
       {},
       ledger({ [A]: live(2), [B]: live(4, H2), [C]: live(1) }),
-      true,
     );
     expect(found).toEqual([]);
   });
 
   it('does not take a sibling at the same revision for a problem', () => {
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(2, H2) }), true)).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(2, H2) }))).toEqual([]);
   });
 
   it('flags an item served at a lower revision than its entry', () => {
-    expect(compareLedger(manifest([entry(A, 3)]), {}, ledger({ [A]: live(2) }), true)).toEqual([
+    expect(compareLedger(manifest([entry(A, 3)]), {}, ledger({ [A]: live(2) }))).toEqual([
       { id: A, verdict: 'rolled-back', revision: 2, manifestRevision: 3 },
     ]);
   });
 
-  it('flags a live entry the server does not serve at all, in an account’s own vault only', () => {
+  it("flags a live entry the server does not serve at all, in a space as in an account's own vault", () => {
     const listed = manifest([entry(A, 3), tomb(B, 2)]);
-    expect(compareLedger(listed, {}, ledger({}), true)).toEqual([
-      { id: A, verdict: 'missing', manifestRevision: 3 },
-    ]);
-    // A tombstone served, or listed as deleted, is not missing; a space member sees only part.
-    expect(compareLedger(listed, {}, ledger({ [A]: gone(4) }), true)).toEqual([]);
-    expect(compareLedger(listed, {}, ledger({}), false)).toEqual([]);
+    expect(compareLedger(listed, {}, ledger({}))).toEqual([{ id: A, verdict: 'missing', manifestRevision: 3 }]);
+    // A tombstone served, or listed as deleted, is not missing.
+    expect(compareLedger(listed, {}, ledger({ [A]: gone(4) }))).toEqual([]);
   });
 
   it('flags a deleted item served live again, whichever way it is known to be deleted', () => {
     // By the manifest, at or below the tombstone.
-    expect(compareLedger(manifest([tomb(A, 5)]), {}, ledger({ [A]: live(5) }), true)).toEqual([
+    expect(compareLedger(manifest([tomb(A, 5)]), {}, ledger({ [A]: live(5) }))).toEqual([
       { id: A, verdict: 'resurrected', revision: 5, manifestRevision: 5 },
     ]);
-    expect(compareLedger(manifest([tomb(A, 5)]), {}, ledger({ [A]: live(3) }), true)[0]?.verdict).toBe(
+    expect(compareLedger(manifest([tomb(A, 5)]), {}, ledger({ [A]: live(3) }))[0]?.verdict).toBe(
       'resurrected',
     );
     // By what this browser saw, with the manifest silent about it.
     const seen: DeletedRecord = { [A]: { revision: 5, seenAt: 1 } };
-    expect(compareLedger(manifest([]), seen, ledger({ [A]: live(7) }), true)[0]?.verdict).toBe('resurrected');
-    expect(compareLedger(manifest([entry(A, 4)]), seen, ledger({ [A]: live(4) }), true)[0]?.verdict).toBe(
+    expect(compareLedger(manifest([]), seen, ledger({ [A]: live(7) }))[0]?.verdict).toBe('resurrected');
+    expect(compareLedger(manifest([entry(A, 4)]), seen, ledger({ [A]: live(4) }))[0]?.verdict).toBe(
       'resurrected',
     );
   });
 
   it('lets a signed undelete through: a live entry above the tombstone this browser saw', () => {
     const seen: DeletedRecord = { [A]: { revision: 5, seenAt: 1 } };
-    expect(compareLedger(manifest([entry(A, 7)]), seen, ledger({ [A]: live(7) }), true)).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 7)]), seen, ledger({ [A]: live(7) }))).toEqual([]);
   });
 
   it('puts the findings in item id order', () => {
@@ -82,7 +78,6 @@ describe('compareLedger', () => {
       manifest([entry(C, 3), entry(A, 3)]),
       {},
       ledger({ [C]: live(1) }),
-      true,
     );
     expect(found.map((finding) => finding.id)).toEqual([A, C]);
   });
@@ -90,20 +85,20 @@ describe('compareLedger', () => {
 
 describe('compareLedger, for what the server could be making up', () => {
   it('flags a tombstone this browser did not write for an item the manifest lists live', () => {
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3) }), true)).toEqual([
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3) }))).toEqual([
       { id: A, verdict: 'deleted', revision: 3, manifestRevision: 2 },
     ]);
     // Its own deletion is no warning, and neither is a tombstone for an entry already deleted.
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3, true) }), true)).toEqual([]);
-    expect(compareLedger(manifest([tomb(A, 2)]), {}, ledger({ [A]: gone(3) }), true)).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3) }))).toEqual([]);
+    expect(compareLedger(manifest([tomb(A, 2)]), {}, ledger({ [A]: gone(3) }))).toEqual([]);
   });
 
   it('flags a revision more than 2^32 above the entry's, but not one of this browser's own', () => {
     const far = 2 + 2 ** 32 + 1;
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far) }), true)[0]?.verdict).toBe('implausible');
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(far) }), true)[0]?.verdict).toBe('implausible');
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far, H1, true) }), true)).toEqual([]);
-    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(2 + 2 ** 32) }), true)).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far) }))[0]?.verdict).toBe('implausible');
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(far) }))[0]?.verdict).toBe('implausible');
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far, H1) }))).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(2 + 2 ** 32) }))).toEqual([]);
   });
 });
 

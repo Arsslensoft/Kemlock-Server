@@ -25,6 +25,7 @@ import type { ItemDto } from '@/api/types';
 import type { CryptoPort } from '@/crypto-port';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import {
+  MAX_JUMP,
   type DeletedRecord,
   type Finding,
   type Ledger,
@@ -71,6 +72,13 @@ export interface KeeperDeps {
   /** The signed-in account's id, or null. */
   accountId: () => string | null;
   spaceSigner: SpaceSigner;
+  /**
+   * The ids of the spaces the account is a confirmed member of now. Their manifests are checked
+   * whether or not the sync served any item of them (a server that withholds all of a space's
+   * items would otherwise go unseen), and a space not on the list is one the account has left: a
+   * 404 for it is no manifest dropped. Without it, only spaces that served items are checked.
+   */
+  spaces?: () => Promise<string[]>;
   now?: () => number;
   /** Runs `run` after `ms` and returns what cancels it. */
   schedule?: (run: () => void, ms: number) => () => void;
@@ -232,6 +240,12 @@ export function createManifestKeeper(deps: KeeperDeps) {
       checked.problem = 'invalid';
       return checked;
     }
+    // Counters go up by one a write: one far above any this browser has seen is a server trying to
+    // use up the counter so that nothing can be signed above it.
+    if (verified.manifest.counter > (record?.counter ?? 0) + MAX_JUMP) {
+      checked.problem = 'invalid';
+      return checked;
+    }
     const encoded = encodeB64(verified.bytes);
     if (
       record &&
@@ -248,16 +262,19 @@ export function createManifestKeeper(deps: KeeperDeps) {
     return checked;
   }
 
-  async function verifyOwner(owner: string, account: string, mine: number): Promise<void> {
+  async function verifyOwner(
+    owner: string,
+    account: string,
+    mine: number,
+    knownMember: boolean,
+  ): Promise<void> {
     const checked = await check(owner, account);
     if (mine !== epoch) return;
+    // Without the list of spaces, a space with no manifest may be one the account has just left.
+    if (!knownMember && checked.problem === 'dropped') checked.problem = undefined;
     const ledger = ledgers.get(owner) ?? new Map<string, Served>();
     const deletedBefore: DeletedRecord = checked.record?.deleted ?? {};
-    // A member of a space sees only the collections they may read, so only the account's own vault
-    // can say an item is missing.
-    const findings = checked.accepted
-      ? compareLedger(checked.accepted, deletedBefore, ledger, isOwnVault(owner))
-      : [];
+    const findings = checked.accepted ? compareLedger(checked.accepted, deletedBefore, ledger) : [];
     if (checked.accepted && checked.acceptedBytes) {
       const deleted = recordDeleted(deletedBefore, checked.accepted, ledger, now());
       if (checked.fresh || JSON.stringify(deleted) !== JSON.stringify(deletedBefore)) {
@@ -278,10 +295,19 @@ export function createManifestKeeper(deps: KeeperDeps) {
     const mine = epoch;
     // A change that lands while this runs makes the next sync check again.
     dirty = false;
-    const owners = new Set([`user:${account}`, ...ledgers.keys()]);
+    let member: Set<string> | null = null;
+    try {
+      const listed = await deps.spaces?.();
+      if (listed) member = new Set(listed.map((id) => `space:${id}`));
+    } catch {
+      // No list: spaces that served items are checked, and a missing manifest says nothing.
+    }
+    const own = `user:${account}`;
+    const owners = new Set([own, ...(member ?? [...ledgers.keys()])]);
+    if (member) for (const owner of results.keys()) if (!owners.has(owner)) results.delete(owner);
     for (const owner of owners) {
       try {
-        await verifyOwner(owner, account, mine);
+        await verifyOwner(owner, account, mine, member !== null || owner === own);
       } catch {
         // The server or the member list could not be reached: what was found before stands.
       }
@@ -303,7 +329,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
       // person's own must not make a rollback, a hidden item or a resurrection permanent.
       const deleted = recordDeleted(checked.record?.deleted ?? {}, base, ledger, now());
       const skip = new Set<string>(
-        (base ? compareLedger(base, deleted, ledger, isOwnVault(owner)) : []).map((finding) => finding.id),
+        (base ? compareLedger(base, deleted, ledger) : []).map((finding) => finding.id),
       );
       for (const anomaly of anomalies.values()) if (anomaly.owner === owner) skip.add(anomaly.id);
       const entries = mergeEntries(base?.entries ?? [], ledger, deleted, skip);
@@ -318,7 +344,10 @@ export function createManifestKeeper(deps: KeeperDeps) {
         if (isApiError(error) && error.status === 409) {
           // Another device wrote first, or the server holds a counter this browser never saw:
           // go above whatever it says.
-          above = Math.max(above, currentCounter(error) ?? counter);
+          const held = currentCounter(error) ?? counter;
+          // A counter far above any known is not adopted: nothing could be signed above it.
+          if (held > Math.max(checked.floor, above) + MAX_JUMP) throw new Error('counter');
+          above = Math.max(above, held);
           continue;
         }
         if (isApiError(error) && (error.status === 403 || error.status === 404)) refused.add(owner);

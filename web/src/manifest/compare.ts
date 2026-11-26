@@ -84,16 +84,11 @@ function classify(item: Served, entry: ManifestEntry | undefined, seenDeletedAt:
 
 /**
  * The findings that are a warning, in item id order. `deleted` is what this device saw before
- * this answer (record the answer's own tombstones after, with `recordDeleted`). `checkMissing` is
- * false for a space, whose members each see only the collections they may read: an entry for an
- * item this member was never served is no evidence of anything.
+ * this answer (record the answer's own tombstones after, with `recordDeleted`). A space's members are
+ * sent every envelope of it, the collections they hold no key for included (sync_delta.rs), so an
+ * entry the server did not serve is missing there as in an account's own vault.
  */
-export function compareLedger(
-  manifest: Manifest,
-  deleted: DeletedRecord,
-  ledger: Ledger,
-  checkMissing: boolean,
-): Finding[] {
+export function compareLedger(manifest: Manifest, deleted: DeletedRecord, ledger: Ledger): Finding[] {
   const entries = new Map(manifest.entries.map((entry) => [entry.id, entry]));
   const findings: Finding[] = [];
   for (const [id, item] of ledger) {
@@ -113,11 +108,9 @@ export function compareLedger(
       });
     }
   }
-  if (checkMissing) {
-    for (const entry of manifest.entries) {
-      if (!entry.deleted && !ledger.has(entry.id)) {
-        findings.push({ id: entry.id, verdict: 'missing', manifestRevision: entry.revision });
-      }
+  for (const entry of manifest.entries) {
+    if (!entry.deleted && !ledger.has(entry.id)) {
+      findings.push({ id: entry.id, verdict: 'missing', manifestRevision: entry.revision });
     }
   }
   return findings.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));

@@ -78,7 +78,12 @@ function served(manifest: Manifest, signer = ACCOUNT, forged = false): ManifestD
   };
 }
 
-function setup(options: { spaceSigner?: (space: string, signer: string) => Promise<Uint8Array | null> } = {}) {
+function setup(
+  options: {
+    spaceSigner?: (space: string, signer: string) => Promise<Uint8Array | null>;
+    spaces?: () => Promise<string[]>;
+  } = {},
+) {
   const stored = new Map<string, ManifestDto>();
   const api = {
     get: vi.fn(async (owner: string): Promise<ManifestDto | null> => stored.get(owner) ?? null),
@@ -115,6 +120,7 @@ function setup(options: { spaceSigner?: (space: string, signer: string) => Promi
     records,
     accountId: () => ACCOUNT,
     spaceSigner: options.spaceSigner ?? (async () => null),
+    ...(options.spaces ? { spaces: options.spaces } : {}),
     now: () => clock,
     schedule: (run) => {
       timers.push(run);
@@ -307,15 +313,15 @@ describe('checking what the server serves against the manifest', () => {
 });
 
 describe('a space’s manifest', () => {
+  const SPACE_ID = SPACE.slice('space:'.length);
+
   it('is checked with the bundle of a signer the space vouches for, and only then', async () => {
     const vouched = vi.fn(async () => utf8(MEMBER));
     const run = setup({ spaceSigner: vouched });
     run.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [await listed(A, 2, 'one')] }, MEMBER));
-    // Not an item this member was served: nothing is missing, a space member sees only part of it.
-    await run.sync([item(B, 1, 'other', SPACE)]);
-    expect(vouched).toHaveBeenCalledWith(SPACE.slice('space:'.length), MEMBER);
-    expect(run.keeper.getWarning().manifests).toEqual([]);
-    expect(run.keeper.getWarning().items).toEqual([]);
+    await run.sync([item(A, 2, 'one', SPACE), item(B, 1, 'other', SPACE)]);
+    expect(vouched).toHaveBeenCalledWith(SPACE_ID, MEMBER);
+    expect(run.keeper.getWarning()).toBe(NO_WARNING);
 
     const unvouched = setup({ spaceSigner: async () => null });
     unvouched.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [] }, MEMBER));
@@ -330,6 +336,99 @@ describe('a space’s manifest', () => {
     expect(run.keeper.getWarning().items.map(({ owner, id, verdict }) => [owner, id, verdict])).toEqual([
       [SPACE, A, 'rolled-back'],
     ]);
+  });
+
+  it('flags an item it lists that the server did not serve, as a space member is sent every envelope', async () => {
+    const run = setup({ spaceSigner: async () => utf8(MEMBER) });
+    run.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [await listed(A, 2, 'one')] }, MEMBER));
+    await run.sync([item(B, 1, 'other', SPACE)]);
+    expect(run.keeper.getWarning().items.map(({ owner, id, verdict }) => [owner, id, verdict])).toEqual([
+      [SPACE, A, 'missing'],
+    ]);
+  });
+
+  it('is checked for a space whose items the server withheld altogether, from the account's space list', async () => {
+    const run = setup({ spaceSigner: async () => utf8(MEMBER), spaces: async () => [SPACE_ID] });
+    run.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [await listed(A, 2, 'one')] }, MEMBER));
+    await run.sync([]);
+    expect(run.keeper.getWarning().items.map(({ owner, id, verdict }) => [owner, id, verdict])).toEqual([
+      [SPACE, A, 'missing'],
+    ]);
+    // Without the list, a space that served nothing is not looked at.
+    const blind = setup({ spaceSigner: async () => utf8(MEMBER) });
+    blind.stored.set(SPACE, served({ owner: SPACE, counter: 2, entries: [await listed(A, 2, 'one')] }, MEMBER));
+    await blind.sync([]);
+    expect(blind.keeper.getWarning()).toBe(NO_WARNING);
+  });
+
+  it('is no manifest dropped when the account has left the space, and one dropped when it has not', async () => {
+    const entries = [await listed(A, 2, 'one')];
+    const record = {
+      manifest: encodeB64(encodeManifest({ owner: SPACE, counter: 2, entries })),
+      counter: 2,
+      deleted: {},
+    };
+    // Left: the space is not on the list any more, and the server answers 404 for it.
+    const left = setup({ spaceSigner: async () => utf8(MEMBER), spaces: async () => [] });
+    await left.records.put(`${ACCOUNT}|${SPACE}`, record);
+    await left.sync([item(A, 2, 'one', SPACE)]);
+    expect(left.keeper.getWarning()).toBe(NO_WARNING);
+
+    const member = setup({ spaceSigner: async () => utf8(MEMBER), spaces: async () => [SPACE_ID] });
+    await member.records.put(`${ACCOUNT}|${SPACE}`, record);
+    await member.sync([item(A, 2, 'one', SPACE)]);
+    expect(member.keeper.getWarning().manifests).toEqual([{ owner: SPACE, problem: 'dropped' }]);
+
+    // The list could not be read: a 404 says nothing then.
+    const blind = setup({
+      spaceSigner: async () => utf8(MEMBER),
+      spaces: async () => {
+        throw new Error('offline');
+      },
+    });
+    await blind.records.put(`${ACCOUNT}|${SPACE}`, record);
+    await blind.sync([item(A, 2, 'one', SPACE)]);
+    expect(blind.keeper.getWarning()).toBe(NO_WARNING);
+  });
+});
+
+describe('counters far above what was seen', () => {
+  it('are not accepted, whether this browser has a record or not', async () => {
+    const fresh = setup();
+    fresh.stored.set(OWN, served({ owner: OWN, counter: 2 ** 40, entries: [] }));
+    await fresh.sync([]);
+    expect(fresh.keeper.getWarning().manifests).toEqual([{ owner: OWN, problem: 'invalid' }]);
+    expect(await fresh.records.get(`${ACCOUNT}|${OWN}`)).toBeUndefined();
+
+    const known = setup();
+    await known.records.put(`${ACCOUNT}|${OWN}`, {
+      manifest: encodeB64(encodeManifest({ owner: OWN, counter: 5, entries: [] })),
+      counter: 5,
+      deleted: {},
+    });
+    known.stored.set(OWN, served({ owner: OWN, counter: 5 + 2 ** 32 + 1, entries: [] }));
+    await known.sync([]);
+    expect(known.keeper.getWarning().manifests).toEqual([{ owner: OWN, problem: 'invalid' }]);
+    // One within reach is taken.
+    known.stored.set(OWN, served({ owner: OWN, counter: 5 + 2 ** 32, entries: [] }));
+    await known.sync([]);
+    expect(known.keeper.getWarning()).toBe(NO_WARNING);
+  });
+
+  it('are not adopted from a 409 either: nothing is signed above a made-up counter', async () => {
+    const run = setup();
+    run.api.put.mockRejectedValue(
+      new ApiError(409, {
+        type: 'urn:kemlock:problem:stale-manifest',
+        title: 'stale',
+        status: 409,
+        currentCounter: 2 ** 50,
+      }),
+    );
+    await run.sync([]);
+    await run.keeper.wrote([item(A, 1)]);
+    await run.keeper.flush();
+    expect(run.api.put).toHaveBeenCalledTimes(1);
   });
 });
 
