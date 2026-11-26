@@ -1302,6 +1302,30 @@ impl Vault {
         json(&built)
     }
 
+    /// Replaces the keys a removal or an ungrant marked: a `keys` record, and the items of the
+    /// replaced collections sealed again under their new key versions. `replacement` is the JSON
+    /// `{items: [{id, collection, kind, revision, keyVersion, ciphertext, itemKey}], names:
+    /// [{target, sealed}]}`: the space's live items as the server serves them, and, when the space
+    /// key is replaced, its sealed names. Answers as `buildChainRecords` does, with `held` (the ids
+    /// of the items this account can't re-write) and `writes` beside the records, or no records
+    /// when there is nothing this account can replace.
+    #[wasm_bindgen(js_name = buildKeyReplacement)]
+    pub fn build_key_replacement(
+        &self,
+        space_id: &str,
+        at: u32,
+        replacement: &str,
+    ) -> Result<String, JsError> {
+        let space = ids::parse_uuid(space_id).map_err(fail)?;
+        let replacement: chain_build::Replacement =
+            serde_json::from_str(replacement).map_err(|_| fail(Error::Invalid))?;
+        let built = self
+            .session
+            .build_key_replacement(&space, u64::from(at), &replacement)
+            .map_err(fail)?;
+        json(&built)
+    }
+
     /// The view of the chain this unlock verified for a space, as `verifySpaceChain` answers it,
     /// or nothing when it hasn't verified one.
     #[wasm_bindgen(js_name = spaceChainView)]

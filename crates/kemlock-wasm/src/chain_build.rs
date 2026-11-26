@@ -14,17 +14,22 @@
 //! `open_chain_key` like every other member's.
 //!
 //! - [`Session::create_chained_space`] makes the `create` record of a new space.
+//! - [`Session::build_key_replacement`] replaces the keys a removal or an ungrant marked
+//!   ("Removal and replacement"): a `keys` record, and the items of the replaced collections
+//!   re-written under their new key versions, which the append route stores with it.
 //! - [`Session::build_chain_records`] makes the records of one [`Change`]. A change that gives
 //!   members keys (a `confirm`, a `grant`, new group members) is followed by a `seal` record that
 //!   shares the keys this account holds with the members now awaiting them.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use kemlock_crypto::{
     bundle::Bundle,
     confirm::Statement,
     hash::{ct_eq, sha256},
-    keys::SecretKey,
+    kem1,
+    keys::{ITEM_WRAP_LABEL, SecretKey},
+    owner::Owner,
     sealed_box,
     sig1::SigningKey,
     space_chain::{
@@ -38,7 +43,7 @@ use crate::{
     b64,
     error::Error,
     ids,
-    session::Session,
+    session::{SealedItemRef, Session},
     spaces::{NameKind, SpaceKeys, seal_name_under},
 };
 
@@ -160,6 +165,32 @@ struct NameOut {
     target: String,
 }
 
+/// An item as the append route takes it in a re-write: `PUT /kem/v1/items/{id}`'s body.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ItemOut {
+    id: String,
+    owner: String,
+    kind: String,
+    format: &'static str,
+    revision: u64,
+    key_version: u32,
+    ciphertext: String,
+    item_key: String,
+    deleted: bool,
+    collection_id: String,
+}
+
+/// An item a `keys` record re-writes under its collection's new key version.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteOut {
+    collection: String,
+    /// The revision being replaced; the item is written as the next one.
+    expected_revision: u64,
+    item: ItemOut,
+}
+
 /// What `POST /kem/v1/spaces/{id}/chain` takes (docs/crypto.md, "Accepting records").
 #[derive(Serialize)]
 pub(crate) struct AppendOut {
@@ -167,6 +198,43 @@ pub(crate) struct AppendOut {
     records: Vec<RecordOut>,
     seals: Vec<SealOut>,
     names: Vec<NameOut>,
+    /// The live items of the replaced collections this account can't re-write (I3).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    held: Vec<String>,
+    /// The items of the replaced collections re-written under their new key versions.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    writes: Vec<WriteOut>,
+}
+
+/// An item as the server serves it, of a collection whose key is marked.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ItemIn {
+    id: String,
+    collection: String,
+    kind: String,
+    revision: u64,
+    key_version: u32,
+    ciphertext: String,
+    item_key: String,
+}
+
+/// A sealed name as the server serves it: `space`, `collection:<uuid>` or `group:<uuid>`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NameIn {
+    target: String,
+    sealed: String,
+}
+
+/// What a key replacement needs of the server's copy: the live items of the space, and, when the
+/// space key is replaced, every sealed name (they are sealed again under the new key).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Replacement {
+    items: Vec<ItemIn>,
+    #[serde(default)]
+    names: Vec<NameIn>,
 }
 
 /// A change the verifier refused, with its reason and the `seq` it would have had.
@@ -226,6 +294,10 @@ struct Build<'a> {
     boxes: Vec<(KeyRef, u32, Id, Vec<u8>)>,
     /// The sealed names the next record's name hashes cover.
     sealed_names: Vec<(NameTarget, Vec<u8>)>,
+    /// Items of replaced collections that this account holds and doesn't re-write.
+    held: Vec<String>,
+    /// Items re-written under a replaced collection's new key.
+    writes: Vec<WriteOut>,
 }
 
 fn sorted<T: Ord>(mut list: Vec<T>) -> Vec<T> {
@@ -283,6 +355,8 @@ impl<'a> Build<'a> {
             names: Vec::new(),
             boxes: Vec::new(),
             sealed_names: Vec::new(),
+            held: Vec::new(),
+            writes: Vec::new(),
         }
     }
 
@@ -292,6 +366,8 @@ impl<'a> Build<'a> {
             records: self.records,
             seals: self.seals,
             names: self.names,
+            held: self.held,
+            writes: self.writes,
         }
     }
 
@@ -450,6 +526,182 @@ impl<'a> Build<'a> {
         let mut next = self.state.clone();
         change(&mut next);
         self.state.lost(&next).into_iter().collect()
+    }
+
+    /// Replaces the keys the chain marks ("Removal and replacement"): a `keys` record that gives
+    /// each its next version, sealed to the members entitled to it, with every name sealed again
+    /// when the space key is one of them; then the items of the replaced collections, each sealed
+    /// again under a fresh item key and wrapped under the new collection key as the next revision.
+    ///
+    /// An item this account can't re-write (it holds no key of its version, has no edit on the
+    /// collection, or the item doesn't open) is named as held, which is all the chain allows
+    /// ("Using the state", "Items"): a removed member's write under a key they kept is never
+    /// re-wrapped into the new key. A key nobody entitled can use is left marked, and one this
+    /// account isn't entitled to is left to someone who is.
+    fn replace_marked(&mut self, session: &Session, input: &Replacement) -> Result<(), Fail> {
+        let marked: Vec<KeyRef> = sorted(
+            self.state
+                .keys()
+                .into_iter()
+                .filter(|key| self.state.key_marked(key))
+                .collect(),
+        );
+        let mut fresh: BTreeMap<KeyRef, (u32, SecretKey)> = BTreeMap::new();
+        let mut rotate = Vec::new();
+        for key in marked {
+            let entitled = self.state.entitled(&key);
+            // A collection's key is replaced by a member entitled to it; the space key's rotation
+            // is the record's own check (an Owner or an Admin), so it is tried and answered.
+            let mine = entitled.contains(&self.me);
+            if entitled.is_empty() || (key != KeyRef::Space && !mine) {
+                continue;
+            }
+            let version = self
+                .state
+                .key_version(&key)
+                .and_then(|v| v.checked_add(1))
+                .ok_or(INVALID)?;
+            let secret = SecretKey::generate();
+            let bundles = self.bundles_of(&entitled)?;
+            rotate.push(self.commit(key, version, &bundles, &secret, true)?);
+            fresh.insert(key, (version, secret));
+        }
+        if rotate.is_empty() {
+            return Ok(());
+        }
+        let names = match fresh.get(&KeyRef::Space) {
+            Some((version, secret)) => Some(self.sealed_again(session, input, *version, secret)?),
+            None => None,
+        };
+        self.push(Body::Keys { names, rotate })?;
+
+        let owner = Owner::space(self.space);
+        for item in &input.items {
+            let collection = ids::parse_uuid(&item.collection)?;
+            let Some((version, secret)) = fresh.get(&KeyRef::Collection(collection)) else {
+                continue;
+            };
+            let id = ids::parse_uuid(&item.id)?;
+            let may_edit = self
+                .state
+                .access(&self.me, &collection)
+                .is_some_and(|rights| rights.edit);
+            let again = if may_edit && item.key_version.checked_add(1) == Some(*version) {
+                self.rewrite(session, item, &id, &collection, *version, secret, &owner)
+            } else {
+                None
+            };
+            match again {
+                Some(write) => self.writes.push(write),
+                None => self.held.push(sc::uuid_text(&id)),
+            }
+        }
+        Ok(())
+    }
+
+    /// One item opened under the collection key it was sealed with, and sealed again as the next
+    /// revision under a fresh item key, wrapped under the new key. `None` when it doesn't open.
+    #[allow(clippy::too_many_arguments)]
+    fn rewrite(
+        &self,
+        session: &Session,
+        item: &ItemIn,
+        id: &Id,
+        collection: &Id,
+        version: u32,
+        secret: &SecretKey,
+        owner: &Owner,
+    ) -> Option<WriteOut> {
+        let ciphertext = b64::decode(&item.ciphertext).ok()?;
+        let wrapped = b64::decode(&item.item_key).ok()?;
+        let plain = session
+            .open_space_item(
+                &self.space,
+                collection,
+                &SealedItemRef {
+                    id,
+                    owner,
+                    kind: &item.kind,
+                    revision: item.revision,
+                    ciphertext: &ciphertext,
+                    item_key: &wrapped,
+                    key_version: Some(item.key_version),
+                },
+            )
+            .ok()?;
+        let revision = item.revision.checked_add(1)?;
+        let item_key = SecretKey::generate();
+        let sealed = kem1::seal_item(&item_key, id, revision, &item.kind, owner, &plain).ok()?;
+        let wrap = secret.child(ITEM_WRAP_LABEL).ok()?;
+        let wrapped = kem1::wrap_item_key(&wrap, &item_key, id, owner, version).ok()?;
+        Some(WriteOut {
+            collection: sc::uuid_text(collection),
+            expected_revision: item.revision,
+            item: ItemOut {
+                id: sc::uuid_text(id),
+                owner: format!("space:{}", sc::uuid_text(&self.space)),
+                kind: item.kind.clone(),
+                format: "kem1",
+                revision,
+                key_version: version,
+                ciphertext: b64::encode(&sealed),
+                item_key: b64::encode(&wrapped),
+                deleted: false,
+                collection_id: sc::uuid_text(collection),
+            },
+        })
+    }
+
+    /// Every name of the space sealed again under the new space key: opened as the chain committed
+    /// it (the server's copy must be the committed one), sealed under `version`, kept for the
+    /// record that commits it, and packed as a `keys` record's `names` ("Name commitments").
+    fn sealed_again(
+        &mut self,
+        session: &Session,
+        input: &Replacement,
+        version: u32,
+        secret: &SecretKey,
+    ) -> Result<Vec<u8>, Fail> {
+        let mut targets: Vec<(u8, Id, NameTarget, NameKind, u32)> = vec![(
+            1,
+            self.space,
+            NameTarget::Space,
+            NameKind::Space,
+            self.state.space.name_version,
+        )];
+        for (id, info) in &self.state.collections {
+            targets.push((
+                2,
+                *id,
+                NameTarget::Collection(*id),
+                NameKind::Collection,
+                info.name_version,
+            ));
+        }
+        for (id, info) in &self.state.groups {
+            targets.push((3, *id, NameTarget::Group(*id), NameKind::Group, info.name_version));
+        }
+        let mut served: BTreeMap<NameTarget, Vec<u8>> = BTreeMap::new();
+        for name in &input.names {
+            let target = NameTarget::parse(&name.target).ok_or(INVALID)?;
+            if served.insert(target, b64::decode(&name.sealed)?).is_some() {
+                return Err(INVALID);
+            }
+        }
+        let mut packed: Vec<[u8; 49]> = Vec::with_capacity(targets.len());
+        for (kind_byte, id, target, kind, name_version) in targets {
+            let old = served.get(&target).ok_or(INVALID)?;
+            let name = session.open_name(&self.space, name_version, kind, &id, old)?;
+            let sealed = seal_name_under(secret, &self.space, version, kind, &id, &name)?;
+            let mut entry = [0u8; 49];
+            entry[0] = kind_byte;
+            entry[1..17].copy_from_slice(&id);
+            entry[17..].copy_from_slice(&sha256(&sealed));
+            packed.push(entry);
+            self.sealed_names.push((target, sealed));
+        }
+        packed.sort_unstable();
+        Ok(packed.concat())
     }
 
     fn apply_change(&mut self, change: &Change) -> Result<(), Fail> {
@@ -766,6 +1018,37 @@ impl Session {
             build.sealed_names.push((NameTarget::Space, space_sealed));
             build.push(body)
         })();
+        finish(result.map(|()| build))
+    }
+
+    /// Replaces the keys the verified chain marks, with the items of the replaced collections
+    /// sealed again (see [`Build::replace_marked`]). `input` is the server's copy of the space's
+    /// live items and, when the space key is replaced, its sealed names. Answers no records when
+    /// there is nothing this account can replace.
+    pub(crate) fn build_key_replacement(
+        &self,
+        space: &Id,
+        at: u64,
+        input: &Replacement,
+    ) -> Result<Built, Error> {
+        let unlocked = self.unlocked()?;
+        let (_, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        if unlocked.spaces.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
+        let held = unlocked.spaces.chains.get(space).ok_or(Error::Invalid)?;
+        if !held.trusted {
+            return Err(Error::Invalid);
+        }
+        let mut build = Build::new(
+            *space,
+            unlocked.account_id,
+            at,
+            sig_private,
+            &unlocked.spaces,
+            held.state.clone(),
+        );
+        let result = build.replace_marked(self, input);
         finish(result.map(|()| build))
     }
 
