@@ -85,6 +85,7 @@ impl InviteLinkDto {
 }
 
 async fn fetch<S, P, K>(
+    State(_api): State<Api<S, P, K>>,
     authed: Authed,
     links: MaybeInviteLinks,
     Path((id, user)): Path<(String, String)>,
