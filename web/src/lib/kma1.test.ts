@@ -1,6 +1,6 @@
 import { createCipheriv, createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Kma1Error, fileKeyBytes, fileKeyText, kma1Length, newAttachmentId, newFileKey, openKma1, sealKma1 } from './kma1';
 
@@ -85,8 +85,9 @@ describe('file keys and ids', () => {
 
 // The Kemlock app's own files, written when the format was added and never regenerated: the same
 // bytes crates/kemlock-blob checks on the server side. What this writes must match them to the byte.
-const dir = new URL('../../../crates/kemlock-blob/tests/fixtures/', import.meta.url);
-const fixture = JSON.parse(readFileSync(fileURLToPath(new URL('kma1.json', dir)), 'utf8')) as {
+// They are read from the working directory (web/): under jsdom import.meta.url is not a file: URL.
+const dir = resolve(process.cwd(), '..', 'crates', 'kemlock-blob', 'tests', 'fixtures');
+const fixture = JSON.parse(readFileSync(resolve(dir, 'kma1.json'), 'utf8')) as {
   key: string;
   files: Array<{
     name: string;
@@ -101,7 +102,7 @@ const fixture = JSON.parse(readFileSync(fileURLToPath(new URL('kma1.json', dir))
 const fromBase64 = (text: string) => new Uint8Array(Buffer.from(text, 'base64'));
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const appKey = fromBase64(fixture.key);
-const twoChunks = new Uint8Array(readFileSync(fileURLToPath(new URL('two-chunks.kma1', dir))));
+const twoChunks = new Uint8Array(readFileSync(resolve(dir, 'two-chunks.kma1')));
 const twoChunksPlain = Uint8Array.from({ length: 65636 }, (_, i) => (i * 31 + 7) & 0xff);
 
 describe("the app's KMA1 fixtures", () => {

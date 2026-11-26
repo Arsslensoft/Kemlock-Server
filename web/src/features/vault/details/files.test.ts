@@ -1,13 +1,14 @@
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { ItemFiles } from '@/api/itemFiles';
 import { fetchFile, downloadFile, NoServerFileError, saveBytes } from './fileDownload';
 import { type AttachedFile, fileOf, filesOf, formatSize } from './files';
 
-const dir = new URL('../../../../../crates/kemlock-blob/tests/fixtures/', import.meta.url);
-const KEY = JSON.parse(readFileSync(fileURLToPath(new URL('kma1.json', dir)), 'utf8')).key as string;
-const twoChunks = new Uint8Array(readFileSync(fileURLToPath(new URL('two-chunks.kma1', dir))));
+// Read from the working directory (web/): under jsdom import.meta.url is not a file: URL.
+const dir = resolve(process.cwd(), '..', 'crates', 'kemlock-blob', 'tests', 'fixtures');
+const KEY = JSON.parse(readFileSync(resolve(dir, 'kma1.json'), 'utf8')).key as string;
+const twoChunks = new Uint8Array(readFileSync(resolve(dir, 'two-chunks.kma1')));
 
 describe('the files an item holds', () => {
   it('reads a File item from `file`, the way the app writes an attachment', () => {
