@@ -14,7 +14,7 @@ use kemlock_app::spaces::{
     DeleteCollection, DeleteGroup, EditCollection, EditGroup, GetSpace, GrantAccess, InviteInput,
     InviteMember, KeyBoxFacts, KeyBoxVerifier, KeyReplacement, ListMembers, ListSpaces,
     NewCollection, Offboard, PendingExternal, PutSpaceBatch, PutSpaceItem, RecoveryBox,
-    ReplaceKeys, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceChainRepo, SpaceChanges,
+    ReplaceKeys, ResealKeys, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceChainRepo, SpaceChanges,
     SpaceFacts, SpaceItemInfo, SpaceRecoveryRepo, SpaceRepo, SpacesError, StoredRecord,
     StoredSeal, SyncOwners,
 };
@@ -685,6 +685,15 @@ impl SpaceWorld {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+        }
+    }
+
+    pub(crate) fn reseal(&self) -> ResealKeys<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
+        ResealKeys {
+            spaces: self.spaces.clone(),
+            events: self.world.store.clone(),
+            clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 

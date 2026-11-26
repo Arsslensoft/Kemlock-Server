@@ -8,7 +8,7 @@ mod space_fakes;
 
 use fakes::actor;
 use kemlock_app::spaces::{
-    CreateCollectionInput, CreateSpaceInput, InviteInput, NewCollection, SpacesError,
+    CreateCollectionInput, CreateSpaceInput, InviteInput, NewCollection, ResealMember, SpacesError,
 };
 use kemlock_domain::spaces::{
     CONFIRMATION_SIGNATURE_LEN, CollectionId, CollectionPermission, CustomPermissions, Grantee,
@@ -16,6 +16,7 @@ use kemlock_domain::spaces::{
 };
 use kemlock_domain::{SpaceId, UserId};
 use space_fakes::{SpaceWorld, key_for, name, sealed_key, signature};
+use kemlock_app::spaces::SealedCollectionKey;
 
 fn signed_by(who: UserId) -> Option<KeyBoxSignature> {
     Some(KeyBoxSignature {
@@ -242,4 +243,118 @@ async fn the_creator_of_a_collection_always_holds_manage_on_it() {
     assert_eq!(grants.len(), 1);
     assert_eq!(grants[0].grantee, Grantee::Member(sam));
     assert_eq!(grants[0].permission, CollectionPermission::Manage);
+}
+
+fn resealed(user: UserId, collection: CollectionId, fill: u8) -> ResealMember {
+    ResealMember {
+        user,
+        sealed_space_key: sealed_key(fill),
+        space_key_signature: signature(),
+        collection_keys: vec![key_for(collection, user, fill + 1)],
+    }
+}
+
+#[tokio::test]
+async fn an_owner_seals_the_current_keys_again_signed() {
+    let w = SpaceWorld::new();
+    let sam = w.user("sam@example.org").await;
+    let ana = w.user("ana@example.org").await;
+    let (space, everyone) = w.make_space(sam).await;
+    w.join(
+        space,
+        sam,
+        sam,
+        ana,
+        SpaceRole::Member,
+        vec![(everyone, CollectionPermission::Edit)],
+    )
+    .await;
+
+    let done = w
+        .reseal()
+        .execute(
+            &actor(sam),
+            space,
+            vec![resealed(sam, everyone, 30), resealed(ana, everyone, 40)],
+        )
+        .await
+        .expect("the keys are sealed again");
+    assert_eq!(done, 2);
+    let member = w.spaces.member(space, ana).expect("Ana");
+    assert_eq!(member.sealed_space_key, Some(sealed_key(40)));
+    assert_eq!(member.sealed_by, signed_by(sam));
+    // Nothing else of the member changed.
+    assert_eq!(member.state, MemberState::Confirmed);
+    assert_eq!(member.key_version, Some(1));
+    assert!(member.confirmation.is_some());
+    let copy = w.spaces.copy(everyone, ana).expect("Ana's copy");
+    assert_eq!((copy.sealed, copy.key_version), (sealed_key(41), 1));
+    assert_eq!(copy.sealed_by, signed_by(sam));
+    assert_eq!(w.spaces.holders_of(everyone).len(), 2);
+}
+
+#[tokio::test]
+async fn only_an_owner_or_admin_seals_keys_again_and_only_what_is_held() {
+    let w = SpaceWorld::new();
+    let sam = w.user("sam@example.org").await;
+    let ana = w.user("ana@example.org").await;
+    let lee = w.user("lee@example.org").await;
+    let (space, everyone) = w.make_space(sam).await;
+    w.join(
+        space,
+        sam,
+        sam,
+        ana,
+        SpaceRole::Member,
+        vec![(everyone, CollectionPermission::Edit)],
+    )
+    .await;
+    invited_and_accepted(&w, space, everyone, sam, lee).await;
+
+    // An ordinary member can't.
+    assert!(matches!(
+        w.reseal()
+            .execute(&actor(ana), space, vec![resealed(ana, everyone, 30)])
+            .await
+            .err(),
+        Some(SpacesError::Rule(SpaceError::Forbidden(_)))
+    ));
+    // Not for someone who isn't confirmed, a key the member doesn't hold, a signature that isn't the
+    // sealer's, a member twice, or nobody.
+    let other = CollectionId::random();
+    for (why, members) in [
+        ("an unconfirmed member", vec![resealed(lee, everyone, 30)]),
+        ("a key the member doesn't hold", vec![resealed(ana, other, 30)]),
+        ("a member twice", vec![resealed(ana, everyone, 30), resealed(ana, everyone, 32)]),
+        ("nobody", Vec::new()),
+        (
+            "a signature that isn't the sealer's",
+            vec![ResealMember {
+                space_key_signature: wrong(),
+                ..resealed(ana, everyone, 30)
+            }],
+        ),
+        (
+            "a collection key with no signature",
+            vec![ResealMember {
+                collection_keys: vec![SealedCollectionKey {
+                    signature: Vec::new(),
+                    ..key_for(everyone, ana, 31)
+                }],
+                ..resealed(ana, everyone, 30)
+            }],
+        ),
+    ] {
+        assert!(
+            invalid(w.reseal().execute(&actor(sam), space, members).await),
+            "{why}"
+        );
+    }
+    // None of it changed a thing.
+    let member = w.spaces.member(space, ana).expect("Ana");
+    assert_eq!(member.sealed_space_key, Some(sealed_key(9)));
+    assert_eq!(
+        w.spaces.copy(everyone, ana).expect("Ana's copy").sealed,
+        sealed_key(5)
+    );
 }

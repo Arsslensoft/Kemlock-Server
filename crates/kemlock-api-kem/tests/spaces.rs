@@ -1784,3 +1784,59 @@ async fn a_confirmation_seals_keys_signed_by_the_confirmer() {
         json!(sam.id.to_string())
     );
 }
+
+/// The body that seals the current keys again to `member`, signed by `by`.
+fn reseal_body(by: &Person, member: &Person, space: Uuid, collection: Uuid, fill: u8) -> Value {
+    json!({"members": [{
+        "user": member.id.to_string(),
+        "sealedSpaceKey": sealed(fill),
+        "sealedSpaceKeySignature": key_sig(by, space, None, 1, member.id, fill),
+        "collectionKeys": [{
+            "collection": collection.to_string(),
+            "sealed": sealed(fill + 1),
+            "signature": key_sig(by, space, Some(collection), 1, member.id, fill + 1),
+        }],
+    }]})
+}
+
+#[tokio::test]
+async fn an_owner_seals_the_keys_again_and_the_copies_come_back_signed() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org").await;
+    let ana = rig.person("ana@example.org").await;
+    let zed = rig.person("zed@example.org").await;
+    let (space, collection) = make_space(&sam).await;
+    join(&sam, &ana, space, collection).await;
+    let uri = format!("/kem/v1/spaces/{space}/reseal");
+
+    // Another member's signature isn't the sender's, and an ordinary member can't re-seal.
+    let forged = sam
+        .post(&uri, reseal_body(&zed, &ana, space, collection, 30))
+        .await;
+    assert_eq!(forged.status, StatusCode::BAD_REQUEST, "{:?}", forged.json());
+    let by_member = ana
+        .post(&uri, reseal_body(&ana, &ana, space, collection, 30))
+        .await;
+    assert_eq!(by_member.status, StatusCode::FORBIDDEN);
+
+    let done = sam
+        .post(&uri, reseal_body(&sam, &ana, space, collection, 30))
+        .await;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.json());
+    assert_eq!(done.json()["resealed"], 1);
+    let view = ana.get(&format!("/kem/v1/spaces/{space}")).await.json();
+    assert_eq!(view["me"]["sealedSpaceKey"], sealed(30));
+    assert_eq!(view["me"]["sealedBy"]["account"], json!(sam.id.to_string()));
+    assert_eq!(
+        view["me"]["sealedBy"]["signature"],
+        json!(key_sig(&sam, space, None, 1, ana.id, 30))
+    );
+    assert_eq!(view["collectionKeys"][0]["sealed"], sealed(31));
+    assert_eq!(
+        view["collectionKeys"][0]["sealedBy"]["account"],
+        json!(sam.id.to_string())
+    );
+    // Her role, grants and confirmation are as they were.
+    assert_eq!(view["me"]["state"], "confirmed");
+    assert_eq!(view["me"]["confirmation"]["by"], json!(sam.id.to_string()));
+}

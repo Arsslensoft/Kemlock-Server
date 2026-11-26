@@ -14,6 +14,8 @@
 //! - [`CreateCollection`], [`EditCollection`], [`DeleteCollection`], [`CreateGroup`],
 //!   [`EditGroup`], [`DeleteGroup`], [`GrantAccess`], [`RevokeGrant`] shape who sees what.
 //! - [`ReplaceKeys`] lands the key replacement that offboarding requires, as one transaction.
+//! - [`ResealKeys`] seals the keys of a space with no chain again, signed, so it has no boxes from
+//!   before keys were signed.
 //! - [`PutSpaceItem`] writes an item into a space, and [`SpaceAccess`] is its authorization step;
 //!   [`PutSpaceBatch`] stores a batch of vault and space items together.
 //! - [`SyncOwners`] lists the owners a device syncs: its user and every space it is confirmed in.
@@ -43,6 +45,7 @@ pub mod ports;
 pub mod put_batch;
 pub mod put_item;
 pub mod recovery;
+pub mod reseal;
 pub mod replace_keys;
 pub mod sso_groups;
 pub mod support;
@@ -82,6 +85,7 @@ pub use recovery::{
     may_recover,
 };
 pub use replace_keys::{CollectionRekey, ReplaceKeys, ReplacementInput};
+pub use reseal::{ResealKeys, ResealMember};
 pub use sso_groups::ApplyGroupRules;
 pub use support::{SealedCollectionKey, SealedSpaceKey};
 pub use sync_owners::SyncOwners;

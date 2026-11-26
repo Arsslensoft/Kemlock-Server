@@ -32,7 +32,7 @@ use kemlock_app::spaces::{
     CreateSpace, CreateSpaceInput, DeleteCollection, DeleteGroup, EditCollection,
     EditCollectionInput, EditGroup, EditGroupInput, GetSpace, GrantAccess, InviteInput,
     InviteMember, ListMembers, ListSpaces, LookupAccount, NewCollection, Offboard, ReplaceKeys,
-    KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, ReplacementInput, ResendInvitation, RevokeGrant,
+    KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, ReplacementInput, ResealKeys, ResealMember, ResendInvitation, RevokeGrant,
     SealedCollectionKey, SealedSpaceKey, SpaceRepo, SpacesError,
 };
 use kemlock_app::{Actor, AppError, b64url};
@@ -780,6 +780,33 @@ pub(crate) struct KeyReplacementRequest {
     writes: Vec<ReplacementWriteDto>,
 }
 
+/// One member's keys sealed again (`POST .../reseal`).
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResealMemberDto {
+    user: Uuid,
+    /// The current space key sealed to the member, base64url.
+    sealed_space_key: String,
+    /// The sealer's signature over that box, base64url.
+    sealed_space_key_signature: String,
+    /// The current key of each collection the member already holds a copy of, sealed to them.
+    #[serde(default)]
+    collection_keys: Vec<OwnKeyDto>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResealRequest {
+    members: Vec<ResealMemberDto>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResealedDto {
+    /// How many members got new boxes.
+    resealed: usize,
+}
+
 // ---- the use cases over this router's state ----
 
 impl<S, P, K, R> Env<S, P, K, R>
@@ -912,6 +939,15 @@ where
             spaces: self.spaces.clone(),
             events: self.api.store.clone(),
             clock: self.api.crypto.clone(),
+        }
+    }
+
+    fn reseal(&self) -> ResealKeys<R, S, P, StoreKeyBoxes<S>> {
+        ResealKeys {
+            spaces: self.spaces.clone(),
+            events: self.api.store.clone(),
+            clock: self.api.crypto.clone(),
+            boxes: self.key_boxes(),
         }
     }
 
@@ -1672,6 +1708,54 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn reseal_keys<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(id): Path<String>,
+    body: Body,
+) -> Result<Json<ResealedDto>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let request: ResealRequest = body.json()?;
+    let members = request
+        .members
+        .into_iter()
+        .map(|m| {
+            let user = UserId(m.user);
+            let collection_keys = m
+                .collection_keys
+                .into_iter()
+                .map(|k| {
+                    Ok::<_, Problem>(SealedCollectionKey {
+                        collection: CollectionId(k.collection),
+                        user,
+                        sealed: decode("sealed", &k.sealed)?,
+                        signature: decode("signature", &k.signature)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, Problem>>()?;
+            Ok::<_, Problem>(ResealMember {
+                user,
+                sealed_space_key: decode("sealedSpaceKey", &m.sealed_space_key)?,
+                space_key_signature: decode(
+                    "sealedSpaceKeySignature",
+                    &m.sealed_space_key_signature,
+                )?,
+                collection_keys,
+            })
+        })
+        .collect::<Result<Vec<_>, Problem>>()?;
+    let resealed = env
+        .reseal()
+        .execute(&caller.actor(), space_id(&id)?, members)
+        .await?;
+    Ok(Json(ResealedDto { resealed }))
+}
+
 async fn replace_keys<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
@@ -1787,6 +1871,7 @@ where
 /// GET, PUT   /kem/v1/spaces/{id}/grants                           list, grant
 /// DELETE     /kem/v1/spaces/{id}/grants/{collection}/{grantee}    revoke a grant
 /// POST       /kem/v1/spaces/{id}/key-replacement                  land new keys and re-wrapped items
+/// POST       /kem/v1/spaces/{id}/reseal                           seal the current keys again, signed
 /// ```
 pub fn router<S, P, K, R>(api: Api<S, P, K>, spaces: R) -> Router
 where
@@ -1865,6 +1950,10 @@ where
         .route(
             "/kem/v1/spaces/{id}/key-replacement",
             post(replace_keys::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/spaces/{id}/reseal",
+            post(reseal_keys::<S, P, K, R>),
         )
         .layer(middleware::from_fn_with_state(
             env.clone(),
@@ -2199,6 +2288,24 @@ fn doc_revoke_grant() {}
 #[allow(dead_code)]
 fn doc_key_replacement() {}
 
+#[utoipa::path(
+    post, path = "/kem/v1/spaces/{id}/reseal", tag = "spaces",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "A UUID"),
+    ),
+    request_body = ResealRequest,
+    responses(
+        (status = 200, description = "The listed members hold the current keys in boxes signed by the caller", body = ResealedDto),
+        (status = 400, description = "A box or its signature isn't what the server rebuilds"),
+        (status = 403, description = "Only an owner or admin re-seals keys"),
+        (status = 409, description = "The space has a chain"),
+        (status = 423, description = "The space waits for its keys to be replaced"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_reseal() {}
+
 /// The OpenAPI paths and schemas of the spaces routes, for merging into the main document.
 #[derive(Debug, OpenApi)]
 #[openapi(
@@ -2227,7 +2334,8 @@ fn doc_key_replacement() {}
         doc_list_grants,
         doc_grant,
         doc_revoke_grant,
-        doc_key_replacement
+        doc_key_replacement,
+        doc_reseal
     ),
     components(schemas(
         SpaceDto,
@@ -2262,7 +2370,10 @@ fn doc_key_replacement() {}
         NamedDto,
         RekeyDto,
         ReplacementWriteDto,
-        KeyReplacementRequest
+        KeyReplacementRequest,
+        ResealMemberDto,
+        ResealRequest,
+        ResealedDto
     ))
 )]
 struct SpacesDoc;
