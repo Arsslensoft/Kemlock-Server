@@ -557,6 +557,7 @@ pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<
 }
 
 /// Whether `name` is a setting the admin console has (and not a secret one).
+#[cfg(test)]
 fn is_registered(name: &str) -> bool {
     kemlock_app::admin::settings::definition(name)
         .is_some_and(|d| d.kind != kemlock_app::admin::settings::Kind::Secret)
