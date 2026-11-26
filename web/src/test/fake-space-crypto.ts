@@ -64,6 +64,10 @@ export interface FakeSpaces extends SpaceCrypto {
   replaced: ChainBuilt | null;
   /** What `buildKeyReplacement` was given, in order. */
   replacements: ChainReplacement[];
+  /** What `buildReseal` answers instead of every item sealed again. */
+  resealed: ChainBuilt | null;
+  /** The items `buildReseal` was given, a list for each call. */
+  resealings: ChainReplacement['items'][];
 }
 
 function utf8Text(text: string): string {
@@ -86,6 +90,35 @@ export function fakeSpaceCrypto(): FakeSpaces {
     changes: [],
     replaced: null,
     replacements: [],
+    resealed: null,
+    resealings: [],
+    async buildReseal({ spaceId, items }) {
+      fake.resealings.push(items);
+      calls.push('buildReseal');
+      if (fake.resealed) return fake.resealed;
+      return {
+        ok: true,
+        records: [],
+        seals: [],
+        names: [],
+        writes: items.map((item) => ({
+          collection: item.collection,
+          expectedRevision: item.revision,
+          item: {
+            id: item.id,
+            owner: `space:${spaceId}`,
+            kind: item.kind,
+            format: 'kem1' as const,
+            revision: item.revision + 1,
+            keyVersion: item.keyVersion + 1,
+            ciphertext: utf8Text(`again:${item.id}`),
+            itemKey: utf8Text(`wrapped:${item.id}`),
+            deleted: false as const,
+            collectionId: item.collection,
+          },
+        })),
+      };
+    },
     async buildKeyReplacement({ spaceId, replacement }) {
       fake.replacements.push(replacement);
       calls.push('buildKeyReplacement');

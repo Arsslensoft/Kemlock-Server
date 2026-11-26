@@ -107,6 +107,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     ),
     buildChainRecords: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [] })),
     buildKeyReplacement: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [] })),
+    buildReseal: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [], held: ['x'] })),
     verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
     spaceChainView: vi.fn((): string | undefined => undefined),
     sealLocal: vi.fn(() => 'c2VhbGVk'),
@@ -390,6 +391,8 @@ describe('the dispatcher', () => {
     await expect(
       dispatch('buildKeyReplacement', [{ spaceId: UUID, at: -1, replacement }]),
     ).rejects.toMatchObject({ code: 'invalid' });
+    expect(await dispatch('buildReseal', [{ spaceId: UUID, items: [] }])).toMatchObject({ held: ['x'] });
+    expect(vault.buildReseal).toHaveBeenCalledWith(UUID, JSON.stringify({ items: [] }));
 
     // The space chain: JSON goes in and comes out, and a key version is checked before the module.
     const record = { entry: 'ZW50cnk', signature: 'c2ln' };

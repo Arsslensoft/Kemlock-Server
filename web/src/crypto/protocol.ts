@@ -380,6 +380,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         (await current()).buildKeyReplacement(spaceId, at, JSON.stringify(replacement)),
       );
     },
+    async buildReseal({ spaceId, items }) {
+      return parse<ChainBuilt>((await current()).buildReseal(spaceId, JSON.stringify({ items })));
+    },
     async sealLocal(label, text) {
       return (await current()).sealLocal(label, text);
     },

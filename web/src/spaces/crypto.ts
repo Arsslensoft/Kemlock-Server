@@ -138,6 +138,11 @@ export interface SpaceCrypto extends SharingCrypto {
     at: number;
     replacement: ChainReplacement;
   }): Promise<ChainBuilt>;
+  /**
+   * Seals again items still under an older key version than their collection's: the writes for
+   * the batch route, and the ids this unlock can't seal again (it no longer holds their old key).
+   */
+  buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
   /** Seals a text this browser keeps for the unlocked account, bound to `label` (base64url out). */
   sealLocal(label: string, text: string): Promise<string>;
   /** Opens what `sealLocal` sealed under the same label and account. */
@@ -190,6 +195,7 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   newChainedSpace: () => unavailable(),
   buildChainRecords: () => unavailable(),
   buildKeyReplacement: () => unavailable(),
+  buildReseal: () => unavailable(),
   spaceChainView: () => unavailable(),
   sealLocal: () => unavailable(),
   openLocal: () => unavailable(),
@@ -217,6 +223,7 @@ type SpaceWorker = Pick<
   | 'newChainedSpace'
   | 'buildChainRecords'
   | 'buildKeyReplacement'
+  | 'buildReseal'
   | 'spaceChainView'
   | 'sealLocal'
   | 'openLocal'
@@ -285,6 +292,7 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
     newChainedSpace: (input) => api.newChainedSpace(input),
     buildChainRecords: (input) => api.buildChainRecords(input),
     buildKeyReplacement: (input) => api.buildKeyReplacement(input),
+    buildReseal: (input) => api.buildReseal(input),
     spaceChainView: (spaceId) => api.spaceChainView(spaceId),
     sealLocal: (label, text) => api.sealLocal(label, text),
     openLocal: (label, sealed) => api.openLocal(label, sealed),

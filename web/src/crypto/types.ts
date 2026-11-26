@@ -793,6 +793,13 @@ export interface CryptoApi {
     replacement: ChainReplacement;
   }): Promise<ChainBuilt>;
   /**
+   * Seals again the items still under an older key version than their collection's current one
+   * (a replacement that stopped halfway, or items it held), as the next revision under the
+   * current version. `held` names those this unlock can't seal again (it no longer holds their
+   * old key, or can't edit them). No record is made.
+   */
+  buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
+  /**
    * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
    * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
    */
@@ -969,6 +976,10 @@ export interface Ops {
   };
   buildKeyReplacement: {
     args: [input: { spaceId: string; at: number; replacement: ChainReplacement }];
+    result: ChainBuilt;
+  };
+  buildReseal: {
+    args: [input: { spaceId: string; items: ChainReplacement['items'] }];
     result: ChainBuilt;
   };
   sealLocal: { args: [label: string, text: string]; result: string };
