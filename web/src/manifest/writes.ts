@@ -10,7 +10,8 @@
 //   unsigned  none came;
 //   invalid   one came and fails, or it names another account for the account's own vault;
 //   unknown   it can't be checked now: the vault is locked, or the space doesn't vouch for the
-//             writer (a member who has left, say), or the member list couldn't be reached, or the
+//             writer (a member it never had, say; one taken out since still counts, for what they
+//             signed before), or the member list couldn't be reached, or the
 //             write names an older key version of the writer whose bundle this browser has no pin
 //             for (bundleHistory.ts).
 //
@@ -70,7 +71,7 @@ export function createWriteChecker(deps: WriteCheckerDeps): WriteChecker {
           return (await deps.crypto.itemWriteVerify(past, fields, writeSignature)) ? 'signed' : 'invalid';
         }
         const space = dto.owner.slice('space:'.length);
-        const bundle = await deps.spaceSigner(space, writer);
+        const bundle = await deps.spaceSigner(space, writer, { former: true });
         const parsed = bundle ? parseBundle(bundle) : null;
         if (!bundle || !parsed) return 'unknown';
         if (writerKeyVersion > parsed.keyVersion) return 'unknown';

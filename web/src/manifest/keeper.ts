@@ -73,7 +73,12 @@ export const MAX_MANIFEST_BYTES = 2 * 1024 * 1024;
  * chain is verified in the web vault, `spaceSigner.ts` answers from the member list the server
  * serves, which is the server's word.
  */
-export type SpaceSigner = (space: string, signer: string) => Promise<Uint8Array | null>;
+export type SpaceSigner = (
+  space: string,
+  signer: string,
+  /** For a write signature: a member taken out since signed what they signed before. */
+  options?: { former?: boolean },
+) => Promise<Uint8Array | null>;
 
 export interface KeeperDeps {
   api: Pick<ManifestsApi, 'get' | 'put'>;

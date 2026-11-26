@@ -60,13 +60,24 @@ export interface SpaceSignerDeps {
 }
 
 /** The server's view of who may sign for `space`: the bundle of `signer`, or null. CHAIN HOOK. */
-async function lookup(deps: SpaceSignerDeps, space: string, signer: string): Promise<Uint8Array | null> {
+async function lookup(
+  deps: SpaceSignerDeps,
+  space: string,
+  signer: string,
+  former: boolean,
+): Promise<Uint8Array | null> {
   const [members, view]: [MemberViewDto[], SpaceViewDto] = await Promise.all([
     deps.spaces.members(space),
     deps.spaces.get(space),
   ]);
-  const member = members.find((candidate) => candidate.user === signer && candidate.state === 'confirmed');
-  if (!member || !canEditSomewhere(member, view)) return null;
+  // A write signed before the member was taken out is still theirs (docs/crypto.md, "Signed item
+  // writes"), so for one a revoked member counts too; whether they could edit then isn't known.
+  const member = members.find(
+    (candidate) =>
+      candidate.user === signer && (candidate.state === 'confirmed' || (former && candidate.state === 'revoked')),
+  );
+  if (!member) return null;
+  if (member.state === 'confirmed' && !canEditSomewhere(member, view)) return null;
   let bundle: Uint8Array;
   let signature: Uint8Array;
   try {
@@ -82,8 +93,8 @@ async function lookup(deps: SpaceSignerDeps, space: string, signer: string): Pro
 }
 
 export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
-  return async (space, signer) => {
-    const bundle = await lookup(deps, space, signer);
+  return async (space, signer, options) => {
+    const bundle = await lookup(deps, space, signer, options?.former === true);
     if (!bundle) return null;
     if (signer === deps.accountId()) {
       // Our own keys are known for certain: the bundle must be the one they make.

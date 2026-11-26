@@ -70,6 +70,14 @@ describe('the signer of a space manifest', () => {
     expect(await setup([{ ...member(SIGNER, 'confirmed'), publicBundle: 'not base64!' }]).signer(SPACE, SIGNER)).toBeNull();
   });
 
+  it('is a member taken out since only for a write signed before, and never one who never was confirmed', async () => {
+    const gone = member(SIGNER, 'revoked');
+    expect(await setup([gone]).signer(SPACE, SIGNER, { former: true })).toEqual(bundleOf(SIGNER));
+    expect(await setup([gone]).signer(SPACE, SIGNER)).toBeNull();
+    expect(await setup([member(SIGNER, 'accepted')]).signer(SPACE, SIGNER, { former: true })).toBeNull();
+    expect(await setup([gone], { verified: false }).signer(SPACE, SIGNER, { former: true })).toBeNull();
+  });
+
   it('holds this account to the bundle its own keys make', async () => {
     const mine = member(ME, 'confirmed');
     expect(await setup([mine]).signer(SPACE, ME)).toEqual(bundleOf(ME));

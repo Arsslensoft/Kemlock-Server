@@ -88,7 +88,7 @@ describe('the verdict on a write signature', () => {
     resetFakeCrypto();
     await crypto.unlock(ACCOUNT, utf8(`wrapped:${ACCOUNT}`), new Uint8Array(), new Uint8Array());
     expect(await checker().verdict(signed)).toBe('signed');
-    expect(spaceSigner).toHaveBeenCalledWith(SPACE_ID, MEMBER);
+    expect(spaceSigner).toHaveBeenCalledWith(SPACE_ID, MEMBER, { former: true });
     expect(await checker().verdict({ ...signed, revision: 9 })).toBe('invalid');
   });
 
