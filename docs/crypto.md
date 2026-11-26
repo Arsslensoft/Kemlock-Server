@@ -638,6 +638,14 @@ only when one of these holds:
    same (space, key, version) is checked as 1, and is refused when it fails.
 3. **A box from before signatures.** `sealedBy` is `null`, and the rule for those is below.
 
+**Comparing first.** A signed box whose sealer the client can't trace (nobody it trusts confirmed
+them, and no person compared their fingerprint here) is not opened, and the client says which member
+a person should compare: the sealer if nobody confirmed them, or the root the walk of confirmations
+ended at. The person compares that member's fingerprint with what the member's own app shows; once
+it matches, the client trusts what that member confirmed and sealed (a **pin**, as in "Member
+confirmation"), and opens the keys. It is the comparison first contact asks for with a chain, and
+without it a space with no chain has nothing that ties a sealer to a person.
+
 A box that fails all three is not opened, and the client shows the space's keys as "Can't be
 checked". A space with a verified chain skips all of this: the chain authenticates its boxes, and
 requiring a signature there too would only repeat the work. A client that has ever been served a chain
