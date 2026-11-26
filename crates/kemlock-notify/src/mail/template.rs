@@ -495,7 +495,7 @@ fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendere
 
 fn keys_rotated(notice: &KeysRotatedNotice, brand: &Branding) -> Rendered {
     let lead = format!(
-        "On {}, the keys of your account were rotated: a new root key now protects your vault, and every copy of the old one was deleted.",
+        "On {}, the keys of your account were rotated: a new root key now protects your vault, and every copy of the old one that this server held was deleted.",
         when(notice.at)
     );
     let body = Body::new(&[

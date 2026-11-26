@@ -466,9 +466,11 @@ POST /kem/v1/account/rotation
 `GET /kem/v1/account/rotation` answers what the server holds that the install must cover, so the
 client builds the request from the server's own list: `{keyVersion, hasPassword, publicBundle,
 kit: {kitId} | null, passkeys: [{id, credentialId}], deviceCopies: [{deviceId}], emergency: [{id,
-state, granteeId, granteeEmail, granteeBundle}], recovery: [{space, keySeq}], sends: [{id, kind}], items: {count}, spaces: count,
+state, granteeId, granteeEmail, granteeBundle}], asContact: [{id, state}], recovery: [{space, keySeq}],
+sends: [{id, kind}], items: {count}, spaces: count,
 previousKeys: {keyVersion, sealed} | null}`. `passkeys` lists only the passkeys that have a PRF wrap;
-`emergency` only grants that hold a box. `granteeBundle` is the contact's bundle as the server holds it now; a client
+`emergency` only grants that hold a box; `asContact` the grants in which this account is the **contact**
+and holds a box (below). `granteeBundle` is the contact's bundle as the server holds it now; a client
 seals the new root key to it only after the person compared its fingerprint with the one on the
 contact's own screen, and otherwise drops the grant, because the server could have swapped it.
 
@@ -477,14 +479,21 @@ fails any check writes nothing and answers `409 rotation-incomplete` (what chang
 read it) or `400 invalid-request` (what is malformed), and one that loses a race answers
 `409 account-changed`:
 
-1. The account is not `compatible`, has keys, and `fromVersion` is its `key_version` and
-   `toVersion` is the next one (`409 rotation-stale-version` otherwise).
+1. The account is not `compatible`, is not federated (it is not a copy made by a replica, and its
+   personal vault has no replicas: `409 rotation-federated`, a limitation: another server holds
+   copies of the wraps and of the items that a rotation here cannot replace), has keys, and
+   `fromVersion` is its `key_version` and `toVersion` is the next one (`409 rotation-stale-version`
+   otherwise).
 2. With a password, the password is right and, when a second step is on, a fresh `proof` is given
-   (both as `PUT /account/password` does, before the transaction); an account with no password needs
-   the proof only when a second step is on.
+   (both as `PUT /account/password` does). **With no password, a fresh answer of a passkey or
+   security key is required** (`proof` as `{"webauthn": …}`), never a session alone, whether or not a
+   second step is on. These are checked **after** every other check that needs no secret, and after
+   the checks below on a plain read of what the account holds, so a refusal that can be known
+   (`rotation-incomplete`) does not spend a login state or a one-time proof; the transaction checks
+   again.
 3. The bundle parses, is for this account at key version `toVersion`, its signature verifies under
    its own `sig1` key, and neither its `kx1` nor its `sig1` public key is the old bundle's. Both
-   sealed private-key blobs are 189 bytes.
+   sealed private-key blobs are exactly 189 bytes (`private-keys` above).
 4. `wrappedRootKey` is present, and 92 bytes, exactly when the account has a password wrap.
 5. Every wrap is well formed by its own length rule: a kit's id is 8 base32 characters and its wrap
    92 bytes; each passkey wrap 92 bytes; each emergency box and recovery box the length of its
@@ -503,7 +512,12 @@ read it) or `400 invalid-request` (what is malformed), and one that loses a race
    `rotation-incomplete`, naming how many; the client stages those again (a round that stages only
    the changed items) and installs again. A live item of format `bw` is `409
    rotation-unsupported-items`.
-9. The account is in no space, or `spacesHandled` is true (`409 spaces-need-rekey`).
+9. The account is in no space, or `spacesHandled` is true (`409 spaces-need-rekey`). Only accepted and
+   confirmed memberships count: an invitation not yet accepted does not. And if an earlier
+   rotation's previous keys are still kept for the spaces, the install is refused
+   (`409 rotation-spaces-pending`): see "Spaces".
+10. The vault has at most 50,000 live items: the install is one transaction, and a larger vault is
+    refused (`400`) rather than half moved. The server writes the staged items 500 at a time.
 
 **What the server writes**, in that transaction and not before: the account's row (bundle,
 signature, sealed private keys, password wrap, `key_version = N′`, a new **security stamp**, new
@@ -511,8 +525,18 @@ signature, sealed private keys, password wrap, `key_version = N′`, a new **sec
 items (as the ordinary write does: revision `baseRevision + 1`, `keyVersion = N′`, a new change per
 item, the item's duplicate tags deleted); the sends; the kit; the passkey wraps (the dropped ones
 removed); the emergency boxes (dropped grants back to `accepted`); the recovery boxes; the device
-copies; the staged rows removed. Nothing refers to `R` afterwards: **no wrap of `R` stays in the
-database**. After the commit, and best effort, the other devices are signed out and their rows and
+copies; the account's answered device approvals (`auth_requests` that hold a root key sealed to a new
+device's one-time key); the staged rows removed. **The grants in which the account is the contact**
+hold a box the grantor sealed to the account's old `kx1` key: each goes back to `accepted` with no
+box, and its grantor confirms the account's new bundle again. The locks that make this exact: the
+install takes the `server_meta` lock that every item write takes, and the account's row lock, before
+it reads; every write of a wrap (a PRF wrap, a device copy, the kit, an emergency box, a recovery
+box, a Send, a device approval) takes the account's row lock too, so a wrap written meanwhile is
+seen, or waits. Nothing the server holds refers to `R` afterwards: **no wrap of `R` stays in this
+server's database**. That holds for this server only: a backup taken earlier still has the old
+wraps and ciphertexts, a device that was offline keeps its own copy of what it opened (its trusted
+copy on the server is deleted with the device), and another server's copies are why a federated
+account is refused. After the commit, and best effort, the other devices are signed out and their rows and
 tokens deleted as `PUT /account/password` with `signOutOthers` does, and the calling device gets new
 tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material).
 
@@ -520,7 +544,26 @@ Other devices' sessions end with the stamp: each signs in again and sees at
 `GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,
 the new kit or another device's approval and makes its trusted-device copy again. A copy of the old
 version no longer opens (its `aad` has `u32be(N)`), and a device deletes the key and the local data
-it kept for `N`.
+it kept for `N`. **What a device that did not rotate does, exactly**, when it learns another device
+rotated (a `401` with `security-stamp-changed`, a push that finds its session ended, or a
+`keyVersion` it did not hold):
+
+1. It treats the session as ended and signs in again (password, passkey, the new kit or an approval).
+2. It discards the root key it held, its trusted-device wrapping key and copy, and its tab and
+   reload copies, every key derived from the old root (item-wrap, private keys, space keys it opened
+   with them), and every value it kept sealed under the old user key: space anchors, pins, key-box
+   stores, signed-owner memory. A value that does not open there is **lost, not damaged**: the device
+   asks again (first contact of each space) instead of refusing.
+3. It fetches the account's keys at the new version and verifies the new bundle against what it
+   opens, shows the new fingerprint, and drops its sync cursor: every item is at a new revision.
+4. It makes its own trusted-device copy again, for `N′`.
+5. It re-pins: another member's pin of this account is for the old fingerprint and shows "replaced
+   their keys" until it is compared again; this account's own pins of other people stay (they are
+   theirs) but are sealed again by the device that rotated, or asked again on one that did not.
+6. It removes its passkeys' unlock marks (their PRF wraps were removed unless the rotating device
+   touched them), its emergency contacts that were not confirmed again, and treats grants that name
+   the account as the contact as waiting for their grantor's new confirmation.
+7. It stops using an old Recovery Kit: its pieces open nothing.
 
 **Spaces.** Space, collection and group keys are not under `R`, but the old `kx1` key is gone: the
 boxes sealed to it can no longer be opened by a device that has not already opened them, and the
@@ -532,13 +575,26 @@ it still holds the old keys (the previous private keys let another device contin
    own new bundle (it is Awaiting those keys, and as a holder it may seal them), or waits for
    another holder's seal;
 2. in a space with none, seals the keys it holds to its own new bundle through the key routes;
-3. then deletes the previous keys (`DELETE /kem/v1/account/rotation/previous-keys`).
+3. then deletes the previous keys (`DELETE /kem/v1/account/rotation/previous-keys`), which takes what
+   the install takes: the password again, and the second step's proof, or with no password a
+   passkey's answer.
+
+The previous keys are kept **only for an account that is in a space**, and an install is refused
+(`409 rotation-spaces-pending`) while an earlier rotation's are still kept: a `rekey` must be
+signed by the key a space has on record, and a second rotation would replace the only copy of it.
+The server accepts a `rekey` only if its bundle is byte for byte the account's registered, current
+one, so the `rekey` must follow the install before the account rotates again.
 
 Until then the member's confirmations are for the old key version, and "Member confirmation"
 applies: every other member sees "replaced their keys" and may compare the new fingerprint. A client
 that cannot do (1) and (2) must not rotate an account that is in a space; the server asks it to say
 so with `spacesHandled` and refuses with `409 spaces-need-rekey` otherwise. The web vault does not
 do it yet, and says so.
+
+A write of an item to the account's own vault must name the account's current key version (`400`
+otherwise), in a single write and in a batch: a device that missed the rotation, or a replica
+serving an older state, can't store an item sealed under keys the account no longer has. A
+deletion carries no sealed value and is not checked.
 
 `GET /kem/v1/account/rotation` answers `previousKeys` while they exist, so a second device that
 opens the vault with the new keys can finish the spaces: it opens `sealedPreviousPrivateKeys` with
