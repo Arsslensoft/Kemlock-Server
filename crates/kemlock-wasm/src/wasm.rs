@@ -1189,15 +1189,19 @@ impl Vault {
 
     /// Whether `signature` is the unlocked account's own `sig1` signature of `manifest`, which
     /// must be of the account's own vault. The key is the account's own, never one the server
-    /// served. Anything malformed, or a locked vault, is simply `false`.
+    /// served. Anything malformed is simply `false`. A locked vault, or one opened without the
+    /// private keys, has no key to check with and gives no verdict at all: it throws `"locked"`,
+    /// so the page can tell "could not be verified" from "can not verify".
     #[wasm_bindgen(js_name = manifestVerifyOwn)]
-    pub fn manifest_verify_own(&self, manifest: &str, signature: &str) -> bool {
+    pub fn manifest_verify_own(&self, manifest: &str, signature: &str) -> Result<bool, JsError> {
         let (Ok(manifest), Ok(signature)) = (b64::decode(manifest), b64::decode(signature)) else {
-            return false;
+            return Ok(false);
         };
-        self.session
-            .verify_own_manifest(&manifest, &signature)
-            .is_ok()
+        match self.session.verify_own_manifest(&manifest, &signature) {
+            Ok(()) => Ok(true),
+            Err(Error::Locked) => Err(fail(Error::Locked)),
+            Err(Error::Invalid) => Ok(false),
+        }
     }
 
     /// Whether `signature` is the `sig1` signature of the space manifest `manifest` under the key

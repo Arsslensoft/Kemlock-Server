@@ -529,7 +529,8 @@ export interface CryptoApi {
   manifestSign(manifest: string): Promise<string>;
   /**
    * Whether the signature is the unlocked account's own over a manifest of its own vault. The key
-   * is the account's own, never a bundle the server served; needs the sealed private keys at unlock.
+   * is the account's own, never a bundle the server served, so it needs the sealed private keys
+   * at unlock: without them it rejects with `locked` rather than answering false.
    */
   manifestVerifyOwn(manifest: string, signature: string): Promise<boolean>;
   /** Whether the signature is the signer's (the bundle's sig1 key) over a space's manifest. */

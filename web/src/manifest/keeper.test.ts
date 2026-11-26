@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '@/api/errors';
 import type { ManifestDto, PutManifestBody } from '@/api/manifests';
 import type { ItemDto } from '@/api/types';
+import { CryptoError } from '@/crypto/types';
 import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 import { TOMBSTONE_HASH, type Manifest, ciphertextHash, decodeManifest, encodeManifest } from './format';
 import { NO_WARNING, VERIFY_EVERY_MS, createManifestKeeper } from './keeper';
@@ -218,6 +219,20 @@ describe('checking what the server serves against the manifest', () => {
     expect(other.keeper.getWarning().manifests).toEqual([{ owner: OWN, problem: 'invalid' }]);
     // The account's own key is the only one asked about its own manifest.
     expect(crypto.manifestVerify).not.toHaveBeenCalled();
+  });
+
+  it("gives no verdict when the vault has no keys to check with, instead of calling the manifest unverified", async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 3)] }));
+    crypto.manifestVerifyOwn.mockRejectedValueOnce(new CryptoError('locked'));
+    await run.sync([item(A, 1)]);
+    expect(run.keeper.getWarning()).toBe(NO_WARNING);
+    expect(await run.records.get(`${ACCOUNT}|${OWN}`)).toBeUndefined();
+    // And nothing is signed on such a check either.
+    crypto.manifestVerifyOwn.mockRejectedValueOnce(new CryptoError('locked'));
+    await run.keeper.wrote([item(B, 1)]);
+    await run.keeper.flush();
+    expect(run.api.put).not.toHaveBeenCalled();
   });
 
   it('refuses a manifest whose counter is not the one it was served under', async () => {

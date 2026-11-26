@@ -1794,6 +1794,11 @@ fn an_accounts_own_manifest_is_signed_and_checked_with_its_own_key() {
     // A space's manifest is not the account's own.
     assert!(session.verify_own_manifest(&space, &space_signature).is_err());
 
+    // A vault opened without the private keys has no key to check with: no verdict, not "false".
+    let account = RootKey::generate();
+    let keyless = unlocked_with(&account, &account_id, FIRST_KEY_VERSION);
+    assert_eq!(keyless.verify_own_manifest(&own, &signature), Err(Error::Locked));
+
     // A locked session signs and checks nothing.
     let locked = Session::new();
     assert_eq!(locked.sign_manifest(&own), Err(Error::Locked));

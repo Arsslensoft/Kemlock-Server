@@ -317,7 +317,9 @@ export const crypto: CryptoPort = {
   },
   async manifestVerifyOwn(manifest, signature) {
     calls.push('manifestVerifyOwn');
-    return !locked && fromUtf8(signature) === `msig:${openedFor}:${encodeB64(manifest)}`;
+    // Like the worker: with no keys to check with there is no verdict, not a "no".
+    if (locked) throw new Error('the vault is locked');
+    return fromUtf8(signature) === `msig:${openedFor}:${encodeB64(manifest)}`;
   },
   async manifestVerify(signerBundle, manifest, signature) {
     calls.push('manifestVerify');
