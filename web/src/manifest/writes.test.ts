@@ -228,6 +228,7 @@ describe('a write signed under a key version the writer has replaced', () => {
 
     // The member rotates: the space vouches for their version 2 bundle now.
     memberVersion = 2;
+    check.beginSync();
     expect(await check.verdict(signed)).toBe('signed');
     expect(await check.verdict({ ...signed, revision: 9 })).toBe('invalid');
     expect(await check.verdict({ ...signed, writerKeyVersion: 3 })).toBe('unknown');
