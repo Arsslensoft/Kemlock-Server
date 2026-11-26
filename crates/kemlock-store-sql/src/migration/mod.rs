@@ -52,16 +52,16 @@ mod m20261129_040001_withheld_changes;
 mod m20261130_010001_email_changes;
 mod m20261130_020001_custom_fields;
 mod m20261201_010001_second_step_attempts;
-mod m20261201_010001_vw_import_ids;
-mod m20261201_010001_email_confirmations;
-mod m20261201_020001_sso_identity_confirmed;
-mod m20261201_010001_bw_tries;
-mod m20261201_020001_forget_email_new_tokens;
-mod m20261201_030001_bw_api_key_width;
-mod m20261201_040001_imported_manager_collections;
-mod m20261201_010001_vault_home_history;
-mod m20261201_020001_peer_key_history;
-mod m20261201_030001_peer_trusted_addresses;
+mod m20261201_020001_vw_import_ids;
+mod m20261201_030001_email_confirmations;
+mod m20261201_040001_sso_identity_confirmed;
+mod m20261201_050001_bw_tries;
+mod m20261201_060001_forget_email_new_tokens;
+mod m20261201_070001_bw_api_key_width;
+mod m20261201_080001_imported_manager_collections;
+mod m20261201_090001_vault_home_history;
+mod m20261201_100001_peer_key_history;
+mod m20261201_110001_peer_trusted_addresses;
 
 use sea_orm_migration::prelude::*;
 
@@ -119,16 +119,16 @@ impl MigratorTrait for Migrator {
             Box::new(m20261130_010001_email_changes::Migration),
             Box::new(m20261130_020001_custom_fields::Migration),
             Box::new(m20261201_010001_second_step_attempts::Migration),
-            Box::new(m20261201_010001_vw_import_ids::Migration),
-            Box::new(m20261201_010001_email_confirmations::Migration),
-            Box::new(m20261201_020001_sso_identity_confirmed::Migration),
-            Box::new(m20261201_010001_bw_tries::Migration),
-            Box::new(m20261201_020001_forget_email_new_tokens::Migration),
-            Box::new(m20261201_030001_bw_api_key_width::Migration),
-            Box::new(m20261201_040001_imported_manager_collections::Migration),
-            Box::new(m20261201_010001_vault_home_history::Migration),
-            Box::new(m20261201_020001_peer_key_history::Migration),
-            Box::new(m20261201_030001_peer_trusted_addresses::Migration),
+            Box::new(m20261201_020001_vw_import_ids::Migration),
+            Box::new(m20261201_030001_email_confirmations::Migration),
+            Box::new(m20261201_040001_sso_identity_confirmed::Migration),
+            Box::new(m20261201_050001_bw_tries::Migration),
+            Box::new(m20261201_060001_forget_email_new_tokens::Migration),
+            Box::new(m20261201_070001_bw_api_key_width::Migration),
+            Box::new(m20261201_080001_imported_manager_collections::Migration),
+            Box::new(m20261201_090001_vault_home_history::Migration),
+            Box::new(m20261201_100001_peer_key_history::Migration),
+            Box::new(m20261201_110001_peer_trusted_addresses::Migration),
         ]
     }
 }
