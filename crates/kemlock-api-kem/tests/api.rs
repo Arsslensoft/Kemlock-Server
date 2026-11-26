@@ -86,6 +86,7 @@ async fn the_openapi_document_names_every_route() {
         ("/kem/v1/items/{id}", "put"),
         ("/kem/v1/items:batch", "post"),
         ("/kem/v1/owners/{owner}/signed-writes", "put"),
+        ("/kem/v1/owners/{owner}/signed-writes", "delete"),
         ("/kem/v1/accounts/{id}/bundles/{version}", "get"),
         ("/kem/v1/sync", "get"),
         ("/kem/v1/sync", "post"),
@@ -2422,7 +2423,7 @@ fn signed_with(
 }
 
 #[tokio::test]
-async fn a_signed_write_is_stored_served_back_and_makes_the_vault_signed_only() {
+async fn a_signed_write_is_stored_and_served_back_and_only_the_owners_ask_makes_the_vault_signed_only() {
     let (_app, client, session) = signed_in().await;
     let key = common::fakes::bundle_key();
     let id = new_item_id();
@@ -2456,13 +2457,26 @@ async fn a_signed_write_is_stored_served_back_and_makes_the_vault_signed_only() 
     let items = synced.json()["items"].clone();
     assert_eq!(items[0]["writeSignature"], shown["writeSignature"]);
 
-    // The vault is signed-only now: an unsigned write is refused, a signed one is not.
+    // A signed write does not make the vault signed-only: an unsigned one is still accepted.
     let unsigned = put(
         &client,
         &session,
         &id,
         ("if-match", "1"),
         item_json(&session.user_id, &id, 2),
+    )
+    .await;
+    assert_eq!(unsigned.status, StatusCode::OK, "{:?}", unsigned.json());
+
+    // After the owner asks, it is refused, and a signed one is not.
+    let asked = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let unsigned = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "2"),
+        item_json(&session.user_id, &id, 3),
     )
     .await;
     assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -2474,8 +2488,8 @@ async fn a_signed_write_is_stored_served_back_and_makes_the_vault_signed_only() 
         &client,
         &session,
         &id,
-        ("if-match", "1"),
-        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 2)),
+        ("if-match", "2"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id,  3)),
     )
     .await;
     assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
@@ -2534,7 +2548,7 @@ async fn a_signature_by_another_key_or_over_another_item_is_refused_and_stores_n
 }
 
 #[tokio::test]
-async fn a_signed_delete_is_accepted_and_an_unsigned_one_is_not_once_signed() {
+async fn a_signed_delete_is_accepted_and_an_unsigned_one_is_not_once_asked_for() {
     let (_app, client, session) = signed_in().await;
     let key = common::fakes::bundle_key();
     let id = new_item_id();
@@ -2546,6 +2560,8 @@ async fn a_signed_delete_is_accepted_and_an_unsigned_one_is_not_once_signed() {
         signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
     )
     .await;
+    let asked = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
     let tombstone = |revision: u64| {
         json!({
             "id": id,
@@ -2572,30 +2588,84 @@ async fn a_signed_delete_is_accepted_and_an_unsigned_one_is_not_once_signed() {
     assert!(signed.json()["writeSignature"].is_string());
 }
 
+/// `method` on the signed-writes flag of `owner`.
+async fn signed_writes_of(
+    client: &Client,
+    session: &Session,
+    owner: &str,
+    method: &str,
+    body: Option<serde_json::Value>,
+) -> Reply {
+    client
+        .send(
+            method,
+            &format!("/kem/v1/owners/{owner}/signed-writes"),
+            Req {
+                access_token: Some(&session.access_token),
+                body,
+                ..Req::default()
+            },
+        )
+        .await
+}
+
+/// `method` on the flag of the caller's own vault.
+async fn signed_writes_call(
+    client: &Client,
+    session: &Session,
+    method: &str,
+    body: Option<serde_json::Value>,
+) -> Reply {
+    let owner = format!("user:{}", session.user_id);
+    signed_writes_of(client, session, &owner, method, body).await
+}
+
+/// The two OPAQUE messages of a fresh login of `sam@example.org`, as a re-authenticating request
+/// carries them.
+async fn reauth_body(client: &Client) -> serde_json::Value {
+    let (state, request) =
+        kemlock_crypto::opaque::client_login_start(&PASSWORD).expect("client login start");
+    let started = client
+        .post(
+            "/kem/v1/auth/opaque/start",
+            json!({"email": "sam@example.org", "request": b64(&request)}),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.json());
+    let started = started.json();
+    let response = unb64(started["response"].as_str().expect("response"));
+    let (finalization, _, _) =
+        kemlock_crypto::opaque::client_login_finish(state, &PASSWORD, &response)
+            .expect("client login finish");
+    json!({
+        "loginState": started["loginState"],
+        "finalization": b64(&finalization),
+    })
+}
+
 #[tokio::test]
 async fn an_owner_may_ask_for_signed_writes_for_its_own_vault_only() {
     let (_app, client, session) = signed_in().await;
-    let ask = |owner: String| {
-        let client = &client;
-        let token = session.access_token.clone();
-        async move {
-            client
-                .send(
-                    "PUT",
-                    &format!("/kem/v1/owners/{owner}/signed-writes"),
-                    Req {
-                        access_token: Some(&token),
-                        ..Req::default()
-                    },
-                )
-                .await
-        }
-    };
-    let other = ask(format!("user:{}", uuid::Uuid::from_u128(9))).await;
+    let other = signed_writes_of(
+        &client,
+        &session,
+        &format!("user:{}", uuid::Uuid::from_u128(9)),
+        "PUT",
+        None,
+    )
+    .await;
     assert_eq!(other.status, StatusCode::FORBIDDEN);
-    let space = ask(format!("space:{}", uuid::Uuid::from_u128(9))).await;
-    assert_eq!(space.status, StatusCode::FORBIDDEN);
-    let own = ask(format!("user:{}", session.user_id)).await;
+    // A space the caller doesn't belong to doesn't show itself.
+    let space = signed_writes_of(
+        &client,
+        &session,
+        &format!("space:{}", uuid::Uuid::from_u128(9)),
+        "PUT",
+        None,
+    )
+    .await;
+    assert_eq!(space.status, StatusCode::NOT_FOUND);
+    let own = signed_writes_call(&client, &session, "PUT", None).await;
     assert_eq!(own.status, StatusCode::NO_CONTENT);
 
     let id = new_item_id();
@@ -2608,6 +2678,58 @@ async fn an_owner_may_ask_for_signed_writes_for_its_own_vault_only() {
     )
     .await;
     assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn turning_signed_writes_off_asks_for_the_password_again() {
+    let (_app, client, session) = signed_in().await;
+    let asked = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let id = new_item_id();
+    let write = |n: u64| item_json(&session.user_id, &id, n);
+
+    // A session alone, or with garbage for the password, turns nothing off.
+    let bare = signed_writes_call(&client, &session, "DELETE", Some(json!({}))).await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST);
+    let wrong = signed_writes_call(
+        &client,
+        &session,
+        "DELETE",
+        Some(json!({"loginState": b64(&[3u8; 64]), "finalization": b64(&[7u8; 64])})),
+    )
+    .await;
+    assert!(
+        wrong.status == StatusCode::BAD_REQUEST || wrong.status == StatusCode::UNAUTHORIZED,
+        "{:?}",
+        wrong.json()
+    );
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), write(1)).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // With the password it is off, and unsigned writes come back. Again is the same answer.
+    let body = reauth_body(&client).await;
+    let cleared = signed_writes_call(&client, &session, "DELETE", Some(body.clone())).await;
+    assert_eq!(cleared.status, StatusCode::NO_CONTENT, "{:?}", cleared.json());
+    let accepted = put(&client, &session, &id, ("if-none-match", "*"), write(1)).await;
+    assert_eq!(accepted.status, StatusCode::CREATED, "{:?}", accepted.json());
+    // The login state is good once.
+    let replayed = signed_writes_call(&client, &session, "DELETE", Some(body)).await;
+    assert_eq!(replayed.status, StatusCode::BAD_REQUEST);
+    let again = reauth_body(&client).await;
+    let again = signed_writes_call(&client, &session, "DELETE", Some(again)).await;
+    assert_eq!(again.status, StatusCode::NO_CONTENT);
+
+    // Another account's vault is refused before the password is spent.
+    let stranger = reauth_body(&client).await;
+    let other = signed_writes_of(
+        &client,
+        &session,
+        &format!("user:{}", uuid::Uuid::from_u128(9)),
+        "DELETE",
+        Some(stranger),
+    )
+    .await;
+    assert_eq!(other.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

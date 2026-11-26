@@ -359,9 +359,8 @@ record checks, before it applies it:
    bundle the receiver doesn't hold yet is refused the same way, and the later comparison fetches
    the record again once the home's records have arrived (a pull that applied a refusal compares
    at once instead of waiting for the next round).
-2. **Without one.** If the receiver holds the owner as **signed-only** (it has applied a signed
-   record for it, or the owner asked) the record is refused.
-3. **Applying a signed record** makes the owner signed-only at the receiver.
+2. **Without one.** If the receiver holds the owner as **signed-only** (the owner asked for it at that server) the record is refused. A signed record does not set
+   the flag.
 
 A `bw` record is checked by neither rule.
 

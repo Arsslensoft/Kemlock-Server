@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unsigned_record_is_refused_once_a_signed_one_was_applied() {
+    async fn an_unsigned_record_is_refused_once_the_owner_is_signed_only_and_not_by_a_signed_one() {
         let writer = UserId::random();
         let key = sig1::SigningKey::from_bytes(&[5; 64]);
         let store = store_for(writer, &key);
@@ -256,7 +256,12 @@ mod tests {
         ReplicaStore::apply(&store, &signed, &[1; 8])
             .await
             .expect("applies");
+        // A signed record doesn't set the flag; the owner's request does.
+        assert_eq!(judge(&store, &unsigned).await, Ok(Verdict::Accept));
+        store.set_signed_only(Owner::User(writer), true);
         assert!(verdict_is_refusal(judge(&store, &unsigned).await));
+        store.set_signed_only(Owner::User(writer), false);
+        assert_eq!(judge(&store, &unsigned).await, Ok(Verdict::Accept));
     }
 
     #[tokio::test]

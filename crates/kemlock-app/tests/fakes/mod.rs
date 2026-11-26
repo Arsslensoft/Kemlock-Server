@@ -630,9 +630,6 @@ impl ItemStore for FakeStore {
         Self::check_draft(&g, &draft)?;
         let change = self.stored_change(&mut g, draft.updated_at);
         let item = draft.into_item(change);
-        if item.signature.is_some() {
-            g.signed_owners.insert(item.owner);
-        }
         g.items.insert(item.id, item.clone());
         self.dedup.clear(item.id);
         Ok(item)
@@ -647,9 +644,6 @@ impl ItemStore for FakeStore {
         for draft in drafts {
             let change = self.stored_change(&mut g, draft.updated_at);
             let item = draft.into_item(change);
-            if item.signature.is_some() {
-                g.signed_owners.insert(item.owner);
-            }
             g.items.insert(item.id, item.clone());
             self.dedup.clear(item.id);
             stored.push(item);
@@ -714,6 +708,11 @@ impl ItemStore for FakeStore {
         _at: OffsetDateTime,
     ) -> Result<(), StoreError> {
         self.lock().signed_owners.insert(owner);
+        Ok(())
+    }
+
+    async fn clear_signed_writes(&self, owner: Owner) -> Result<(), StoreError> {
+        self.lock().signed_owners.remove(&owner);
         Ok(())
     }
 

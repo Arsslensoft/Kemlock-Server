@@ -184,7 +184,7 @@ struct Extras {
     local_accounts: HashSet<Owner>,
     /// The attachment rows, for `BlobSync`.
     attachments: Vec<kemlock_domain::Attachment>,
-    /// The owners that accept signed `kem1` writes only: set by a signed write, local or applied.
+    /// The owners that accept signed `kem1` writes only.
     signed_only: HashSet<Owner>,
 }
 
@@ -213,6 +213,17 @@ impl MemoryStore {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes `owner` take signed writes only, or not, as the admin's route (or the home's record
+    /// of it) does.
+    pub fn set_signed_only(&self, owner: Owner, required: bool) {
+        let mut extras = self.extras();
+        if required {
+            extras.signed_only.insert(owner);
+        } else {
+            extras.signed_only.remove(&owner);
+        }
     }
 
     /// Writes an item as this server's own change, as `ItemStore::put` does.
@@ -245,9 +256,6 @@ impl MemoryStore {
             hlc,
         });
         drop(st);
-        if item.signature.is_some() {
-            self.extras().signed_only.insert(item.owner);
-        }
         Ok(item)
     }
 
@@ -672,14 +680,20 @@ impl ReplicaStore for MemoryStore {
             ApplyOutcome::Sibling
         };
         drop(st);
-        if record.write.is_some() {
-            self.extras().signed_only.insert(record.owner);
-        }
         Ok(outcome)
     }
 
     async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
         Ok(self.lock().log.iter().any(|e| e.key == key))
+    }
+
+    async fn set_owner_signed_only(
+        &self,
+        owner: Owner,
+        required: bool,
+    ) -> Result<(), StoreError> {
+        self.set_signed_only(owner, required);
+        Ok(())
     }
 
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {

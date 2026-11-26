@@ -501,9 +501,8 @@ pub trait ItemStore: Send + Sync {
         async { Ok(Vec::new()) }
     }
 
-    /// Whether `owner` accepts signed `kem1` writes only (docs/crypto.md, "Signed item writes"):
-    /// a signed write was accepted for it, or its owner asked. The store sets it in the
-    /// transaction of the first signed write.
+    /// Whether `owner` accepts signed `kem1` writes only (docs/crypto.md, "The signed-only flag"):
+    /// its owner (or a space's owner or admin) asked.
     ///
     /// The default is false, for a store that keeps no such flag.
     fn signed_writes_required(
@@ -513,11 +512,20 @@ pub trait ItemStore: Send + Sync {
         async { Ok(false) }
     }
 
-    /// Makes `owner` accept signed writes only, at `at`. Idempotent, and never undone.
+    /// Makes `owner` accept signed writes only, at `at`. Idempotent. Only a request of the owner's
+    /// own authority sets it (docs/crypto.md, "The signed-only flag").
     fn require_signed_writes(
         &self,
         _owner: Owner,
         _at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Makes `owner` accept unsigned writes again. Idempotent.
+    fn clear_signed_writes(
+        &self,
+        _owner: Owner,
     ) -> impl Future<Output = Result<(), StoreError>> + Send {
         async { Ok(()) }
     }

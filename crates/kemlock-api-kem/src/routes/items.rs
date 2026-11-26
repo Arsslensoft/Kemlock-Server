@@ -2,7 +2,7 @@
 
 use super::view::MaybeView;
 use crate::dto::{
-    BatchResponse, ItemDto, ResolveResponse, SiblingSetDto, SyncBody, SyncQuery, SyncResponse,
+    BatchResponse, ClearSignedWritesRequest, ItemDto, ResolveResponse, SiblingSetDto, SyncBody, SyncQuery, SyncResponse,
 };
 use crate::extract::{Authed, Body};
 use crate::problem::Problem;
@@ -17,8 +17,8 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use kemlock_app::ports::{ItemStore, StoreError, TokenSigner};
-use kemlock_app::signed_writes::RequireSignedWrites;
+use kemlock_app::ports::{ItemStore, StoreError, TokenSigner, TwoFactorRepo, UserRepo};
+use kemlock_app::signed_writes::SetSignedWrites;
 use kemlock_app::spaces::sync_owners::owners_of;
 use kemlock_app::spaces::{SpaceRepo, SpacesError};
 use kemlock_app::{AppError, SyncOutcome, b64url};
@@ -225,10 +225,10 @@ where
     .into_response())
 }
 
-/// `PUT /kem/v1/owners/{owner}/signed-writes`: the account asks that its own vault accept signed
-/// writes only, before any signed write has been made (docs/crypto.md, "Signed item writes"). It is
-/// otherwise set by the first signed write, and it is never undone. `204`; `403` for another
-/// owner: the flag of a space is set by the first signed write of one of its members.
+/// `PUT /kem/v1/owners/{owner}/signed-writes`: asks that the owner accept signed writes only
+/// (docs/crypto.md, "The signed-only flag"). The account's own vault, or a space the caller owns or
+/// administers. A signed write does not set it. Idempotent. `204`; `403` for another account's vault
+/// or a space the caller only belongs to; `404` for a space the caller doesn't belong to.
 async fn require_signed_writes<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
@@ -241,13 +241,79 @@ where
     R: SpaceRepo + Clone + 'static,
 {
     let owner = super::contract::owner_param(&owner)?;
-    RequireSignedWrites {
+    set_signed_writes(&env)
+        .execute(&caller.actor(), owner, true)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /kem/v1/owners/{owner}/signed-writes`: takes the owner off the list, so unsigned writes
+/// are accepted again. The same people may, and it asks for the password again (and a fresh proof
+/// beside it when a second step is on), as erasing the account does: turning the flag off lets a
+/// stolen session write what the account's keys never signed. `204`.
+async fn clear_signed_writes<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(owner): Path<String>,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let owner = super::contract::owner_param(&owner)?;
+    let request: ClearSignedWritesRequest = body.json()?;
+    let api = &env.api;
+    let user = UserRepo::by_id(&api.store, caller.0.actor.user)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
+    let second_step = TwoFactorRepo::list(&api.store, user.id)
+        .await
+        .map_err(AppError::from)?
+        .iter()
+        .any(|row| row.enabled);
+    let proof = request.proof.as_ref().filter(|p| !p.is_blank());
+    if second_step && proof.is_none() {
+        return Err(AppError::Invalid(
+            "a fresh proof is needed beside the password to turn signed-only writes off",
+        )
+        .into());
+    }
+    // Who may is checked before the password is spent, so a refusal costs no attempt.
+    let setter = set_signed_writes(&env);
+    setter.check(&caller.actor(), owner).await?;
+    super::reauth::reauthenticate(
+        api,
+        &caller.0,
+        &user,
+        &request.login_state,
+        &request.finalization,
+    )
+    .await?;
+    if let (true, Some(proof)) = (second_step, proof) {
+        super::two_step::require_proof_via_api(api, user.id, proof, true).await?;
+    }
+    setter.execute(&caller.actor(), owner, false).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The use case that sets or clears the flag.
+fn set_signed_writes<S, P, K, R>(env: &Env<S, P, K, R>) -> SetSignedWrites<S, R, S, P>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    SetSignedWrites {
         items: env.api.store.clone(),
+        spaces: env.spaces.clone(),
+        events: env.api.store.clone(),
         clock: env.api.crypto.clone(),
     }
-    .execute(&caller.actor(), owner)
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The header that carries the sync cursor, for a cursor too long for a URL.
@@ -510,7 +576,7 @@ where
         .route("/kem/v1/items:batch", post(put_batch::<S, P, K, R>))
         .route(
             "/kem/v1/owners/{owner}/signed-writes",
-            put(require_signed_writes::<S, P, K, R>),
+            put(require_signed_writes::<S, P, K, R>).delete(clear_signed_writes::<S, P, K, R>),
         )
         .route(
             "/kem/v1/accounts/{id}/bundles/{version}",

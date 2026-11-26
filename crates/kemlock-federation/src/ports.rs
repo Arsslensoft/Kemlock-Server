@@ -316,9 +316,20 @@ pub trait ReplicaStore: Send + Sync {
         async { Ok(false) }
     }
 
-    /// Whether `owner` accepts signed `kem1` writes only on this server (docs/crypto.md, "Signed
-    /// item writes"): a signed write was accepted for it, or applied from a peer. Applying a signed
-    /// record sets it.
+    /// Sets or clears the flag of `owner` here, as the home's signed record says
+    /// (`docs/federation.md`, "Writer signatures"). Idempotent.
+    ///
+    /// The default keeps no flag.
+    fn set_owner_signed_only(
+        &self,
+        _owner: Owner,
+        _required: bool,
+    ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Whether `owner` accepts signed `kem1` writes only on this server (docs/crypto.md, "The
+    /// signed-only flag"): the owner asked for it, here or at the home server it replicates from.
     ///
     /// The default is false, for a store that keeps no such flag.
     fn owner_signed_only(

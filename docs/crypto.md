@@ -920,7 +920,7 @@ subject to this.
 2. if it carries none and the owner is signed-only, it is refused;
 3. a record that names the head in its lineage at no higher revision than the head's is refused
    (see "Rollback" in `docs/federation.md`);
-4. applying a signed record makes the owner signed-only on this peer.
+4. a signed record does not set the flag on this peer: only the owner's own request at that server does.
 
 **A client, on sync**, for each `kem1` revision it is served, tombstones included. It checks the
 signature under the writer's bundle, taken as follows: the account's own `sig1` key for its own
@@ -955,13 +955,17 @@ next manifest may list the item as deleted.
 Bitwarden-API writes, an older Kemlock client and the import tools can't sign. So the server keeps,
 per owner, a flag **signed-only**:
 
-- it is set the first time a signed `kem1` write is accepted for the owner (by the server or by
-  federation), or when the owner asks: `PUT /kem/v1/owners/{owner}/signed-writes` (`204`) for the
-  signed-in account's own vault, which makes the next unsigned write a refusal. It is never cleared
-  by a request. Only erasing the owner clears it;
+- it is set only when the owner asks: `PUT /kem/v1/owners/{owner}/signed-writes` (`204`), by the
+  account for its own vault, or by an owner or admin of a space for that space. A signed write does
+  not set it, because the Kemlock app doesn't sign yet and one device that does must not lock out
+  the others. The same people clear it with `DELETE` on the same path, which asks for the password
+  again (the OPAQUE messages of a fresh login, and a fresh proof beside them when a second step is
+  on), as erasing the account does, because clearing it lets a stolen session write what the
+  account's keys never signed. Both are logged. Erasing the owner clears it too;
 - once set, an unsigned `kem1` write or record for that owner is refused by this server and by
-  every federation peer that holds the flag. A peer learns it from the first signed record it
-  applies.
+  every federation peer that holds the flag. A peer holds it only when the owner asked at that
+  server; a flag set at the home is not yet carried to the replicas in a signed home record, so it
+  has to be set at each server of the set.
 
 **What stays unprotected.** `bw` items (a Bitwarden-format cipher has no `kem1` envelope), so
 Bitwarden apps' writes are accepted whatever the flag says, and so can be rolled back, deleted and

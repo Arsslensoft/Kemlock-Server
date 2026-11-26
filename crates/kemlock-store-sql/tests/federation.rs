@@ -562,7 +562,7 @@ fn signature_of(writer: kemlock_domain::UserId, fill: u8) -> kemlock_domain::Wri
 }
 
 #[tokio::test]
-async fn a_writer_signature_travels_with_a_version_and_makes_the_owner_signed_only_on_both() {
+async fn a_writer_signature_travels_with_a_version_and_the_flag_is_set_only_by_the_owner() {
     use kemlock_app::ports::ItemStore;
     let a = memory().await;
     let b = memory().await;
@@ -572,13 +572,14 @@ async fn a_writer_signature_travels_with_a_version_and_makes_the_owner_signed_on
     let mut signed = draft(id, owner, None, 1);
     signed.signature = Some(signature_of(writer, 7));
     put(&a, signed).await;
+    // A signature does not set the flag, here or at the peer.
     assert!(
-        ItemStore::signed_writes_required(&a, owner)
+        !ItemStore::signed_writes_required(&a, owner)
             .await
             .expect("flag")
     );
     assert!(
-        !ItemStore::signed_writes_required(&b, owner)
+        !ReplicaStore::owner_signed_only(&b, owner)
             .await
             .expect("flag")
     );
@@ -590,7 +591,24 @@ async fn a_writer_signature_travels_with_a_version_and_makes_the_owner_signed_on
     let held = ItemStore::get(&b, id).await.expect("get").expect("item");
     assert_eq!(held.signature, Some(signature_of(writer, 7)));
     assert!(
+        !ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
+    // The flag is the owner's to set, and a peer takes it from the home.
+    ReplicaStore::set_owner_signed_only(&b, owner, true)
+        .await
+        .expect("set");
+    assert!(
         ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
+    ReplicaStore::set_owner_signed_only(&b, owner, false)
+        .await
+        .expect("cleared");
+    assert!(
+        !ReplicaStore::owner_signed_only(&b, owner)
             .await
             .expect("flag")
     );

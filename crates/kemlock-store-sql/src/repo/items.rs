@@ -345,6 +345,32 @@ impl ItemStore for SqlStore {
         }
     }
 
+    async fn clear_signed_writes(&self, owner: Owner) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
+        let cleared = async {
+            lock_meta(&txn).await?;
+            let (owner_type, owner_id) = items::owner_parts(owner);
+            signed_writes::Entity::delete_by_id((owner_type, owner_id))
+                .exec(&txn)
+                .await
+                .store()?;
+            Ok::<(), StoreError>(())
+        }
+        .await;
+        match cleared {
+            Ok(()) => {
+                txn.commit().await.store()?;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = txn.rollback().await {
+                    tracing::warn!(%rollback, "rollback after a failed signed-only clear failed");
+                }
+                Err(err)
+            }
+        }
+    }
+
     async fn purge_tombstones(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
         let txn = self.writer().begin().await.store()?;
         match purge_in(&txn, before).await {
@@ -578,10 +604,6 @@ async fn write_over(
         }
     } else {
         items::Entity::insert(row).exec(txn).await.store()?;
-    }
-    if item.signature.is_some() {
-        // The first signed write makes the owner signed-only, in the transaction that stores it.
-        mark_signed_only(txn, item.owner, item.updated_at).await?;
     }
     changes::Entity::insert(changes::active(&item)?)
         .exec(txn)

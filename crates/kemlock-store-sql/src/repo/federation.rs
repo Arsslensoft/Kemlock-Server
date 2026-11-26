@@ -475,11 +475,6 @@ async fn apply_in(
     .exec(txn)
     .await
     .store()?;
-    if record.write.is_some() {
-        // A signed write makes the owner signed-only here too (docs/crypto.md, "Signed item
-        // writes").
-        super::items::mark_signed_only(txn, record.owner, incoming.updated_at).await?;
-    }
 
     // A later write here must carry an HLC time after the one just received.
     let meta = server_meta::Entity::find_by_id(server_meta::ROW_ID)
@@ -613,6 +608,23 @@ impl ReplicaStore for SqlStore {
         .await
         .store()?
         .is_some())
+    }
+
+    async fn set_owner_signed_only(
+        &self,
+        owner: Owner,
+        required: bool,
+    ) -> Result<(), StoreError> {
+        if required {
+            kemlock_app::ports::ItemStore::require_signed_writes(
+                self,
+                owner,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+        } else {
+            kemlock_app::ports::ItemStore::clear_signed_writes(self, owner).await
+        }
     }
 
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {

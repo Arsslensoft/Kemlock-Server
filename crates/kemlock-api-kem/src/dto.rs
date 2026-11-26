@@ -813,6 +813,19 @@ impl FreshProof {
     }
 }
 
+/// Takes an owner off the signed-only list (docs/crypto.md, "The signed-only flag"): the password
+/// again, as erasing the account asks for it, because turning the flag off lets unsigned writes in.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClearSignedWritesRequest {
+    /// What `POST /auth/opaque/start` answered, unread.
+    pub login_state: String,
+    /// The client's OPAQUE `CredentialFinalization`.
+    pub finalization: String,
+    /// A fresh proof, needed beside the password when the account has a second step on.
+    pub proof: Option<FreshProof>,
+}
+
 /// An account's public-key bundle at one key version (docs/crypto.md, "Signed item writes").
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

@@ -7,7 +7,7 @@
 //! `tests/openapi.rs` checks that every routed path is in the merged document.
 
 use crate::dto::{
-    BundleAtDto, ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
+    BundleAtDto, ClearSignedWritesRequest, ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
     PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest,
     RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
@@ -438,14 +438,31 @@ fn doc_bundle_at() {}
 #[utoipa::path(
     put, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
     security(("dpop" = [])),
-    params(("owner" = String, Path, description = "The account's own vault, `user:<uuid>`")),
+    params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
     responses(
-        (status = 204, description = "The vault accepts signed writes only from now on (docs/crypto.md, \"Signed item writes\"). Idempotent, and never undone"),
-        (status = 403, description = "Any owner but the caller's own vault: a space's flag is set by the first signed write of one of its members", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 204, description = "The owner accepts signed writes only from now on (docs/crypto.md, \"The signed-only flag\"). Idempotent. Servers it replicates to learn it from the home server"),
+        (status = 403, description = "Another account's vault, or a space the caller is neither owner nor admin of", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "A space the caller is not a member of", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn doc_signed_writes() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
+    security(("dpop" = [])),
+    params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
+    request_body = ClearSignedWritesRequest,
+    responses(
+        (status = 204, description = "Unsigned writes are accepted again (docs/crypto.md, \"The signed-only flag\"). Idempotent. Needs the password, and a fresh proof when a second step is on"),
+        (status = 400, description = "The login state was used before, or isn't well formed; or a second step is on and the proof is missing, wrong or spent", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 403, description = "Another account's vault, or a space the caller is neither owner nor admin of", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 429, description = "Too many wrong passwords", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_clear_signed_writes() {}
 
 #[utoipa::path(
     get, path = "/kem/v1/sync", tag = "sync",
@@ -502,7 +519,7 @@ fn doc_live() {}
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
         doc_register_start, doc_register_finish, doc_confirm_email_page, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
-        doc_put_item, doc_batch, doc_signed_writes, doc_bundle_at, doc_sync, doc_sync_post, doc_live
+        doc_put_item, doc_batch, doc_signed_writes, doc_clear_signed_writes, doc_bundle_at, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
         ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,
@@ -512,7 +529,7 @@ fn doc_live() {}
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,
         TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeRequest, RecoveryCodeResponse, ItemDto,
         ItemWriteDto, ItemWriteAnswerDto, TaggedBatchWriteDto, TaggedBatchRequest, TagOutcomeDto,
-        TaggedBatchResponse, SyncBody, SyncResponse, BundleAtDto
+        TaggedBatchResponse, SyncBody, SyncResponse, BundleAtDto, ClearSignedWritesRequest
     )),
     modifiers(&SecurityAddon)
 )]

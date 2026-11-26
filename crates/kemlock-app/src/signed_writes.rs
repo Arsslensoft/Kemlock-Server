@@ -1,15 +1,17 @@
 //! Signed item writes (docs/crypto.md, "Signed item writes"): the per-owner **signed-only** flag
 //! and the rule it gives the write use cases.
 //!
-//! Once an owner has had a signed `kem1` write accepted (or its owner asked), this server refuses
-//! an unsigned `kem1` write for it. The cryptographic check of a signature is done where the
+//! Once an owner asked (the account for its vault, an owner or admin for a space), this server
+//! refuses an unsigned `kem1` write for it. A signed write does not set it: the Kemlock app does not
+//! sign yet, and a vault one of its devices writes would be locked out by the first signed write of
+//! another. The default will change once the app signs. The cryptographic check of a signature is done where the
 //! writer's bundle is read (the API layer), because this crate has no crypto of its own; the
 //! flag's rule is here so every route that writes items, and the key replacement that rewrites
 //! them, applies the same one.
 
 use crate::authenticate::Actor;
 use crate::error::AppError;
-use crate::ports::{Clock, ItemStore, StoreError};
+use crate::ports::{Clock, Event, EventLog, ItemStore, StoreError};
 use kemlock_domain::{ItemDraft, ItemFormat, Owner};
 
 /// Whether the write `draft` came from must be refused for lacking a signature: it is a `kem1`
@@ -28,27 +30,71 @@ pub async fn refuses_unsigned<I: ItemStore>(
     items.signed_writes_required(draft.owner).await
 }
 
-/// Makes the account's own vault accept signed writes only, before any signed write has been
-/// made. It never goes back.
+/// Turns the signed-only flag of an owner on or off (docs/crypto.md, "The signed-only flag"): the
+/// account's own vault, or a space by a confirmed owner or admin of it. Both are logged. Turning it
+/// off is the step that needs a fresh proof of the person, which the route asks before it gets here.
 #[derive(Debug)]
-pub struct RequireSignedWrites<I, C> {
+pub struct SetSignedWrites<I, R, V, C> {
     pub items: I,
+    pub spaces: R,
+    pub events: V,
     pub clock: C,
 }
 
-impl<I: ItemStore, C: Clock> RequireSignedWrites<I, C> {
-    /// `owner` must be the actor's own vault: the owner of a space is set by the first signed
-    /// write of one of its members, not asked for.
-    pub async fn execute(&self, actor: &Actor, owner: Owner) -> Result<(), AppError> {
+impl<I: ItemStore, R: crate::spaces::SpaceRepo, V: EventLog, C: Clock> SetSignedWrites<I, R, V, C> {
+    /// Whether `actor` may set or clear the flag of `owner`: `NotFound` for a space the actor isn't
+    /// a confirmed member of, and `Forbidden` for another person's vault and for a member who is
+    /// neither owner nor admin. The route asks it before it spends the password.
+    pub async fn check(&self, actor: &Actor, owner: Owner) -> Result<(), AppError> {
         match owner {
-            Owner::User(user) if user == actor.user => {
-                self.items
-                    .require_signed_writes(owner, self.clock.now())
-                    .await?;
-                Ok(())
+            Owner::User(user) if user == actor.user => {}
+            Owner::User(_) => return Err(AppError::Forbidden),
+            Owner::Space(space) => {
+                let state = self.spaces.load(space).await?.ok_or(AppError::NotFound)?;
+                let member = state
+                    .confirmed_actor(actor.user)
+                    .map_err(|_| AppError::NotFound)?;
+                if !matches!(
+                    member.role,
+                    kemlock_domain::spaces::SpaceRole::Owner
+                        | kemlock_domain::spaces::SpaceRole::Admin
+                ) {
+                    return Err(AppError::Forbidden);
+                }
             }
-            _ => Err(AppError::Forbidden),
         }
+        Ok(())
+    }
+
+    /// Sets (`required`) or clears the flag, when [`Self::check`] allows it.
+    pub async fn execute(
+        &self,
+        actor: &Actor,
+        owner: Owner,
+        required: bool,
+    ) -> Result<(), AppError> {
+        self.check(actor, owner).await?;
+        let now = self.clock.now();
+        if required {
+            self.items.require_signed_writes(owner, now).await?;
+        } else {
+            self.items.clear_signed_writes(owner).await?;
+        }
+        let event = Event {
+            actor: Some(actor.user),
+            device: Some(actor.device),
+            action: if required {
+                "signed_writes.require"
+            } else {
+                "signed_writes.clear"
+            },
+            target: Some(owner.to_string()),
+            at: now,
+        };
+        if let Err(e) = self.events.record(event).await {
+            tracing::warn!(error = %e, "couldn't record a signed-writes event");
+        }
+        Ok(())
     }
 }
 

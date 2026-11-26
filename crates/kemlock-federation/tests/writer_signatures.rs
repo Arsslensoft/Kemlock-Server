@@ -173,8 +173,9 @@ async fn a_replica_cannot_delete_what_the_account_wrote_with_a_signature() {
     assert_eq!(report.counts.applied, 1);
     assert_eq!(report.counts.refused, 0);
 
-    // A turns malicious: it signs, as a server, a tombstone no device wrote. B has seen a signed
-    // write of the vault, so it takes no unsigned change of it.
+    // The owner asked B for signed writes only. A turns malicious: it signs, as a server, a
+    // tombstone no device wrote, and B takes no unsigned change of the vault.
+    b.store().set_signed_only(vault, true);
     a.store()
         .put(tombstone(item, vault, 1, 2, 2_000))
         .expect("A's own unsigned tombstone");

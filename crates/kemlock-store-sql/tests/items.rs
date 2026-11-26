@@ -699,7 +699,7 @@ async fn mysql_when_configured() {
 }
 
 #[tokio::test]
-async fn a_signed_write_is_kept_with_the_item_and_makes_its_owner_signed_only() {
+async fn a_signed_write_is_kept_with_the_item_and_does_not_set_the_flag() {
     let store = memory().await;
     let writer = kemlock_domain::UserId::random();
     let owner = kemlock_domain::Owner::User(writer);
@@ -727,6 +727,15 @@ async fn a_signed_write_is_kept_with_the_item_and_makes_its_owner_signed_only() 
         get(&store, id).await.expect("the item").signature,
         Some(signature.clone())
     );
+    // Only the owner's own request sets the flag, not a signed write.
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+    ItemStore::require_signed_writes(&store, owner, MADE_AT)
+        .await
+        .expect("asked");
     assert!(
         ItemStore::signed_writes_required(&store, owner)
             .await
@@ -753,7 +762,7 @@ async fn a_signed_write_is_kept_with_the_item_and_makes_its_owner_signed_only() 
 }
 
 #[tokio::test]
-async fn an_owner_may_ask_for_signed_writes_and_it_is_never_undone() {
+async fn an_owner_may_ask_for_signed_writes_and_clear_it_again() {
     let store = memory().await;
     let owner = user_owner();
     assert!(
@@ -769,6 +778,17 @@ async fn an_owner_may_ask_for_signed_writes_and_it_is_never_undone() {
         .expect("asked twice");
     assert!(
         ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+    ItemStore::clear_signed_writes(&store, owner)
+        .await
+        .expect("cleared");
+    ItemStore::clear_signed_writes(&store, owner)
+        .await
+        .expect("cleared twice");
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
             .await
             .expect("flag")
     );
