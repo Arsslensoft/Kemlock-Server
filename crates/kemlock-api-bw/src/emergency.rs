@@ -23,7 +23,7 @@ use crate::cipher::{FOLDER_KIND, StoredCipher};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::password::hash_password;
-use crate::routes::{EmptyResult, JsonResult, empty, ok, parse};
+use crate::routes::{EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -514,7 +514,7 @@ async fn invite_link_route<S: BwStore>(
     State(app): State<App<S>>,
     authed: Authed,
     Path(id): Path<String>,
-) -> JsonResult {
+) -> SecretJsonResult {
     let grant = owned(&app, authed.user.id, &id).await?;
     if grant.state != EmergencyState::Invited {
         return Err(BwError::msg(
@@ -522,7 +522,7 @@ async fn invite_link_route<S: BwStore>(
         ));
     }
     let (token, link) = invite_link(&app, &grant).await?;
-    ok(json!({"object": "inviteLink", "link": link, "token": token}))
+    ok_no_store(json!({"object": "inviteLink", "link": link, "token": token}))
 }
 
 async fn send_invite<S: BwStore>(

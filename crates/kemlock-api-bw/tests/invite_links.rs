@@ -228,3 +228,27 @@ async fn someone_who_was_never_invited_has_no_link() {
         Err(InviteLinkError::NotFound)
     );
 }
+
+#[tokio::test]
+async fn the_bitwarden_route_gives_its_link_with_no_cache() {
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let (_bob, bob_id) = h.signed_in("bob@example.com").await;
+    let org = organization(&h, &ada).await;
+    invite(&h, &ada, &org, "bob@example.com", 2).await;
+
+    let bearer = format!("Bearer {ada}");
+    let (status, headers, _) = h
+        .send(
+            "GET",
+            &format!("/api/organizations/{org}/users/{bob_id}/invite-link"),
+            &[("authorization", bearer.as_str())],
+            axum::body::Body::empty(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("cache-control").and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+}
