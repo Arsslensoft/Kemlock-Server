@@ -440,7 +440,7 @@ for several keys, one of them with a group that wraps the list.
 - Public key: `ML-DSA-65 public key (1952) ‖ Ed25519 public key (32)`, 1984 bytes.
 - Private key: `ML-DSA-65 seed ξ (32) ‖ Ed25519 seed (32)`, 64 bytes.
 - The signed message is `m' = "kemlock/v1/sig1" ‖ lp(context) ‖ lp(message)`. The contexts are
-  `"bundle"`, `"manifest"`, `"confirm"` and `"space-chain"` ("Space chain").
+  `"bundle"`, `"manifest"`, `"confirm"`, `"key-box"` ("Signed key boxes") and `"space-chain"` ("Space chain").
 - Signature: `ML-DSA-65.Sign(sk_m, m', ctx = empty) (3309) ‖ Ed25519.Sign(sk_e, m') (64)`,
   3373 bytes. ML-DSA signing may be hedged or deterministic; verifiers accept both.
 - Verification passes only when both verify over the same `m'`.
@@ -564,6 +564,108 @@ A deleted item is a tombstone: `deleted: true` with `ciphertext` and `itemKey` a
 revision still moves on, so a device sees the deletion as a newer write. `deleted` is always
 present, `true` or `false`, in both directions; the server refuses an item without it. `owner` is
 `user:<uuid>` for a person's own vault and `space:<uuid>` for a space, hyphenated lower case.
+
+### Signed key boxes
+
+A sealed box is anonymous: whoever knows a member's `kx1` public key can seal anything to it, and the
+`aad` only stops a box being served as another one. So the server, which knows every member's public
+key, could make a collection key of its own, seal it to a member and serve it, and a new item that
+member wrote to that collection would be readable by the server. A space with a chain commits every
+box in the signed chain (`open_key`, "Using the state"), which authenticates it. **A space with no
+chain gets the same from the member who sealed each box signing it.**
+
+```
+statement = "kemlock/v1/key-box" ‖ lp(box context) ‖ lp(aad) ‖ lp(box)
+            ‖ sealer id (16) ‖ u32be(sealer key version)
+signature = sig1 signature of the sealer's own key, context "key-box", over the statement
+```
+
+- The box context is `"space-key"` or `"collection-key"` and `aad` is that box's own `aad` ("Sealed
+  box"), so the statement names the space, the collection, the key version and the recipient. The
+  box is the 1661 bytes of `u8(1) ‖ ct ‖ AES-256-GCM(…)`. The statement is 1756 bytes for a space key
+  and 1777 for a collection key, and the signature 3373.
+- The **sealer** is the account that made the box: the one signed in when it was sent. The key
+  version is the version of the sealer's bundle whose `sig1` key signs.
+- The signature stays beside the box, never inside it, so a box's bytes (and the seal hash a chain
+  commits) don't change.
+
+**What the server does.** Every route that takes a sealed space key or collection key for a space
+with no chain also takes the signature (`signature`, base64url). The server rebuilds the statement
+from the route (the space, the collection, the key version it will store, the recipient and the box)
+with the signed-in account as sealer and that account's registered key version, and refuses the
+request (invalid, `400`) unless the signature verifies under the `sig1` key of the sealer's
+registered bundle. It stores `sealedBy` (the sealer's id and key version) and the signature with
+each key copy, a member's space key copy and each collection key copy, and serves them with it:
+
+```json
+"sealedBy": {"account": uuid, "keyVersion": int, "signature": base64url}   or null
+```
+
+on a member's own entry (next to `sealedSpaceKey`) and on each collection key copy it serves. It
+doesn't judge the sealer's authority again: its own rules already say who may seal what. A copy the
+server holds from before signatures, and any copy of a space with a chain, has `sealedBy` `null`.
+Replacing a key (a `confirm` again, a key replacement, a grant) replaces the box and its signature
+together. Key copies the chain commits (a `confirm`, `seal`, `keys` or `collection` record) carry no
+signature.
+
+**What a client does, before it opens a key of a space with no chain.** The key is the member's own
+copy of the space key, or one of the collection copies the server serves. The client opens the box
+only when one of these holds:
+
+1. **A signed box.** `sealedBy` is present, the signature verifies over the statement the client
+   rebuilds itself (the space, key version and recipient from what it is opening, never from the
+   server's description of the box) under the `sig1` key of the sealer's bundle, and the sealer is
+   trusted:
+   - the sealer is the client's own account, and the bundle is the one the client holds (not the
+     server's copy), at the key version the signature names; or
+   - the sealer is a confirmed member whose bundle is verified as for a recipient ("Member
+     confirmation": the bundle is theirs, signed by itself, at their current key version, and their
+     confirmation traces, through members who are themselves verified, to the client's own account
+     or to a fingerprint a person compared, a **pin**), the signature's key version is that
+     bundle's, **and** the sealer held authority to seal that key:
+     - the space key: an owner or admin, or a custom member with `manage-users` (a confirmer);
+     - a collection key: an owner or admin, or a member with Manage on the collection (directly or
+       through a group), or a custom member with `manage-users` or `manage-groups` who holds a grant
+       on the collection (the confirmation and the group change seal the keys of the collections
+       they cover).
+2. **A box already accepted.** The client remembers, in its sealed local store, the SHA-256 of each
+   box it accepted for (space, key, version). A box with that hash is accepted again without the
+   sealer being checked, so a sealer who has since left, or whose account has moved to another key
+   version, doesn't lock a member out of a key they already hold. A box with another hash for the
+   same (space, key, version) is checked as 1, and is refused when it fails.
+3. **A box from before signatures.** `sealedBy` is `null`, and the rule for those is below.
+
+A box that fails all three is not opened, and the client shows the space's keys as "Can't be
+checked". A space with a verified chain skips all of this: the chain authenticates its boxes, and
+requiring a signature there too would only repeat the work. A client that has ever been served a chain
+for a space never reads it as having none ("Using the state").
+
+**Boxes made before this change.** There are boxes no one signed, and no later signature can prove
+who made them. The rule keeps existing spaces usable without opening the door to new forgeries:
+
+- A client **accepts and remembers** an unsigned box once per (space, key, version): the first time
+  it meets one it opens it, stores its SHA-256 as in 2 and marks it "sealed before keys were
+  signed". The mark is shown to the person on the space ("Some keys of this space were sealed before
+  keys were signed; ask an owner to confirm you again"), and goes when the box is replaced.
+- An unsigned box that differs from the one remembered for that (space, key, version) is refused.
+- An unsigned box is refused for a (space, key) once the client has accepted a **signed** box of it
+  at the same or a later version, so a server can't take a signature away. Signed boxes are
+  accepted at any version.
+- A box is replaced by a signed one when the key is replaced (the next key version is sealed and
+  signed by whoever replaces it) or when an owner or admin confirms the member again, which seals
+  the current space key and the member's collection keys anew. Nothing else is needed: there is no
+  separate migration step.
+
+What this leaves open is stated plainly: a device that has never opened a key of that (space, key,
+version) accepts an unsigned box on first sight, so a server that already forged one for a member's
+new device before the member first sees it is not caught, until the key is replaced. The mark
+makes such boxes visible, and a replacement removes the exposure.
+
+**A sealer's key version.** The statement binds the key version of the sealer's bundle. After an
+account moves to a new key version the signature can't be verified against its new bundle, so
+the sealer's earlier boxes pass only by rule 2 on a device that already accepted them, and are
+replaced at the next replacement or confirmation, as with every key their account held. A box signed
+by an account at a version later than the one the client verified is refused.
 
 ### Items of a space
 
@@ -1604,7 +1706,7 @@ that the `confirm` records its own bundle, byte for byte.
 A space with no chain is not covered by any of this. Its client takes who is in it and which key
 version is current from the server, and checks only what it can: that a member's bundle is theirs and
 that someone it can trace to itself, or to a fingerprint its person compared, confirmed exactly those
-keys. A server can still hand an unchained space's members a key of its own at the next version, or
+keys, and that the member who sealed each key it opens signed it ("Signed key boxes"). A server can still hand an unchained space's members a key of its own at the next version, or
 leave one out of a replacement, and nothing in the space shows it: **an unchained space trusts the
 server for which key version is current, and a chained space doesn't.** That is why a client that has
 ever been served a chain for a space never reads the space as unchained again, and why a space is
@@ -2376,4 +2478,4 @@ kemlock-vectors` from fixed seeds, and checked by CI to regenerate byte for byte
 its format version and a description, and `SHA256SUMS` lists them. The folder is CC0-1.0 so any
 client may copy it.
 
-Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `sig1-edge.json` (the Ed25519 verification rule's edge cases and their verdicts), `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).
+Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `sig1-edge.json` (the Ed25519 verification rule's edge cases and their verdicts), `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `key-box.json` (signed key box statements for a space key and a collection key, their signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).
