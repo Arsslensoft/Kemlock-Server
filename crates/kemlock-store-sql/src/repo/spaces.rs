@@ -18,11 +18,12 @@ use crate::tables::space_tables::{
 };
 use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::{
-    ExternalChangeMode, KeyReplacement, PendingExternal, SpaceChanges, SpaceItemInfo, SpaceRepo,
+    ExternalChangeMode, KeyReplacement, OWNER_REQUIRED, PendingExternal, SpaceChanges,
+    SpaceItemInfo, SpaceRepo,
 };
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, Grantee, Group, GroupId, KeyCopy, Member,
-    MemberState, Space, SpaceState,
+    MemberState, Space, SpaceRole, SpaceState,
 };
 use kemlock_domain::{Item, ItemDraft, ItemId, Owner, SpaceId, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
@@ -388,6 +389,29 @@ impl SpaceRepo for SqlStore {
 }
 
 impl SqlStore {
+    /// As `write_changes` for a space that exists, but refuses (`OWNER_REQUIRED`) a change that
+    /// leaves a space that had a confirmed owner with none. The use cases check the state they read,
+    /// and two owners removing each other at once each pass; this checks the state written, in the
+    /// same transaction, and the writer takes them one at a time.
+    pub(crate) async fn write_changes_keeping_owner(
+        &self,
+        changes: SpaceChanges,
+    ) -> Result<(), StoreError> {
+        let space = changes.space_id.0;
+        let touches_members = !changes.members.is_empty() || !changes.members_removed.is_empty();
+        let txn = self.writer().begin().await.store()?;
+        let outcome = async {
+            let had_owner = touches_members && has_confirmed_owner(&txn, space).await?;
+            apply_in(&txn, changes, false).await?;
+            if had_owner && !has_confirmed_owner(&txn, space).await? {
+                return Err(StoreError::Backend(OWNER_REQUIRED.to_owned()));
+            }
+            Ok::<(), StoreError>(())
+        }
+        .await;
+        finish(txn, outcome, "a failed space change").await
+    }
+
     pub(crate) async fn write_changes(
         &self,
         changes: SpaceChanges,
@@ -417,6 +441,18 @@ pub(super) async fn finish<T>(
             Err(err)
         }
     }
+}
+
+/// Whether the space has a confirmed owner.
+async fn has_confirmed_owner<C: ConnectionTrait>(db: &C, space: Uuid) -> Result<bool, StoreError> {
+    Ok(members::Entity::find()
+        .filter(members::Column::SpaceId.eq(space))
+        .filter(members::Column::Role.eq(SpaceRole::Owner.as_str()))
+        .filter(members::Column::State.eq(MemberState::Confirmed.as_str()))
+        .one(db)
+        .await
+        .store()?
+        .is_some())
 }
 
 /// The ids of a space's collections.

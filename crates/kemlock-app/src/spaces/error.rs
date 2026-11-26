@@ -37,6 +37,9 @@ impl From<StoreError> for SpacesError {
             StoreError::Conflict { item, current } => SpacesError::StaleItem { item, current },
             StoreError::Duplicate => SpacesError::Duplicate,
             StoreError::NotFound => SpacesError::NotFound,
+            StoreError::Backend(message) if message == super::ports::OWNER_REQUIRED => {
+                SpacesError::Rule(SpaceError::LastOwner)
+            }
             StoreError::Backend(message) => SpacesError::Store(message),
         }
     }
@@ -78,5 +81,23 @@ impl From<SpacesError> for AppError {
             SpacesError::Item(e) => AppError::Item(e),
             SpacesError::Store(message) => AppError::Store(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stores_refusal_to_leave_no_owner_is_the_last_owner_rule() {
+        let refused = StoreError::Backend(crate::spaces::OWNER_REQUIRED.to_owned());
+        assert_eq!(
+            SpacesError::from(refused),
+            SpacesError::Rule(SpaceError::LastOwner)
+        );
+        assert!(matches!(
+            SpacesError::from(StoreError::Backend("down".to_owned())),
+            SpacesError::Store(_)
+        ));
     }
 }

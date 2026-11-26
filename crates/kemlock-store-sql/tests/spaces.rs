@@ -9,8 +9,8 @@ use kemlock_app::ports::{Clock, ItemStore, Notifier, StoreError, UserRepo};
 use kemlock_app::spaces::{
     AcceptInvitation, BundleFingerprints, CollectionRekey, ConfirmInput, ConfirmMember,
     ConfirmationFacts, CreateSpace, CreateSpaceInput, GetSpace, InviteInput, InviteMember,
-    KeyReplacement, NewCollection, Offboard, PutSpaceItem, ReplaceKeys, ReplacementInput,
-    SealedCollectionKey, SpaceChanges, SpaceRepo, SyncOwners,
+    KeyReplacement, NewCollection, OWNER_REQUIRED, Offboard, PutSpaceItem, ReplaceKeys,
+    ReplacementInput, SealedCollectionKey, SpaceChanges, SpaceRepo, SyncOwners,
 };
 use kemlock_app::{Actor, AuthConfig};
 use kemlock_domain::spaces::{
@@ -937,4 +937,94 @@ async fn another_space_cannot_take_over_or_wipe_a_collection_or_group() {
     .await
     .expect("the owner space deletes its own");
     assert_eq!(SpaceRepo::collection_space(&store, everyone).await, Ok(None));
+}
+
+#[tokio::test]
+async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let lee = person(&store, 2, "lee@example.org").await;
+    let (space, _) = make_space(&store, sam.id).await;
+    let sam_row = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists")
+        .members[0]
+        .clone();
+    let mut lee_row = sam_row.clone();
+    lee_row.user = lee.id;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![lee_row.clone()],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a second owner");
+
+    // Two owners each take the other out at once, each valid against what they read. The first
+    // lands; the second would leave nobody and is refused, whichever way it is done.
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![sam.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Lee removes Sam");
+    let removed = SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![lee.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await;
+    assert_eq!(
+        removed,
+        Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
+    );
+    let mut demoted = lee_row.clone();
+    demoted.role = SpaceRole::Admin;
+    let mut revoked = lee_row.clone();
+    revoked.state = MemberState::Revoked;
+    for member in [demoted, revoked] {
+        let refused = SpaceRepo::apply(
+            &store,
+            SpaceChanges {
+                members: vec![member],
+                ..SpaceChanges::new(space)
+            },
+        )
+        .await;
+        assert_eq!(
+            refused,
+            Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
+        );
+    }
+    // Lee is still the confirmed owner, and the refusals rolled back whole.
+    let after = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert_eq!(after.members.len(), 1);
+    assert_eq!(
+        (after.members[0].user, after.members[0].role, after.members[0].state),
+        (lee.id, SpaceRole::Owner, MemberState::Confirmed)
+    );
+
+    // A change that leaves an owner still works.
+    let mut sam_back = sam_row.clone();
+    sam_back.role = SpaceRole::Admin;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![sam_back],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("an admin joins");
 }

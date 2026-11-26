@@ -61,6 +61,12 @@ impl SpaceChanges {
     }
 }
 
+/// What a store says (as `StoreError::Backend`) when it refuses `SpaceRepo::apply` because it would
+/// leave a space that had a confirmed owner without one. Two owners removing each other at once
+/// each pass the use case's check against the state they read; the store checks the state it
+/// writes. [`SpacesError`](super::SpacesError) turns it into `SpaceError::LastOwner`.
+pub const OWNER_REQUIRED: &str = "a space needs at least one confirmed owner";
+
 /// What the server knows about one item of a space without opening it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpaceItemInfo {

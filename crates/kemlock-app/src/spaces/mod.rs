@@ -70,7 +70,8 @@ pub use invite::{AcceptInvitation, InviteInput, InviteMember, ResendInvitation};
 pub use lookup::{AccountLookup, LookupAccount};
 pub use members::{ChangeRole, Exposure, Offboard, Offboarded};
 pub use ports::{
-    BundleFingerprints, ConfirmationFacts, KeyReplacement, SpaceChanges, SpaceItemInfo, SpaceRepo,
+    BundleFingerprints, ConfirmationFacts, KeyReplacement, OWNER_REQUIRED, SpaceChanges,
+    SpaceItemInfo, SpaceRepo,
 };
 pub use put_batch::PutSpaceBatch;
 pub use put_item::PutSpaceItem;

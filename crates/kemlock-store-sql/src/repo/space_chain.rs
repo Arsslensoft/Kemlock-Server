@@ -525,15 +525,18 @@ impl SqlStore {
         creating: bool,
     ) -> Result<(), StoreError> {
         let space = changes.space_id;
-        if creating || !self.space_has_chain(space).await? {
-            return self.write_changes(changes, creating).await;
+        if creating {
+            return self.write_changes(changes, true).await;
+        }
+        if !self.space_has_chain(space).await? {
+            return self.write_changes_keeping_owner(changes).await;
         }
         let Some(state) = kemlock_app::spaces::SpaceRepo::load(self, space).await? else {
             return Err(StoreError::NotFound);
         };
         let (queued, other) = pending_from_changes(&state, &changes);
         if queued.is_empty() && !other {
-            return self.write_changes(changes, false).await;
+            return self.write_changes_keeping_owner(changes).await;
         }
         if self.read_external_mode().await? != ExternalChangeMode::Queue {
             return Err(StoreError::Backend(
