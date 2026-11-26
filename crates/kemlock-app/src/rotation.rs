@@ -21,9 +21,10 @@ use crate::notices::{KeysRotatedNotice, Notice, Notices};
 use crate::platform::{Platform, random_uuid};
 use crate::ports::{ItemStore, Notifier, StoreError, UserRepo};
 use crate::register::{
-    BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN, SEALED_PRIVATE_KEYS_RANGE,
+    BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN,
     WRAPPED_ROOT_KEY_LEN, check_bundle_signature,
 };
+use kemlock_crypto::private_keys::SEALED_LEN as SEALED_PRIVATE_KEYS_LEN;
 use kemlock_crypto::recovery_kit::{WRAPPED_LEN as KIT_WRAP_LEN, is_kit_id};
 use kemlock_domain::item::{ITEM_KEY_LEN, MIN_SEALED_LEN};
 use kemlock_domain::sends::SendId;
@@ -644,8 +645,9 @@ fn check_shapes(account: &User, request: &InstallRequest) -> Result<(), Rotation
     {
         return Err(invalid("the key pair must be replaced"));
     }
-    if !SEALED_PRIVATE_KEYS_RANGE.contains(&request.sealed_private_keys.len())
-        || !SEALED_PRIVATE_KEYS_RANGE.contains(&request.sealed_previous_private_keys.len())
+    // Exactly what the format makes (docs/crypto.md, "The account's private keys"): 189 bytes.
+    if request.sealed_private_keys.len() != SEALED_PRIVATE_KEYS_LEN
+        || request.sealed_previous_private_keys.len() != SEALED_PRIVATE_KEYS_LEN
     {
         return Err(invalid("the sealed private keys are malformed"));
     }

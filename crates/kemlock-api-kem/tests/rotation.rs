@@ -609,3 +609,21 @@ async fn an_account_with_no_password_needs_a_passkey_answer_not_a_session() {
     assert_eq!(*rig.repo.installs.lock().expect("lock"), 0);
     assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
 }
+
+#[tokio::test]
+async fn the_sealed_private_keys_are_exactly_the_size_the_format_makes() {
+    let rig = rig();
+    let sam = rig.person().await;
+    for (field, len) in [
+        ("sealedPrivateKeys", 188),
+        ("sealedPrivateKeys", 190),
+        ("sealedPreviousPrivateKeys", 100),
+        ("sealedPreviousPrivateKeys", 4096),
+    ] {
+        let mut body = sam.install_body().await;
+        body[field] = json!(b64(&vec![0x22u8; len]));
+        let reply = sam.call("POST", "/kem/v1/account/rotation", Some(body)).await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{field} {len}: {:?}", reply.body);
+    }
+    assert_eq!(rig.app.store.user(sam.id).expect("user").key_version, 1);
+}
