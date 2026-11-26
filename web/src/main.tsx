@@ -4,7 +4,9 @@ import { createRoot } from 'react-dom/client';
 import { Root } from '@/app/Root';
 import { keepRootSealed, restoreSession } from '@/app/persistence';
 import { createAppRouter } from '@/app/router';
-import { forgetEndedSession } from '@/app/actions';
+import { forgetEndedSession, lockVault, signOut } from '@/app/actions';
+import { startAutoLock } from '@/app/autoLock';
+import { createPoliciesApi } from '@/api/policies';
 import { sessionEndedTarget } from '@/app/sessionEnded';
 import { api, onSessionEndedPage, queryClient, session } from '@/app/services';
 import { keepTabKeyAlive, purgeClosedTabKeys } from '@/app/tabKey';
@@ -42,6 +44,23 @@ const restored = purged.then(() => restoreSession(persistence)).catch(() => unde
 // Only once the restore has settled does this page say its tab is open: before that the tab id in
 // the storage may be a closed tab's, which must not look alive.
 void restored.then(() => keepTabKeyAlive(session));
+
+// An open vault shuts itself after a while idle or out of sight, sooner if a space's policy says so.
+void restored.then(() =>
+  startAutoLock({
+    session,
+    policies: createPoliciesApi(api),
+    expire: (action) => {
+      if (action === 'logOut') {
+        void signOut().then(() => router.navigate({ to: '/sign-in' }));
+        return;
+      }
+      // The unlock screen brings the person back to the page they were on.
+      const next = router.state.location.href;
+      void lockVault().then(() => router.navigate({ to: '/unlock', search: { next } }));
+    },
+  }),
+);
 
 // The server refusing the refresh token ends the session while a page is open: forget what that
 // page decrypted and go to the sign-in, keeping the page as `next`. Not before the router is up.
