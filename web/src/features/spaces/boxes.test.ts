@@ -343,3 +343,18 @@ describe('the account the server names as mine', () => {
     expect(crypto.calls.some((call) => call.startsWith('openSpace'))).toBe(false);
   });
 });
+
+describe('the sealer’s key version', () => {
+  it('is the one the signature names, looked up as the sealer’s bundle at that version', async () => {
+    const { ctx, lee } = await setup();
+    // The bundle listed for Lee is at version 1: a box signed at version 1 verifies against it, and
+    // one signed at another version has no bundle here to verify against, so it is refused.
+    await expect(
+      openKeyBox(ctx, { key: finance, version: 1, ...signedBy(lee, finance, 1, { signedVersion: 1 }) }),
+    ).resolves.toEqual({ legacy: false });
+    const earlier = signedBy(lee, { collection: INFRA }, 1, { signedVersion: 0 });
+    expect(await refusal(openKeyBox(ctx, { key: { collection: INFRA }, version: 1, ...earlier }))).toBe(
+      'sealer-version',
+    );
+  });
+});

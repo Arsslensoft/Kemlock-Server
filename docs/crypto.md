@@ -664,11 +664,14 @@ version) accepts an unsigned box on first sight, so a server that already forged
 new device before the member first sees it is not caught, until the key is replaced. The mark
 makes such boxes visible, and a replacement removes the exposure.
 
-**A sealer's key version.** The statement binds the key version of the sealer's bundle. After an
-account moves to a new key version the signature can't be verified against its new bundle, so
-the sealer's earlier boxes pass only by rule 2 on a device that already accepted them, and are
-replaced at the next replacement or confirmation, as with every key their account held. A box signed
-by an account at a version later than the one the client verified is refused.
+**A sealer's key version.** The statement binds the key version of the sealer's bundle, so a client
+verifies a signature against the sealer's bundle **at the version the signature names**, not only
+their current one. A client that can get the sealer's earlier bundles (a history of bundles by key
+version, each signed by the one before it, the newest being the one it traced) verifies a box the
+sealer made before their account moved on. A client that holds only the current bundle can't: such a
+box then passes only by rule 2 on a device that already accepted it, and is replaced at the next
+replacement or confirmation, as with every key their account held. A box signed at a version the
+client has no bundle for is refused.
 
 ### Items of a space
 

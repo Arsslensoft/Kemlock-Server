@@ -161,6 +161,24 @@ async function mayGrant(ctx: BoxContext, sealer: MemberViewDto, key: BoxKey): Pr
   return manage || (holds && (sealer.custom.includes('manage-users') || sealer.custom.includes('manage-groups')));
 }
 
+/**
+ * The sealer's bundle at the key version their signature names, so a box they signed before their
+ * account moved to a new key version still verifies against the keys that signed it.
+ *
+ * MERGE: only the bundle the server lists now is known here, so this returns it when its key
+ * version is the one asked for and nothing otherwise. The branch that serves bundles by key version
+ * (the bundle history) replaces the body, and checks that each bundle in the history is signed by
+ * the one before it, with the newest being the listed one `verifiedRecipient` traced.
+ */
+async function bundleAt(
+  _ctx: BoxContext,
+  sealer: MemberViewDto,
+  keyVersion: number,
+): Promise<Uint8Array | undefined> {
+  const current = decodeB64(sealer.publicBundle);
+  return parseBundle(current)?.keyVersion === keyVersion ? current : undefined;
+}
+
 /** Checks a signed box's signature and the sealer behind it; throws `KeyBoxRefused`. */
 async function checkSigned(
   ctx: BoxContext,
@@ -184,16 +202,15 @@ async function checkSigned(
     if (error instanceof MemberNotVerified) throw refuse('sealer-not-verified');
     throw error;
   }
-  let bundle: Uint8Array;
   let signature: Uint8Array;
+  let bundle: Uint8Array | undefined;
   try {
-    bundle = decodeB64(sealer.publicBundle);
     signature = decodeB64(sealedBy.signature);
+    bundle = await bundleAt(ctx, sealer, sealedBy.keyVersion);
   } catch {
     throw refuse('bad-signature');
   }
-  const parsed = parseBundle(bundle);
-  if (!parsed || parsed.keyVersion !== sealedBy.keyVersion) throw refuse('sealer-version');
+  if (!bundle) throw refuse('sealer-version');
   if (sealer.user !== ctx.me && !(await mayGrant(ctx, sealer, box.key))) {
     throw refuse('sealer-not-allowed');
   }
