@@ -79,8 +79,9 @@ impl Rig {
         self.vw_folder().display().to_string()
     }
 
-    /// How the status shows the sample database in the import folder.
-    const SHOWN: &'static str = "import/db.sqlite3";
+    /// How the status shows the sample database: relative to the import folder, as the console
+    /// takes a source, so a retry can send it back.
+    const SHOWN: &'static str = "db.sqlite3";
 
     /// Waits for the background task to end the move.
     async fn finished(&self) -> MigrationStatus {

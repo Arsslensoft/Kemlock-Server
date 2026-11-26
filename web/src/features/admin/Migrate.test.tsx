@@ -109,6 +109,14 @@ describe('MigrateView', () => {
     expect(screen.getByText('Check it', { selector: 'li' })).toHaveAttribute('aria-current', 'step');
   });
 
+  it('pre-fills the source of a failed move and sends it back as it was shown', async () => {
+    const { onStart } = view({ status: migration({ state: 'failed', source: 'vw/db.sqlite3', error: 'no' }) });
+    expect(screen.getByLabelText(/Vaultwarden database in the import folder/)).toHaveValue('vw/db.sqlite3');
+    const user = userEvent.setup({ delay: null });
+    await user.click(screen.getByRole('button', { name: 'Check it' }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith({ from: 'vw/db.sqlite3' }));
+  });
+
   it('shows why a move failed, and when it ended', () => {
     view({ status: migration({ state: 'failed', error: 'no db.sqlite3 in that folder', finishedAt: NOW - 60 }) });
     expect(screen.getByRole('alert')).toHaveTextContent('The move stopped. no db.sqlite3 in that folder');

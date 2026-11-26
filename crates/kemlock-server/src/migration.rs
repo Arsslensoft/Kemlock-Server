@@ -124,10 +124,8 @@ fn console_source(
             .ok_or_else(not_a_source)?,
     };
     let relative = database.strip_prefix(&root).unwrap_or(&database);
-    let shown = format!(
-        "{IMPORT_FOLDER}/{}",
-        relative.to_string_lossy().replace('\\', "/")
-    );
+    // Relative to the import folder, as the console takes it, so the form can send it back.
+    let shown = relative.to_string_lossy().replace('\\', "/");
     Ok((
         Source {
             database: Database::Sqlite(database),
@@ -395,7 +393,7 @@ impl VaultwardenMove {
             actor: Some(by),
             device: None,
             action: action.to_owned(),
-            target: Some(format!("{source}: {what}")),
+            target: Some(format!("{IMPORT_FOLDER}/{source}: {what}")),
             ip: None,
             at: self.crypto.now(),
         };
@@ -506,14 +504,19 @@ mod tests {
         let (source, shown) = console_source(dir.path(), "db.sqlite3", None).expect("a file");
         assert_eq!(source.database, Database::Sqlite(root.join("db.sqlite3")));
         assert_eq!(source.folder, Some(root.clone()));
-        assert_eq!(shown, "import/db.sqlite3");
+        assert_eq!(shown, "db.sqlite3");
 
         let (source, shown) = console_source(dir.path(), " vw ", None).expect("a folder");
         assert_eq!(
             source.database,
             Database::Sqlite(root.join("vw").join("db.sqlite3"))
         );
-        assert_eq!(shown, "import/vw/db.sqlite3");
+        assert_eq!(shown, "vw/db.sqlite3");
+
+        // What the status shows is a source the console takes as it is: a retry from the form.
+        let (again, same) = console_source(dir.path(), &shown, None).expect("the shown source");
+        assert_eq!(same, shown);
+        assert_eq!(again.database, source.database);
 
         // An absolute path inside the folder is fine, and so is a folder of files beside it.
         let absolute = root.join("vw").display().to_string();
