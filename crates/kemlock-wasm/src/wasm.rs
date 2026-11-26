@@ -171,6 +171,40 @@ impl From<SignedBox> for SignedBoxOut {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotationStartOut {
+    key_version: u32,
+    public_bundle: String,
+    bundle_signature: String,
+    sealed_private_keys: String,
+    sealed_previous_private_keys: String,
+    fingerprint: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResealedItemOut {
+    ciphertext: String,
+    item_key: String,
+    revision: u64,
+    key_version: u32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResealedSendOut {
+    sealed_key: String,
+    meta: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RotationCommitOut {
+    key_version: u32,
+    fingerprint: String,
+}
+
 /// An account id given as base64url of its 16 bytes.
 fn b64_id(text: &str) -> Result<[u8; 16], JsError> {
     b64::decode(text)
@@ -1471,6 +1505,205 @@ impl Vault {
         let sealed = b64::decode(sealed).map_err(fail)?;
         let plain = self.session.open_local(label, &sealed).map_err(fail)?;
         String::from_utf8(plain).map_err(|_| fail(Error::Invalid))
+    }
+
+    // ---- rotating the root key (docs/crypto.md, "Rotating the root key"; rotation.rs) ----
+
+    /// Starts a rotation of the open account: a new root key and key pair held in the worker, and
+    /// what the server stores of them: `{keyVersion, publicBundle, bundleSignature,
+    /// sealedPrivateKeys, sealedPreviousPrivateKeys, fingerprint}`. The account must have been
+    /// unlocked with its sealed private keys. A rotation already started is replaced.
+    #[wasm_bindgen(js_name = rotationStart)]
+    pub fn rotation_start(&mut self) -> Result<String, JsError> {
+        let started = self.session.rotation_start().map_err(fail)?;
+        json(&RotationStartOut {
+            key_version: started.key_version,
+            public_bundle: b64::encode(&started.public_bundle),
+            bundle_signature: b64::encode(&started.bundle_signature),
+            sealed_private_keys: b64::encode(&started.sealed_private_keys),
+            sealed_previous_private_keys: b64::encode(&started.sealed_previous_private_keys),
+            fingerprint: started.fingerprint,
+        })
+    }
+
+    /// Moves one item of the account's own vault to the new keys: `{ciphertext, itemKey, revision,
+    /// keyVersion}`, at `revision + 1` under a fresh item key.
+    #[wasm_bindgen(js_name = rotationResealItem)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn rotation_reseal_item(
+        &self,
+        id: &str,
+        owner: &str,
+        kind: &str,
+        revision: u64,
+        ciphertext: &str,
+        item_key: &str,
+        key_version: Option<u32>,
+    ) -> Result<String, JsError> {
+        let id = ids::parse_uuid(id).map_err(fail)?;
+        let owner = ids::parse_owner(owner).map_err(fail)?;
+        let ciphertext = b64::decode(ciphertext).map_err(fail)?;
+        let item_key = b64::decode(item_key).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_item(&SealedItemRef {
+                id: &id,
+                owner: &owner,
+                kind,
+                revision,
+                ciphertext: &ciphertext,
+                item_key: &item_key,
+                key_version,
+            })
+            .map_err(fail)?;
+        json(&ResealedItemOut {
+            ciphertext: b64::encode(&moved.moved.ciphertext),
+            item_key: b64::encode(&moved.moved.item_key),
+            revision: moved.moved.revision,
+            key_version: moved.key_version,
+        })
+    }
+
+    /// Moves one Send's sealed key and meta to the new keys: `{sealedKey, meta}`.
+    #[wasm_bindgen(js_name = rotationResealSend)]
+    pub fn rotation_reseal_send(
+        &self,
+        id: &str,
+        kind: &str,
+        sealed_key: &str,
+        meta: &str,
+    ) -> Result<String, JsError> {
+        let id = sends::send_id(id).map_err(fail)?;
+        let kind = sends::kind(kind).map_err(fail)?;
+        let sealed_key = b64::decode(sealed_key).map_err(fail)?;
+        let meta = b64::decode(meta).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_send(&id, kind, &sealed_key, &meta)
+            .map_err(fail)?;
+        json(&ResealedSendOut {
+            sealed_key: b64::encode(&moved.sealed_key),
+            meta: b64::encode(&moved.meta),
+        })
+    }
+
+    /// The new root key wrapped under a master key and OPAQUE export key (handles of a fresh
+    /// sign-in): base64url of the 92-byte password wrap at the new key version. Consumes both
+    /// handles on success.
+    #[wasm_bindgen(js_name = rotationWrapPassword)]
+    pub fn rotation_wrap_password(
+        &mut self,
+        master: u32,
+        export_key: u32,
+    ) -> Result<String, JsError> {
+        let wrapped = self
+            .session
+            .rotation_wrap_password(master, export_key)
+            .map_err(fail)?;
+        Ok(b64::encode(&wrapped))
+    }
+
+    /// The new root key wrapped under a passkey's PRF output and credential id:
+    /// `{wrappedKey, keyVersion}` at the new key version.
+    #[wasm_bindgen(js_name = rotationPrfWrap)]
+    pub fn rotation_prf_wrap(
+        &self,
+        prf_output: &str,
+        credential_id: &str,
+    ) -> Result<String, JsError> {
+        let prf = b64::decode(prf_output).map_err(fail)?;
+        let credential = b64::decode(credential_id).map_err(fail)?;
+        let (wrapped, key_version) = self
+            .session
+            .rotation_prf_wrap(&prf, &credential)
+            .map_err(fail)?;
+        json(&PrfWrapOut {
+            wrapped_key: b64::encode(&wrapped),
+            key_version,
+        })
+    }
+
+    /// A new Recovery Kit for the new root key: `{kitId, pieces, wrappedKey, keyVersion}`.
+    #[wasm_bindgen(js_name = rotationKitMake)]
+    pub fn rotation_kit_make(&self) -> Result<String, JsError> {
+        let made = self.session.rotation_kit_make().map_err(fail)?;
+        json(&KitOut {
+            kit_id: made.kit_id,
+            pieces: made.pieces,
+            wrapped_key: b64::encode(&made.wrapped),
+            key_version: made.key_version,
+        })
+    }
+
+    /// The new root key (base64url, 64 bytes), for the worker to seal under this device's own key.
+    /// It is never sent to the page.
+    #[wasm_bindgen(js_name = rotationExportRoot)]
+    pub fn rotation_export_root(&self) -> Result<String, JsError> {
+        let root = self.session.rotation_export_root().map_err(fail)?;
+        Ok(b64::encode(&*root))
+    }
+
+    /// Seals the new root key to a `kx1` public key under `emergency-access` (`aad`: the contact's
+    /// account id, 16 bytes) or `account-recovery` (`aad`: space id, account id, `u64be(keySeq)`).
+    #[wasm_bindgen(js_name = rotationSealRootKey)]
+    pub fn rotation_seal_root_key(
+        &self,
+        recipient_kx1: &str,
+        context: &str,
+        aad: &str,
+    ) -> Result<String, JsError> {
+        let recipient = b64::decode(recipient_kx1).map_err(fail)?;
+        let aad = b64::decode(aad).map_err(fail)?;
+        let sealed = self
+            .session
+            .rotation_seal_root_key(&recipient, context, &aad)
+            .map_err(fail)?;
+        Ok(b64::encode(&sealed))
+    }
+
+    /// Makes the new keys the account's. Returns `{keyVersion, fingerprint}`.
+    #[wasm_bindgen(js_name = rotationCommit)]
+    pub fn rotation_commit(&mut self) -> Result<String, JsError> {
+        let (key_version, fingerprint) = self.session.rotation_commit().map_err(fail)?;
+        json(&RotationCommitOut {
+            key_version,
+            fingerprint,
+        })
+    }
+
+    /// Moves a value this browser keeps for the account (`sealLocal`, base64url) to the new keys, for
+    /// the same label: base64url.
+    #[wasm_bindgen(js_name = rotationResealLocal)]
+    pub fn rotation_reseal_local(&self, label: &str, sealed: &str) -> Result<String, JsError> {
+        let sealed = b64::decode(sealed).map_err(fail)?;
+        let moved = self
+            .session
+            .rotation_reseal_local(label, &sealed)
+            .map_err(fail)?;
+        Ok(b64::encode(&moved))
+    }
+
+    /// Forgets a rotation that was started and not committed.
+    #[wasm_bindgen(js_name = rotationAbort)]
+    pub fn rotation_abort(&mut self) {
+        self.session.rotation_abort();
+    }
+
+    /// A `sig1` signature over a space-chain signing input, by the key before the last rotation
+    /// (`previous`) or the new one: the two signatures of a `rekey` record.
+    #[wasm_bindgen(js_name = rotationSign)]
+    pub fn rotation_sign(
+        &self,
+        previous: bool,
+        context: &str,
+        message: &str,
+    ) -> Result<String, JsError> {
+        let message = b64::decode(message).map_err(fail)?;
+        let signature = self
+            .session
+            .rotation_sign(previous, context, &message)
+            .map_err(fail)?;
+        Ok(b64::encode(&signature))
     }
 
     /// Wipes every secret: all handles and the unlocked account.

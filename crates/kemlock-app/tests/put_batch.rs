@@ -205,3 +205,28 @@ async fn a_batch_over_another_accounts_id_is_taken_and_stores_nothing() {
     assert_eq!(result, Err(AppError::Duplicate));
     assert!(world.store.item(mine).is_none());
 }
+
+#[tokio::test]
+async fn a_batch_with_one_write_at_a_stale_key_version_stores_nothing() {
+    use kemlock_app::ports::UserRepo;
+    let world = World::new().with_signups();
+    let user = make_user(&world, "sam@example.org").await;
+    let mut account = world.store.user(user).expect("the account");
+    account.key_version = 2;
+    UserRepo::update(&world.store, &account)
+        .await
+        .expect("the account is updated");
+
+    let (current, stale) = (ItemId::random(), ItemId::random());
+    let writes = vec![
+        kemlock_domain::ItemWrite {
+            key_version: 2,
+            ..write(user, current, None, 1)
+        },
+        write(user, stale, None, 1),
+    ];
+    let refused = world.put_batch().execute(&actor(user), writes).await;
+    assert!(matches!(refused, Err(AppError::Invalid(_))), "{refused:?}");
+    assert!(world.store.item(current).is_none());
+    assert!(world.store.item(stale).is_none());
+}

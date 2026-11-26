@@ -18,6 +18,7 @@ import { confirmEmergencyContact } from './emergencyModel';
 import { useApiKey } from './useApiKey';
 import { useDeleteAccount } from './useDeleteAccount';
 import { useRecoveryKit } from './useRecoveryKit';
+import { useRotateKeys } from './useRotateKeys';
 import { useRun } from './useRun';
 import { useSecondSteps } from './useSecondSteps';
 import { SecurityView, type TotpState } from './SecurityView';
@@ -52,6 +53,7 @@ export default function Security() {
   const { run, pending, error } = useRun();
   const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes, methods?.includes('totp') ?? false);
   const recoveryKit = useRecoveryKit();
+  const rotation = useRotateKeys(email, (methods?.length ?? 0) > 0);
   const apiKey = useApiKey();
   const navigate = useNavigate();
   const deleteAccount = useDeleteAccount(email, (methods?.length ?? 0) > 0, () => void navigate({ to: '/sign-in' }));
@@ -97,14 +99,22 @@ export default function Security() {
         passkeyRun.pending ||
         secondSteps.props.busy ||
         recoveryKit.props.busy ||
+        rotation.props.busy ||
         apiKey.props.busy ||
         deleteAccount.props.busy
       }
       error={
-        error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error ?? apiKey.error ?? deleteAccount.error
+        error ??
+        passkeyRun.error ??
+        secondSteps.error ??
+        recoveryKit.error ??
+        rotation.error ??
+        apiKey.error ??
+        deleteAccount.error
       }
       secondSteps={secondSteps.props}
       recoveryKit={recoveryKit.props}
+      rotateKeys={rotation.props}
       apiKey={apiKey.props}
       deleteAccount={deleteAccount.props}
       totpError={totpRun.error}

@@ -17,7 +17,7 @@ use crate::{
     manifest::{Entry, Manifest},
     opaque::{self, OpaqueServer},
     owner::Owner,
-    password_wrap, prf_wrap, private_keys, rand, seal, sealed_box, send,
+    password_wrap, prf_wrap, private_keys, rand, rotation, seal, sealed_box, send,
     sig1::{self, context::BUNDLE, context::CONFIRM, context::KEY_BOX, context::MANIFEST},
 };
 
@@ -64,6 +64,7 @@ pub(crate) fn all() -> Result<Vec<(&'static str, Value)>, Error> {
         ("send", send_doc()?),
         ("space-names", space_names_doc()?),
         ("space-chain", super::space_chain::generate()?),
+        ("rotation", rotation_doc()?),
     ])
 }
 
@@ -1546,6 +1547,277 @@ fn space_names_doc() -> Result<Value, Error> {
              \"collection-name\" or \"group-name\", owner is 0x02 || space_id and key_version is \
              the space key version. There is no item-key wrap: name_key is the item key. A name \
              must not open under another space, id, kind, key version or owner.",
+            cases,
+        ))
+    })
+}
+
+/// A user key's `item-wrap` child, from a root key's bytes.
+fn item_wrap_of(root: &[u8; 64]) -> Result<SecretKey, Error> {
+    RootKey::from_bytes(root)
+        .user_key_in::<G>()?
+        .child_in::<G>(ITEM_WRAP_LABEL)
+}
+
+fn rotation_doc() -> Result<Value, Error> {
+    seeded("rotation", || {
+        let mut cases = Vec::new();
+
+        // An item moved from the old root key to a new one.
+        for (name, old_version, new_version, revision, kind, json) in [
+            (
+                "login-first-rotation",
+                1u32,
+                2u32,
+                4u64,
+                "login",
+                r#"{"name":"Bank","username":"ada","password":"hunter2"}"#,
+            ),
+            (
+                "note-third-rotation",
+                3u32,
+                4u32,
+                1u64,
+                "note",
+                r#"{"name":"Plan","text":"line one\nline two"}"#,
+            ),
+        ] {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let old_wrap = item_wrap_of(&old_root)?;
+            let new_wrap = item_wrap_of(&new_root)?;
+            let id: [u8; 16] = rnd()?;
+            let owner = Owner::user(rnd()?);
+            let old_key = SecretKey::from_bytes(&rnd()?);
+            let old_ciphertext =
+                kem1::seal_item_in::<G>(&old_key, &id, revision, kind, &owner, json.as_bytes())?;
+            let old_wrapped =
+                kem1::wrap_item_key_in::<G>(&old_wrap, &old_key, &id, &owner, old_version)?;
+            let moved = rotation::reseal_item_in::<G>(
+                &old_wrap,
+                old_version,
+                &new_wrap,
+                new_version,
+                &id,
+                &owner,
+                kind,
+                revision,
+                &old_ciphertext,
+                &old_wrapped,
+            )?;
+            let new_key = kem1::unwrap_item_key_in::<G>(
+                &new_wrap,
+                &moved.item_key,
+                &id,
+                &owner,
+                new_version,
+            )?;
+            cases.push(json!({
+                "name": name,
+                "type": "item",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "old_item_wrap_key": hx(old_wrap.as_bytes()),
+                "new_item_wrap_key": hx(new_wrap.as_bytes()),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "item_id": hx(&id),
+                "owner": hx(&owner.to_bytes()),
+                "kind": kind,
+                "revision": revision,
+                "json": hx(json.as_bytes()),
+                "old_item_key": hx(old_key.as_bytes()),
+                "old_ciphertext": hx(&old_ciphertext),
+                "old_wrapped_item_key": hx(&old_wrapped),
+                "new_revision": moved.revision,
+                "new_item_key": hx(new_key.as_bytes()),
+                "new_ciphertext": hx(&moved.ciphertext),
+                "new_wrapped_item_key": hx(&moved.item_key),
+                "new_item_aad": hx(&kem1::item_aad(&id, moved.revision, kind, &owner)?),
+                "new_item_key_aad": hx(&kem1::item_key_aad(&id, &owner, new_version)),
+            }));
+        }
+
+        // A Send moved: the link key stays, its sealed key and meta move.
+        for (name, kind, old_version, new_version, meta) in [
+            (
+                "text-send",
+                send::Kind::Text,
+                1u32,
+                2u32,
+                r#"{"name":"Wi-Fi","notes":"guest"}"#,
+            ),
+            (
+                "file-send",
+                send::Kind::File,
+                2u32,
+                3u32,
+                r#"{"name":"Scan","notes":""}"#,
+            ),
+        ] {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let old_wrap = item_wrap_of(&old_root)?;
+            let new_wrap = item_wrap_of(&new_root)?;
+            let send_id: [u8; 16] = rnd()?;
+            let link_key = SecretKey::from_bytes(&rnd()?);
+            let old_sealed_key =
+                send::wrap_link_key_in::<G>(&old_wrap, &link_key, &send_id, old_version)?;
+            let old_meta =
+                send::seal_meta_in::<G>(&old_wrap, &send_id, old_version, kind, meta.as_bytes())?;
+            let moved = rotation::reseal_send_in::<G>(
+                &old_wrap,
+                &new_wrap,
+                new_version,
+                &send_id,
+                kind,
+                &old_sealed_key,
+                &old_meta,
+            )?;
+            cases.push(json!({
+                "name": name,
+                "type": "send",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "old_item_wrap_key": hx(old_wrap.as_bytes()),
+                "new_item_wrap_key": hx(new_wrap.as_bytes()),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "send_id": hx(&send_id),
+                "send_kind": kind.as_str(),
+                "link_key": hx(link_key.as_bytes()),
+                "meta_json": hx(meta.as_bytes()),
+                "old_sealed_key": hx(&old_sealed_key),
+                "old_meta": hx(&old_meta),
+                "new_sealed_key": hx(&moved.sealed_key),
+                "new_meta": hx(&moved.meta),
+                "new_key_aad": hx(&send::key_aad(&send_id, new_version)),
+            }));
+        }
+
+        // The wraps of the new root key: the formats are the old ones at the new version.
+        {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let account: [u8; 16] = rnd()?;
+            let master: [u8; 32] = rnd()?;
+            let export: [u8; 64] = rnd()?;
+            let prf_output: [u8; 32] = rnd()?;
+            let credential_id: [u8; 24] = rnd()?;
+            let (old_version, new_version) = (1u32, 2u32);
+            let password_old = password_wrap::seal_in::<G>(
+                &master,
+                &export,
+                &RootKey::from_bytes(&old_root),
+                &account,
+                old_version,
+            )?;
+            let password_new = password_wrap::seal_in::<G>(
+                &master,
+                &export,
+                &RootKey::from_bytes(&new_root),
+                &account,
+                new_version,
+            )?;
+            let prf_old = prf_wrap::seal_in::<G>(
+                &prf_output,
+                &credential_id,
+                &RootKey::from_bytes(&old_root),
+                &account,
+                old_version,
+            )?;
+            let prf_new = prf_wrap::seal_in::<G>(
+                &prf_output,
+                &credential_id,
+                &RootKey::from_bytes(&new_root),
+                &account,
+                new_version,
+            )?;
+            cases.push(json!({
+                "name": "wraps-of-the-new-root-key",
+                "type": "wraps",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "account_id": hx(&account),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "master_key": hx(&master),
+                "export_key": hx(&export),
+                "prf_output": hx(&prf_output),
+                "credential_id": hx(&credential_id),
+                "password_wrap_old": hx(&password_old),
+                "password_wrap_new": hx(&password_new),
+                "prf_wrap_old": hx(&prf_old),
+                "prf_wrap_new": hx(&prf_new),
+            }));
+        }
+
+        // The new key pair, its bundle, and the old pair sealed under the new user key.
+        {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let account: [u8; 16] = rnd()?;
+            let (old_version, new_version) = (1u32, 2u32);
+            let old_kx: [u8; 96] = rnd()?;
+            let old_sig: [u8; 64] = rnd()?;
+            let new_kx: [u8; 96] = rnd()?;
+            let new_sig: [u8; 64] = rnd()?;
+            let new_kx_private = kx1::PrivateKey::from_bytes(&new_kx);
+            let new_sig_private = sig1::SigningKey::from_bytes(&new_sig);
+            let bundle = Bundle {
+                account_id: account,
+                key_version: new_version,
+                kx1_public: kx1::public_key_in::<G>(&new_kx_private)?,
+                sig1_public: sig1::public_key_in::<G>(&new_sig_private)?,
+            };
+            let bundle_bytes = bundle.to_bytes();
+            let bundle_signature = sig1::sign_in::<G>(&new_sig_private, BUNDLE, &bundle_bytes)?;
+            let new_user = RootKey::from_bytes(&new_root).user_key_in::<G>()?;
+            let sealed_new = private_keys::seal_in::<G>(
+                &new_user,
+                &new_kx_private,
+                &new_sig_private,
+                &account,
+                new_version,
+            )?;
+            let sealed_previous = private_keys::seal_in::<G>(
+                &new_user,
+                &kx1::PrivateKey::from_bytes(&old_kx),
+                &sig1::SigningKey::from_bytes(&old_sig),
+                &account,
+                old_version,
+            )?;
+            cases.push(json!({
+                "name": "new-key-pair-and-previous-keys",
+                "type": "keys",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "account_id": hx(&account),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "old_kx1_private_key": hx(&old_kx),
+                "old_sig1_private_key": hx(&old_sig),
+                "new_kx1_private_key": hx(&new_kx),
+                "new_sig1_private_key": hx(&new_sig),
+                "new_bundle": hx(&bundle_bytes),
+                "new_bundle_signature": hx(&bundle_signature),
+                "new_user_key": hx(new_user.as_bytes()),
+                "sealed_private_keys": hx(&sealed_new),
+                "sealed_previous_private_keys": hx(&sealed_previous),
+            }));
+        }
+
+        Ok(document(
+            "rotation",
+            "Rotating the root key (docs/crypto.md): an item is opened under the old item-wrap key \
+             and sealed again under a fresh item key at revision + 1, the new item key wrapped \
+             under the new item-wrap key at the new key version (new_item_aad, \
+             new_item_key_aad); a Send keeps its link key and gets a new sealed key and meta under \
+             the new item-wrap key and version; the password and PRF wraps of the new root key are \
+             the existing formats at the new key version, and the old ones do not open there; the \
+             new kx1 and sig1 pair is sealed under the new user key at the new version, with the \
+             bundle at the new version signed by the new sig1 key, and the old pair is sealed under \
+             the new user key at the old version.",
             cases,
         ))
     })

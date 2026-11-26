@@ -37,6 +37,7 @@ mod ids;
 mod kit;
 mod manifests;
 mod prf;
+mod rotation;
 mod sends;
 mod session;
 mod sharing;

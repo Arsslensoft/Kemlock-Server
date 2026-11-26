@@ -305,6 +305,56 @@ export interface CryptoPort {
     manifest: Uint8Array,
     signature: Uint8Array,
   ): Promise<boolean>;
+
+  // Rotating the root key (docs/crypto.md, "Rotating the root key"): the worker makes a new root
+  // key and key pair and gives each piece when asked. Nothing but wraps and boxes leaves it.
+
+  /** Starts a rotation of the open account (unlocked with its private keys). */
+  rotationStart(): Promise<RotationKeys>;
+  /** Moves an item of the account's own vault to the new keys: a fresh item key, revision + 1. */
+  rotationResealItem(input: OpenInput): Promise<ResealedItem>;
+  /** Moves a Send's sealed key and meta to the new keys. */
+  rotationResealSend(input: {
+    id: string;
+    kind: string;
+    sealedKey: Uint8Array;
+    meta: Uint8Array;
+  }): Promise<{ sealedKey: Uint8Array; meta: Uint8Array }>;
+  /** The new root key's 92-byte password wrap, under a fresh sign-in's two keys (both are spent). */
+  rotationWrapPassword(masterKey: Uint8Array, exportKey: Uint8Array): Promise<Uint8Array>;
+  /** The new root key under a passkey's PRF output, at the new key version. */
+  rotationPrfWrap(
+    prfOutput: Uint8Array,
+    credentialId: Uint8Array,
+  ): Promise<{ wrappedKey: Uint8Array; keyVersion: number }>;
+  /** A 2-of-3 Recovery Kit for the new root key. */
+  rotationKitMake(): Promise<{
+    kitId: string;
+    pieces: string[];
+    wrappedKey: Uint8Array;
+    keyVersion: number;
+  }>;
+  /** This browser's copy of the new root key, at the new key version (see `deviceCopySeal`). */
+  rotationDeviceCopySeal(
+    accountId: string,
+    deviceId: string,
+    keyVersion: number,
+    tabId?: string,
+  ): Promise<Uint8Array>;
+  /** The new root key sealed to a kx1 public key under `emergency-access` or `account-recovery`. */
+  rotationSealRootKey(
+    recipientKx1: Uint8Array,
+    context: 'emergency-access' | 'account-recovery',
+    aad: Uint8Array,
+  ): Promise<Uint8Array>;
+  /** Makes the new keys the account's. */
+  rotationCommit(): Promise<{ keyVersion: number; fingerprint: string }>;
+  /** Moves a value kept with `sealLocal` to the new keys; rejects one that does not open now. */
+  rotationResealLocal(label: string, sealed: string): Promise<string>;
+  /** Forgets a rotation that was started and not committed. */
+  rotationAbort(): Promise<void>;
+  /** A sig1 signature over a space-chain signing input, by the previous key or the new one. */
+  rotationSign(previous: boolean, context: string, message: Uint8Array): Promise<Uint8Array>;
 }
 
 // A worker handle crosses the app as 4 opaque bytes, so the app's Uint8Array-typed secrets stay
@@ -317,6 +367,27 @@ function handleBytes(handle: number): Uint8Array {
 
 function handleOf<Kind extends string>(bytes: Uint8Array): Handle<Kind> {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0) as Handle<Kind>;
+}
+
+/** The keys a rotation starts, as the server stores them. */
+export interface RotationKeys {
+  /** The key version the rotation installs. */
+  keyVersion: number;
+  publicBundle: Uint8Array;
+  bundleSignature: Uint8Array;
+  sealedPrivateKeys: Uint8Array;
+  /** The old pair, sealed under the new user key at the old key version. */
+  sealedPreviousPrivateKeys: Uint8Array;
+  /** 12 groups of 5 digits. */
+  fingerprint: string;
+}
+
+/** An item sealed again under the new keys: a fresh item key at the next revision. */
+export interface ResealedItem {
+  ciphertext: Uint8Array;
+  itemKey: Uint8Array;
+  revision: number;
+  keyVersion: number;
 }
 
 /** The app's crypto port over a worker client. */
@@ -517,6 +588,69 @@ export function fromWorker(api: CryptoApi): CryptoPort {
       api.manifestVerifyOwn(encodeB64(manifest), encodeB64(signature)),
     manifestVerify: (signerBundle, manifest, signature) =>
       api.manifestVerify(encodeB64(signerBundle), encodeB64(manifest), encodeB64(signature)),
+    async rotationStart() {
+      const started = await api.rotationStart();
+      return {
+        keyVersion: started.keyVersion,
+        publicBundle: decodeB64(started.publicBundle),
+        bundleSignature: decodeB64(started.bundleSignature),
+        sealedPrivateKeys: decodeB64(started.sealedPrivateKeys),
+        sealedPreviousPrivateKeys: decodeB64(started.sealedPreviousPrivateKeys),
+        fingerprint: started.fingerprint,
+      };
+    },
+    async rotationResealItem(input) {
+      const moved = await api.rotationResealItem({
+        ...input,
+        ciphertext: encodeB64(input.ciphertext),
+        itemKey: encodeB64(input.itemKey),
+      });
+      return {
+        ciphertext: decodeB64(moved.ciphertext),
+        itemKey: decodeB64(moved.itemKey),
+        revision: moved.revision,
+        keyVersion: moved.keyVersion,
+      };
+    },
+    async rotationResealSend({ id, kind, sealedKey, meta }) {
+      const moved = await api.rotationResealSend({
+        id,
+        kind,
+        sealedKey: encodeB64(sealedKey),
+        meta: encodeB64(meta),
+      });
+      return { sealedKey: decodeB64(moved.sealedKey), meta: decodeB64(moved.meta) };
+    },
+    async rotationWrapPassword(masterKey, exportKey) {
+      return decodeB64(
+        await api.rotationWrapPassword(
+          handleOf<'master-key'>(masterKey),
+          handleOf<'export-key'>(exportKey),
+        ),
+      );
+    },
+    async rotationPrfWrap(prfOutput, credentialId) {
+      const wrap = await api.rotationPrfWrap(encodeB64(prfOutput), encodeB64(credentialId));
+      return { wrappedKey: decodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
+    },
+    async rotationKitMake() {
+      const made = await api.rotationKitMake();
+      return { ...made, wrappedKey: decodeB64(made.wrappedKey) };
+    },
+    async rotationDeviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+      return decodeB64(await api.rotationDeviceCopySeal(accountId, deviceId, keyVersion, tabId));
+    },
+    async rotationSealRootKey(recipientKx1, context, aad) {
+      return decodeB64(
+        await api.rotationSealRootKey(encodeB64(recipientKx1), context, encodeB64(aad)),
+      );
+    },
+    rotationCommit: () => api.rotationCommit(),
+    rotationResealLocal: (label, sealed) => api.rotationResealLocal(label, sealed),
+    rotationAbort: () => api.rotationAbort(),
+    async rotationSign(previous, context, message) {
+      return decodeB64(await api.rotationSign(previous, context, encodeB64(message)));
+    },
   };
 }
 

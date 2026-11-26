@@ -118,6 +118,31 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     openLocal: vi.fn(() => '{"seq":1}'),
     acceptFirstContact: vi.fn(),
     openChainKey: vi.fn(),
+    rotationStart: vi.fn(() =>
+      JSON.stringify({
+        keyVersion: 4,
+        publicBundle: 'YnVuZGxl',
+        bundleSignature: 'c2ln',
+        sealedPrivateKeys: 'c2VhbGVk',
+        sealedPreviousPrivateKeys: 'cHJldg',
+        fingerprint: '12345 67890',
+      }),
+    ),
+    rotationResealItem: vi.fn(() =>
+      JSON.stringify({ ciphertext: 'bmV3', itemKey: 'a2V5', revision: 8, keyVersion: 4 }),
+    ),
+    rotationResealSend: vi.fn(() => JSON.stringify({ sealedKey: 'c2s', meta: 'bWV0YQ' })),
+    rotationWrapPassword: vi.fn(() => 'bmV3d3JhcA'),
+    rotationPrfWrap: vi.fn(() => JSON.stringify({ wrappedKey: 'cHJm', keyVersion: 4 })),
+    rotationKitMake: vi.fn(() =>
+      JSON.stringify({ kitId: 'NEWKITID', pieces: ['n1', 'n2', 'n3'], wrappedKey: 'a2l0', keyVersion: 4 }),
+    ),
+    rotationExportRoot: vi.fn(() => 'bmV3cm9vdA'),
+    rotationSealRootKey: vi.fn(() => 'Ym94'),
+    rotationCommit: vi.fn(() => JSON.stringify({ keyVersion: 4, fingerprint: '12345 67890' })),
+    rotationResealLocal: vi.fn(() => 'bW92ZWQ'),
+    rotationAbort: vi.fn(),
+    rotationSign: vi.fn(() => 'c2lnbmVk'),
     lock: vi.fn(),
     free: vi.fn(),
     ...overrides,
@@ -586,6 +611,64 @@ describe('the dispatcher', () => {
     expect(vault.prfOpenRoot).toHaveBeenCalledWith('cHJm', 'Y3JlZA', UUID, 3, 'd3JhcA');
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 3 }]);
     expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined, undefined);
+  });
+
+  it('rotates the root key in the worker and hands the page only wraps and boxes', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('rotationStart', [])).toMatchObject({ keyVersion: 4, sealedPreviousPrivateKeys: 'cHJldg' });
+    const item = {
+      id: UUID,
+      owner: `user:${UUID}`,
+      kind: 'login',
+      revision: 7,
+      ciphertext: 'b2xk',
+      itemKey: 'b2xka2V5',
+      keyVersion: 3,
+    };
+    expect(await dispatch('rotationResealItem', [item])).toEqual({
+      ciphertext: 'bmV3',
+      itemKey: 'a2V5',
+      revision: 8,
+      keyVersion: 4,
+    });
+    expect(vault.rotationResealItem).toHaveBeenCalledWith(
+      UUID,
+      `user:${UUID}`,
+      'login',
+      7n,
+      'b2xk',
+      'b2xka2V5',
+      3,
+    );
+    expect(await dispatch('rotationResealSend', [{ id: UUID, kind: 'text', sealedKey: 'a2V5', meta: 'bQ' }])).toEqual({
+      sealedKey: 'c2s',
+      meta: 'bWV0YQ',
+    });
+    expect(await dispatch('rotationWrapPassword', [7 as never, 9 as never])).toBe('bmV3d3JhcA');
+    expect(vault.rotationWrapPassword).toHaveBeenCalledWith(7, 9);
+    expect(await dispatch('rotationPrfWrap', ['cHJm', 'Y3JlZA'])).toEqual({ wrappedKey: 'cHJm', keyVersion: 4 });
+    expect(await dispatch('rotationKitMake', [])).toMatchObject({ kitId: 'NEWKITID', keyVersion: 4 });
+    expect(await dispatch('rotationSealRootKey', ['a3gx', 'emergency-access', 'YWFk'])).toBe('Ym94');
+    expect(vault.rotationSealRootKey).toHaveBeenCalledWith('a3gx', 'emergency-access', 'YWFk');
+    expect(await dispatch('rotationCommit', [])).toEqual({ keyVersion: 4, fingerprint: '12345 67890' });
+    expect(await dispatch('rotationResealLocal', ['anchor/one', 'b2xk'])).toBe('bW92ZWQ');
+    expect(vault.rotationResealLocal).toHaveBeenCalledWith('anchor/one', 'b2xk');
+    await dispatch('rotationAbort', []);
+    expect(vault.rotationAbort).toHaveBeenCalled();
+    expect(await dispatch('rotationSign', [true, 'space-chain', 'bXNn'])).toBe('c2lnbmVk');
+    expect(vault.rotationSign).toHaveBeenCalledWith(true, 'space-chain', 'bXNn');
+  });
+
+  it('seals this device\'s copy of the new root key at the new key version, never returning the root', async () => {
+    const vault = mockVault();
+    const seal = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const deviceWrap = { seal, open: vi.fn(), reset: vi.fn() } as never;
+    const loadWasm = vi.fn(async () => () => vault);
+    const dispatch = createDispatcher({ loadWasm, dpop: dpopStub(), deviceWrap });
+    expect(await dispatch('rotationDeviceCopySeal', [UUID, UUID, 4])).toBe('AQID');
+    expect(vault.rotationExportRoot).toHaveBeenCalled();
+    expect(seal).toHaveBeenCalledWith(expect.any(Uint8Array), UUID, UUID, 4);
   });
 
   it('makes a Recovery Kit in the worker and opens its wrap with pieces into a handle', async () => {

@@ -3,7 +3,8 @@
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
-use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier};
+use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier, UserRepo};
+use crate::put_item::check_key_version;
 use kemlock_domain::{ChangeId, Item, ItemId, ItemWrite, Owner};
 use std::collections::{BTreeMap, HashSet};
 
@@ -11,15 +12,16 @@ use std::collections::{BTreeMap, HashSet};
 pub const MAX_BATCH: usize = 500;
 
 #[derive(Debug)]
-pub struct PutBatch<I, V, N, C> {
+pub struct PutBatch<I, V, N, C, U> {
     pub items: I,
     pub events: V,
     pub push: N,
     pub clock: C,
+    pub users: U,
     pub config: AuthConfig,
 }
 
-impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutBatch<I, V, N, C> {
+impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock, U: UserRepo> PutBatch<I, V, N, C, U> {
     /// Stores every write or none. A refused write names its item (`Conflict`), and nothing is
     /// stored. An item may appear once in a batch.
     pub async fn execute(
@@ -38,6 +40,9 @@ impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutBatch<I, V, N, C> {
             return Err(AppError::Invalid("an item appears twice in the batch"));
         }
 
+        for write in &writes {
+            check_key_version(&self.users, actor.user, write).await?;
+        }
         let now = self.clock.now();
         let mut drafts = Vec::with_capacity(writes.len());
         for write in writes {

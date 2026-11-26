@@ -123,6 +123,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .merge_from(super::invite_link::openapi())
             .merge_from(super::account::document())
             .merge_from(super::profile::ProfileApiDoc::openapi())
+            .merge_from(super::rotation::RotationApiDoc::openapi())
             .merge_from(super::push::document())
             .merge_from(super::custom_fields::document())
             .merge_from(super::passkeys::PasskeysApiDoc::openapi())

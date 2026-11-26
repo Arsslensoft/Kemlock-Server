@@ -3066,3 +3066,263 @@ fn a_key_is_replaced_only_by_an_unlock_that_holds_it() {
     assert_eq!(out["ok"], true);
     assert!(out["records"].as_array().expect("records").is_empty());
 }
+
+// ---- rotating the root key ---------------------------------------------------------------------
+
+#[wasm_bindgen_test]
+fn a_rotation_moves_an_item_and_the_account_to_the_new_keys() {
+    let account = [0xA7; 16];
+    let (mut session, old_bundle) = open_account(account);
+    let owner = Owner::user(account);
+    let id = [0x31; 16];
+    let sealed = session
+        .seal_item(&id, &owner, "login", 3, br#"{"name":"bank"}"#)
+        .expect("seal");
+
+    let started = session.rotation_start().expect("start");
+    assert_eq!(started.key_version, FIRST_KEY_VERSION + 1);
+    let new_bundle = Bundle::from_bytes(&started.public_bundle).expect("bundle");
+    assert_eq!(new_bundle.account_id, account);
+    assert_eq!(new_bundle.key_version, FIRST_KEY_VERSION + 1);
+    new_bundle
+        .verify_self_signature(&started.bundle_signature)
+        .expect("the new bundle is signed by its own key");
+    assert_ne!(
+        new_bundle.kx1_public.as_bytes(),
+        old_bundle.kx1_public.as_bytes()
+    );
+    assert_ne!(
+        new_bundle.sig1_public.as_bytes(),
+        old_bundle.sig1_public.as_bytes()
+    );
+
+    let moved = session
+        .rotation_reseal_item(&SealedItemRef {
+            id: &id,
+            owner: &owner,
+            kind: "login",
+            revision: 3,
+            ciphertext: &sealed.ciphertext,
+            item_key: &sealed.item_key,
+            key_version: Some(sealed.key_version),
+        })
+        .expect("reseal");
+    assert_eq!(moved.moved.revision, 4);
+    assert_eq!(moved.key_version, FIRST_KEY_VERSION + 1);
+
+    // Until the commit the account still opens only the old item.
+    assert!(
+        session
+            .open_item(&SealedItemRef {
+                id: &id,
+                owner: &owner,
+                kind: "login",
+                revision: 4,
+                ciphertext: &moved.moved.ciphertext,
+                item_key: &moved.moved.item_key,
+                key_version: Some(moved.key_version),
+            })
+            .is_err()
+    );
+    let (version, fingerprint) = session.rotation_commit().expect("commit");
+    assert_eq!(version, FIRST_KEY_VERSION + 1);
+    assert_eq!(fingerprint, new_bundle.fingerprint_text());
+    assert_eq!(session.own_fingerprint().expect("fingerprint"), fingerprint);
+
+    let plain = session
+        .open_item(&SealedItemRef {
+            id: &id,
+            owner: &owner,
+            kind: "login",
+            revision: 4,
+            ciphertext: &moved.moved.ciphertext,
+            item_key: &moved.moved.item_key,
+            key_version: Some(moved.key_version),
+        })
+        .expect("the new item opens under the new keys");
+    assert_eq!(plain.as_slice(), br#"{"name":"bank"}"#.as_slice());
+    // The old envelope no longer opens: the account's keys are the new ones.
+    assert!(
+        session
+            .open_item(&SealedItemRef {
+                id: &id,
+                owner: &owner,
+                kind: "login",
+                revision: 3,
+                ciphertext: &sealed.ciphertext,
+                item_key: &sealed.item_key,
+                key_version: Some(sealed.key_version),
+            })
+            .is_err()
+    );
+    // A second commit has nothing pending.
+    assert_eq!(session.rotation_commit(), Err(Error::Invalid));
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_wraps_the_new_root_key_and_the_old_wraps_stay_old() {
+    let account = [0xA8; 16];
+    let (mut session, _) = open_account(account);
+    assert_eq!(session.rotation_kit_make().err(), Some(Error::Invalid));
+    let started = session.rotation_start().expect("start");
+
+    let master = session.insert_master([1; 32]).expect("handle");
+    let export = session.insert_export([2; 64]).expect("handle");
+    let wrapped = session
+        .rotation_wrap_password(master, export)
+        .expect("password wrap");
+    // The handles are spent.
+    assert!(session.master_bytes(master).is_err());
+    assert!(session.export_bytes(export).is_err());
+
+    let (prf, prf_version) = session
+        .rotation_prf_wrap(&[7; 32], b"credential")
+        .expect("prf wrap");
+    assert_eq!(prf_version, started.key_version);
+    let kit = session.rotation_kit_make().expect("kit");
+    assert_eq!(kit.key_version, started.key_version);
+
+    session.rotation_commit().expect("commit");
+    // The password wrap and the PRF wrap are for the new root key and the new version.
+    let root = password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, started.key_version)
+        .expect("opens at the new version");
+    assert_eq!(
+        &session.export_root().expect("root")[..],
+        root.as_bytes().as_slice()
+    );
+    assert!(
+        password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, FIRST_KEY_VERSION).is_err()
+    );
+    let from_prf = kemlock_crypto::prf_wrap::open(
+        &[7; 32],
+        b"credential",
+        &prf,
+        &account,
+        started.key_version,
+    )
+    .expect("the prf wrap opens");
+    assert_eq!(from_prf.as_bytes(), root.as_bytes());
+
+    // The new private keys open under the new user key; the old ones are kept sealed under it too.
+    let user = root.user_key().expect("user key");
+    private_keys::open(
+        &user,
+        &started.sealed_private_keys,
+        &account,
+        started.key_version,
+    )
+    .expect("new keys");
+    private_keys::open(
+        &user,
+        &started.sealed_previous_private_keys,
+        &account,
+        FIRST_KEY_VERSION,
+    )
+    .expect("previous keys");
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_seals_the_new_root_key_only_under_its_two_contexts() {
+    let account = [0xA9; 16];
+    let (mut session, bundle) = open_account(account);
+    session.rotation_start().expect("start");
+    let contact = [0x55; 16];
+    for context in ["device-approval", "space-key", "something-else"] {
+        assert!(
+            session
+                .rotation_seal_root_key(bundle.kx1_public.as_bytes(), context, &contact)
+                .is_err(),
+            "{context}"
+        );
+    }
+    assert!(
+        session
+            .rotation_seal_root_key(bundle.kx1_public.as_bytes(), "emergency-access", &[0; 15])
+            .is_err()
+    );
+    let boxed = session
+        .rotation_seal_root_key(bundle.kx1_public.as_bytes(), "emergency-access", &account)
+        .expect("a box to the account's own key, aad its own id");
+    session.rotation_commit().expect("commit");
+    let unlocked = session.unlocked().expect("unlocked");
+    let (kx_private, _) = unlocked.private.as_ref().expect("private keys");
+    // Sealed to the old key: the new private key doesn't open it.
+    assert!(sealed_box::open(kx_private, "emergency-access", &account, &boxed).is_err());
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_that_was_not_started_does_nothing() {
+    let (mut session, _) = open_account([0xAA; 16]);
+    assert_eq!(session.rotation_commit(), Err(Error::Invalid));
+    assert!(session.rotation_export_root().is_err());
+    session.rotation_start().expect("start");
+    session.rotation_abort();
+    assert_eq!(session.rotation_commit(), Err(Error::Invalid));
+    // A locked session starts nothing.
+    session.lock();
+    assert_eq!(session.rotation_start().err(), Some(Error::Locked));
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
+    let (mut session, _) = open_account([0xAB; 16]);
+    let anchor = session
+        .seal_local("anchor/one", b"{\"seq\":3}")
+        .expect("seals");
+    let pin = session
+        .seal_local("pin/one", b"11111 22222")
+        .expect("seals");
+    // Nothing moves before a rotation is started.
+    assert_eq!(
+        session.rotation_reseal_local("anchor/one", &anchor),
+        Err(Error::Invalid)
+    );
+    session.rotation_start().expect("start");
+
+    let moved = session
+        .rotation_reseal_local("anchor/one", &anchor)
+        .expect("moves");
+    assert_ne!(moved, anchor);
+    // A value that does not open now, or is moved under another label, is not moved.
+    assert_eq!(
+        session.rotation_reseal_local("anchor/two", &anchor),
+        Err(Error::Invalid)
+    );
+    let moved_pin = session
+        .rotation_reseal_local("pin/one", &pin)
+        .expect("moves");
+
+    session.rotation_commit().expect("commit");
+    // Under the new keys the moved values open, bound to their labels; the old ones do not.
+    assert_eq!(
+        session.open_local("anchor/one", &moved).expect("opens"),
+        b"{\"seq\":3}".to_vec()
+    );
+    assert_eq!(
+        session.open_local("pin/one", &moved_pin).expect("opens"),
+        b"11111 22222".to_vec()
+    );
+    assert_eq!(
+        session.open_local("pin/one", &moved),
+        Err(Error::Invalid),
+        "another label"
+    );
+    assert_eq!(
+        session.open_local("anchor/one", &anchor),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn committing_without_the_private_keys_takes_nothing() {
+    // Unlocked with the root key only: no private keys to rotate from or to.
+    let root = RootKey::from_bytes(&[0x61; 64]);
+    let mut session = unlocked_with(&root, &[0xAC; 16], 1);
+    assert_eq!(session.rotation_commit(), Err(Error::Locked));
+    assert_eq!(session.rotation_start().err(), Some(Error::Locked));
+    // And the root key it holds is still the one it was opened with.
+    assert_eq!(
+        &session.export_root().expect("root")[..],
+        root.as_bytes().as_slice()
+    );
+}

@@ -1155,22 +1155,28 @@ impl World {
         }
     }
 
-    pub(crate) fn put_item(&self) -> PutItem<FakeStore, FakeStore, FakeNotifier, FakeEnv> {
+    pub(crate) fn put_item(
+        &self,
+    ) -> PutItem<FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeStore> {
         PutItem {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.notifier.clone(),
             clock: self.env.clone(),
+            users: self.store.clone(),
             config: self.config,
         }
     }
 
-    pub(crate) fn put_batch(&self) -> PutBatch<FakeStore, FakeStore, FakeNotifier, FakeEnv> {
+    pub(crate) fn put_batch(
+        &self,
+    ) -> PutBatch<FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeStore> {
         PutBatch {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.notifier.clone(),
             clock: self.env.clone(),
+            users: self.store.clone(),
             config: self.config,
         }
     }

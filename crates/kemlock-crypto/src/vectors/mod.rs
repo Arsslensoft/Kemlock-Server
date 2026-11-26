@@ -50,6 +50,7 @@ pub const FILES: &[&str] = &[
     "send",
     "space-names",
     "space-chain",
+    "rotation",
 ];
 
 /// The version every file carries; bumping a format means a new label, not a new number here.

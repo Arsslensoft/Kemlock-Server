@@ -701,3 +701,35 @@ describe('the last manifest that is good', () => {
     expect(await run.keeper.acceptedManifest(SPACE)).toBeNull();
   });
 });
+
+describe('after the account rotated its keys', () => {
+  it('signs the next manifest with the new key, listing the re-encrypted items, and the check then passes', async () => {
+    const run = setup();
+    // The manifest the server holds was signed by the key the account had before the rotation: this
+    // browser accepted it then, but the new key does not verify it.
+    const old = { owner: OWN, counter: 3, entries: [await listed(A, 1, 'old-a'), await listed(B, 3, 'old-b')] };
+    run.stored.set(OWN, served(old, 'the-old-key'));
+    await run.records.put(`${ACCOUNT}|${OWN}`, {
+      manifest: encodeB64(encodeManifest(old)),
+      counter: 3,
+      deleted: {},
+    });
+
+    // The rotation re-encrypted both items at the next revision; the page tells the keeper.
+    const moved = [item(A, 2, 'new-a'), item(B, 4, 'new-b')];
+    await run.keeper.wrote(moved);
+    await run.keeper.flush();
+
+    expect(run.api.put).toHaveBeenCalledTimes(1);
+    const { manifest } = putBody(run.api);
+    expect(manifest?.counter).toBe(4);
+    expect(manifest?.entries).toEqual([
+      { id: A, revision: 2, hash: await hash('new-a'), deleted: false },
+      { id: B, revision: 4, hash: await hash('new-b'), deleted: false },
+    ]);
+
+    // The next sync serves the re-encrypted items, and the manifest the new key signed matches.
+    await run.sync(moved);
+    expect(run.keeper.getWarning()).toEqual(NO_WARNING);
+  });
+});

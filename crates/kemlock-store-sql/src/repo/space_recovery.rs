@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::begin_locked;
 use crate::store::SqlStore;
 use crate::tables::space_recovery;
 use kemlock_app::ports::StoreError;
@@ -46,7 +47,8 @@ impl SpaceRecoveryRepo for SqlStore {
     /// Delete then insert in one transaction: a replacement leaves exactly one row.
     async fn put_recovery_box(&self, recovery: RecoveryBox) -> Result<(), StoreError> {
         let key_seq = to_i64(recovery.key_seq)?;
-        let txn = self.writer().begin().await.store()?;
+        // The box is a wrap of the member's root key: written under the member's lock.
+        let txn = begin_locked(self, recovery.user).await?;
         space_recovery::Entity::delete_many()
             .filter(space_recovery::Column::SpaceId.eq(recovery.space.0))
             .filter(space_recovery::Column::UserId.eq(recovery.user.0))

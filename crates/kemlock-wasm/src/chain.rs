@@ -501,13 +501,13 @@ fn own_bundle_bytes(session: &Session) -> Result<Vec<u8>, Error> {
 
 /// The child of the user key that seals what this browser keeps locally for the account (the
 /// anchors of chains it verified, the members whose fingerprints a person compared).
-const LOCAL_STORE_LABEL: &str = "kemlock/v1/local-store";
+pub(crate) const LOCAL_STORE_LABEL: &str = "kemlock/v1/local-store";
 /// The `kem1` kind of a locally kept value.
-const LOCAL_KIND: &str = "local-store";
+pub(crate) const LOCAL_KIND: &str = "local-store";
 
 /// The id a local value is bound to: the first 16 bytes of the SHA-256 of its label, so a value
 /// sealed under one label doesn't open under another.
-fn local_id(label: &str) -> [u8; 16] {
+pub(crate) fn local_id(label: &str) -> [u8; 16] {
     let hash = kemlock_crypto::hash::sha256(label.as_bytes());
     let mut id = [0u8; 16];
     id.copy_from_slice(&hash[..16]);

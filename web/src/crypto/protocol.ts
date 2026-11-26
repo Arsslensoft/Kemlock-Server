@@ -27,6 +27,10 @@ import {
   type MadeKit,
   type PrfWrap,
   type Ops,
+  type ResealedItem,
+  type ResealedSend,
+  type RotationCommit,
+  type RotationStart,
   type SealedCollection,
   type SignedBox,
   type SealedItem,
@@ -444,6 +448,58 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
     async kitMake() {
       return parse<MadeKit>((await current()).kitMake());
+    },
+    async rotationStart() {
+      return parse<RotationStart>((await current()).rotationStart());
+    },
+    async rotationResealItem({ id, owner, kind, revision, ciphertext, itemKey, keyVersion }) {
+      return parse<ResealedItem>(
+        (await current()).rotationResealItem(
+          id,
+          owner,
+          kind,
+          toRevision(revision),
+          ciphertext,
+          itemKey,
+          keyVersion,
+        ),
+      );
+    },
+    async rotationResealSend({ id, kind, sealedKey, meta }) {
+      return parse<ResealedSend>((await current()).rotationResealSend(id, kind, sealedKey, meta));
+    },
+    async rotationWrapPassword(masterKey, exportKey) {
+      return (await current()).rotationWrapPassword(masterKey, exportKey);
+    },
+    async rotationPrfWrap(prfOutput, credentialId) {
+      return parse<PrfWrap>((await current()).rotationPrfWrap(prfOutput, credentialId));
+    },
+    async rotationKitMake() {
+      return parse<MadeKit>((await current()).rotationKitMake());
+    },
+    async rotationDeviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+      const wrap = copyWrap(tabId);
+      const root = b64urlDecode((await current()).rotationExportRoot());
+      try {
+        return b64urlEncode(await wrap.seal(root, accountId, deviceId, keyVersion));
+      } finally {
+        root.fill(0);
+      }
+    },
+    async rotationSealRootKey(recipientKx1, context, aad) {
+      return (await current()).rotationSealRootKey(recipientKx1, context, aad);
+    },
+    async rotationCommit() {
+      return parse<RotationCommit>((await current()).rotationCommit());
+    },
+    async rotationResealLocal(label, sealed) {
+      return (await current()).rotationResealLocal(label, sealed);
+    },
+    async rotationAbort() {
+      (await current()).rotationAbort();
+    },
+    async rotationSign(previous, context, message) {
+      return (await current()).rotationSign(previous, context, message);
     },
     async kitReadPiece(text) {
       return parse<KitPieceRead>((await current()).kitReadPiece(text));

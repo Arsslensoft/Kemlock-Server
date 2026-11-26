@@ -491,22 +491,24 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         }
     }
 
-    pub(crate) fn put_item(&self) -> PutItem<S, S, LiveHub, P> {
+    pub(crate) fn put_item(&self) -> PutItem<S, S, LiveHub, P, S> {
         PutItem {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.hub.clone(),
             clock: self.crypto.clone(),
+            users: self.store.clone(),
             config: self.auth_config(),
         }
     }
 
-    pub(crate) fn put_batch(&self) -> PutBatch<S, S, LiveHub, P> {
+    pub(crate) fn put_batch(&self) -> PutBatch<S, S, LiveHub, P, S> {
         PutBatch {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.hub.clone(),
             clock: self.crypto.clone(),
+            users: self.store.clone(),
             config: self.auth_config(),
         }
     }

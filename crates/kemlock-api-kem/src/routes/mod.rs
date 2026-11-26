@@ -25,6 +25,7 @@ pub(crate) mod profile;
 pub(crate) mod push;
 pub(crate) mod reauth;
 pub(crate) mod recovery_kit;
+pub(crate) mod rotation;
 pub(crate) mod sends;
 mod server;
 mod signup_verify;

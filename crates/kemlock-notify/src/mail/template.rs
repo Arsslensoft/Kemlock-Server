@@ -11,9 +11,9 @@ use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
     BwEmergencyInviteNotice, BwOrgInviteNotice, EmailChangeNotice, EmailChangeRequestedNotice,
-    EmailChangedNotice, EmailTakenNotice, InvitationNotice, Notice, PasswordChangedNotice,
-    ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice, TwoStepChangedNotice,
-    TwoStepCodeNotice, TwoStepRecoveredNotice,
+    EmailChangedNotice, EmailTakenNotice, InvitationNotice, KeysRotatedNotice, Notice,
+    PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice, SignupVerifyNotice,
+    TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -493,6 +493,24 @@ fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendere
     )
 }
 
+fn keys_rotated(notice: &KeysRotatedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, the keys of your account were rotated: a new root key now protects your vault, and every copy of the old one that this server held was deleted.",
+        when(notice.at)
+    );
+    let body = Body::new(&[
+        &lead,
+        "Your other devices were signed out and ask you to sign in again. A Recovery Kit made before this stopped working; if you made a new one, it is the one to keep.",
+        "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("The keys of your {} account were rotated", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
 /// The mail of a registration that has to prove its address first. The link is the Bitwarden web
 /// vault's `finish-signup`; its token proves the mailbox is the person's, and works for 30 minutes.
 fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered {
@@ -582,6 +600,7 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::EmailTaken(n) => email_taken(n, brand),
         Notice::EmailChanged(n) => email_changed(n, brand),
         Notice::PasswordChanged(n) => password_changed(n, brand),
+        Notice::KeysRotated(n) => keys_rotated(n, brand),
         Notice::SignupVerify(n) => signup_verify(n, brand),
         Notice::RegisterVerify(n) => register_verify(n, brand),
         Notice::BwOrgInvite(n) => bw_org_invite(n, brand),
@@ -976,6 +995,29 @@ mod tests {
         assert!(r.text.contains("new@example.com"), "{}", r.text);
         assert!(r.text.contains("2026-11-26 09:05 UTC"));
         assert!(!r.text.contains("confirm-email"));
+    }
+
+    #[test]
+    fn the_mail_about_rotated_keys_says_what_happened_and_holds_no_secret() {
+        let rendered = render(
+            &Notice::KeysRotated(KeysRotatedNotice {
+                to: email(),
+                at: datetime!(2026-12-02 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(rendered.to, "ada@example.com");
+        assert_eq!(
+            rendered.subject,
+            "The keys of your Kemlock account were rotated"
+        );
+        assert!(
+            rendered.text.contains("2026-12-02 09:05 UTC"),
+            "{}",
+            rendered.text
+        );
+        assert!(rendered.text.contains("other devices were signed out"));
+        assert!(rendered.text.contains("If it wasn't"));
     }
 
     #[test]
