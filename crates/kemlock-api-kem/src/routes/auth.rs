@@ -1,5 +1,6 @@
 //! Accounts and sign-in: prelogin, registration, OPAQUE login, the second step, refresh, TOTP.
 
+use super::attempts;
 use super::guard;
 use super::new_device::announce;
 use crate::dto::{
@@ -9,7 +10,7 @@ use crate::dto::{
     RegisterStartResponse, SignInResponse, SsoOffer, TokenResponse, TotpConfirmRequest,
     TotpEnrolResponse, TwoFactorRequest, decode,
 };
-use crate::extract::{Authed, Body, ClientIp, Proof, SecureConnection};
+use crate::extract::{Authed, Body, ClientIp, Proof, RefreshProof, SecureConnection};
 use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::ip_key;
 use crate::replay::Full;
@@ -195,9 +196,12 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     }
 
     /// `POST /kem/v1/auth/opaque/finish`: OPAQUE login, last message, with a DPoP proof whose key
-    /// the device and its tokens are bound to. A wrong password counts against the account (10
-    /// in 15 minutes, then doubling delays, whichever address they come from); a right one
-    /// clears the count.
+    /// the device and its tokens are bound to. A wrong password counts against the account as seen
+    /// from the address that sent it (10 in 15 minutes, then doubling delays, reserved before the
+    /// password is looked at), so a stranger sending wrong passwords for someone's email only
+    /// locks themselves out; what all addresses add up to only slows the account by a few
+    /// seconds, and a right password always gets in from an address that hasn't run out. A right
+    /// one clears the counts.
     pub(crate) async fn handle_opaque_finish(
         State(api): State<Self>,
         proof: Proof,
@@ -205,17 +209,23 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     ) -> Result<Json<SignInResponse>, Problem> {
         let request: OpaqueFinishRequest = body.json()?;
         check_email_len(&request.email)?;
-        let account = format!("acct:{}", credential_id(&request.email));
-        api.limits
-            .account
-            .blocked(&account, api.now())
-            .map_err(rate_limited)?;
-        let device = request.device.into_info()?;
         let login_state = decode("loginState", &request.login_state)?;
-        // A login state finishes once, whether the password was right or not. Only a genuine,
-        // fresh state is remembered, so made-up ones take no room.
+        // Only a genuine, fresh login state gets as far as being counted or remembered, so
+        // made-up ones spend nobody's attempts and take no room.
         api.sign_in().check_login_state(&login_state)?;
-        match api.used_states.insert(&login_state, api.now()) {
+        // Wrong passwords count per account and source address, reserved before the password is
+        // looked at: the name comes from the request, so a count on the name alone would let
+        // anyone lock the owner out.
+        let attempt = attempts::begin_password_attempt(
+            &api,
+            "acct",
+            &credential_id(&request.email),
+            proof.ip,
+        )
+        .await?;
+        let device = request.device.into_info()?;
+        // A login state finishes once, whether the password was right or not.
+        match api.spend_open_state(proof.ip, &login_state, api.now()) {
             Ok(true) => {}
             Ok(false) => {
                 return Err(Problem::bad_request("the login state was already used"));
@@ -232,14 +242,20 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
                 jkt: proof.jkt,
             })
             .await;
-        match &finished {
-            Err(AppError::Unauthorized) => api.limits.account.fail(&account, api.now()),
-            Ok(_) => api.limits.account.clear(&account),
-            Err(_) => {}
-        }
+        attempts::end_password_attempt(&api, &attempt, &finished);
         api.log_attempt(api.attempt("password", None, &finished, proof.ip, signed_in_ids))
             .await;
         let signed_in = finished?;
+        if let SignedIn::SecondStep(step) = &signed_in {
+            // A challenge is sealed, not stored, so nothing counts the open ones: an account is
+            // given only so many in a while, or whoever holds the password could pile them up
+            // to guess codes on.
+            let user = api.sign_in().challenge_user(&step.challenge)?;
+            api.limits
+                .challenges
+                .check(&format!("challenges:{user}"), api.now())
+                .map_err(rate_limited)?;
+        }
         if let SignedIn::Tokens(tokens) = &signed_in {
             announce(&api, tokens, proof.ip).await;
         }
@@ -286,13 +302,10 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             "totp" => TwoFactorMethod::Totp,
             _ => return Err(Problem::bad_request("method must be \"totp\"")),
         };
-        // A genuine, fresh challenge names the account its codes count against.
+        // A genuine, fresh challenge names the account its codes count against. The attempt is
+        // reserved before the code is looked at, so parallel guesses can't all get past the limit.
         let user = api.sign_in().challenge_user(&challenge)?;
-        let account = format!("2fa:{user}");
-        api.limits
-            .second_step
-            .blocked(&account, now)
-            .map_err(rate_limited)?;
+        attempts::reserve_second_step(&api, user, now).await?;
         let finished = api
             .sign_in()
             .second_step(SecondStepInput {
@@ -302,11 +315,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
                 jkt: proof.jkt,
             })
             .await;
-        match &finished {
-            Err(AppError::Unauthorized) => api.limits.second_step.fail(&account, now),
-            Ok(_) => api.limits.second_step.clear(&account),
-            Err(_) => {}
-        }
+        attempts::settle_second_step(&api, user, &finished).await;
         api.log_attempt(api.attempt("two-factor", Some(user), &finished, proof.ip, token_ids))
             .await;
         let tokens = finished?;
@@ -314,10 +323,12 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         Ok(Json(token_response(&tokens, now)))
     }
 
-    /// `POST /kem/v1/auth/token`: refresh. The refresh token rotates at every use.
+    /// `POST /kem/v1/auth/token`: refresh. The refresh token rotates at every use. The proof is
+    /// remembered only once the refresh token has worked, so proofs that lead nowhere take no
+    /// room in the replay sets and can't be used to fill them.
     pub(crate) async fn handle_token(
         State(api): State<Self>,
-        proof: Proof,
+        proof: RefreshProof,
         body: Body,
     ) -> Result<Json<TokenResponse>, Problem> {
         let request: RefreshRequest = body.json()?;
@@ -328,6 +339,11 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .refresh()
             .execute(&request.refresh_token, &proof.jkt)
             .await;
+        if refreshed.is_ok() {
+            // A proof raced to the same end is refused here, and the refresh token's rotation
+            // already decides which of two refreshes with one token wins.
+            let _ = api.dpop.record(&proof.pending, api.now());
+        }
         api.log_attempt(api.attempt("refresh", None, &refreshed, proof.ip, token_ids))
             .await;
         let tokens = refreshed?;

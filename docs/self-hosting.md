@@ -197,6 +197,25 @@ owner, never what changed, and a replica that loses its connection nudges every 
 is back. Only the replica that took a write pushes to phones, so a phone is woken once. Bitwarden
 apps are told in detail by the replica that took the write and with a general sync by the others.
 
+Rate limits and replay checks. Each replica keeps these in its own memory: the per-address limits
+(sign-in starts, DPoP proofs, registration, device-approval requests), the per-address-and-account
+limit on wrong passwords, and the replay sets of DPoP proofs and spent login states. With several
+replicas behind one load balancer every per-address limit therefore multiplies by the number of
+replicas (a client that spreads its tries over all of them gets that many), and a proof or login
+state replayed against a different replica than the one that first saw it is not recognised there.
+That is acceptable because none of them is the only thing standing in the way: a login state and a
+second-step challenge are sealed with the shared server key and bound to the DPoP key of the device
+that asked for them, an access token is bound to its device's key too, so a captured proof or state
+is no use without that key, and the part that decides whether a guess may be made is shared. The
+count of second-step attempts (authenticator codes, security keys, recovery codes, and the proofs
+for changing a method) is kept in the database, per account: an attempt is reserved there before
+the code is checked, so the limit (5 in 15 minutes by default, then doubling waits) holds across
+replicas and restarts and parallel guesses can't all pass it. Open second-step challenges per
+account, the admin console's step-up, mailed setup codes, and the slowdown after many wrong
+passwords for one account are per replica. To keep a per-address limit as set, send each client
+address to one replica (a load balancer's source-address affinity) or divide the limit by the
+number of replicas in the console.
+
 ## Docker and Compose
 
 ```bash
@@ -335,7 +354,9 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
 
 - Real client IPs. The header named by `IP_HEADER` is trusted only from the addresses in
   `KEMLOCK_TRUSTED_PROXIES`, so rate limits see the real client. Set both, with the proxy's
-  address, or every client looks like the proxy.
+  address, or every client looks like the proxy. Kemlock reads every line of the header and takes
+  the right-most address that is not a trusted proxy; have the outermost proxy drop any
+  `X-Forwarded-For` the client sent (the HAProxy example does).
 - Private only. Bind the port to a Tailscale or WireGuard address, or run Tailscale as a sidecar
   with `tailscale serve`, and nothing is open to the internet. A Cloudflare Tunnel needs no open
   port either, but Cloudflare then sees decrypted requests: vault data stays end-to-end encrypted
@@ -343,7 +364,8 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
 - No proxy. Set `KEMLOCK_ACME_DOMAIN` and Kemlock gets and renews its own Let's Encrypt
   certificate, kept in `/data/acme`.
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
-  /64.
+  /56 (the failed-password limit per account counts by /64), so a host that rotates through the
+  /64s of its site shares one count.
 
 ## Operations
 

@@ -39,6 +39,7 @@ pub(crate) mod push_tokens;
 pub(crate) mod recovery_kits;
 pub(crate) mod refresh_tokens;
 pub(crate) mod revoked_families;
+pub(crate) mod second_step_attempts;
 pub(crate) mod sends;
 pub(crate) mod server_meta;
 pub(crate) mod settings;

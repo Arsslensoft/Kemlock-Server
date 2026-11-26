@@ -629,3 +629,48 @@ async fn sending_a_message_does_not_cover_by_itself() {
     let kinds: Vec<UpdateType> = tap.heard().iter().map(|(_, m)| m.kind).collect();
     assert_eq!(kinds, [UpdateType::SyncSettings, UpdateType::SyncVault]);
 }
+
+#[tokio::test]
+async fn the_address_the_server_settled_beats_a_header_the_client_wrote() {
+    let (ada, grace) = (UserId::random(), UserId::random());
+    let hub = BwHub::new(
+        Arc::new(Both(ada, grace)),
+        HubConfig {
+            ip_header: Some("X-Real-IP".to_owned()),
+            ..HubConfig::default()
+        },
+    );
+    let auth = Arc::new(Tokens { ada, grace });
+    // The server's request layer settles the address and puts it in the extensions.
+    let settled = router(hub, auth).layer(axum::middleware::from_fn(
+        |mut request: Request, next: axum::middleware::Next| async move {
+            request
+                .extensions_mut()
+                .insert(ClientAddr("198.51.100.5".parse().expect("an address")));
+            next.run(request).await
+        },
+    ));
+    let address = serve_with_peers(settled).await;
+    // A client that writes a new address in each request still counts as the one settled.
+    let mut held = Vec::new();
+    for n in 0..MAX_ANONYMOUS_PER_IP {
+        let mut request = format!("ws://{address}/notifications/anonymous-hub?token=t{n}")
+            .into_client_request()
+            .expect("a request");
+        request.headers_mut().insert(
+            "X-Real-IP",
+            format!("203.0.113.{}", n + 1).parse().expect("header"),
+        );
+        held.push(connect_async(request).await.expect("opens").0);
+    }
+    let mut spoofed = format!("ws://{address}/notifications/anonymous-hub?token=x")
+        .into_client_request()
+        .expect("a request");
+    spoofed
+        .headers_mut()
+        .insert("X-Real-IP", "192.0.2.77".parse().expect("header"));
+    assert!(matches!(
+        connect_async(spoofed).await,
+        Err(tungstenite::Error::Http(r)) if r.status() == 429
+    ));
+}

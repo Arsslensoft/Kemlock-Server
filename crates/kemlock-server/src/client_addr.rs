@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::HeaderMap;
 use axum::middleware::Next;
 use axum::response::Response;
-use kemlock_api_kem::ratelimit::client_ip;
+use kemlock_api_kem::ratelimit::{client_ip, joined_header};
 use kemlock_app::privacy::ClientAddr;
 use kemlock_store_sql::with_request_ip;
 use std::net::{IpAddr, SocketAddr};
@@ -38,12 +38,13 @@ impl ClientAddrSettings {
     /// server wasn't started to tell the peer (tests that call the router directly).
     pub fn settle(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Option<IpAddr> {
         let peer = peer?;
+        // Every line of the header, not the first: a proxy may append its own line after the
+        // client's, and the client's own line must not name the address.
         let header = self
             .ip_header
             .as_deref()
-            .and_then(|name| headers.get(name))
-            .and_then(|value| value.to_str().ok());
-        Some(client_ip(peer, header, &self.trusted_proxies))
+            .and_then(|name| joined_header(headers, name));
+        Some(client_ip(peer, header.as_deref(), &self.trusted_proxies))
     }
 }
 
@@ -112,6 +113,20 @@ mod tests {
             "a stranger's header is not believed"
         );
         assert_eq!(s.settle(None, &forwarded), None, "no peer, no address");
+    }
+
+    #[test]
+    fn a_proxy_that_adds_its_own_header_line_is_read_last() {
+        // HAProxy's `option forwardfor` adds a separate line after the client's own.
+        let s = settings(&["10.0.0.1"], Some("x-forwarded-for"));
+        let mut forwarded = HeaderMap::new();
+        forwarded.append("x-forwarded-for", "1.2.3.4".parse().expect("a value"));
+        forwarded.append("x-forwarded-for", "198.51.100.7".parse().expect("a value"));
+        assert_eq!(
+            s.settle(Some(ip("10.0.0.1")), &forwarded),
+            Some(ip("198.51.100.7")),
+            "the proxy's line, not the client's"
+        );
     }
 
     /// A route that writes an event from inside a request, as a use case does.

@@ -9,6 +9,15 @@ use kemlock_domain::{DeviceId, DeviceKind, Email, UserId};
 use std::future::Future;
 use time::OffsetDateTime;
 
+/// What the hourly limits need to know of an earlier request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentRequest {
+    pub created_at: OffsetDateTime,
+    /// The request's address, cut to its /24 or /48 (what the request stored).
+    pub ip: String,
+    pub state: ApprovalState,
+}
+
 /// Pending device approvals (`auth_requests`).
 pub trait ApprovalRepo: Send + Sync {
     /// Stores a new request.
@@ -37,13 +46,13 @@ pub trait ApprovalRepo: Send + Sync {
         from: ApprovalState,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// When the account's requests made after `since` were created, oldest first. Backs the
-    /// hourly limit.
+    /// The account's requests made after `since`, oldest first, with where each came from and how
+    /// it stands. Backs the hourly limits.
     fn requests_since(
         &self,
         user: UserId,
         since: OffsetDateTime,
-    ) -> impl Future<Output = Result<Vec<OffsetDateTime>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<RecentRequest>, StoreError>> + Send;
 
     /// Deletes requests that expired before `before`. Returns how many went.
     fn purge_requests(

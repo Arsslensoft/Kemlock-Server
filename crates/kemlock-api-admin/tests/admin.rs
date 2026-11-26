@@ -356,6 +356,55 @@ async fn wrong_totp_codes_are_refused_and_then_slowed_down() {
 }
 
 #[tokio::test]
+async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in() {
+    use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    // Four attempts at the second step of a sign-in, counted in the store as the Kemlock API
+    // counts them.
+    for _ in 0..4 {
+        let reserved =
+            SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900)
+                .await;
+        assert_eq!(reserved, Ok(Reservation::Granted));
+    }
+    // One wrong step-up code is the fifth: it is looked at, and the next try waits.
+    let wrong = root
+        .send(
+            "POST",
+            "/admin/v1/step-up/totp",
+            Some(json!({"code": "000000"})),
+            None,
+        )
+        .await;
+    assert_eq!(slug(&wrong), "step-up-failed");
+    let waiting = root
+        .send(
+            "POST",
+            "/admin/v1/step-up/totp",
+            Some(json!({"code": rig.totp_code()})),
+            None,
+        )
+        .await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    // After the wait the right code gets a step-up token, and clears the count for both.
+    rig.app.clock.advance(Duration::seconds(1));
+    rig.next_step();
+    let ok = root
+        .send(
+            "POST",
+            "/admin/v1/step-up/totp",
+            Some(json!({"code": rig.totp_code()})),
+            None,
+        )
+        .await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    let after =
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert_eq!(after, Ok(Reservation::Granted));
+}
+
+#[tokio::test]
 async fn the_password_check_makes_a_step_up_token() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;

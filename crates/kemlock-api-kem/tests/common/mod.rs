@@ -208,6 +208,28 @@ impl App {
         client
     }
 
+    /// A device (with its own DPoP key) talking to a second server over the same database and
+    /// keys: its own limits and replay sets in memory, as another replica of one deployment has.
+    pub(crate) fn replica_client(&self) -> Client {
+        let api = Api::new(
+            self.store.clone(),
+            self.crypto.clone(),
+            JwsTokenSigner::new(ed25519::SigningKey::from_seed(&[1u8; 32])),
+            LiveHub::new(),
+            self.api.config.clone(),
+            ApiSecrets {
+                prelogin: [9u8; 32],
+                dpop_nonce: [8u8; 32],
+            },
+        )
+        .expect("the test domain is valid");
+        Client::new(
+            router(api, fakes::NoSpaceStore),
+            self.clock.clone(),
+            DpopSigner::es256(),
+        )
+    }
+
     pub(crate) fn now(&self) -> i64 {
         self.clock.now().unix_timestamp()
     }

@@ -7,8 +7,8 @@
 use super::{FakeEnv, FakeSeal, FakeStore, FakeTokenSigner, World};
 use kemlock_app::devices::{
     AnswerApproval, ApprovalRepo, DeviceNotices, DeviceSignIn, KeyCopies, KeyCopyRepo,
-    ListApprovals, NewDeviceNotice, PollApproval, PurgeApprovals, RequestApproval, SignOutDevice,
-    UntrustDevice,
+    ListApprovals, NewDeviceNotice, PollApproval, PurgeApprovals, RecentRequest, RequestApproval,
+    SignOutDevice, UntrustDevice,
 };
 use kemlock_app::emergency::{
     ApproveDue, EmergencyAccess, EmergencyNotice, EmergencyNotices, EmergencyRepo,
@@ -113,17 +113,21 @@ impl ApprovalRepo for FakeStore {
         &self,
         user: UserId,
         since: OffsetDateTime,
-    ) -> Result<Vec<OffsetDateTime>, StoreError> {
-        let mut times: Vec<OffsetDateTime> = self
+    ) -> Result<Vec<RecentRequest>, StoreError> {
+        let mut recent: Vec<RecentRequest> = self
             .unlock
             .lock()
             .requests
             .values()
             .filter(|r| r.user == user && r.created_at > since)
-            .map(|r| r.created_at)
+            .map(|r| RecentRequest {
+                created_at: r.created_at,
+                ip: r.ip.clone(),
+                state: r.state,
+            })
             .collect();
-        times.sort();
-        Ok(times)
+        recent.sort_by_key(|r| r.created_at);
+        Ok(recent)
     }
 
     async fn purge_requests(&self, before: OffsetDateTime) -> Result<u64, StoreError> {

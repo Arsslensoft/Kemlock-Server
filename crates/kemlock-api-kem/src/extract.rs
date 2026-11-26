@@ -1,9 +1,9 @@
 //! Request extractors: the capped body, the client address, a DPoP proof on a token endpoint,
 //! and an authenticated actor. All reject with problem+json.
 
-use crate::dpop::DpopError;
+use crate::dpop::{DpopError, Pending};
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{client_ip, ip_key};
+use crate::ratelimit::{client_ip, ip_key, joined_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, Bytes};
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
@@ -60,13 +60,13 @@ fn peer_and_header<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
     api: &Api<S, P, K>,
 ) -> IpAddr {
     let peer = peer_address(parts);
+    // Every line of the header, not the first: a proxy may append its own line after the client's.
     let header = api
         .config
         .ip_header
         .as_deref()
-        .and_then(|name| parts.headers.get(name))
-        .and_then(|value| value.to_str().ok());
-    client_ip(peer, header, &api.config.trusted_proxies)
+        .and_then(|name| joined_header(&parts.headers, name));
+    client_ip(peer, header.as_deref(), &api.config.trusted_proxies)
 }
 
 /// Headers that say a proxy forwarded the request.
@@ -176,11 +176,11 @@ fn dpop_problem<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
     }
 }
 
-fn verify_proof<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
-    parts: &Parts,
+/// The proof header's text: there must be exactly one.
+fn proof_header<'a, S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
+    parts: &'a Parts,
     api: &Api<S, P, K>,
-    access_token: Option<&str>,
-) -> Result<String, Problem> {
+) -> Result<&'a str, Problem> {
     let mut values = parts.headers.get_all("dpop").iter();
     let (Some(value), None) = (values.next(), values.next()) else {
         return Err(dpop_problem(
@@ -188,11 +188,23 @@ fn verify_proof<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
             DpopError::Invalid("exactly one DPoP header is required"),
         ));
     };
-    let proof = value
+    value
         .to_str()
-        .map_err(|_| dpop_problem(api, DpopError::Invalid("the DPoP header isn't text")))?;
+        .map_err(|_| dpop_problem(api, DpopError::Invalid("the DPoP header isn't text")))
+}
+
+/// Checks the request's proof and remembers it. `source` names the client address of a request
+/// nobody is authenticated for: its proofs may take only their share of the open set.
+fn verify_proof<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
+    parts: &Parts,
+    api: &Api<S, P, K>,
+    access_token: Option<&str>,
+    source: Option<&str>,
+) -> Result<String, Problem> {
+    let proof = proof_header(parts, api)?;
     api.dpop
-        .verify(
+        .verify_from(
+            source.map(str::as_bytes),
             proof,
             parts.method.as_str(),
             parts.uri.path(),
@@ -223,8 +235,51 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
             .proof
             .check(&ip_key(ip), api.now())
             .map_err(rate_limited)?;
-        let jkt = verify_proof(parts, api, None)?;
+        let jkt = verify_proof(parts, api, None, Some(&ip_key(ip)))?;
         Ok(Proof { jkt, ip })
+    }
+}
+
+/// A request to the refresh endpoint: its DPoP proof checked but not remembered yet, with the
+/// thumbprint of the proof's key.
+///
+/// A refresh proof carries no access token, so remembering it on arrival would put it in the
+/// open set anyone can fill, and a full set would stop every device refreshing. The handler
+/// instead records it (in the set of proofs that belong to sessions) once the refresh token is
+/// found and bound to this key. Limited per client address like [`Proof`].
+#[derive(Clone, Debug)]
+pub struct RefreshProof {
+    pub jkt: String,
+    pub ip: IpAddr,
+    pub pending: Pending,
+}
+
+impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api<S, P, K>>
+    for RefreshProof
+{
+    type Rejection = Problem;
+
+    async fn from_request_parts(parts: &mut Parts, api: &Api<S, P, K>) -> Result<Self, Problem> {
+        let ip = peer_and_header(parts, api);
+        api.limits
+            .proof
+            .check(&ip_key(ip), api.now())
+            .map_err(rate_limited)?;
+        let proof = proof_header(parts, api)?;
+        let pending = api
+            .dpop
+            .verify_unrecorded(
+                proof,
+                parts.method.as_str(),
+                parts.uri.path(),
+                api.now(),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
+        Ok(RefreshProof {
+            jkt: pending.jkt.clone(),
+            ip,
+            pending,
+        })
     }
 }
 
@@ -284,7 +339,13 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
         let Ok(claims) = api.signer.verify(token, api.crypto.now()) else {
             return Err(invalid_token(Problem::from(AppError::Unauthorized)));
         };
-        let jkt = verify_proof(parts, api, Some(token))?;
+        // A token anyone who registered holds is enough to get a proof into the set of
+        // authenticated ones, so each device may make only so many a minute.
+        api.limits
+            .device_proof
+            .check(&format!("device:{}", claims.device.0), api.now())
+            .map_err(rate_limited)?;
+        let jkt = verify_proof(parts, api, Some(token), None)?;
         let actor = api
             .authenticate()
             .execute(token, &jkt)

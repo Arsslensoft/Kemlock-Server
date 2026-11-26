@@ -3,6 +3,7 @@
 
 pub(crate) mod account;
 pub(crate) mod api_key;
+pub(crate) mod attempts;
 mod auth;
 pub(crate) mod connector;
 pub(crate) mod contract;

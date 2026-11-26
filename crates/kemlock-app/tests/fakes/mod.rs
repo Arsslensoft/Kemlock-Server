@@ -82,6 +82,8 @@ struct StoreInner {
     disabled: HashSet<UserId>,
     /// The accounts whose deletion is pending (the grace period), with when it is due.
     erasing: HashMap<UserId, OffsetDateTime>,
+    /// The second-step attempts each account has reserved.
+    second_step: HashMap<UserId, kemlock_app::second_step_guard::Attempts>,
     /// The `settings` table.
     settings: std::collections::BTreeMap<String, String>,
 }
@@ -1463,6 +1465,27 @@ impl kemlock_app::admin::SettingsRepo for FakeStore {
 
     async fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
         self.lock().settings.remove(key);
+        Ok(())
+    }
+}
+
+impl kemlock_app::second_step_guard::SecondStepGuard for FakeStore {
+    async fn reserve_second_step(
+        &self,
+        user: UserId,
+        now: i64,
+        limit: u32,
+        window_secs: i64,
+    ) -> Result<kemlock_app::second_step_guard::Reservation, StoreError> {
+        let mut g = self.lock();
+        let before = g.second_step.get(&user).copied().unwrap_or_default();
+        let (after, reservation) = before.reserve(now, limit, window_secs);
+        g.second_step.insert(user, after);
+        Ok(reservation)
+    }
+
+    async fn clear_second_step(&self, user: UserId) -> Result<(), StoreError> {
+        self.lock().second_step.remove(&user);
         Ok(())
     }
 }

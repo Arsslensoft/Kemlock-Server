@@ -238,17 +238,63 @@ async fn an_unknown_email_gets_the_same_answer_and_shows_nowhere() {
     assert_eq!(listed["approvals"], json!([]));
 }
 
+/// A new device that asks from its own address.
+fn from(app: &App, n: u8) -> Client {
+    let mut client = app.client();
+    client.peer = Some(std::net::SocketAddr::from(([198, 51, n, 1], 40_000)));
+    client
+}
+
 #[tokio::test]
-async fn an_account_takes_ten_requests_an_hour() {
+async fn one_address_asks_three_times_an_hour_for_one_email_whether_or_not_it_has_an_account() {
     let (app, _open, _session) = open_device().await;
-    let new_device = app.client();
-    for _ in 0..10 {
-        assert_eq!(ask(&new_device, EMAIL).await.status, StatusCode::CREATED);
+    let new_device = from(&app, 1);
+    for email in [EMAIL, "nobody@example.org"] {
+        for _ in 0..3 {
+            assert_eq!(ask(&new_device, email).await.status, StatusCode::CREATED);
+        }
+        let refused = ask(&new_device, email).await;
+        assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{email}");
+        assert_eq!(refused.problem(), "rate-limited", "{email}");
+        assert!(refused.header("retry-after").is_some());
     }
-    let refused = ask(&new_device, EMAIL).await;
-    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(refused.problem(), "rate-limited");
-    assert!(refused.header("retry-after").is_some());
+    // Another address is not held back by it.
+    assert_eq!(ask(&from(&app, 2), EMAIL).await.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn an_account_takes_thirty_requests_an_hour_and_past_them_the_answer_is_the_same() {
+    let (app, open, session) = open_device().await;
+    // Thirty requests from ten addresses (each in a network of its own), so no address is over
+    // its own limit of three.
+    for n in 0..30u8 {
+        let asked = ask(&from(&app, 1 + n / 3), EMAIL).await;
+        assert_eq!(asked.status, StatusCode::CREATED, "{n}: {:?}", asked.json());
+    }
+    // The next, from an address that has asked nothing, is answered like any other: it is
+    // not a refusal that tells a stranger the account exists, and it stores nothing.
+    let eleventh = ask(&from(&app, 99), EMAIL).await;
+    assert_eq!(eleventh.status, StatusCode::CREATED, "{:?}", eleventh.json());
+    let stranger = ask(&from(&app, 99), "nobody@example.org").await;
+    assert_eq!(stranger.status, StatusCode::CREATED);
+    let keys = |reply: &Reply| {
+        let mut keys: Vec<String> = reply
+            .json()
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    };
+    assert_eq!(keys(&eleventh), keys(&stranger));
+
+    let listed = open
+        .get_authed("/kem/v1/devices/approvals", &session.access_token)
+        .await
+        .json();
+    assert_eq!(listed["approvals"].as_array().expect("approvals").len(), 30);
 }
 
 #[tokio::test]

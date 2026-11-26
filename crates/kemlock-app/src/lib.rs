@@ -49,6 +49,7 @@ pub mod refresh;
 pub mod register;
 pub mod reset_admin;
 pub mod sealed;
+pub mod second_step_guard;
 pub mod sends;
 pub mod session;
 pub mod setup_basics;

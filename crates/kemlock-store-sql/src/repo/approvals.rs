@@ -4,7 +4,7 @@ use crate::convert::utc;
 use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::auth_requests::{self, state_str};
-use kemlock_app::devices::ApprovalRepo;
+use kemlock_app::devices::{ApprovalRepo, RecentRequest};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::UserId;
 use kemlock_domain::unlock::{ApprovalId, ApprovalState, AuthRequest};
@@ -85,8 +85,8 @@ impl ApprovalRepo for SqlStore {
         &self,
         user: UserId,
         since: OffsetDateTime,
-    ) -> Result<Vec<OffsetDateTime>, StoreError> {
-        Ok(auth_requests::Entity::find()
+    ) -> Result<Vec<RecentRequest>, StoreError> {
+        auth_requests::Entity::find()
             .filter(auth_requests::Column::UserId.eq(user.0))
             .filter(auth_requests::Column::CreatedAt.gt(utc(since)))
             .order_by_asc(auth_requests::Column::CreatedAt)
@@ -94,8 +94,14 @@ impl ApprovalRepo for SqlStore {
             .await
             .store()?
             .into_iter()
-            .map(|row| row.created_at)
-            .collect())
+            .map(|row| {
+                row.into_domain().map(|r| RecentRequest {
+                    created_at: r.created_at,
+                    ip: r.ip,
+                    state: r.state,
+                })
+            })
+            .collect()
     }
 
     async fn purge_requests(&self, before: OffsetDateTime) -> Result<u64, StoreError> {

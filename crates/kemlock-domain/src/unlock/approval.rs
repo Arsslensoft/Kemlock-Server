@@ -12,8 +12,12 @@ uuid_id!(
 
 /// A request lives 15 minutes (design, "Retention").
 pub const REQUEST_TTL: Duration = Duration::minutes(15);
-/// An account takes at most this many requests an hour (design, "Limits").
-pub const HOURLY_REQUEST_LIMIT: usize = 10;
+/// An account takes at most this many requests an hour from all addresses together (design,
+/// "Limits"); past it a request is held back, whoever sent it.
+pub const HOURLY_REQUEST_LIMIT: usize = 30;
+/// One address (a /24, or a /48 for IPv6) takes at most this many requests an hour for one account,
+/// so a few addresses can't use up the account's whole hour.
+pub const SOURCE_HOURLY_REQUEST_LIMIT: usize = 3;
 /// A `kx1` public key: ML-KEM-1024 encapsulation key (1568) and X25519 public key (32).
 pub const KX1_PUBLIC_KEY_LEN: usize = 1600;
 /// What a `kx1` sealed box adds to its secret: version byte (1), `kx1` ciphertext (1600), AES-GCM

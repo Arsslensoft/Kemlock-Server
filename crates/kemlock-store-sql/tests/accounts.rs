@@ -7,12 +7,13 @@
 
 mod common;
 
-use common::{device, external, file, memory, unique_email, user};
+use common::{device, external, file, file_url, memory, unique_email, user};
 use kemlock_app::FirstAdminRepo;
 use kemlock_app::ports::{
     DeviceRepo, Event, EventLog, RefreshToken, ServerInfo, StoreError, TokenRepo, TwoFactor,
     TwoFactorMethod, TwoFactorRepo, UserRepo,
 };
+use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
 use kemlock_domain::{DeviceId, DeviceKind, Role, UserId};
 use kemlock_store_sql::SqlStore;
 use time::macros::datetime;
@@ -453,6 +454,58 @@ async fn two_step_version_moves_when_a_method_is_turned_on_or_off(store: &SqlSto
     );
 }
 
+async fn second_step_attempts_are_reserved_atomically_and_kept(store: &SqlStore) {
+    let owner = user(&unique_email("2fa-attempts"));
+    UserRepo::insert(store, &owner).await.expect("insert user");
+    let reserve = |now: i64| SecondStepGuard::reserve_second_step(store, owner.id, now, 3, 900);
+
+    // Parallel attempts: exactly three of ten pass, whichever order they land in.
+    let tasks: Vec<_> = (0..10)
+        .map(|_| {
+            let (store, user) = (store.clone(), owner.id);
+            tokio::spawn(async move {
+                SecondStepGuard::reserve_second_step(&store, user, 1000, 3, 900).await
+            })
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for task in tasks {
+        answers.push(task.await.expect("the task ran"));
+    }
+    let granted = answers
+        .iter()
+        .filter(|a| matches!(a, Ok(Reservation::Granted)))
+        .count();
+    assert_eq!(granted, 3, "{answers:?}");
+    assert!(
+        answers
+            .iter()
+            .all(|a| matches!(a, Ok(Reservation::Granted | Reservation::Wait(_)))),
+        "{answers:?}"
+    );
+
+    // A wait counts nothing, and doubles for the attempt after it.
+    assert!(matches!(reserve(1000).await, Ok(Reservation::Wait(_))));
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+    assert_eq!(reserve(1001).await, Ok(Reservation::Wait(2)));
+
+    // A right code clears it.
+    SecondStepGuard::clear_second_step(store, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+
+    // It is the account's own.
+    let other = user(&unique_email("2fa-attempts-other"));
+    UserRepo::insert(store, &other).await.expect("insert user");
+    for _ in 0..3 {
+        SecondStepGuard::reserve_second_step(store, other.id, 1001, 3, 900)
+            .await
+            .expect("reserve");
+    }
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+}
+
 async fn events(store: &SqlStore) {
     let owner = user(&unique_email("events"));
     UserRepo::insert(store, &owner).await.expect("insert user");
@@ -603,6 +656,7 @@ async fn run_all(store: &SqlStore) {
     tokens(store).await;
     two_factor(store).await;
     two_step_version_moves_when_a_method_is_turned_on_or_off(store).await;
+    second_step_attempts_are_reserved_atomically_and_kept(store).await;
     events(store).await;
 }
 
@@ -629,4 +683,35 @@ async fn mysql_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_MYSQL_URL").await {
         run_all(&store).await;
     }
+}
+
+#[tokio::test]
+async fn second_step_attempts_are_seen_by_another_server_on_the_same_database() {
+    // Two servers (a restart, or two replicas) on one database file: what one reserved the other
+    // sees, so the limit holds across them.
+    let (first, dir) = file().await;
+    let owner = user(&unique_email("2fa-attempts-shared"));
+    UserRepo::insert(&first, &owner).await.expect("insert user");
+    for _ in 0..3 {
+        assert_eq!(
+            SecondStepGuard::reserve_second_step(&first, owner.id, 1000, 3, 900).await,
+            Ok(Reservation::Granted)
+        );
+    }
+    let second = SqlStore::connect(&file_url(&dir.path().join("kemlock.db")))
+        .await
+        .expect("a second store opens the same file");
+    assert_eq!(
+        SecondStepGuard::reserve_second_step(&second, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(1)),
+        "the other server's attempts count here"
+    );
+    // A right code on the second server clears it for the first.
+    SecondStepGuard::clear_second_step(&second, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(
+        SecondStepGuard::reserve_second_step(&first, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Granted)
+    );
 }

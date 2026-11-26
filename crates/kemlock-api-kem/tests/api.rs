@@ -545,36 +545,122 @@ async fn asking_for_logins_never_slows_an_account_down_from_other_addresses() {
 }
 
 #[tokio::test]
-async fn failed_finishes_slow_the_account_down_from_every_address() {
+async fn wrong_passwords_lock_out_only_the_address_that_sent_them() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account.set_limit(3);
+    let wrong = [9u8; 32];
+    // A stranger sends wrong passwords for sam's email: three, then they wait, even with the
+    // right password, because the count is theirs.
+    for n in 1..=3 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+        assert_eq!(reply.problem(), "unauthorized");
+    }
+    let waiting = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waiting.problem(), "rate-limited");
+    assert_eq!(waiting.header("retry-after"), Some("1"));
+    // Sam, from another address, signs in at once: the stranger's count is not sam's.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(2)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    // Another account is not affected either, and after the wait the stranger gets a try again.
+    register(&client, "alex@example.org", None).await;
+    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
+    app.clock.advance(Duration::seconds(1));
+    let again = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED);
+    let doubled = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+    assert_eq!(doubled.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(doubled.header("retry-after"), Some("2"));
+}
+
+#[tokio::test]
+async fn wrong_passwords_from_many_addresses_only_slow_the_account_and_the_right_one_gets_in() {
     let app = App::new(true);
     let client = app.client();
     register_and_sign_in(&client, "sam@example.org").await;
     let wrong = [9u8; 32];
-    // Ten wrong passwords, each from another address, so no per-IP limit is involved.
+    // Ten wrong passwords, each from another address, so no hard limit is involved.
     for n in 1..=10u8 {
         let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
-        assert_eq!(reply.problem(), "unauthorized");
     }
-    // The account now waits, whoever asks, even with the right password.
-    let slowed = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
-    assert_eq!(slowed.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(slowed.problem(), "rate-limited");
-    assert_eq!(slowed.header("retry-after"), Some("1"));
+    // The account is slowed now, whoever asks: the right password still signs in, a moment late.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "held back about a second: {:?}",
+        started.elapsed()
+    );
+    // And a right password clears the slowdown.
+    let started = std::time::Instant::now();
+    let again = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(51)).await;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.json());
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn wrong_passwords_spread_over_many_addresses_are_capped_for_the_account() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account_cap.set_limit(5);
+    let wrong = [9u8; 32];
+    // Five wrong passwords, each from its own address, so no per-address limit is involved.
+    for n in 1..=5u8 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Past the cap the account's password checks are refused for everyone, a right password
+    // included, until the wait is over.
+    let refused = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(refused.problem(), "rate-limited");
     // Another account is not affected.
     register(&client, "alex@example.org", None).await;
     let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(51)).await;
     assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
-    // After the delay the right password signs sam in, and clears the count.
     app.clock.advance(Duration::seconds(1));
     let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(52)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
-    let again = sign_in_from(&client, "sam@example.org", &wrong, peer(53)).await;
-    assert_eq!(
-        again.status,
-        StatusCode::UNAUTHORIZED,
-        "the count started again"
-    );
+}
+
+#[tokio::test]
+async fn made_up_login_states_spend_no_one_s_attempts() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account.set_limit(3);
+    app.api.limits.account_cap.set_limit(3);
+    // Twenty finishes with login states nobody made, from one address: refused as bad requests
+    // before anything is counted.
+    for n in 0..20 {
+        let reply = client
+            .send(
+                "POST",
+                "/kem/v1/auth/opaque/finish",
+                Req {
+                    body: Some(json!({
+                        "email": "sam@example.org",
+                        "loginState": b64(&[n as u8; 64]),
+                        "finalization": b64(&[7u8; 64]),
+                        "device": test_device(),
+                    })),
+                    peer: Some(peer(1)),
+                    ..Req::default()
+                },
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "try {n}");
+    }
+    // Neither that address nor the account is the worse for it.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
 }
 
 /// Registers `email` (signups on), enrols and confirms a TOTP method, and returns its secret.
@@ -675,6 +761,57 @@ async fn wrong_second_step_codes_slow_the_account_down_whatever_challenge_or_add
     let right = totp_now(&app, &secret);
     let ok = second_step_from(&client, &challenge, &right, peer(61)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn second_step_attempts_are_counted_in_the_store_so_every_replica_sees_them() {
+    let app = App::new(true);
+    let client = app.client();
+    let secret = two_step_account(&app, &client, "sam@example.org").await;
+    for n in 1..=5u8 {
+        let challenge = challenge_from(&client, "sam@example.org", peer(n)).await;
+        let wrong = wrong_code(&app, &secret);
+        let reply = second_step_from(&client, &challenge, &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Another replica of the same deployment has memory of its own and the same database: it
+    // turns the account away too, even with the right code.
+    let other = app.replica_client();
+    let challenge = challenge_from(&other, "sam@example.org", peer(70)).await;
+    let right = totp_now(&app, &secret);
+    let waiting = second_step_from(&other, &challenge, &right, peer(70)).await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waiting.problem(), "rate-limited");
+    assert_eq!(waiting.header("retry-after"), Some("1"));
+
+    // After the wait the right code works there, and clears the count for both.
+    app.clock.advance(Duration::seconds(1));
+    let challenge = challenge_from(&other, "sam@example.org", peer(71)).await;
+    let right = totp_now(&app, &secret);
+    let ok = second_step_from(&other, &challenge, &right, peer(71)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    let wrong = wrong_code(&app, &secret);
+    let challenge = challenge_from(&client, "sam@example.org", peer(72)).await;
+    let again = second_step_from(&client, &challenge, &wrong, peer(72)).await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED, "the count started again");
+}
+
+#[tokio::test]
+async fn an_account_is_given_only_so_many_second_step_challenges_in_a_while() {
+    let app = App::new(true);
+    let client = app.client();
+    two_step_account(&app, &client, "sam@example.org").await;
+    // Whoever holds the password can ask for challenges, each a place to guess codes on; each
+    // from its own address, so no per-address limit is involved.
+    for n in 1..=10u8 {
+        challenge_from(&client, "sam@example.org", peer(n)).await;
+    }
+    let eleventh = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(11)).await;
+    assert_eq!(eleventh.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(eleventh.problem(), "rate-limited");
+    // A challenge lives five minutes; some time on, the account is given another.
+    app.clock.advance(Duration::seconds(301));
+    challenge_from(&client, "sam@example.org", peer(12)).await;
 }
 
 #[tokio::test]
@@ -1149,20 +1286,20 @@ async fn a_proof_can_be_used_once() {
     let app = App::new(false);
     let client = app.client();
     // Learn the nonce.
-    client.post("/kem/v1/auth/token", token_request()).await;
-    let proof = client.proof_for("POST", "/kem/v1/auth/token", None);
+    client.post("/kem/v1/auth/opaque/start", json!({})).await;
+    let proof = client.proof_for("POST", "/kem/v1/auth/opaque/start", None);
     let req = Req {
-        body: Some(token_request()),
+        body: Some(json!({})),
         proof: Some(proof),
         ..Req::default()
     };
-    let first = client.once("POST", "/kem/v1/auth/token", &req).await;
+    let first = client.once("POST", "/kem/v1/auth/opaque/start", &req).await;
     assert_eq!(
         first.status,
         StatusCode::BAD_REQUEST,
         "the proof was accepted"
     );
-    let replay = client.once("POST", "/kem/v1/auth/token", &req).await;
+    let replay = client.once("POST", "/kem/v1/auth/opaque/start", &req).await;
     assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
     assert_eq!(replay.problem(), "invalid-dpop-proof");
 }
@@ -1222,6 +1359,36 @@ async fn a_made_up_access_token_never_takes_room_in_the_replay_set() {
         .await;
     assert_eq!(real.status, StatusCode::OK);
     assert_eq!(app.api.dpop.tracked(), before + 1);
+}
+
+#[tokio::test]
+async fn one_device_may_put_only_so_many_authenticated_proofs_in_the_replay_set() {
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let other_client = app.client();
+    let other = register_and_sign_in(&other_client, "alex@example.org").await;
+    app.api.limits.device_proof.set_limit(5);
+
+    let before = app.api.dpop.tracked();
+    for n in 0..5 {
+        let reply = client
+            .get_authed("/kem/v1/sync", &session.access_token)
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "request {n}");
+    }
+    // The sixth waits, before its proof is looked at: it takes no room.
+    let limited = client
+        .get_authed("/kem/v1/sync", &session.access_token)
+        .await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.problem(), "rate-limited");
+    assert_eq!(app.api.dpop.tracked(), before + 5);
+    // Another device is not held back by it.
+    let ok = other_client
+        .get_authed("/kem/v1/sync", &other.access_token)
+        .await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
 }
 
 #[tokio::test]
@@ -1377,6 +1544,40 @@ async fn a_changed_security_stamp_ends_the_session() {
 
 fn refresh_body(token: &str) -> serde_json::Value {
     json!({"grantType": "refresh_token", "refreshToken": token})
+}
+
+#[tokio::test]
+async fn a_refresh_proof_is_remembered_only_once_the_refresh_worked() {
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let open_before = app.api.dpop.tracked_open();
+    let total_before = app.api.dpop.tracked();
+
+    // Refreshes that lead nowhere take no room in either replay set, so they can't fill them.
+    for _ in 0..5 {
+        let bad = client
+            .post("/kem/v1/auth/token", refresh_body("not-a-refresh-token"))
+            .await;
+        assert_eq!(bad.status, StatusCode::UNAUTHORIZED, "{:?}", bad.json());
+    }
+    assert_eq!(app.api.dpop.tracked(), total_before);
+
+    // One that works is remembered with the sessions' proofs, not in the open set, and is then
+    // a replay.
+    let proof = client.proof_for("POST", "/kem/v1/auth/token", None);
+    let req = Req {
+        body: Some(refresh_body(&session.refresh_token)),
+        proof: Some(proof),
+        ..Req::default()
+    };
+    let ok = client.once("POST", "/kem/v1/auth/token", &req).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert_eq!(app.api.dpop.tracked_open(), open_before);
+    assert_eq!(app.api.dpop.tracked(), total_before + 1);
+    let replay = client.once("POST", "/kem/v1/auth/token", &req).await;
+    assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(replay.problem(), "invalid-dpop-proof");
 }
 
 #[tokio::test]

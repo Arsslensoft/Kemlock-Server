@@ -32,7 +32,9 @@ use crate::tables::{
     auth_requests, bw_accounts, bw_user_key_ids, device_key_copies, devices, emergency_access,
 };
 use crate::tables::{dedup_owners, item_tags};
-use crate::tables::{refresh_tokens, two_factor, two_factor_recovery, two_step_versions, users};
+use crate::tables::{
+    refresh_tokens, second_step_attempts, two_factor, two_factor_recovery, two_step_versions, users,
+};
 use kemlock_app::ports::{DeviceRepo, Event, ItemStore, StoreError, TwoFactorRepo};
 use kemlock_app::privacy::{
     AccountData, AccountEraser, ErasedRows, NewSignIn, PrivacyLog, PrivacySettings, PurgedTrash,
@@ -693,6 +695,11 @@ async fn erase_in(
         .store()?;
     two_step_versions::Entity::delete_many()
         .filter(two_step_versions::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
+    second_step_attempts::Entity::delete_many()
+        .filter(second_step_attempts::Column::UserId.eq(uid))
         .exec(txn)
         .await
         .store()?;
