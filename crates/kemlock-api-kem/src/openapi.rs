@@ -397,7 +397,7 @@ fn doc_recovery_code() {}
         (status = 403, description = "A space item the caller may not write: no edit on its collection", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such space, or the caller isn't in it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "Stale write: the current revision is in `currentRevision`; or a space item sealed under a replaced collection key", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 422, description = "`invalid-signature`: the write's signature is not the signed-in account's, or `signature-required`: the owner accepts signed writes only", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 422, description = "`invalid-signature`: the write's signature is not the signed-in account's, or `signature-required`: the owner accepts signed writes only, or `key-version-stale`: the account replaced its keys after the device unlocked (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 423, description = "The space waits for its keys to be replaced", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 428, description = "No If-Match or If-None-Match", body = ProblemDoc, content_type = "application/problem+json"),
     )

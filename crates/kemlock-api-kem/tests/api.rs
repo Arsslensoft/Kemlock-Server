@@ -2653,3 +2653,28 @@ async fn an_account_reads_its_own_bundle_by_key_version_and_a_stranger_gets_a_40
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+async fn a_signature_under_an_old_key_version_asks_the_device_to_unlock_again() {
+    let (app, client, session) = signed_in().await;
+    let key = common::fakes::bundle_key();
+    // The account replaced its keys since this device unlocked: its row is at version 2.
+    let user = session.user_id.parse::<kemlock_domain::UserId>().expect("a user id");
+    let mut account = app.store.user(user).expect("the account");
+    account.key_version = 2;
+    app.store.put_user(account);
+
+    let id = new_item_id();
+    let stale = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let json = stale.json();
+    assert_eq!(json["type"], "urn:kemlock:problem:key-version-stale");
+    assert_eq!(json["currentKeyVersion"], 2);
+}

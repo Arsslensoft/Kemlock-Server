@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { decodeB64, encodeB64, wipe } from './b64url';
 import { ApiErrorFixture } from './lib.fixture';
+import { CryptoError } from '@/crypto/types';
 import { describeError } from './errors';
 import { safeNext } from './safe-next';
 import {
@@ -202,6 +203,11 @@ describe('error messages and links', () => {
     expect(describeError(ApiErrorFixture(403, 'storage-disabled')).id).toBe('error.storageDisabled');
     expect(describeError(ApiErrorFixture(413, 'storage-limit-reached')).id).toBe('error.storageFull');
     expect(describeError(ApiErrorFixture(413, 'storage-limit-exceeded')).id).toBe('error.storageTooBig');
+    expect(describeError(ApiErrorFixture(422, 'key-version-stale')).id).toBe('error.keyVersionStale');
+    expect(describeError(ApiErrorFixture(422, 'signature-required')).id).toBe('error.signatureRefused');
+    expect(describeError(ApiErrorFixture(422, 'invalid-signature')).id).toBe('error.signatureRefused');
+    // A browser that opened the vault without its signing keys can't sign a write.
+    expect(describeError(new CryptoError('locked')).id).toBe('error.needsFullUnlock');
     expect(describeError(ApiErrorFixture(500, 'internal')).id).toBe('error.server');
     expect(describeError(new Error('x')).id).toBe('error.generic');
   });

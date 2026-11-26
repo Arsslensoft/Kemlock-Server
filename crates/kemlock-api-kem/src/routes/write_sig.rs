@@ -12,6 +12,7 @@ use crate::problem::Problem;
 use crate::state::{Crypto, Store};
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::StatusCode;
 use kemlock_app::ports::{TokenSigner, UserRepo};
 use kemlock_app::signed_writes::GetBundleAt;
 use kemlock_app::spaces::SpaceRepo;
@@ -64,10 +65,20 @@ pub(crate) async fn verify_writes<U: UserRepo>(
         let Some(signature) = &write.signature else {
             continue;
         };
-        if signature.writer != actor
-            || signature.key_version != account.key_version
-            || account.public_bundle.is_empty()
+        if signature.writer == actor
+            && signature.key_version != account.key_version
+            && !account.public_bundle.is_empty()
         {
+            // The account replaced its keys after this device unlocked: it must unlock again, and
+            // the device can tell that from a signature that is simply wrong.
+            return Err(Problem::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "key-version-stale",
+                "The account's keys changed since this device unlocked",
+            )
+            .with("currentKeyVersion", serde_json::json!(account.key_version)));
+        }
+        if signature.writer != actor || account.public_bundle.is_empty() {
             return Err(invalid());
         }
         let statement = statement_of(write).ok_or_else(invalid)?;
