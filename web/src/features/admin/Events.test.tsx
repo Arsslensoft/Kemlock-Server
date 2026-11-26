@@ -28,7 +28,19 @@ describe('EventsView', () => {
   const events = [
     event({ id: 'a', action: 'device.sign_out' }),
     event({ id: 'b', action: 'item.put', target: '3f6a…91b4' }),
+    event({ id: 'd', action: 'auth.passkey_sign_in' }),
     event({ id: 'c', action: 'something.new', actor: null, actorEmail: null, ip: null }),
+    event({
+      id: 'e',
+      action: 'bw.event',
+      target: JSON.stringify({
+        type: 1107,
+        cipherId: '265920f3-088e-47d9-bd7b-dfc31cd17f1a',
+        organizationId: 'dd99347a-052a-44a5-9441-517e4aefd8a9',
+        deviceType: 9,
+        ipAddress: '203.0.113.0/24',
+      }),
+    }),
   ];
 
   function view(props: Partial<Parameters<typeof EventsView>[0]> = {}) {
@@ -47,15 +59,44 @@ describe('EventsView', () => {
     return { onFilters, onExport };
   }
 
-  it('words known events, shows an unknown one as its code, and names who did it', () => {
+  it('words every event, even one it has no message for, and names who did it', () => {
     view();
     expect(screen.getByText('Signed a device out')).toBeInTheDocument();
     expect(screen.getByText('Saved an item')).toBeInTheDocument();
+    expect(screen.getByText('Signed in with a passkey')).toBeInTheDocument();
     expect(screen.getByText('3f6a…91b4')).toBeInTheDocument();
-    expect(screen.getByText('something.new')).toBeInTheDocument();
+    expect(screen.getByText('Other: new')).toBeInTheDocument();
+    expect(screen.queryByText('something.new')).not.toBeInTheDocument();
+    // A Bitwarden event: its type in words, and the item it was about instead of the JSON.
+    expect(screen.getByText('Viewed an item (Bitwarden API)')).toBeInTheDocument();
+    expect(screen.getByText('265920f3-088e-47d9-bd7b-dfc31cd17f1a')).toBeInTheDocument();
+    expect(screen.queryByText(/"type"/)).not.toBeInTheDocument();
+    // The code stays on the cell, for matching a row to the CSV export.
+    expect(screen.getByText('Other: new').closest('td')).toHaveAttribute('title', 'something.new');
     expect(screen.getByText('Server')).toBeInTheDocument();
-    expect(screen.getAllByText('jordan@example.co')).toHaveLength(2);
-    expect(screen.getAllByText('203.0.113.0')).toHaveLength(2);
+    expect(screen.getAllByText('jordan@example.co')).toHaveLength(4);
+    expect(screen.getAllByText('203.0.113.0')).toHaveLength(4);
+  });
+
+  it('renders markup in an event as inert text, never as elements', () => {
+    const hostile = '<img src=x onerror="window.__xss=1"><script>window.__xss=1</script>';
+    const { container } = renderWithIntl(
+      <EventsView
+        events={[
+          event({ id: 'x1', action: `item.${hostile}`, target: hostile }),
+          event({ id: 'x2', action: 'bw.event', target: JSON.stringify({ type: 1107, cipherId: hostile }) }),
+          event({ id: 'x3', action: hostile, actorEmail: hostile, ip: hostile }),
+        ]}
+        users={USERS}
+        filters={DEFAULT_FILTERS}
+        onFilters={vi.fn()}
+        onExport={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('tbody img, tbody script')).toBeNull();
+    expect((window as { __xss?: number }).__xss).toBeUndefined();
+    // A server target is shown as text, as it is; a Bitwarden one only if it is a UUID.
+    expect(screen.getAllByText(hostile)).toHaveLength(3);
   });
 
   it('words the device and custom field changes, and shows what each names', () => {

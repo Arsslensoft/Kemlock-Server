@@ -5,6 +5,7 @@ import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
 import { admin } from './client';
+import { eventText, format } from './eventText';
 import { clock, day } from './format';
 import { useReauth } from './reauth';
 import { ErrorNotice, Loading, PageHead, SelectBox } from './ui';
@@ -35,35 +36,6 @@ export function queryFor(filters: EventFilters, nowSeconds: number): EventsQuery
   if (filters.user !== '') query.actor = filters.user;
   return query;
 }
-
-// The keys are written as template literals so the message-id check in i18n.test.ts, which reads
-// quoted strings, doesn't take an action code such as `item.put` for a message id.
-const ACTIONS: Record<string, MessageId> = {
-  [`item.put`]: 'admin.events.action.itemPut',
-  [`item.delete`]: 'admin.events.action.itemDelete',
-  [`item.batch`]: 'admin.events.action.itemBatch',
-  [`space.create`]: 'admin.events.action.spaceCreate',
-  [`space.member.invite`]: 'admin.events.action.spaceInvite',
-  [`space.member.revoke`]: 'admin.events.action.spaceRevoke',
-  [`send.create`]: 'admin.events.action.sendCreate',
-  [`send.delete`]: 'admin.events.action.sendDelete',
-  [`device.approval_approved`]: 'admin.events.action.deviceApproved',
-  [`device.approval_denied`]: 'admin.events.action.deviceDenied',
-  [`device.sign_out`]: 'admin.events.action.deviceSignOut',
-  [`device.untrust`]: 'admin.events.action.deviceUntrust',
-  [`account.export`]: 'admin.events.action.accountExport',
-  [`account.erased`]: 'admin.events.action.accountErased',
-  [`admin.user.disable`]: 'admin.events.action.userDisabled',
-  [`admin.user.enable`]: 'admin.events.action.userEnabled',
-  [`admin.user.delete`]: 'admin.events.action.userErased',
-  [`admin.settings.update`]: 'admin.events.action.settingsUpdate',
-  [`admin.sso.update`]: 'admin.events.action.ssoUpdate',
-  [`admin.events.export`]: 'admin.events.action.eventsExport',
-  [`admin.custom_field.create`]: 'admin.events.action.fieldCreate',
-  [`admin.custom_field.update`]: 'admin.events.action.fieldUpdate',
-  [`admin.custom_field.delete`]: 'admin.events.action.fieldDelete',
-  [`admin.custom_field.allow_own`]: 'admin.events.action.fieldAllowOwn',
-};
 
 const KINDS: Array<[Kind, MessageId]> = [
   ['all', 'admin.events.kind.all'],
@@ -170,7 +142,7 @@ export function EventsView({
               </thead>
               <tbody>
                 {events.map((event) => {
-                  const id = ACTIONS[event.action];
+                  const text = eventText(event);
                   return (
                     <tr key={event.id}>
                       <td className="mono hint">
@@ -178,12 +150,13 @@ export function EventsView({
                           {day(event.at)} {clock(event.at)}
                         </time>
                       </td>
-                      <td>
-                        {id ? t(id) : <span className="mono">{event.action}</span>}
-                        {event.target ? (
+                      {/* The code stays a hover away, for matching rows to the CSV export. */}
+                      <td title={event.action}>
+                        {format(text.words, t)}
+                        {text.target ? (
                           <>
                             {' '}
-                            <span className="mono">{event.target}</span>
+                            <span className="mono">{text.target}</span>
                           </>
                         ) : null}
                       </td>
