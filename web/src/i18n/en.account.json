@@ -401,7 +401,7 @@
   "security.rotate.dismiss": "I have saved it",
   "security.rotate.done": "The keys were rotated. Your new fingerprint is {fingerprint}.",
   "security.rotate.removed": "Removed: {passkeys, plural, one {# passkey wrap} other {# passkey wraps}}, {emergency, plural, one {# emergency contact box} other {# emergency contact boxes}}, {recovery, plural, one {# recovery enrolment} other {# recovery enrolments}}. Set them up again.",
-  "security.rotate.blocked.spaces": "You belong to a shared space, whose keys must move to the new keys too. The web vault can't do that yet: use the Kemlock app to rotate your keys.",
+  "security.rotate.blocked.spaces": "You belong to a shared space, whose keys must move to the new keys too. The web vault can't do that yet: rotate your keys from the Kemlock app, or leave the space first and rotate here.",
   "security.rotate.blocked.compatible": "This account is shared with Bitwarden apps, which hold its root key, so its keys can't be rotated here.",
   "security.rotate.phase.plan": "Reading what your account holds",
   "security.rotate.phase.items": "Encrypting items again: {done} of {total}",

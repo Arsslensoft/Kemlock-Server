@@ -429,8 +429,9 @@ PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRe
 
 - `rotationId` is 16 random bytes the client makes, base64url: it names one attempt. A request with
   another `rotationId` than the account's staged rows discards those rows first.
-- 1 to 200 items per request; a row is replaced when the same `id` is staged again, so a request
-  that failed is simply sent again. `baseRevision` is the revision the client read; `ciphertext`
+- 1 to 200 items per request, and no more than fit the server's 2 MiB JSON body limit: a client
+  batches by encoded size and sends fewer items when they are large. A row is replaced when the
+  same `id` is staged again, so a request that failed is simply sent again. `baseRevision` is the revision the client read; `ciphertext`
   and `itemKey` are as above, at revision `baseRevision + 1`. The server cannot check that; it
   checks the lengths (`ciphertext` 28 bytes up to the item limit, `itemKey` 60 bytes), that the item
   is live, the account's own, in format `kem1`, and at `baseRevision` now, and that `toVersion` is
