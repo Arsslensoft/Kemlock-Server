@@ -233,7 +233,14 @@ const SPACE_NAME: [u8; 40] = [1; 40];
 
 /// A space of this server's own, made by `owner`, with its first collection.
 async fn native_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) {
-    let space = SpaceId::random();
+    native_space_with_id(store, owner, SpaceId::random()).await
+}
+
+async fn native_space_with_id(
+    store: &SqlStore,
+    owner: UserId,
+    space: SpaceId,
+) -> (SpaceId, CollectionId) {
     let collection = CollectionId::random();
     CreateSpace {
         spaces: store.clone(),
@@ -256,6 +263,20 @@ async fn native_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId
     .await
     .expect("the space is made");
     (space, collection)
+}
+
+/// A cipher of the Bitwarden API, as the import stores it.
+fn cipher(id: ItemId, owner: Owner, updated_at: OffsetDateTime) -> MappedItem {
+    MappedItem {
+        id,
+        owner,
+        kind: kind("login"),
+        format: kemlock_domain::ItemFormat::Bw,
+        atype: 1,
+        json: json!({"name": "2.name|iv|mac"}),
+        created_at: updated_at,
+        updated_at,
+    }
 }
 
 fn refused(report: &ApplyReport, kind: &str) -> Vec<String> {
@@ -555,4 +576,72 @@ async fn items_attachments_and_files_of_another_owner_are_not_touched() {
     assert_eq!(after.owner, Owner::User(victim));
     assert_eq!(after.revision, stored.revision);
     assert_eq!(after.ciphertext, stored.ciphertext);
+}
+
+#[tokio::test]
+async fn an_id_a_pass_only_names_is_not_marked_as_the_imports() {
+    let store = memory().await;
+    let owner = native(&store, "late-owner").await;
+    let space = SpaceId::random();
+
+    // A cipher of an organization whose row never comes: the import writes it for that owner,
+    // but the space is not created and so is not recorded as the import's.
+    let user = UserId::random();
+    let mut mapped = MappedImport::default();
+    mapped.accounts.push(account(user, &unique_email("member"), "Member"));
+    mapped
+        .items
+        .push(cipher(ItemId::random(), Owner::Space(space), NOW));
+    let first = pass(&store, &mapped, false).await;
+    assert!(first.refused.is_empty(), "{:?}", first.refused);
+    assert_eq!(first.items, 1);
+
+    // A real space is made under that id later (legacy space ids are deterministic) ...
+    let (made, _) = native_space_with_id(&store, owner, space).await;
+    assert_eq!(made, space);
+    // ... and a later move can't rename it or add members.
+    let mut later = MappedImport::default();
+    later.carried = vec![
+        organizations(&[(space, "Hijacked")]),
+        memberships(&[(space, user)]),
+    ];
+    let report = pass(&store, &later, false).await;
+    assert_eq!(refused(&report, "space"), vec![space.0.to_string()]);
+    let state = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    assert_eq!(state.space.name, SPACE_NAME.to_vec());
+    assert!(state.members.iter().all(|m| m.user != user));
+}
+
+#[tokio::test]
+async fn an_account_and_a_space_never_share_an_id() {
+    let store = memory().await;
+    let owner = native(&store, "owner").await;
+    let (space, _) = native_space(&store, owner).await;
+
+    // A snapshot that gives a user the id of a space of this server, and a space the id of one
+    // of its accounts: neither is created, and neither side's rows change.
+    let mut mapped = MappedImport::default();
+    mapped
+        .accounts
+        .push(account(UserId(space.0), &unique_email("clash"), "Clash"));
+    mapped.carried = vec![organizations(&[(SpaceId(owner.0), "Clash")])];
+    let report = pass(&store, &mapped, false).await;
+
+    assert_eq!(refused(&report, "user"), vec![space.0.to_string()]);
+    assert_eq!(refused(&report, "space"), vec![owner.0.to_string()]);
+    assert!(
+        UserRepo::by_id(&store, UserId(space.0))
+            .await
+            .expect("a read")
+            .is_none()
+    );
+    assert!(
+        SpaceRepo::load(&store, SpaceId(owner.0))
+            .await
+            .expect("a read")
+            .is_none()
+    );
 }

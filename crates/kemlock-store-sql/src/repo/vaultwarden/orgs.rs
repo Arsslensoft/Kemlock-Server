@@ -7,6 +7,7 @@
 //! someone sets the space up there.
 
 use super::rows::{self, row_time, row_uuid};
+use super::scope::SPACE;
 use super::vault::owner_of;
 use super::{Ctx, Res};
 use crate::convert::utc;
@@ -64,6 +65,8 @@ pub(super) async fn put_organizations(ctx: &Ctx, table: &Table) -> Res<()> {
                 .exec(txn)
                 .await
                 .store()?;
+                // Now that the space exists, it is the import's from here on.
+                ctx.remember(SPACE, id).await?;
             }
         }
     }

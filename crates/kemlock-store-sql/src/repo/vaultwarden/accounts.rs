@@ -142,6 +142,8 @@ async fn put_account(ctx: &Ctx, a: &MappedAccount) -> Res<()> {
             .exec(txn)
             .await
             .store()?;
+        // Now that the account exists, it is the import's from here on.
+        ctx.remember(USER, id).await?;
     }
 
     let account = BwAccount {

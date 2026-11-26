@@ -117,9 +117,21 @@ impl Ctx {
         Ok(true)
     }
 
-    /// Takes `id` for the import if it may have it: it owns it already, or nothing of that id
-    /// exists yet, in which case the pass is about to create it and records that. An id that
-    /// exists and isn't the import's is refused.
+    /// Writes the record that the import created `id`, unless there is one. Only the code that
+    /// really inserts the user or space calls this: an id the pass merely names (a cipher of an
+    /// organization whose row never comes) must not become the import's, or a space made later
+    /// under that id would count as owned.
+    pub(super) async fn remember(&self, kind: &str, id: Uuid) -> Res<()> {
+        if !self.marked(kind, id).await? {
+            self.mark(kind, id).await?;
+        }
+        Ok(())
+    }
+
+    /// Takes `id` for this pass if the import may have it: it owns it already, or nothing of
+    /// that id exists yet, as a user or as a space (the two share `bw_docs` scopes and are never
+    /// the same thing). The id is only held in memory until the row is created and
+    /// [`Ctx::remember`] records it. An id that exists and isn't the import's is refused.
     pub(super) async fn claim(&mut self, kind: &'static str, id: Uuid) -> Res<bool> {
         if self.was_refused(kind, id) {
             return Ok(false);
@@ -127,12 +139,10 @@ impl Ctx {
         if self.owns(kind, id).await? {
             return Ok(true);
         }
-        if self.exists(kind, id).await? {
+        let other = if kind == SPACE { USER } else { SPACE };
+        if self.exists(kind, id).await? || self.exists(other, id).await? {
             self.refuse(kind, id);
             return Ok(false);
-        }
-        if !self.marked(kind, id).await? {
-            self.mark(kind, id).await?;
         }
         self.owned_set(kind).insert(id);
         Ok(true)
