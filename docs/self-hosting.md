@@ -224,7 +224,7 @@ nobody re-keys or signs in again, and it never changes Vaultwarden's own data. S
 `import` folder of the server's data folder, `/data/import/` in the image. Copy Vaultwarden's data
 folder (`db.sqlite3`, `attachments/`, `sends/`, `rsa_key.pem`, `config.json`) into it, for example
 `/data/import/db.sqlite3`, and name the file (or the folder that holds `db.sqlite3`) relative to
-the import folder. The optional second field names a folder inside it that holds the files when
+the import folder, as plain names joined by `/` (no absolute path, drive, network share, `..` or `:`; they are refused before anything is opened). The optional second field names a folder inside it that holds the files when
 they are not beside the database. Symbolic links are followed and a path that ends up outside the
 import folder is refused; so is a database URL, and a missing source gets the same answer as a
 refused one. An admin can't put files into the import folder, so only whoever runs the server

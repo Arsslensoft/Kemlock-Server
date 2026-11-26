@@ -75,8 +75,10 @@ impl Rig {
         folder
     }
 
+    /// The sample database, named the way the console takes it: relative to the import folder.
     fn vw_path(&self) -> String {
-        self.vw_folder().display().to_string()
+        self.vw_folder();
+        "db.sqlite3".to_owned()
     }
 
     /// How the status shows the sample database: relative to the import folder, as the console
@@ -300,6 +302,8 @@ async fn the_console_takes_no_database_url_and_nothing_outside_the_import_folder
         "mysql://vw:pw@internal-db/vault".to_owned(),
         outside.display().to_string(),
         rig.dest.path().display().to_string(),
+        rig.vw_folder().join("db.sqlite3").display().to_string(),
+        "//attacker/share/db.sqlite3".to_owned(),
         "../server.key".to_owned(),
         "/definitely/not/there".to_owned(),
     ] {

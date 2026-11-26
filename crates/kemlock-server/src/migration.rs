@@ -38,7 +38,7 @@ use kemlock_vaultwarden::{
     ApplyReport, Database, ReadError, Source, apply, map_snapshot, read_snapshot, render_plan,
 };
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use time::OffsetDateTime;
 
@@ -77,33 +77,56 @@ fn holder_name() -> String {
         .collect()
 }
 
-/// `name` inside `root`, with symlinks followed; `None` when it isn't there or lands outside.
-/// `name` may be relative to `root` or an absolute path.
-fn inside(root: &Path, name: &Path) -> Option<PathBuf> {
-    let found = root.join(name).canonicalize().ok()?;
+/// A source typed in the console as a path relative to the import folder: plain names joined by
+/// `/`, nothing else. An absolute path, a drive letter or UNC share, `.` or `..`, a backslash and
+/// a `:` are refused before anything touches the file system, because merely resolving a path
+/// like `\\host\share` on Windows is a network connection that hands over the service account's
+/// credentials.
+fn relative(name: &str) -> Option<PathBuf> {
+    let name = name.trim();
+    if name.is_empty() || name.contains('\\') || name.contains(':') {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for component in Path::new(name).components() {
+        match component {
+            Component::Normal(part) => out.push(part),
+            _ => return None,
+        }
+    }
+    (!out.as_os_str().is_empty()).then_some(out)
+}
+
+/// `relative` inside `root`, with symlinks followed; `None` when it isn't there or lands outside.
+fn inside(root: &Path, relative: &Path) -> Option<PathBuf> {
+    let found = root.join(relative).canonicalize().ok()?;
     found.starts_with(root).then_some(found)
 }
 
 /// The source the console may read, from what the admin typed, and how to show it: a SQLite file
 /// (or a folder holding `db.sqlite3`) inside `<data folder>/import`, and optionally a folder of
-/// attachments, Sends, `rsa_key.pem` and `config.json` inside it too. Any other source is refused
-/// with the same error.
+/// attachments, Sends, `rsa_key.pem` and `config.json` inside it too, all named relative to the
+/// import folder. Any other source is refused with the same error.
 fn console_source(
     data_folder: &Path,
     from: &str,
     files: Option<&str>,
 ) -> Result<(Source, String), AdminError> {
-    if from.contains("://") || files.is_some_and(|f| f.contains("://")) {
-        return Err(not_a_source());
-    }
+    // Whatever is typed is checked as text before the file system is asked anything.
+    let from = relative(from).ok_or_else(not_a_source)?;
+    let files = match files {
+        Some(files) => Some(relative(files).ok_or_else(not_a_source)?),
+        None => None,
+    };
     let root = data_folder
         .join(IMPORT_FOLDER)
         .canonicalize()
         .map_err(|_| not_a_source())?;
-    let found = inside(&root, Path::new(from.trim())).ok_or_else(not_a_source)?;
+    let found = inside(&root, &from).ok_or_else(not_a_source)?;
     let database = if found.is_dir() {
         // The database may itself be a link that leads out.
-        inside(&root, &found.join("db.sqlite3")).ok_or_else(not_a_source)?
+        let inner = found.strip_prefix(&root).map_err(|_| not_a_source())?;
+        inside(&root, &inner.join("db.sqlite3")).ok_or_else(not_a_source)?
     } else {
         found
     };
@@ -112,7 +135,7 @@ fn console_source(
     }
     let folder = match files {
         Some(files) => {
-            let folder = inside(&root, Path::new(files.trim())).ok_or_else(not_a_source)?;
+            let folder = inside(&root, &files).ok_or_else(not_a_source)?;
             if !folder.is_dir() {
                 return Err(not_a_source());
             }
@@ -518,10 +541,41 @@ mod tests {
         assert_eq!(same, shown);
         assert_eq!(again.database, source.database);
 
-        // An absolute path inside the folder is fine, and so is a folder of files beside it.
-        let absolute = root.join("vw").display().to_string();
-        let (source, _) = console_source(dir.path(), "db.sqlite3", Some(absolute.as_str())).expect("files");
+        // A folder of files, named the same way.
+        let (source, _) = console_source(dir.path(), "db.sqlite3", Some("vw")).expect("files");
         assert_eq!(source.folder, Some(root.join("vw")));
+    }
+
+    #[test]
+    fn only_plain_relative_names_get_as_far_as_the_file_system() {
+        for ok in ["db.sqlite3", " vw/db.sqlite3 ", "a/b/c", "vw/"] {
+            assert!(relative(ok).is_some(), "{ok:?}");
+        }
+        for bad in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "./db.sqlite3",
+            "../server.key",
+            "vw/../../x",
+            "/etc/passwd",
+            "//attacker/share/x",
+            "\\\\attacker\\share\\x",
+            "\\\\?\\C:\\x",
+            "C:/x",
+            "C:x",
+            "db.sqlite3:stream",
+            "vw\\db.sqlite3",
+            "postgres://db/vw",
+        ] {
+            assert!(relative(bad).is_none(), "{bad:?}");
+        }
+        // An absolute path inside the import folder isn't taken either, only a relative name.
+        let dir = data_folder();
+        let inside_it = dir.path().join(IMPORT_FOLDER).join("db.sqlite3");
+        let named = inside_it.display().to_string();
+        refusal(console_source(dir.path(), &named, None));
     }
 
     #[test]
