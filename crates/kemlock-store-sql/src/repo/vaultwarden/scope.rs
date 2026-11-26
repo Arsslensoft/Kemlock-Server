@@ -117,6 +117,14 @@ impl Ctx {
         Ok(true)
     }
 
+    /// Whether the import owns `id`, or nothing of that id exists on this server at all.
+    pub(super) async fn owns_or_absent(&mut self, kind: &'static str, id: Uuid) -> Res<bool> {
+        if self.owns(kind, id).await? {
+            return Ok(true);
+        }
+        Ok(!self.exists(kind, id).await?)
+    }
+
     /// Writes the record that the import created `id`, unless there is one. Only the code that
     /// really inserts the user or space calls this: an id the pass merely names (a cipher of an
     /// organization whose row never comes) must not become the import's, or a space made later
@@ -375,14 +383,17 @@ async fn admit_row(ctx: &mut Ctx, table: &str, row: &RowRef<'_>) -> Res<bool> {
             })
         }
         "event" => {
-            let actor = id("act_user_uuid").or_else(|| id("user_uuid"));
-            if let Some(user) = actor
-                && !ctx.owns(USER, user).await?
-            {
-                return Ok(false);
+            // History names accounts and spaces Vaultwarden has since deleted, which is kept. It
+            // is refused only when it names one this server has that isn't the import's.
+            for column in ["act_user_uuid", "user_uuid"] {
+                if let Some(user) = id(column)
+                    && !ctx.owns_or_absent(USER, user).await?
+                {
+                    return Ok(false);
+                }
             }
             match id("org_uuid") {
-                Some(space) => ctx.owns(SPACE, space).await,
+                Some(space) => ctx.owns_or_absent(SPACE, space).await,
                 None => Ok(true),
             }
         }

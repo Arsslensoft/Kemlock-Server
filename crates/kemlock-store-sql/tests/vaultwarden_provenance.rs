@@ -681,3 +681,68 @@ async fn an_address_another_account_holds_leaves_that_account_out_and_not_the_pa
     );
     assert_eq!(refused(&report, "user").len(), 2);
 }
+
+/// An `event` row of a Vaultwarden database from the day before NOW.
+fn events(rows: &[(Option<UserId>, Option<UserId>)]) -> Table {
+    Table::from_rows(
+        &schema::EVENT,
+        rows.iter()
+            .map(|(actor, subject)| {
+                vec![
+                    text(Uuid::new_v4()),
+                    Cell::Int(1000),
+                    subject.map_or(Cell::Null, |u| text(u.0)),
+                    Cell::Null,
+                    Cell::Null,
+                    Cell::Null,
+                    Cell::Null,
+                    Cell::Null,
+                    actor.map_or(Cell::Null, |u| text(u.0)),
+                    Cell::Int(0),
+                    Cell::Null,
+                    text("2026-05-31 12:00:00"),
+                    Cell::Null,
+                    Cell::Null,
+                    Cell::Null,
+                    Cell::Null,
+                ]
+            })
+            .collect(),
+    )
+}
+
+#[tokio::test]
+async fn events_of_a_deleted_vaultwarden_user_are_kept_but_not_those_naming_this_servers_users() {
+    use kemlock_app::admin::{AdminEventRepo, EventFilter};
+
+    let store = memory().await;
+    let native_user = native(&store, "named-in-events").await;
+    let moved = UserId::random();
+    let gone = UserId::random();
+
+    let mut mapped = MappedImport::default();
+    mapped.accounts.push(account(moved, &unique_email("moved"), "Moved"));
+    mapped.carried = vec![events(&[
+        // Done by a user of the snapshot, and by one Vaultwarden has since deleted.
+        (Some(moved), None),
+        (Some(gone), Some(gone)),
+        // Naming one of this server's own users, as the actor or as the subject.
+        (Some(native_user), None),
+        (Some(moved), Some(native_user)),
+    ])];
+    let report = pass(&store, &mapped, false).await;
+
+    assert_eq!(refused(&report, "event").len(), 2, "{:?}", report.refused);
+    let kept = store
+        .query_events(
+            &EventFilter {
+                action: Some("vw-event-*".to_owned()),
+                ..EventFilter::default()
+            },
+            None,
+            10,
+        )
+        .await
+        .expect("events");
+    assert_eq!(kept.events.len(), 2);
+}
