@@ -35,6 +35,8 @@ export interface SpaceActions extends StructureActions {
   startConfirm: (member: MemberViewDto) => void;
   /** Compares a member's fingerprint without confirming them, so their confirmations are trusted here. */
   startPin?: (member: MemberViewDto) => void;
+  /** An owner or admin seals the space's keys again, signed, so no box is left that nobody signed. */
+  reseal?: () => Done;
   cancelConfirm: () => void;
   confirm: () => void;
   changeRole: (user: string, role: SpaceRole, custom: CustomPermission[]) => Done;
@@ -313,6 +315,13 @@ function ChainNotice({
   );
 }
 
+/** Whether an owner or admin of a space with no chain, whose keys are open here, may seal them again. */
+function canReseal(detail: SpaceDetail): boolean {
+  const unchained = !detail.trust || detail.trust.kind === 'unchained';
+  const role = detail.view.me.role;
+  return unchained && detail.readable && (role === 'owner' || role === 'admin');
+}
+
 /**
  * What a space whose keys can't be opened because their sealer isn't traced here asks for: that a
  * person compare that member's fingerprint with what their own app shows, so this browser trusts the
@@ -438,6 +447,13 @@ export function SpaceDetailView({
       <ChainNotice detail={detail} busy={busy} onAccept={actions.acceptFirstContact} />
       {detail.compare ? (
         <CompareNotice detail={detail} busy={busy} onCompare={actions.startPin} />
+      ) : null}
+      {actions.reseal && canReseal(detail) ? (
+        <div className="actions">
+          <Button isDisabled={busy} onPress={() => void actions.reseal?.()}>
+            {t('space.keys.reseal')}
+          </Button>
+        </div>
       ) : null}
       {detail.legacyKeys && detail.legacyKeys.length > 0 ? (
         <Notice tone="warn">

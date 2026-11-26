@@ -8,6 +8,7 @@ import { vaultCrypto } from '@/crypto-port';
 import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
 import { signedInAccount } from './boxes';
+import { resealKeys } from './reseal';
 import { spaceDeps } from './deps';
 import { acceptFirstContact } from './chain';
 import { refreshSpaces } from './refresh';
@@ -120,6 +121,7 @@ export default function SpaceDetail() {
         accept: () => void change(() => api.accept(spaceId, 'me')),
         startConfirm: (member) => void startConfirm(member),
         startPin: (member) => void startConfirm(member, 'pin'),
+        reseal: async () => !!detail && (await worked(() => resealKeys(spaceDeps, detail))),
         cancelConfirm: () => setConfirming(null),
         confirm: () => {
           const current = confirming;

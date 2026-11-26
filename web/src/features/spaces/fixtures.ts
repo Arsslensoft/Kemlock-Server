@@ -173,5 +173,6 @@ export function fakeSpacesApi() {
       permission: 'view',
     })),
     revokeGrant: vi.fn<SpacesApi['revokeGrant']>(async () => undefined),
+    reseal: vi.fn<SpacesApi['reseal']>(async () => ({ resealed: 1 })),
   };
 }

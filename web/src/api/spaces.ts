@@ -168,6 +168,16 @@ export interface ConfirmRequest {
   collectionKeys: Array<{ collection: string; sealed: string; signature: string }>;
 }
 
+/** `POST .../reseal`: the current keys sealed again, each box signed by the caller. */
+export interface ResealRequest {
+  members: Array<{
+    user: string;
+    sealedSpaceKey: string;
+    sealedSpaceKeySignature: string;
+    collectionKeys: Array<{ collection: string; sealed: string; signature: string }>;
+  }>;
+}
+
 export interface CreateCollectionRequest {
   id: string;
   parent?: string | null;
@@ -254,6 +264,9 @@ export function createSpacesApi(http: Http) {
         path: `${base(space)}/members/${user}/confirm`,
         body,
       }),
+    /** An owner or admin seals the current keys again, signed (docs/crypto.md, "Signed key boxes"). */
+    reseal: (space: string, body: ResealRequest) =>
+      http.request<{ resealed: number }>({ method: 'POST', path: `${base(space)}/reseal`, body }),
     changeRole: (space: string, user: string, role: SpaceRole, custom: CustomPermission[]) =>
       http.request<MemberDto>({
         method: 'PUT',
