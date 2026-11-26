@@ -25,8 +25,9 @@ commands:
   import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]
                  move in from Vaultwarden: prints a dry-run plan; --apply writes it to the server
                  move in from Vaultwarden: prints a dry-run plan; --apply writes (see below)
-  backup [--to <folder|s3://bucket/prefix>] [--recipient <age1...>]
-                 take an encrypted backup now (settings: KEMLOCK_BACKUP_*); server.key is never in it
+  backup [--to <folder|s3://bucket/prefix>] [--recipient <age1...>] [--allow-unauthenticated]
+                 take an encrypted backup now (settings: KEMLOCK_BACKUP_*); server.key is never in it;
+                 without a readable server.key it refuses, unless --allow-unauthenticated
   restore <archive> --identity <file> [--server-key <file>] [--allow-unauthenticated] --yes
                  replace the database and files with an archive's (stop the server first); the
                  archive's authentication code is checked with the server.key, and an archive

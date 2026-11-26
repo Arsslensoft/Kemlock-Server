@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! kemlock-cli backup [--to <folder|s3://bucket/prefix>] [--recipient <age1...>]
+//!                    [--allow-unauthenticated]
 //! kemlock-cli restore <archive> --identity <file> [--server-key <file>]
 //!                      [--allow-unauthenticated] --yes
 //! kemlock-cli restore --check <archive> --identity <file> --server-key <file> [--record]
@@ -31,6 +32,8 @@ pub(crate) struct BackupArgs {
     pub(crate) to: Option<String>,
     /// An age public key, instead of `KEMLOCK_BACKUP_RECIPIENT`.
     pub(crate) recipient: Option<String>,
+    /// Writes the archive without an authentication code when the server key can't be read.
+    pub(crate) allow_unauthenticated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +81,7 @@ pub(crate) fn parse_backup(args: &[String]) -> Result<BackupArgs, String> {
     let mut parsed = BackupArgs {
         to: None,
         recipient: None,
+        allow_unauthenticated: false,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -88,6 +92,7 @@ pub(crate) fn parse_backup(args: &[String]) -> Result<BackupArgs, String> {
         match name {
             "--to" => parsed.to = Some(value(name, inline, &mut rest)?),
             "--recipient" => parsed.recipient = Some(value(name, inline, &mut rest)?),
+            "--allow-unauthenticated" => parsed.allow_unauthenticated = true,
             other => return Err(format!("backup doesn't take {other:?}")),
         }
     }
@@ -150,6 +155,27 @@ pub(crate) fn parse_restore(args: &[String]) -> Result<RestoreArgs, String> {
     Ok(parsed)
 }
 
+/// What a backup does when it has no `server.key` to make the archive's authentication code with
+/// (the file is missing or unreadable and `KEMLOCK_SERVER_KEY` is not set): refuses, unless the
+/// operator said to write the archive without a code, which a later restore then takes only with
+/// `--allow-unauthenticated`. `Ok(Some(warning))` is to be shown on stderr.
+fn without_server_key(has_key: bool, allow_unauthenticated: bool) -> Result<Option<String>, String> {
+    match (has_key, allow_unauthenticated) {
+        (true, _) => Ok(None),
+        (false, true) => Ok(Some(
+            "no server.key could be read, so this archive has no authentication code: a restore \
+             will refuse it unless told to take it unauthenticated"
+                .to_owned(),
+        )),
+        (false, false) => Err(
+            "no server.key could be read (the data folder has none, or it can't be read, and \
+             KEMLOCK_SERVER_KEY isn't set), so the archive couldn't be authenticated; fix that, or \
+             add --allow-unauthenticated to write it without a code"
+                .to_owned(),
+        ),
+    }
+}
+
 /// `kemlock-cli backup`.
 pub(crate) async fn run_backup_command(config: &Config, args: BackupArgs) -> u8 {
     let settings = settings_from_env(
@@ -174,6 +200,14 @@ pub(crate) async fn run_backup_command(config: &Config, args: BackupArgs) -> u8 
             return 2;
         }
     };
+    match without_server_key(layout.mac_key.is_some(), args.allow_unauthenticated) {
+        Ok(Some(warning)) => eprintln!("kemlock-cli: warning: {warning}"),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("kemlock-cli: {e}");
+            return 2;
+        }
+    }
     let store = match SqlStore::connect(&config.database_url).await {
         Ok(store) => store,
         Err(e) => {
@@ -343,18 +377,38 @@ mod tests {
             parse_backup(&args(&[])),
             Ok(BackupArgs {
                 to: None,
-                recipient: None
+                recipient: None,
+                allow_unauthenticated: false,
             })
         );
         assert_eq!(
             parse_backup(&args(&["--to", "/mnt/nas", "--recipient=age1abc"])),
             Ok(BackupArgs {
                 to: Some("/mnt/nas".to_owned()),
-                recipient: Some("age1abc".to_owned())
+                recipient: Some("age1abc".to_owned()),
+                allow_unauthenticated: false,
             })
         );
         assert!(parse_backup(&args(&["--to"])).is_err());
         assert!(parse_backup(&args(&["--everything"])).is_err());
+    }
+
+    #[test]
+    fn a_backup_with_no_server_key_is_refused_unless_told_to_go_ahead() {
+        assert_eq!(without_server_key(true, false), Ok(None));
+        assert_eq!(without_server_key(true, true), Ok(None));
+        let warning = without_server_key(false, true)
+            .expect("allowed")
+            .expect("a warning");
+        assert!(warning.contains("no authentication code"), "{warning}");
+        let refused = without_server_key(false, false).expect_err("refused");
+        assert!(refused.contains("--allow-unauthenticated"), "{refused}");
+        assert_eq!(
+            parse_backup(&args(&["--allow-unauthenticated"]))
+                .expect("parses")
+                .allow_unauthenticated,
+            true
+        );
     }
 
     #[test]
