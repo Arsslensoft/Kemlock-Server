@@ -6,14 +6,21 @@
 // page is back in view or focused, and it is also done at once when the vault locks, the person signs
 // out, or the page goes away (`clearCopiedSecret`).
 //
-// It only ever clears what this page put there. Where the browser lets the page read the clipboard
-// (the permission is already granted: asking would put a prompt in front of the person), a clipboard
-// that no longer holds the value is left alone. Where it does not, the clear still happens, but only
-// for a copy of ours that is pending, never otherwise.
+// It tries to clear only what this page put there. Where the browser lets the page read the clipboard
+// (Chromium, once the permission is granted: asking would put a prompt in front of the person), a
+// clipboard that no longer holds the value is left alone. Firefox and Safari do not let a page read
+// it, so there the page cannot tell whether the person has copied something else since, and a clear
+// that waited for focus could wipe it. So a pending clear is given up after GIVE_UP_AFTER_MS: past
+// that, the person has almost certainly copied something of their own, and what is left on the
+// clipboard is more likely theirs than ours. A clear that comes when the vault locks or the person
+// signs out is still tried, but is dropped the same way once it is that old.
 const CLEAR_AFTER_MS = 30_000;
+const GIVE_UP_AFTER_MS = 5 * 60_000;
 
 interface Pending {
   value: string;
+  /** Milliseconds since the epoch: past this the clear is dropped unless the clipboard can be read. */
+  giveUpAt: number;
   /** The time is up: the clear is only waiting for the browser to let it through. */
   due: boolean;
 }
@@ -38,6 +45,11 @@ async function attemptClear(): Promise<boolean> {
   const held = pending;
   if (!held) return true;
   const now = await readIfAllowed();
+  // Too old to tell, and the clipboard cannot be read: it is more likely the person's than ours.
+  if (now === undefined && Date.now() >= held.giveUpAt) {
+    if (pending === held) pending = undefined;
+    return true;
+  }
   // Copied over by someone else in the meantime: not ours to clear.
   if (now !== undefined && now !== held.value) {
     if (pending === held) pending = undefined;
@@ -92,7 +104,7 @@ export async function copyText(text: string, options: { secret?: boolean } = {})
   clearTimer = undefined;
   pending = undefined;
   if (options.secret) {
-    pending = { value: text, due: false };
+    pending = { value: text, giveUpAt: Date.now() + GIVE_UP_AFTER_MS, due: false };
     listen();
     const mine = pending;
     clearTimer = setTimeout(() => {

@@ -130,6 +130,50 @@ describe('a clear the browser refuses because the page has no focus', () => {
 });
 
 describe('only what this page put there', () => {
+  it('gives up a clear that waited minutes for focus where the clipboard cannot be read', async () => {
+    const clip = browser();
+    const { copyText } = await load();
+    await copyText('hunter2', { secret: true });
+    clip.state.refuseEmpty = true;
+    await vi.advanceTimersByTimeAsync(THIRTY);
+    // The person went off, copied something of their own in another app, and came back much later.
+    await vi.advanceTimersByTimeAsync(6 * 60_000);
+    clip.state.value = 'their own copy';
+    clip.state.refuseEmpty = false;
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clip.state.value).toBe('their own copy');
+    // And nothing is left pending: another focus does not write either.
+    const writes = clip.writeText.mock.calls.length;
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clip.writeText).toHaveBeenCalledTimes(writes);
+  });
+
+  it('still clears the same old copy where reading is allowed and it holds the secret', async () => {
+    const clip = browser({ readPermission: 'granted' });
+    const { copyText } = await load();
+    await copyText('hunter2', { secret: true });
+    clip.state.refuseEmpty = true;
+    await vi.advanceTimersByTimeAsync(THIRTY + 6 * 60_000);
+    clip.state.refuseEmpty = false;
+    window.dispatchEvent(new Event('focus'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(clip.state.value).toBe('');
+  });
+
+  it('gives up on a lock that comes after the limit too, where reading is not allowed', async () => {
+    const clip = browser();
+    const { copyText, clearCopiedSecret } = await load();
+    await copyText('hunter2', { secret: true });
+    clip.state.refuseEmpty = true;
+    await vi.advanceTimersByTimeAsync(THIRTY + 6 * 60_000);
+    clip.state.refuseEmpty = false;
+    clip.state.value = 'their own copy';
+    await clearCopiedSecret();
+    expect(clip.state.value).toBe('their own copy');
+  });
+
   it('leaves the clipboard alone when reading is allowed and it holds something else now', async () => {
     const clip = browser({ readPermission: 'granted' });
     const { copyText } = await load();
