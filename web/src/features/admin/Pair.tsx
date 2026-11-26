@@ -413,7 +413,7 @@ export default function Pair() {
     refetchInterval: 3000,
   });
   const newCode = useMutation({
-    mutationFn: () => admin.newPairingCode(),
+    mutationFn: () => guard((grant) => admin.newPairingCode(grant)),
     onSuccess: (made) => {
       setCode(made);
       void queryClient.invalidateQueries({ queryKey: ['admin', 'pairing'] });

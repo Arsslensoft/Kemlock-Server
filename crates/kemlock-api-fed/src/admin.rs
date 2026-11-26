@@ -891,12 +891,14 @@ where
 
 async fn new_code<S, C>(
     State(state): State<AdminState<S, C>>,
-    _admin: Admin,
+    Admin(actor): Admin,
 ) -> Result<Json<CodeDto>, ApiError>
 where
     S: FedStore + Leases + 'static,
     C: Connector + 'static,
 {
+    // Every write needs a step-up token, and this one makes the secret that lets a stranger pair.
+    require_step_up(&actor)?;
     let (code, expires_at) = state.federation.pairings().new_code(unix_now());
     Ok(Json(CodeDto { code, expires_at }))
 }

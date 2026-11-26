@@ -233,6 +233,25 @@ async fn the_code_route_shows_a_displayable_code() {
 }
 
 #[tokio::test]
+async fn a_new_code_needs_a_step_up_token_like_every_other_write() {
+    let e = env(1, Arc::new(Dead));
+    let uri = "/admin/v1/federation/pairing/code";
+    for headers in [
+        &[("x-admin", "1")][..],
+        &[("x-admin", "1"), ("x-fresh", "1")][..],
+    ] {
+        let (status, _, bytes) = call(&e.app, Method::POST, uri, None, headers).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let problem: Value = serde_json::from_slice(&bytes).expect("a problem");
+        assert_eq!(problem["type"], "urn:kemlock:problem:step-up-required");
+    }
+    assert!(
+        !e.pairings.code_waiting(unix_now()),
+        "no code was made without the token"
+    );
+}
+
+#[tokio::test]
 async fn two_servers_pair_through_their_admin_routes() {
     let b = env(2, Arc::new(Dead));
     let a = env(1, Arc::new(Loop(b.pairings.clone())));

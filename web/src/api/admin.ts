@@ -967,8 +967,11 @@ export function createAdminApi(api: AdminTransport) {
       if (overview.pairings.length === 0) return pairingOf(overview);
       return pairingOf(overview, await get<WireShareable[]>('/federation/shareable'));
     },
-    /** `POST /admin/v1/federation/pairing/code`: a new one-time code (the old one stops working). */
-    newPairingCode: () => post<PairingCode>('/federation/pairing/code'),
+    /**
+     * `POST /admin/v1/federation/pairing/code`: a new one-time code (the old one stops working).
+     * Needs a step-up token.
+     */
+    newPairingCode: (token?: string) => post<PairingCode>('/federation/pairing/code', undefined, token),
     /** `POST /admin/v1/federation/pairing { address, code }`: runs the exchange, then waits for the words. */
     connectPairing: async (address: string, code: string, grant?: string): Promise<PairingSession> => {
       const awaiting = await post<WireAwaiting>('/federation/pairing', { address, code }, grant);
