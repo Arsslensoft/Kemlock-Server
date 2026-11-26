@@ -310,9 +310,10 @@ async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<
   }
   // A signature that fails is never taken in. An item without one, or one that can't be checked,
   // is taken in until this browser has seen the item signed (the floor, kept across reloads) or,
-  // for an item the session holds, the owner's writes signed; after that a newer revision must be
-  // signed too, or the server could undo the signing.
-  const newerThanSigned = floored !== undefined && dto.revision > floored;
+  // for an item the session holds, the owner's writes signed; after that no unsigned revision of it
+  // is, whether above the floor (undoing the signing) or at or below it (an older copy served as
+  // the item's, as a full sync with nothing held would take it).
+  const newerThanSigned = floored !== undefined;
   if (
     verdict === 'invalid' ||
     ((verdict === 'unsigned' || verdict === 'unknown') &&

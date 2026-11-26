@@ -233,3 +233,18 @@ describe('an item keeps its format', () => {
     expect(store.items.get(A)?.revision).toBe(4);
   });
 });
+
+describe('an unsigned revision of an item this browser saw signed', () => {
+  it('is not taken in below the signed revision either, on a fresh sync', async () => {
+    const floors = memoryFloorStore();
+    const first = setup(floors);
+    await first.sync(await signedItem(crypto, await sealed(A, 5)));
+    expect(await floors.load(ACCOUNT, OWN)).toEqual({ [A]: 5 });
+
+    // A reload, and the server serves an older, unsigned copy as the item's.
+    const second = setup(floors);
+    await second.sync(await sealed(A, 2));
+    expect(second.store.items.has(A)).toBe(false);
+    expect(second.rejected).toHaveBeenCalledWith(expect.objectContaining({ id: A, revision: 2 }), 'unsigned');
+  });
+});
