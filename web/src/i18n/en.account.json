@@ -73,6 +73,8 @@
   "space.members.compare": "Compare",
   "space.members.compareFor": "Compare the fingerprint of {name}",
   "space.members.untraced": "Keys not traced",
+  "space.keys.legacy.title": "Some keys were sealed before keys were signed",
+  "space.keys.legacy.body": "This browser can't tell who sealed them, so it trusted them the first time it saw them. Ask an owner or admin to confirm you again, or to replace the keys, so they are sealed and signed by a member you can check.",
   "space.pin.title": "Compare {name}",
   "space.pin.body": "Ask {name} to read out the numbers their app shows for their account, and check they match. Once they do, this browser trusts the confirmations {name} made, and the keys of the members they confirmed can be traced:",
   "space.members.confirmFor": "Confirm {name}",

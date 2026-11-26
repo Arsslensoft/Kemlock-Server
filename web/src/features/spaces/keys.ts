@@ -8,6 +8,7 @@
 // only keeps the form from offering what is certain to be refused.
 import type { CollectionPermission, GroupDto, SpaceViewDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
+import { lazyContext, openUnchainedKeys } from './boxes';
 import { checkSpaceChain, openChainedKeys, overlayChain } from './chain';
 import type { SpaceDeps } from './model';
 
@@ -30,21 +31,15 @@ export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<S
     const chained = overlayChain(view, [], trust.view).view;
     return { ...chained, collectionKeys: view.collectionKeys.filter((c) => opened.has(c.collection)) };
   }
-  const sealed = view.me.sealedSpaceKey;
-  if (!sealed) throw new Error('the space key is not sealed to this account yet');
-  await deps.crypto.openSpace({
-    spaceId,
-    keyVersion: view.me.keyVersion ?? view.space.keyVersion,
-    sealed: decodeB64(sealed),
-  });
-  for (const copy of view.collectionKeys) {
-    await deps.crypto.openCollection({
-      spaceId,
-      collectionId: copy.collection,
-      keyVersion: copy.keyVersion,
-      sealed: decodeB64(copy.sealed),
-    });
-  }
+  // Every key opens only after the member who sealed it is checked and has signed it (boxes.ts). The
+  // roster is read from the server only when a box has to be checked.
+  await openUnchainedKeys(
+    {
+      ...lazyContext(deps, spaceId, view.me.user),
+      access: async () => ({ grants: view.grants, groups: view.groups }),
+    },
+    { me: view.me, spaceKeyVersion: view.space.keyVersion, collectionKeys: view.collectionKeys },
+  );
   return view;
 }
 

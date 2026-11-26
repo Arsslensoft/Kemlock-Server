@@ -1,6 +1,7 @@
 import { api } from '@/app/services';
 import { createSpacesApi } from '@/api/spaces';
 import { defaultStores } from '@/spaces/anchors';
+import { defaultBoxStore } from '@/spaces/boxstore';
 import { spaceCrypto } from '@/spaces/crypto';
 import type { SpaceDeps } from './model';
 
@@ -14,6 +15,8 @@ export const spaceDeps: SpaceDeps = {
   crypto: spaceCrypto,
   anchors: stores.anchors,
   pins: stores.pins,
+  // The key boxes it accepted, which is how a box sealed before keys were signed is flagged once.
+  boxes: defaultBoxStore(spaceCrypto),
 };
 
 export { spacesKey } from './refresh';

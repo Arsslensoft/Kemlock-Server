@@ -398,6 +398,12 @@ export function SpaceDetailView({
         </Notice>
       ) : null}
       <ChainNotice detail={detail} busy={busy} onAccept={actions.acceptFirstContact} />
+      {detail.legacyKeys && detail.legacyKeys.length > 0 ? (
+        <Notice tone="warn">
+          <b>{t('space.keys.legacy.title')}</b>
+          <p>{t('space.keys.legacy.body')}</p>
+        </Notice>
+      ) : null}
       {!detail.readable && (!detail.trust || detail.trust.kind === 'unchained') ? (
         <Notice tone="warn">
           <p>{me.state === 'confirmed' ? t('sharing.unavailable') : t('space.detail.notConfirmed')}</p>

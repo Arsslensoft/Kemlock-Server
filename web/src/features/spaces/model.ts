@@ -29,6 +29,8 @@ import {
   openChainedKeys,
   overlayChain,
 } from './chain';
+import type { BoxStore } from '@/spaces/boxstore';
+import { lazyContext, openKeyBox, openUnchainedKeys } from './boxes';
 import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
@@ -39,6 +41,8 @@ export interface SpaceDeps {
   anchors?: AnchorStore;
   /** Where it keeps the members whose fingerprint a person compared here. */
   pins?: PinStore;
+  /** Where it keeps the key boxes it accepted, so one sealed before keys were signed is flagged once. */
+  boxes?: BoxStore;
 }
 
 /**
@@ -94,7 +98,12 @@ async function openSpaceName(
       await openChainedKey(deps, spaceId, trust.view, null, servedVersion, sealed);
       keyVersion = nameVersionOf(trust.view, 'space', spaceId);
     } else {
-      await deps.crypto.openSpace({ spaceId, keyVersion: servedVersion, sealed: decodeB64(sealed) });
+      await openKeyBox(lazyContext(deps, spaceId, summary.member.user), {
+        key: 'space',
+        version: servedVersion,
+        sealed,
+        sealedBy: summary.member.sealedBy,
+      });
     }
     return {
       name: await deps.crypto.openName({
@@ -190,6 +199,12 @@ export interface SpaceDetail {
    * fingerprint a person could compare to put that right. Confirming them again does too.
    */
   unverified?: Array<{ user: string; compare?: string }>;
+  /**
+   * The keys of a space with no chain that were sealed before keys were signed (`space`, or
+   * `collection:<id>`): this browser accepted them once, and they are replaced when the keys are or
+   * when an owner confirms this account again (docs/crypto.md, "Signed key boxes").
+   */
+  legacyKeys?: string[];
 }
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
@@ -198,6 +213,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
   let view = served;
   let members = servedMembers;
   let readable = false;
+  let legacyKeys: string[] = [];
   let nameVersion = (_kind: 'space' | 'collection' | 'group', _id: string) => served.space.keyVersion;
   if (trust.kind === 'verified') {
     // The space as its chain gives it; keys open at the chain's version, under its commitments.
@@ -211,20 +227,19 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
       readable = false;
     }
   } else if (trust.kind === 'unchained' && served.me.sealedSpaceKey) {
+    // Each key opens only after its sealer's signature is checked (boxes.ts); one sealed before keys
+    // were signed is accepted once and flagged.
     try {
-      await deps.crypto.openSpace({
-        spaceId,
-        keyVersion: served.me.keyVersion ?? served.space.keyVersion,
-        sealed: decodeB64(served.me.sealedSpaceKey),
+      const ctx = {
+        ...lazyContext(deps, spaceId, served.me.user),
+        members: async () => servedMembers,
+        access: async () => ({ grants: served.grants, groups: served.groups }),
+      };
+      legacyKeys = await openUnchainedKeys(ctx, {
+        me: served.me,
+        spaceKeyVersion: served.space.keyVersion,
+        collectionKeys: served.collectionKeys,
       });
-      for (const copy of served.collectionKeys) {
-        await deps.crypto.openCollection({
-          spaceId,
-          collectionId: copy.collection,
-          keyVersion: copy.keyVersion,
-          sealed: decodeB64(copy.sealed),
-        });
-      }
       readable = true;
     } catch {
       readable = false;
@@ -265,6 +280,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     members,
     readable,
     trust,
+    ...(legacyKeys.length > 0 ? { legacyKeys } : {}),
     ...(unverified.length > 0 ? { unverified } : {}),
     name: await title('space', space.id, space.name),
     collections: await Promise.all(
