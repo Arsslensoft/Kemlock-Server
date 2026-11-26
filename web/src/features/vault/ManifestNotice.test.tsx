@@ -31,9 +31,24 @@ describe('ManifestNoticeView', () => {
     expect(screen.getByText('2 items are older than your devices last saw them.')).toBeInTheDocument();
     expect(screen.getByText('1 item your devices saw is missing.')).toBeInTheDocument();
     expect(screen.getByText('1 deleted item came back.')).toBeInTheDocument();
-    expect(screen.getByText(/1 item was deleted by another device or by the server/)).toBeInTheDocument();
+    expect(screen.getByText(/1 item was deleted without a signature/)).toBeInTheDocument();
     expect(screen.getByText('1 item has a revision it could not have reached.')).toBeInTheDocument();
     expect(screen.getByText(/tell your administrator/)).toBeInTheDocument();
+  });
+
+  it('says what a revision refused for its signature was', () => {
+    const warning: ManifestWarning = {
+      manifests: [],
+      publishFailed: false,
+      items: [
+        { owner: OWN, id: 'f', verdict: 'forged', revision: 5 },
+        { owner: OWN, id: 'g', verdict: 'unsigned', revision: 6 },
+        { owner: OWN, id: 'h', verdict: 'unsigned', revision: 7 },
+      ],
+    };
+    renderWithIntl(<ManifestNoticeView warning={warning} />);
+    expect(screen.getByText(/1 change to an item carries a signature that is not its writer/)).toBeInTheDocument();
+    expect(screen.getByText(/2 changes to items have no signature, though this vault/)).toBeInTheDocument();
   });
 
   it.each([

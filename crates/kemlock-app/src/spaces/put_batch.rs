@@ -109,6 +109,9 @@ impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceBat
                     .map_err(|e| item_error(id, e))?
                 }
             };
+            if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+                return Err(item_error(id, ItemError::SignatureRequired));
+            }
             let collection = matches!(draft.owner, Owner::Space(_))
                 .then_some(collection)
                 .flatten();

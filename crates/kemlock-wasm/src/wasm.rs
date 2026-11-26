@@ -21,7 +21,7 @@ use kemlock_crypto::space_chain::KeyRef;
 use crate::{
     b64, chain, chain_build,
     error::Error,
-    ids, kit, manifests, sends,
+    ids, item_writes, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
     sharing::{self, Facts},
     spaces::{self, NameKind, NewCollection, SignedBox},
@@ -189,6 +189,10 @@ struct ResealedItemOut {
     item_key: String,
     revision: u64,
     key_version: u32,
+    /// The account's signature of the write, by the new keys.
+    writer: String,
+    writer_key_version: u32,
+    write_signature: String,
 }
 
 #[derive(Serialize)]
@@ -1322,6 +1326,59 @@ impl Vault {
         manifests::verify_space_manifest(&bundle, &manifest, &signature).is_ok()
     }
 
+    /// The key version the unlocked account is at, which a signature of its own is checked at; a
+    /// signature at an older version is checked against that version's bundle instead.
+    #[wasm_bindgen(js_name = ownKeyVersion)]
+    pub fn own_key_version(&self) -> Result<u32, JsError> {
+        self.session.own_key_version().map_err(fail)
+    }
+
+    /// Signs a write of an item as the unlocked account (docs/crypto.md, "Signed item writes").
+    /// `fields` is JSON: `{owner, id, kind, revision, deleted, keyVersion, ciphertext?, itemKey?}`
+    /// with the base64url `ciphertext` and `itemKey` the write carries (absent on a tombstone).
+    /// Answers JSON `{writer, writerKeyVersion, writeSignature}`: the three members the server
+    /// takes with the item. Only a write for this account's own vault or a space is signed.
+    #[wasm_bindgen(js_name = itemWriteSign)]
+    pub fn item_write_sign(&self, fields: &str) -> Result<String, JsError> {
+        let fields = item_writes::WriteFields::parse(fields).map_err(fail)?;
+        let signed = self.session.sign_item_write(&fields).map_err(fail)?;
+        json(&signed)
+    }
+
+    /// Whether `signature` (base64url) is the unlocked account's own signature of the write
+    /// `fields` (as above, with `writer` and `writerKeyVersion` naming this account). The key is
+    /// the account's own, never one the server served. Anything malformed is `false`; a vault
+    /// opened without the private keys gives no verdict and throws `"locked"`.
+    #[wasm_bindgen(js_name = itemWriteVerifyOwn)]
+    pub fn item_write_verify_own(&self, fields: &str, signature: &str) -> Result<bool, JsError> {
+        let (Ok(fields), Ok(signature)) = (
+            item_writes::WriteFields::parse(fields),
+            b64::decode(signature),
+        ) else {
+            return Ok(false);
+        };
+        match self.session.verify_own_item_write(&fields, &signature) {
+            Ok(()) => Ok(true),
+            Err(Error::Locked) => Err(fail(Error::Locked)),
+            Err(Error::Invalid) => Ok(false),
+        }
+    }
+
+    /// Whether `signature` is the signature of the write `fields` by the account whose bundle is
+    /// `signer_bundle` (the page has checked that bundle against the space's members), at the
+    /// bundle's key version. Anything malformed is `false`.
+    #[wasm_bindgen(js_name = itemWriteVerify)]
+    pub fn item_write_verify(&self, signer_bundle: &str, fields: &str, signature: &str) -> bool {
+        let (Ok(bundle), Ok(fields), Ok(signature)) = (
+            b64::decode(signer_bundle),
+            item_writes::WriteFields::parse(fields),
+            b64::decode(signature),
+        ) else {
+            return false;
+        };
+        item_writes::verify_item_write(&bundle, &fields, &signature).is_ok()
+    }
+
     // ---- the space chain (src/chain.rs) -----------------------------------------------------
 
     /// Verifies the chain the server served for a space and keeps its state. `records` is the
@@ -1436,10 +1493,7 @@ impl Vault {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let reseal: chain_build::Reseal =
             serde_json::from_str(reseal).map_err(|_| fail(Error::Invalid))?;
-        let built = self
-            .session
-            .build_reseal(&space, &reseal)
-            .map_err(fail)?;
+        let built = self.session.build_reseal(&space, &reseal).map_err(fail)?;
         json(&built)
     }
 
@@ -1527,7 +1581,8 @@ impl Vault {
     }
 
     /// Moves one item of the account's own vault to the new keys: `{ciphertext, itemKey, revision,
-    /// keyVersion}`, at `revision + 1` under a fresh item key.
+    /// keyVersion, writer, writerKeyVersion, writeSignature}`, at `revision + 1` under a fresh item
+    /// key, signed by the new keys as a write of the account.
     #[wasm_bindgen(js_name = rotationResealItem)]
     #[allow(clippy::too_many_arguments)]
     pub fn rotation_reseal_item(
@@ -1561,6 +1616,9 @@ impl Vault {
             item_key: b64::encode(&moved.moved.item_key),
             revision: moved.moved.revision,
             key_version: moved.key_version,
+            writer: moved.signature.writer,
+            writer_key_version: moved.signature.writer_key_version,
+            write_signature: moved.signature.write_signature,
         })
     }
 

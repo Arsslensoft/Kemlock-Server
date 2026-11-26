@@ -70,6 +70,14 @@ pub struct EmailConfirmation {
     pub expires_at: OffsetDateTime,
 }
 
+/// A public-key bundle an account has had, with its self-signature, at one key version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredBundle {
+    pub key_version: u32,
+    pub public_bundle: Vec<u8>,
+    pub bundle_signature: Vec<u8>,
+}
+
 pub trait UserRepo: Send + Sync {
     fn by_id(&self, id: UserId) -> impl Future<Output = Result<Option<User>, StoreError>> + Send;
     fn by_email(
@@ -101,6 +109,63 @@ pub trait UserRepo: Send + Sync {
             }
         }
     }
+    /// The account's bundle at `key_version`: the current one, or one it had before a key
+    /// replacement (docs/crypto.md, "Signed item writes"), for as long as the store keeps them.
+    /// `None` for a version the account never had, or one the store no longer holds.
+    ///
+    /// The default knows only the current bundle, for a store that keeps no history.
+    fn bundle_at(
+        &self,
+        id: UserId,
+        key_version: u32,
+    ) -> impl Future<Output = Result<Option<StoredBundle>, StoreError>> + Send {
+        async move {
+            Ok(self
+                .by_id(id)
+                .await?
+                .filter(|u| u.key_version == key_version && !u.public_bundle.is_empty())
+                .map(|u| StoredBundle {
+                    key_version: u.key_version,
+                    public_bundle: u.public_bundle,
+                    bundle_signature: u.bundle_signature,
+                }))
+        }
+    }
+
+    /// When the account replaced its bundle at `key_version` with the next version, Unix seconds:
+    /// when the keys of that version stopped signing (docs/crypto.md, "Signed item writes"). `None`
+    /// for the current version, and for one the store doesn't know the end of.
+    ///
+    /// The default knows none.
+    fn bundle_retired_at(
+        &self,
+        _id: UserId,
+        _key_version: u32,
+    ) -> impl Future<Output = Result<Option<i64>, StoreError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// Every bundle the account has had that the store holds, oldest key version first, the
+    /// current one last. The default has only the current one.
+    fn bundles_of(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<Vec<StoredBundle>, StoreError>> + Send {
+        async move {
+            Ok(self
+                .by_id(id)
+                .await?
+                .filter(|u| u.key_version > 0 && !u.public_bundle.is_empty())
+                .map(|u| StoredBundle {
+                    key_version: u.key_version,
+                    public_bundle: u.public_bundle,
+                    bundle_signature: u.bundle_signature,
+                })
+                .into_iter()
+                .collect())
+        }
+    }
+
     fn count_admins(&self) -> impl Future<Output = Result<u64, StoreError>> + Send;
     /// Whether the account may not sign in: an admin disabled it, or Vaultwarden had it disabled
     /// before the move. Sign-in and refresh on both APIs ask this and issue nothing to a disabled
@@ -447,6 +512,35 @@ pub trait ItemStore: Send + Sync {
         _collections: &[CollectionId],
     ) -> impl Future<Output = Result<Vec<(CollectionId, VersionVector)>, StoreError>> + Send {
         async { Ok(Vec::new()) }
+    }
+
+    /// Whether `owner` accepts signed `kem1` writes only (docs/crypto.md, "The signed-only flag"):
+    /// its owner (or a space's owner or admin) asked.
+    ///
+    /// The default is false, for a store that keeps no such flag.
+    fn signed_writes_required(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Makes `owner` accept signed writes only, at `at`. Idempotent. Only a request of the owner's
+    /// own authority sets it (docs/crypto.md, "The signed-only flag").
+    fn require_signed_writes(
+        &self,
+        _owner: Owner,
+        _at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Makes `owner` accept unsigned writes again. Idempotent.
+    fn clear_signed_writes(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
     }
 
     /// Purges tombstones deleted before `before`, moving each owner's horizon. Returns how many

@@ -8,6 +8,8 @@ import type { Api, SyncResult } from '@/api/client';
 import { isApiError } from '@/api/errors';
 import type { ItemDto } from '@/api/types';
 import type { CryptoPort, SealedItem } from '@/crypto-port';
+import type { SignedFloor } from '@/spaces/anchors';
+import type { WriteChecker, WriteVerdict } from '@/manifest/writes';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 
 export type ItemData = {
@@ -25,6 +27,8 @@ export interface VaultItem {
   id: string;
   owner: string;
   kind: string;
+  /** The format the item has: what it was served in, or `kem1` for what this browser wrote. */
+  format?: ItemDto['format'];
   revision: number;
   keyVersion: number;
   /** The collection an item of a space is in; absent for an item of the account's own vault. */
@@ -63,10 +67,27 @@ export function sealedData(existing: VaultItem | undefined, id: string, fields: 
 
 export class VaultStore {
   readonly items = new Map<string, VaultItem>();
+  /**
+   * The owners this session has seen a valid write signature for. Once an owner is here, an
+   * unsigned or unverifiable newer revision of an item this session holds is not taken in
+   * (docs/crypto.md, "Signed item writes"): a server can't turn signing off by leaving it out.
+   */
+  readonly signedOwners = new Set<string>();
+  /**
+   * Per owner, the highest revision of each item seen with a valid write signature, kept across
+   * reloads in the sealed local store (`VaultDeps.floors`). A newer revision of such an item that
+   * comes unsigned is not taken in, whether or not this session holds the item.
+   */
+  readonly floors = new Map<string, Map<string, number>>();
+  /** Owners whose floor changed since it was last kept. */
+  readonly dirtyFloors = new Set<string>();
   cursor: string | undefined;
 
   reset(): void {
     this.items.clear();
+    this.signedOwners.clear();
+    this.floors.clear();
+    this.dirtyFloors.clear();
     this.cursor = undefined;
   }
 
@@ -94,7 +115,25 @@ export interface VaultDeps {
    * whether its envelope opened. The manifest keeper (src/manifest) is what listens. It must
    * return at once: it is called for every item of a page.
    */
-  served?: (dto: ItemDto, opened: boolean) => void;
+  served?: (dto: ItemDto, opened: boolean, verdict?: WriteVerdict) => void;
+  /**
+   * Checks the write signature of an item the server serves (src/manifest/writes.ts). Without it
+   * nothing is checked and every revision is taken in as before.
+   */
+  writes?: Pick<WriteChecker, 'verdict' | 'beginSync'>;
+  /**
+   * Told of a revision that was served and not taken in because of its signature: `invalid` (one
+   * came and fails), or `unsigned` and `unknown` for an item of an owner whose writes are signed.
+   */
+  rejected?: (dto: ItemDto, verdict: Exclude<WriteVerdict, 'signed'>) => void;
+  /**
+   * Keeps, per owner, the highest signed revision of each item across reloads (sealed by the
+   * worker, `src/spaces/anchors.ts`). Without it the memory lasts as long as the vault's.
+   */
+  floors?: {
+    load(owner: string): Promise<SignedFloor>;
+    save(owner: string, floor: SignedFloor): Promise<void>;
+  };
   now?: () => Date;
   newId?: () => string;
 }
@@ -205,6 +244,7 @@ export async function openDto(
     id: dto.id,
     owner: dto.owner,
     kind: dto.kind,
+    format: dto.format,
     revision: dto.revision,
     keyVersion: dto.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),
@@ -214,26 +254,88 @@ export async function openDto(
   };
 }
 
+/** The signed floor of an owner: from this session, or from the sealed store. A store that can't be read is an empty floor, which only means less is refused. */
+async function floorOf(deps: VaultDeps, store: VaultStore, owner: string): Promise<Map<string, number>> {
+  let floor = store.floors.get(owner);
+  if (!floor) {
+    let kept: SignedFloor = {};
+    try {
+      kept = (await deps.floors?.load(owner)) ?? {};
+    } catch {
+      kept = {};
+    }
+    floor = new Map(Object.entries(kept));
+    store.floors.set(owner, floor);
+    if (floor.size > 0) store.signedOwners.add(owner);
+  }
+  return floor;
+}
+
+/** Keeps the floors that changed. Never throws: a failure only means less is remembered. */
+async function keepFloors(deps: VaultDeps, store: VaultStore): Promise<void> {
+  for (const owner of [...store.dirtyFloors]) {
+    store.dirtyFloors.delete(owner);
+    try {
+      await deps.floors?.save(owner, Object.fromEntries(store.floors.get(owner) ?? []));
+    } catch {
+      store.dirtyFloors.add(owner);
+    }
+  }
+}
+
 async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<void> {
   const current = store.items.get(dto.id);
+  // An item keeps the format it was made in. A revision that says another (a `bw` label on a `kem1`
+  // item would skip every signature check) is not taken in, and the item is not deleted for it.
+  if (current?.format !== undefined && current.format !== dto.format) {
+    deps.served?.(dto, false, undefined);
+    deps.rejected?.(dto, 'invalid');
+    return;
+  }
+  const verdict = await deps.writes?.verdict(dto);
+  const floor = await floorOf(deps, store, dto.owner);
+  if (verdict === 'signed') {
+    store.signedOwners.add(dto.owner);
+    if ((floor.get(dto.id) ?? 0) < dto.revision) {
+      floor.set(dto.id, dto.revision);
+      store.dirtyFloors.add(dto.owner);
+    }
+  }
+  const floored = floor.get(dto.id);
   if (current && current.revision >= dto.revision) {
     // Not taken in, but the keeper still wants to know what the server served: an older copy is
     // exactly what it watches for.
-    deps.served?.(dto, false);
+    deps.served?.(dto, false, verdict);
+    return;
+  }
+  // A signature that fails is never taken in. An item without one, or one that can't be checked,
+  // is taken in until this browser has seen the item signed (the floor, kept across reloads) or,
+  // for an item the session holds, the owner's writes signed; after that no unsigned revision of it
+  // is, whether above the floor (undoing the signing) or at or below it (an older copy served as
+  // the item's, as a full sync with nothing held would take it).
+  const newerThanSigned = floored !== undefined;
+  if (
+    verdict === 'invalid' ||
+    ((verdict === 'unsigned' || verdict === 'unknown') &&
+      (newerThanSigned || (current && store.signedOwners.has(dto.owner))))
+  ) {
+    deps.served?.(dto, false, verdict);
+    deps.rejected?.(dto, verdict);
     return;
   }
   if (dto.deleted) {
     store.items.delete(dto.id);
-    deps.served?.(dto, false);
+    deps.served?.(dto, false, verdict);
     return;
   }
   const item = await openDto(deps.crypto, dto, deps.ensureSpaceKeys);
-  deps.served?.(dto, item?.opened === true);
+  deps.served?.(dto, item?.opened === true, verdict);
   if (item) store.items.set(item.id, item);
 }
 
 /** Pulls every change since the stored cursor (everything, the first time) into the store. */
 export async function syncVault(deps: VaultDeps, store: VaultStore): Promise<VaultItem[]> {
+  deps.writes?.beginSync();
   let since = store.cursor;
   for (;;) {
     let result: SyncResult;
@@ -249,6 +351,7 @@ export async function syncVault(deps: VaultDeps, store: VaultStore): Promise<Vau
     }
     if (result.notModified) break;
     for (const dto of result.page.items) await apply(deps, store, dto);
+    await keepFloors(deps, store);
     store.cursor = result.page.cursor;
     since = result.page.cursor;
     if (!result.page.more) break;
@@ -332,6 +435,7 @@ export async function saveItem(
     id,
     owner,
     kind: input.kind,
+    format: 'kem1',
     revision,
     keyVersion: sealed.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),

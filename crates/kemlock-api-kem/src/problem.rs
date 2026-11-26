@@ -274,6 +274,18 @@ fn item_problem(e: &ItemError) -> Problem {
             "item-too-large",
             "The item is larger than this server allows",
         ),
+        ItemError::BadSignature => Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid-signature",
+            "The write's signature is not valid",
+        )
+        .detail(e.to_string()),
+        ItemError::SignatureRequired => Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "signature-required",
+            "This owner accepts signed writes only",
+        )
+        .detail(e.to_string()),
     }
 }
 

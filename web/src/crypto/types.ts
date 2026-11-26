@@ -425,6 +425,34 @@ export interface SealSpaceItemInput {
   json: string;
 }
 
+/**
+ * The fields of an item write that a signature covers (docs/crypto.md, "Signed item writes"): what
+ * the server is sent, minus the signature. `ciphertext` and `itemKey` are base64url and absent on a
+ * tombstone. To check a signature, `writer` and `writerKeyVersion` name who signed.
+ */
+export interface ItemWriteFields {
+  owner: string;
+  id: string;
+  kind: string;
+  revision: number;
+  deleted: boolean;
+  keyVersion: number;
+  ciphertext?: string;
+  itemKey?: string;
+  /** The collection an item of a space is in; the signature covers it. None for a vault's item. */
+  collectionId?: string;
+  writer?: string;
+  writerKeyVersion?: number;
+}
+
+/** What signing a write answers: the three members the server takes with the item. */
+export interface ItemWriteSignature {
+  writer: string;
+  writerKeyVersion: number;
+  /** base64url, 3,373 bytes */
+  writeSignature: string;
+}
+
 /** An item of a space's collection, to open. `keyVersion` is the collection key's. */
 export interface OpenSpaceItemInput {
   spaceId: string;
@@ -511,6 +539,10 @@ export interface ResealedItem {
   /** The revision it is sealed at: the old one plus one. */
   revision: number;
   keyVersion: number;
+  /** The account's signature of the write this makes, by the new keys (docs/crypto.md, "Rotating the root key"). */
+  writer: string;
+  writerKeyVersion: number;
+  writeSignature: string;
 }
 
 /** A Send's sealed key and meta under the new keys. */
@@ -680,6 +712,8 @@ export interface CryptoApi {
   verifyBundle(publicBundle: string, bundleSignature: string): Promise<boolean>;
   /** The unlocked account's own fingerprint; needs `unlock` with `sealedPrivateKeys`. */
   ownFingerprint(): Promise<string>;
+  /** The key version the account is unlocked at: authenticated by the wrap that opened it. */
+  ownKeyVersion(): Promise<number>;
   /** Drops a handle that will not be used. */
   release(
     handle:
@@ -826,6 +860,23 @@ export interface CryptoApi {
   manifestVerifyOwn(manifest: string, signature: string): Promise<boolean>;
   /** Whether the signature is the signer's (the bundle's sig1 key) over a space's manifest. */
   manifestVerify(signerBundle: string, manifest: string, signature: string): Promise<boolean>;
+
+  // Signed item writes (docs/crypto.md, "Signed item writes"): the worker signs a write as the
+  // unlocked account and checks the signature of one, so the page holds no signing key.
+
+  /**
+   * Signs a write as the unlocked account at its key version. Only a write for the account's own
+   * vault or a space is signed.
+   */
+  itemWriteSign(fields: ItemWriteFields): Promise<ItemWriteSignature>;
+  /**
+   * Whether the signature is the unlocked account's own over the write, which must name this
+   * account as `writer`. The key is the account's own, never a bundle the server served: without
+   * the sealed private keys it rejects with `locked` rather than answering false.
+   */
+  itemWriteVerifyOwn(fields: ItemWriteFields, signature: string): Promise<boolean>;
+  /** Whether the signature is the signer's (the bundle's sig1 key) over the write. */
+  itemWriteVerify(signerBundle: string, fields: ItemWriteFields, signature: string): Promise<boolean>;
 
   // The space chain: verified in the worker, which keeps the state. A space that has a chain opens
   // and seals keys only through it.
@@ -994,6 +1045,7 @@ export interface Ops {
   fingerprint: { args: [publicBundle: string]; result: string };
   verifyBundle: { args: [publicBundle: string, bundleSignature: string]; result: boolean };
   ownFingerprint: { args: []; result: string };
+  ownKeyVersion: { args: []; result: number };
   release: { args: [handle: number]; result: void };
   dpopReset: { args: []; result: void };
   sealRootKey: {
@@ -1085,6 +1137,12 @@ export interface Ops {
   manifestVerifyOwn: { args: [manifest: string, signature: string]; result: boolean };
   manifestVerify: {
     args: [signerBundle: string, manifest: string, signature: string];
+    result: boolean;
+  };
+  itemWriteSign: { args: [fields: ItemWriteFields]; result: ItemWriteSignature };
+  itemWriteVerifyOwn: { args: [fields: ItemWriteFields, signature: string]; result: boolean };
+  itemWriteVerify: {
+    args: [signerBundle: string, fields: ItemWriteFields, signature: string];
     result: boolean;
   };
   // The space chain.

@@ -16,7 +16,7 @@ use crate::{
     backend::Backend,
     bundle::{self, Bundle},
     confirm::{STATEMENT_LEN, Statement},
-    dedup, ed25519, kem1,
+    dedup, ed25519, item_write, kem1,
     key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     keys::{ITEM_WRAP_LABEL, RootKey, SecretKey},
     kma1, kx1, legacy_id,
@@ -1306,6 +1306,143 @@ fn confirm_file<B: Backend>(doc: &Value) {
     }
 }
 
+fn item_write_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let name = s(case, "name");
+        let owner: [u8; 17] = arr(case, "owner");
+        let item_id: [u8; 16] = arr(case, "item_id");
+        let kind = s(case, "kind");
+        let revision = int(case, "revision");
+        assert_eq!(int(case, "replaces"), revision - 1, "{name}");
+        let deleted = case["deleted"].as_bool().expect("deleted is a flag");
+        let key_version = u32::try_from(int(case, "key_version")).expect("u32");
+        let writer: [u8; 16] = arr(case, "writer");
+        let writer_version = u32::try_from(int(case, "writer_key_version")).expect("u32");
+        let collection: Option<[u8; 16]> = case
+            .get("collection")
+            .filter(|v| !v.is_null())
+            .map(|_| arr(case, "collection"));
+        assert_eq!(
+            collection.is_some(),
+            owner[0] == 2,
+            "{name}: a collection exactly when the owner is a space"
+        );
+
+        // The envelope hash, rebuilt by hand from the documented layout.
+        let envelope: [u8; 32] = arr(case, "envelope_hash");
+        if deleted {
+            assert_eq!(envelope, [0; 32], "{name}");
+            assert!(case.get("ciphertext").is_none(), "{name}");
+        } else {
+            let ciphertext = bytes(case, "ciphertext");
+            let item_key = bytes(case, "item_key");
+            let mut data = key_version.to_be_bytes().to_vec();
+            lp(&mut data, &ciphertext).expect("lp");
+            lp(&mut data, &item_key).expect("lp");
+            assert_eq!(B::sha256(&data), envelope, "{} {name}", B::NAME);
+            assert_eq!(
+                item_write::envelope_hash(
+                    key_version,
+                    Some((ciphertext.as_slice(), item_key.as_slice()))
+                )
+                .expect("hash"),
+                envelope,
+                "{name}"
+            );
+        }
+
+        // The statement, rebuilt by hand.
+        let mut expected = b"kemlock/v1/item-write".to_vec();
+        expected.extend_from_slice(&owner);
+        expected.extend_from_slice(&item_id);
+        lp(&mut expected, kind.as_bytes()).expect("lp");
+        expected.extend_from_slice(&revision.to_be_bytes());
+        expected.extend_from_slice(&(revision - 1).to_be_bytes());
+        expected.push(u8::from(deleted));
+        expected.extend_from_slice(&envelope);
+        expected.extend_from_slice(&writer);
+        expected.extend_from_slice(&writer_version.to_be_bytes());
+        match collection {
+            Some(collection) => {
+                expected.push(1);
+                expected.extend_from_slice(&collection);
+            }
+            None => expected.push(0),
+        }
+        let statement = bytes(case, "statement");
+        assert_eq!(statement, expected, "{name}");
+        let rebuilt = item_write::Statement {
+            owner: Owner::from_bytes(&owner).expect("an owner"),
+            item_id,
+            kind,
+            revision,
+            deleted,
+            envelope,
+            writer,
+            writer_key_version: writer_version,
+            collection,
+        };
+        assert_eq!(rebuilt.to_bytes().expect("encode"), statement, "{name}");
+
+        let public =
+            sig1::PublicKey::from_bytes(&bytes(case, "writer_public_key")).expect("public key");
+        let signing = sig1::SigningKey::from_bytes(&arr(case, "writer_private_key"));
+        assert_eq!(
+            sig1::public_key_in::<B>(&signing).expect("public"),
+            public,
+            "{} {name}",
+            B::NAME
+        );
+        let signature = bytes(case, "signature");
+        assert_eq!(signature.len(), sig1::SIGNATURE_LEN);
+        sig1::verify_in::<B>(&public, "item-write", &statement, &signature)
+            .expect("the write verifies");
+        rebuilt
+            .verify(&public, &signature)
+            .expect("the crate's own verification agrees");
+        assert_eq!(
+            item_write::to_stored(&writer, writer_version, &signature).expect("stored"),
+            bytes(case, "stored"),
+            "{name}"
+        );
+
+        for context in list(case, "wrong_contexts") {
+            let context = context.as_str().expect("a context");
+            assert_ne!(context, "item-write");
+            assert!(
+                sig1::verify_in::<B>(&public, context, &statement, &signature).is_err(),
+                "{name} {context}"
+            );
+        }
+        for changed in list(case, "changed_statements") {
+            let other = bytes(changed, "statement");
+            assert_ne!(other, statement, "{name} {}", s(changed, "name"));
+            assert!(
+                sig1::verify_in::<B>(&public, "item-write", &other, &signature).is_err(),
+                "{name} {}",
+                s(changed, "name")
+            );
+        }
+        for index in [0usize, 3308, 3309, 3372] {
+            assert!(
+                sig1::verify_in::<B>(
+                    &public,
+                    "item-write",
+                    &statement,
+                    &flip(signature.clone(), index)
+                )
+                .is_err(),
+                "{name} byte {index}"
+            );
+        }
+        let own = sig1::sign_in::<B>(&signing, "item-write", &statement).expect("sign");
+        sig1::verify_in::<B>(&public, "item-write", &statement, &own).expect("own signature");
+        if B::NAME == "rustcrypto" {
+            assert_eq!(own, signature, "{name}");
+        }
+    }
+}
+
 fn key_box_file<B: Backend>(doc: &Value) {
     for case in cases(doc) {
         let name = s(case, "name");
@@ -2042,6 +2179,7 @@ pub(crate) fn check_on<B: Backend>(name: &str, doc: &Value) {
         "private-keys" => private_keys_file::<B>(doc),
         "prf-wrap" => prf_wrap_file::<B>(doc),
         "confirm" => confirm_file::<B>(doc),
+        "item-write" => item_write_file::<B>(doc),
         "key-box" => key_box_file::<B>(doc),
         "send" => send_file::<B>(doc),
         "space-names" => space_names_file::<B>(doc),

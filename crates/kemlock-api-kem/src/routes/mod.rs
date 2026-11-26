@@ -35,6 +35,7 @@ pub(crate) mod spaces;
 pub(crate) mod sso;
 pub(crate) mod two_step;
 pub(crate) mod view;
+mod write_sig;
 
 use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::Limiter;

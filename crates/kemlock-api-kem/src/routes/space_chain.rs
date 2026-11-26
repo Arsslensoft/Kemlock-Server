@@ -41,8 +41,8 @@ use kemlock_app::spaces::{
 };
 use kemlock_app::{AppError, b64url};
 use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
-use kemlock_domain::spaces::CustomPermissions;
 use kemlock_domain::spaces::CollectionId;
+use kemlock_domain::spaces::CustomPermissions;
 use kemlock_domain::{ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -377,7 +377,9 @@ impl From<ChainReadError> for Problem {
 
 // ---- the use cases of one request ----
 
-fn append_use_case<S, P, K, R>(env: &Env<S, P, K, R>) -> AppendChain<R, S, S, P, S, S, crate::LiveHub>
+fn append_use_case<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+) -> AppendChain<R, S, S, P, S, S, crate::LiveHub>
 where
     S: Store,
     P: Crypto,

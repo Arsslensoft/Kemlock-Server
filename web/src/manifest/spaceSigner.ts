@@ -83,11 +83,15 @@ export interface SpaceSignerDeps {
   trace: { crypto: SpaceCrypto; pins?: PinStore | undefined };
 }
 
-/** The bundle the chain records for `signer`, null unless it shows them confirmed with `edit`. */
-function chained(view: ChainView, signer: string): Uint8Array | null {
+/** The bundle the chain records for `signer`, null unless it shows them confirmed with `edit`. A write signed before the member was taken out is still theirs (docs/crypto.md, "Signed item writes"), so for `former` a revoked member counts too; whether they could edit then isn't known. */
+function chained(view: ChainView, signer: string, former: boolean): Uint8Array | null {
   const member = view.members.find((candidate) => candidate.id === signer);
-  if (!member || member.status !== 'confirmed' || !member.bundle) return null;
-  if (!editsByGrant(signer, view)) return null;
+  if (!member || !member.bundle) return null;
+  if (member.status === 'confirmed') {
+    if (!editsByGrant(signer, view)) return null;
+  } else if (!(former && member.status === 'removed')) {
+    return null;
+  }
   let bundle: Uint8Array;
   try {
     bundle = decodeB64(member.bundle);
@@ -100,13 +104,25 @@ function chained(view: ChainView, signer: string): Uint8Array | null {
 }
 
 /** The member list's view of who may sign for a space with no chain: the bundle of `signer`, or null. */
-async function unchained(deps: SpaceSignerDeps, space: string, signer: string, me: string): Promise<Uint8Array | null> {
+async function unchained(
+  deps: SpaceSignerDeps,
+  space: string,
+  signer: string,
+  me: string,
+  former: boolean,
+): Promise<Uint8Array | null> {
   const [members, view]: [MemberViewDto[], SpaceViewDto] = await Promise.all([
     deps.spaces.members(space),
     deps.spaces.get(space),
   ]);
-  const member = members.find((candidate) => candidate.user === signer && candidate.state === 'confirmed');
-  if (!member || !canEditSomewhere(member, view)) return null;
+  // A write signed before the member was taken out is still theirs, so for `former` a revoked
+  // member counts too; whether they could edit then isn't known.
+  const member = members.find(
+    (candidate) =>
+      candidate.user === signer && (candidate.state === 'confirmed' || (former && candidate.state === 'revoked')),
+  );
+  if (!member) return null;
+  if (member.state === 'confirmed' && !canEditSomewhere(member, view)) return null;
   let bundle: Uint8Array;
   try {
     bundle = decodeB64(member.publicBundle);
@@ -129,18 +145,23 @@ async function unchained(deps: SpaceSignerDeps, space: string, signer: string, m
 }
 
 /** Who may sign for `space`: the bundle of `signer`, or null. */
-async function lookup(deps: SpaceSignerDeps, space: string, signer: string): Promise<Uint8Array | null> {
+async function lookup(
+  deps: SpaceSignerDeps,
+  space: string,
+  signer: string,
+  former: boolean,
+): Promise<Uint8Array | null> {
   const me = deps.accountId();
   if (me === null) return null;
   const trust = await deps.chain(space, me);
-  if (trust.kind === 'verified') return chained(trust.view, signer);
+  if (trust.kind === 'verified') return chained(trust.view, signer, former);
   if (trust.kind !== 'unchained') return null;
-  return unchained(deps, space, signer, me);
+  return unchained(deps, space, signer, me, former);
 }
 
 export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
-  return async (space, signer) => {
-    const bundle = await lookup(deps, space, signer);
+  const answer: SpaceSigner = async (space, signer, options) => {
+    const bundle = await lookup(deps, space, signer, options?.former === true);
     if (!bundle) return null;
     if (signer === deps.accountId()) {
       // Our own keys are known for certain: the bundle must be the one they make.
@@ -149,4 +170,8 @@ export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
     }
     return bundle;
   };
+  // What it answers is the verified chain's, or keys traced to a confirmation this browser can follow:
+  // vouched, so the write checker may pin a bundle taken from it (`writes.ts`).
+  answer.vouched = true;
+  return answer;
 }

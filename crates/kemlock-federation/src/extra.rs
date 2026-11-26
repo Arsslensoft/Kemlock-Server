@@ -211,6 +211,31 @@ pub trait MemberStore: Send + Sync {
         ready(Ok(Vec::new()))
     }
 
+    /// The accounts that may have written an item of `vault`: its members, and those who were (a
+    /// space keeps the row of a member who was taken out). A write is checked by who signed it, so
+    /// one made before the account left is still good.
+    ///
+    /// The default is the members.
+    fn writer_ids(&self, vault: Owner) -> impl Future<Output = R<Vec<UserId>>> + Send {
+        self.member_ids(vault)
+    }
+
+    /// Whether `user` may edit `collection` of the space `vault`, from the member list and grants
+    /// this server holds: `Some(true)` for a confirmed member with edit on it, and for one taken out
+    /// of the space since (what they signed before is theirs, and what they could edit then is not
+    /// known), `Some(false)` for a confirmed member without, and `None` when the server doesn't
+    /// know the collection yet (the space's records may not have arrived).
+    ///
+    /// The default says yes, for a store that keeps no spaces.
+    fn writer_may_edit(
+        &self,
+        _vault: Owner,
+        _user: UserId,
+        _collection: kemlock_domain::spaces::CollectionId,
+    ) -> impl Future<Output = R<Option<bool>>> + Send {
+        ready(Ok(Some(true)))
+    }
+
     /// The public part of an account that lives on this server, with its device registrations.
     /// `None` when there is no such account or it is a copy from another server.
     fn member_account(
@@ -236,6 +261,29 @@ pub trait MemberStore: Send + Sync {
     /// Whether `user` is a copy from another server.
     fn is_replica_account(&self, _user: UserId) -> impl Future<Output = R<bool>> + Send {
         ready(Ok(false))
+    }
+
+    /// The public-key bundle `user` had at `key_version` as this server holds it, whether the
+    /// account lives here or is the copy a replica keeps of a member, past bundles included: what a
+    /// writer's signature is checked against (docs/crypto.md, "Signed item writes"). `None` when
+    /// this server holds no such bundle.
+    fn writer_bundle(
+        &self,
+        _user: UserId,
+        _key_version: u32,
+    ) -> impl Future<Output = R<Option<Vec<u8>>>> + Send {
+        ready(Ok(None))
+    }
+
+    /// When `user` replaced its bundle at `key_version`, Unix seconds, as this server knows it:
+    /// `None` for the current version and for one whose end it doesn't know. What an account's
+    /// replaced keys sign after that is not the account's.
+    fn writer_bundle_retired_at(
+        &self,
+        _user: UserId,
+        _key_version: u32,
+    ) -> impl Future<Output = R<Option<i64>>> + Send {
+        ready(Ok(None))
     }
 }
 

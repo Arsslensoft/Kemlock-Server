@@ -325,6 +325,7 @@ mod tests {
             item_key: deleted.is_none().then(|| vec![2; 60]),
             deleted_at: deleted,
             updated_at: at,
+            signature: None,
         }
     }
 

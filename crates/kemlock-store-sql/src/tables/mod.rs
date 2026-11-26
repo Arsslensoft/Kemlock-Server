@@ -4,6 +4,7 @@
 //! reachable from outside, so the lint that flags that is allowed for these modules.
 #![allow(unreachable_pub)]
 
+pub(crate) mod account_bundles;
 pub(crate) mod admin;
 pub(crate) mod attachments;
 pub(crate) mod auth_requests;
@@ -49,6 +50,7 @@ pub(crate) mod server_meta;
 pub(crate) mod settings;
 pub(crate) mod sign_in_log;
 pub(crate) mod signed_manifests;
+pub(crate) mod signed_writes;
 pub(crate) mod space_chain;
 pub(crate) mod space_recovery;
 pub(crate) mod space_tables;

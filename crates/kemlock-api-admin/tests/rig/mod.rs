@@ -441,7 +441,12 @@ impl BwInviteLinks for FakeInviteLinks {
     }
 
     fn pending_invitations(&self, _space: SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
-        Box::pin(async move { self.pending.lock().expect("the lock isn't poisoned").clone() })
+        Box::pin(async move {
+            self.pending
+                .lock()
+                .expect("the lock isn't poisoned")
+                .clone()
+        })
     }
 }
 

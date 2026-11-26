@@ -498,8 +498,16 @@ doc!(
     tag = "spaces",
     security(("dpop" = [])),
     params(
-        ("id" = String, Path, description = "The space's UUID: a Bitwarden organization"),
-        ("user" = String, Path, description = "The invited member: an account id"),
+        (
+            "id" = String,
+            Path,
+            description = "The space's UUID: a Bitwarden organization"
+        ),
+        (
+            "user" = String,
+            Path,
+            description = "The invited member: an account id"
+        ),
         (
             "Step-Up-Token" = String,
             Header,

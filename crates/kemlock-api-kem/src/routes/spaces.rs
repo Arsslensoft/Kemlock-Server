@@ -1832,6 +1832,16 @@ where
             Ok::<_, Problem>((CollectionId(w.collection), write))
         })
         .collect::<Result<Vec<_>, Problem>>()?;
+    // The re-written items are signed like any write (docs/crypto.md, "Signed item writes").
+    super::write_sig::verify_writes(
+        &env.api.store,
+        caller.actor().user,
+        &writes
+            .iter()
+            .map(|(collection, write)| (write, Some(*collection)))
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     let input = ReplacementInput {
         space_key_version: request.space_key_version,
         space_name: request

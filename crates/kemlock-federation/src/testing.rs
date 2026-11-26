@@ -39,6 +39,7 @@ pub fn draft(
         item_key: Some(vec![9; 60]),
         deleted_at: None,
         updated_at: ms_to_time(at_ms).expect("a time"),
+        signature: None,
     }
 }
 

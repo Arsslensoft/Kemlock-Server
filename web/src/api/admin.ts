@@ -507,6 +507,10 @@ export interface Peer extends ServerView {
   pullLogs: boolean;
   /** Whether the peer sends its logs to us, for "It sends, but Pull is off here". */
   theySendLogs: boolean;
+  /** The peer reads writer signatures; every server of a vault must before its writes are signed. */
+  signedWrites: boolean;
+  /** The peer reads the past bundles of a member account. */
+  pastBundles: boolean;
   /** Set while a key mismatch against this peer is unresolved. */
   mismatch: boolean;
 }

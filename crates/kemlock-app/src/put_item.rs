@@ -6,7 +6,7 @@ use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
 use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier, UserRepo};
-use kemlock_domain::{Item, ItemFormat, ItemWrite, Owner, UserId};
+use kemlock_domain::{Item, ItemError, ItemFormat, ItemWrite, Owner, UserId};
 
 /// A sealed write to the account's own vault must name the account's current key version.
 ///
@@ -57,6 +57,11 @@ impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock, U: UserRepo> PutItem<I, V
         let draft = write
             .apply(stored.as_ref(), actor.user, self.config.item_limits, now)
             .map_err(|e| AppError::from_item(id, e))?;
+        // After the owner, the revision and the sizes, so a caller who may not write the owner
+        // learns nothing of whether it takes only signed writes.
+        if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+            return Err(AppError::from_item(id, ItemError::SignatureRequired));
+        }
         let deleted = draft.deleted_at.is_some();
         let item = self.items.put(draft).await?;
 

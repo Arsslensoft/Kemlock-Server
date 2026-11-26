@@ -21,6 +21,7 @@ import { useRecoveryKit } from './useRecoveryKit';
 import { useRotateKeys } from './useRotateKeys';
 import { useRun } from './useRun';
 import { useSecondSteps } from './useSecondSteps';
+import { useSignedWrites } from './useSignedWrites';
 import { SecurityView, type TotpState } from './SecurityView';
 
 const emergencyApi = createEmergencyApi(api);
@@ -55,6 +56,7 @@ export default function Security() {
   const recoveryKit = useRecoveryKit();
   const rotation = useRotateKeys(email, (methods?.length ?? 0) > 0);
   const apiKey = useApiKey();
+  const signedWrites = useSignedWrites(email, (methods?.length ?? 0) > 0);
   const navigate = useNavigate();
   const deleteAccount = useDeleteAccount(email, (methods?.length ?? 0) > 0, () => void navigate({ to: '/sign-in' }));
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
@@ -101,7 +103,8 @@ export default function Security() {
         recoveryKit.props.busy ||
         rotation.props.busy ||
         apiKey.props.busy ||
-        deleteAccount.props.busy
+        deleteAccount.props.busy ||
+        signedWrites.props.busy
       }
       error={
         error ??
@@ -110,12 +113,14 @@ export default function Security() {
         recoveryKit.error ??
         rotation.error ??
         apiKey.error ??
+        signedWrites.error ??
         deleteAccount.error
       }
       secondSteps={secondSteps.props}
       recoveryKit={recoveryKit.props}
       rotateKeys={rotation.props}
       apiKey={apiKey.props}
+      signedWrites={signedWrites.props}
       deleteAccount={deleteAccount.props}
       totpError={totpRun.error}
       onStartTotp={() => {

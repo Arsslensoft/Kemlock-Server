@@ -208,6 +208,8 @@ export function peer(patch: Partial<Peer> = {}): Peer {
     sendLogs: false,
     pullLogs: false,
     theySendLogs: false,
+    signedWrites: true,
+    pastBundles: true,
     mismatch: false,
     ...patch,
   };

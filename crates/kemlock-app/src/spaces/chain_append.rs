@@ -584,8 +584,7 @@ where
             if let Body::Keys { rotate, .. } = &rec.body {
                 for commitment in rotate {
                     if let KeyRef::Collection(id) = commitment.key {
-                        new_versions
-                            .insert(CollectionId(Uuid::from_bytes(id)), commitment.version);
+                        new_versions.insert(CollectionId(Uuid::from_bytes(id)), commitment.version);
                     }
                 }
             }
@@ -636,11 +635,9 @@ where
                     "only a member with edit on a collection re-writes its items",
                 ));
             }
-            let stored = self
-                .items
-                .get(id)
-                .await?
-                .ok_or(AppendError::Invalid("a replacement re-writes existing items only"))?;
+            let stored = self.items.get(id).await?.ok_or(AppendError::Invalid(
+                "a replacement re-writes existing items only",
+            ))?;
             let draft = apply_space_write(write.clone(), Some(&stored), actor, self.limits, now)
                 .map_err(|_| {
                     AppendError::Invalid(

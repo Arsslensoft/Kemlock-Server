@@ -205,6 +205,7 @@ impl<S: BwStore> App<S> {
             ciphertext: body,
             item_key: None,
             updated_at: now,
+            signature: None,
         })
     }
 
@@ -920,6 +921,7 @@ impl<S: BwStore> App<S> {
             ciphertext: None,
             item_key: None,
             updated_at: now,
+            signature: None,
         })
     }
 }

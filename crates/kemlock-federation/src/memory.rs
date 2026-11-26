@@ -3,7 +3,7 @@
 //! an HLC time not before the last one, a log entry) and keeps the replication state beside them.
 
 use crate::change::{ChangeRecord, MAX_LINEAGE};
-use crate::conflict::{Version, merge};
+use crate::conflict::{Rank, Version, merge_ranked};
 use crate::eventsync::{EventSync, LogEntry, PeerEvent};
 use crate::extra::{ErasureOutbox, PendingErasure, VaultErased, VaultErasure};
 use crate::hashtree::{Leaf, leaf_digest};
@@ -58,6 +58,8 @@ struct State {
     cursors: HashMap<(ServerId, Owner), VersionVector>,
     vaults: HashMap<Owner, VaultFederation>,
     home_records: Vec<StoredHomeRecord>,
+    /// The collection of each item of a space, as the newest version applied names it.
+    collections: HashMap<ItemId, kemlock_domain::spaces::CollectionId>,
 }
 
 fn millis(time: OffsetDateTime) -> u64 {
@@ -129,6 +131,7 @@ impl State {
         self.ensure_meta(&item);
         let meta = self.meta.get(&ChangeKey::of(&item.change));
         Exported {
+            collection: self.collections.get(&item.id).copied(),
             lineage: meta.map(|m| m.lineage.clone()).unwrap_or_default(),
             signature: meta.and_then(|m| m.signature.clone()),
             item,
@@ -166,6 +169,10 @@ struct Extras {
     withheld: HashMap<(ServerId, Owner), Withheld>,
     /// The members `member_ids` answers with, by vault.
     members: HashMap<Owner, Vec<UserId>>,
+    /// The members `writer_ids` adds to them: those who left.
+    former_members: HashMap<Owner, Vec<UserId>>,
+    /// What `writer_may_edit` answers, where a test says: absent means yes.
+    edits: HashMap<(Owner, UserId, kemlock_domain::spaces::CollectionId), Option<bool>>,
     /// The account copies applied: the home that signed and the user.
     accounts_applied: Vec<(ServerId, UserId)>,
     /// The accounts that live here, for `member_account`.
@@ -186,6 +193,8 @@ struct Extras {
     attachments: Vec<kemlock_domain::Attachment>,
     /// The offers received from homes, by vault.
     offers: BTreeMap<Owner, crate::extra::StoredOffer>,
+    /// The owners that accept signed `kem1` writes only.
+    signed_only: HashSet<Owner>,
 }
 
 impl MemoryStore {
@@ -207,12 +216,24 @@ impl MemoryStore {
                 cursors: HashMap::new(),
                 vaults: HashMap::new(),
                 home_records: Vec::new(),
+                collections: HashMap::new(),
             })),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes `owner` take signed writes only, or not, as the admin's route (or the home's record
+    /// of it) does.
+    pub fn set_signed_only(&self, owner: Owner, required: bool) {
+        let mut extras = self.extras();
+        if required {
+            extras.signed_only.insert(owner);
+        } else {
+            extras.signed_only.remove(&owner);
+        }
     }
 
     /// Writes an item as this server's own change, as `ItemStore::put` does.
@@ -244,6 +265,7 @@ impl MemoryStore {
             item: item.id,
             hlc,
         });
+        drop(st);
         Ok(item)
     }
 
@@ -318,6 +340,35 @@ impl MemoryStore {
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
     pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
         self.extras().members.insert(vault, members);
+    }
+
+    /// Sets what `writer_may_edit` answers for `user` and `collection` of `vault`.
+    pub fn set_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+        answer: Option<bool>,
+    ) {
+        self.extras()
+            .edits
+            .insert((vault, user, collection), answer);
+    }
+
+    /// Puts a version of an item of a space into `collection`, as a write that names it does.
+    pub fn put_in_collection(
+        &self,
+        draft: ItemDraft,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Item, StoreError> {
+        let item = self.put(draft)?;
+        self.lock().collections.insert(item.id, collection);
+        Ok(item)
+    }
+
+    /// Sets who `writer_ids` adds to the members of `vault`: accounts that were members.
+    pub fn set_former_members(&self, vault: Owner, members: Vec<UserId>) {
+        self.extras().former_members.insert(vault, members);
     }
 
     /// An account that lives on this store, as `member_account` answers for it.
@@ -582,10 +633,11 @@ impl ReplicaStore for MemoryStore {
         Ok(())
     }
 
-    async fn apply(
+    async fn apply_ranked(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
+        rank: Rank,
     ) -> Result<ApplyOutcome, StoreError> {
         let incoming_item = record
             .to_item()
@@ -605,6 +657,13 @@ impl ReplicaStore for MemoryStore {
         }
 
         let held_items = st.versions_of(record.item);
+        // An item keeps the format and the kind it was made with (see the SQL store).
+        if held_items
+            .iter()
+            .any(|held| held.format != incoming_item.format || held.kind != incoming_item.kind)
+        {
+            return Ok(ApplyOutcome::Refused);
+        }
         for item in &held_items {
             st.ensure_meta(item);
         }
@@ -618,7 +677,10 @@ impl ReplicaStore for MemoryStore {
             })
             .collect();
         let held_head = st.heads.get(&record.item).map(|h| ChangeKey::of(&h.change));
-        let m = merge(&held, held_head, &Version::of(record));
+        let m = merge_ranked(&held, held_head, &Version::of(record), rank);
+        if m.regressed {
+            return Ok(ApplyOutcome::Refused);
+        }
         if !m.kept {
             return Ok(ApplyOutcome::Duplicate);
         }
@@ -651,11 +713,31 @@ impl ReplicaStore for MemoryStore {
             },
         );
         st.last_hlc = st.last_hlc.max(record.change.hlc);
-        Ok(if m.head == key {
+        if m.head == key
+            && let Some(collection) = record.collection
+        {
+            st.collections.insert(record.item, collection);
+        }
+        let outcome = if m.head == key {
             ApplyOutcome::Applied
         } else {
             ApplyOutcome::Sibling
-        })
+        };
+        drop(st);
+        Ok(outcome)
+    }
+
+    async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
+        Ok(self.lock().log.iter().any(|e| e.key == key))
+    }
+
+    async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
+        self.set_signed_only(owner, required);
+        Ok(())
+    }
+
+    async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().signed_only.contains(&owner))
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {
@@ -877,11 +959,68 @@ impl crate::extra::MemberStore for MemoryStore {
             .unwrap_or_default())
     }
 
+    async fn writer_may_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .extras()
+            .edits
+            .get(&(vault, user, collection))
+            .copied()
+            .unwrap_or(Some(true)))
+    }
+
+    async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        let extras = self.extras();
+        let mut ids = extras.members.get(&vault).cloned().unwrap_or_default();
+        ids.extend(
+            extras
+                .former_members
+                .get(&vault)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        Ok(ids)
+    }
+
     async fn member_account(
         &self,
         user: UserId,
     ) -> Result<Option<crate::members::MemberAccount>, StoreError> {
         Ok(self.extras().accounts_held.get(&user).cloned())
+    }
+
+    async fn writer_bundle(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).and_then(|a| {
+            if a.key_version == key_version {
+                Some(a.public_bundle.clone())
+            } else {
+                a.past_bundles
+                    .iter()
+                    .find(|b| b.key_version == key_version)
+                    .map(|b| b.public_bundle.clone())
+            }
+        }))
+    }
+
+    async fn writer_bundle_retired_at(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).and_then(|a| {
+            a.past_bundles
+                .iter()
+                .find(|b| b.key_version == key_version)
+                .map(|b| b.superseded_at)
+        }))
     }
 
     async fn apply_member_account(

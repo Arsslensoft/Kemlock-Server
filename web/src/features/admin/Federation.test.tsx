@@ -62,6 +62,17 @@ describe('FederationView', () => {
     expect(onSetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Home server' }), false, true);
   });
 
+  it('tells the admin which servers must be upgraded before writes are signed', () => {
+    view({ ...OVERVIEW, peers: [peer({ signedWrites: false })] });
+    expect(screen.getByText('Upgrade needed')).toBeInTheDocument();
+    expect(screen.getByText(/doesn't read signed writes yet/)).toBeInTheDocument();
+  });
+
+  it('says nothing of upgrades when every peer reads signed writes and past keys', () => {
+    view({ ...OVERVIEW, peers: [peer()] });
+    expect(screen.queryByText('Upgrade needed')).toBeNull();
+  });
+
   it('says when a peer sends its logs and this server does not pull them', () => {
     view({ ...OVERVIEW, peers: [peer({ theySendLogs: true, pullLogs: false })] });
     expect(screen.getByText('It sends, but Pull is off here')).toBeInTheDocument();

@@ -465,7 +465,11 @@ fn advertising_identity(
         signing,
         kems,
         params,
-        &[kemlock_federation::sendsync::SENDS_CAPABILITY],
+        &[
+            kemlock_federation::sendsync::SENDS_CAPABILITY,
+            kemlock_federation::writes::SIGNED_WRITES_CAPABILITY,
+            kemlock_federation::writes::PAST_BUNDLES_CAPABILITY,
+        ],
     )
 }
 

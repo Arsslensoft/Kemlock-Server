@@ -11,6 +11,7 @@
 
 use crate::blobs::BlobFiles;
 use crate::change::{self, ChangeRecord};
+use crate::conflict::Rank;
 use crate::descriptor::SignedDescriptor;
 use crate::error::{FedError, Result};
 use crate::eventsync::EventSync;
@@ -29,11 +30,13 @@ use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
     VaultRepo,
 };
+use crate::quota::{Admission, Meter, Quota};
 use crate::relay::OriginKeys;
 use crate::sendsync::SendSync;
 use crate::signed::Signed;
 use crate::spaces::SpaceMirror;
 use crate::tagsync::TagSync;
+use crate::writes;
 use kemlock_app::ports::StoreError;
 use kemlock_crypto::sig1;
 use kemlock_domain::{ItemId, Owner, ServerId, VersionVector};
@@ -107,8 +110,14 @@ pub struct Counts {
     pub siblings: usize,
     /// Records already held or replaced.
     pub duplicates: usize,
-    /// Records for an item id another owner holds.
+    /// Records left out: an item id another owner holds, a change from the future, a writer
+    /// signature that is missing or doesn't verify, an origin over its quota, and a rollback.
     pub refused: usize,
+    /// Of the refused, the ones a later comparison may apply: a change from the future or past an
+    /// origin's quota, a writer whose keys or space membership haven't arrived. The rest (a bad
+    /// signature, an unsigned change for a signed-only owner, a rollback) will be refused again, so
+    /// a pull that left only those has nothing to compare.
+    pub retry: usize,
 }
 
 impl Counts {
@@ -117,6 +126,7 @@ impl Counts {
         self.siblings += other.siblings;
         self.duplicates += other.duplicates;
         self.refused += other.refused;
+        self.retry += other.retry;
     }
 }
 
@@ -164,6 +174,8 @@ pub struct Replica<S> {
     identity: RwLock<Arc<LocalIdentity>>,
     pub(crate) padding: Padding,
     pub(crate) files: Option<Arc<dyn BlobFiles>>,
+    quota: Quota,
+    meter: Meter,
 }
 
 impl<S> std::fmt::Debug for Replica<S> {
@@ -207,12 +219,20 @@ impl<S: FedStore> Replica<S> {
             identity: RwLock::new(identity),
             padding: Padding::Step4096,
             files: None,
+            quota: Quota::default(),
+            meter: Meter::default(),
         }
     }
 
     /// Gives the engine this server's file storage, so it serves and fetches attachments.
     pub fn with_blob_files(mut self, files: Arc<dyn BlobFiles>) -> Replica<S> {
         self.files = Some(files);
+        self
+    }
+
+    /// Sets what one origin may write to this server (docs/federation.md, "Per-origin quotas").
+    pub fn with_quota(mut self, quota: Quota) -> Replica<S> {
+        self.quota = quota;
         self
     }
 
@@ -263,6 +283,21 @@ impl<S: FedStore> Replica<S> {
 
     pub fn server_id(&self) -> ServerId {
         self.identity().server
+    }
+
+    /// Whether every paired server of `vault`'s set, this one aside, says in its descriptor that it
+    /// understands `capability`. A vault nobody else holds has no one to disagree.
+    pub async fn vault_advertises(&self, vault: Owner, capability: &str) -> Result<bool> {
+        let Some(settings) = self.store.get_vault(vault).await? else {
+            return Ok(true);
+        };
+        let me = self.server_id();
+        Ok(self.store.list_peers().await?.iter().all(|peer| {
+            peer.id == me
+                || peer.state != PeerState::Paired
+                || !settings.holds(peer.id)
+                || peer.advertises(capability)
+        }))
     }
 
     /// The identity keys of the peers we are paired with: who may open a session.
@@ -604,7 +639,8 @@ impl<S: FedStore> Replica<S> {
     /// The signed envelope of a stored version, signing it first if this server accepted it and
     /// hasn't sent it before.
     async fn signed_record(&self, entry: &Exported) -> Result<Vec<u8>> {
-        let record = ChangeRecord::from_item(&entry.item, entry.lineage.clone());
+        let record = ChangeRecord::from_item(&entry.item, entry.lineage.clone())
+            .in_collection(entry.collection);
         let signature = match &entry.signature {
             Some(signature) => signature.clone(),
             None => {
@@ -633,6 +669,7 @@ impl<S: FedStore> Replica<S> {
     /// or whose signature fails, fails the whole batch: nothing past it is applied.
     pub(crate) async fn apply_envelopes(
         &self,
+        from: ServerId,
         vault: Owner,
         envelopes: &[Vec<u8>],
     ) -> Result<Counts> {
@@ -645,6 +682,17 @@ impl<S: FedStore> Replica<S> {
             .ok_or(FedError::UnknownVault)?;
         let me = self.server_id();
         let now_ms = crate::session::unix_now().saturating_mul(1000);
+        // The head is chosen by revision first only while every server of the vault says it ranks so
+        // (`x-kemlock-signed-writes1`): servers must agree on the head, and one that ranks by clock
+        // alone would pick another.
+        let rank = if self
+            .vault_advertises(vault, writes::SIGNED_WRITES_CAPABILITY)
+            .await?
+        {
+            Rank::Revision
+        } else {
+            Rank::Clock
+        };
         let mut counts = Counts::default();
         for envelope in envelopes {
             let record = change::open(envelope, &keys)?;
@@ -657,6 +705,7 @@ impl<S: FedStore> Replica<S> {
             if change::check_not_future(&record, now_ms).is_err() {
                 tracing::warn!(origin = %record.change.origin, "a change with a time far ahead of this server's clock was refused");
                 counts.refused += 1;
+                counts.retry += 1;
                 continue;
             }
             // A relayed change is accepted from an origin we are paired with or one in the vault's
@@ -667,11 +716,50 @@ impl<S: FedStore> Replica<S> {
                     "a change from an origin outside the vault's set",
                 ));
             }
+            // A change is applied once: one already held costs nothing, so a peer that sends the
+            // same records again (a comparison fetches whatever differs) can't use up the quota of
+            // the origin it relays, which would keep that origin's new changes out.
+            if self.store.holds_change(record.key()).await? {
+                counts.duplicates += 1;
+                continue;
+            }
+            // What one origin may write through the server that sent it, before the expensive
+            // checks: a flood is cut off here, and what one peer relays doesn't spend what another
+            // does.
+            match self
+                .meter
+                .admit(&self.quota, from, origin, envelope.len(), now_ms / 1000)
+            {
+                Admission::Admitted => {}
+                over => {
+                    tracing::warn!(%origin, ?over, "a change past the origin's quota was refused");
+                    counts.refused += 1;
+                    counts.retry += 1;
+                    continue;
+                }
+            }
+            // The writing account's signature: the origin's signature says which server accepted
+            // the write, this says who made it.
+            match writes::judge(&self.store, &record).await? {
+                writes::Verdict::Accept => {}
+                writes::Verdict::Refuse(why) => {
+                    tracing::warn!(%origin, why, "a change was refused");
+                    counts.refused += 1;
+                    continue;
+                }
+                writes::Verdict::Defer(why) => {
+                    tracing::warn!(%origin, why, "a change was left out for now");
+                    counts.refused += 1;
+                    counts.retry += 1;
+                    continue;
+                }
+            }
             let signature = Signed::decode(envelope)?.signature;
-            match self.store.apply(&record, &signature).await {
+            match self.store.apply_ranked(&record, &signature, rank).await {
                 Ok(ApplyOutcome::Applied) => counts.applied += 1,
                 Ok(ApplyOutcome::Sibling) => counts.siblings += 1,
                 Ok(ApplyOutcome::Duplicate) => counts.duplicates += 1,
+                Ok(ApplyOutcome::Refused) => counts.refused += 1,
                 Err(StoreError::Duplicate) => counts.refused += 1,
                 Err(e) => return Err(e.into()),
             }
@@ -702,7 +790,7 @@ impl<S: FedStore> Replica<S> {
                 })
                 .await?;
             let (records, next, more) = expect_changes(response, vault)?;
-            let counts = self.apply_envelopes(vault, &records).await?;
+            let counts = self.apply_envelopes(peer, vault, &records).await?;
             report.counts.add(&counts);
             let mut cursor = since.clone();
             cursor.merge(&next);
@@ -785,7 +873,7 @@ impl<S: FedStore> Replica<S> {
                 })
                 .await?;
             let (records, _, _) = expect_changes(response, vault)?;
-            fetched.add(&self.apply_envelopes(vault, &records).await?);
+            fetched.add(&self.apply_envelopes(peer, vault, &records).await?);
         }
         Ok(ReconcileReport {
             in_step: false,

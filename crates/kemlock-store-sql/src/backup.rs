@@ -45,15 +45,15 @@ use crate::tables::space_recovery;
 use crate::tables::space_tables;
 use crate::tables::sso;
 use crate::tables::{
-    admin, attachments, auth_requests, bw_account_extras, bw_accounts, bw_attachments, bw_devices,
-    bw_docs, bw_tries, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
-    device_key_copies, devices, duplicate_dismissals, email_changes, email_confirmations,
-    emergency_access, events, federation, federation_insight, federation_keys, federation_logs,
-    federation_wiring, item_tags, items, passkeys, pending_erasures, policies, push_tokens,
-    recovery_kits, refresh_tokens, revoked_families, rotation_previous_keys, rotation_staged_items,
-    second_step_attempts, sends, server_meta, settings, sign_in_log, signed_manifests,
-    sync_horizon, two_factor, two_factor_recovery, two_step_versions, users, vw_import_ids,
-    vw_rows, webauthn_challenges,
+    account_bundles, admin, attachments, auth_requests, bw_account_extras, bw_accounts,
+    bw_attachments, bw_devices, bw_docs, bw_tries, bw_user_key_ids, changes, custom_fields,
+    dedup_owners, device_api_use, device_key_copies, devices, duplicate_dismissals, email_changes,
+    email_confirmations, emergency_access, events, federation, federation_insight, federation_keys,
+    federation_logs, federation_wiring, item_tags, items, passkeys, pending_erasures, policies,
+    push_tokens, recovery_kits, refresh_tokens, revoked_families, rotation_previous_keys,
+    rotation_staged_items, second_step_attempts, sends, server_meta, settings, sign_in_log,
+    signed_manifests, signed_writes, sync_horizon, two_factor, two_factor_recovery,
+    two_step_versions, users, vw_import_ids, vw_rows, webauthn_challenges,
 };
 use kemlock_app::b64url;
 use kemlock_app::ports::StoreError;
@@ -229,6 +229,8 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         vw_import_ids::Entity,
         sends::Entity,
         signed_manifests::Entity,
+        signed_writes::Entity,
+        account_bundles::Entity,
         space_tables::spaces::Entity,
         space_tables::members::Entity,
         space_tables::groups::Entity,

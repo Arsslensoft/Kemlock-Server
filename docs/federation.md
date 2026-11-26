@@ -320,6 +320,8 @@ chain" below): a vault's servers need only form a chain of pairings.
 | 12 | deleted | 0 or 1 |
 | 13 | written at | Unix milliseconds; a tombstone's deletion time too |
 | 14 | lineage | up to 64 change keys, packed, nearest ancestor first |
+| 15 | writer signature | 3393 bytes; absent on a `bw` record and on a `kem1` record written unsigned |
+| 16 | collection | 16 bytes, the collection of an item of a space, which the writer's signature covers; absent for an item of a vault, and on a record of a space written before collections were signed (a signed record of a space must have it) |
 
 A change key is `origin (16) ‖ u64be(seq)` (24 bytes). A record is refused when it has a zero
 sequence or revision, a tombstone with ciphertext, a live item without it, or a lineage that names
@@ -341,6 +343,74 @@ that peers already hold, so a peer's change can't be re-stamped, and re-stamping
 invalidate a signature peers may have taken. They stay as they are; such an item keeps winning the
 head against older versions until a write that names it in its lineage replaces it.
 
+### Writer signatures
+
+A `kem1` record also carries the **writing account's** signature of the write
+(`docs/crypto.md`, "Signed item writes"), in field 15: `writer (16) ‖ u32be(key version) ‖ sig1
+signature (3373)`, 3393 bytes, absent on a `bw` record and on a `kem1` record written without one,
+and the collection of an item of a space in field 16.
+The origin's signature covers the field, so a relay can't strip or swap it. A receiver of a `kem1`
+record checks, before it applies it:
+
+1. **With a signature.** The writer is allowed for the owner: the vault's own account for a
+   `user:` owner, a member of the space or one who was taken out of it (from the receiver's
+   replicated member list, which keeps the row of a revoked member) for a `space:` owner: a write
+   is checked by who signed it, so one made before the account left is still good. The receiver holds the writer's bundle at the signature's key version (the
+   replicated member account), and the signature verifies over the statement rebuilt from the
+   record's owner, item id, kind, revision, deleted flag, key version, ciphertext and item key, and
+   for a `space:` owner the collection (field 16), which the writer must be allowed to edit: a
+   confirmed member with edit on it, or one taken out since, as the receiver's copy of the space
+   says; a collection it doesn't know yet is left out for now. A signed record of a space without
+   a collection is refused, so a replica that moves a signed item to another collection, or strips
+   it, breaks the origin's signature or the writer's.
+   A record that fails is **refused**: counted, left out, the rest of the page applied. A writer who
+   isn't in the member list yet, or a bundle the receiver doesn't hold yet, is left out **for now**
+   (counted as refused, and as one to retry): the later comparison fetches the record again once
+   the home's records have arrived, and a pull that left such a record compares at once instead of
+   waiting for the next round. A record refused for good (the signature doesn't verify, an unsigned
+   change for a signed-only owner) is not retried at once, or each visit would fetch it again.
+2. **Without one.** If the receiver holds the owner as **signed-only** (the owner asked for it at that server) the record is refused. A signed record does not set
+   the flag.
+
+A `bw` record is checked by neither rule.
+
+**The flag.** The owner's request for signed writes only (`docs/crypto.md`, "The signed-only flag")
+reaches the replicas as a home record of kind `signed-writes`, deterministic CBOR `{0: 1, 1: owner (17
+bytes), 2: 1 or 0}`, made once when the flag is set and again when it is cleared (an owner that never
+asked has none). A replica applies it under the epoch fence like every home record, and only for the
+vault whose home sent it. A server that doesn't know the kind keeps it for relaying and ignores it, so
+it is safe to publish before every server is upgraded, and such a server just doesn't hold the flag.
+
+**Mixed versions.** A server that doesn't know field 15 refuses the record and, with it, the batch it came
+in, so it stops receiving the changes of a vault whose writes are signed. A vault's writes may be signed
+only after **every server of its set is upgraded**. A server says in its descriptor that it reads
+writer signatures and ranks heads by revision (`x-kemlock-signed-writes1`) and that it reads the past
+bundles of a member account (`x-kemlock-past-bundles1`), and the admin console marks each paired
+server that doesn't ("Upgrade needed"). The home leaves the past bundles out of a member account record
+while a server of the vault's set doesn't say so, and makes the record again, with them, when every
+server does: an older server would refuse the whole record for the unknown key. Nothing else is held
+back for an old server; it is the admin's part not to turn on signing (`PUT /kem/v1/owners/{owner}/signed-writes`,
+or a client that signs) before the set is upgraded.
+
+### Rollback
+
+A version replaces the **head** only at a **higher revision**. A record whose lineage names the
+receiver's head, and whose revision is not above the head's, is refused, not merged: a replica that
+re-signs an old ciphertext as a new change naming the current head in its lineage can't roll the
+item back, with or without a writer signature. A conflict between two servers' concurrent edits is
+unaffected (neither lineage names the other), and so is a device's merge of the head with a sibling
+that is further along: only the head's revision counts, because the server makes the merge the
+head's plus one.
+
+### Per-origin quotas
+
+A receiver counts, per origin server and per rolling hour, the records and the bytes of records it
+takes, and bounds the size of one. The defaults are 50,000 records and 1 GiB an hour per origin and
+4 MiB for one record; they are settings of the engine (`Replica::with_quota`). A record past a
+bound is refused like any other refusal, so it is fetched again, when the hour has passed or the
+admin raised the bound, by the periodic comparison. Honest catch-up of a large vault is the case
+the defaults leave room for; the bound is what keeps one malicious replica from writing without end.
+
 ### Lineage, versions and siblings
 
 The **lineage** of a version is the versions it replaced. The origin works it out once, for a
@@ -349,7 +419,12 @@ holds as siblings at that moment, and signs it with the record. A version that i
 lineage is **replaced**.
 
 Servers can't merge items, so they keep every version that nothing replaced. Of those, the **head**
-is the one with the latest HLC time, then the higher origin id, then the higher sequence number. It
+is the one with the highest revision, then the latest HLC time, then the higher origin id, then the
+higher sequence number. (The revision comes first so that a replay of an old revision with a late
+clock that leaves the head out of its lineage stays a sibling and never takes the head; two
+concurrent edits of one revision are still ordered by clock. A server that doesn't say
+`x-kemlock-signed-writes1` ranks by clock alone and may pick another head when revisions differ, so
+the ranking is part of what every server of a set must be upgraded for.) It
 is what devices sync and what Bitwarden apps see. The others are **siblings**, kept until a write
 supersedes them; the next Kemlock app to sync merges them with its field-level merge and writes a
 version whose lineage names every one. The rule depends only on the set of versions, so servers
@@ -502,7 +577,7 @@ words. That is 96 bits.
   seconds from the receiver's clock is refused, and the responder keeps the nonces of the last
   5 minutes (only authenticated peers add to the cache, and it is capped).
 - **Frames.** Per-direction counters and the header in the AAD, as above.
-- **Changes.** Each change id is applied once; origin signatures cover the record and its lineage.
+- **Changes.** Each change id is applied once; origin signatures cover the record and its lineage; a `kem1` record carries its writing account's signature too, a version never replaces one of a higher revision, and an origin is held to a rate and a size ("Writer signatures", "Rollback", "Per-origin quotas").
 - **Unknown servers.** Only a peer paired for the vault gets past the first message; everything
   before it is cheap (length checks, a signature) and the KEM work comes after.
 - **A key that doesn't match.** Nothing is accepted silently, and there is no trust on first use
@@ -529,7 +604,7 @@ checked by CI to regenerate byte for byte. Each file is `{"format", "version", "
 | `federation-handshake.json` | Hello, reply, transcript hash, the three shared secrets, the master secret, per-direction keys and the first frames, for both implemented suites; hellos that must be refused |
 | `federation-frames.json` | Frames of both suites with and without padding, the rekey, the key schedule, and streams that must fail (replayed, dropped, reordered, flipped last flag, truncated, after the last) |
 | `federation-pairing.json` | CPace with its two random draws, the ISK, the derived keys, the binding and sealed descriptors; the fingerprint; proquints; code normalisation |
-| `federation-change.json` | Signed change records (live, tombstone, Bitwarden format, with and without lineage), a promotion and a home record, the epoch verdicts |
+| `federation-change.json` | Signed change records (live, tombstone, Bitwarden format, with and without lineage, with a writer signature), a promotion and a home record, the epoch verdicts |
 | `federation-hashtree.json` | Leaf digests, bucket digests and the root |
 
 A verifier rebuilds every value from the inputs a file lists: derives public keys from seeds,
@@ -607,7 +682,11 @@ vault (for a personal vault, its account; for a space, its confirmed members) wh
 changes. The payload is deterministic CBOR (`kemlock-federation`, `members.rs`): the user id, email,
 name, mode, KDF settings, the root key wrapped by the password, the public-key bundle and its
 signature, the private keys sealed under the user key, the key version, the creation and update
-times and the device registrations (id, name, kind, the thumbprint of the DPoP key, creation time).
+times, the device registrations (id, name, kind, the thumbprint of the DPoP key, creation time)
+and the bundles the account had before its current key version, each with the time it replaced
+it, so a write it signed under one is checked against it, and refused when it was made after that
+time (`docs/crypto.md`, "Signed item writes", "Key versions"); each is held to what
+the current bundle is held to.
 There is no OPAQUE record, security stamp, role, two-step method or token in it, so no password
 secret is shared, and a copy signs in only with a registered device key
 (`POST /kem/v1/auth/device-key/challenge` and `/verify`). A replica applies a record only when it is

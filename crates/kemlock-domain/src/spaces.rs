@@ -1884,6 +1884,7 @@ mod tests {
                 ciphertext: vec![7; 64],
                 item_key: vec![1; ITEM_KEY_LEN],
             }),
+            signature: None,
         }
     }
 
@@ -1904,6 +1905,7 @@ mod tests {
                 seq: 1,
                 hlc: Hlc::default(),
             },
+            signature: None,
         }
     }
 

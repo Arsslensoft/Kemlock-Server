@@ -46,6 +46,7 @@ export interface WasmVault {
     keyVersion?: number,
   ): string;
   ownFingerprint(): string;
+  ownKeyVersion(): number;
   fingerprint(publicBundle: string): string;
   verifyBundle(publicBundle: string, bundleSignature: string): boolean;
   totpEnrol(secret: string | undefined, issuer: string, account: string): string;
@@ -180,6 +181,12 @@ export interface WasmVault {
   manifestVerifyOwn(manifest: string, signature: string): boolean;
   /** Whether the signature is the bundle's sig1 key over a space's manifest. */
   manifestVerify(signerBundle: string, manifest: string, signature: string): boolean;
+  /** A write's fields as JSON in; `{writer, writerKeyVersion, writeSignature}` as JSON out. */
+  itemWriteSign(fields: string): string;
+  /** Whether the signature is the unlocked account's own over the write (fields as JSON). */
+  itemWriteVerifyOwn(fields: string, signature: string): boolean;
+  /** Whether the signature is the bundle's sig1 key over the write (fields as JSON). */
+  itemWriteVerify(signerBundle: string, fields: string, signature: string): boolean;
   // The space chain: JSON in and out (see crates/kemlock-wasm/src/chain.rs).
   verifySpaceChain(spaceId: string, records: string, anchor?: string): string;
   newChainedSpace(
@@ -205,7 +212,7 @@ export interface WasmVault {
   ): void;
   /** `{keyVersion, publicBundle, bundleSignature, sealedPrivateKeys, sealedPreviousPrivateKeys, fingerprint}`. */
   rotationStart(): string;
-  /** `{ciphertext, itemKey, revision, keyVersion}`: the item under a fresh key, at revision + 1. */
+  /** `{ciphertext, itemKey, revision, keyVersion, writer, writerKeyVersion, writeSignature}`: the item under a fresh key, at revision + 1, signed by the new keys. */
   rotationResealItem(
     id: string,
     owner: string,

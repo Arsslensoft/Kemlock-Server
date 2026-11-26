@@ -81,6 +81,7 @@ pub mod ed25519;
 #[cfg(feature = "fips")]
 pub mod fips;
 pub mod hash;
+pub mod item_write;
 pub mod kem1;
 pub mod key_box;
 pub mod keys;

@@ -7,7 +7,15 @@
 // own contract (src/crypto/types.ts) speaks base64url strings and numeric handles; `fromWorker`
 // below adapts it, and under Vitest `@/crypto-port` is aliased to the fake in src/test.
 import { crypto as worker } from '@/crypto';
-import type { CryptoApi, Handle, KitPieceRead, KitProblem, OpaqueStateHandle } from '@/crypto/types';
+import type {
+  CryptoApi,
+  Handle,
+  ItemWriteFields,
+  ItemWriteSignature,
+  KitPieceRead,
+  KitProblem,
+  OpaqueStateHandle,
+} from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 
 /** Argon2id settings from /auth/prelogin, with the salt decoded. */
@@ -287,6 +295,8 @@ export interface CryptoPort {
   ): Promise<void>;
   /** The open account's own fingerprint: 12 groups of 5 digits. Needs the sealed private keys at unlock. */
   ownFingerprint(): Promise<string>;
+  /** The key version the account is unlocked at. */
+  ownKeyVersion(): Promise<number>;
   /** Drops a handle that will not be used (a one-time key whose request was refused). */
   release(handle: Uint8Array): Promise<void>;
   /** Seals an item of a space's collection under the collection's key. */
@@ -304,6 +314,19 @@ export interface CryptoPort {
     signerBundle: Uint8Array,
     manifest: Uint8Array,
     signature: Uint8Array,
+  ): Promise<boolean>;
+  /**
+   * Signs a write as the unlocked account (docs/crypto.md, "Signed item writes"): the three members
+   * the server takes with the item. Only a write for the account's own vault or a space is signed.
+   */
+  itemWriteSign(fields: ItemWriteFields): Promise<ItemWriteSignature>;
+  /** Whether the signature is the unlocked account's own, by its own key, over a write naming it as writer. */
+  itemWriteVerifyOwn(fields: ItemWriteFields, signature: string): Promise<boolean>;
+  /** Whether the signature is the signer's (the bundle's sig1 key) over the write. */
+  itemWriteVerify(
+    signerBundle: Uint8Array,
+    fields: ItemWriteFields,
+    signature: string,
   ): Promise<boolean>;
 
   // Rotating the root key (docs/crypto.md, "Rotating the root key"): the worker makes a new root
@@ -388,6 +411,10 @@ export interface ResealedItem {
   itemKey: Uint8Array;
   revision: number;
   keyVersion: number;
+  /** The account's signature of the write this makes, by the new keys: the three members the server takes. */
+  writer: string;
+  writerKeyVersion: number;
+  writeSignature: string;
 }
 
 /** The app's crypto port over a worker client. */
@@ -567,6 +594,7 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         ...(options?.publicBundle ? { publicBundle: encodeB64(options.publicBundle) } : {}),
       }),
     ownFingerprint: () => api.ownFingerprint(),
+    ownKeyVersion: () => api.ownKeyVersion(),
     async sealSpaceItem(input) {
       const sealed = await api.sealSpaceItem(input);
       return {
@@ -588,6 +616,10 @@ export function fromWorker(api: CryptoApi): CryptoPort {
       api.manifestVerifyOwn(encodeB64(manifest), encodeB64(signature)),
     manifestVerify: (signerBundle, manifest, signature) =>
       api.manifestVerify(encodeB64(signerBundle), encodeB64(manifest), encodeB64(signature)),
+    itemWriteSign: (fields) => api.itemWriteSign(fields),
+    itemWriteVerifyOwn: (fields, signature) => api.itemWriteVerifyOwn(fields, signature),
+    itemWriteVerify: (signerBundle, fields, signature) =>
+      api.itemWriteVerify(encodeB64(signerBundle), fields, signature),
     async rotationStart() {
       const started = await api.rotationStart();
       return {
@@ -610,6 +642,9 @@ export function fromWorker(api: CryptoApi): CryptoPort {
         itemKey: decodeB64(moved.itemKey),
         revision: moved.revision,
         keyVersion: moved.keyVersion,
+        writer: moved.writer,
+        writerKeyVersion: moved.writerKeyVersion,
+        writeSignature: moved.writeSignature,
       };
     },
     async rotationResealSend({ id, kind, sealedKey, meta }) {

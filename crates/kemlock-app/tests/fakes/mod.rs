@@ -62,6 +62,8 @@ struct StoreInner {
     /// The newest TOTP step accepted per user.
     totp_steps: HashMap<UserId, u64>,
     items: HashMap<ItemId, Item>,
+    /// The owners that accept signed writes only.
+    signed_owners: HashSet<Owner>,
     events: Vec<Event>,
     /// The address each event was written with, in step with `events`.
     event_ips: Vec<Option<IpAddr>>,
@@ -694,6 +696,24 @@ impl ItemStore for FakeStore {
             }
         }
         Ok(horizon)
+    }
+
+    async fn signed_writes_required(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.lock().signed_owners.contains(&owner))
+    }
+
+    async fn require_signed_writes(
+        &self,
+        owner: Owner,
+        _at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.lock().signed_owners.insert(owner);
+        Ok(())
+    }
+
+    async fn clear_signed_writes(&self, owner: Owner) -> Result<(), StoreError> {
+        self.lock().signed_owners.remove(&owner);
+        Ok(())
     }
 
     async fn purge_tombstones(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
@@ -1472,6 +1492,7 @@ pub(crate) fn write(
             ciphertext: filler(64, 0xaa),
             item_key: filler(kemlock_domain::item::ITEM_KEY_LEN, 0xbb),
         }),
+        signature: None,
     }
 }
 

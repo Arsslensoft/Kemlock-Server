@@ -3,7 +3,9 @@
 // under the id, revision, kind and owner it was sealed with, like the real AAD), so the app's
 // logic is tested without WebAssembly.
 import type { CryptoPort } from '@/crypto-port';
-import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import type { ItemWriteFields } from '@/crypto/types';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 const calls: string[] = [];
 
@@ -14,6 +16,10 @@ let locked = true;
 export const isFakeLocked = () => locked;
 /** The account the fake vault was opened for, for `ownFingerprint`. */
 let openedFor = '';
+/** The key version a test raises to play a key replacement; a rotation raises it too. */
+export const setFakeKeyVersion = (version: number) => {
+  fakeKeyVersion = version;
+};
 
 /** The tabs that have a reload key, as IndexedDB would keep them: a test deletes one to age it out. */
 export const fakeTabKeys = new Set<string>();
@@ -159,13 +165,19 @@ export const crypto: CryptoPort = {
   },
   async fingerprint(publicBundle) {
     calls.push('fingerprint');
-    const text = fromUtf8(publicBundle);
+    const parsed = parseBundle(publicBundle);
+    const text = parsed
+      ? `real:${signerOf(publicBundle) ?? ''}:${parsed.keyVersion}`
+      : fromUtf8(publicBundle);
     const sum = [...text].reduce((a, c) => (a * 31 + (c.codePointAt(0) ?? 0)) >>> 0, 11);
     return Array.from({ length: 12 }, (_, i) => String((sum + i * 7919) % 100000).padStart(5, '0')).join(' ');
   },
   async verifyBundle(publicBundle, bundleSignature) {
     calls.push('verifyBundle');
-    return fromUtf8(bundleSignature) === 'sig' && fromUtf8(publicBundle).startsWith('bundle:');
+    return (
+      fromUtf8(bundleSignature) === 'sig' &&
+      (parseBundle(publicBundle) !== null || fromUtf8(publicBundle).startsWith('bundle:'))
+    );
   },
   async lock() {
     calls.push('lock');
@@ -287,6 +299,9 @@ export const crypto: CryptoPort = {
       itemKey: utf8(`item-key:v${fakePendingVersion}`),
       revision: revision + 1,
       keyVersion: fakePendingVersion,
+      writer: openedFor,
+      writerKeyVersion: fakePendingVersion,
+      writeSignature: encodeB64(utf8(`rotation-write:${openedFor}:v${fakePendingVersion}:${id}:${revision + 1}`)),
     };
   },
   async rotationResealSend({ id, kind, sealedKey, meta }) {
@@ -407,6 +422,11 @@ export const crypto: CryptoPort = {
     locked = false;
     openedFor = accountId;
   },
+  async ownKeyVersion() {
+    calls.push('ownKeyVersion');
+    if (locked) throw new Error('the vault is locked');
+    return fakeKeyVersion;
+  },
   async ownFingerprint() {
     calls.push('ownFingerprint');
     if (locked) throw new Error('the vault is locked');
@@ -459,7 +479,77 @@ export const crypto: CryptoPort = {
     const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
     return signer !== undefined && fromUtf8(signature) === `msig:${signer}:${encodeB64(manifest)}`;
   },
+  // Signed item writes. A signature names its writer, the key version and every field of the
+  // write it covers, so a test sees that it checks only for that writer and only for those fields.
+  async itemWriteSign(fields) {
+    calls.push('itemWriteSign');
+    if (locked) throw new Error('the vault is locked');
+    if (fields.owner.startsWith('user:') && fields.owner !== `user:${openedFor}`) {
+      throw new Error('another account');
+    }
+    return {
+      writer: openedFor,
+      writerKeyVersion: fakeKeyVersion,
+      writeSignature: encodeB64(utf8(writeSignatureText(openedFor, fakeKeyVersion, fields))),
+    };
+  },
+  async itemWriteVerifyOwn(fields, signature) {
+    calls.push('itemWriteVerifyOwn');
+    if (locked) throw new Error('the vault is locked');
+    return (
+      fields.writer === openedFor &&
+      fields.writerKeyVersion === fakeKeyVersion &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(openedFor, fakeKeyVersion, fields)
+    );
+  },
+  async itemWriteVerify(signerBundle, fields, signature) {
+    calls.push('itemWriteVerify');
+    const signer = signerOf(signerBundle);
+    return (
+      signer !== undefined &&
+      fields.writer === signer &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(signer, fields.writerKeyVersion ?? 0, fields)
+    );
+  },
 };
+
+/**
+ * A bundle with the layout of docs/crypto.md for `account` at `version`, and nothing else in it, for
+ * tests that parse one. The fake worker reads its signer from the account id.
+ */
+export function fakeBundleOf(account: string, version: number): Uint8Array {
+  const label = utf8('kemlock/v1/bundle');
+  const out = new Uint8Array(label.length + 16 + 4 + 1600 + 1984);
+  out.set(label, 0);
+  out.set(uuidBytes(account), label.length);
+  new DataView(out.buffer).setUint32(label.length + 16, version);
+  return out;
+}
+
+/** Who a bundle names: a real-layout one by its account id, a `bundle:<account>` one by its text. */
+function signerOf(bundle: Uint8Array): string | undefined {
+  const parsed = parseBundle(bundle);
+  if (parsed) {
+    const hex = [...parsed.accountId].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return /^bundle:(.+)$/.exec(fromUtf8(bundle))?.[1];
+}
+
+/** What the fake's write signature says: who, at which key version, over which fields. */
+export function writeSignatureText(writer: string, keyVersion: number, fields: ItemWriteFields): string {
+  return `wsig:${writer}:${keyVersion}:${JSON.stringify([
+    fields.owner,
+    fields.id,
+    fields.kind,
+    fields.revision,
+    fields.deleted,
+    fields.keyVersion,
+    fields.ciphertext ?? '',
+    fields.itemKey ?? '',
+    fields.collectionId ?? '',
+  ])}`;
+}
 
 const deviceKeys = { count: 0, spent: new Set<string>() };
 

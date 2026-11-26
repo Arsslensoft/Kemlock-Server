@@ -390,6 +390,12 @@ async fn delete_owner_data(
         .exec(txn)
         .await
         .store()?;
+    crate::tables::signed_writes::Entity::delete_many()
+        .filter(crate::tables::signed_writes::Column::OwnerType.eq(owner_type))
+        .filter(crate::tables::signed_writes::Column::OwnerId.eq(owner_id))
+        .exec(txn)
+        .await
+        .store()?;
     // A vault this server is the home of: its replicas hold copies that must go too. The erasure
     // is queued here, in this transaction, because the settings that name the replicas are
     // deleted just below; the replication job tells each peer in its next session.
@@ -790,6 +796,11 @@ async fn erase_in(
         .store()?;
     out.events_scrubbed += dropped.rows_affected;
 
+    crate::tables::account_bundles::Entity::delete_many()
+        .filter(crate::tables::account_bundles::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
     users::Entity::delete_by_id(uid).exec(txn).await.store()?;
     Ok(out)
 }
@@ -1063,6 +1074,7 @@ impl RetentionStore for SqlStore {
                     item_key: None,
                     deleted_at: Some(now),
                     updated_at: now,
+                    signature: None,
                 };
                 match ItemStore::put(self, tombstone).await {
                     Ok(_) => {}

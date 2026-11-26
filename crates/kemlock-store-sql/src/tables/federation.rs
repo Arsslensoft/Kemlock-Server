@@ -450,6 +450,8 @@ pub(crate) mod item_siblings {
         /// Unix milliseconds.
         pub updated_at_ms: i64,
         pub hlc: i64,
+        /// The writing account's signature, as `items.write_sig` holds it.
+        pub write_sig: Option<Vec<u8>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -485,6 +487,7 @@ pub(crate) mod item_siblings {
                     seq: from_i64(self.seq, "sequence number")?,
                     hlc: Hlc(from_i64(self.hlc, "hlc")?),
                 },
+                signature: crate::tables::items::stored_signature(self.write_sig.as_deref())?,
             })
         }
     }
@@ -509,6 +512,10 @@ pub(crate) mod item_siblings {
                 "updated_at",
             )?),
             hlc: Set(to_i64(item.change.hlc.0, "hlc")?),
+            write_sig: Set(item
+                .signature
+                .as_ref()
+                .map(kemlock_domain::WriteSignature::to_stored)),
         })
     }
 
@@ -535,6 +542,7 @@ pub(crate) mod item_siblings {
                     seq: 12,
                     hlc: Hlc::from_parts(1_700_000_000_123, 3),
                 },
+                signature: None,
             };
             let row = active(&item).expect("fits");
             assert_eq!(row.updated_at_ms, Set(1_700_000_000_123));
@@ -555,6 +563,7 @@ pub(crate) mod item_siblings {
                 deleted: false,
                 updated_at_ms: 1_700_000_000_123,
                 hlc: i64::try_from(item.change.hlc.0).expect("fits"),
+                write_sig: None,
             };
             assert_eq!(model.into_item(), Ok(item));
         }

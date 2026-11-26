@@ -5,6 +5,7 @@
 //! `async fn` and callers stay `Send` for axum, as in `kemlock_app::ports`.
 
 use crate::change::ChangeRecord;
+use crate::conflict::Rank;
 use crate::error::{FedError, Result};
 use crate::hashtree::Leaf;
 use crate::home::{HomeRecord, VaultFederation};
@@ -219,6 +220,9 @@ pub struct Exported {
     /// The origin's signature, if one is stored. A change this server accepted has none until it
     /// is first sent.
     pub signature: Option<Vec<u8>>,
+    /// The collection of an item of a space, as this server holds it: what the writer's signature
+    /// covers. The same for every version of the item held, which is the item's current one.
+    pub collection: Option<kemlock_domain::spaces::CollectionId>,
 }
 
 /// A page of versions, in (origin, sequence) order.
@@ -239,6 +243,8 @@ pub enum ApplyOutcome {
     Sibling,
     /// The version was already held, or a held version replaced it.
     Duplicate,
+    /// The version would have replaced the head at no higher revision: a rollback, left out.
+    Refused,
 }
 
 pub trait ReplicaStore: Send + Sync {
@@ -271,12 +277,23 @@ pub trait ReplicaStore: Send + Sync {
     ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send;
 
     /// Applies a verified record from another server: merges it with the versions held, as
-    /// `conflict::merge` says, and keeps its signature for relaying. One transaction.
+    /// `conflict::merge_ranked` says with `rank`, and keeps its signature for relaying. One
+    /// transaction.
+    fn apply_ranked(
+        &self,
+        record: &ChangeRecord,
+        signature: &[u8],
+        rank: Rank,
+    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send;
+
+    /// [`apply_ranked`](Self::apply_ranked), choosing the head by clock alone.
     fn apply(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
-    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send;
+    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send {
+        self.apply_ranked(record, signature, Rank::Clock)
+    }
 
     /// A digest per item of `owner`, over the versions held.
     fn leaves(
@@ -290,6 +307,40 @@ pub trait ReplicaStore: Send + Sync {
         &self,
         owner: Owner,
     ) -> impl Future<Output = std::result::Result<VersionVector, StoreError>> + Send;
+
+    /// Whether the change `key` is already held here, applied or since replaced: what a record is
+    /// asked before anything is spent on it, since a change is applied once.
+    ///
+    /// The default holds none, for a store that can't say.
+    fn holds_change(
+        &self,
+        _key: ChangeKey,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Sets or clears the flag of `owner` here, as the home's signed record says
+    /// (`docs/federation.md`, "Writer signatures"). Idempotent.
+    ///
+    /// The default keeps no flag.
+    fn set_owner_signed_only(
+        &self,
+        _owner: Owner,
+        _required: bool,
+    ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Whether `owner` accepts signed `kem1` writes only on this server (docs/crypto.md, "The
+    /// signed-only flag"): the owner asked for it, here or at the home server it replicates from.
+    ///
+    /// The default is false, for a store that keeps no such flag.
+    fn owner_signed_only(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
 
     /// The siblings of an item: the versions held beside its head.
     fn siblings(

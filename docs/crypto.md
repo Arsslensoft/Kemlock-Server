@@ -424,7 +424,7 @@ The items are the only part that can be large, so they travel apart from the ins
 holds them **staged**, invisible to every reader and to sync:
 
 ```
-PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRevision, ciphertext, itemKey}]}
+PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRevision, ciphertext, itemKey, writer?, writerKeyVersion?, writeSignature?}]}
 ```
 
 - `rotationId` is 16 random bytes the client makes, base64url: it names one attempt. A request with
@@ -436,6 +436,13 @@ PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRe
   checks the lengths (`ciphertext` 28 bytes up to the item limit, `itemKey` 60 bytes), that the item
   is live, the account's own, in format `kem1`, and at `baseRevision` now, and that `toVersion` is
   the account's version plus one.
+- **Each item is signed.** The re-encrypted item is a write of the account like any other (revision
+  `baseRevision + 1`, `keyVersion = N′`), so the client signs it ("Signed item writes"): the statement
+  of that write, with the writer's key version `N′`, signed by the **new** `sig1` key `R′` brings,
+  and sends `writer`, `writerKeyVersion` (`N′`) and `writeSignature` beside the item, all three or
+  none. The server cannot check it when it is staged (it holds the new bundle only from the install),
+  so it keeps it with the row and checks the signature, and that the writer is the account at
+  version `N′`, at the install; see step 8.
 - `DELETE /kem/v1/account/rotation` discards the staged rows (abandoning); rows older than two hours
   are ignored and deleted by the next request. Staged rows change nothing a device can see. A page
   that is closed mid-rotation loses `R′` with it, and its staged rows are useless: the next attempt
@@ -512,6 +519,13 @@ read it) or `400 invalid-request` (what is malformed), and one that loses a race
    `rotation-incomplete`, naming how many; the client stages those again (a round that stages only
    the changed items) and installs again. A live item of format `bw` is `409
    rotation-unsupported-items`.
+   Each staged item's signature, when it has one, verifies over the statement of the write the install
+   makes (the item's id, owner and kind, revision `baseRevision + 1`, its sealed value at `N′`),
+   under the new `sig1` key of the bundle the request brings; one that doesn't is refused (`422
+   invalid-signature`), and nothing is written. An owner that takes signed writes only ("The
+   signed-only flag") has no unsigned staged item installed (`422 signature-required`): a vault that
+   asked for signed writes only stays that way through a rotation, and a client that cannot sign
+   (an old one) cannot rotate it. The signature is stored with the item like any signed write.
 9. The account is in no space, or `spacesHandled` is true (`409 spaces-need-rekey`). Only accepted and
    confirmed memberships count: an invitation not yet accepted does not. And if an earlier
    rotation's previous keys are still kept for the spaces, the install is refused
@@ -721,7 +735,8 @@ for several keys, one of them with a group that wraps the list.
 - Public key: `ML-DSA-65 public key (1952) ‖ Ed25519 public key (32)`, 1984 bytes.
 - Private key: `ML-DSA-65 seed ξ (32) ‖ Ed25519 seed (32)`, 64 bytes.
 - The signed message is `m' = "kemlock/v1/sig1" ‖ lp(context) ‖ lp(message)`. The contexts are
-  `"bundle"`, `"manifest"`, `"confirm"`, `"key-box"` ("Signed key boxes") and `"space-chain"` ("Space chain").
+  `"bundle"`, `"manifest"`, `"confirm"`, `"key-box"` ("Signed key boxes"), `"space-chain"` ("Space chain") and
+  `"item-write"` ("Signed item writes").
 - Signature: `ML-DSA-65.Sign(sk_m, m', ctx = empty) (3309) ‖ Ed25519.Sign(sk_e, m') (64)`,
   3373 bytes. ML-DSA signing may be hedged or deterministic; verifiers accept both.
 - Verification passes only when both verify over the same `m'`.
@@ -841,7 +856,9 @@ On the wire an item is:
   "deleted": false }
 ```
 
-A deleted item is a tombstone: `deleted: true` with `ciphertext` and `itemKey` absent. Its
+A `kem1` item may also carry `writer`, `writerKeyVersion` and `writeSignature`, the writing
+account's signature of the write ("Signed item writes"); an owner that has seen one refuses writes
+without. A deleted item is a tombstone: `deleted: true` with `ciphertext` and `itemKey` absent. Its
 revision still moves on, so a device sees the deletion as a newer write. `deleted` is always
 present, `true` or `false`, in both directions; the server refuses an item without it. `owner` is
 `user:<uuid>` for a person's own vault and `space:<uuid>` for a space, hyphenated lower case.
@@ -1229,7 +1246,8 @@ keeps one of them from freezing it.
   is served live at or below its tombstone's revision, or live where the manifest lists it deleted, is
   *resurrected*; a tombstone the client did not write for an entry the manifest lists live is
   *deleted* (another device may have deleted it, or the server is hiding it, and nothing tells
-  them apart); a revision more than 2^32 above the entry's is *implausible*. Each is shown to the
+  them apart), unless the tombstone's write signature verifies ("Signed item writes"): then it is
+  a deletion by that writer and is accepted; a revision more than 2^32 above the entry's is *implausible*. Each is shown to the
   person as a warning. An item newer than its entry, or not listed, was written by a device that
   has not signed a manifest since (an app that writes none, for one), and is accepted.
 - **Writing.** After its own writes, and only then, a client signs the manifest it last accepted
@@ -1242,6 +1260,216 @@ keeps one of them from freezing it.
   nothing for an id it flagged or saw deleted, so signing never makes a rollback, a hidden item
   or a resurrection permanent. A tombstone that is neither served nor remembered as seen is dropped,
   so the manifest does not outgrow the server's size limit.
+
+## Signed item writes
+
+A federation change record is signed by the server that accepted the write ("Change records and
+origin signatures" in `docs/federation.md`), so on its own it proves nothing about *who* wrote the
+item. A replica in a vault's set could sign tombstones for every item, re-sign an old ciphertext it
+holds as a new revision (the `kem1` aad binds the revision, but the replica sends the old envelope
+again under its own old revision number, and a client sees "newer than the manifest"), or write
+without limit. So every `kem1` write is also signed by the **writing account**, with a `sig1` key
+only that account's devices hold. A server can pass such a signature on, but can neither make nor
+alter one.
+
+### The signature
+
+```
+statement = "kemlock/v1/item-write" ‖ owner (17) ‖ item id (16) ‖ lp(kind) ‖ u64be(revision)
+            ‖ u64be(replaces) ‖ u8(deleted) ‖ envelope hash (32)
+            ‖ writer account id (16) ‖ u32be(writer key version)
+            ‖ u8(0)                          for an item of a vault
+              or u8(1) ‖ collection id (16)  for an item of a space
+signature = sig1 signature of the writer's own key, context "item-write", over the statement
+```
+
+- `owner` is the 17-byte owner of the item (a vault or a space), `kind` is the item's kind in
+  ASCII, and `revision` is the revision written. `replaces` is the revision the write replaces:
+  `revision - 1`, so `0` for a new item. A verifier takes `replaces` from the revision and refuses
+  a statement whose `replaces` isn't that; it is in the signed bytes so a later format can lift the
+  rule without moving the signature's meaning.
+- `deleted` is `1` for a tombstone and `0` for a live revision.
+- `envelope hash` is `SHA-256(u32be(key version) ‖ lp(ciphertext) ‖ lp(item key))` of the
+  envelope as written ("`kem1`: the item envelope": `keyVersion` is the collection's for a space
+  item), and 32 zero bytes for a tombstone, as in the manifest. It binds the wrapped item key and
+  the key version as well as the ciphertext, so a replica can't pair a signed ciphertext with
+  another key.
+- `writer account id` and `writer key version` name the account and the bundle version whose
+  `sig1` key made the signature.
+- `collection` is the collection the item is written into, for an item of a space, and nothing for an
+  item of a vault: the statement has the flag byte `0` there. A statement of a space's item without
+  a collection, or of a vault's with one, is not a statement. The collection is the one `PUT`
+  names (`collectionId`), so a replica can't move a signed item into another collection, and the
+  writer's right to edit it can be checked by whoever holds the record.
+
+The statement is `21 + 17 + 16 + (4 + len(kind)) + 8 + 8 + 1 + 32 + 16 + 4 + 1` bytes, and 16 more for
+an item of a space; the signature
+is 3373 bytes. `kemlock-crypto`'s `item_write` module builds it, and `test-vectors/item-write.json`
+pins the bytes, the envelope hashes, the signatures and the statements a signature must not cover.
+
+What the signature does not cover: the server's change id, HLC time and lineage (the origin server's
+signature covers those), and `bw` items, which have no `kem1` envelope.
+
+### Who may write
+
+- **A vault** (`user:`): the writer is the owner's own account.
+- **A space** (`space:`): the writer is a confirmed member allowed to write the item's collection.
+  For a chained space that is the chain's verified state ("Using the state"): confirmed, with
+  `edit` on the collection, and the writer's bundle is the one the chain records for it. For an
+  unchained space it is the server's confirmed member list and the member's confirmed bundle
+  ("Member confirmation"). A deletion needs the same edit access as any write.
+
+### Where it travels
+
+- **Client to server.** `PUT /kem/v1/items/{id}`, `POST /kem/v1/items:batch` and the writes of a
+  key replacement take three new optional members on the item: `writer` (the writing account's id),
+  `writerKeyVersion` and `writeSignature` (base64url). All three or none; `writer` must be the
+  signed-in account.
+- **Stored** with the item's change, as one value `writer (16) ‖ u32be(key version) ‖ signature
+  (3373)`, 3393 bytes, and **served back** on sync (`GET /kem/v1/sync`, siblings included) in the
+  same three members, so any device can check it.
+- **Federation.** The change record carries the same 3393 bytes in field 15 ("Change records and
+  origin signatures" in `docs/federation.md`). The origin's signature covers the field, so a relay
+  can't strip it.
+
+### What each party checks
+
+**The server, at write time**, for a `kem1` write that carries a signature:
+
+1. `writer` is the signed-in account, and `writerKeyVersion` is that account's current key version;
+2. the signature verifies, over the statement the server rebuilds from the write, under the `sig1`
+   key of the account's registered bundle (the bundle it checked at registration);
+3. the usual item rules (`If-Match`, `revision = stored + 1`, authority over the owner or the
+   collection) already make `replaces` the stored revision;
+4. the owner isn't **signed-only** (below) unless the write is signed.
+
+A write that fails 1 or 2 is `422` `invalid-signature`; an unsigned `kem1` write to a signed-only
+owner is `422` `signature-required`. Nothing is stored. A `bw` write is never signed and is not
+subject to this.
+
+**A federation peer, on a record** (`apply`), for a `kem1` record:
+
+1. if it carries a signature, the writer must be allowed for the record's owner (the owner's own
+   account for a vault, a member of the space or one taken out of it, per the peer's replicated
+   member list), and for a space the record names the collection (field 16) and the writer must be
+   allowed to edit it (a confirmed member with edit on it, or one taken out since: what they signed
+   before is theirs); a collection or member the peer doesn't know yet is left out for now, not
+   refused. The
+   peer must hold the writer's bundle at the signature's key version (the replicated account or
+   member copy), and the signature must verify over the statement rebuilt from the record. Else the
+   record is refused, as a record from a stranger is;
+2. if it carries none and the owner is signed-only, it is refused;
+3. a record that names the head in its lineage at no higher revision than the head's is refused
+   (see "Rollback" in `docs/federation.md`);
+4. a signed record does not set the flag on this peer: only the owner's own request at that server does.
+
+**A client, on sync**, for each `kem1` revision it is served, tombstones included. It checks the
+signature under the writer's bundle, taken as follows: the account's own `sig1` key for its own
+vault, never a bundle the server served; for a space, the bundle of a writer the space vouches for
+("Using the state"), who must be allowed to write the item's collection. The verdict is one of:
+
+- `signed`: the signature verifies and the writer is allowed.
+- `unsigned`: none came.
+- `invalid`: one came and fails, or its writer isn't allowed, or `replaces` isn't `revision - 1`.
+- `unknown`: it can't be checked now: the vault is locked, the writer's bundle at that key version
+  isn't held, or the space doesn't vouch for the writer (a member who has left, say).
+
+A revision at or below the revision the client already holds is never a change. Otherwise the
+client takes a revision in as the item's current one when it is `signed`; it **never takes in an
+`invalid` one**; and for an `unsigned` or `unknown` one it follows its own record, never what the
+server says. It keeps, per owner, the highest revision of each item it has seen with a valid
+signature (the **floor**), sealed in its local store so a reload or a fresh full sync still has it.
+It takes in no `unsigned` or `unknown` revision above an item's floor, tombstones included, and
+once it has seen the owner signed it takes in none of an item it holds at all, and it shows the
+refusal to the person, who still has the revision they held. An item it never saw signed, and an
+item on a client that has never seen the owner signed, is taken in as it always was. So a server
+can't turn signing off by leaving it out for what the client has seen, which is why the signed
+manifest stays: it lists revisions the owner's devices signed, for the rest.
+
+The manifest keeper uses the verdict for deletions ("How a client uses it"): a tombstone whose
+signature verifies, by the account itself or by a member allowed to write the collection, is a
+deletion by that writer, not a "deleted by another device or the server". It is not flagged, and the
+next manifest may list the item as deleted.
+
+### The signed-only flag
+
+Bitwarden-API writes, an older Kemlock client and the import tools can't sign. So the server keeps,
+per owner, a flag **signed-only**:
+
+- it is set only when the owner asks: `PUT /kem/v1/owners/{owner}/signed-writes` (`204`), by the
+  account for its own vault, or by an owner or admin of a space for that space. A signed write does
+  not set it, because the Kemlock app doesn't sign yet and one device that does must not lock out
+  the others. The same people clear it with `DELETE` on the same path, which asks for the password
+  again (the OPAQUE messages of a fresh login, and a fresh proof beside them when a second step is
+  on), as erasing the account does, because clearing it lets a stolen session write what the
+  account's keys never signed. Both are logged. Erasing the owner clears it too;
+- once set, an unsigned `kem1` write or record for that owner is refused by this server and by
+  every federation peer that holds the flag. The home publishes it as a home record of kind
+  `signed-writes` (`docs/federation.md`, "Writer signatures"), signed like every home record, so the
+  replicas hold it too, and drop it when the owner clears it at the home. Ask at the home: a flag
+  set at a replica holds there only, until the home's record next says otherwise.
+
+**What stays unprotected.** `bw` items (a Bitwarden-format cipher has no `kem1` envelope), so
+Bitwarden apps' writes are accepted whatever the flag says, and so can be rolled back, deleted and
+re-signed by a malicious replica. A vault or space that no signing client has written is not
+signed-only, so a replica can still delete or roll back its items. And signing does not stop a
+replica from **withholding** records, or from replaying an old signed revision *to a client that
+never saw a later one*; the manifest and "Sync cursor" are what notice those. A signer who has lost
+control of the account's keys can still write. For a space, a federation peer checks that the
+writer may edit the collection the record names, from the member list and grants it holds; a
+member taken out since counts for what they signed before, since the grants then are not known.
+
+### Key versions
+
+A write names the key version of the bundle that signed it (`writerKeyVersion`), and is checked
+under **that** version's bundle. An account that replaces its keys (a new bundle at the next key
+version) therefore keeps every bundle it had, and what it signed before stays verifiable.
+
+- **The server** keeps every bundle of an account by key version: written wherever the account's
+  bundle is written, and whichever path replaces it keeps the one it replaces first, so a key
+  replacement can't lose the version before it. It accepts a **new** write only under the
+  account's **current** key version, so a replaced key can't sign again.
+- **A rotation of the root key** writes every item again at the new key version, so each is signed by
+  the new key at that version: the client signs the statement of each re-encrypted item when it
+  moves it, and the install keeps the signature with the item ("Rotating the root key", staging).
+  Without that, the items a rotation writes would be unsigned and refused by a vault that takes
+  signed writes only, and by a client that holds an item at a floor.
+- **Reading one.** `GET /kem/v1/accounts/{id}/bundles/{version}` answers
+  `{keyVersion, publicBundle, bundleSignature}` (base64url) to the account itself and to a
+  confirmed member of a space the account is a confirmed member of. An unknown account, a version it
+  never had and a caller who may not read it are the same `404`.
+- **Federation.** A `member-account` record carries the account's past bundles (payload key 14, in
+  ascending key version, at most 64), each with the time the account replaced it (`superseded
+  at`, Unix seconds). A receiver keeps the record only when each past bundle is the
+  account's own, at the version it says, below the current one, and carries a valid signature of
+  its own key, as the current bundle must. A peer then checks a record's writer signature against
+  the bundle of the key version the signature names, and refuses it when it holds none.
+  **A replaced key signs nothing made after it was replaced.** A peer refuses a record signed under
+  a past version when the change was made (its clock, the origin's) no earlier than five minutes
+  before the time the account replaced that version: a stolen old key can't write new changes
+  once the account has moved on, whatever the signature says. The server does not need the rule
+  at write time, which already takes only the current version. A client does not apply it: it
+  has no trustworthy time for the replacement, and leans on the floor and on the server's check.
+- **A client** checks at the writer's current version as before. At an older version it takes a
+  bundle from the server's history only when all of these hold: it parses as that account's bundle
+  at that version; it carries a valid signature of its own key; and its fingerprint is the one the
+  client **pinned** while that bundle was the account's current one: its own keys vouched for the
+  account's own bundle, and the verified space chain ("Using the state") for a member's. The pins
+  are kept sealed in the browser's local store, one per version, never replaced.
+  **A signer that is only the server's word** vouches nothing: a client with no verified chain for a
+  space, and no way to trace a member's keys to a confirmation it can follow, has only the server's
+  member list, and pins nothing from it, so a member's write under a key version they have since
+  replaced has no verdict there. The web vault reads a space's verified chain, or traces the keys of
+  a member of an unchained space to a confirmation it can follow, and pins what those vouch for.
+  A version the client never saw vouched has no verdict (`unknown`), and so does one above the
+  writer's current version, because a bundle the server serves for an old version is otherwise a
+  bundle the server can make up. A client that first sees an account after it replaced its keys
+  therefore cannot vouch for writes signed under the keys before.
+
+### Limits that go with it
+
+A federation server also bounds what one origin can write: a rate and a size per origin
+("Per-origin quotas" in `docs/federation.md`).
 
 ## Space chain
 
@@ -2798,4 +3026,4 @@ kemlock-vectors` from fixed seeds, and checked by CI to regenerate byte for byte
 its format version and a description, and `SHA256SUMS` lists them. The folder is CC0-1.0 so any
 client may copy it.
 
-Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `sig1-edge.json` (the Ed25519 verification rule's edge cases and their verdicts), `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `key-box.json` (signed key box statements for a space key and a collection key, their signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).
+Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `sig1-edge.json` (the Ed25519 verification rule's edge cases and their verdicts), `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `key-box.json` (signed key box statements for a space key and a collection key, their signatures and the statements a signature must not cover), `item-write.json` (signed item writes: envelope hashes, statements, signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).

@@ -190,6 +190,7 @@ async fn a_replica_deletes_its_copy_of_an_erased_vault_and_the_copied_account() 
         key_version: template.key_version,
         created_at: MADE_AT.unix_timestamp(),
         updated_at: MADE_AT.unix_timestamp(),
+        past_bundles: Vec::new(),
         devices: vec![MemberDevice {
             id: DeviceId::random(),
             name: "Pixel".to_owned(),
@@ -402,6 +403,7 @@ fn copy_of(id: UserId, email: &str) -> MemberAccount {
         key_version: template.key_version,
         created_at: MADE_AT.unix_timestamp(),
         updated_at: MADE_AT.unix_timestamp(),
+        past_bundles: Vec::new(),
         devices: Vec::new(),
     }
 }

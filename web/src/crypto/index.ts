@@ -132,6 +132,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     verifyBundle: (publicBundle, bundleSignature) =>
       call('verifyBundle', [publicBundle, bundleSignature]),
     ownFingerprint: () => call('ownFingerprint', []),
+    ownKeyVersion: () => call('ownKeyVersion', []),
     release: (handle) => call('release', [handle]),
     dpopReset: () => call('dpopReset', []),
     sealRootKey: (recipientKx1, context, aad) => call('sealRootKey', [recipientKx1, context, aad]),
@@ -182,6 +183,10 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     manifestVerifyOwn: (manifest, signature) => call('manifestVerifyOwn', [manifest, signature]),
     manifestVerify: (signerBundle, manifest, signature) =>
       call('manifestVerify', [signerBundle, manifest, signature]),
+    itemWriteSign: (fields) => call('itemWriteSign', [fields]),
+    itemWriteVerifyOwn: (fields, signature) => call('itemWriteVerifyOwn', [fields, signature]),
+    itemWriteVerify: (signerBundle, fields, signature) =>
+      call('itemWriteVerify', [signerBundle, fields, signature]),
     verifySpaceChain: (input) => call('verifySpaceChain', [input]),
     newChainedSpace: (input) => call('newChainedSpace', [input]),
     buildChainRecords: (input) => call('buildChainRecords', [input]),

@@ -26,7 +26,9 @@ use crate::app::{App, Authed, BwStore, MaybeAuthed};
 use crate::cipher::{CipherData, lcase_keys};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
-use crate::routes::{EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse, truthy};
+use crate::routes::{
+    EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse, truthy,
+};
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};

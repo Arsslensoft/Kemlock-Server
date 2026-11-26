@@ -1010,7 +1010,12 @@ async fn a_rewrite_under_another_key_version_than_the_new_one_appends_nothing() 
     let mut body = request(&[&keys]);
     body["writes"] = json!([rewrite(space, collection, id, 1, 1)]);
     let refused = sam.post(&uri(space), body).await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
     let stored = ItemStore::get(&rig.app.store, ItemId(id))
         .await
         .expect("read")
@@ -1062,7 +1067,12 @@ async fn only_items_of_a_replaced_collection_are_rewritten_and_none_that_is_also
             body["held"] = json!([of_general.to_string()]);
         }
         let refused = sam.post(&uri(space), body).await;
-        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{:?}",
+            refused.json()
+        );
     }
 
     // Nothing of any of it landed: the record goes in alone.
@@ -1123,7 +1133,12 @@ async fn no_item_is_written_while_the_space_key_waits_to_be_replaced() {
     let mut body = request(&[&keys]);
     body["writes"] = json!([rewrite(space, collection, id, 1, 2)]);
     let refused = sam.post(&uri(space), body).await;
-    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
     let stored = ItemStore::get(&rig.app.store, ItemId(id))
         .await
         .expect("read")

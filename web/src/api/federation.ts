@@ -112,6 +112,8 @@ export interface WirePeer {
   lastChangeVault: string | null;
   /** This server holds event-log entries the peer sent. */
   theySendLogs: boolean;
+  signedWrites: boolean;
+  pastBundles: boolean;
 }
 
 export interface WireAwaiting {
@@ -358,6 +360,8 @@ export function peerOf(peer: WirePeer, ownOperator: string): Peer {
     sendLogs: peer.switches.send,
     pullLogs: peer.switches.pull,
     theySendLogs: peer.theySendLogs,
+    signedWrites: peer.signedWrites,
+    pastBundles: peer.pastBundles,
     mismatch: (status?.keyMismatch !== null && status?.keyMismatch !== undefined) || peer.health === 'key-mismatch',
   };
 }

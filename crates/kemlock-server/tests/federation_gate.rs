@@ -1709,3 +1709,136 @@ async fn duplicate_tags_follow_their_revision_where_matching_is_on() {
             .is_empty()
     );
 }
+
+// ---- signed item writes: a replica can't delete or roll back what an account signed ----
+
+/// An account whose bundle names its own id and the key `key`, as a registered account's does.
+fn account_with_keys(email: &str, key: &sig1::SigningKey) -> User {
+    use kemlock_crypto::bundle::Bundle;
+    use kemlock_crypto::kx1;
+    let mut user = new_user(email);
+    let bundle = Bundle {
+        account_id: *user.id.as_bytes(),
+        key_version: 1,
+        kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+        sig1_public: key.public_key().expect("a public key"),
+    };
+    user.bundle_signature = bundle.sign(key).expect("a signature");
+    user.public_bundle = bundle.to_bytes();
+    user
+}
+
+/// `draft` signed by `writer` with `key`, as a device would have signed the write.
+fn signed(
+    mut draft: kemlock_domain::ItemDraft,
+    writer: UserId,
+    key: &sig1::SigningKey,
+) -> kemlock_domain::ItemDraft {
+    use kemlock_crypto::{item_write, owner::Owner as CryptoOwner};
+    let signature = {
+        let sealed = match (&draft.ciphertext, &draft.item_key) {
+            (Some(c), Some(k)) => Some((c.as_slice(), k.as_slice())),
+            _ => None,
+        };
+        item_write::Statement {
+            owner: CryptoOwner::from_bytes(&draft.owner.to_bytes()).expect("an owner"),
+            item_id: *draft.id.as_bytes(),
+            kind: draft.kind.as_str(),
+            revision: draft.revision.0,
+            deleted: draft.deleted_at.is_some(),
+            envelope: item_write::envelope_hash(draft.key_version, sealed).expect("a hash"),
+            writer: *writer.as_bytes(),
+            writer_key_version: 1,
+            collection: None,
+        }
+        .sign(key)
+        .expect("a signature")
+    };
+    draft.signature = Some(kemlock_domain::WriteSignature {
+        writer,
+        key_version: 1,
+        signature,
+    });
+    draft
+}
+
+#[tokio::test]
+async fn a_replica_cannot_delete_or_replay_what_the_account_signed() {
+    let fabric = Arc::new(Fabric::default());
+    let a = Node::new("signed-a", &fabric).await;
+    let b = Node::new("signed-b", &fabric).await;
+    pair(&a, &b).await;
+
+    let key = sig1::SigningKey::from_bytes(&[5; 64]);
+    let member = account_with_keys("sigrid@example.org", &key);
+    UserRepo::insert(a.store(), &member)
+        .await
+        .expect("an account");
+    let owner = Owner::User(member.id);
+    let (one, two) = (ItemId::random(), ItemId::random());
+    for (n, id) in [one, two].into_iter().enumerate() {
+        ItemStore::put(
+            a.store(),
+            signed(draft(id, owner, None, 1, 1_000 + n as u64), member.id, &key),
+        )
+        .await
+        .expect("a signed item");
+    }
+    a.facade
+        .set_policy(owner, Policy::Federated, vec![b.id])
+        .await
+        .expect("the home federates the vault");
+    a.visit(&b).await;
+    b.facade.accept_offer(owner).await.expect("B accepts");
+    a.visit(&b).await;
+    // The first visit may reach the items before the account's keys: those changes are left out,
+    // and the comparison that follows the home records fetches them. A second visit settles it.
+    b.visit(&a).await;
+    b.visit(&a).await;
+    assert_eq!(b.items(owner).await.len(), 2);
+
+    // B's server turns hostile. It signs, as a server, a tombstone for an item no device deleted.
+    let now = OffsetDateTime::now_utc();
+    ItemStore::put(
+        b.store(),
+        kemlock_domain::ItemDraft {
+            ciphertext: None,
+            item_key: None,
+            deleted_at: Some(now),
+            ..draft(one, owner, Some(1), 2, 5_000)
+        },
+    )
+    .await
+    .expect("a hostile tombstone");
+    let RunOutcome::Done(statuses) = a.visit(&b).await else {
+        panic!("a run");
+    };
+    assert_eq!(statuses[0].pulled.applied, 0, "{:?}", statuses[0]);
+    assert!(statuses[0].pulled.refused >= 1, "{:?}", statuses[0]);
+    let held = ItemStore::get(a.store(), one)
+        .await
+        .expect("a read")
+        .expect("the item");
+    assert!(
+        !held.is_tombstone(),
+        "the replica could not delete the item"
+    );
+    assert_eq!(held.revision, Revision(1));
+
+    // It replays an old signed ciphertext as a new change: not applied either.
+    ItemStore::put(b.store(), draft_with(two, owner, Some(1), 2, 6_000, 0x77))
+        .await
+        .expect("a hostile revision");
+    let RunOutcome::Done(statuses) = a.visit(&b).await else {
+        panic!("a run");
+    };
+    assert_eq!(statuses[0].pulled.applied, 0, "{:?}", statuses[0]);
+    assert_eq!(
+        ItemStore::get(a.store(), two)
+            .await
+            .expect("a read")
+            .expect("the item")
+            .revision,
+        Revision(1)
+    );
+}

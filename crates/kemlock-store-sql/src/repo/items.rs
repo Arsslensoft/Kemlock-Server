@@ -13,7 +13,7 @@ use crate::error::StoreResult;
 use crate::store::SqlStore;
 use crate::tables::space_chain::held;
 use crate::tables::space_tables::{collections, item_collections};
-use crate::tables::{changes, items, server_meta, sync_horizon};
+use crate::tables::{changes, items, server_meta, signed_writes, sync_horizon};
 use kemlock_app::ports::{ChangePage, EachPage, HeldPage, ItemStore, StoreError};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::{
@@ -311,6 +311,66 @@ impl ItemStore for SqlStore {
         vectors_by_owner(owners, rows)
     }
 
+    async fn signed_writes_required(&self, owner: Owner) -> Result<bool, StoreError> {
+        let key = items::owner_parts(owner);
+        Ok(signed_writes::Entity::find_by_id(key)
+            .one(self.reader())
+            .await
+            .store()?
+            .is_some())
+    }
+
+    async fn require_signed_writes(
+        &self,
+        owner: Owner,
+        at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
+        let marked = async {
+            lock_meta(&txn).await?;
+            mark_signed_only(&txn, owner, at).await
+        }
+        .await;
+        match marked {
+            Ok(()) => {
+                txn.commit().await.store()?;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = txn.rollback().await {
+                    tracing::warn!(%rollback, "rollback after a failed signed-only mark failed");
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn clear_signed_writes(&self, owner: Owner) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
+        let cleared = async {
+            lock_meta(&txn).await?;
+            let (owner_type, owner_id) = items::owner_parts(owner);
+            signed_writes::Entity::delete_by_id((owner_type, owner_id))
+                .exec(&txn)
+                .await
+                .store()?;
+            Ok::<(), StoreError>(())
+        }
+        .await;
+        match cleared {
+            Ok(()) => {
+                txn.commit().await.store()?;
+                Ok(())
+            }
+            Err(err) => {
+                if let Err(rollback) = txn.rollback().await {
+                    tracing::warn!(%rollback, "rollback after a failed signed-only clear failed");
+                }
+                Err(err)
+            }
+        }
+    }
+
     async fn purge_tombstones(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
         let txn = self.writer().begin().await.store()?;
         match purge_in(&txn, before).await {
@@ -421,6 +481,39 @@ pub(super) async fn release_written(
         .exec(txn)
         .await
         .store()?;
+    Ok(())
+}
+
+/// Whether `owner` takes signed writes only, read in the caller's transaction.
+pub(super) async fn signed_only_in<C: sea_orm::ConnectionTrait>(
+    conn: &C,
+    owner: Owner,
+) -> Result<bool, StoreError> {
+    Ok(signed_writes::Entity::find_by_id(items::owner_parts(owner))
+        .one(conn)
+        .await
+        .store()?
+        .is_some())
+}
+
+/// Marks `owner` as accepting signed writes only (docs/crypto.md, "Signed item writes"), once. The
+/// caller holds the `server_meta` lock, so two writers can't both insert the row.
+pub(super) async fn mark_signed_only(
+    txn: &DatabaseTransaction,
+    owner: Owner,
+    at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    let key = items::owner_parts(owner);
+    let known = signed_writes::Entity::find_by_id(key)
+        .one(txn)
+        .await
+        .store()?;
+    if known.is_none() {
+        signed_writes::Entity::insert(signed_writes::active(owner, at))
+            .exec(txn)
+            .await
+            .store()?;
+    }
     Ok(())
 }
 
@@ -774,6 +867,7 @@ mod tests {
             origin: Uuid::new_v4(),
             seq: 1,
             hlc: 1,
+            write_sig: None,
         }
     }
 
@@ -799,6 +893,7 @@ mod tests {
             item_key: Some(vec![4; 60]),
             deleted_at: None,
             updated_at: time::macros::datetime!(2026-06-02 12:00:00 UTC),
+            signature: None,
         };
         let txn = store.writer().begin().await.expect("begins");
         let mut hlc = Hlc(0);

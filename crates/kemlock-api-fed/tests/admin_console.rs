@@ -385,6 +385,10 @@ async fn the_overview_carries_keys_lag_sizes_and_the_server_profile() {
     assert!(peer_row["lagSeconds"].is_u64(), "{peer_row}");
     assert_eq!(peer_row["lastChangeAt"], Value::Null);
     assert_eq!(peer_row["theySendLogs"], false);
+    // The test peer lists no capabilities beyond its suites: it is one to upgrade before a vault
+    // it shares has signed writes.
+    assert_eq!(peer_row["signedWrites"], false);
+    assert_eq!(peer_row["pastBundles"], false);
 
     let vault_row = &overview["vaults"][0];
     assert_eq!(vault_row["sizeBytes"], 80, "two items of 40 bytes");

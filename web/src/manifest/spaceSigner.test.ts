@@ -167,6 +167,13 @@ describe('the signer of a space with a chain', () => {
     }
   });
 
+  it('is a member the chain shows removed only for a write signed before', async () => {
+    const trust = chained([confirmed(SIGNER, { status: 'removed' })]);
+    const run = await setup([], { trust });
+    expect(await run.signer(SPACE, SIGNER, { former: true })).toEqual(bundleOf(SIGNER));
+    expect(await run.signer(SPACE, SIGNER)).toBeNull();
+  });
+
   it('holds this account to the bundle its own keys make', async () => {
     const trust = chained([confirmed(ME)], {
       grants: [{ collection: 'c1', grantee: `user:${ME}`, permission: 'manage' }],
@@ -205,6 +212,17 @@ describe('the signer of a space with no chain', () => {
     expect(await (await setup([bad], { pin: [SIGNER] })).signer(SPACE, SIGNER)).toBeNull();
     const junk = { ...member(SIGNER, 'confirmed'), publicBundle: 'not base64!' };
     expect(await (await setup([junk], { pin: [SIGNER] })).signer(SPACE, SIGNER)).toBeNull();
+  });
+
+  it('is a member taken out since only for a write signed before, and never one who never was confirmed', async () => {
+    const gone = member(SIGNER, 'revoked');
+    const former = { former: true };
+    expect(await (await setup([gone], { pin: [SIGNER] })).signer(SPACE, SIGNER, former)).toEqual(bundleOf(SIGNER));
+    expect(await (await setup([gone], { pin: [SIGNER] })).signer(SPACE, SIGNER)).toBeNull();
+    const accepted = member(SIGNER, 'accepted');
+    expect(await (await setup([accepted], { pin: [SIGNER] })).signer(SPACE, SIGNER, former)).toBeNull();
+    // Keys nobody confirmed that this browser can trace are not vouched, taken out or not.
+    expect(await (await setup([gone])).signer(SPACE, SIGNER, former)).toBeNull();
   });
 
   it('holds this account to the bundle its own keys make', async () => {

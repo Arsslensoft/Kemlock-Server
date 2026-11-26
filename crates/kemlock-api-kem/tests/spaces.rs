@@ -1627,8 +1627,10 @@ impl kemlock_app::bitwarden::BwInviteLinks for Organizations {
         _space: kemlock_domain::SpaceId,
         _member: UserId,
         _asker: kemlock_app::bitwarden::Asker,
-    ) -> BoxFuture<'_, Result<kemlock_app::bitwarden::MemberInviteLink, kemlock_app::bitwarden::InviteLinkError>>
-    {
+    ) -> BoxFuture<
+        '_,
+        Result<kemlock_app::bitwarden::MemberInviteLink, kemlock_app::bitwarden::InviteLinkError>,
+    > {
         Box::pin(async { Err(kemlock_app::bitwarden::InviteLinkError::NotFound) })
     }
 
@@ -1636,10 +1638,17 @@ impl kemlock_app::bitwarden::BwInviteLinks for Organizations {
         Box::pin(async move { self.organization })
     }
 
-    fn pending_invitations(&self, _space: kemlock_domain::SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
+    fn pending_invitations(
+        &self,
+        _space: kemlock_domain::SpaceId,
+    ) -> BoxFuture<'_, Option<Vec<UserId>>> {
         Box::pin(async move {
-            self.organization
-                .then(|| self.invited.lock().expect("the lock isn't poisoned").clone())
+            self.organization.then(|| {
+                self.invited
+                    .lock()
+                    .expect("the lock isn't poisoned")
+                    .clone()
+            })
         })
     }
 }
@@ -1661,14 +1670,22 @@ async fn the_space_view_says_whether_the_space_is_a_bitwarden_organization() {
 async fn the_member_list_marks_who_has_a_bitwarden_invitation() {
     // An organization that knows zed's invitation, one where zed was invited through the Kemlock
     // API alone (a space row and no Bitwarden member document), and a space that is no organization.
-    for (organization, knows_zed, expected) in [(true, true, true), (true, false, false), (false, true, false)] {
+    for (organization, knows_zed, expected) in [
+        (true, true, true),
+        (true, false, false),
+        (false, true, false),
+    ] {
         let mut rig = Rig::new();
         let links = Organizations::new(organization);
         links.on(&mut rig);
         let sam = rig.person("sam@example.org").await;
         let zed = rig.person("zed@example.org").await;
         if knows_zed {
-            links.invited.lock().expect("the lock isn't poisoned").push(zed.id);
+            links
+                .invited
+                .lock()
+                .expect("the lock isn't poisoned")
+                .push(zed.id);
         }
         let (space, collection) = make_space(&sam).await;
         let invite = sam

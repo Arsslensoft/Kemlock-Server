@@ -323,6 +323,70 @@ impl MemberStore for SqlStore {
         }
     }
 
+    async fn writer_may_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        let Owner::Space(space) = vault else {
+            return Ok(Some(false));
+        };
+        let Some(state) = SpaceRepo::load(self, space).await? else {
+            return Ok(None);
+        };
+        if state.collection(collection).is_none() {
+            return Ok(None);
+        }
+        let Some(member) = state.members.iter().find(|m| m.user == user) else {
+            return Ok(Some(false));
+        };
+        Ok(Some(match member.state {
+            MemberState::Confirmed => state.access(user, collection).is_some_and(|a| a.edit),
+            // Taken out since: what they signed before is theirs.
+            MemberState::Revoked => true,
+            _ => false,
+        }))
+    }
+
+    async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        match vault {
+            Owner::User(_) => MemberStore::member_ids(self, vault).await,
+            // A member who was taken out keeps their row, and what they wrote before is theirs.
+            Owner::Space(space) => Ok(SpaceRepo::load(self, space)
+                .await?
+                .map(|state| {
+                    state
+                        .members
+                        .iter()
+                        .filter(|m| {
+                            matches!(m.state, MemberState::Confirmed | MemberState::Revoked)
+                        })
+                        .map(|m| m.user)
+                        .collect()
+                })
+                .unwrap_or_default()),
+        }
+    }
+
+    async fn writer_bundle_retired_at(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        UserRepo::bundle_retired_at(self, user, key_version).await
+    }
+
+    async fn writer_bundle(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(UserRepo::bundle_at(self, user, key_version)
+            .await?
+            .map(|b| b.public_bundle))
+    }
+
     async fn member_account(&self, user: UserId) -> Result<Option<MemberAccount>, StoreError> {
         let Some(account) = UserRepo::by_id(self, user).await? else {
             return Ok(None);
@@ -341,6 +405,24 @@ impl MemberStore for SqlStore {
                 created_at: d.created_at.unix_timestamp(),
             })
             .collect();
+        // The bundles before the current one go with the copy, so a replica can check a write the
+        // account signed before it replaced its keys.
+        let mut past_bundles = Vec::new();
+        for b in UserRepo::bundles_of(self, user).await? {
+            if b.key_version >= account.key_version {
+                continue;
+            }
+            // When the account replaced it: what is signed under it after that isn't the account's.
+            let superseded_at = UserRepo::bundle_retired_at(self, user, b.key_version)
+                .await?
+                .unwrap_or_else(|| account.updated_at.unix_timestamp());
+            past_bundles.push(kemlock_federation::members::PastBundle {
+                key_version: b.key_version,
+                public_bundle: b.public_bundle,
+                bundle_signature: b.bundle_signature,
+                superseded_at,
+            });
+        }
         Ok(Some(MemberAccount {
             id: account.id,
             email: account.email.as_str().to_owned(),
@@ -355,6 +437,7 @@ impl MemberStore for SqlStore {
             created_at: account.created_at.unix_timestamp(),
             updated_at: account.updated_at.unix_timestamp(),
             devices,
+            past_bundles,
         }))
     }
 
@@ -408,6 +491,31 @@ impl MemberStore for SqlStore {
                 changed = true;
             }
             Some(_) => {}
+        }
+        // What the account signed under its earlier keys is checked against these, and not after the
+        // home says it replaced them: a version began when the one before it ended, so each is kept
+        // as of then (the first, when the account was made), and the current one too.
+        let mut began = account.created_at;
+        for past in &account.past_bundles {
+            crate::tables::account_bundles::record(
+                self.writer(),
+                account.id.0,
+                i64::from(past.key_version),
+                &past.public_bundle,
+                &past.bundle_signature,
+                from_secs(began, "a past bundle's start")?,
+            )
+            .await?;
+            began = past.superseded_at;
+        }
+        if !account.past_bundles.is_empty() {
+            crate::tables::account_bundles::set_recorded_at(
+                self.writer(),
+                account.id.0,
+                i64::from(account.key_version),
+                from_secs(began, "a bundle's start")?,
+            )
+            .await?;
         }
         if !replicated {
             replicated_accounts::Entity::insert(replicated_accounts::ActiveModel {

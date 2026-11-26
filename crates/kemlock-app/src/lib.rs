@@ -55,6 +55,7 @@ pub mod sends;
 pub mod session;
 pub mod setup_basics;
 pub mod sign_in;
+pub mod signed_writes;
 pub mod signup_verify;
 pub mod spaces;
 pub mod sso;

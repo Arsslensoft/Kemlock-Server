@@ -23,7 +23,7 @@
 import { ApiError } from '@/api/errors';
 import type { Api } from '@/api/client';
 import type { Proof } from '@/api/twoStep';
-import type { InstallRequest, RotationApi, RotationPlanDto, Rotated } from '@/api/rotation';
+import type { InstallRequest, RotationApi, RotationPlanDto, Rotated, StagedItemDto } from '@/api/rotation';
 import type { PasskeysApi } from '@/api/passkeys';
 import type { SendsApi } from '@/api/sends';
 import type { ItemDto } from '@/api/types';
@@ -213,7 +213,7 @@ async function stageItems(
   rewritten: Map<string, ItemDto>,
   report: (done: number, total: number) => void,
 ): Promise<void> {
-  let batch: Array<{ id: string; baseRevision: number; ciphertext: string; itemKey: string }> = [];
+  let batch: StagedItemDto[] = [];
   let bytes = 0;
   let done = 0;
   const flush = async () => {
@@ -234,11 +234,16 @@ async function stageItems(
       ciphertext: decodeB64(item.ciphertext),
       itemKey: decodeB64(item.itemKey),
     });
-    const entry = {
+    // The re-encrypted item is a write of the account, signed by the new keys: a vault that takes
+    // signed writes only is installed with every item signed, and the signature is kept with it.
+    const entry: StagedItemDto = {
       id: item.id,
       baseRevision: item.revision,
       ciphertext: encodeB64(moved.ciphertext),
       itemKey: encodeB64(moved.itemKey),
+      writer: moved.writer,
+      writerKeyVersion: moved.writerKeyVersion,
+      writeSignature: moved.writeSignature,
     };
     rewritten.set(item.id, {
       id: item.id,
@@ -249,6 +254,9 @@ async function stageItems(
       keyVersion: moved.keyVersion,
       ciphertext: entry.ciphertext,
       itemKey: entry.itemKey,
+      writer: moved.writer,
+      writerKeyVersion: moved.writerKeyVersion,
+      writeSignature: moved.writeSignature,
     });
     // Keep the request under the body limit: send what is held before this item would pass it.
     const size = entry.ciphertext.length + entry.itemKey.length + 120;

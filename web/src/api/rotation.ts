@@ -41,6 +41,14 @@ export interface StagedItemDto {
   baseRevision: number;
   ciphertext: string;
   itemKey: string;
+  /**
+   * The account's signature of the write the rotation makes of the item, by the new keys: all three
+   * or none (docs/crypto.md, "Rotating the root key"). A vault that takes signed writes only is not
+   * installed without them.
+   */
+  writer?: string;
+  writerKeyVersion?: number;
+  writeSignature?: string;
 }
 
 export interface StageRequest {

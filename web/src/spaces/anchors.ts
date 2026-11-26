@@ -47,12 +47,39 @@ export interface AnchorStore {
   markSeen(account: string, space: string): Promise<void>;
 }
 
+/**
+ * The fingerprint of the bundle an account had at a key version, as this browser saw it vouched
+ * (the account's own keys, or a space's member list) when it was the account's current one. A bundle
+ * the server serves for an older version is taken only when it has this fingerprint: the server can
+ * give a key version only the bundle this browser already saw it have
+ * (docs/crypto.md, "Signed item writes", "Key versions").
+ */
+export interface BundlePinStore {
+  load(account: string, writer: string, version: number): Promise<string | undefined>;
+  /** Keeps the fingerprint for a version, unless one is kept: a version names one bundle. */
+  save(account: string, writer: string, version: number, fingerprint: string): Promise<void>;
+}
+
 /** The members a person compared the fingerprint of, here. A pin is a fingerprint, 12 groups of 5 digits. */
 export interface PinStore {
   /** The fingerprint pinned for a member, if any. */
   load(account: string, member: string): Promise<string | undefined>;
   /** Pins a member's fingerprint, replacing the one before. */
   save(account: string, member: string, fingerprint: string): Promise<void>;
+}
+
+/**
+ * The highest revision of each item of an owner that this browser has seen with a valid write
+ * signature (docs/crypto.md, "Signed item writes"): an item id to a revision. A newer revision of
+ * such an item that comes without a signature is not taken in, after a reload or on a fresh full
+ * sync as in the session that saw the signature. It lives beside the anchors, sealed the same way.
+ */
+export type SignedFloor = Record<string, number>;
+
+export interface FloorStore {
+  /** The floor kept for an owner; empty when none is. */
+  load(account: string, owner: string): Promise<SignedFloor>;
+  save(account: string, owner: string, floor: SignedFloor): Promise<void>;
 }
 
 const DATABASE = 'kemlock-space-anchors';
@@ -63,6 +90,21 @@ const anchorKey = (account: string, space: string) => `anchor/${account}/${space
 const canaryKey = (account: string) => `canary/${account}`;
 const seenKey = (account: string, space: string) => `seen/${account}/${space}`;
 const pinKey = (account: string, member: string) => `pin/${account}/${member}`;
+const floorKey = (account: string, owner: string) => `floor/${account}/${owner}`;
+const bundleKey = (account: string, writer: string, version: number) =>
+  `bundle/${account}/${writer}/${version}`;
+
+/** Reads a kept floor from its text; anything that isn't one is an error. */
+export function parseFloor(text: string): SignedFloor {
+  const value: unknown = JSON.parse(text);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('the kept floor is damaged');
+  const floor: SignedFloor = {};
+  for (const [id, revision] of Object.entries(value)) {
+    if (!Number.isSafeInteger(revision) || (revision as number) < 1) throw new Error('the kept floor is damaged');
+    floor[id] = revision as number;
+  }
+  return floor;
+}
 
 /** Whether `kept` is at least as far along as `next`, so `next` must not replace it. */
 function further(kept: ChainAnchor | undefined, next: ChainAnchor): boolean {
@@ -88,7 +130,14 @@ export function parseAnchor(text: string): ChainAnchor {
 }
 
 /** The anchors and pins in memory: for tests, and the fallback when IndexedDB can't be used. */
-export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
+export function memoryStores(): {
+  anchors: AnchorStore;
+  pins: PinStore;
+  floors: FloorStore;
+  bundles: BundlePinStore;
+} {
+  const floors = new Map<string, SignedFloor>();
+  const bundles = new Map<string, string>();
   const anchors = new Map<string, ChainAnchor>();
   const pins = new Map<string, string>();
   const seen = new Set<string>();
@@ -116,6 +165,23 @@ export function memoryStores(): { anchors: AnchorStore; pins: PinStore } {
         pins.set(pinKey(account, member), fingerprint);
       },
     },
+    floors: {
+      async load(account, owner) {
+        return { ...floors.get(floorKey(account, owner)) };
+      },
+      async save(account, owner, floor) {
+        floors.set(floorKey(account, owner), { ...floor });
+      },
+    },
+    bundles: {
+      async load(account, writer, version) {
+        return bundles.get(bundleKey(account, writer, version));
+      },
+      async save(account, writer, version, fingerprint) {
+        const key = bundleKey(account, writer, version);
+        if (!bundles.has(key)) bundles.set(key, fingerprint);
+      },
+    },
   };
 }
 
@@ -125,6 +191,14 @@ export function memoryAnchorStore(): AnchorStore {
 
 export function memoryPinStore(): PinStore {
   return memoryStores().pins;
+}
+
+export function memoryBundlePinStore(): BundlePinStore {
+  return memoryStores().bundles;
+}
+
+export function memoryFloorStore(): FloorStore {
+  return memoryStores().floors;
 }
 
 /** The account a key was made for: its second segment. */
@@ -159,7 +233,7 @@ function open(factory: IDBFactory): Promise<IDBDatabase> {
 export function indexedDbStores(
   seal: LocalSeal,
   factory: IDBFactory = indexedDB,
-): { anchors: AnchorStore; pins: PinStore } {
+): { anchors: AnchorStore; pins: PinStore; floors: FloorStore; bundles: BundlePinStore } {
   async function withStore<T>(
     name: string,
     mode: IDBTransactionMode,
@@ -250,7 +324,21 @@ export function indexedDbStores(
     load: (account, member) => read(PINS, pinKey(account, member)),
     save: (account, member, fingerprint) => write(PINS, pinKey(account, member), fingerprint),
   };
-  return { anchors, pins };
+  const floors: FloorStore = {
+    async load(account, owner) {
+      const text = await read(ANCHORS, floorKey(account, owner));
+      return text === undefined ? {} : parseFloor(text);
+    },
+    save: (account, owner, floor) => write(ANCHORS, floorKey(account, owner), JSON.stringify(floor)),
+  };
+  const bundles: BundlePinStore = {
+    load: (account, writer, version) => read(ANCHORS, bundleKey(account, writer, version)),
+    async save(account, writer, version, fingerprint) {
+      const key = bundleKey(account, writer, version);
+      if ((await read(ANCHORS, key)) === undefined) await write(ANCHORS, key, fingerprint);
+    },
+  };
+  return { anchors, pins, floors, bundles };
 }
 
 /**
@@ -298,7 +386,12 @@ registerLocalStore({
 });
 
 /** The stores the app uses: IndexedDB where there is one, memory otherwise. */
-export function defaultStores(seal: LocalSeal): { anchors: AnchorStore; pins: PinStore } {
+export function defaultStores(seal: LocalSeal): {
+  anchors: AnchorStore;
+  pins: PinStore;
+  floors: FloorStore;
+  bundles: BundlePinStore;
+} {
   try {
     if (typeof indexedDB !== 'undefined') return indexedDbStores(seal);
   } catch {

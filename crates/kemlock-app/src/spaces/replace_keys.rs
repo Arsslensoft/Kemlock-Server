@@ -332,6 +332,11 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
                 now,
             )
             .map_err(|e| SpacesError::from_item(id, e))?;
+            // No `refuses_unsigned` here, on purpose: the caller is an owner or admin of the space, and
+            // the rewrites are a new envelope of other members' items, which no signature of theirs
+            // covers. A signed-only space must not be stuck at 423 for want of a client that signs
+            // its replacement, so an unsigned rewrite from an owner or admin is accepted; a signed
+            // one carries its signature as any write does.
             drafts.push((draft, collection));
         }
         let held: BTreeSet<ItemId> = held.into_iter().collect();

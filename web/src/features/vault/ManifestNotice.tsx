@@ -28,6 +28,8 @@ export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
   const resurrected = count('resurrected');
   const deleted = count('deleted');
   const implausible = count('implausible');
+  const forged = count('forged');
+  const unsigned = count('unsigned');
   return (
     <Notice tone="warn" live>
       {mismatch ? (
@@ -44,6 +46,8 @@ export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
       {resurrected > 0 ? <p>{t('manifest.notice.resurrected', { count: resurrected })}</p> : null}
       {deleted > 0 ? <p>{t('manifest.notice.deleted', { count: deleted })}</p> : null}
       {implausible > 0 ? <p>{t('manifest.notice.implausible', { count: implausible })}</p> : null}
+      {forged > 0 ? <p>{t('manifest.notice.forged', { count: forged })}</p> : null}
+      {unsigned > 0 ? <p>{t('manifest.notice.unsigned', { count: unsigned })}</p> : null}
       {mismatch ? <p className="hint">{t('manifest.notice.hint')}</p> : null}
     </Notice>
   );

@@ -18,6 +18,7 @@
 //! - `prf`: the passkey PRF wrap of the root key;
 //! - `kit`: the Recovery Kit, a 2-of-3 split of a key that wraps the root key;
 //! - `manifests`: signing and checking the signed manifest;
+//! - `item_writes`: signing an item write as the account and checking the signature of one;
 //! - `sharing`: sealing the root key, the member confirmation and a released emergency key;
 //! - `spaces`: a space's keys and their encrypted names;
 //! - `chain`: a space's signed chain, verified, and the keys opened only through it;
@@ -34,6 +35,7 @@ mod chain;
 mod chain_build;
 mod error;
 mod ids;
+mod item_writes;
 mod kit;
 mod manifests;
 mod prf;
