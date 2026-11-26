@@ -167,6 +167,10 @@ pub struct Limits {
     /// Second-step challenges made per account: 10 in 5 minutes (as long as a challenge lives),
     /// so someone who holds the password can't pile up open challenges to guess codes on.
     pub challenges: Limiter,
+    /// Authenticated requests per device: 240 a minute, then doubling delays. Anyone who can
+    /// register an account holds a token, and each request with one puts a proof in the replay
+    /// set of authenticated proofs, so this bounds what one registration can put there.
+    pub device_proof: Limiter,
     /// Asking to change the sign-in address: 3 an hour per account, whether or not the address is
     /// free. Each ask mails someone, and trying addresses is how an account would be probed.
     pub email_change: Limiter,
@@ -188,6 +192,7 @@ impl Default for Limits {
             setup: Limiter::new(5, 60),
             register: Limiter::new(10, 3600),
             challenges: Limiter::new(10, 300),
+            device_proof: Limiter::new(240, 60),
             email_change: Limiter::new(3, 3600),
             lookup: Limiter::new(30, 600),
         }

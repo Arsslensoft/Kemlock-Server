@@ -14,11 +14,14 @@
 //! a hard cap. At the cap a new proof is refused with [`DpopError::Overloaded`] (a 503), because
 //! forgetting ids to make room would let any proof be replayed.
 //!
-//! Two sets, so the ones anybody can fill can't starve the ones only a signed-in device can: a
-//! proof with no access token (a token endpoint, where nobody is authenticated yet and anyone
-//! may make a key and get the nonce) goes in the open set, with a smaller cap; a proof that
-//! carries a valid access token goes in the authenticated set. A full open set refuses only
-//! sign-ins and refreshes, never a call that already holds a token.
+//! Two sets, so the ones anybody can fill can't starve the ones only an account's own devices
+//! fill: a proof with no access token (a token endpoint, where nobody is authenticated yet and
+//! anyone may make a key and get the nonce) goes in the open set, with a smaller cap and a share
+//! per client address; a proof that carries a valid access token goes in the authenticated set.
+//! Anyone who can register an account can get such a token, so the authenticated set is not
+//! closed to strangers: each device is limited in how many authenticated requests it may make
+//! (`Limits::device_proof`), which bounds what one registration can put in. A full open set
+//! refuses only sign-ins, never a call that already holds a token or a refresh.
 
 use crate::replay::{Full, TimedSet};
 use kemlock_app::b64url;

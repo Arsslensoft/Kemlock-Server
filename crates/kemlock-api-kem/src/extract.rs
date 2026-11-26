@@ -339,6 +339,12 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
         let Ok(claims) = api.signer.verify(token, api.crypto.now()) else {
             return Err(invalid_token(Problem::from(AppError::Unauthorized)));
         };
+        // A token anyone who registered holds is enough to get a proof into the set of
+        // authenticated ones, so each device may make only so many a minute.
+        api.limits
+            .device_proof
+            .check(&format!("device:{}", claims.device.0), api.now())
+            .map_err(rate_limited)?;
         let jkt = verify_proof(parts, api, Some(token), None)?;
         let actor = api
             .authenticate()

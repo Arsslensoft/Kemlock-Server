@@ -1362,6 +1362,36 @@ async fn a_made_up_access_token_never_takes_room_in_the_replay_set() {
 }
 
 #[tokio::test]
+async fn one_device_may_put_only_so_many_authenticated_proofs_in_the_replay_set() {
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let other_client = app.client();
+    let other = register_and_sign_in(&other_client, "alex@example.org").await;
+    app.api.limits.device_proof.set_limit(5);
+
+    let before = app.api.dpop.tracked();
+    for n in 0..5 {
+        let reply = client
+            .get_authed("/kem/v1/sync", &session.access_token)
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "request {n}");
+    }
+    // The sixth waits, before its proof is looked at: it takes no room.
+    let limited = client
+        .get_authed("/kem/v1/sync", &session.access_token)
+        .await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.problem(), "rate-limited");
+    assert_eq!(app.api.dpop.tracked(), before + 5);
+    // Another device is not held back by it.
+    let ok = other_client
+        .get_authed("/kem/v1/sync", &other.access_token)
+        .await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
+#[tokio::test]
 async fn a_proof_for_another_url_or_method_is_refused() {
     let app = App::new(false);
     let client = app.client();
