@@ -43,6 +43,7 @@ pub mod profile;
 pub mod push;
 pub mod put_batch;
 pub mod put_item;
+pub mod signed_writes;
 pub mod quota;
 pub mod recovery_kit;
 pub mod refresh;

@@ -27,7 +27,7 @@ use kemlock_domain::spaces::{
     Collection, CollectionId, Group, GroupId, KeyCopy, SpaceError, SpaceRole, apply_space_write,
     check_sealed_key, check_sealed_name,
 };
-use kemlock_domain::{Item, ItemFormat, ItemId, ItemWrite, Owner, SpaceId, UserId};
+use kemlock_domain::{Item, ItemError, ItemFormat, ItemId, ItemWrite, Owner, SpaceId, UserId};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
@@ -265,6 +265,9 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
         let mut drafts = Vec::with_capacity(input.writes.len());
         for (collection, write) in input.writes {
             let id = write.id;
+            if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
+                return Err(SpacesError::from_item(id, ItemError::SignatureRequired));
+            }
             if write.owner != Owner::Space(space) {
                 return Err(invalid("a replacement writes items of this space only"));
             }

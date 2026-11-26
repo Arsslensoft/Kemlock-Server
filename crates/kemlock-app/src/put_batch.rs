@@ -4,7 +4,7 @@ use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::error::AppError;
 use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier};
-use kemlock_domain::{ChangeId, Item, ItemId, ItemWrite, Owner};
+use kemlock_domain::{ChangeId, Item, ItemError, ItemId, ItemWrite, Owner};
 use std::collections::{BTreeMap, HashSet};
 
 /// The most writes one batch may carry.
@@ -42,6 +42,9 @@ impl<I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutBatch<I, V, N, C> {
         let mut drafts = Vec::with_capacity(writes.len());
         for write in writes {
             let id = write.id;
+            if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
+                return Err(AppError::from_item(id, ItemError::SignatureRequired));
+            }
             let stored = self.items.get(id).await?;
             let draft = write
                 .apply(stored.as_ref(), actor.user, self.config.item_limits, now)

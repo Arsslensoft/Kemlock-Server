@@ -62,6 +62,8 @@ struct StoreInner {
     /// The newest TOTP step accepted per user.
     totp_steps: HashMap<UserId, u64>,
     items: HashMap<ItemId, Item>,
+    /// The owners that accept signed writes only.
+    signed_owners: HashSet<Owner>,
     events: Vec<Event>,
     /// The address each event was written with, in step with `events`.
     event_ips: Vec<Option<IpAddr>>,
@@ -628,6 +630,9 @@ impl ItemStore for FakeStore {
         Self::check_draft(&g, &draft)?;
         let change = self.stored_change(&mut g, draft.updated_at);
         let item = draft.into_item(change);
+        if item.signature.is_some() {
+            g.signed_owners.insert(item.owner);
+        }
         g.items.insert(item.id, item.clone());
         self.dedup.clear(item.id);
         Ok(item)
@@ -642,6 +647,9 @@ impl ItemStore for FakeStore {
         for draft in drafts {
             let change = self.stored_change(&mut g, draft.updated_at);
             let item = draft.into_item(change);
+            if item.signature.is_some() {
+                g.signed_owners.insert(item.owner);
+            }
             g.items.insert(item.id, item.clone());
             self.dedup.clear(item.id);
             stored.push(item);
@@ -694,6 +702,19 @@ impl ItemStore for FakeStore {
             }
         }
         Ok(horizon)
+    }
+
+    async fn signed_writes_required(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.lock().signed_owners.contains(&owner))
+    }
+
+    async fn require_signed_writes(
+        &self,
+        owner: Owner,
+        _at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.lock().signed_owners.insert(owner);
+        Ok(())
     }
 
     async fn purge_tombstones(&self, before: OffsetDateTime) -> Result<u64, StoreError> {

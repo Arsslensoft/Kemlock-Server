@@ -64,6 +64,9 @@ impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceBat
         let mut drafts = Vec::with_capacity(writes.len());
         for (write, collection) in writes {
             let id = write.id;
+            if crate::signed_writes::refuses_unsigned(&self.items, &write).await? {
+                return Err(item_error(id, ItemError::SignatureRequired));
+            }
             let stored = self.items.get(id).await?;
             let draft = match write.owner {
                 Owner::User(_) => {
