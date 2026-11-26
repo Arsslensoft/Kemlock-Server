@@ -172,18 +172,18 @@ async function mayGrant(ctx: BoxContext, sealer: MemberViewDto, key: BoxKey): Pr
  * The sealer's bundle at the key version their signature names, so a box they signed before their
  * account moved to a new key version still verifies against the keys that signed it.
  *
- * MERGE: only the bundle the server lists now is known here, so this returns it when its key
- * version is the one asked for and nothing otherwise. The branch that serves bundles by key version
- * (the bundle history) replaces the body, and checks that each bundle in the history is signed by
- * the one before it, with the newest being the listed one `verifiedRecipient` traced.
+ * The listed bundle when its key version is the one asked for; otherwise the bundle history's one
+ * for that version, which is taken only when it is the one this browser pinned while it was the
+ * sealer's current bundle (src/manifest/bundleHistory.ts). Anything else is none.
  */
 async function bundleAt(
-  _ctx: BoxContext,
+  ctx: BoxContext,
   sealer: MemberViewDto,
   keyVersion: number,
 ): Promise<Uint8Array | undefined> {
   const current = decodeB64(sealer.publicBundle);
-  return parseBundle(current)?.keyVersion === keyVersion ? current : undefined;
+  if (parseBundle(current)?.keyVersion === keyVersion) return current;
+  return (await ctx.deps.pastBundle?.(sealer.user, keyVersion)) ?? undefined;
 }
 
 /** Checks a signed box's signature and the sealer behind it; throws `KeyBoxRefused`. */

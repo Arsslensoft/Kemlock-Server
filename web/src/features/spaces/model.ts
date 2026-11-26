@@ -63,6 +63,11 @@ export interface SpaceDeps {
    * re-written by a key replacement. Null when there is none; left out, it is none.
    */
   acceptedManifest?: (spaceId: string) => Promise<Manifest | null>;
+  /**
+   * The bundle `account` had at `version`, from the server's bundle history, when it is the one
+   * this browser pinned while it was current (src/manifest/bundleHistory.ts); null for anything else.
+   */
+  pastBundle?: (account: string, version: number) => Promise<Uint8Array | null>;
 }
 
 /** Tells the manifest keeper, when there is one, of items this browser wrote. Never throws. */

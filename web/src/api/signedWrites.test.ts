@@ -83,7 +83,7 @@ describe('writeFields', () => {
   });
 });
 
-describe('signedItem, () => {
+describe('signedItem', () => {
   it('adds the writer, its key version and the signature of a kem1 item', async () => {
     const signed = await signedItem(crypto, live('a', 2));
     expect(signed.writer).toBe(ACCOUNT);

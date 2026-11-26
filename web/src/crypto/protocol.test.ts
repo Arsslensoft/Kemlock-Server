@@ -36,6 +36,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sealItem: vi.fn(() => JSON.stringify({ ciphertext: 'Y3Q', itemKey: 'aw', keyVersion: 1 })),
     openItem: vi.fn(() => '{"name":"x"}'),
     ownFingerprint: vi.fn(() => '11111 22222'),
+    ownKeyVersion: vi.fn(() => 1),
     fingerprint: vi.fn(() => '33333 44444'),
     verifyBundle: vi.fn(() => true),
     totpEnrol: vi.fn(() => JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x' })),
@@ -101,6 +102,9 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     manifestSign: vi.fn(() => 'c2lnbmF0dXJl'),
     manifestVerifyOwn: vi.fn(() => true),
     manifestVerify: vi.fn(() => true),
+    itemWriteSign: vi.fn(() => 'c2lnbmF0dXJl'),
+    itemWriteVerifyOwn: vi.fn(() => true),
+    itemWriteVerify: vi.fn(() => true),
     newChainedSpace: vi.fn(() =>
       JSON.stringify({
         ok: true,

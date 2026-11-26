@@ -23,6 +23,7 @@ export const bundlePinStore = stores.bundles;
 export const manifestHooks: {
   wrote?: (items: ItemDto[]) => Promise<void>;
   accepted?: (spaceId: string) => Promise<Manifest | null>;
+  pastBundle?: (account: string, version: number) => Promise<Uint8Array | null>;
 } = {};
 
 export const spaceDeps: SpaceDeps = {
@@ -36,6 +37,7 @@ export const spaceDeps: SpaceDeps = {
   account: () => session.getState().userId,
   wrote: (items) => manifestHooks.wrote?.(items) ?? Promise.resolve(),
   acceptedManifest: (spaceId) => manifestHooks.accepted?.(spaceId) ?? Promise.resolve(null),
+  pastBundle: (account, version) => manifestHooks.pastBundle?.(account, version) ?? Promise.resolve(null),
 };
 
 export { spacesKey } from './refresh';

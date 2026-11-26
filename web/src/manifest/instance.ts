@@ -57,3 +57,6 @@ export const writeChecker = createWriteChecker({
 // The items a key replacement writes into a space are listed in its manifest like any other write.
 manifestHooks.wrote = (items) => manifestKeeper.wrote(items);
 manifestHooks.accepted = (spaceId) => manifestKeeper.acceptedManifest(`space:${spaceId}`);
+// A key box its sealer signed under a key version they have since replaced is checked against that
+// version's bundle, the same way a write is.
+manifestHooks.pastBundle = (account, version) => bundleHistory.past(account, version);

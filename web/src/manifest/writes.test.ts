@@ -105,8 +105,8 @@ describe('the verdict on a write signature', () => {
   });
 });
 
-describe('a space member's past bundle', () => {
-  it('is not pinned from a member list that is only the server's word', async () => {
+describe("a space member's past bundle", () => {
+  it("is not pinned from a member list that is only the server's word", async () => {
     resetFakeCrypto();
     await crypto.unlock(MEMBER, utf8(`wrapped:${MEMBER}`), new Uint8Array(), new Uint8Array());
     const signed = await signedItem(crypto, item(SPACE));
@@ -149,7 +149,7 @@ describe('what a sync looks up', () => {
     return signed;
   };
 
-  it('asks for a space's writer once for all the items of a sync, and again for the next', async () => {
+  it("asks for a space's writer once for all the items of a sync, and again for the next", async () => {
     const signed = await signedBy();
     const check = checker();
     check.beginSync();
