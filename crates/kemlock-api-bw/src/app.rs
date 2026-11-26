@@ -313,7 +313,7 @@ impl<S: BwStore> FromRequestParts<App<S>> for Authed {
 /// sign in that the web vault offers. With an `Authorization` header it must be a good one, as for
 /// [`Authed`]; with none, there is no caller.
 #[derive(Debug)]
-pub struct MaybeAuthed(pub Option<Authed>);
+pub(crate) struct MaybeAuthed(pub(crate) Option<Authed>);
 
 impl<S: BwStore> FromRequestParts<App<S>> for MaybeAuthed {
     type Rejection = BwError;

@@ -1011,7 +1011,7 @@ mod tests {
 
     #[test]
     fn a_rejected_request_reads_as_confirmed() {
-        let grant = EmergencyGrant::invite(
+        let mut grant = EmergencyGrant::invite(
             GrantId::random(),
             UserId::random(),
             Email::parse("a@example.com").expect("an email"),
