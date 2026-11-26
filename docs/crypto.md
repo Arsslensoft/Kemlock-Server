@@ -918,8 +918,8 @@ subject to this.
    member copy), and the signature must verify over the statement rebuilt from the record. Else the
    record is refused, as a record from a stranger is;
 2. if it carries none and the owner is signed-only, it is refused;
-3. a record never replaces a version of an equal or higher revision (see "Rollback" in
-   `docs/federation.md`);
+3. a record that names the head in its lineage at no higher revision than the head's is refused
+   (see "Rollback" in `docs/federation.md`);
 4. applying a signed record makes the owner signed-only on this peer.
 
 **A client, on sync**, for each `kem1` revision it is served, tombstones included. It checks the
@@ -930,16 +930,18 @@ vault, never a bundle the server served; for a space, the bundle of a writer the
 - `signed`: the signature verifies and the writer is allowed.
 - `unsigned`: none came.
 - `invalid`: one came and fails, or its writer isn't allowed, or `replaces` isn't `revision - 1`.
-- `unknown`: it can't be checked now (the writer's bundle at that key version isn't held).
+- `unknown`: it can't be checked now: the vault is locked, the writer's bundle at that key version
+  isn't held, or the space doesn't vouch for the writer (a member who has left, say).
 
-The client treats a revision as the item's current one only when it is `signed`, with two
-exceptions it applies by its own record and never because the server said so: **before the owner is
-signed for it** (it has seen no signed write for the owner and made none), an `unsigned` revision is
-accepted as it was; **a revision at or below the revision it already holds** is never a change. An
-`invalid` revision is never accepted, and it, an `unsigned` one for a signed owner and an `unknown`
-one are shown to the person, who can still open the previous revision. A client remembers, per
-owner, that it has seen a valid signature, and never forgets it. So a server can't turn signing off
-again by omitting it.
+A revision at or below the revision the client already holds is never a change. Otherwise the
+client takes a revision in as the item's current one when it is `signed`; it **never takes in an
+`invalid` one**; and for an `unsigned` or `unknown` one it follows its own record, never what the
+server says: once the client has seen a valid signature for the owner (in this session, which for
+the web vault is as long as its copy of the vault), it takes in no `unsigned` or `unknown` revision
+of an item it holds, tombstones included, and shows it to the person, who still has the revision it
+held. Until then it takes the revision in as it always did. So a server can't turn signing off by
+leaving it out, except for an item the client has never held, which is why the signed manifest
+stays: it lists revisions the owner's devices signed.
 
 The manifest keeper uses the verdict for deletions ("How a client uses it"): a tombstone whose
 signature verifies, by the account itself or by a member allowed to write the collection, is a
