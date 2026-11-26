@@ -92,6 +92,8 @@ export interface RotationResult {
   keyVersion: number;
   fingerprint: string;
   kit: { kitId: string; pieces: string[] } | null;
+  /** The live items as they are now, re-encrypted: what the next signed manifest lists. */
+  rewritten: ItemDto[];
   tokens: Rotated['tokens'];
   removed: { passkeys: number; emergency: number; recovery: number };
 }
@@ -168,6 +170,7 @@ async function stageItems(
   toVersion: number,
   items: ItemDto[],
   staged: Map<string, number>,
+  rewritten: Map<string, ItemDto>,
   report: (done: number, total: number) => void,
 ): Promise<void> {
   let batch: Array<{ id: string; baseRevision: number; ciphertext: string; itemKey: string }> = [];
@@ -197,6 +200,16 @@ async function stageItems(
       ciphertext: encodeB64(moved.ciphertext),
       itemKey: encodeB64(moved.itemKey),
     };
+    rewritten.set(item.id, {
+      id: item.id,
+      owner: item.owner,
+      kind: item.kind,
+      format: 'kem1',
+      revision: moved.revision,
+      keyVersion: moved.keyVersion,
+      ciphertext: entry.ciphertext,
+      itemKey: entry.itemKey,
+    });
     batch.push(entry);
     bytes += entry.ciphertext.length + entry.itemKey.length + 120;
     done += 1;
@@ -231,13 +244,14 @@ export async function rotateKeys(
   const started = await deps.crypto.rotationStart();
   const toVersion = started.keyVersion;
   const staged = new Map<string, number>();
+  const rewritten = new Map<string, ItemDto>();
   let installed = false;
   try {
     // The items.
     let items = await liveItems(deps);
     if (items.some((item) => item.format !== 'kem1')) throw new RotationBlockedError('unsupported-items');
     onProgress({ phase: 'items', done: 0, total: items.length });
-    await stageItems(deps, rotationId, toVersion, items, staged, (done, total) =>
+    await stageItems(deps, rotationId, toVersion, items, staged, rewritten, (done, total) =>
       onProgress({ phase: 'items', done, total }),
     );
 
@@ -271,7 +285,7 @@ export async function rotateKeys(
         if (plan.spaces > 0) throw new RotationBlockedError('spaces');
         items = await liveItems(deps);
         const changed = items.filter((item) => staged.get(item.id) !== item.revision);
-        await stageItems(deps, rotationId, toVersion, changed, staged, () => undefined);
+        await stageItems(deps, rotationId, toVersion, changed, staged, rewritten, () => undefined);
       }
       const proof = plan.hasPassword
         ? await proveAndWrap(deps, input.email, input.password)
@@ -313,6 +327,7 @@ export async function rotateKeys(
       keyVersion: committed.keyVersion,
       fingerprint: committed.fingerprint,
       kit: kit ? { kitId: kit.kitId, pieces: kit.pieces } : null,
+      rewritten: items.flatMap((item) => rewritten.get(item.id) ?? []),
       tokens: rotated.tokens,
       removed: {
         passkeys: plan.passkeys.length,

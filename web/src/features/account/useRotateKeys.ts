@@ -8,6 +8,7 @@ import { api, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
 import { vaultCrypto } from '@/crypto-port';
 import { encodeB64 } from '@/lib/b64url';
+import { manifestKeeper } from '@/manifest/instance';
 import { describeProfileError } from './profileErrors';
 import type { RotateDone, RotateImpact, RotateKeysProps } from './RotateKeysCard';
 import {
@@ -110,6 +111,14 @@ export function useRotateKeys(email: string, twoStep: boolean) {
           session.sealedRoot.set({ sealed: encodeB64(sealed), keyVersion: result.keyVersion });
         } catch {
           session.sealedRoot.clear();
+        }
+        // The old manifest was signed by the old key: sign the next with the new one, listing the
+        // re-encrypted items, so the next sync does not flag them.
+        try {
+          await manifestKeeper.wrote(result.rewritten);
+          await manifestKeeper.flush();
+        } catch {
+          // The keeper shows a failed publish itself, and tries again after the next write.
         }
         setDone({ fingerprint: result.fingerprint, kit: result.kit, removed: result.removed });
         await queryClient.invalidateQueries();

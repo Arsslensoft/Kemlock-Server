@@ -121,6 +121,10 @@ describe('rotateKeys', () => {
     });
     expect(request?.rotationId).toBe(staged[0]?.rotationId);
     expect(fromUtf8(decodeWrapped(request?.wrappedRootKey))).toContain('wrapped:v2');
+    expect(result.rewritten.map((i) => [i.id, i.revision, i.keyVersion]).sort()).toEqual([
+      [A, 2, 2],
+      [B, 4, 2],
+    ]);
     expect(progress).toContain('items:2/2');
     expect(progress.at(-1)).toBe('done:1/1');
     expect(api.abandon).not.toHaveBeenCalled();
@@ -183,6 +187,8 @@ describe('rotateKeys', () => {
     const result = await rotateKeys(deps, { email: 'sam@example.org', password: 'pw', makeKit: false });
     expect(result.keyVersion).toBe(2);
     expect(installs).toHaveLength(2);
+    // The item that moved on is listed at the revision it was staged again at.
+    expect(result.rewritten.find((i) => i.id === A)?.revision).toBe(3);
     // Only the item that moved on is staged again.
     expect(staged.map((s) => s.ids)).toEqual([[A, B], [A]]);
     expect(fakeCalls.filter((call) => call === 'rotationCommit')).toHaveLength(1);
