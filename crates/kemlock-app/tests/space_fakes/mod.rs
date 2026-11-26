@@ -14,9 +14,9 @@ use kemlock_app::spaces::{
     DeleteCollection, DeleteGroup, EditCollection, EditGroup, GetSpace, GrantAccess, InviteInput,
     InviteMember, KeyBoxFacts, KeyBoxVerifier, KeyReplacement, ListMembers, ListSpaces,
     NewCollection, Offboard, PendingExternal, PutSpaceBatch, PutSpaceItem, RecoveryBox,
-    ReplaceKeys, ResealKeys, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceChainRepo, SpaceChanges,
-    SpaceFacts, SpaceItemInfo, SpaceRecoveryRepo, SpaceRepo, SpacesError, StoredRecord,
-    StoredSeal, SyncOwners,
+    ReplaceKeys, ResealKeys, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceChainRepo,
+    SpaceChanges, SpaceFacts, SpaceItemInfo, SpaceRecoveryRepo, SpaceRepo, SpacesError,
+    StoredRecord, StoredSeal, SyncOwners,
 };
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, CustomPermissions, Grantee,
@@ -480,7 +480,10 @@ impl KeyBoxVerifier for FakeKeyBoxes {
         if signature == self::signature().as_slice() {
             Ok(1)
         } else {
-            Err(SpaceError::Invalid("the key's signature isn't the sealing member's over this box").into())
+            Err(
+                SpaceError::Invalid("the key's signature isn't the sealing member's over this box")
+                    .into(),
+            )
         }
     }
 }
@@ -621,7 +624,9 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn create_collection(&self) -> CreateCollection<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
+    pub(crate) fn create_collection(
+        &self,
+    ) -> CreateCollection<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         CreateCollection {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
@@ -699,7 +704,8 @@ impl SpaceWorld {
 
     pub(crate) fn replace_keys(
         &self,
-    ) -> ReplaceKeys<Spaces, FakeStore, FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeKeyBoxes> {
+    ) -> ReplaceKeys<Spaces, FakeStore, FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeKeyBoxes>
+    {
         ReplaceKeys {
             spaces: self.spaces.clone(),
             items: self.world.store.clone(),

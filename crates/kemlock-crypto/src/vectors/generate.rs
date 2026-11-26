@@ -10,8 +10,8 @@ use crate::{
     backend::{Backend, rustcrypto::RustCrypto},
     bundle::{self, Bundle},
     confirm::Statement,
-    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     dedup, kem1,
+    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     keys::{ITEM_WRAP_LABEL, MANIFEST_LABEL, PRIVATE_KEYS_LABEL, RootKey, SecretKey, USER_LABEL},
     kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
@@ -1210,9 +1210,8 @@ fn key_box_doc() -> Result<Value, Error> {
 
             // A real box of a random key, to a recipient key made for the case.
             let recipient_private: [u8; 96] = rnd()?;
-            let recipient_public = kx1::public_key_in::<G>(&kx1::PrivateKey::from_bytes(
-                &recipient_private,
-            ))?;
+            let recipient_public =
+                kx1::public_key_in::<G>(&kx1::PrivateKey::from_bytes(&recipient_private))?;
             let secret: [u8; 32] = rnd()?;
             let aad = match kind {
                 KeyBoxKind::Space => key_box::space_aad(&space, key_version, &recipient),
@@ -1220,7 +1219,8 @@ fn key_box_doc() -> Result<Value, Error> {
                     key_box::collection_aad(&space, &collection, key_version, &recipient)
                 }
             };
-            let sealed = sealed_box::seal_in::<G>(&recipient_public, kind.context(), &aad, &secret)?;
+            let sealed =
+                sealed_box::seal_in::<G>(&recipient_public, kind.context(), &aad, &secret)?;
 
             let sealer_private: [u8; 64] = rnd()?;
             let signing = sig1::SigningKey::from_bytes(&sealer_private);

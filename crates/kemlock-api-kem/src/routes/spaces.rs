@@ -31,9 +31,9 @@ use kemlock_app::spaces::{
     ConfirmationFacts, CreateCollection, CreateCollectionInput, CreateGroup, CreateGroupInput,
     CreateSpace, CreateSpaceInput, DeleteCollection, DeleteGroup, EditCollection,
     EditCollectionInput, EditGroup, EditGroupInput, GetSpace, GrantAccess, InviteInput,
-    InviteMember, ListMembers, ListSpaces, LookupAccount, NewCollection, Offboard, ReplaceKeys,
-    KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, ReplacementInput, ResealKeys, ResealMember, ResendInvitation, RevokeGrant,
-    SealedCollectionKey, SealedSpaceKey, SpaceRepo, SpacesError,
+    InviteMember, KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, ListMembers, ListSpaces, LookupAccount,
+    NewCollection, Offboard, ReplaceKeys, ReplacementInput, ResealKeys, ResealMember,
+    ResendInvitation, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceRepo, SpacesError,
 };
 use kemlock_app::{Actor, AppError, b64url};
 use kemlock_domain::spaces::{

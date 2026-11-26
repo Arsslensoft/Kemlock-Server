@@ -142,7 +142,8 @@ impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> EditGroup<R, V, C, 
             if !delta.needed.is_empty() {
                 state.ensure_keys_open()?;
             }
-            let keys = key_changes(&after, &delta, input.keys, now, &self.boxes, actor.user).await?;
+            let keys =
+                key_changes(&after, &delta, input.keys, now, &self.boxes, actor.user).await?;
             changes.key_copies = keys.key_copies;
             changes.key_copies_removed = keys.key_copies_removed;
             changes.collections = keys.collections;

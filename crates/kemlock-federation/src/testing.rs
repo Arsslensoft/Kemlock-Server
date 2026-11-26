@@ -9,9 +9,8 @@ use kemlock_crypto::sig1;
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
-    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState, Space,
-    SpaceRole,
-    SpaceState,
+    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState,
+    Space, SpaceRole, SpaceState,
 };
 use kemlock_domain::{
     ItemDraft, ItemFormat, ItemId, ItemKind, Owner, Revision, ServerId, SpaceId, UserId,

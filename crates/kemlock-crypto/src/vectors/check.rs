@@ -16,8 +16,8 @@ use crate::{
     backend::Backend,
     bundle::{self, Bundle},
     confirm::{STATEMENT_LEN, Statement},
-    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     dedup, ed25519, kem1,
+    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     keys::{ITEM_WRAP_LABEL, RootKey, SecretKey},
     kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
@@ -1346,7 +1346,12 @@ fn key_box_file<B: Backend>(doc: &Value) {
         assert_eq!(boxed[0], 1, "{name}");
         let private = kx1::PrivateKey::from_bytes(&arr(case, "recipient_private_key"));
         let opened = sealed_box::open_in::<B>(&private, context, &aad, &boxed).expect("open");
-        assert_eq!(opened.as_slice(), bytes(case, "secret"), "{} {name}", B::NAME);
+        assert_eq!(
+            opened.as_slice(),
+            bytes(case, "secret"),
+            "{} {name}",
+            B::NAME
+        );
 
         // The statement, rebuilt by hand from the documented layout.
         let mut expected = b"kemlock/v1/key-box".to_vec();
@@ -1410,8 +1415,13 @@ fn key_box_file<B: Backend>(doc: &Value) {
             );
         }
         assert!(
-            sig1::verify_in::<B>(&public, "key-box", &flip(statement.clone(), 700), &signature)
-                .is_err()
+            sig1::verify_in::<B>(
+                &public,
+                "key-box",
+                &flip(statement.clone(), 700),
+                &signature
+            )
+            .is_err()
         );
         for index in [0usize, 3308, 3309, 3372] {
             assert!(

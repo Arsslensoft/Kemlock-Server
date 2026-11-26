@@ -86,7 +86,11 @@ impl Model {
             invited_at: self.invited_at,
             accepted_at: self.accepted_at,
             sealed_space_key: self.sealed_space_key,
-            sealed_by: sealed_by_of(self.sealed_by, self.sealed_by_key_version, self.sealed_signature)?,
+            sealed_by: sealed_by_of(
+                self.sealed_by,
+                self.sealed_by_key_version,
+                self.sealed_signature,
+            )?,
             key_version: self
                 .key_version
                 .map(|v| from_i64_u32(v, "member key version"))

@@ -1175,7 +1175,11 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
             .open_collection(&space, &collection, 1, &for_member_space.sealed)
             .is_err()
     );
-    assert!(maker.open_space(&space, 1, &for_member_space.sealed).is_err());
+    assert!(
+        maker
+            .open_space(&space, 1, &for_member_space.sealed)
+            .is_err()
+    );
     // The recipient's id is the box's aad: a box sealed for one account id does not open for
     // another account with the same key.
     let misaddressed = maker

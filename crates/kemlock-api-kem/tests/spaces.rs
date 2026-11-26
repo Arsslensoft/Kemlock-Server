@@ -1655,7 +1655,11 @@ async fn a_sealed_key_must_carry_the_signature_of_the_member_who_sends_it() {
             b64(&[0x55u8; 3373]),
             good_collection_key.clone(),
         ),
-        ("a short signature", b64(&[1u8; 10]), good_collection_key.clone()),
+        (
+            "a short signature",
+            b64(&[1u8; 10]),
+            good_collection_key.clone(),
+        ),
     ] {
         let refused = sam
             .post(
@@ -1672,7 +1676,12 @@ async fn a_sealed_key_must_carry_the_signature_of_the_member_who_sends_it() {
     );
 
     // The signature is required, not optional.
-    let mut unsigned = space_body(space, collection, good_space_key.clone(), good_collection_key.clone());
+    let mut unsigned = space_body(
+        space,
+        collection,
+        good_space_key.clone(),
+        good_collection_key.clone(),
+    );
     unsigned
         .as_object_mut()
         .expect("an object")
@@ -1684,7 +1693,12 @@ async fn a_sealed_key_must_carry_the_signature_of_the_member_who_sends_it() {
     let made = sam
         .post(
             "/kem/v1/spaces",
-            space_body(space, collection, good_space_key.clone(), good_collection_key.clone()),
+            space_body(
+                space,
+                collection,
+                good_space_key.clone(),
+                good_collection_key.clone(),
+            ),
         )
         .await;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
@@ -1744,8 +1758,7 @@ async fn a_confirmation_seals_keys_signed_by_the_confirmer() {
     // his: the space key box and each collection key box must be signed by the confirmer.
     let uri = format!("/kem/v1/spaces/{space}/members/{}/confirm", ana.id);
     let mut forged_space_key = confirm_body(&sam, &ana, space, collection, 6);
-    forged_space_key["sealedSpaceKeySignature"] =
-        json!(key_sig(&zed, space, None, 1, ana.id, 5));
+    forged_space_key["sealedSpaceKeySignature"] = json!(key_sig(&zed, space, None, 1, ana.id, 5));
     assert_eq!(
         sam.post(&uri, forged_space_key).await.status,
         StatusCode::BAD_REQUEST
@@ -1813,7 +1826,12 @@ async fn an_owner_seals_the_keys_again_and_the_copies_come_back_signed() {
     let forged = sam
         .post(&uri, reseal_body(&zed, &ana, space, collection, 30))
         .await;
-    assert_eq!(forged.status, StatusCode::BAD_REQUEST, "{:?}", forged.json());
+    assert_eq!(
+        forged.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        forged.json()
+    );
     let by_member = ana
         .post(&uri, reseal_body(&ana, &ana, space, collection, 30))
         .await;

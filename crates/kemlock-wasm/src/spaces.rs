@@ -33,8 +33,7 @@ use std::collections::{HashMap, HashSet};
 
 use kemlock_crypto::{
     bundle::Bundle,
-    kem1,
-    key_box,
+    kem1, key_box,
     keys::{ITEM_WRAP_LABEL, SecretKey},
     kx1,
     owner::Owner,
@@ -605,7 +604,8 @@ impl Session {
         let own_id = unlocked.account_id;
         let key = SecretKey::generate();
         let aad = collection_key_aad(space, collection, FIRST_COLLECTION_KEY_VERSION, &own_id);
-        let sealed_key = sealed_box::seal(&own_public, context::COLLECTION_KEY, &aad, key.as_bytes())?;
+        let sealed_key =
+            sealed_box::seal(&own_public, context::COLLECTION_KEY, &aad, key.as_bytes())?;
         let sealed_key_signature = sign_key_box(
             sig_private,
             own_id,

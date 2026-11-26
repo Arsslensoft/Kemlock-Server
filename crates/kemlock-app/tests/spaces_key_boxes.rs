@@ -7,6 +7,7 @@ mod fakes;
 mod space_fakes;
 
 use fakes::actor;
+use kemlock_app::spaces::SealedCollectionKey;
 use kemlock_app::spaces::{
     CreateCollectionInput, CreateSpaceInput, InviteInput, NewCollection, ResealMember, SpacesError,
 };
@@ -16,7 +17,6 @@ use kemlock_domain::spaces::{
 };
 use kemlock_domain::{SpaceId, UserId};
 use space_fakes::{SpaceWorld, key_for, name, sealed_key, signature};
-use kemlock_app::spaces::SealedCollectionKey;
 
 fn signed_by(who: UserId) -> Option<KeyBoxSignature> {
     Some(KeyBoxSignature {
@@ -95,7 +95,13 @@ async fn a_space_is_not_made_with_a_key_nobody_signed() {
 }
 
 /// Sam invites Ana to `space` with Edit on `everyone`, and Ana accepts.
-async fn invited_and_accepted(w: &SpaceWorld, space: SpaceId, everyone: CollectionId, sam: UserId, ana: UserId) {
+async fn invited_and_accepted(
+    w: &SpaceWorld,
+    space: SpaceId,
+    everyone: CollectionId,
+    sam: UserId,
+    ana: UserId,
+) {
     let email = w
         .world
         .store
@@ -324,8 +330,14 @@ async fn only_an_owner_or_admin_seals_keys_again_and_only_what_is_held() {
     let other = CollectionId::random();
     for (why, members) in [
         ("an unconfirmed member", vec![resealed(lee, everyone, 30)]),
-        ("a key the member doesn't hold", vec![resealed(ana, other, 30)]),
-        ("a member twice", vec![resealed(ana, everyone, 30), resealed(ana, everyone, 32)]),
+        (
+            "a key the member doesn't hold",
+            vec![resealed(ana, other, 30)],
+        ),
+        (
+            "a member twice",
+            vec![resealed(ana, everyone, 30), resealed(ana, everyone, 32)],
+        ),
         ("nobody", Vec::new()),
         (
             "a signature that isn't the sealer's",

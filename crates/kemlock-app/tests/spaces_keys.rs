@@ -1,10 +1,4 @@
-//! Spaces: collecti    case("a space key not signed by the sealer", &|i| {
-        i.sealed_space_keys[0].signature = vec![0x66; kemlock_domain::spaces::CONFIRMATION_SIGNATURE_LEN]
-    });
-    case("a collection key with no signature", &|i| {
-        i.collections[0].keys[0].signature = Vec::new()
-    });
-ons, groups, grants, item writes, the key replacement after offboarding, and
+//! Spaces: collections, groups, grants, item writes, the key replacement after offboarding, and
 //! the owners a device syncs.
 
 mod fakes;
@@ -1126,6 +1120,12 @@ async fn an_incomplete_replacement_changes_nothing() {
     });
     case("an item moved to another collection", &|i| {
         i.writes[0].0 = o.private
+    });
+    case("a space key not signed by the sealer", &|i| {
+        i.sealed_space_keys[0].signature = vec![0x66; kemlock_domain::spaces::CONFIRMATION_SIGNATURE_LEN]
+    });
+    case("a collection key with no signature", &|i| {
+        i.collections[0].keys[0].signature = Vec::new()
     });
     for (why, input) in cases {
         let result = o.replace(c.sam, input).await;

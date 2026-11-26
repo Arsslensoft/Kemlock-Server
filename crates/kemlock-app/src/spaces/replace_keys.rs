@@ -17,8 +17,8 @@
 //! collection keys leaves it alone: the dedup key doesn't come from them.
 
 use super::error::SpacesError;
-use super::ports::{KeyReplacement, SpaceChanges, SpaceItemInfo, SpaceRepo};
 use super::key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, check_box};
+use super::ports::{KeyReplacement, SpaceChanges, SpaceItemInfo, SpaceRepo};
 use super::support::{SealedCollectionKey, SealedSpaceKey, load_open, record};
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
@@ -76,15 +76,7 @@ fn invalid(why: &'static str) -> SpacesError {
     SpacesError::Rule(SpaceError::Invalid(why))
 }
 
-impl<
-    R: SpaceRepo,
-    I: ItemStore,
-    T: TagStore,
-    V: EventLog,
-    N: Notifier,
-    C: Clock,
-    K: KeyBoxVerifier,
->
+impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock, K: KeyBoxVerifier>
     ReplaceKeys<R, I, T, V, N, C, K>
 {
     /// Lands a key replacement. Only an owner or admin may. Returns the re-written items.

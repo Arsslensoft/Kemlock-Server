@@ -37,9 +37,8 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
-    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState, Space,
-    SpaceRole,
-    SpaceState,
+    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState,
+    Space, SpaceRole, SpaceState,
 };
 use kemlock_domain::{ItemId, Owner, SpaceId, UserId};
 use std::collections::BTreeSet;

@@ -140,7 +140,13 @@ fn sealed(fill: u8) -> String {
 
 /// `by`'s signature (base64url) over the box `sealed(fill)` of a space key (`collection` `None`) or
 /// a collection key (docs/crypto.md, "Signed key boxes"), sealed to `recipient` at key version 1.
-fn key_sig(by: &Person, space: Uuid, collection: Option<Uuid>, recipient: UserId, fill: u8) -> String {
+fn key_sig(
+    by: &Person,
+    space: Uuid,
+    collection: Option<Uuid>,
+    recipient: UserId,
+    fill: u8,
+) -> String {
     use kemlock_crypto::key_box::{self, Kind};
     let boxed = sealed_key(fill);
     let (kind, aad) = match collection {
