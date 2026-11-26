@@ -8,6 +8,7 @@ import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
 import { duplicatesViewStore } from '@/features/duplicates/viewState';
 import { manifestKeeper, writeChecker } from '@/manifest/instance';
+import { onForget } from '@/app/forget';
 import { signedApi } from '@/api/signedWrites';
 import { trackedApi } from '@/manifest/tracked';
 import { forgetKeyFacts } from './keyFacts';
@@ -125,6 +126,7 @@ export function clearVault(): void {
   queryClient.removeQueries({ queryKey: writableCollectionsKey });
   queryClient.removeQueries({ queryKey: vaultKey });
 }
+onForget(clearVault);
 
 export function useVault() {
   const query = useQuery(vaultQuery);

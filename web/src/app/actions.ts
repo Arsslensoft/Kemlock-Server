@@ -1,6 +1,6 @@
 import { createDevicesApi } from '@/api/devices';
 import { clearCopiedSecret } from '@/lib/clipboard';
-import { clearVault } from '@/features/vault/hooks';
+import { forgetLoaded } from './forget';
 import { vaultCrypto } from '@/crypto-port';
 import { forgetGrant } from '@/features/admin/reauth';
 import { api, queryClient, session } from './services';
@@ -27,7 +27,7 @@ export async function lockVault(): Promise<void> {
   // A password or code copied from the vault does not stay on the clipboard of a locked one.
   void clearCopiedSecret();
   await vaultCrypto.lock();
-  clearVault();
+  forgetLoaded();
   forgetCachedData();
   // An admin step-up stays with the keys: locking drops it too.
   forgetGrant();
@@ -39,7 +39,7 @@ export async function lockVault(): Promise<void> {
  */
 export function forgetEndedSession(): void {
   void clearCopiedSecret();
-  clearVault();
+  forgetLoaded();
   forgetCachedData();
   forgetGrant();
 }
@@ -80,7 +80,7 @@ export async function signOut(options: { server?: boolean } = {}): Promise<void>
   // (this device was removed from Devices, or the account was erased).
   if (options.server !== false && session.getState().status !== 'signed-out') await endOnServer();
   await vaultCrypto.lock();
-  clearVault();
+  forgetLoaded();
   session.end();
   forgetGrant();
   queryClient.clear();
