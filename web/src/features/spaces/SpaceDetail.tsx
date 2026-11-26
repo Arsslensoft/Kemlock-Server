@@ -17,6 +17,7 @@ import {
   type SpaceDetail as Detail,
   ChainConflict,
   ChainRefused,
+  ReplaceBlocked,
   SpaceNotChecked,
   changeRole,
   confirmMember,
@@ -58,6 +59,13 @@ function describeSpaceError(error: unknown): Described {
     return { id: 'space.error.chainRefused', values: { reason: error.reason } };
   }
   if (error instanceof ChainConflict) return { id: 'space.error.chainConflict' };
+  if (error instanceof ReplaceBlocked) {
+    return error.reason === 'too-large'
+      ? { id: 'space.error.replaceTooLarge' }
+      : error.reason === 'no-manifest'
+        ? { id: 'space.error.replaceNoManifest' }
+        : { id: 'space.error.replaceUnreadable', values: { count: error.count } };
+  }
   return describeAccountError(error);
 }
 

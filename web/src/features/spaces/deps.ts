@@ -3,6 +3,7 @@ import { createSpacesApi } from '@/api/spaces';
 import { defaultStores } from '@/spaces/anchors';
 import { spaceCrypto } from '@/spaces/crypto';
 import type { ItemDto } from '@/api/types';
+import type { Manifest } from '@/manifest/format';
 import type { SpaceDeps } from './model';
 
 /** The real clients, for the screens' thin wrappers. Tests build their own `SpaceDeps`. */
@@ -15,7 +16,10 @@ const stores = defaultStores(spaceCrypto);
  * items a key replacement writes reach the signed manifest without the two files importing each
  * other.
  */
-export const manifestHooks: { wrote?: (items: ItemDto[]) => Promise<void> } = {};
+export const manifestHooks: {
+  wrote?: (items: ItemDto[]) => Promise<void>;
+  accepted?: (spaceId: string) => Promise<Manifest | null>;
+} = {};
 
 export const spaceDeps: SpaceDeps = {
   api: createSpacesApi(api),
@@ -23,6 +27,7 @@ export const spaceDeps: SpaceDeps = {
   anchors: stores.anchors,
   pins: stores.pins,
   wrote: (items) => manifestHooks.wrote?.(items) ?? Promise.resolve(),
+  acceptedManifest: (spaceId) => manifestHooks.accepted?.(spaceId) ?? Promise.resolve(null),
 };
 
 export { spacesKey } from './refresh';

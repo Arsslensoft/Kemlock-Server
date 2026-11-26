@@ -21,14 +21,9 @@ import type {
 } from '@/api/spaces';
 import { isApiError } from '@/api/errors';
 import type { ItemDto } from '@/api/types';
-import type {
-  ChainBuilt,
-  ChainChange,
-  ChainReplacement,
-  ChainView,
-  ChainWrite,
-} from '@/crypto/types';
+import type { ChainBuilt, ChainChange, ChainReplacement, ChainView } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
+import { type Manifest, ciphertextHash } from '@/manifest/format';
 import { type Fingerprint, fingerprintBytes } from '@/sharing/bundle';
 import type { AnchorStore, PinStore } from '@/spaces/anchors';
 import type { SpaceCrypto } from '@/spaces/crypto';
@@ -57,6 +52,11 @@ export interface SpaceDeps {
    * replacement's), so the space's signed manifest lists them (src/manifest/keeper.ts).
    */
   wrote?: (items: ItemDto[]) => Promise<void>;
+  /**
+   * The last verified manifest of a space (src/manifest/keeper.ts): what an item has to match to be
+   * re-written by a key replacement. Null when there is none; left out, it is none.
+   */
+  acceptedManifest?: (spaceId: string) => Promise<Manifest | null>;
 }
 
 /** Tells the manifest keeper, when there is one, of items this browser wrote. Never throws. */
@@ -91,6 +91,24 @@ export class ChainRefused extends Error {
   }
 }
 
+/**
+ * A key replacement that can't be made from here, and nothing was sent: the space is too large for
+ * one request (the replaced keys and every item sealed again must land together, or the items
+ * stay under keys nobody can open), or items the signed manifest lists can't be opened here, or
+ * the space has no manifest to say which items to re-write.
+ */
+export class ReplaceBlocked extends Error {
+  readonly reason: 'too-large' | 'unreadable' | 'no-manifest';
+  readonly count: number;
+
+  constructor(reason: ReplaceBlocked['reason'], count = 0) {
+    super(`the keys can't be replaced from the web vault (${reason})`);
+    this.name = 'ReplaceBlocked';
+    this.reason = reason;
+    this.count = count;
+  }
+}
+
 /** Someone else added records to the space's chain at the same time, twice running. */
 export class ChainConflict extends Error {
   constructor() {
@@ -119,55 +137,56 @@ const newId = (deps: SpaceDeps) => (deps.newId ?? (() => globalThis.crypto.rando
 
 const unixNow = (deps: SpaceDeps) => (deps.now ?? (() => Math.floor(Date.now() / 1000)))();
 
-/** What an append left to do: the writes that didn't fit in the request, and the items held. */
+/** What an append gave: whether any record went in, and the chain as it verifies now. */
 interface Appended {
   appended: boolean;
   chain: ChainView;
-  /** How many re-written items went up with the records. */
-  first: number;
-  rest: ChainWrite[];
-  held: string[];
 }
+
+/** What `make` hands `appendBuilt`: the worker's answer, and the items to name held beside it. */
+interface Made {
+  built: ChainBuilt;
+  held?: string[];
+}
+
+/**
+ * The most one append request may weigh: the route reads 8 MiB (routes/space_chain.rs), less a
+ * margin for what the transport adds.
+ */
+const MAX_REQUEST_BYTES = 8 * 1024 * 1024 - 256 * 1024;
 
 /**
  * Makes records in the worker (`make`), appends them to the space's chain, and verifies the chain
  * again, which keeps this browser's anchor and the worker's state up to date. When the head moved
- * meanwhile (409), the chain is read and verified again and the records are made once more on the
- * new head; a second conflict is shown. Resolves with the verified chain, and whether any record
- * was appended (a `seal` with nothing to share makes none).
+ * meanwhile (409), the chain is read and verified again and `make` runs again, on the new head
+ * (it reads whatever it depends on again); a second conflict is shown. Resolves with the verified
+ * chain, and whether any record was appended (a `seal` with nothing to share makes none).
  *
- * A key replacement's re-written items go up with its `keys` record, in one transaction, as many
- * as `writeBytes` lets one request hold; `rest` is what didn't fit.
+ * A key replacement's re-written items go up with its `keys` record, in one request and so one
+ * transaction: once the new version is in the chain nobody can open an item left under the old one.
+ * A request over the route's limit is never sent (`ReplaceBlocked`, `too-large`).
  */
 async function appendBuilt(
   deps: SpaceDeps,
   detail: Pick<SpaceDetail, 'view'>,
-  make: () => Promise<ChainBuilt>,
-  writeBytes = 0,
+  make: () => Promise<Made>,
 ): Promise<Appended> {
   const spaceId = detail.view.space.id;
   const me = detail.view.me.user;
-  let first = 0;
-  let rest: ChainWrite[] = [];
-  let held: string[] = [];
   const attempt = async (): Promise<boolean> => {
-    const built = await make();
+    const { built, held = [] } = await make();
     if (!built.ok) throw new ChainRefused(built.reason, built.seq);
     if (built.records.length === 0) return false;
-    const writes = takeWithin(built.writes ?? [], writeBytes);
-    first = writes.length;
-    rest = (built.writes ?? []).slice(writes.length);
-    held = built.held ?? [];
-    // What doesn't fit in the request is named held, so the replacement is complete (I3); the
-    // batches that follow write each under the new key version, which releases it (I4).
-    const named = [...held, ...rest.map((write) => write.item.id)];
-    await deps.api.appendChain(spaceId, {
+    const writes = built.writes ?? [];
+    const request = {
       records: built.records,
       seals: built.seals,
       names: built.names,
-      ...(named.length > 0 ? { held: named } : {}),
+      ...(held.length > 0 ? { held } : {}),
       ...(writes.length > 0 ? { writes } : {}),
-    });
+    };
+    if (JSON.stringify(request).length > MAX_REQUEST_BYTES) throw new ReplaceBlocked('too-large');
+    await deps.api.appendChain(spaceId, request);
     wrote(
       deps,
       writes.map((write) => write.item),
@@ -192,20 +211,7 @@ async function appendBuilt(
       throw again;
     }
   }
-  return { appended, chain: await verified(), first, rest, held };
-}
-
-/** The first of `writes` that fit in `bytes` of JSON (at least one when any are given). */
-function takeWithin(writes: ChainWrite[], bytes: number): ChainWrite[] {
-  if (bytes <= 0) return [];
-  let used = 0;
-  const taken: ChainWrite[] = [];
-  for (const write of writes) {
-    used += JSON.stringify(write).length;
-    if (used > bytes && taken.length > 0) break;
-    taken.push(write);
-  }
-  return taken;
+  return { appended, chain: await verified() };
 }
 
 /** Makes the records of one change in the worker and appends them (see `appendBuilt`). */
@@ -213,11 +219,11 @@ function appendChange(
   deps: SpaceDeps,
   detail: Pick<SpaceDetail, 'view'>,
   change: ChainChange,
-): Promise<{ appended: boolean; chain: ChainView }> {
+): Promise<Appended> {
   const spaceId = detail.view.space.id;
-  return appendBuilt(deps, detail, () =>
-    deps.crypto.buildChainRecords({ spaceId, at: unixNow(deps), change }),
-  );
+  return appendBuilt(deps, detail, async () => ({
+    built: await deps.crypto.buildChainRecords({ spaceId, at: unixNow(deps), change }),
+  }));
 }
 
 // ---- the list ---------------------------------------------------------------------------
@@ -921,8 +927,6 @@ export async function sealPending(deps: SpaceDeps, detail: SpaceDetail): Promise
 
 // ---- replacing the keys a removal marked -------------------------------------------------------
 
-/** A request to the append route holds this much of the re-written items; the rest go in batches. */
-const REQUEST_WRITE_BYTES = 4 * 1024 * 1024;
 /** Items a batch write takes at most. */
 const BATCH_SIZE = 500;
 
@@ -932,6 +936,32 @@ export function keysAwaitReplacement(detail: Pick<SpaceDetail, 'trust'>): boolea
   if (trust?.kind !== 'verified') return false;
   const { space, collections } = trust.view;
   return space.marked || collections.some((c) => c.marked);
+}
+
+/** Whether a grant, directly or through a group, lets `user` edit `collection`, as the chain has it. */
+function editsByChain(user: string, collection: string, chain: ChainView): boolean {
+  return chain.grants.some((grant) => {
+    if (grant.collection !== collection) return false;
+    if (!['edit', 'edit-hide-passwords', 'manage'].includes(grant.permission)) return false;
+    const [kind, id] = grant.grantee.split(':');
+    if (kind === 'user') return id === user;
+    if (kind === 'group') return chain.groups.find((g) => g.id === id)?.members.includes(user) ?? false;
+    return false;
+  });
+}
+
+/**
+ * Whether this account may replace the keys that wait, from here: the space's keys are open, and it
+ * can edit a collection whose key is marked, or is an owner or admin and the space key is. The
+ * worker leaves any other key alone, since an account that can't seal a collection's items again
+ * would leave them under a key nobody can open.
+ */
+export function canReplaceKeys(detail: SpaceDetail): boolean {
+  const trust = detail.trust;
+  if (trust?.kind !== 'verified' || !detail.readable) return false;
+  const { role, user } = detail.view.me;
+  if (trust.view.space.marked && (role === 'owner' || role === 'admin')) return true;
+  return trust.view.collections.some((c) => c.marked && editsByChain(user, c.id, trust.view));
 }
 
 export interface ReplaceProgress {
@@ -945,7 +975,7 @@ export interface ReplaceProgress {
 export interface Replaced {
   /** Items sealed again under their new key versions. */
   rewritten: number;
-  /** Items this account couldn't seal again, which stay held until someone with edit writes them. */
+  /** Items named held: not in the signed manifest, so not taken as accepted. */
   held: number;
 }
 
@@ -990,11 +1020,40 @@ async function scanItems(
 }
 
 /**
- * Replaces the keys that wait for it ("Removal and replacement"): the worker makes the `keys`
- * record and seals every item of the replaced collections again under the new key (an item it
- * can't open, or has no edit on, is held, which the chain allows and keeps from being re-wrapped
- * into the new key), and the server stores them with the record in one transaction. Items that
- * don't fit in that request go in batches after it. `progress` says how far it is.
+ * Splits items into those the last verified manifest of the space lists as they are (same id,
+ * revision and ciphertext hash, not deleted), which are the ones accepted, and the rest. A removed
+ * member's write under a key they kept, or anything newer than the manifest, is in the rest
+ * ("Using the state", "Items": only what was accepted and listed is written again).
+ */
+async function acceptedOf(
+  manifest: Manifest,
+  items: ChainReplacement['items'],
+): Promise<{ accepted: ChainReplacement['items']; rest: ChainReplacement['items'] }> {
+  const entries = new Map(manifest.entries.map((entry) => [entry.id, entry]));
+  const accepted: ChainReplacement['items'] = [];
+  const rest: ChainReplacement['items'] = [];
+  for (const item of items) {
+    const entry = entries.get(item.id);
+    const listed =
+      entry !== undefined &&
+      !entry.deleted &&
+      entry.revision === item.revision &&
+      entry.hash === (await ciphertextHash(decodeB64(item.ciphertext)));
+    (listed ? accepted : rest).push(item);
+  }
+  return { accepted, rest };
+}
+
+/**
+ * Replaces the keys that wait for it ("Removal and replacement"), all or nothing. The worker makes
+ * the `keys` record and seals again every item of the replaced collections that the space's last
+ * verified manifest lists as it is served; those it doesn't list are named held, which is all the
+ * chain allows for an item nobody vouches for. Both go in one request, so the new versions and the
+ * items under them land together: once they are in the chain nobody can open an item left under an
+ * old version. When that can't be (the request is too large, an item the manifest lists doesn't
+ * open here, the space has no manifest) nothing is sent and `ReplaceBlocked` says why. The items
+ * and the names are read again if the head moved and the records are made again. `progress` says
+ * how far it is.
  */
 export async function replaceKeys(
   deps: SpaceDeps,
@@ -1002,61 +1061,61 @@ export async function replaceKeys(
   progress: (p: ReplaceProgress) => void = () => undefined,
 ): Promise<Replaced> {
   if (!isChained(detail) || !keysAwaitReplacement(detail)) return { rewritten: 0, held: 0 };
-  const trust = detail.trust;
-  if (trust?.kind !== 'verified') return { rewritten: 0, held: 0 };
   const spaceId = detail.view.space.id;
-  const marked = new Set(trust.view.collections.filter((c) => c.marked).map((c) => c.id));
-  // Items already held stay held: they aren't live, and the replacement doesn't have to name them.
-  const items = await scanItems(
-    deps,
-    spaceId,
-    (dto) => marked.has(dto.collectionId) && !dto.held,
-    progress,
-  );
-  // What the server holds of each name, to be sealed again when the space key is replaced.
-  const names = [
-    { target: 'space', sealed: detail.view.space.name },
-    ...detail.view.collections.map((c) => ({ target: `collection:${c.id}`, sealed: c.name })),
-    ...detail.view.groups.map((g) => ({ target: `group:${g.id}`, sealed: g.name })),
-  ];
-  progress({ phase: 'sealing', done: 0, total: items.length });
-  const sent = await appendBuilt(
-    deps,
-    detail,
-    () =>
-      deps.crypto.buildKeyReplacement({
-        spaceId,
-        at: unixNow(deps),
-        replacement: { items, names },
-      }),
-    REQUEST_WRITE_BYTES,
-  );
-  if (!sent.appended) return { rewritten: 0, held: 0 };
-  const total = sent.first + sent.rest.length;
-  let done = sent.first;
-  progress({ phase: 'sending', done, total });
-  for (let at = 0; at < sent.rest.length; at += BATCH_SIZE) {
-    const batch = sent.rest.slice(at, at + BATCH_SIZE);
-    await deps.api.putBatch({
-      writes: batch.map((write) => ({ expectedRevision: write.expectedRevision, item: write.item })),
-    });
-    wrote(
+  let counts: Replaced = { rewritten: 0, held: 0 };
+  const sent = await appendBuilt(deps, detail, async () => {
+    // Everything this depends on is read now, so a retry after a conflict builds on the new state.
+    const trust = await checkSpaceChain(deps, spaceId, detail.view.me.user);
+    if (trust.kind !== 'verified') throw new SpaceNotChecked(trust.kind);
+    const marked = new Set(trust.view.collections.filter((c) => c.marked).map((c) => c.id));
+    const served = await deps.api.get(spaceId);
+    const live = await scanItems(
       deps,
-      batch.map((write) => write.item),
+      spaceId,
+      // Items already held stay held: they aren't live, and the replacement doesn't name them.
+      (dto) => marked.has(dto.collectionId) && !dto.held,
+      progress,
     );
-    done += batch.length;
-    progress({ phase: 'sending', done, total });
-  }
-  return { rewritten: total, held: sent.held.length };
+    const manifest = await deps.acceptedManifest?.(spaceId);
+    if (!manifest && live.length > 0) throw new ReplaceBlocked('no-manifest', live.length);
+    const { accepted, rest } = manifest ? await acceptedOf(manifest, live) : { accepted: [], rest: [] };
+    // What the server holds of each name, to be sealed again when the space key is replaced.
+    const names = [
+      { target: 'space', sealed: served.space.name },
+      ...served.collections.map((c) => ({ target: `collection:${c.id}`, sealed: c.name })),
+      ...served.groups.map((g) => ({ target: `group:${g.id}`, sealed: g.name })),
+    ];
+    progress({ phase: 'sealing', done: 0, total: accepted.length });
+    const built = await deps.crypto.buildKeyReplacement({
+      spaceId,
+      at: unixNow(deps),
+      replacement: { items: accepted, names },
+    });
+    // An item the manifest lists that this unlock can't open can't be named held: it is the
+    // member's own, and held it would be lost.
+    if (built.ok && (built.held?.length ?? 0) > 0) {
+      throw new ReplaceBlocked('unreadable', built.held?.length ?? 0);
+    }
+    // Only items of a collection the record replaces can be named held; the worker leaves a key
+    // alone that it doesn't hold or can't edit, and the items of it stay as they are.
+    const replaced = new Set(built.ok ? (built.rotated ?? []) : []);
+    const unlisted = rest.filter((item) => replaced.has(`collection:${item.collection}`));
+    counts = { rewritten: built.ok ? (built.writes?.length ?? 0) : 0, held: unlisted.length };
+    return { built, held: unlisted.map((item) => item.id) };
+  });
+  if (!sent.appended) return { rewritten: 0, held: 0 };
+  progress({ phase: 'sending', done: counts.rewritten, total: counts.rewritten });
+  return counts;
 }
 
 // ---- sealing again what a replacement left under an old key ------------------------------------
 
 /**
  * The live kem1 items of the space that are still under an older key version than their
- * collection's current one: what a replacement that stopped halfway left, and what it held. Read
- * from the server's sync, so it is the same after a reload or on another device. A space whose keys
- * were never replaced has none, and isn't read.
+ * collection's current one, and not held: what a replacement that stopped halfway left. (A held
+ * item is a hold made on purpose, by this vault or an app, and isn't released from here.) Read from
+ * the server's sync, so it is the same after a reload or on another device. A space whose keys were
+ * never replaced has none, and isn't read.
  */
 export async function itemsToReseal(
   deps: SpaceDeps,
@@ -1069,7 +1128,7 @@ export async function itemsToReseal(
   return scanItems(
     deps,
     detail.view.space.id,
-    (dto) => dto.keyVersion < (versions.get(dto.collectionId) ?? 0),
+    (dto) => !dto.held && dto.keyVersion < (versions.get(dto.collectionId) ?? 0),
     progress,
   );
 }
@@ -1077,16 +1136,17 @@ export async function itemsToReseal(
 export interface Resealed {
   /** Items sealed again under their collection's current key version. */
   rewritten: number;
-  /** Items this browser can't seal again: it no longer holds their old key, or can't edit them. */
+  /** Items this browser can't seal again: not in the signed manifest, or it holds no old key. */
   stuck: number;
 }
 
 /**
- * Seals again the items `itemsToReseal` finds and writes them as the next revision under the
- * current key version, in batches (a write under the current version also releases a held item).
- * The worker does it with the old key it still holds from this unlock; an item whose old key it no
- * longer holds is counted as stuck, and waits for a device that has it. The space's signed manifest
- * lists what was written. `progress` says how far it is.
+ * Seals again the items `itemsToReseal` finds that the last verified manifest lists as they are,
+ * and writes them as the next revision under the current key version, in batches. The worker does
+ * it with the old key it still holds from this unlock, so it works only in the session that
+ * replaced the keys: after a reload the old key is gone and these items wait for the device that
+ * replaced the keys, or an app that holds it. What it can't is counted as stuck. The space's signed
+ * manifest lists what was written. `progress` says how far it is.
  */
 export async function resealItems(
   deps: SpaceDeps,
@@ -1095,10 +1155,13 @@ export async function resealItems(
 ): Promise<Resealed> {
   if (!isChained(detail)) return { rewritten: 0, stuck: 0 };
   const spaceId = detail.view.space.id;
-  const items = await itemsToReseal(deps, detail, progress);
-  if (items.length === 0) return { rewritten: 0, stuck: 0 };
-  progress({ phase: 'sealing', done: 0, total: items.length });
-  const built = await deps.crypto.buildReseal({ spaceId, items });
+  const found = await itemsToReseal(deps, detail, progress);
+  if (found.length === 0) return { rewritten: 0, stuck: 0 };
+  const manifest = await deps.acceptedManifest?.(spaceId);
+  const { accepted, rest } = manifest ? await acceptedOf(manifest, found) : { accepted: [], rest: found };
+  if (accepted.length === 0) return { rewritten: 0, stuck: rest.length };
+  progress({ phase: 'sealing', done: 0, total: accepted.length });
+  const built = await deps.crypto.buildReseal({ spaceId, items: accepted });
   if (!built.ok) throw new ChainRefused(built.reason, built.seq);
   const writes = built.writes ?? [];
   let done = 0;
@@ -1115,5 +1178,5 @@ export async function resealItems(
     done += batch.length;
     progress({ phase: 'sending', done, total: writes.length });
   }
-  return { rewritten: writes.length, stuck: (built.held ?? []).length };
+  return { rewritten: writes.length, stuck: (built.held ?? []).length + rest.length };
 }

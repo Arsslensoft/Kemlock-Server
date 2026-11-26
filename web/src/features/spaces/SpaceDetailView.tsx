@@ -22,6 +22,7 @@ import {
   type Resealed,
   type SpaceDetail,
   canManageUsers,
+  canReplaceKeys,
   keysAwaitReplacement,
   memberLabel,
 } from './model';
@@ -451,13 +452,15 @@ export function SpaceDetailView({
           <b>{t('space.keysPending.title')}</b>
           <p>{t('space.keysPending.chained')}</p>
           <Progress progress={replacing} />
-          {actions.replaceKeys ? (
+          {actions.replaceKeys && canReplaceKeys(detail) ? (
             <div className="actions">
               <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.replaceKeys}>
                 {t('space.keys.replace')}
               </Button>
             </div>
-          ) : null}
+          ) : (
+            <p>{t('space.keysPending.elsewhere')}</p>
+          )}
         </Notice>
       ) : pendingKeys ? (
         <Notice tone="warn" live>

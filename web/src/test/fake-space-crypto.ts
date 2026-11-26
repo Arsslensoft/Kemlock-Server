@@ -129,6 +129,7 @@ export function fakeSpaceCrypto(): FakeSpaces {
         records: [{ entry: utf8Text('keys-record'), signature: utf8Text('signature') }],
         seals: [],
         names: [],
+        rotated: [...new Set(replacement.items.map((item) => `collection:${item.collection}`))],
         writes: replacement.items.map((item) => ({
           collection: item.collection,
           expectedRevision: item.revision,

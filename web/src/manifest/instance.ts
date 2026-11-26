@@ -33,3 +33,4 @@ export const manifestKeeper: ManifestKeeper = createManifestKeeper({
 
 // The items a key replacement writes into a space are listed in its manifest like any other write.
 manifestHooks.wrote = (items) => manifestKeeper.wrote(items);
+manifestHooks.accepted = (spaceId) => manifestKeeper.acceptedManifest(`space:${spaceId}`);

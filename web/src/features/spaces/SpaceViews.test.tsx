@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { renderWithIntl } from '@/test/render';
 import { NO_CHAIN } from '@/test/fake-space-crypto';
-import { detail, LEE, ME, THEO } from './fixtures';
+import { detail, LEE, ME, THEO, member, spaceView } from './fixtures';
 import { type SpaceActions, type SpaceDetailViewProps, SpaceDetailView } from './SpaceDetailView';
 import { SpaceListView } from './SpaceListView';
 
@@ -407,8 +407,19 @@ describe('SpaceDetailView, a space with a chain', () => {
     const replaceKeys = vi.fn();
     view({ detail: waiting(), actions: { ...actions(), replaceKeys } });
     expect(screen.getByText(/Replacing them here seals every item/)).toBeInTheDocument();
+    expect(screen.queryByText(/Only a member who can edit/)).not.toBeInTheDocument();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Replace the keys' }));
     expect(replaceKeys).toHaveBeenCalledOnce();
+  });
+
+  it('offers no button to a member who can’t edit what waits, and says who can', () => {
+    const plain = detail({
+      view: spaceView({ me: member(ME, { role: 'member' }) }),
+      trust: { kind: 'verified' as const, view: marked },
+    });
+    view({ detail: plain, actions: { ...actions(), replaceKeys: vi.fn() } });
+    expect(screen.queryByRole('button', { name: 'Replace the keys' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Only a member who can edit the affected collections/)).toBeInTheDocument();
   });
 
   it('shows the progress and holds the button while it runs, and what it did when done', () => {
@@ -453,7 +464,9 @@ describe('SpaceDetailView, items left under an old key', () => {
     const resealItems = vi.fn();
     view({ detail: replaced(), toReseal: 3, actions: { ...actions(), resealItems } });
     expect(screen.getByText(/3 items are still under an old key/)).toBeInTheDocument();
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Seal them again' }));
+    // It doesn't promise the web can fix them after a reload.
+    expect(screen.getByText(/After a reload this page can't/)).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Try to seal them again' }));
     expect(resealItems).toHaveBeenCalledOnce();
   });
 
@@ -465,12 +478,12 @@ describe('SpaceDetailView, items left under an old key', () => {
       replacing: { phase: 'sending', done: 1, total: 3 },
     });
     expect(screen.getByText(/Sending 1 of 3/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Seal them again' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Try to seal them again' })).toBeDisabled();
   });
 
   it('says nothing when none waits, and what a sealing again did, with the items it could not', () => {
     view({ detail: replaced(), toReseal: 0, resealed: { rewritten: 2, stuck: 1 } });
-    expect(screen.queryByRole('button', { name: 'Seal them again' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try to seal them again' })).not.toBeInTheDocument();
     expect(screen.getByText(/2 items sealed again/)).toBeInTheDocument();
     expect(screen.getByText(/1 item can't be sealed again here/)).toBeInTheDocument();
   });

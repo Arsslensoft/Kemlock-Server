@@ -373,6 +373,8 @@ export interface ChainAppend {
   held?: string[];
   /** Items of the replaced collections, sealed again under their new key versions. */
   writes?: ChainWrite[];
+  /** The keys (`space`, `collection:<uuid>`) a key replacement replaces: only items of these can be held. */
+  rotated?: string[];
 }
 
 /** The server's copy of what a key replacement seals again. */
