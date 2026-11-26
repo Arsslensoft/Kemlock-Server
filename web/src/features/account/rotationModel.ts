@@ -329,20 +329,26 @@ export async function rotateKeys(
       onProgress({ phase: 'items', done, total }),
     );
 
-    // The Sends, the kit and this browser's copy do not change between rounds.
-    const sends = await deps.sends.list();
-    onProgress({ phase: 'sends', done: 0, total: sends.length });
-    const movedSends: NonNullable<InstallRequest['sends']> = [];
-    for (const send of sends) {
-      const moved = await deps.crypto.rotationResealSend({
-        id: send.id,
-        kind: send.kind === 'file' ? 'file' : 'text',
-        sealedKey: decodeB64(send.sealedKey),
-        meta: decodeB64(send.meta),
-      });
-      movedSends.push({ id: send.id, sealedKey: encodeB64(moved.sealedKey), meta: encodeB64(moved.meta) });
-      onProgress({ phase: 'sends', done: movedSends.length, total: sends.length });
-    }
+    // The Sends are read and moved each round: one made or edited while the items were moved is
+    // one the server holds now, and the install must name every one it holds.
+    const moveSends = async (report: (done: number, total: number) => void) => {
+      const sends = await deps.sends.list();
+      report(0, sends.length);
+      const moved: NonNullable<InstallRequest['sends']> = [];
+      for (const send of sends) {
+        const again = await deps.crypto.rotationResealSend({
+          id: send.id,
+          kind: send.kind === 'file' ? 'file' : 'text',
+          sealedKey: decodeB64(send.sealedKey),
+          meta: decodeB64(send.meta),
+        });
+        moved.push({ id: send.id, sealedKey: encodeB64(again.sealedKey), meta: encodeB64(again.meta) });
+        report(moved.length, sends.length);
+      }
+      return moved;
+    };
+    let sendsNow = await moveSends((done, total) => onProgress({ phase: 'sends', done, total }));
+    // The kit and this browser's copy do not change between rounds.
     const kit = input.makeKit ? await deps.crypto.rotationKitMake() : null;
     let deviceCopy: InstallRequest['deviceCopy'];
     if (plan.deviceCopies.some((copy) => copy.deviceId === deps.deviceId)) {
@@ -361,6 +367,7 @@ export async function rotateKeys(
         items = await liveItems(deps);
         const changed = items.filter((item) => staged.get(item.id) !== item.revision);
         await stageItems(deps, rotationId, toVersion, changed, staged, rewritten, () => undefined);
+        sendsNow = await moveSends(() => undefined);
       }
       const proof = plan.hasPassword
         ? await proveAndWrap(deps, input.email, input.password)
@@ -385,7 +392,7 @@ export async function rotateKeys(
         dropEmergency: boxes.dropEmergency,
         recovery: boxes.recovery,
         dropRecovery: boxes.dropRecovery,
-        sends: movedSends,
+        sends: sendsNow,
         spacesHandled: false,
       };
       dropped = { emergency: boxes.dropEmergency.length, recovery: boxes.dropRecovery.length };

@@ -149,6 +149,27 @@ describe('rotateKeys', () => {
     expect(fakeCalls).not.toContain('rotationAbort');
   });
 
+  it('names a Send made while the items were moved, by reading and moving the Sends again each round', async () => {
+    let attempts = 0;
+    const { deps, installs } = setup({
+      install: async () => {
+        attempts += 1;
+        if (attempts === 1) throw incomplete();
+        return { keyVersion: 2, tokens: null };
+      },
+    });
+    const send = (id: string) => ({ id, kind: 'text', sealedKey: encodeB64(utf8('key')), meta: encodeB64(utf8('meta')) });
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce([send('s1')])
+      .mockResolvedValue([send('s1'), send('s2')]);
+    await rotateKeys(
+      { ...deps, sends: { list } as never },
+      { email: 'sam@example.org', password: 'pw', makeKit: false },
+    );
+    expect(installs.map((request) => request.sends?.map((s) => s.id))).toEqual([['s1'], ['s1', 's2']]);
+  });
+
   it('keeps every staging request under the body limit, however large the items', async () => {
     const big = (id: string) => {
       const base = item(id, 1);
