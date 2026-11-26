@@ -408,3 +408,35 @@ async fn changes_already_held_cost_no_quota() {
     assert_eq!(again.counts.duplicates, 2);
     assert_eq!(again.counts.refused, 0);
 }
+
+#[tokio::test]
+async fn a_record_that_relabels_an_item_as_bitwarden_is_refused() {
+    let store = MemoryStore::new(kemlock_domain::ServerId::random());
+    let owner = Owner::User(UserId::random());
+    let item = ItemId::random();
+    let head = store.put(draft(item, owner, None, 1, 1_000)).expect("rev 1");
+    let relabelled = ChangeRecord {
+        change: ChangeId {
+            origin: kemlock_domain::ServerId::random(),
+            seq: 1,
+            hlc: Hlc::from_parts(unix_now() * 1000, 0),
+        },
+        item,
+        owner,
+        kind: ItemKind::try_from("login".to_owned()).expect("kind"),
+        format: ItemFormat::Bw,
+        revision: Revision(2),
+        key_version: 1,
+        ciphertext: Some(vec![1; 40]),
+        item_key: Some(vec![9; 60]),
+        deleted: false,
+        updated_at_ms: unix_now() * 1000,
+        lineage: vec![ChangeKey::of(&head.change)],
+        write: None,
+    };
+    assert_eq!(
+        store.apply(&relabelled, &[7; 8]).await,
+        Ok(ApplyOutcome::Refused)
+    );
+    assert_eq!(store.get(item).expect("the head").format, ItemFormat::Kem1);
+}

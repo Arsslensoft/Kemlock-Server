@@ -389,6 +389,15 @@ async fn apply_in(
         // The id belongs to another owner here: say it is taken, and nothing about that item.
         return Err(StoreError::Duplicate);
     }
+    // An item keeps the format and the kind it was made with: a record that says otherwise (a `bw`
+    // label on a `kem1` item, to slip past the writer checks) is refused, whoever signed it.
+    if head
+        .iter()
+        .chain(siblings.iter())
+        .any(|held| held.format != incoming.format || held.kind != incoming.kind)
+    {
+        return Ok(ApplyOutcome::Refused);
+    }
     let sibling_keys = keys_of(&siblings);
     let mut held_items: Vec<Item> = head.iter().cloned().collect();
     held_items.extend(siblings);

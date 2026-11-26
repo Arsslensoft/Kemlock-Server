@@ -609,6 +609,13 @@ impl ReplicaStore for MemoryStore {
         }
 
         let held_items = st.versions_of(record.item);
+        // An item keeps the format and the kind it was made with (see the SQL store).
+        if held_items
+            .iter()
+            .any(|held| held.format != incoming_item.format || held.kind != incoming_item.kind)
+        {
+            return Ok(ApplyOutcome::Refused);
+        }
         for item in &held_items {
             st.ensure_meta(item);
         }

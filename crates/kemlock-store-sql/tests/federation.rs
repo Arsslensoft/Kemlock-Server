@@ -643,3 +643,39 @@ async fn a_record_that_names_the_head_at_a_lower_revision_is_refused_and_leaves_
     assert_eq!(held.change, head.change);
     assert_eq!(held.revision, Revision(3));
 }
+
+#[tokio::test]
+async fn a_record_that_changes_an_items_format_or_kind_is_refused() {
+    use kemlock_app::ports::ItemStore;
+    let a = memory().await;
+    let owner = user_owner();
+    let id = ItemId::random();
+    put(&a, draft(id, owner, None, 1)).await;
+    let head = put(&a, draft(id, owner, Some(1), 2)).await;
+
+    // A later change that names the head and labels the item `bw` (so no writer check would look
+    // at it), or gives it another kind, is refused and leaves the item as it was.
+    let mut relabelled = ChangeRecord::from_item(&head, vec![ChangeKey::of(&head.change)]);
+    relabelled.change = ChangeId {
+        origin: ServerId::random(),
+        seq: 1,
+        hlc: Hlc(head.change.hlc.0 + 1_000_000),
+    };
+    relabelled.revision = Revision(3);
+    relabelled.format = kemlock_domain::ItemFormat::Bw;
+    assert_eq!(
+        ReplicaStore::apply(&a, &relabelled, b"signature").await.expect("apply"),
+        ApplyOutcome::Refused
+    );
+    let mut other_kind = relabelled.clone();
+    other_kind.format = head.format;
+    other_kind.kind = kemlock_domain::ItemKind::try_from("note".to_owned()).expect("a kind");
+    other_kind.change.seq = 2;
+    assert_eq!(
+        ReplicaStore::apply(&a, &other_kind, b"signature").await.expect("apply"),
+        ApplyOutcome::Refused
+    );
+    let held = ItemStore::get(&a, id).await.expect("get").expect("item");
+    assert_eq!(held.change, head.change);
+    assert_eq!(held.format, kemlock_domain::ItemFormat::Kem1);
+}
