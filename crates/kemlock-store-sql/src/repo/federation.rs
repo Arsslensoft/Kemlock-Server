@@ -593,6 +593,17 @@ impl ReplicaStore for SqlStore {
         finish(txn, result).await
     }
 
+    async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
+        Ok(changes::Entity::find_by_id((
+            key.origin.0,
+            to_i64(key.seq, "sequence number")?,
+        ))
+        .one(self.reader())
+        .await
+        .store()?
+        .is_some())
+    }
+
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
         kemlock_app::ports::ItemStore::signed_writes_required(self, owner).await
     }

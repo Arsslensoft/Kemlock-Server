@@ -670,6 +670,10 @@ impl ReplicaStore for MemoryStore {
         Ok(outcome)
     }
 
+    async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
+        Ok(self.lock().log.iter().any(|e| e.key == key))
+    }
+
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
         Ok(self.extras().signed_only.contains(&owner))
     }

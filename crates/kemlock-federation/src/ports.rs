@@ -293,6 +293,17 @@ pub trait ReplicaStore: Send + Sync {
         owner: Owner,
     ) -> impl Future<Output = std::result::Result<VersionVector, StoreError>> + Send;
 
+    /// Whether the change `key` is already held here, applied or since replaced: what a record is
+    /// asked before anything is spent on it, since a change is applied once.
+    ///
+    /// The default holds none, for a store that can't say.
+    fn holds_change(
+        &self,
+        _key: ChangeKey,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
     /// Whether `owner` accepts signed `kem1` writes only on this server (docs/crypto.md, "Signed
     /// item writes"): a signed write was accepted for it, or applied from a peer. Applying a signed
     /// record sets it.

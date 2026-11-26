@@ -646,6 +646,7 @@ impl<S: FedStore> Replica<S> {
     /// or whose signature fails, fails the whole batch: nothing past it is applied.
     pub(crate) async fn apply_envelopes(
         &self,
+        from: ServerId,
         vault: Owner,
         envelopes: &[Vec<u8>],
     ) -> Result<Counts> {
@@ -680,10 +681,19 @@ impl<S: FedStore> Replica<S> {
                     "a change from an origin outside the vault's set",
                 ));
             }
-            // What one origin may write, before the expensive checks: a flood is cut off here.
+            // A change is applied once: one already held costs nothing, so a peer that sends the
+            // same records again (a comparison fetches whatever differs) can't use up the quota of
+            // the origin it relays, which would keep that origin's new changes out.
+            if self.store.holds_change(record.key()).await? {
+                counts.duplicates += 1;
+                continue;
+            }
+            // What one origin may write through the server that sent it, before the expensive
+            // checks: a flood is cut off here, and what one peer relays doesn't spend what another
+            // does.
             match self
                 .meter
-                .admit(&self.quota, origin, envelope.len(), now_ms / 1000)
+                .admit(&self.quota, from, origin, envelope.len(), now_ms / 1000)
             {
                 Admission::Admitted => {}
                 over => {
@@ -735,7 +745,7 @@ impl<S: FedStore> Replica<S> {
                 })
                 .await?;
             let (records, next, more) = expect_changes(response, vault)?;
-            let counts = self.apply_envelopes(vault, &records).await?;
+            let counts = self.apply_envelopes(peer, vault, &records).await?;
             report.counts.add(&counts);
             let mut cursor = since.clone();
             cursor.merge(&next);
@@ -818,7 +828,7 @@ impl<S: FedStore> Replica<S> {
                 })
                 .await?;
             let (records, _, _) = expect_changes(response, vault)?;
-            fetched.add(&self.apply_envelopes(vault, &records).await?);
+            fetched.add(&self.apply_envelopes(peer, vault, &records).await?);
         }
         Ok(ReconcileReport {
             in_step: false,

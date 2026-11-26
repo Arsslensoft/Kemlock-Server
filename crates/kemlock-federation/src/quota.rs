@@ -62,25 +62,35 @@ struct Window {
 /// The counts of every origin.
 #[derive(Debug, Default)]
 pub struct Meter {
-    windows: Mutex<HashMap<ServerId, Window>>,
+    windows: Mutex<HashMap<(ServerId, ServerId), Window>>,
 }
 
 impl Meter {
-    /// Counts a record of `bytes` from `origin` at `now` (Unix seconds) if the quota allows it. A
-    /// refused record is not counted.
-    pub fn admit(&self, quota: &Quota, origin: ServerId, bytes: usize, now: u64) -> Admission {
+    /// Counts a record of `bytes` that `origin` made and `peer` sent at `now` (Unix seconds) if the
+    /// quota allows it. The count is per pair: what one peer relays of an origin doesn't use up what
+    /// another does, so a peer that sends garbage can't keep the origin's records from the rest.
+    /// A refused record is not counted.
+    pub fn admit(
+        &self,
+        quota: &Quota,
+        peer: ServerId,
+        origin: ServerId,
+        bytes: usize,
+        now: u64,
+    ) -> Admission {
+        let key = (peer, origin);
         if bytes > quota.max_record_bytes {
             return Admission::TooLarge;
         }
         let bytes = bytes as u64;
         let mut windows = self.windows.lock().unwrap_or_else(PoisonError::into_inner);
-        if windows.len() >= MAX_ORIGINS && !windows.contains_key(&origin) {
+        if windows.len() >= MAX_ORIGINS && !windows.contains_key(&key) {
             // Origins are paired servers, so this is far past any federation; make room anyway.
             if let Some(oldest) = windows.iter().min_by_key(|(_, w)| w.start).map(|(k, _)| *k) {
                 windows.remove(&oldest);
             }
         }
-        let window = windows.entry(origin).or_insert(Window {
+        let window = windows.entry(key).or_insert(Window {
             start: now,
             records: 0,
             bytes: 0,
@@ -107,6 +117,9 @@ impl Meter {
 mod tests {
     use super::*;
 
+    /// The server that sends, in the tests that don't care which.
+    const P: ServerId = ServerId(uuid::Uuid::from_u128(1));
+
     fn small() -> Quota {
         Quota {
             records_per_window: 3,
@@ -120,14 +133,35 @@ mod tests {
         let meter = Meter::default();
         let (a, b) = (ServerId::random(), ServerId::random());
         for _ in 0..3 {
-            assert_eq!(meter.admit(&small(), a, 10, 1_000), Admission::Admitted);
+            assert_eq!(meter.admit(&small(), P, a, 10, 1_000), Admission::Admitted);
         }
-        assert_eq!(meter.admit(&small(), a, 10, 1_001), Admission::OverRate);
+        assert_eq!(meter.admit(&small(), P, a, 10, 1_001), Admission::OverRate);
         // Another origin has its own count.
-        assert_eq!(meter.admit(&small(), b, 10, 1_001), Admission::Admitted);
+        assert_eq!(meter.admit(&small(), P, b, 10, 1_001), Admission::Admitted);
         // The window passes.
         assert_eq!(
-            meter.admit(&small(), a, 10, 1_000 + WINDOW_SECS),
+            meter.admit(&small(), P, a, 10, 1_000 + WINDOW_SECS),
+            Admission::Admitted
+        );
+    }
+
+    #[test]
+    fn what_one_peer_sends_does_not_use_up_what_another_does() {
+        let meter = Meter::default();
+        let origin = ServerId::random();
+        let (noisy, quiet) = (ServerId::random(), ServerId::random());
+        for _ in 0..3 {
+            assert_eq!(
+                meter.admit(&small(), noisy, origin, 10, 5),
+                Admission::Admitted
+            );
+        }
+        assert_eq!(
+            meter.admit(&small(), noisy, origin, 10, 5),
+            Admission::OverRate
+        );
+        assert_eq!(
+            meter.admit(&small(), quiet, origin, 10, 5),
             Admission::Admitted
         );
     }
@@ -136,20 +170,20 @@ mod tests {
     fn bytes_and_the_size_of_one_record_are_bounded() {
         let meter = Meter::default();
         let a = ServerId::random();
-        assert_eq!(meter.admit(&small(), a, 61, 5), Admission::TooLarge);
-        assert_eq!(meter.admit(&small(), a, 60, 5), Admission::Admitted);
+        assert_eq!(meter.admit(&small(), P, a, 61, 5), Admission::TooLarge);
+        assert_eq!(meter.admit(&small(), P, a, 60, 5), Admission::Admitted);
         // 40 more would be 100: allowed. One more byte is over.
-        assert_eq!(meter.admit(&small(), a, 40, 5), Admission::Admitted);
-        assert_eq!(meter.admit(&small(), a, 1, 5), Admission::OverRate);
+        assert_eq!(meter.admit(&small(), P, a, 40, 5), Admission::Admitted);
+        assert_eq!(meter.admit(&small(), P, a, 1, 5), Admission::OverRate);
     }
 
     #[test]
     fn a_refused_record_costs_nothing() {
         let meter = Meter::default();
         let a = ServerId::random();
-        assert_eq!(meter.admit(&small(), a, 99, 5), Admission::TooLarge);
+        assert_eq!(meter.admit(&small(), P, a, 99, 5), Admission::TooLarge);
         for _ in 0..3 {
-            assert_eq!(meter.admit(&small(), a, 10, 5), Admission::Admitted);
+            assert_eq!(meter.admit(&small(), P, a, 10, 5), Admission::Admitted);
         }
     }
 

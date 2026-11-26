@@ -358,3 +358,53 @@ async fn a_record_that_names_the_head_at_a_lower_revision_is_not_applied() {
         Ok(ApplyOutcome::Applied)
     );
 }
+
+#[tokio::test]
+async fn changes_already_held_cost_no_quota() {
+    let a = server(1, None);
+    let b = server(
+        2,
+        Some(Quota {
+            records_per_window: 2,
+            bytes_per_window: u64::MAX,
+            max_record_bytes: usize::MAX,
+        }),
+    );
+    pair(&a, &b).await;
+    let vault = Owner::User(UserId::random());
+    a.federate(vault, vec![b.server_id()]).await.expect("federate");
+    b.accept_vault(vault, a.server_id(), vec![b.server_id()])
+        .await
+        .expect("accept");
+    for n in 0..2u64 {
+        a.store()
+            .put(draft(ItemId::random(), vault, None, 1, 1_000 + n))
+            .expect("a put");
+    }
+    let mut a_to_b = Direct {
+        to: a.clone(),
+        from: b.server_id(),
+    };
+    let first = b
+        .pull(&mut a_to_b, a.server_id(), vault)
+        .await
+        .expect("B pulls from A");
+    assert_eq!(first.counts.applied, 2);
+
+    // The quota is used up. A peer that sends the same changes again (a comparison fetches whatever
+    // differs) is sending duplicates: they are not refused, and they don't hold anything up.
+    kemlock_federation::ports::VaultRepo::set_peer_cursor(
+        b.store(),
+        a.server_id(),
+        vault,
+        &kemlock_domain::VersionVector::new(),
+    )
+    .await
+    .expect("the cursor is reset");
+    let again = b
+        .pull(&mut a_to_b, a.server_id(), vault)
+        .await
+        .expect("B pulls again");
+    assert_eq!(again.counts.duplicates, 2);
+    assert_eq!(again.counts.refused, 0);
+}
