@@ -374,7 +374,7 @@ reset, since other accounts that sign in on the same browser may depend on it. A
 under it in an old closed tab can still be opened by someone who runs script on the vault's origin,
 but with no live token it can fetch nothing, and the web vault keeps no vault data in the browser to
 decrypt instead: there is no service worker, no Cache API and no stored query cache, and IndexedDB
-holds keys only. Closing the tab or signing out of an old session by hand does the same.
+holds keys only.
 
 ## Operations
 
