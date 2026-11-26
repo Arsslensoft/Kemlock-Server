@@ -699,11 +699,14 @@ addresses decide where this server connects.
 A **revocation** is signed with `sig1("federation-key-revocation", body)` by the key it revokes. A
 receiver that holds that key stops trusting the server (`revoked`) until it is paired again with a
 new code. A revocation also counts when it is signed by a key the receiver **replaced** in the last
-30 days: that is how the owner of a stolen key answers a thief who rotated it away (a rotation
-signed by a key that turns out to be stolen can't be told from the thief's, so everything after it
-is distrusted, and the server is revoked, not rolled back). The cost is that a copy of an old key
-that leaks within 30 days of an honest rotation can revoke the server, which then has to be paired
-again; it can't impersonate it. A revocation of any other key (one never held, or replaced longer
+30 days: that is how the owner of a stolen key answers a thief who rotated it away. A rotation
+signed by a key that turns out to be stolen can't be told from the thief's, and a copy of an old
+key that leaks within 30 days of an honest rotation can sign the same revocation, so the server is
+not revoked but **contested** (peer state `contested`): no session is accepted from it or opened to
+it, so nothing syncs either way, nothing it sent or holds is deleted, and the console shows it in a
+card of its own. Its admin settles it: unpair it and pair again with a new code, or, knowing the
+rotation was honest, trust it again (`DELETE /admin/v1/federation/peers/{id}/contest`, with a
+step-up token). A revocation signed by the key the receiver holds still revokes outright. A revocation of any other key (one never held, or replaced longer
 ago) does nothing, and so does the same record twice. The history of a peer's keys goes when the
 peer is unpaired.
 

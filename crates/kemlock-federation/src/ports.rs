@@ -20,6 +20,10 @@ pub enum PeerState {
     Paired,
     /// The admin revoked it, or its identity key was reported stolen. No session is accepted.
     Revoked,
+    /// A key this server replaced for the peer says the peer's key was stolen (and rotated away
+    /// by a thief), which can't be told from an honest rotation by the old key. Nothing syncs
+    /// either way, nothing is deleted, and the admin settles it: pair again, or trust the peer.
+    Contested,
 }
 
 impl PeerState {
@@ -27,6 +31,7 @@ impl PeerState {
         match self {
             PeerState::Paired => "paired",
             PeerState::Revoked => "revoked",
+            PeerState::Contested => "contested",
         }
     }
 
@@ -34,6 +39,7 @@ impl PeerState {
         match s {
             "paired" => Some(PeerState::Paired),
             "revoked" => Some(PeerState::Revoked),
+            "contested" => Some(PeerState::Contested),
             _ => None,
         }
     }
@@ -322,7 +328,7 @@ mod tests {
 
     #[test]
     fn states_round_trip() {
-        for s in [PeerState::Paired, PeerState::Revoked] {
+        for s in [PeerState::Paired, PeerState::Revoked, PeerState::Contested] {
             assert_eq!(PeerState::parse(s.as_str()), Some(s));
         }
         for s in [HomeStatus::Applied, HomeStatus::Quarantined] {

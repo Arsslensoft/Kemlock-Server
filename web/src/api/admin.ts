@@ -461,7 +461,7 @@ export interface UpdateRequestRequest {
 
 // ---- Federation ---------------------------------------------------------------------------
 
-export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked';
+export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked' | 'contested';
 export type PeerOperator = 'own' | 'other';
 
 /** A server's identity as the console shows it. `identityKey` is the `sig1` public key, base64url. */
@@ -954,6 +954,15 @@ export function createAdminApi(api: AdminTransport) {
      */
     refuseDemotion: (owner: string, grant?: string) =>
       act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/peers/{id}/contest`: trusts a contested peer again (a key this
+     * server replaced for it said it was stolen). Needs a step-up token.
+     */
+    clearContest: (peerId: string, grant?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/contest`, undefined, grant),
+    /** `POST /admin/v1/federation/peers/{id}/unpair`: stops copying and asks the peer to delete. Needs a step-up token. */
+    unpairPeer: (peerId: string, grant?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/unpair`, undefined, grant),
     /** `GET /admin/v1/federation/address-changes`: what key rotations said about where a peer lives, held for the admin. */
     addressChanges: () =>
       get<Array<Omit<AddressChange, 'peerId'> & { peer: string }>>('/federation/address-changes').then((all) =>

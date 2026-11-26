@@ -839,6 +839,14 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
         self.replica.held_promotions().await
     }
 
+    /// Trusts a contested peer again: its keys said it was stolen and rotated away, and the admin
+    /// decided it wasn't. The caller has checked the admin with a step-up token.
+    pub async fn clear_contest(&self, peer: ServerId) -> Result<()> {
+        self.replica.clear_contest(peer).await?;
+        self.runner.mark_dirty(peer);
+        Ok(())
+    }
+
     /// The address changes that came with peers' key rotations and wait for this server's admin.
     pub async fn pending_address_changes(&self) -> Result<Vec<PendingAddresses>> {
         self.replica.pending_address_changes().await

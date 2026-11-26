@@ -1324,6 +1324,22 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `DELETE …/peers/{id}/contest`: trust a contested peer again.
+async fn clear_contest<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.clear_contest(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `DELETE …/peers/{id}/address-change`: keep the addresses this server knows.
 async fn refuse_address_change<S, C>(
     State(state): State<AdminState<S, C>>,
@@ -1444,6 +1460,10 @@ where
         .route(
             &format!("{BASE}/peers/{{id}}/address-change"),
             post(approve_address_change::<S, C>).delete(refuse_address_change::<S, C>),
+        )
+        .route(
+            &format!("{BASE}/peers/{{id}}/contest"),
+            delete(clear_contest::<S, C>),
         )
         .route(
             &format!("{BASE}/vaults/{{owner}}/events"),

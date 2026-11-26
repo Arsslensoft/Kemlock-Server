@@ -293,6 +293,31 @@ doc!(
 );
 
 doc!(
+    doc_clear_contest,
+    delete,
+    path = "/admin/v1/federation/peers/{id}/contest",
+    tag = "federation",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The peer's server id"),
+        (
+            "Step-Up-Token" = String,
+            Header,
+            description = "A step-up token"
+        ),
+    ),
+    responses(
+        (status = 204, description = "The contested peer is trusted again and syncs from the next visit"),
+        (
+            status = 409,
+            description = "The peer is not contested",
+            body = ProblemDoc,
+            content_type = "application/problem+json"
+        ),
+    )
+);
+
+doc!(
     doc_shareable,
     get,
     path = "/admin/v1/federation/shareable",
@@ -556,7 +581,7 @@ doc!(
     paths(
         doc_openapi, doc_overview, doc_peers, doc_promote, doc_accept_demotion, doc_held_promotions,
         doc_refuse_demotion, doc_address_changes, doc_approve_address_change,
-        doc_refuse_address_change, doc_shareable, doc_check,
+        doc_refuse_address_change, doc_clear_contest, doc_shareable, doc_check,
         doc_consistency, doc_peer_security, doc_peer_descriptor, doc_self, doc_self_kem_rotation,
         doc_self_identity_rotation, doc_self_suites, doc_mismatch, doc_keep_blocking
     ),

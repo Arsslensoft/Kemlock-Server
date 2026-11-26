@@ -17,10 +17,15 @@ const STATE: Record<PeerState, MessageId> = {
   offline: 'admin.fed.state.offline',
   'catching-up': 'admin.fed.state.catchingUp',
   revoked: 'admin.fed.state.revoked',
+  contested: 'admin.fed.state.contested',
 };
 
 function stateTag(state: PeerState): string {
-  return state === 'online' ? 'tag ok' : state === 'offline' || state === 'revoked' ? 'tag bad' : 'tag warn';
+  return state === 'online'
+    ? 'tag ok'
+    : state === 'offline' || state === 'revoked' || state === 'contested'
+      ? 'tag bad'
+      : 'tag warn';
 }
 
 export interface FederationViewProps {
@@ -45,6 +50,10 @@ export interface FederationViewProps {
   onApproveAddresses?: (change: AddressChange) => void;
   /** Keeps the addresses this server knew. */
   onRefuseAddresses?: (change: AddressChange) => void;
+  /** Trusts a contested peer again. */
+  onClearContest?: (peer: Peer) => void;
+  /** Unpairs a contested peer, to pair it again with a new code. */
+  onUnpair?: (peer: Peer) => void;
   labelsOf?: LabelsOf;
   busy?: boolean;
   error?: unknown;
@@ -65,6 +74,8 @@ export function FederationView({
   addressChanges,
   onApproveAddresses,
   onRefuseAddresses,
+  onClearContest,
+  onUnpair,
   labelsOf,
   busy,
   error,
@@ -466,6 +477,50 @@ export function FederationView({
         ) : null}
       </section>
 
+      {peers.some((p) => p.state === 'contested') ? (
+        <section className="card" aria-labelledby="h-contested">
+          <div className="adm-head">
+            <h2 id="h-contested">{t('admin.fed.contested.title')}</h2>
+          </div>
+          <p className="hint adm-pad">{t('admin.fed.contested.hint')}</p>
+          <ul className="adm-list">
+            {peers
+              .filter((p) => p.state === 'contested')
+              .map((peer) => (
+                <li key={peer.serverId}>
+                  <div>
+                    <b>{peer.name}</b>
+                    <div className="adm-cell-sub">{t('admin.fed.contested.sub')}</div>
+                  </div>
+                  <div className="adm-row-actions">
+                    {onClearContest ? (
+                      <Button
+                        size="small"
+                        isDisabled={busy}
+                        aria-label={t('admin.fed.contested.trust.of', { peer: peer.name })}
+                        onPress={() => onClearContest(peer)}
+                      >
+                        {t('admin.fed.contested.trust')}
+                      </Button>
+                    ) : null}
+                    {onUnpair ? (
+                      <Button
+                        size="small"
+                        variant="danger"
+                        isDisabled={busy}
+                        aria-label={t('admin.fed.contested.unpair.of', { peer: peer.name })}
+                        onPress={() => onUnpair(peer)}
+                      >
+                        {t('admin.fed.contested.unpair')}
+                      </Button>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+          </ul>
+        </section>
+      ) : null}
+
       {addressChanges && addressChanges.length > 0 ? (
         <section className="card" aria-labelledby="h-addresses">
           <div className="adm-head">
@@ -579,6 +634,14 @@ export default function Federation() {
     mutationFn: (vault: FedVault) => guard((grant) => admin.declineFederation(vault.id, grant)),
     onSuccess: refresh,
   });
+  const clearContest = useMutation({
+    mutationFn: (peer: Peer) => guard((grant) => admin.clearContest(peer.serverId, grant)),
+    onSuccess: refresh,
+  });
+  const unpair = useMutation({
+    mutationFn: (peer: Peer) => guard((grant) => admin.unpairPeer(peer.serverId, grant)),
+    onSuccess: refresh,
+  });
   const addressChanges = useQuery({
     queryKey: ['admin', 'federation', 'address-changes'],
     queryFn: () => admin.addressChanges(),
@@ -618,6 +681,8 @@ export default function Federation() {
         addressChanges={addressChanges.data}
         onApproveAddresses={(change) => approveAddresses.mutate(change)}
         onRefuseAddresses={(change) => refuseAddresses.mutate(change)}
+        onClearContest={(peer) => clearContest.mutate(peer)}
+        onUnpair={(peer) => unpair.mutate(peer)}
         busy={
           logs.isPending ||
           check.isPending ||
@@ -627,7 +692,9 @@ export default function Federation() {
           demotion.isPending ||
           refuseDemotion.isPending ||
           approveAddresses.isPending ||
-          refuseAddresses.isPending
+          refuseAddresses.isPending ||
+          clearContest.isPending ||
+          unpair.isPending
         }
         error={
           logs.error ??
@@ -639,7 +706,9 @@ export default function Federation() {
           demotion.error ??
           refuseDemotion.error ??
           approveAddresses.error ??
-          refuseAddresses.error
+          refuseAddresses.error ??
+          clearContest.error ??
+          unpair.error
         }
       />
       {dialog}

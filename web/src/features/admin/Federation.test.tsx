@@ -220,6 +220,41 @@ describe('FederationView', () => {
     expect(screen.queryByRole('region', { name: 'Address changes waiting' })).not.toBeInTheDocument();
   });
 
+  it('shows a contested server and trusts or unpairs it only on request', async () => {
+    const contested = peer({ state: 'contested' });
+    const onClearContest = vi.fn();
+    const onUnpair = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, peers: [contested] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onClearContest={onClearContest}
+        onUnpair={onUnpair}
+      />,
+    );
+    const card = within(screen.getByRole('region', { name: 'Contested servers' }));
+    expect(card.getByText('Not syncing until you decide')).toBeInTheDocument();
+    expect(onClearContest).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(card.getByRole('button', { name: 'Keep trusting Office server' }));
+    expect(onClearContest).toHaveBeenCalledWith(expect.objectContaining({ serverId: contested.serverId }));
+    await user.click(card.getByRole('button', { name: 'Unpair Office server to pair it again with a new code' }));
+    expect(onUnpair).toHaveBeenCalledWith(expect.objectContaining({ serverId: contested.serverId }));
+  });
+
+  it('shows no contested card when no server is contested', () => {
+    view();
+    expect(screen.queryByRole('region', { name: 'Contested servers' })).not.toBeInTheDocument();
+  });
+
   it('leads to a peer with a key mismatch', async () => {
     const { onNavigate } = view({ ...OVERVIEW, peers: [peer({ mismatch: true })] });
     await userEvent.setup().click(screen.getByRole('button', { name: 'Possible man in the middle with Office server' }));

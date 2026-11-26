@@ -83,7 +83,7 @@ export interface WirePeer {
   name: string;
   operator: string;
   addresses: string[];
-  state: 'paired' | 'revoked';
+  state: 'paired' | 'revoked' | 'contested';
   /** The pinned `sig1` identity key, hex. */
   identityKey: string;
   pairedAt: number;
@@ -331,6 +331,7 @@ function serverView(
 
 function peerState(peer: WirePeer): PeerState {
   if (peer.state === 'revoked') return 'revoked';
+  if (peer.state === 'contested') return 'contested';
   const status = peer.status;
   if (peer.health === 'offline') return 'offline';
   if (status?.downSince !== null && status?.downSince !== undefined) return 'offline';

@@ -477,12 +477,21 @@ impl<S: FedStore> Replica<S> {
                 };
                 signed.verify(&public_key(&revoker)?, REVOCATION_CONTEXT)?;
                 let paired = peer.as_ref().is_some_and(|p| p.state == PeerState::Paired);
-                if paired {
+                if paired && *key == held {
                     self.store
                         .set_peer_state(server, PeerState::Revoked)
                         .await?;
                     self.store.clear_pending_addresses(server).await?;
                     tracing::warn!(%server, "a peer revoked its identity key: it is no longer trusted");
+                    KeyRecordOutcome::Applied
+                } else if paired {
+                    // Signed by a key this server replaced for the peer: the owner of a stolen
+                    // key, or someone with a leaked old one. Nothing is deleted and nothing
+                    // syncs until the admin decides.
+                    self.store
+                        .set_peer_state(server, PeerState::Contested)
+                        .await?;
+                    tracing::warn!(%server, "a key this server replaced for a peer says it was stolen: the peer is contested");
                     KeyRecordOutcome::Applied
                 } else if learned.is_some() && *key == held {
                     self.store.remove_learned_key(server).await?;
@@ -528,6 +537,21 @@ impl<S: FedStore> Replica<S> {
         // The admin looked at the new addresses and approved them.
         self.store.trust_addresses(peer, &pending.addresses).await?;
         self.store.clear_pending_addresses(peer).await?;
+        Ok(())
+    }
+
+    /// The admin trusts a contested peer again (see [`PeerState::Contested`]): it syncs from the
+    /// next visit. `Refused` when the peer isn't contested.
+    pub async fn clear_contest(&self, peer: ServerId) -> Result<()> {
+        let held = self
+            .store
+            .get_peer(peer)
+            .await?
+            .ok_or(FedError::UnknownPeer)?;
+        if held.state != PeerState::Contested {
+            return Err(FedError::Refused("this peer is not contested"));
+        }
+        self.store.set_peer_state(peer, PeerState::Paired).await?;
         Ok(())
     }
 
@@ -828,14 +852,18 @@ mod tests {
             p.b.accept_key_record(&revocation.encode(), NOW + 60).await,
             Ok(KeyRecordOutcome::Applied)
         );
-        assert_eq!(peer_of(&p).await.state, PeerState::Revoked);
-        assert!(
-            p.b.pending_address_changes()
-                .await
-                .expect("list")
-                .is_empty(),
-            "the thief's addresses go with it"
+        // Not revoked outright: the old key can't be told from a thief's, so the peer is contested,
+        // with nothing deleted and nothing syncing, until the admin settles it.
+        assert_eq!(peer_of(&p).await.state, PeerState::Contested);
+        assert!(!p.b.peer_keys().await.expect("keys").contains_key(&p.old.server));
+        assert_eq!(
+            p.b.pending_address_changes().await.expect("list").len(),
+            1,
+            "the thief's addresses still wait, unapplied"
         );
+        assert!(p.b.clear_contest(p.old.server).await.is_ok());
+        assert_eq!(peer_of(&p).await.state, PeerState::Paired);
+        assert!(p.b.clear_contest(p.old.server).await.is_err(), "no longer contested");
 
         // Someone who never held a key of the server can't revoke it this way.
         let p = pair().await;
@@ -1002,6 +1030,17 @@ mod tests {
             p.b.accept_key_record(&revocation.encode(), NOW).await,
             Ok(KeyRecordOutcome::Applied)
         );
+        assert_eq!(peer_of(&p).await.state, PeerState::Contested);
+    }
+
+    #[tokio::test]
+    async fn a_revocation_by_the_current_key_still_revokes_outright() {
+        let p = pair().await;
+        let (_, revocation) = revocation_record(&p.old, NOW).expect("a record");
+        p.b.accept_key_record(&revocation.encode(), NOW)
+            .await
+            .expect("revoked");
         assert_eq!(peer_of(&p).await.state, PeerState::Revoked);
+        assert!(p.b.clear_contest(p.old.server).await.is_err());
     }
 }

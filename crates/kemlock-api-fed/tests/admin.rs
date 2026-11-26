@@ -713,3 +713,47 @@ async fn an_address_change_that_came_with_a_rotation_waits_for_a_step_up_token()
     let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn a_contested_peer_shows_as_such_and_is_trusted_again_only_with_a_step_up_token() {
+    use kemlock_federation::ports::{PeerRepo, PeerState};
+
+    let e = env(1, Arc::new(Dead));
+    let other = identity(2, unix_now(), &Suite::IMPLEMENTED);
+    e.replica
+        .pin_peer(&other.descriptor, unix_now())
+        .await
+        .expect("pin");
+    e.replica
+        .store()
+        .set_peer_state(other.server, PeerState::Contested)
+        .await
+        .expect("contested");
+
+    let (_, peers) = admin(&e.app, Method::GET, "/admin/v1/federation/peers", None).await;
+    assert_eq!(peers[0]["state"], "contested");
+
+    let uri = format!("/admin/v1/federation/peers/{}/contest", other.server.0);
+    let (status, _, _) = call(
+        &e.app,
+        Method::DELETE,
+        &uri,
+        None,
+        &[("x-admin", "1"), ("x-fresh", "1")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "a recent sign-in is not enough");
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let held = e
+        .replica
+        .store()
+        .get_peer(other.server)
+        .await
+        .expect("get")
+        .expect("peer");
+    assert_eq!(held.state, PeerState::Paired);
+    // Nothing is left to settle.
+    let (status, _) = admin(&e.app, Method::DELETE, &uri, None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
