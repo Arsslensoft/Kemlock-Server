@@ -957,6 +957,10 @@
   background: var(--accent-wash-strong);
   color: var(--text);
 }
+/* On the blue wash the faint gray falls under 4.5:1. */
+.nav a[aria-current='page'] .n {
+  color: var(--muted);
+}
 .nav .n {
   margin-left: auto;
   font-family: var(--font-mono);
