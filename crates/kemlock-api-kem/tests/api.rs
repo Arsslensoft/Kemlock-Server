@@ -2425,7 +2425,8 @@ fn signed_with(
 }
 
 #[tokio::test]
-async fn a_signed_write_is_stored_and_served_back_and_only_the_owners_ask_makes_the_vault_signed_only() {
+async fn a_signed_write_is_stored_and_served_back_and_only_the_owners_ask_makes_the_vault_signed_only()
+ {
     let (_app, client, session) = signed_in().await;
     let key = common::fakes::bundle_key();
     let id = new_item_id();
@@ -2491,7 +2492,7 @@ async fn a_signed_write_is_stored_and_served_back_and_only_the_owners_ask_makes_
         &session,
         &id,
         ("if-match", "2"),
-        signed_with(&key, &session.user_id, item_json(&session.user_id, &id,  3)),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 3)),
     )
     .await;
     assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
@@ -2725,9 +2726,19 @@ async fn turning_signed_writes_off_asks_for_the_password_again() {
     // With the password it is off, and unsigned writes come back. Again is the same answer.
     let body = reauth_body(&client).await;
     let cleared = signed_writes_call(&client, &session, "DELETE", Some(body.clone())).await;
-    assert_eq!(cleared.status, StatusCode::NO_CONTENT, "{:?}", cleared.json());
+    assert_eq!(
+        cleared.status,
+        StatusCode::NO_CONTENT,
+        "{:?}",
+        cleared.json()
+    );
     let accepted = put(&client, &session, &id, ("if-none-match", "*"), write(1)).await;
-    assert_eq!(accepted.status, StatusCode::CREATED, "{:?}", accepted.json());
+    assert_eq!(
+        accepted.status,
+        StatusCode::CREATED,
+        "{:?}",
+        accepted.json()
+    );
     // The login state is good once.
     let replayed = signed_writes_call(&client, &session, "DELETE", Some(body)).await;
     assert_eq!(replayed.status, StatusCode::BAD_REQUEST);
@@ -2797,7 +2808,10 @@ async fn a_signature_under_an_old_key_version_asks_the_device_to_unlock_again() 
     let (app, client, session) = signed_in().await;
     let key = common::fakes::bundle_key();
     // The account replaced its keys since this device unlocked: its row is at version 2.
-    let user = session.user_id.parse::<kemlock_domain::UserId>().expect("a user id");
+    let user = session
+        .user_id
+        .parse::<kemlock_domain::UserId>()
+        .expect("a user id");
     let mut account = app.store.user(user).expect("the account");
     account.key_version = 2;
     app.store.put_user(account);

@@ -661,7 +661,10 @@ mod tests {
             paired_at: NOW,
             last_seen: None,
         };
-        a.store.insert_peer(&paired(Vec::new())).await.expect("a peer");
+        a.store
+            .insert_peer(&paired(Vec::new()))
+            .await
+            .expect("a peer");
         a.federate(space, vec![peer]).await.expect("federate");
         a.store.set_members(space, vec![member.user]);
         a.store.set_member_account(acct.clone());
@@ -669,7 +672,10 @@ mod tests {
         let published = |a: &Replica<MemoryStore>| {
             let store = a.store.clone();
             async move {
-                let records = store.home_records(space, 0, u32::MAX).await.expect("records");
+                let records = store
+                    .home_records(space, 0, u32::MAX)
+                    .await
+                    .expect("records");
                 let last = records
                     .iter()
                     .filter(|r| r.record.kind == members::KIND)
@@ -688,7 +694,9 @@ mod tests {
         // It is upgraded: the record is made again, with them.
         a.store.remove_peer(peer).await.expect("removed");
         a.store
-            .insert_peer(&paired(vec![crate::writes::PAST_BUNDLES_CAPABILITY.to_owned()]))
+            .insert_peer(&paired(vec![
+                crate::writes::PAST_BUNDLES_CAPABILITY.to_owned(),
+            ]))
             .await
             .expect("a peer");
         assert_eq!(a.publish_members(space).await.expect("published"), 1);

@@ -7,13 +7,14 @@
 //! `tests/openapi.rs` checks that every routed path is in the merged document.
 
 use crate::dto::{
-    BundleAtDto, ClearSignedWritesRequest, ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
-    MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
-    PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest,
-    RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
-    ServerBasicsDto, SignedWritesDto, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse,
-    SsoOffer, SyncBody, SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse,
-    TaggedBatchWriteDto, TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
+    BundleAtDto, ClearSignedWritesRequest, ConfigResponse, EmailRequest, ItemDto,
+    ItemWriteAnswerDto, ItemWriteDto, KdfDto, MethodsResponse, OpaqueFinishRequest,
+    OpaqueStartRequest, OpaqueStartResponse, PreloginResponse, RecoveryCodeRequest,
+    RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest, RegisterFinishResponse,
+    RegisterStartRequest, RegisterStartResponse, ServerBasicsDto, SetupFinishRequest,
+    SetupVerifyRequest, SetupVerifyResponse, SignInResponse, SignedWritesDto, SsoOffer, SyncBody,
+    SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse, TaggedBatchWriteDto,
+    TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
 };
 use serde::Serialize;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};

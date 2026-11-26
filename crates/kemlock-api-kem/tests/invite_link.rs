@@ -113,9 +113,7 @@ async fn an_admin_of_the_organization_gets_the_link_and_nobody_caches_it() {
 async fn the_link_needs_a_signed_in_device() {
     let links = FakeLinks::working();
     let (client, _session) = signed_in(Some(&links)).await;
-    let reply = client
-        .get(&uri(SpaceId::random(), UserId::random()))
-        .await;
+    let reply = client.get(&uri(SpaceId::random(), UserId::random())).await;
     assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
     assert!(links.asked().is_empty());
 }

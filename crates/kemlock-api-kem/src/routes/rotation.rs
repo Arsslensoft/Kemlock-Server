@@ -674,7 +674,11 @@ where
         .items
         .iter()
         .map(|item| {
-            let signature = match (item.writer, item.writer_key_version, item.write_signature.as_deref()) {
+            let signature = match (
+                item.writer,
+                item.writer_key_version,
+                item.write_signature.as_deref(),
+            ) {
                 (None, None, None) => None,
                 (Some(writer), Some(key_version), Some(signature)) => Some(WriteSignature {
                     writer: UserId(writer),

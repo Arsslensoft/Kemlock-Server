@@ -359,7 +359,9 @@ impl MemberStore for SqlStore {
                     state
                         .members
                         .iter()
-                        .filter(|m| matches!(m.state, MemberState::Confirmed | MemberState::Revoked))
+                        .filter(|m| {
+                            matches!(m.state, MemberState::Confirmed | MemberState::Revoked)
+                        })
                         .map(|m| m.user)
                         .collect()
                 })

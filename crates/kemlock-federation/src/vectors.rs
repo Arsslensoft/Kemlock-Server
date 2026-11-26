@@ -1238,7 +1238,9 @@ fn record_from_json(v: &Json) -> Result<ChangeRecord> {
             let bytes: [u8; 16] = unhex(other)?
                 .try_into()
                 .map_err(|_| FedError::Malformed("a collection id"))?;
-            Some(kemlock_domain::spaces::CollectionId(uuid::Uuid::from_bytes(bytes)))
+            Some(kemlock_domain::spaces::CollectionId(
+                uuid::Uuid::from_bytes(bytes),
+            ))
         }
     };
     Ok(ChangeRecord {
@@ -1360,9 +1362,9 @@ fn change_doc() -> Result<Json> {
                 hlc: Hlc::from_parts(1_800_000_001_000, 0),
             },
             owner: Owner::Space(kemlock_domain::SpaceId(uuid::Uuid::from_bytes([0x32; 16]))),
-            collection: Some(kemlock_domain::spaces::CollectionId(uuid::Uuid::from_bytes(
-                [0x33; 16],
-            ))),
+            collection: Some(kemlock_domain::spaces::CollectionId(
+                uuid::Uuid::from_bytes([0x33; 16]),
+            )),
             ..written.clone()
         };
         let in_space_statement = crate::writes::statement_of(&in_space)

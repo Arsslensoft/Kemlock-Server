@@ -248,7 +248,12 @@ async fn collections_of(
         .await
         .store()?
         .into_iter()
-        .map(|row| (row.item_id, kemlock_domain::spaces::CollectionId(row.collection_id)))
+        .map(|row| {
+            (
+                row.item_id,
+                kemlock_domain::spaces::CollectionId(row.collection_id),
+            )
+        })
         .collect())
 }
 
@@ -641,21 +646,16 @@ impl ReplicaStore for SqlStore {
     }
 
     async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
-        Ok(changes::Entity::find_by_id((
-            key.origin.0,
-            to_i64(key.seq, "sequence number")?,
-        ))
-        .one(self.reader())
-        .await
-        .store()?
-        .is_some())
+        Ok(
+            changes::Entity::find_by_id((key.origin.0, to_i64(key.seq, "sequence number")?))
+                .one(self.reader())
+                .await
+                .store()?
+                .is_some(),
+        )
     }
 
-    async fn set_owner_signed_only(
-        &self,
-        owner: Owner,
-        required: bool,
-    ) -> Result<(), StoreError> {
+    async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
         if required {
             kemlock_app::ports::ItemStore::require_signed_writes(
                 self,

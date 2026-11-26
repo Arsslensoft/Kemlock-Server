@@ -199,7 +199,10 @@ impl ChangeRecord {
             .transpose()?;
         let collection = f
             .get(16)
-            .map(|_| f.fixed::<16>(16).map(|id| CollectionId(uuid::Uuid::from_bytes(id))))
+            .map(|_| {
+                f.fixed::<16>(16)
+                    .map(|id| CollectionId(uuid::Uuid::from_bytes(id)))
+            })
             .transpose()?;
         let record = ChangeRecord {
             change: ChangeId {

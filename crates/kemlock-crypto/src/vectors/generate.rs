@@ -18,7 +18,10 @@ use crate::{
     opaque::{self, OpaqueServer},
     owner::Owner,
     password_wrap, prf_wrap, private_keys, rand, rotation, seal, sealed_box, send,
-    sig1::{self, context::BUNDLE, context::CONFIRM, context::ITEM_WRITE, context::KEY_BOX, context::MANIFEST},
+    sig1::{
+        self, context::BUNDLE, context::CONFIRM, context::ITEM_WRITE, context::KEY_BOX,
+        context::MANIFEST,
+    },
 };
 
 type G = RustCrypto;
@@ -1402,7 +1405,11 @@ fn item_write_doc() -> Result<Value, Error> {
                     item_write::Statement {
                         owner: other_owner,
                         // A vault's item has no collection and a space's has one.
-                        collection: if owner_is_space { None } else { Some(other_item) },
+                        collection: if owner_is_space {
+                            None
+                        } else {
+                            Some(other_item)
+                        },
                         ..statement
                     },
                 ),

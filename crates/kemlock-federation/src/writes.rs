@@ -139,7 +139,11 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
         .await?
     {
         let made = record.change.hlc.millis() / 1000;
-        if made >= u64::try_from(retired).unwrap_or(0).saturating_add(RETIRED_KEY_SLACK_SECS) {
+        if made
+            >= u64::try_from(retired)
+                .unwrap_or(0)
+                .saturating_add(RETIRED_KEY_SLACK_SECS)
+        {
             return Ok(Verdict::Refuse(
                 "a change signed with keys the account had replaced by then",
             ));
@@ -361,7 +365,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_signed_write_into_a_space_is_for_the_collection_it_names_and_one_its_writer_may_edit() {
+    async fn a_signed_write_into_a_space_is_for_the_collection_it_names_and_one_its_writer_may_edit()
+     {
         let writer = UserId::random();
         let key = sig1::SigningKey::from_bytes(&[5; 64]);
         let store = store_for(writer, &key);

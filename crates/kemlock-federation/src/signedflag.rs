@@ -51,7 +51,9 @@ pub fn read(payload_bytes: &[u8]) -> Result<(Owner, bool)> {
     .ok_or(FedError::Malformed("an owner is not valid"))?;
     let required = fields.flag(2)?;
     if payload(owner, required) != payload_bytes {
-        return Err(FedError::Invalid("the signed-writes record is not canonical"));
+        return Err(FedError::Invalid(
+            "the signed-writes record is not canonical",
+        ));
     }
     Ok((owner, required))
 }

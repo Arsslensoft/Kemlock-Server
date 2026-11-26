@@ -2,7 +2,8 @@
 
 use super::view::MaybeView;
 use crate::dto::{
-    BatchResponse, ClearSignedWritesRequest, ItemDto, SignedWritesDto, ResolveResponse, SiblingSetDto, SyncBody, SyncQuery, SyncResponse,
+    BatchResponse, ClearSignedWritesRequest, ItemDto, ResolveResponse, SiblingSetDto,
+    SignedWritesDto, SyncBody, SyncQuery, SyncResponse,
 };
 use crate::extract::{Authed, Body};
 use crate::problem::Problem;
@@ -96,12 +97,7 @@ where
     let collection = dto.collection();
     let write = dto.into_write(expected)?;
     let actor = caller.actor();
-    super::write_sig::verify_writes(
-        &env.api.store,
-        actor.user,
-        &[(&write, collection)],
-    )
-    .await?;
+    super::write_sig::verify_writes(&env.api.store, actor.user, &[(&write, collection)]).await?;
     let item = match (write.owner, collection) {
         (Owner::User(_), None) => env.api.put_item().execute(&actor, write).await?,
         (Owner::User(_), Some(_)) => {

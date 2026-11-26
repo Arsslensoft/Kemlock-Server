@@ -11,9 +11,7 @@ use kemlock_app::sends::{SendRepo, file_send_bytes};
 use kemlock_domain::UserId;
 use kemlock_domain::sends::{SendId, SendRecord};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
-};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use time::OffsetDateTime;
 
 /// How many times a view count retries when another opener changed it between the read and the

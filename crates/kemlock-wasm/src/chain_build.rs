@@ -517,7 +517,12 @@ impl<'a> Build<'a> {
         }
         entries.sort_by_key(|entry| entry.0);
         let check = if makes {
-            Some(sc::key_check(&self.space, &key, version, secret.as_bytes())?)
+            Some(sc::key_check(
+                &self.space,
+                &key,
+                version,
+                secret.as_bytes(),
+            )?)
         } else {
             None
         };
@@ -532,7 +537,13 @@ impl<'a> Build<'a> {
 
     /// A name sealed under the space key at the chain's current version, and its hash; the sealed
     /// bytes are kept for the record that commits them.
-    fn name(&mut self, kind: NameKind, id: &Id, target: NameTarget, name: &str) -> Result<Hash, Fail> {
+    fn name(
+        &mut self,
+        kind: NameKind,
+        id: &Id,
+        target: NameTarget,
+        name: &str,
+    ) -> Result<Hash, Fail> {
         let version = self.state.space.key_version;
         let key = self.secret(&KeyRef::Space, version).ok_or(INVALID)?;
         let sealed = seal_name_under(&key, &self.space, version, kind, id, name)?;
@@ -567,9 +578,7 @@ impl<'a> Build<'a> {
         if commitments.is_empty() {
             return Ok(());
         }
-        self.push(Body::Seal {
-            seals: commitments,
-        })
+        self.push(Body::Seal { seals: commitments })
     }
 
     /// The keys a change to a copy of the state makes some member lose.
@@ -725,7 +734,13 @@ impl<'a> Build<'a> {
             ));
         }
         for (id, info) in &self.state.groups {
-            targets.push((3, *id, NameTarget::Group(*id), NameKind::Group, info.name_version));
+            targets.push((
+                3,
+                *id,
+                NameTarget::Group(*id),
+                NameKind::Group,
+                info.name_version,
+            ));
         }
         let mut served: BTreeMap<NameTarget, Vec<u8>> = BTreeMap::new();
         for name in &input.names {
@@ -889,7 +904,8 @@ impl<'a> Build<'a> {
                 members,
             } => {
                 let group = ids::parse_uuid(group)?;
-                let name_hash = self.name(NameKind::Group, &group, NameTarget::Group(group), name)?;
+                let name_hash =
+                    self.name(NameKind::Group, &group, NameTarget::Group(group), name)?;
                 self.push(Body::Group { group, name_hash })?;
                 if members.is_empty() {
                     return Ok(());
@@ -1031,15 +1047,24 @@ impl Session {
             kx1_public: kx_private.public_key()?,
             sig1_public: sig_private.public_key()?,
         };
-        let mut build = Build::new(*space, me, at, sig_private, &unlocked.spaces, State::empty());
+        let mut build = Build::new(
+            *space,
+            me,
+            at,
+            sig_private,
+            &unlocked.spaces,
+            State::empty(),
+        );
         let result = (|| -> Result<(), Fail> {
             let space_key = SecretKey::generate();
             let collection_key = SecretKey::generate();
             let own = [(me, bundle.clone())];
             let collection_ref = KeyRef::Collection(*collection);
-            let collection_commitment = build.commit(collection_ref, 1, &own, &collection_key, true)?;
+            let collection_commitment =
+                build.commit(collection_ref, 1, &own, &collection_key, true)?;
             let space_commitment = build.commit(KeyRef::Space, 1, &own, &space_key, true)?;
-            let space_sealed = seal_name_under(&space_key, space, 1, NameKind::Space, space, space_name)?;
+            let space_sealed =
+                seal_name_under(&space_key, space, 1, NameKind::Space, space, space_name)?;
             let collection_sealed = seal_name_under(
                 &space_key,
                 space,
@@ -1137,19 +1162,29 @@ impl Session {
                 if !may_edit {
                     return None;
                 }
-                let old = unlocked
+                let old =
+                    unlocked
+                        .spaces
+                        .collections
+                        .get(&(*space, collection, item.key_version))?;
+                let new = unlocked
                     .spaces
                     .collections
-                    .get(&(*space, collection, item.key_version))?;
-                let new = unlocked.spaces.collections.get(&(*space, collection, current))?;
+                    .get(&(*space, collection, current))?;
                 let ciphertext = b64::decode(&item.ciphertext).ok()?;
                 let wrapped = b64::decode(&item.item_key).ok()?;
                 let wrap = old.child(ITEM_WRAP_LABEL).ok()?;
                 let item_key =
                     kem1::unwrap_item_key(&wrap, &wrapped, &id, &owner, item.key_version).ok()?;
-                let plain =
-                    kem1::open_item(&item_key, &id, item.revision, &item.kind, &owner, &ciphertext)
-                        .ok()?;
+                let plain = kem1::open_item(
+                    &item_key,
+                    &id,
+                    item.revision,
+                    &item.kind,
+                    &owner,
+                    &ciphertext,
+                )
+                .ok()?;
                 sealed_again(space, item, &id, &collection, current, new, &plain)
             })();
             match again {

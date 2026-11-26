@@ -1122,7 +1122,8 @@ async fn an_incomplete_replacement_changes_nothing() {
         i.writes[0].0 = o.private
     });
     case("a space key not signed by the sealer", &|i| {
-        i.sealed_space_keys[0].signature = vec![0x66; kemlock_domain::spaces::CONFIRMATION_SIGNATURE_LEN]
+        i.sealed_space_keys[0].signature =
+            vec![0x66; kemlock_domain::spaces::CONFIRMATION_SIGNATURE_LEN]
     });
     case("a collection key with no signature", &|i| {
         i.collections[0].keys[0].signature = Vec::new()

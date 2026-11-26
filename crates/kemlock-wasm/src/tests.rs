@@ -2330,7 +2330,10 @@ fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle()
         .sign_item_write(&WriteFields::parse(&elsewhere.to_string()).expect("fields"))
         .expect("signs");
     assert_ne!(signed_here.write_signature, signed_there.write_signature);
-    elsewhere.as_object_mut().expect("an object").remove("collectionId");
+    elsewhere
+        .as_object_mut()
+        .expect("an object")
+        .remove("collectionId");
     assert_eq!(
         session
             .sign_item_write(&WriteFields::parse(&elsewhere.to_string()).expect("fields"))
@@ -2549,7 +2552,11 @@ fn a_new_chained_space_verifies_and_opens_through_its_chain() {
     let (mut other, _) = open_account([0xE4; 16]);
     for field in ["entry", "signature"] {
         let changed = tampered(&chain, 0, field);
-        assert_eq!(verdict_json(&mut other, &space, &changed)["ok"], false, "{field}");
+        assert_eq!(
+            verdict_json(&mut other, &space, &changed)["ok"],
+            false,
+            "{field}"
+        );
     }
 
     // A space this account holds a chain for isn't made again, and a locked session makes nothing.
@@ -2801,7 +2808,10 @@ fn every_kind_a_manager_needs_is_built_and_verifies_with_the_shared_verifier() {
         json!({"action": "remove", "member": theo_text}),
     );
     let view = verdict_json(&mut owner, &space, &chain);
-    assert_eq!(find(&view["members"], "id", &theo_text)["status"], "removed");
+    assert_eq!(
+        find(&view["members"], "id", &theo_text)["status"],
+        "removed"
+    );
     assert_eq!(view["space"]["marked"], true);
 
     // While the space key is marked a new collection is refused with the verifier's reason.
@@ -2851,7 +2861,10 @@ fn a_collection_is_made_and_deleted_and_a_tampered_chain_is_refused() {
         json!({"action": "collection-delete", "collection": extra_text}),
     );
     let view = verdict_json(&mut owner, &space, &chain);
-    assert_eq!(view["collections"].as_array().expect("collections").len(), 1);
+    assert_eq!(
+        view["collections"].as_array().expect("collections").len(),
+        1
+    );
 
     // One byte of any record, or of its signature, and a fresh verifier refuses the chain.
     let (mut fresh, _) = open_account([0xB5; 16]);
@@ -2950,7 +2963,9 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     ]});
     let swapped: Replacement = serde_json::from_value(swapped).expect("a replacement");
     assert_eq!(
-        owner.build_key_replacement(&space, AT, &swapped).map(|_| ()),
+        owner
+            .build_key_replacement(&space, AT, &swapped)
+            .map(|_| ()),
         Err(Error::Invalid)
     );
 
@@ -2965,7 +2980,10 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     assert_eq!(out["names"].as_array().expect("names").len(), 2);
     assert_eq!(out["seals"].as_array().expect("seals").len(), 2);
     assert_eq!(out["held"], json!([uuid_text(&junk)]));
-    assert_eq!(out["rotated"], json!([format!("collection:{general_text}"), "space"]));
+    assert_eq!(
+        out["rotated"],
+        json!([format!("collection:{general_text}"), "space"])
+    );
     let writes = out["writes"].as_array().expect("writes");
     assert_eq!(writes.len(), 1);
     assert_eq!(writes[0]["collection"], general_text);
@@ -2987,8 +3005,12 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     // item opens under its new version with what it held before.
     open_own(&mut owner, &space, &me, &out);
     let new_name = |target: &str| {
-        b64::decode(find(&out["names"], "target", target)["name"].as_str().expect("name"))
-            .expect("b64")
+        b64::decode(
+            find(&out["names"], "target", target)["name"]
+                .as_str()
+                .expect("name"),
+        )
+        .expect("b64")
     };
     assert_eq!(
         owner.open_name(&space, 2, NameKind::Space, &space, &new_name("space")),
@@ -3015,7 +3037,8 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
                 owner: &owner_ref,
                 kind: "login",
                 revision: 2,
-                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct")).expect("b64"),
+                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct"))
+                    .expect("b64"),
                 item_key: &b64::decode(item_out["itemKey"].as_str().expect("key")).expect("b64"),
                 key_version: Some(2),
             },
@@ -3026,7 +3049,11 @@ fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
     // Nothing is marked now: there is nothing to replace.
     let again = serde_json::to_value(
         owner
-            .build_key_replacement(&space, AT, &serde_json::from_value(json!({"items": []})).expect("r"))
+            .build_key_replacement(
+                &space,
+                AT,
+                &serde_json::from_value(json!({"items": []})).expect("r"),
+            )
             .expect("a build"),
     )
     .expect("json");
@@ -3100,7 +3127,10 @@ fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
     .expect("json");
     assert_eq!(out["ok"], true, "{out}");
     append(&mut chain, &out);
-    assert_eq!(verdict_json(&mut owner, &space, &chain)["collections"][0]["keyVersion"], 2);
+    assert_eq!(
+        verdict_json(&mut owner, &space, &chain)["collections"][0]["keyVersion"],
+        2
+    );
     open_own(&mut owner, &space, &me, &out);
 
     // The item still under version 1 and one that doesn't open: the first is sealed again as the
@@ -3118,8 +3148,8 @@ fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
         served_item(&current, 2, &[9u8; 60], &[8u8; 60]),
     ]}))
     .expect("a reseal");
-    let again = serde_json::to_value(owner.build_reseal(&space, &reseal).expect("a build"))
-        .expect("json");
+    let again =
+        serde_json::to_value(owner.build_reseal(&space, &reseal).expect("a build")).expect("json");
     assert_eq!(again["ok"], true, "{again}");
     assert!(again["records"].as_array().expect("records").is_empty());
     assert_eq!(again["held"], json!([uuid_text(&junk)]));
@@ -3139,7 +3169,8 @@ fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
                 owner: &owner_ref,
                 kind: "login",
                 revision: 2,
-                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct")).expect("b64"),
+                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct"))
+                    .expect("b64"),
                 item_key: &b64::decode(item_out["itemKey"].as_str().expect("key")).expect("b64"),
                 key_version: Some(2),
             },
@@ -3149,7 +3180,10 @@ fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
 
     // An account that holds no chain of the space builds nothing.
     let (other, _, _) = open_signed_account([0xD8; 16]);
-    assert_eq!(other.build_reseal(&space, &reseal).map(|_| ()), Err(Error::Invalid));
+    assert_eq!(
+        other.build_reseal(&space, &reseal).map(|_| ()),
+        Err(Error::Invalid)
+    );
 }
 
 #[wasm_bindgen_test]
@@ -3199,8 +3233,7 @@ fn a_key_is_replaced_only_by_an_unlock_that_holds_it() {
         .expect("unlocked")
         .spaces
         .drop_keys(&space);
-    let nothing: Replacement =
-        serde_json::from_value(json!({"items": []})).expect("a replacement");
+    let nothing: Replacement = serde_json::from_value(json!({"items": []})).expect("a replacement");
     let out = serde_json::to_value(
         owner
             .build_key_replacement(&space, AT, &nothing)

@@ -175,7 +175,10 @@ mod tests {
     #[test]
     fn layout_matches_the_doc() {
         let bytes = live().to_bytes().expect("encode");
-        assert_eq!(bytes.len(), 21 + 17 + 16 + 4 + 5 + 8 + 8 + 1 + 32 + 16 + 4 + 1 + 16);
+        assert_eq!(
+            bytes.len(),
+            21 + 17 + 16 + 4 + 5 + 8 + 8 + 1 + 32 + 16 + 4 + 1 + 16
+        );
         assert_eq!(&bytes[..21], b"kemlock/v1/item-write");
         assert_eq!(bytes[21], 2);
         assert_eq!(&bytes[22..38], &[0x51; 16]);
@@ -312,7 +315,14 @@ mod tests {
         assert!(statement([1; 32], true).to_bytes().is_err());
         assert!(statement([0; 32], true).to_bytes().is_ok());
         // A space's item has a collection and a vault's has none.
-        assert!(Statement { collection: None, ..live() }.to_bytes().is_err());
+        assert!(
+            Statement {
+                collection: None,
+                ..live()
+            }
+            .to_bytes()
+            .is_err()
+        );
         assert!(
             Statement {
                 owner: Owner::user([0x51; 16]),

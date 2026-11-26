@@ -72,7 +72,10 @@ async fn once_the_owner_asks_unsigned_writes_are_refused_and_it_can_be_undone() 
         .await
         .expect("the owner asks");
     assert_eq!(
-        world.put_item().execute(&who, write(user, id, Some(1), 2)).await,
+        world
+            .put_item()
+            .execute(&who, write(user, id, Some(1), 2))
+            .await,
         Err(AppError::Item(ItemError::SignatureRequired))
     );
     assert_eq!(
@@ -115,7 +118,10 @@ async fn a_batch_with_an_unsigned_write_is_refused_whole() {
         .put_batch()
         .execute(
             &who,
-            vec![signed(user, write(user, a, None, 1)), write(user, b, None, 1)],
+            vec![
+                signed(user, write(user, a, None, 1)),
+                write(user, b, None, 1),
+            ],
         )
         .await;
     assert_eq!(result, Err(AppError::Item(ItemError::SignatureRequired)));
@@ -223,9 +229,17 @@ async fn a_space_is_set_by_an_owner_or_admin_and_only_by_them() {
     let owner = Owner::Space(space);
 
     // An ordinary member may not, and a stranger can't tell the space exists.
-    assert_eq!(set.execute(&actor(alex), owner, true).await, Err(AppError::Forbidden));
-    assert_eq!(set.execute(&actor(kim), owner, true).await, Err(AppError::NotFound));
-    set.execute(&actor(sam), owner, true).await.expect("the owner asks");
+    assert_eq!(
+        set.execute(&actor(alex), owner, true).await,
+        Err(AppError::Forbidden)
+    );
+    assert_eq!(
+        set.execute(&actor(kim), owner, true).await,
+        Err(AppError::NotFound)
+    );
+    set.execute(&actor(sam), owner, true)
+        .await
+        .expect("the owner asks");
     assert!(
         kemlock_app::ports::ItemStore::signed_writes_required(&w.world.store, owner)
             .await

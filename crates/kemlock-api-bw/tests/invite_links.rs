@@ -108,9 +108,9 @@ async fn an_owner_gets_the_link_of_an_invited_account_and_it_accepts() {
         .await
         .expect("a link");
     assert!(
-        given
-            .link
-            .starts_with(&format!("{DOMAIN}/#/accept-organization/?organizationId={org}")),
+        given.link.starts_with(&format!(
+            "{DOMAIN}/#/accept-organization/?organizationId={org}"
+        )),
         "{}",
         given.link
     );
@@ -159,7 +159,11 @@ async fn an_admin_hands_over_a_users_link_and_an_owner_a_managers_or_admins() {
     invite(&h, &ada, &org, "erin@example.com", 1).await;
 
     // An admin may hand over the invitation of a plain user, not of an admin.
-    assert!(link(&h, &org, dave_id, Asker::Member(carol_id)).await.is_ok());
+    assert!(
+        link(&h, &org, dave_id, Asker::Member(carol_id))
+            .await
+            .is_ok()
+    );
     assert!(matches!(
         link(&h, &org, erin_id, Asker::Member(carol_id)).await,
         Err(InviteLinkError::Forbidden(_))

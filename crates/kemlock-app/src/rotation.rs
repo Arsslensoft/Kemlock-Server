@@ -929,8 +929,26 @@ mod tests {
         );
 
         // Another item, another account, another revision or another kind is another statement.
-        assert!(checked(&request, user, ItemId::random(), Some(signature.clone()), true).is_err());
-        assert!(checked(&request, UserId::random(), id, Some(signature.clone()), true).is_err());
+        assert!(
+            checked(
+                &request,
+                user,
+                ItemId::random(),
+                Some(signature.clone()),
+                true
+            )
+            .is_err()
+        );
+        assert!(
+            checked(
+                &request,
+                UserId::random(),
+                id,
+                Some(signature.clone()),
+                true
+            )
+            .is_err()
+        );
         let moved = check_staged_write(
             &request,
             user,
@@ -967,7 +985,9 @@ mod tests {
         assert_eq!(checked(&request(), user, id, None, false), Ok(None));
         assert_eq!(
             checked(&request(), user, id, None, true),
-            Err(RotationError::App(AppError::Item(ItemError::SignatureRequired)))
+            Err(RotationError::App(AppError::Item(
+                ItemError::SignatureRequired
+            )))
         );
     }
 

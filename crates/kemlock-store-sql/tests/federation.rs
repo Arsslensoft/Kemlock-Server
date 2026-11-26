@@ -6,7 +6,6 @@ mod common;
 
 use common::{draft, memory, put, user_owner};
 use kemlock_app::ports::StoreError;
-use uuid::Uuid;
 use kemlock_domain::{ChangeId, Hlc, ItemId, Owner, Revision, ServerId, VersionVector};
 use kemlock_federation::change::ChangeRecord;
 use kemlock_federation::home::{HomeRecord, VaultFederation};
@@ -17,6 +16,7 @@ use kemlock_federation::ports::{
 use kemlock_federation::wire::ChangeKey;
 use kemlock_store_sql::SqlStore;
 use time::Duration;
+use uuid::Uuid;
 
 fn peer(n: u8) -> Peer {
     Peer {
@@ -729,7 +729,9 @@ async fn a_record_that_changes_an_items_format_or_kind_is_refused() {
     relabelled.revision = Revision(3);
     relabelled.format = kemlock_domain::ItemFormat::Bw;
     assert_eq!(
-        ReplicaStore::apply(&a, &relabelled, b"signature").await.expect("apply"),
+        ReplicaStore::apply(&a, &relabelled, b"signature")
+            .await
+            .expect("apply"),
         ApplyOutcome::Refused
     );
     let mut other_kind = relabelled.clone();
@@ -737,7 +739,9 @@ async fn a_record_that_changes_an_items_format_or_kind_is_refused() {
     other_kind.kind = kemlock_domain::ItemKind::try_from("note".to_owned()).expect("a kind");
     other_kind.change.seq = 2;
     assert_eq!(
-        ReplicaStore::apply(&a, &other_kind, b"signature").await.expect("apply"),
+        ReplicaStore::apply(&a, &other_kind, b"signature")
+            .await
+            .expect("apply"),
         ApplyOutcome::Refused
     );
     let held = ItemStore::get(&a, id).await.expect("get").expect("item");

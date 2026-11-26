@@ -378,7 +378,9 @@ async fn changes_already_held_cost_no_quota() {
     );
     pair(&a, &b).await;
     let vault = Owner::User(UserId::random());
-    a.federate(vault, vec![b.server_id()]).await.expect("federate");
+    a.federate(vault, vec![b.server_id()])
+        .await
+        .expect("federate");
     b.accept_vault(vault, a.server_id(), vec![b.server_id()])
         .await
         .expect("accept");
@@ -420,7 +422,9 @@ async fn a_record_that_relabels_an_item_as_bitwarden_is_refused() {
     let store = MemoryStore::new(kemlock_domain::ServerId::random());
     let owner = Owner::User(UserId::random());
     let item = ItemId::random();
-    let head = store.put(draft(item, owner, None, 1, 1_000)).expect("rev 1");
+    let head = store
+        .put(draft(item, owner, None, 1, 1_000))
+        .expect("rev 1");
     let relabelled = ChangeRecord {
         change: ChangeId {
             origin: kemlock_domain::ServerId::random(),
@@ -454,8 +458,12 @@ async fn a_replay_with_a_late_clock_that_leaves_the_head_out_of_its_lineage_neve
     let store = MemoryStore::new(kemlock_domain::ServerId::random());
     let owner = Owner::User(UserId::random());
     let item = ItemId::random();
-    store.put(draft(item, owner, None, 1, 1_000)).expect("rev 1");
-    let head = store.put(draft(item, owner, Some(1), 2, 2_000)).expect("rev 2");
+    store
+        .put(draft(item, owner, None, 1, 1_000))
+        .expect("rev 1");
+    let head = store
+        .put(draft(item, owner, Some(1), 2, 2_000))
+        .expect("rev 2");
 
     // Revision 1 re-sent with a clock far ahead and a lineage that names nothing held.
     let replay = ChangeRecord {

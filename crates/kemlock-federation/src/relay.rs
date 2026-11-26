@@ -462,7 +462,9 @@ mod tests {
             .await
             .expect("kept");
         assert!(
-            t.c.apply_envelopes(t.b.server_id(), t.vault, &[envelope]).await.is_err(),
+            t.c.apply_envelopes(t.b.server_id(), t.vault, &[envelope])
+                .await
+                .is_err(),
             "an origin outside the set"
         );
         assert!(t.c.store.get(item).is_none());

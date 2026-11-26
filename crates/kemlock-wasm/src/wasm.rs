@@ -1493,10 +1493,7 @@ impl Vault {
         let space = ids::parse_uuid(space_id).map_err(fail)?;
         let reseal: chain_build::Reseal =
             serde_json::from_str(reseal).map_err(|_| fail(Error::Invalid))?;
-        let built = self
-            .session
-            .build_reseal(&space, &reseal)
-            .map_err(fail)?;
+        let built = self.session.build_reseal(&space, &reseal).map_err(fail)?;
         json(&built)
     }
 

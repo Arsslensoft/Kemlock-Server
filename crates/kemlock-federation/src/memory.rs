@@ -350,7 +350,9 @@ impl MemoryStore {
         collection: kemlock_domain::spaces::CollectionId,
         answer: Option<bool>,
     ) {
-        self.extras().edits.insert((vault, user, collection), answer);
+        self.extras()
+            .edits
+            .insert((vault, user, collection), answer);
     }
 
     /// Puts a version of an item of a space into `collection`, as a write that names it does.
@@ -729,11 +731,7 @@ impl ReplicaStore for MemoryStore {
         Ok(self.lock().log.iter().any(|e| e.key == key))
     }
 
-    async fn set_owner_signed_only(
-        &self,
-        owner: Owner,
-        required: bool,
-    ) -> Result<(), StoreError> {
+    async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
         self.set_signed_only(owner, required);
         Ok(())
     }
@@ -978,7 +976,13 @@ impl crate::extra::MemberStore for MemoryStore {
     async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
         let extras = self.extras();
         let mut ids = extras.members.get(&vault).cloned().unwrap_or_default();
-        ids.extend(extras.former_members.get(&vault).cloned().unwrap_or_default());
+        ids.extend(
+            extras
+                .former_members
+                .get(&vault)
+                .cloned()
+                .unwrap_or_default(),
+        );
         Ok(ids)
     }
 

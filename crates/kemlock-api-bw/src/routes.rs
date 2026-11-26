@@ -81,7 +81,8 @@ pub(crate) fn ok(v: Value) -> JsonResult {
 
 /// A JSON answer that carries a secret (an invitation link accepts for its account), so no cache
 /// keeps it.
-pub(crate) type SecretJsonResult = Result<([(header::HeaderName, &'static str); 1], Json<Value>), BwError>;
+pub(crate) type SecretJsonResult =
+    Result<([(header::HeaderName, &'static str); 1], Json<Value>), BwError>;
 
 pub(crate) fn ok_no_store(v: Value) -> SecretJsonResult {
     Ok(([(header::CACHE_CONTROL, "no-store")], Json(v)))
