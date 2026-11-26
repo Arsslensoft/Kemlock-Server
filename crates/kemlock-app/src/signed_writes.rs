@@ -66,6 +66,12 @@ impl<I: ItemStore, R: crate::spaces::SpaceRepo, V: EventLog, C: Clock> SetSigned
         Ok(())
     }
 
+    /// Whether the owner takes signed writes only, for whoever [`Self::check`] allows.
+    pub async fn state(&self, actor: &Actor, owner: Owner) -> Result<bool, AppError> {
+        self.check(actor, owner).await?;
+        Ok(self.items.signed_writes_required(owner).await?)
+    }
+
     /// Sets (`required`) or clears the flag, when [`Self::check`] allows it.
     pub async fn execute(
         &self,

@@ -813,6 +813,13 @@ impl FreshProof {
     }
 }
 
+/// Whether an owner takes signed writes only.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedWritesDto {
+    pub required: bool,
+}
+
 /// Takes an owner off the signed-only list (docs/crypto.md, "The signed-only flag"): the password
 /// again, as erasing the account asks for it, because turning the flag off lets unsigned writes in.
 #[derive(Debug, Deserialize, ToSchema)]

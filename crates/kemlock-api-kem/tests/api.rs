@@ -85,6 +85,7 @@ async fn the_openapi_document_names_every_route() {
         ("/kem/v1/account/two-factor/recovery-code", "post"),
         ("/kem/v1/items/{id}", "put"),
         ("/kem/v1/items:batch", "post"),
+        ("/kem/v1/owners/{owner}/signed-writes", "get"),
         ("/kem/v1/owners/{owner}/signed-writes", "put"),
         ("/kem/v1/owners/{owner}/signed-writes", "delete"),
         ("/kem/v1/accounts/{id}/bundles/{version}", "get"),
@@ -2665,8 +2666,22 @@ async fn an_owner_may_ask_for_signed_writes_for_its_own_vault_only() {
     )
     .await;
     assert_eq!(space.status, StatusCode::NOT_FOUND);
+    let before = signed_writes_call(&client, &session, "GET", None).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.json()["required"], false);
     let own = signed_writes_call(&client, &session, "PUT", None).await;
     assert_eq!(own.status, StatusCode::NO_CONTENT);
+    let after = signed_writes_call(&client, &session, "GET", None).await;
+    assert_eq!(after.json()["required"], true);
+    let stranger = signed_writes_of(
+        &client,
+        &session,
+        &format!("user:{}", uuid::Uuid::from_u128(9)),
+        "GET",
+        None,
+    )
+    .await;
+    assert_eq!(stranger.status, StatusCode::FORBIDDEN);
 
     let id = new_item_id();
     let unsigned = put(

@@ -2,7 +2,7 @@
 
 use super::view::MaybeView;
 use crate::dto::{
-    BatchResponse, ClearSignedWritesRequest, ItemDto, ResolveResponse, SiblingSetDto, SyncBody, SyncQuery, SyncResponse,
+    BatchResponse, ClearSignedWritesRequest, ItemDto, SignedWritesDto, ResolveResponse, SiblingSetDto, SyncBody, SyncQuery, SyncResponse,
 };
 use crate::extract::{Authed, Body};
 use crate::problem::Problem;
@@ -223,6 +223,26 @@ where
             .collect(),
     })
     .into_response())
+}
+
+/// `GET /kem/v1/owners/{owner}/signed-writes`: whether the owner takes signed writes only. The
+/// same people may ask as may set it.
+async fn read_signed_writes<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(owner): Path<String>,
+) -> Result<Json<SignedWritesDto>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let owner = super::contract::owner_param(&owner)?;
+    let required = set_signed_writes(&env)
+        .state(&caller.actor(), owner)
+        .await?;
+    Ok(Json(SignedWritesDto { required }))
 }
 
 /// `PUT /kem/v1/owners/{owner}/signed-writes`: asks that the owner accept signed writes only
@@ -576,7 +596,9 @@ where
         .route("/kem/v1/items:batch", post(put_batch::<S, P, K, R>))
         .route(
             "/kem/v1/owners/{owner}/signed-writes",
-            put(require_signed_writes::<S, P, K, R>).delete(clear_signed_writes::<S, P, K, R>),
+            get(read_signed_writes::<S, P, K, R>)
+                .put(require_signed_writes::<S, P, K, R>)
+                .delete(clear_signed_writes::<S, P, K, R>),
         )
         .route(
             "/kem/v1/accounts/{id}/bundles/{version}",

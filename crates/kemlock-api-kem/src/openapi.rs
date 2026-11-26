@@ -11,7 +11,7 @@ use crate::dto::{
     MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
     PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest,
     RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
-    ServerBasicsDto, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse,
+    ServerBasicsDto, SignedWritesDto, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse,
     SsoOffer, SyncBody, SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse,
     TaggedBatchWriteDto, TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
 };
@@ -436,6 +436,19 @@ fn doc_batch() {}
 fn doc_bundle_at() {}
 
 #[utoipa::path(
+    get, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
+    security(("dpop" = [])),
+    params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
+    responses(
+        (status = 200, description = "Whether the owner takes signed writes only (docs/crypto.md, \"The signed-only flag\")", body = SignedWritesDto),
+        (status = 403, description = "Another account's vault, or a space the caller is neither owner nor admin of", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "A space the caller is not a member of", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_read_signed_writes() {}
+
+#[utoipa::path(
     put, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
     security(("dpop" = [])),
     params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
@@ -519,7 +532,7 @@ fn doc_live() {}
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
         doc_register_start, doc_register_finish, doc_confirm_email_page, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
-        doc_put_item, doc_batch, doc_signed_writes, doc_clear_signed_writes, doc_bundle_at, doc_sync, doc_sync_post, doc_live
+        doc_put_item, doc_batch, doc_read_signed_writes, doc_signed_writes, doc_clear_signed_writes, doc_bundle_at, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
         ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,
@@ -529,7 +542,7 @@ fn doc_live() {}
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,
         TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeRequest, RecoveryCodeResponse, ItemDto,
         ItemWriteDto, ItemWriteAnswerDto, TaggedBatchWriteDto, TaggedBatchRequest, TagOutcomeDto,
-        TaggedBatchResponse, SyncBody, SyncResponse, BundleAtDto, ClearSignedWritesRequest
+        TaggedBatchResponse, SyncBody, SyncResponse, BundleAtDto, ClearSignedWritesRequest, SignedWritesDto
     )),
     modifiers(&SecurityAddon)
 )]
