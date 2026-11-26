@@ -48,12 +48,20 @@ export type BoxRefusal =
 export class KeyBoxRefused extends Error {
   readonly key: KeyRef;
   readonly reason: BoxRefusal;
+  /**
+   * For a sealer this browser couldn't trace: the member whose fingerprint a person could compare so
+   * they can (the sealer, or the root of the confirmations that lead to them), as `MemberNotVerified`
+   * names it. Comparing is how a space with no chain is first trusted here, as first contact is for a
+   * chain.
+   */
+  readonly compare: MemberViewDto | undefined;
 
-  constructor(key: KeyRef, reason: BoxRefusal) {
+  constructor(key: KeyRef, reason: BoxRefusal, compare?: MemberViewDto) {
     super(`the ${key} key box can't be checked (${reason})`);
     this.name = 'KeyBoxRefused';
     this.key = key;
     this.reason = reason;
+    this.compare = compare;
   }
 }
 
@@ -198,7 +206,9 @@ async function checkSigned(
       sealer,
     );
   } catch (error) {
-    if (error instanceof MemberNotVerified) throw refuse('sealer-not-verified');
+    if (error instanceof MemberNotVerified) {
+      throw new KeyBoxRefused(ref, 'sealer-not-verified', error.compare);
+    }
     throw error;
   }
   let signature: Uint8Array;

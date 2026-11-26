@@ -368,3 +368,41 @@ describe('the sealer’s key version', () => {
     );
   });
 });
+
+describe('a sealer nobody here has compared', () => {
+  it('names the member whose fingerprint a person should compare, and opens once they did', async () => {
+    const { ctx, deps, lee } = await setup({ confirmed: false });
+    const box = { key: finance, version: 1, ...signedBy(lee, finance, 1) };
+    const error = await openKeyBox(ctx, box).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(error).toBeInstanceOf(KeyBoxRefused);
+    expect((error as KeyBoxRefused).reason).toBe('sealer-not-verified');
+    // Nobody confirmed Lee, so Lee's own fingerprint is the one to compare.
+    expect((error as KeyBoxRefused).compare?.user).toBe(LEE);
+
+    await deps.pins?.save(ME, LEE, await fingerprintTextOf(lee));
+    await expect(openKeyBox(ctx, box)).resolves.toEqual({ legacy: false });
+  });
+
+  it('names the root of the confirmations that lead to the sealer, not the sealer', async () => {
+    const { ctx, deps, me, crypto } = await setup();
+    // Theo, whom the server lists as an owner but nobody confirmed, confirmed Lee, who sealed the key.
+    const theo = memberView(THEO, 'theo@example.co', { role: 'owner', invitedBy: THEO });
+    const lee = await confirmedBy(THEO, memberView(LEE, 'lee@example.co', { role: 'admin' }));
+    const roster = [me, theo, lee];
+    const traced: BoxContext = { ...ctx, members: async () => roster };
+    const box = { key: finance, version: 1, ...signedBy(lee, finance, 1) };
+    const error = await openKeyBox(traced, box).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect((error as KeyBoxRefused).reason).toBe('sealer-not-verified');
+    expect((error as KeyBoxRefused).compare?.user).toBe(THEO);
+    expect(crypto.calls.some((call) => call.startsWith('openCollection'))).toBe(false);
+
+    await deps.pins?.save(ME, THEO, await fingerprintTextOf(theo));
+    await expect(openKeyBox(traced, box)).resolves.toEqual({ legacy: false });
+  });
+});

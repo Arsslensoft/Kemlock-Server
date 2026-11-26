@@ -313,6 +313,44 @@ function ChainNotice({
   );
 }
 
+/**
+ * What a space whose keys can't be opened because their sealer isn't traced here asks for: that a
+ * person compare that member's fingerprint with what their own app shows, so this browser trusts the
+ * confirmations they made, as it does for the first contact with a chain.
+ */
+function CompareNotice({
+  detail,
+  busy,
+  onCompare,
+}: {
+  detail: SpaceDetail;
+  busy: boolean;
+  onCompare: ((member: MemberViewDto) => void) | undefined;
+}) {
+  const t = useT();
+  const target = detail.members.find((m) => m.user === detail.compare);
+  if (!target) return null;
+  const name = memberLabel(detail.members, target.user);
+  return (
+    <Notice tone="warn">
+      <b>{t('space.keys.compare.title')}</b>
+      <p>{t('space.keys.compare.body', { name })}</p>
+      {onCompare ? (
+        <div className="actions">
+          <Button
+            variant="primary"
+            isDisabled={busy}
+            aria-label={t('space.members.compareFor', { name })}
+            onPress={() => onCompare(target)}
+          >
+            {t('space.members.compare')}
+          </Button>
+        </div>
+      ) : null}
+    </Notice>
+  );
+}
+
 type Offboard = { kind: 'revoke' | 'remove'; member: MemberViewDto } | null;
 
 export function SpaceDetailView({
@@ -398,6 +436,9 @@ export function SpaceDetailView({
         </Notice>
       ) : null}
       <ChainNotice detail={detail} busy={busy} onAccept={actions.acceptFirstContact} />
+      {detail.compare ? (
+        <CompareNotice detail={detail} busy={busy} onCompare={actions.startPin} />
+      ) : null}
       {detail.legacyKeys && detail.legacyKeys.length > 0 ? (
         <Notice tone="warn">
           <b>{t('space.keys.legacy.title')}</b>

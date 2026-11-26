@@ -30,7 +30,7 @@ import {
   overlayChain,
 } from './chain';
 import type { BoxStore } from '@/spaces/boxstore';
-import { lazyContext, openKeyBox, openUnchainedKeys, signedInAccount } from './boxes';
+import { KeyBoxRefused, lazyContext, openKeyBox, openUnchainedKeys, signedInAccount } from './boxes';
 import { MemberNotVerified, type Recipient, checkBundle, verifiedRecipient } from './verify';
 
 export interface SpaceDeps {
@@ -214,6 +214,12 @@ export interface SpaceDetail {
    * when an owner confirms this account again (docs/crypto.md, "Signed key boxes").
    */
   legacyKeys?: string[];
+  /**
+   * The member whose fingerprint a person should compare so the keys of a space with no chain open:
+   * the member who sealed one of them, or the root of the confirmations that lead to them, whom this
+   * browser can't trace yet (`startPin` asks for it).
+   */
+  compare?: string;
 }
 
 export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise<SpaceDetail> {
@@ -224,6 +230,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
   let members = servedMembers;
   let readable = false;
   let legacyKeys: string[] = [];
+  let compare: string | undefined;
   let nameVersion = (_kind: 'space' | 'collection' | 'group', _id: string) => served.space.keyVersion;
   if (trust.kind === 'verified') {
     // The space as its chain gives it; keys open at the chain's version, under its commitments.
@@ -251,8 +258,11 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
         collectionKeys: served.collectionKeys,
       });
       readable = true;
-    } catch {
+    } catch (error) {
       readable = false;
+      // A sealer nobody here has compared: what would put it right is a person comparing their
+      // fingerprint, as for first contact with a chain.
+      if (error instanceof KeyBoxRefused && error.compare) compare = error.compare.user;
     }
   }
   const unverified: NonNullable<SpaceDetail['unverified']> = [];
@@ -291,6 +301,7 @@ export async function loadSpaceDetail(deps: SpaceDeps, spaceId: string): Promise
     readable,
     trust,
     ...(legacyKeys.length > 0 ? { legacyKeys } : {}),
+    ...(compare ? { compare } : {}),
     ...(unverified.length > 0 ? { unverified } : {}),
     name: await title('space', space.id, space.name),
     collections: await Promise.all(
