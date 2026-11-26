@@ -170,7 +170,7 @@ where
             return Err(AppError::AccountDisabled);
         }
         // Said only to whoever proved the password: a new account whose address isn't confirmed.
-        if self.users.email_unconfirmed(user.id).await? {
+        if self.sessions.config.signups_verify && self.users.email_unconfirmed(user.id).await? {
             return Err(AppError::EmailNotConfirmed);
         }
         ensure_not_pending(&self.users, user.id).await?;

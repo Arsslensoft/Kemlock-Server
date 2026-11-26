@@ -39,6 +39,8 @@ pub struct Authenticate<U, D, F, K, C> {
     pub two_factor: F,
     pub signer: K,
     pub clock: C,
+    /// Whether held accounts are refused (`AuthConfig::signups_verify`).
+    pub verify_email: bool,
 }
 
 impl<U: UserRepo, D: DeviceRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock>
@@ -62,7 +64,7 @@ impl<U: UserRepo, D: DeviceRepo, F: TwoFactorRepo, K: TokenSigner, C: Clock>
         }
         // An account made on a sign-up that asks for a confirmed address is not used until the link
         // mailed to it is opened, whatever tokens it holds.
-        if self.users.email_unconfirmed(user.id).await? {
+        if self.verify_email && self.users.email_unconfirmed(user.id).await? {
             return Err(AppError::EmailNotConfirmed);
         }
         // A device that was signed out is gone from the account: its access token, which would

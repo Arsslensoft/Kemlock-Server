@@ -1014,6 +1014,12 @@ impl World {
         self
     }
 
+    /// With "verify the email of a new account" on: a held account is refused.
+    pub(crate) fn with_email_verification(mut self) -> Self {
+        self.config.signups_verify = true;
+        self
+    }
+
     pub(crate) fn first_run(&self) -> FirstRun<FakeStore, FakeEnv> {
         FirstRun {
             users: self.store.clone(),
@@ -1110,6 +1116,7 @@ impl World {
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.env.clone(),
+            verify_email: self.config.signups_verify,
         }
     }
 

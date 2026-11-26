@@ -286,6 +286,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     pub(crate) fn auth_config(&self) -> AuthConfig {
         AuthConfig {
             signups_allowed: self.live.signups_allowed(),
+            signups_verify: self.live.signups_verify(),
             ..self.config.auth
         }
     }
@@ -430,6 +431,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.crypto.clone(),
+            verify_email: self.live.signups_verify(),
         }
     }
 

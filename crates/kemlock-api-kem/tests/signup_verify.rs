@@ -123,11 +123,22 @@ async fn a_token_of_an_account_held_after_signing_in_stops_working() {
         .hold_unconfirmed(user, [5; 32], now, now + Duration::hours(1))
         .await
         .expect("held");
+    // With the setting off a hold does nothing; turned on, it refuses the token.
+    let released = client
+        .get_authed("/kem/v1/devices", &session.access_token)
+        .await;
+    assert_eq!(released.status, StatusCode::OK, "{:?}", released.json());
+    app.api.live.set_signups_verify(true);
     let held = client
         .get_authed("/kem/v1/devices", &session.access_token)
         .await;
     assert_eq!(held.status, StatusCode::FORBIDDEN, "{:?}", held.json());
     assert_eq!(held.problem(), "email-not-confirmed");
+    app.api.live.set_signups_verify(false);
+    let freed = client
+        .get_authed("/kem/v1/devices", &session.access_token)
+        .await;
+    assert_eq!(freed.status, StatusCode::OK, "{:?}", freed.json());
 }
 
 #[tokio::test]

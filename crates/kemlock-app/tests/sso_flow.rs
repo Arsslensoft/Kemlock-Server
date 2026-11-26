@@ -840,7 +840,8 @@ async fn linking_to_an_administrators_account_by_email_asks_for_its_second_step_
 
 #[tokio::test]
 async fn an_account_whose_email_isnt_confirmed_is_not_linked_by_email() {
-    let sso = Sso::new();
+    let mut sso = Sso::new();
+    sso.world.config.signups_verify = true;
     let existing = make_user(&sso.world, "ada@example.org").await;
     let now = sso.world.env.now();
     UserRepo::hold_unconfirmed(&sso.world.store, existing, [1; 32], now, now + Duration::hours(1))

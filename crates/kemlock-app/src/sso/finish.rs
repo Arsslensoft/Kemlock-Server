@@ -318,7 +318,7 @@ where
             ensure_not_pending(&self.users, user.id).await?;
             // An account whose address was never confirmed may have been made by someone who
             // doesn't own it.
-            if self.users.email_unconfirmed(user.id).await? {
+            if self.sessions.config.signups_verify && self.users.email_unconfirmed(user.id).await? {
                 return Err(AppError::EmailNotConfirmed.into());
             }
             self.link(&user, claims, email, now).await?;

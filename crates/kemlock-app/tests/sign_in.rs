@@ -768,6 +768,7 @@ async fn a_secret_copied_from_another_accounts_row_does_not_sign_in() {
 async fn an_account_held_for_its_email_is_refused_once_the_password_checks_out() {
     use kemlock_app::ports::{Clock, UserRepo};
     let (world, user) = signed_in_world().await;
+    let world = world.with_email_verification();
     let now = Clock::now(&world.env);
     UserRepo::hold_unconfirmed(&world.store, user, [2; 32], now, now + Duration::hours(1))
         .await

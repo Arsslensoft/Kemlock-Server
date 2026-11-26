@@ -107,7 +107,7 @@ the Kemlock API answers `email-not-confirmed` (403), and single sign-on does not
 email. The link works once and runs out in 24 hours; `POST /kem/v1/accounts/confirm-email/resend`
 (the sign-in screen's "send it again") mails a new one, at most one in five minutes. An account made
 from an invitation (its token was mailed to the address) or as the first admin is not held, and
-accounts that existed before the setting was turned on are confirmed. The Kemlock API's
+accounts that existed before the setting was turned on are confirmed. The hold only counts while the setting is on and mail works: turning it off (or losing `SMTP_HOST`) releases every held account. The Kemlock API's
 `register/finish` answer then carries `"emailConfirmationRequired": true`; with the setting off it
 is the answer it always was. The Bitwarden API follows the same setting for its own registration.
 
