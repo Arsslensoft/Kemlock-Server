@@ -1,4 +1,5 @@
 import { createDevicesApi } from '@/api/devices';
+import { clearCopiedSecret } from '@/lib/clipboard';
 import { clearVault } from '@/features/vault/hooks';
 import { vaultCrypto } from '@/crypto-port';
 import { forgetGrant } from '@/features/admin/reauth';
@@ -23,6 +24,8 @@ function forgetCachedData(): void {
 export async function lockVault(): Promise<void> {
   // First, so that nothing syncs the vault while the keys go.
   session.locked();
+  // A password or code copied from the vault does not stay on the clipboard of a locked one.
+  void clearCopiedSecret();
   await vaultCrypto.lock();
   clearVault();
   forgetCachedData();
@@ -35,6 +38,7 @@ export async function lockVault(): Promise<void> {
  * user's decrypted items, and the next sign-in in this tab must not see them.
  */
 export function forgetEndedSession(): void {
+  void clearCopiedSecret();
   clearVault();
   forgetCachedData();
   forgetGrant();
@@ -70,6 +74,7 @@ async function endOnServer(deviceId: string): Promise<void> {
  * account erased).
  */
 export async function signOut(options: { server?: boolean } = {}): Promise<void> {
+  void clearCopiedSecret();
   const { deviceId, status } = session.getState();
   // First, while the tokens and the DPoP key still work. Not when the server has just ended it
   // (this device signed itself out, or the account was erased).
