@@ -193,6 +193,19 @@ where
             None => (None, sc::State::empty()),
         };
 
+        // G3: a space that exists is for its members; an outsider is told nothing of it, not even
+        // its head.
+        let existing = self.spaces.load(space).await?;
+        if head.is_some() || existing.is_some() {
+            let is_member = existing
+                .as_ref()
+                .and_then(|s| s.member(actor.user))
+                .is_some_and(|m| m.state != MemberState::Revoked);
+            if !is_member {
+                return Err(AppendError::NotFound);
+            }
+        }
+
         // A3: the first record must follow the head. This is a conflict, not a refusal: the
         // caller learns the head and tries again.
         let first =
@@ -212,7 +225,6 @@ where
         let now = self.clock.now();
         let now_secs = u64::try_from(now.unix_timestamp()).unwrap_or(0);
         let gate = self.spaces.chain_home_gate(space).await?;
-        let existing = self.spaces.load(space).await?;
         let me = id_of(actor.user);
 
         let mut accepted: Vec<(Record, sc::Applied, &SignedRecord)> = Vec::new();

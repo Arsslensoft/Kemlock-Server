@@ -1581,7 +1581,8 @@ that the `confirm` records its own bundle, byte for byte.
 - G2. `?from=<seq>` answers the records with `seq ≥ from`: an empty array past the head, and `400` for
   a value that isn't an integer from `0`.
 - G3. Only an invited or confirmed member gets the chain. Any other account, a removed member
-  included, gets `404`, as for every other space route.
+  included, gets `404`, as for every other space route. This holds for a `POST` too: it answers `404`, not
+  a `409` with the head, to anyone but a member of a space that exists or has a chain.
 - G4. The home and the space's replicas may serve the chain; records are signed, so a replica needs
   no trust. Only the home accepts records.
 - G5. `GET /kem/v1/spaces/{id}/chain/{seq}/seals` answers the seal hashes record `seq` committed:

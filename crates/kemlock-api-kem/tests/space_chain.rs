@@ -254,6 +254,38 @@ async fn a_second_append_at_the_same_seq_is_a_conflict_with_the_head() {
 }
 
 #[tokio::test]
+async fn an_outsider_is_not_told_the_head_of_a_chain() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 2).await;
+    let zoe = rig.person("zoe@example.org", 3).await;
+    let (space, _, mut chain, create) = make(&rig, &sam).await;
+    // A record at seq 0 from someone outside the space: a 404 like every other space route, with
+    // no head in it.
+    let reply = zoe.post(&uri(space), request(&[&create])).await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{:?}", reply.json());
+    assert!(reply.json().get("head").is_none(), "{:?}", reply.json());
+
+    // An invited member is in the space: she gets the conflict and the head.
+    let invite = chain.invite(&sam.person, ana.person.id, Role::Member);
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let reply = ana.post(&uri(space), request(&[&create])).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{:?}", reply.json());
+    assert_eq!(reply.json()["head"]["seq"], 1);
+    // And a record Sam signed but she sent is refused for it (A5), not hidden.
+    let next = chain.invite(&sam.person, zoe.person.id, Role::Member);
+    let reply = ana.post(&uri(space), request(&[&next])).await;
+    assert_eq!(
+        reply.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        reply.json()
+    );
+    assert_eq!(reply.json()["reason"], "not allowed");
+}
+
+#[tokio::test]
 async fn a_confirm_before_the_invitee_accepted_is_refused() {
     let rig = Rig::new();
     let sam = rig.person("sam@example.org", 1).await;
@@ -324,10 +356,9 @@ async fn refusals_name_their_reason_and_seq() {
     assert_eq!(reply.json()["reason"], "bad signature");
     assert_eq!(reply.json()["seq"], 1);
 
-    // A record signed by Sam but sent by Ana.
+    // A record signed by Sam but sent by Ana, who isn't in the space: she learns nothing of it.
     let reply = ana.post(&uri(space), request(&[&good])).await;
-    assert_eq!(reply.status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(reply.json()["reason"], "not allowed");
+    assert_eq!(reply.status, StatusCode::NOT_FOUND, "{:?}", reply.json());
 
     // A cosignature on a record that isn't a rekey is malformed.
     let mut body = request(&[&good]);
