@@ -397,6 +397,7 @@ fn doc_recovery_code() {}
         (status = 403, description = "A space item the caller may not write: no edit on its collection", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such space, or the caller isn't in it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "Stale write: the current revision is in `currentRevision`; or a space item sealed under a replaced collection key", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 422, description = "`invalid-signature`: the write's signature is not the signed-in account's, or `signature-required`: the owner accepts signed writes only", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 423, description = "The space waits for its keys to be replaced", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 428, description = "No If-Match or If-None-Match", body = ProblemDoc, content_type = "application/problem+json"),
     )
@@ -417,6 +418,18 @@ fn doc_put_item() {}
 )]
 #[allow(dead_code)]
 fn doc_batch() {}
+
+#[utoipa::path(
+    put, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
+    security(("dpop" = [])),
+    params(("owner" = String, Path, description = "The account's own vault, `user:<uuid>`")),
+    responses(
+        (status = 204, description = "The vault accepts signed writes only from now on (docs/crypto.md, \"Signed item writes\"). Idempotent, and never undone"),
+        (status = 403, description = "Any owner but the caller's own vault: a space's flag is set by the first signed write of one of its members", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_signed_writes() {}
 
 #[utoipa::path(
     get, path = "/kem/v1/sync", tag = "sync",
@@ -473,7 +486,7 @@ fn doc_live() {}
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
         doc_register_start, doc_register_finish, doc_confirm_email_page, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
-        doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live
+        doc_put_item, doc_batch, doc_signed_writes, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
         ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,

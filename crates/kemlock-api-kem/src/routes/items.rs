@@ -19,6 +19,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use kemlock_app::ports::{ItemStore, StoreError, TokenSigner};
 use kemlock_app::spaces::sync_owners::owners_of;
+use kemlock_app::signed_writes::RequireSignedWrites;
 use kemlock_app::spaces::{SpaceRepo, SpacesError};
 use kemlock_app::{AppError, SyncOutcome, b64url};
 use kemlock_domain::spaces::CollectionId;
@@ -95,6 +96,7 @@ where
     let collection = dto.collection();
     let write = dto.into_write(expected)?;
     let actor = caller.actor();
+    super::write_sig::verify_writes(&env.api.store, actor.user, &[&write]).await?;
     let item = match (write.owner, collection) {
         (Owner::User(_), None) => env.api.put_item().execute(&actor, write).await?,
         (Owner::User(_), Some(_)) => {
@@ -162,6 +164,12 @@ where
         writes.push((write, collection));
     }
     let actor = caller.actor();
+    super::write_sig::verify_writes(
+        &env.api.store,
+        actor.user,
+        &writes.iter().map(|(write, _)| write).collect::<Vec<_>>(),
+    )
+    .await?;
     // A batch of vault items alone is the plain batch; one that names a space or a collection
     // goes through the spaces' step, which stores vault and space items together.
     if writes
@@ -215,6 +223,31 @@ where
             .collect(),
     })
     .into_response())
+}
+
+/// `PUT /kem/v1/owners/{owner}/signed-writes`: the account asks that its own vault accept signed
+/// writes only, before any signed write has been made (docs/crypto.md, "Signed item writes"). It is
+/// otherwise set by the first signed write, and it is never undone. `204`; `403` for another
+/// owner: the flag of a space is set by the first signed write of one of its members.
+async fn require_signed_writes<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(owner): Path<String>,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let owner = super::contract::owner_param(&owner)?;
+    RequireSignedWrites {
+        items: env.api.store.clone(),
+        clock: env.api.crypto.clone(),
+    }
+    .execute(&caller.actor(), owner)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The header that carries the sync cursor, for a cursor too long for a URL.
@@ -475,6 +508,10 @@ where
     Router::new()
         .route("/kem/v1/items/{id}", put(put_item::<S, P, K, R>))
         .route("/kem/v1/items:batch", post(put_batch::<S, P, K, R>))
+        .route(
+            "/kem/v1/owners/{owner}/signed-writes",
+            put(require_signed_writes::<S, P, K, R>),
+        )
         .route(
             "/kem/v1/items/{id}/siblings/resolve",
             post(resolve_siblings::<S, P, K, R>),

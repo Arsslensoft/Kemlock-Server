@@ -85,6 +85,7 @@ async fn the_openapi_document_names_every_route() {
         ("/kem/v1/account/two-factor/recovery-code", "post"),
         ("/kem/v1/items/{id}", "put"),
         ("/kem/v1/items:batch", "post"),
+        ("/kem/v1/owners/{owner}/signed-writes", "put"),
         ("/kem/v1/sync", "get"),
         ("/kem/v1/sync", "post"),
         ("/kem/v1/live", "get"),
@@ -2379,4 +2380,227 @@ async fn a_live_session_ends_with_a_stamp_change_a_removed_device_or_a_reuse() {
     changed.security_stamp = uuid::Uuid::from_u128(99);
     app.store.put_user(changed);
     assert!(!live(account.security_stamp, jkt).await);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signed item writes (docs/crypto.md, "Signed item writes")
+
+/// `item` signed by the account `user` with `key`, as a device would, for the write of it.
+fn signed_with(
+    key: &kemlock_crypto::sig1::SigningKey,
+    user: &str,
+    mut item: serde_json::Value,
+) -> serde_json::Value {
+    use kemlock_crypto::{item_write, owner::Owner};
+    let writer = user.parse::<kemlock_domain::UserId>().expect("a user id");
+    let deleted = item["deleted"].as_bool().unwrap_or(false);
+    let ciphertext = item["ciphertext"].as_str().map(unb64);
+    let item_key = item["itemKey"].as_str().map(unb64);
+    let sealed = match (&ciphertext, &item_key) {
+        (Some(c), Some(k)) => Some((c.as_slice(), k.as_slice())),
+        _ => None,
+    };
+    let id = item["id"]
+        .as_str()
+        .and_then(|s| s.parse::<ItemId>().ok())
+        .expect("an item id");
+    let statement = item_write::Statement {
+        owner: Owner::user(*writer.as_bytes()),
+        item_id: *id.as_bytes(),
+        kind: "login",
+        revision: item["revision"].as_u64().expect("a revision"),
+        deleted,
+        envelope: item_write::envelope_hash(1, sealed).expect("the hash"),
+        writer: *writer.as_bytes(),
+        writer_key_version: 1,
+    };
+    item["writer"] = json!(user);
+    item["writerKeyVersion"] = json!(1);
+    item["writeSignature"] = json!(b64(&statement.sign(key).expect("signs")));
+    item
+}
+
+#[tokio::test]
+async fn a_signed_write_is_stored_served_back_and_makes_the_vault_signed_only() {
+    let (_app, client, session) = signed_in().await;
+    let key = common::fakes::bundle_key();
+    let id = new_item_id();
+
+    let created = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+    let shown = created.json();
+    assert_eq!(shown["writer"], session.user_id);
+    assert_eq!(shown["writerKeyVersion"], 1);
+    assert!(shown["writeSignature"].is_string());
+
+    // Sync serves the signature back.
+    let synced = client
+        .send(
+            "GET",
+            "/kem/v1/sync",
+            Req {
+                access_token: Some(&session.access_token),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(synced.status, StatusCode::OK);
+    let items = synced.json()["items"].clone();
+    assert_eq!(items[0]["writeSignature"], shown["writeSignature"]);
+
+    // The vault is signed-only now: an unsigned write is refused, a signed one is not.
+    let unsigned = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "1"),
+        item_json(&session.user_id, &id, 2),
+    )
+    .await;
+    assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        unsigned.json()["type"],
+        "urn:kemlock:problem:signature-required"
+    );
+    let signed = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "1"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 2)),
+    )
+    .await;
+    assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+}
+
+#[tokio::test]
+async fn a_signature_by_another_key_or_over_another_item_is_refused_and_stores_nothing() {
+    let (_app, client, session) = signed_in().await;
+    let id = new_item_id();
+    let thief = kemlock_crypto::sig1::SigningKey::from_bytes(&[0x66; 64]);
+    let forged = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&thief, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    assert_eq!(forged.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        forged.json()["type"],
+        "urn:kemlock:problem:invalid-signature"
+    );
+
+    // A genuine signature of one write, sent with another's ciphertext.
+    let key = common::fakes::bundle_key();
+    let mut swapped = signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1));
+    swapped["ciphertext"] = json!(b64(&kemlock_crypto::rand::bytes::<64>()));
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), swapped).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A signature with no writer, or by another account, is refused too.
+    let mut partial = signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1));
+    partial.as_object_mut().expect("an object").remove("writer");
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), partial).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    let mut other = signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1));
+    other["writer"] = json!(uuid::Uuid::from_u128(5).to_string());
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), other).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Nothing was stored: the id is still free, and an unsigned write is still accepted.
+    let created = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        item_json(&session.user_id, &id, 1),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+}
+
+#[tokio::test]
+async fn a_signed_delete_is_accepted_and_an_unsigned_one_is_not_once_signed() {
+    let (_app, client, session) = signed_in().await;
+    let key = common::fakes::bundle_key();
+    let id = new_item_id();
+    put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    let tombstone = |revision: u64| {
+        json!({
+            "id": id,
+            "owner": format!("user:{}", session.user_id),
+            "kind": "login",
+            "format": "kem1",
+            "revision": revision,
+            "keyVersion": 1,
+            "deleted": true,
+        })
+    };
+    let unsigned = put(&client, &session, &id, ("if-match", "1"), tombstone(2)).await;
+    assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let signed = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "1"),
+        signed_with(&key, &session.user_id, tombstone(2)),
+    )
+    .await;
+    assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+    assert_eq!(signed.json()["deleted"], true);
+    assert!(signed.json()["writeSignature"].is_string());
+}
+
+#[tokio::test]
+async fn an_owner_may_ask_for_signed_writes_for_its_own_vault_only() {
+    let (_app, client, session) = signed_in().await;
+    let ask = |owner: String| {
+        let client = &client;
+        let token = session.access_token.clone();
+        async move {
+            client
+                .send(
+                    "PUT",
+                    &format!("/kem/v1/owners/{owner}/signed-writes"),
+                    Req {
+                        access_token: Some(&token),
+                        ..Req::default()
+                    },
+                )
+                .await
+        }
+    };
+    let other = ask(format!("user:{}", uuid::Uuid::from_u128(9))).await;
+    assert_eq!(other.status, StatusCode::FORBIDDEN);
+    let space = ask(format!("space:{}", uuid::Uuid::from_u128(9))).await;
+    assert_eq!(space.status, StatusCode::FORBIDDEN);
+    let own = ask(format!("user:{}", session.user_id)).await;
+    assert_eq!(own.status, StatusCode::NO_CONTENT);
+
+    let id = new_item_id();
+    let unsigned = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        item_json(&session.user_id, &id, 1),
+    )
+    .await;
+    assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
 }
