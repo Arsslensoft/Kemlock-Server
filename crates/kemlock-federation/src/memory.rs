@@ -180,6 +180,8 @@ struct Extras {
     trusted_addresses: HashMap<ServerId, Vec<String>>,
     /// Vaults whose account or space does not live here, for `owns_vault`; everything else does.
     unowned: HashSet<Owner>,
+    /// Personal vaults whose account lives on this store (not a copy), for `erase_vault`.
+    local_accounts: HashSet<Owner>,
     /// The attachment rows, for `BlobSync`.
     attachments: Vec<kemlock_domain::Attachment>,
 }
@@ -294,6 +296,11 @@ impl MemoryStore {
         } else {
             extras.unowned.insert(vault);
         }
+    }
+
+    /// Says the account of the personal vault `vault` lives here, so an erasure of it is refused.
+    pub fn set_local_account(&self, vault: Owner) {
+        self.extras().local_accounts.insert(vault);
     }
 
     /// Adds an attachment row, as an upload would have left it.
@@ -950,6 +957,9 @@ impl ErasureOutbox for MemoryStore {
 
 impl VaultErasure for MemoryStore {
     async fn erase_vault(&self, vault: Owner) -> Result<VaultErased, StoreError> {
+        if self.extras().local_accounts.contains(&vault) {
+            return Err(StoreError::Duplicate);
+        }
         // What federation keeps beside the vault's items goes too: its event log copies, its
         // duplicate tags and its matching switch.
         {

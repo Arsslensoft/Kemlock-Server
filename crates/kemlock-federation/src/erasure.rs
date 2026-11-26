@@ -22,6 +22,13 @@ use crate::ports::PeerState;
 use crate::replicate::{Channel, FedStore, Replica};
 use kemlock_domain::{Owner, ServerId};
 
+use kemlock_app::ports::StoreError;
+
+/// What a replica answers when the vault's account lives on it (it is not a copy), so that no
+/// peer, whoever it has become, can have a local account's vault erased. It is final: the home
+/// stops asking, as it would after an acknowledgement, and logs it.
+pub const ERASE_LOCAL_ACCOUNT: &str = "this server holds that vault's account itself";
+
 impl<S: FedStore> Replica<S> {
     /// Handles an erasure `peer` asks for. The peer must be paired and the vault's home (by the
     /// vault's settings here, or by the offer it made if the vault was never accepted).
@@ -49,7 +56,12 @@ impl<S: FedStore> Replica<S> {
             return Err(FedError::Refused("only a vault's home may erase it"));
         }
 
-        let erased = self.store.erase_vault(vault).await?;
+        let erased = match self.store.erase_vault(vault).await {
+            Ok(erased) => erased,
+            // The account lives here: refused, and nothing was deleted.
+            Err(StoreError::Duplicate) => return Err(FedError::Refused(ERASE_LOCAL_ACCOUNT)),
+            Err(e) => return Err(e.into()),
+        };
         let mut files_failed = 0usize;
         if let Some(files) = &self.files {
             for blob in &erased.blobs {
@@ -94,6 +106,11 @@ impl<S: FedStore> Replica<S> {
                     acknowledged += 1;
                     tracing::info!(%peer, ?vault, queued_at, "a peer erased its copy of a vault");
                 }
+                Response::Error { detail, .. } if detail == ERASE_LOCAL_ACCOUNT => {
+                    // Final: the peer will never erase it, so asking again every visit is no use.
+                    self.store.complete_erasure(peer, vault).await?;
+                    tracing::warn!(%peer, ?vault, "a peer holds that vault's account itself and won't erase it: the erasure was dropped");
+                }
                 Response::Error { detail, .. } => {
                     tracing::warn!(%peer, ?vault, %detail, "a peer refused to erase its copy of a vault");
                 }
@@ -101,5 +118,64 @@ impl<S: FedStore> Replica<S> {
             }
         }
         Ok(acknowledged)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::MemoryStore;
+    use crate::suite::Suite;
+    use crate::testing::identity;
+    use kemlock_domain::UserId;
+    use std::sync::Arc;
+
+    const NOW: u64 = 1_800_000_000;
+
+    struct Direct<'a> {
+        remote: &'a Replica<MemoryStore>,
+        caller: ServerId,
+    }
+
+    impl Channel for Direct<'_> {
+        async fn call(&mut self, request: &Request) -> Result<Response> {
+            Ok(self.remote.serve(self.caller, request, NOW).await.response)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_replica_whose_account_is_local_refuses_for_good_and_the_home_stops_asking() {
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let (a_id, b_id) = (ia.server, ib.server);
+        let a = Replica::new(MemoryStore::new(a_id), Arc::new(ia.clone()));
+        let b = Replica::new(MemoryStore::new(b_id), Arc::new(ib.clone()));
+        b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        b.accept_vault(vault, a_id, vec![b_id]).await.expect("accept");
+        // The vault's account lives on B, not as a copy.
+        b.store.set_local_account(vault);
+        a.store.queue_erasure(b_id, vault, NOW);
+
+        let mut channel = Direct {
+            remote: &b,
+            caller: a_id,
+        };
+        // B says so in a way A takes as final: nothing is acknowledged, nothing stays queued.
+        assert_eq!(
+            a.forward_erasures(&mut channel, b_id).await.expect("a visit"),
+            0
+        );
+        assert!(a.store.pending_erasures(b_id).await.expect("pending").is_empty());
+        // And B still holds the vault.
+        assert!(b.store.get_vault(vault).await.expect("get").is_some());
+
+        // A vault B holds nothing of is acknowledged, as before.
+        let elsewhere = Owner::User(UserId::random());
+        a.store.queue_erasure(b_id, elsewhere, NOW);
+        assert_eq!(
+            a.forward_erasures(&mut channel, b_id).await.expect("a visit"),
+            1
+        );
     }
 }

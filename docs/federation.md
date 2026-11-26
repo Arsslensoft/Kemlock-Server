@@ -779,8 +779,10 @@ A replica accepts `Erase` only from a paired peer that is the vault's home by th
 vault's items and every version of them, the change log, attachment rows, home records, cursors,
 the offer and the federation settings, and, for a personal vault, the copied account with its
 devices; then it deletes the attachment files. A personal vault whose account lives on the
-replica (is not a copy) is never erased by a peer: the replica refuses and deletes nothing, however
-the sender came to be taken for its home. A replica that holds nothing of the vault answers `Ack` too, so a repeated erasure (a lost
+replica (is not a copy) is never erased by a peer: the replica refuses, with the detail "this server
+holds that vault's account itself", and deletes nothing, however the sender came to be taken for
+its home. The home takes that answer as final: it drops the queued erasure and logs it, instead of
+asking at every visit. A replica that holds nothing of the vault answers `Ack` too, so a repeated erasure (a lost
 acknowledgement) is harmless. Both servers log it, and each writes an event
 (`federation.erasure_forwarded` at the home, `federation.vault_erased` at the replica) that names
 the vault and the peer and holds no name or email.

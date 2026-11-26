@@ -260,8 +260,9 @@ async fn a_replica_never_erases_an_account_that_lives_on_it() {
     // Asked to erase the vault of an account that is this server's own (no copy marker), it
     // refuses and deletes nothing: a peer that became the vault's home (an admin here accepted a
     // promotion) can't wipe a local user's items with an Erase.
+    // The refusal is the one the replica turns into an answer the home takes as final.
     let refused = VaultErasure::erase_vault(&store, Owner::User(ada.id)).await;
-    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(refused, Err(kemlock_app::ports::StoreError::Duplicate));
 
     for item in &items {
         assert!(
