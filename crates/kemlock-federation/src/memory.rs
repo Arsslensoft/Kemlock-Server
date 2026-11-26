@@ -887,12 +887,21 @@ impl crate::extra::MemberStore for MemoryStore {
         Ok(self.extras().accounts_held.get(&user).cloned())
     }
 
-    async fn writer_bundle(&self, user: UserId) -> Result<Option<(u32, Vec<u8>)>, StoreError> {
-        Ok(self
-            .extras()
-            .accounts_held
-            .get(&user)
-            .map(|a| (a.key_version, a.public_bundle.clone())))
+    async fn writer_bundle(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).and_then(|a| {
+            if a.key_version == key_version {
+                Some(a.public_bundle.clone())
+            } else {
+                a.past_bundles
+                    .iter()
+                    .find(|b| b.key_version == key_version)
+                    .map(|b| b.public_bundle.clone())
+            }
+        }))
     }
 
     async fn apply_member_account(

@@ -25,6 +25,24 @@ fn bundle_is_signed(account: &MemberAccount) -> bool {
         .is_ok()
 }
 
+/// Whether every past bundle of the account is the account's own, at the key version it says, below
+/// the current one, in ascending order, and carries a valid signature of its own `sig1` key: a copy
+/// is the only place a replica learns what a write signed before a key replacement is checked
+/// against, so each is held to what a registered bundle is.
+fn past_bundles_are_signed(account: &MemberAccount) -> bool {
+    let mut last = 0;
+    account.past_bundles.iter().all(|past| {
+        let ordered = past.key_version > last && past.key_version < account.key_version;
+        last = past.key_version;
+        ordered
+            && kemlock_crypto::bundle::Bundle::from_bytes(&past.public_bundle).is_ok_and(|bundle| {
+                bundle.account_id == *account.id.as_bytes()
+                    && bundle.key_version == past.key_version
+                    && bundle.verify_self_signature(&past.bundle_signature).is_ok()
+            })
+    })
+}
+
 /// Whether the latest `member-account` record of `user` among `records` was made before the first
 /// `space-member` record of the same user: the order a home used before replicas needed the member
 /// first.
@@ -256,6 +274,13 @@ impl<S: FedStore> Replica<S> {
             );
             return;
         }
+        if !past_bundles_are_signed(&account) {
+            tracing::warn!(
+                user = %account.id,
+                "a member account record whose past bundles do not verify was refused"
+            );
+            return;
+        }
         match self
             .store
             .apply_member_account(record.vault, record.signer, &account)
@@ -338,6 +363,7 @@ mod tests {
             key_version: 1,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_100,
+            past_bundles: Vec::new(),
             devices: vec![members::MemberDevice {
                 id: kemlock_domain::DeviceId::random(),
                 name: "Pixel".to_owned(),
@@ -554,5 +580,48 @@ mod tests {
             0,
             "once, not at every visit"
         );
+    }
+
+    /// A bundle of `id` at `key_version` and its own signature.
+    fn bundle_of(id: UserId, key_version: u32, seed: u8) -> members::PastBundle {
+        use kemlock_crypto::{bundle::Bundle, kx1, sig1};
+        let key = sig1::SigningKey::from_bytes(&[seed; 64]);
+        let bundle = Bundle {
+            account_id: *id.as_bytes(),
+            key_version,
+            kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+            sig1_public: crate::crypto::sign_public(&key).expect("a public key"),
+        };
+        members::PastBundle {
+            key_version,
+            bundle_signature: bundle.sign(&key).expect("a signature"),
+            public_bundle: bundle.to_bytes(),
+        }
+    }
+
+    #[test]
+    fn past_bundles_are_the_accounts_own_in_order_below_the_current_key_version() {
+        let id = UserId::random();
+        let mut acct = account(id);
+        acct.key_version = 3;
+        assert!(past_bundles_are_signed(&acct), "none is fine");
+        acct.past_bundles = vec![bundle_of(id, 1, 5), bundle_of(id, 2, 6)];
+        assert!(past_bundles_are_signed(&acct));
+
+        // Another account's bundle, a version that isn't the bundle's, one at or above the current
+        // version, one out of order and a signature that isn't the bundle's own all fail.
+        let other = vec![bundle_of(UserId::random(), 1, 5)];
+        let mislabelled = vec![members::PastBundle {
+            key_version: 2,
+            ..bundle_of(id, 1, 5)
+        }];
+        let current = vec![bundle_of(id, 3, 5)];
+        let unordered = vec![bundle_of(id, 2, 6), bundle_of(id, 1, 5)];
+        let mut forged = bundle_of(id, 1, 5);
+        forged.bundle_signature = bundle_of(id, 1, 9).bundle_signature;
+        for bad in [other, mislabelled, current, unordered, vec![forged]] {
+            acct.past_bundles = bad;
+            assert!(!past_bundles_are_signed(&acct));
+        }
     }
 }

@@ -93,6 +93,7 @@ impl Writer {
             created_at: 1,
             updated_at: 1,
             devices: Vec::new(),
+            past_bundles: Vec::new(),
         }
     }
 

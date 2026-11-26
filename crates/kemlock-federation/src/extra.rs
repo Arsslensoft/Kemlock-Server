@@ -238,14 +238,15 @@ pub trait MemberStore: Send + Sync {
         ready(Ok(false))
     }
 
-    /// The key version and the public-key bundle of `user` as this server holds them, whether the
-    /// account lives here or is the copy a replica keeps of a member: what a writer's signature
-    /// is checked against (docs/crypto.md, "Signed item writes"). `None` when this server holds no
-    /// keys for the account.
+    /// The public-key bundle `user` had at `key_version` as this server holds it, whether the
+    /// account lives here or is the copy a replica keeps of a member, past bundles included: what a
+    /// writer's signature is checked against (docs/crypto.md, "Signed item writes"). `None` when
+    /// this server holds no such bundle.
     fn writer_bundle(
         &self,
         _user: UserId,
-    ) -> impl Future<Output = R<Option<(u32, Vec<u8>)>>> + Send {
+        _key_version: u32,
+    ) -> impl Future<Output = R<Option<Vec<u8>>>> + Send {
         ready(Ok(None))
     }
 }

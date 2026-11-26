@@ -71,16 +71,16 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
             "a change written by an account that may not write here",
         ));
     }
-    let Some((version, bundle)) = store.writer_bundle(write.writer).await? else {
+    // The bundle of the key version the signature names, which may be one the account has
+    // replaced since (docs/crypto.md, "Signed item writes", "Key versions").
+    let Some(bundle) = store
+        .writer_bundle(write.writer, write.key_version)
+        .await?
+    else {
         return Ok(Verdict::Refuse(
-            "a change by a writer whose keys we do not hold",
+            "a change by a writer whose keys at that version we do not hold",
         ));
     };
-    if version != write.key_version {
-        return Ok(Verdict::Refuse(
-            "a change signed under another key version of its writer",
-        ));
-    }
     let Some(statement) = statement_of(record) else {
         return Ok(Verdict::Refuse(
             "a change whose writer statement can't be made",
@@ -120,6 +120,7 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             devices: Vec::new(),
+            past_bundles: Vec::new(),
         }
     }
 
@@ -269,5 +270,49 @@ mod tests {
         record.format = ItemFormat::Bw;
         let store = MemoryStore::new(ServerId::random());
         assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+    }
+
+    #[tokio::test]
+    async fn a_write_signed_before_a_key_replacement_is_checked_against_the_past_bundle() {
+        use crate::members::PastBundle;
+        let writer = UserId::random();
+        let old_key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let new_key = sig1::SigningKey::from_bytes(&[6; 64]);
+        let bundle_of = |version: u32, key: &sig1::SigningKey| {
+            Bundle {
+                account_id: *writer.as_bytes(),
+                key_version: version,
+                kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("length"),
+                sig1_public: key.public_key().expect("public key"),
+            }
+            .to_bytes()
+        };
+        // The account is at key version 2 now and kept its first bundle.
+        let store = MemoryStore::new(ServerId::random());
+        let mut copy = account(writer, bundle_of(2, &new_key), 2);
+        copy.past_bundles = vec![PastBundle {
+            key_version: 1,
+            public_bundle: bundle_of(1, &old_key),
+            bundle_signature: vec![0; 8],
+        }];
+        store.set_member_account(copy);
+
+        // A write signed under version 1 (by the old key) verifies against that bundle.
+        let before = signed_record(Owner::User(writer), writer, &old_key);
+        assert_eq!(judge(&store, &before).await, Ok(Verdict::Accept));
+        // The old key can't sign as version 2, and the new key can't sign as version 1.
+        let mut as_new = signed_record(Owner::User(writer), writer, &old_key);
+        if let Some(write) = &mut as_new.write {
+            write.key_version = 2;
+        }
+        assert!(verdict_is_refusal(judge(&store, &as_new).await));
+        let by_new_as_old = signed_record(Owner::User(writer), writer, &new_key);
+        assert!(verdict_is_refusal(judge(&store, &by_new_as_old).await));
+        // A version the replica holds no bundle for is refused.
+        let mut third = signed_record(Owner::User(writer), writer, &old_key);
+        if let Some(write) = &mut third.write {
+            write.key_version = 3;
+        }
+        assert!(verdict_is_refusal(judge(&store, &third).await));
     }
 }
