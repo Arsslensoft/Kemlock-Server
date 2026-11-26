@@ -320,12 +320,22 @@ async fn erasing_a_replica_vault_clears_its_event_log_tags_and_matching_switch()
     let (store, dir) = common::file().await;
     let url = common::file_url(&dir.path().join("kemlock.db"));
     let peer = ServerId::random();
-    let (ada, ada_items) = account_with_items(&store, "ada", 1).await;
+    // Ada lives here only as a copy of another home's account: a vault whose account lives here
+    // is never erased by a peer (8c22806).
+    let ada_id = UserId::random();
+    assert_eq!(
+        store
+            .apply_member_account(Owner::User(ada_id), peer, &copy_of(ada_id, &unique_email("ada")))
+            .await,
+        Ok(MemberApply::Applied)
+    );
+    let ada_items = [ItemId::random()];
+    put(&store, draft(ada_items[0], Owner::User(ada_id), None, 1)).await;
     let (bob, bob_items) = account_with_items(&store, "bob", 1).await;
-    let (vault, other) = (Owner::User(ada.id), Owner::User(bob.id));
+    let (vault, other) = (Owner::User(ada_id), Owner::User(bob.id));
     let tags = TagSet::new(1, [DedupTag([7; 32])]).expect("a small set");
     for (owner, by, item, n) in [
-        (vault, ada.id, ada_items[0], 1),
+        (vault, ada_id, ada_items[0], 1),
         (other, bob.id, bob_items[0], 2),
     ] {
         EventSync::store_peer_events(&store, peer, owner, &[log_entry(n)])
