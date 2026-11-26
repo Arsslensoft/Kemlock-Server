@@ -111,6 +111,11 @@ export interface SpaceViewDto {
   grants: GrantDto[];
   /** The collection keys sealed to the caller. */
   collectionKeys: KeyCopyDto[];
+  /**
+   * Whether the space is a Bitwarden organization, so the page offers an invited member's invitation
+   * link only there. Left out by a server that doesn't say, which counts as no.
+   */
+  bitwardenOrganization?: boolean;
 }
 
 export interface OffboardedDto {

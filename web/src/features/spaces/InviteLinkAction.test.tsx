@@ -65,7 +65,11 @@ describe('InviteLinkAction', () => {
 });
 
 describe('the invitation link on the space page', () => {
-  function page(role: 'owner' | 'admin' | 'member', inviteLink: SpaceActions['inviteLink']) {
+  function page(
+    role: 'owner' | 'admin' | 'member',
+    inviteLink: SpaceActions['inviteLink'],
+    organization: boolean | 'unsaid' = true,
+  ) {
     const actions = {
       invite: vi.fn(),
       accept: vi.fn(),
@@ -91,7 +95,7 @@ describe('the invitation link on the space page', () => {
       <SpaceDetailView
         detail={{
           ...base,
-          view: spaceView({ me: member(ME, { role }) }),
+          view: spaceView({ me: member(ME, { role }), ...(organization === 'unsaid' ? {} : { bitwardenOrganization: organization }) }),
           members: [
             ...base.members,
             memberView(IVY, 'ivy@example.co', { state: 'invited', name: 'Ivy Chen' }),
@@ -127,6 +131,18 @@ describe('the invitation link on the space page', () => {
     cleanup();
     page('owner', undefined);
     expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();
+  });
+
+  it('is not offered in a space that is not a Bitwarden organization, or one the server does not say of', () => {
+    const inviteLink = vi.fn(async () => LINK);
+    page('owner', inviteLink, false);
+    expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();
+    cleanup();
+    page('admin', inviteLink, 'unsaid');
+    expect(screen.queryByRole('button', { name: /Copy the invitation link/ })).not.toBeInTheDocument();
+    cleanup();
+    page('admin', inviteLink, true);
+    expect(screen.getByRole('button', { name: 'Copy the invitation link of Ivy Chen' })).toBeInTheDocument();
   });
 });
 
