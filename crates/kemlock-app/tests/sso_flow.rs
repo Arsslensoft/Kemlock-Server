@@ -13,7 +13,7 @@ use kemlock_app::sso::{
     SsoError, SsoFinish, SsoLogout, SsoSettings, SsoSignedIn, SsoStart, StartInput,
 };
 use kemlock_app::{AppError, DeviceInfo, SecondStepInput, SignedIn, b64url};
-use kemlock_domain::{DeviceKind, Email, SpaceId, User, UserId};
+use kemlock_domain::{DeviceKind, Email, Role, SpaceId, User, UserId};
 use sso_fakes::*;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -760,6 +760,58 @@ async fn an_existing_account_with_the_same_verified_email_is_linked_and_left_alo
     assert_eq!(sso.repos.identities()[0].user, existing);
     // SSO never touches a key: the account row is exactly as it was.
     assert_eq!(sso.world.store.user(existing), Some(before));
+}
+
+#[tokio::test]
+async fn the_sign_in_that_links_by_email_never_takes_the_providers_word_for_the_second_step() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    enable_totp(&sso.world, existing).await;
+    let mfa = || {
+        let mut c = claims("sub-1", "ada@example.org");
+        c.amr = vec!["mfa".to_owned()];
+        c
+    };
+
+    // The provider says its user did multi-factor authentication, which says nothing about who
+    // owns this account: the account's own second step is asked all the same.
+    sso.provider.say(mfa());
+    let first = sso.sign_in("provider-code-1").await.expect("links");
+    assert_eq!(first.user, existing);
+    assert!(!first.new_account);
+    assert!(!first.mfa_via_sso);
+    let SignedIn::SecondStep(step) = &first.outcome else {
+        panic!("a second step expected");
+    };
+    assert_eq!(step.methods, vec![TwoFactorMethod::Totp]);
+    assert_eq!(sso.repos.identities().len(), 1, "the identity is linked");
+    assert!(
+        sso.world.store.devices_of(existing).is_empty(),
+        "no device before the second step"
+    );
+
+    // Once linked, the provider's multi-factor answer is taken as before.
+    sso.provider.say(mfa());
+    let again = sso.sign_in("provider-code-2").await.expect("signs in");
+    assert!(matches!(again.outcome, SignedIn::Tokens(_)));
+    assert!(again.mfa_via_sso);
+}
+
+#[tokio::test]
+async fn an_administrators_account_is_not_linked_by_email() {
+    let sso = Sso::new();
+    let existing = make_user(&sso.world, "ada@example.org").await;
+    let mut account = sso.world.store.user(existing).expect("the account");
+    account.role = Role::Admin;
+    sso.world.store.put_user(account);
+
+    assert_eq!(
+        sso.sign_in("provider-code-1").await,
+        Err(SsoError::AdminLinkingRefused)
+    );
+    assert!(sso.repos.identities().is_empty(), "nothing is linked");
+    assert!(sso.world.store.devices_of(existing).is_empty());
+    assert!(sso.world.store.refresh_tokens().is_empty());
 }
 
 #[tokio::test]

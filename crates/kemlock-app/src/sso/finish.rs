@@ -144,7 +144,7 @@ where
         let email = self.trusted_email(&settings, &claims).await?;
 
         // 3. The account: linked, linkable by email, or new.
-        let (user, new_account) = self
+        let (user, new_account, linked_now) = self
             .resolve_account(&settings, &claims, &email, now)
             .await?;
         // The provider has said who this is, so the account may be told it is disabled. Before the
@@ -180,7 +180,11 @@ where
             .filter(|t| t.enabled)
             .map(|t| t.method)
             .collect();
-        let provider_did_mfa = amr_shows_mfa(&claims.amr);
+        // What the provider's `amr` says is how the provider's user signed in, not that they own this
+        // account: it is taken in place of Kemlock's own second step only for an identity that was
+        // linked before this sign-in. The sign-in that makes the link (an account found by its
+        // email) always answers the account's own second step.
+        let provider_did_mfa = amr_shows_mfa(&claims.amr) && !linked_now;
         if !methods.is_empty() && !provider_did_mfa {
             // The device is registered only after the second step, as after a password.
             let device = input.device.resolve(user.id, &self.sessions.env);
@@ -268,7 +272,7 @@ where
         claims: &IdentityClaims,
         email: &Email,
         now: OffsetDateTime,
-    ) -> Result<(User, bool), SsoError> {
+    ) -> Result<(User, bool, bool), SsoError> {
         match self.find_or_make(settings, claims, email, now).await {
             Err(SsoError::App(AppError::Duplicate)) => {
                 self.find_or_make(settings, claims, email, now).await
@@ -283,7 +287,7 @@ where
         claims: &IdentityClaims,
         email: &Email,
         now: OffsetDateTime,
-    ) -> Result<(User, bool), SsoError> {
+    ) -> Result<(User, bool, bool), SsoError> {
         // Linked already: issuer and subject name the account, whatever the email says now.
         if let Some(identity) = self
             .repos
@@ -295,7 +299,7 @@ where
                 .by_id(identity.user)
                 .await?
                 .ok_or(SsoError::Unauthorized)?;
-            return Ok((user, false));
+            return Ok((user, false, false));
         }
 
         if settings.require_verified_domain && !self.domain_verified(email.as_str()).await? {
@@ -312,13 +316,19 @@ where
                 return Err(AppError::AccountDisabled.into());
             }
             ensure_not_pending(&self.users, user.id).await?;
+            // An administrator's account is not given to whoever the provider says has its
+            // address: there is no one to ask, and the console and its second step are what stand
+            // between the account and the server.
+            if user.is_admin() {
+                return Err(SsoError::AdminLinkingRefused);
+            }
             // An account whose address was never confirmed may have been made by someone who
             // doesn't own it.
             if self.users.email_unconfirmed(user.id).await? {
                 return Err(AppError::EmailNotConfirmed.into());
             }
             self.link(&user, claims, email, now).await?;
-            return Ok((user, false));
+            return Ok((user, false, true));
         }
 
         if !settings.create_accounts {
@@ -327,7 +337,7 @@ where
         let user = self.new_account(claims, email, now);
         self.users.insert(&user).await?;
         self.link(&user, claims, email, now).await?;
-        Ok((user, true))
+        Ok((user, true, true))
     }
 
     async fn link(

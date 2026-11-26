@@ -117,6 +117,26 @@ holds no one back. Without it anyone can register any address first: with sign-u
 `@corp.com`, someone could take `ceo@corp.com` before its owner does. Turn it on whenever sign-ups
 are open to people you don't know, or limited to a domain.
 
+### Single sign-on and linking by email (`SSO_*`)
+
+`SSO_SIGNUPS_MATCH_EMAIL` (default `true`, as in Vaultwarden) lets a person's first sign-in with the
+provider link to the account that already has the email the provider vouches for. That is the risk
+to weigh: whoever controls an address at the provider (an open sign-up, an alias, a mail domain the
+provider doesn't check) gets the Kemlock account of that address. Kemlock narrows it:
+
+- the provider's `email_verified` must be true (`SSO_ALLOW_UNKNOWN_EMAIL_VERIFICATION` accepts a
+  token with no such claim only where the domain is proven by DNS in the console);
+- a server administrator's account is never linked by email (the sign-in answers `sso-admin-linking`);
+  admins sign in with their password and second step. Accounts that SSO makes are ordinary accounts;
+- an account whose email was never confirmed (see `SIGNUPS_VERIFY`) is never linked;
+- the sign-in that makes the link always asks for the account's own second step, whatever the
+  provider's `amr` says; the `amr` skip ("Via SSO") applies only to identities that were linked
+  before.
+
+Safer settings: set `SSO_SIGNUPS_MATCH_EMAIL=false` and let SSO make its own accounts (an existing
+account then stays out of SSO and the sign-in answers `sso-linking-off`); or keep it on, require a
+proven domain (the console's "Only accept people whose email domain is verified here") and turn `SIGNUPS_VERIFY` on.
+
 ### Push to phones
 
 The server wakes the Kemlock apps itself, with a push that says only "sync now": no email, account
