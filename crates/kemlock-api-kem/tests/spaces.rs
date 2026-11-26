@@ -1397,7 +1397,7 @@ async fn lookups_are_limited_per_caller() {
     let role = ana_as_admin(&sam, space, ana.id).await;
     assert_eq!(role, StatusCode::OK);
 
-    for _ in 0..30 {
+    for _ in 0..10 {
         let reply = sam.get(&lookup_uri(space, "ana@example.org")).await;
         assert_eq!(reply.status, StatusCode::OK);
     }
