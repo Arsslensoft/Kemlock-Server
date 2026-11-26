@@ -499,9 +499,21 @@ impl<S: FedStore> Replica<S> {
                 // arrive wins" would let it win.
                 let is_home = current.home == self.server_id();
                 if is_home || self.store.promotion_mode().await? == PromotionMode::Hold {
-                    if current.held_demotion.as_deref() != Some(record.as_slice()) {
+                    // One promotion is held for each server that would become the home. A later
+                    // one from the same server replaces its own, never another's, so repeating an
+                    // announcement can't push the legitimate one out; one that no longer fits the
+                    // vault (an epoch already passed) is dropped.
+                    let mut held = current.held_demotion.clone();
+                    held.retain(|r| {
+                        home::peek_promotion(r).is_ok_and(|p| {
+                            p.new_home != promotion.new_home
+                                && home::apply_promotion(&current, &p).is_ok()
+                        })
+                    });
+                    held.push(record.clone());
+                    if held != current.held_demotion {
                         let held = VaultFederation {
-                            held_demotion: Some(record.clone()),
+                            held_demotion: held,
                             ..current
                         };
                         self.store.put_vault(&held).await?;
@@ -935,15 +947,22 @@ impl<S: FedStore> Replica<S> {
     /// the admin with a fresh passkey or password. The record is checked again as it was when it
     /// arrived: signed by the new home, for the next epoch, from this server as the home.
     pub async fn accept_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        self.accept_promotion_of(vault, None).await
+    }
+
+    /// [`accept_demotion`](Self::accept_demotion) for the promotion of `new_home`. `None` names it
+    /// only when exactly one waits.
+    pub async fn accept_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
         let current = self
             .store
             .get_vault(vault)
             .await?
             .ok_or(FedError::UnknownVault)?;
-        let record = current
-            .held_demotion
-            .clone()
-            .ok_or(FedError::Refused("no promotion waits for this vault"))?;
+        let record = pick_held(&current, new_home)?;
         let keys = self.directory().await?;
         let promotion = home::open_promotion(&record, &keys)?;
         let mut next = home::apply_promotion(&current, &promotion)?;
@@ -956,16 +975,29 @@ impl<S: FedStore> Replica<S> {
     /// server that signed it announces it again at its next run of this process, and it is held
     /// again; the way to stop that is to unpair it, or to take it out of the vault's set.
     pub async fn refuse_demotion(&self, vault: Owner) -> Result<VaultFederation> {
+        self.refuse_promotion_of(vault, None).await
+    }
+
+    /// [`refuse_demotion`](Self::refuse_demotion) for the promotion of `new_home`. `None` names it
+    /// only when exactly one waits.
+    pub async fn refuse_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
         let current = self
             .store
             .get_vault(vault)
             .await?
             .ok_or(FedError::UnknownVault)?;
-        if current.held_demotion.is_none() {
-            return Err(FedError::Refused("no promotion waits for this vault"));
-        }
+        let record = pick_held(&current, new_home)?;
         let next = VaultFederation {
-            held_demotion: None,
+            held_demotion: current
+                .held_demotion
+                .iter()
+                .filter(|r| **r != record)
+                .cloned()
+                .collect(),
             ..current
         };
         self.store.put_vault(&next).await?;
@@ -976,11 +1008,10 @@ impl<S: FedStore> Replica<S> {
     pub async fn held_promotions(&self) -> Result<Vec<(Owner, PromotionRecord)>> {
         let mut out = Vec::new();
         for vault in self.store.list_vaults().await? {
-            let Some(record) = &vault.held_demotion else {
-                continue;
-            };
-            if let Ok(promotion) = home::peek_promotion(record) {
-                out.push((vault.owner, promotion));
+            for record in &vault.held_demotion {
+                if let Ok(promotion) = home::peek_promotion(record) {
+                    out.push((vault.owner, promotion));
+                }
             }
         }
         Ok(out)
@@ -993,6 +1024,22 @@ impl<S: FedStore> Replica<S> {
             Response::Error { detail, .. } => Err(FedError::Remote(detail)),
             _ => Err(FedError::Malformed("an unexpected response to a promotion")),
         }
+    }
+}
+
+/// The held promotion `new_home` signed, or the only one held when none is named.
+fn pick_held(vault: &VaultFederation, new_home: Option<ServerId>) -> Result<Vec<u8>> {
+    let mut found = vault.held_demotion.iter().filter(|record| {
+        new_home.is_none_or(|wanted| {
+            home::peek_promotion(record).is_ok_and(|p| p.new_home == wanted)
+        })
+    });
+    match (found.next(), found.next()) {
+        (Some(record), None) => Ok(record.clone()),
+        (None, _) => Err(FedError::Refused("no promotion waits for this vault")),
+        (Some(_), Some(_)) => Err(FedError::Refused(
+            "several promotions wait for this vault: name the server",
+        )),
     }
 }
 
@@ -1366,7 +1413,7 @@ mod tests {
                 .expect("get")
                 .expect("vault");
         assert_eq!((at_a.home, at_a.epoch), (a_id, 1));
-        assert_eq!(at_a.held_demotion.as_deref(), Some(promotion.as_slice()));
+        assert_eq!(at_a.held_demotion, vec![promotion.clone()]);
         // So B, not A's home, can't have A erase its copy.
         let answer = to_a
             .call(&Request::Erase { vault: t.vault })
@@ -1412,7 +1459,7 @@ mod tests {
         let mut bad = promotion.clone();
         let last = bad.len() - 1;
         bad[last] ^= 1;
-        tampered.held_demotion = Some(bad);
+        tampered.held_demotion = vec![bad];
         t.a.store.put_vault(&tampered).await.expect("put");
         assert!(t.a.accept_demotion(t.vault).await.is_err());
         let at_a =
@@ -1726,7 +1773,7 @@ mod tests {
         );
         let at_c = c.store.get_vault(held_vault.owner).await.expect("get").expect("vault");
         assert_eq!((at_c.home, at_c.epoch), (ia.server, 1), "the vault stays where it was");
-        assert_eq!(at_c.held_demotion.as_deref(), Some(promotion.as_slice()));
+        assert_eq!(at_c.held_demotion, vec![promotion.clone()]);
         let held = c.held_promotions().await.expect("held");
         assert_eq!(held.len(), 1);
         assert_eq!((held[0].0, held[0].1.new_home), (held_vault.owner, ib.server));
@@ -1742,7 +1789,7 @@ mod tests {
         b.announce(&mut to_c, promotion).await.expect_err("held again");
         let next = c.accept_demotion(held_vault.owner).await.expect("accepted");
         assert_eq!((next.home, next.epoch), (ib.server, 2));
-        assert!(next.held_demotion.is_none());
+        assert!(next.held_demotion.is_empty());
 
         // With the setting on auto, the same announcement applies at once.
         c.store.set_promotion_mode(PromotionMode::Auto);
@@ -1750,7 +1797,65 @@ mod tests {
         b.announce(&mut to_c, promotion).await.expect("applied");
         let at_c = c.store.get_vault(auto_vault.owner).await.expect("get").expect("vault");
         assert_eq!((at_c.home, at_c.epoch), (ib.server, 2));
-        assert!(at_c.held_demotion.is_none());
+        assert!(at_c.held_demotion.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_vault_holds_one_promotion_for_each_server_that_announced_one() {
+        let ia = identity(1, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let ic = identity(3, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let id = identity(4, NOW, &crate::suite::Suite::IMPLEMENTED);
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
+        let c = Replica::new(MemoryStore::new(ic.server), Arc::new(ic.clone()));
+        let d = Replica::new(MemoryStore::new(id.server), Arc::new(id.clone()));
+        d.pin_peer(&ib.descriptor, NOW).await.expect("pin");
+        d.pin_peer(&ic.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        let settings = VaultFederation::federated(
+            vault,
+            ia.server,
+            vec![ib.server, ic.server, id.server],
+        );
+        for replica in [&b, &c, &d] {
+            replica.store.put_vault(&settings).await.expect("put");
+        }
+        // Two replicas each sign a promotion for themselves, and a replica announces them.
+        let by_b = b.promote(vault, NOW).await.expect("promote");
+        let by_c = c.promote(vault, NOW).await.expect("promote");
+        let mut from_b = Direct {
+            remote: &d,
+            caller: ib.server,
+        };
+        let mut from_c = Direct {
+            remote: &d,
+            caller: ic.server,
+        };
+        b.announce(&mut from_b, by_b.clone()).await.expect_err("held");
+        c.announce(&mut from_c, by_c.clone()).await.expect_err("held");
+        // The same one again, and again: it can't push the other out, or pile up.
+        for _ in 0..3 {
+            b.announce(&mut from_b, by_b.clone()).await.expect_err("held");
+        }
+        let held = d.store.get_vault(vault).await.expect("get").expect("vault");
+        assert_eq!(held.held_demotion.len(), 2, "one for each server");
+        assert!(held.held_demotion.contains(&by_b) && held.held_demotion.contains(&by_c));
+        assert_eq!(d.held_promotions().await.expect("list").len(), 2);
+
+        // Naming none is ambiguous; naming one picks it.
+        assert!(d.refuse_demotion(vault).await.is_err());
+        assert!(d.accept_demotion(vault).await.is_err());
+        d.refuse_promotion_of(vault, Some(ib.server))
+            .await
+            .expect("refused");
+        let left = d.store.get_vault(vault).await.expect("get").expect("vault");
+        assert_eq!(left.held_demotion, vec![by_c]);
+        let next = d
+            .accept_promotion_of(vault, Some(ic.server))
+            .await
+            .expect("accepted");
+        assert_eq!((next.home, next.epoch), (ic.server, 2));
+        assert!(next.held_demotion.is_empty());
     }
 
     #[tokio::test]

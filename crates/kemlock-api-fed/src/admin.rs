@@ -14,7 +14,7 @@
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{FromRequestParts, Path, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -455,12 +455,15 @@ struct VaultDto {
     /// Versions waiting to reach the vault's other servers, counted to a limit.
     waiting_changes: u64,
     waiting_note: Option<String>,
-    /// Another server signed a promotion that would make it this vault's home. It waits for this
-    /// server's admin (`POST …/vaults/{owner}/demotion`); until then the vault doesn't sync.
+    /// The first promotion another server signed that would make it this vault's home. It waits
+    /// for this server's admin (`POST …/vaults/{owner}/demotion`); until then the vault doesn't
+    /// sync. Every one that waits is in `heldPromotions`.
     held_demotion: Option<HeldDemotionDto>,
+    /// All the promotions that wait, one for each server that would become the home.
+    held_promotions: Vec<HeldDemotionDto>,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Clone, Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HeldDemotionDto {
     /// The server that would become the home.
@@ -683,6 +686,16 @@ fn peer_dto(view: &PeerView) -> PeerDto {
 }
 
 fn settings_dto(settings: &VaultFederation, is_home: bool) -> VaultDto {
+    let held: Vec<HeldDemotionDto> = settings
+        .held_demotion
+        .iter()
+        .filter_map(|record| kemlock_federation::home::peek_promotion(record).ok())
+        .map(|p| HeldDemotionDto {
+            new_home: p.new_home,
+            epoch: p.epoch,
+            issued_at: p.issued_at,
+        })
+        .collect();
     VaultDto {
         vault: settings.owner,
         policy: settings.policy.as_str(),
@@ -696,15 +709,8 @@ fn settings_dto(settings: &VaultFederation, is_home: bool) -> VaultDto {
         size_bytes: None,
         waiting_changes: 0,
         waiting_note: None,
-        held_demotion: settings
-            .held_demotion
-            .as_deref()
-            .and_then(|record| kemlock_federation::home::peek_promotion(record).ok())
-            .map(|p| HeldDemotionDto {
-                new_home: p.new_home,
-                epoch: p.epoch,
-                issued_at: p.issued_at,
-            }),
+        held_demotion: held.first().cloned(),
+        held_promotions: held,
     }
 }
 
@@ -1225,10 +1231,22 @@ where
     }))
 }
 
+/// Which held promotion a route means: the one `newHome` names, or the only one that waits.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PromotionPick {
+    new_home: Option<String>,
+}
+
+fn pick_of(pick: &PromotionPick) -> Result<Option<ServerId>, ApiError> {
+    pick.new_home.as_deref().map(parse_server).transpose()
+}
+
 async fn accept_demotion<S, C>(
     State(state): State<AdminState<S, C>>,
     Admin(actor): Admin,
     Path(owner): Path<String>,
+    Query(pick): Query<PromotionPick>,
 ) -> Result<Json<VaultDto>, ApiError>
 where
     S: FedStore + Leases + 'static,
@@ -1236,7 +1254,10 @@ where
 {
     let owner = parse_owner(&owner)?;
     require_fresh(&actor)?;
-    let next = state.federation.accept_demotion(owner).await?;
+    let next = state
+        .federation
+        .accept_promotion_of(owner, pick_of(&pick)?)
+        .await?;
     Ok(Json(settings_dto(&next, false)))
 }
 
@@ -1271,6 +1292,7 @@ async fn refuse_demotion<S, C>(
     State(state): State<AdminState<S, C>>,
     Admin(actor): Admin,
     Path(owner): Path<String>,
+    Query(pick): Query<PromotionPick>,
 ) -> Result<StatusCode, ApiError>
 where
     S: FedStore + Leases + 'static,
@@ -1278,7 +1300,10 @@ where
 {
     let owner = parse_owner(&owner)?;
     require_step_up(&actor)?;
-    state.federation.refuse_demotion(owner).await?;
+    state
+        .federation
+        .refuse_promotion_of(owner, pick_of(&pick)?)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

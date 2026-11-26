@@ -151,6 +151,11 @@ doc!(
             description = "`user:<uuid>` or `space:<uuid>`"
         ),
         (
+            "newHome" = Option<String>,
+            Query,
+            description = "The server whose held promotion is meant, when more than one waits"
+        ),
+        (
             "Step-Up-Token" = String,
             Header,
             description = "A step-up token; it counts as the fresh check, as a recent sign-in does"
@@ -204,6 +209,11 @@ doc!(
             "owner" = String,
             Path,
             description = "`user:<uuid>` or `space:<uuid>`"
+        ),
+        (
+            "newHome" = Option<String>,
+            Query,
+            description = "The server whose held promotion is meant, when more than one waits"
         ),
         (
             "Step-Up-Token" = String,

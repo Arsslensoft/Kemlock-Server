@@ -741,7 +741,7 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                 replicas: Vec::new(),
                 promotion,
                 // A changed set no longer fits a held demotion's record, so it goes.
-                held_demotion: None,
+                held_demotion: Vec::new(),
                 home_history,
             },
             Policy::Federated => {
@@ -775,7 +775,7 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
                     replicas,
                     promotion,
                     // A changed set no longer fits a held demotion's record, so it goes.
-                    held_demotion: None,
+                    held_demotion: Vec::new(),
                     home_history,
                 }
             }
@@ -819,7 +819,17 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// applying the promotion it sent ([`VaultFederation::held_demotion`]). The caller has checked
     /// the admin with a fresh passkey or password first. This server becomes the last replica.
     pub async fn accept_demotion(&self, vault: Owner) -> Result<VaultFederation> {
-        let next = self.replica.accept_demotion(vault).await?;
+        self.accept_promotion_of(vault, None).await
+    }
+
+    /// [`accept_demotion`](Self::accept_demotion) for the promotion `new_home` signed; `None` names
+    /// it only when exactly one waits.
+    pub async fn accept_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
+        let next = self.replica.accept_promotion_of(vault, new_home).await?;
         for server in next.order() {
             if server != self.me() {
                 self.runner.mark_dirty(server);
@@ -832,6 +842,15 @@ impl<S: FedStore + Leases, C: Connector> Federation<S, C> {
     /// it. The caller has checked the admin with a fresh passkey or password first.
     pub async fn refuse_demotion(&self, vault: Owner) -> Result<VaultFederation> {
         self.replica.refuse_demotion(vault).await
+    }
+
+    /// [`refuse_demotion`](Self::refuse_demotion) for the promotion `new_home` signed.
+    pub async fn refuse_promotion_of(
+        &self,
+        vault: Owner,
+        new_home: Option<ServerId>,
+    ) -> Result<VaultFederation> {
+        self.replica.refuse_promotion_of(vault, new_home).await
     }
 
     /// Every promotion held for this server's admin: the vault and what the record says.

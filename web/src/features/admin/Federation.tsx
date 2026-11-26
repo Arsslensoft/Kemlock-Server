@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import type { AddressChange, FedVault, FederationOverview, Peer, PeerState } from '@/api/admin';
 import { type MessageId, useT } from '@/i18n';
 import { Button } from '@/ui/Button';
@@ -19,6 +19,12 @@ const STATE: Record<PeerState, MessageId> = {
   revoked: 'admin.fed.state.revoked',
   contested: 'admin.fed.state.contested',
 };
+
+/** The promotions held for a vault: every one the server lists, or the one older servers show. */
+function held(vault: FedVault) {
+  if (vault.heldPromotions && vault.heldPromotions.length > 0) return vault.heldPromotions;
+  return vault.heldDemotion ? [vault.heldDemotion] : [];
+}
 
 function stateTag(state: PeerState): string {
   return state === 'online'
@@ -41,9 +47,9 @@ export interface FederationViewProps {
    * Accepts the promotion held for a vault: at the vault's home it hands the home to the server
    * that signed it, and at a replica it makes that server the home here.
    */
-  onAcceptDemotion?: (vault: FedVault) => void;
+  onAcceptDemotion?: (vault: FedVault, newHomeId: string) => void;
   /** Drops the promotion held for a vault without applying it. */
-  onRefuseDemotion?: (vault: FedVault) => void;
+  onRefuseDemotion?: (vault: FedVault, newHomeId: string) => void;
   /** The address changes that came with peers' key rotations and wait for the admin. */
   addressChanges?: AddressChange[] | undefined;
   /** Follows the peer to the addresses its rotation brought. */
@@ -332,13 +338,15 @@ export function FederationView({
                     </td>
                     <td className="mono">{vault.sizeBytes === null ? '—' : bytes(vault.sizeBytes)}</td>
                     <td>
-                      {vault.heldDemotion ? (
-                        <>
-                          <div>{t('admin.fed.demotion.asks', { peer: nameOf(vault.heldDemotion.newHomeId) })}</div>
-                          <div className="adm-cell-sub">
-                            {t('admin.fed.demotion.sub')} · {relative(vault.heldDemotion.at, now)}
+                      {held(vault).length > 0 ? (
+                        held(vault).map((promotion) => (
+                          <div key={promotion.newHomeId}>
+                            <div>{t('admin.fed.demotion.asks', { peer: nameOf(promotion.newHomeId) })}</div>
+                            <div className="adm-cell-sub">
+                              {t('admin.fed.demotion.sub')} · {relative(promotion.at, now)}
+                            </div>
                           </div>
-                        </>
+                        ))
                       ) : vault.request ? (
                         <>
                           <div>{t('admin.fed.asks')}</div>
@@ -352,39 +360,34 @@ export function FederationView({
                     </td>
                     <td>
                       <div className="adm-row-actions">
-                        {vault.heldDemotion && onAcceptDemotion ? (
-                          <Button
-                            size="small"
-                            isDisabled={busy}
-                            aria-label={
-                              homeHere
-                                ? t('admin.fed.demotion.accept.of', {
-                                    name,
-                                    peer: nameOf(vault.heldDemotion.newHomeId),
-                                  })
-                                : t('admin.fed.promotion.accept.of', {
-                                    name,
-                                    peer: nameOf(vault.heldDemotion.newHomeId),
-                                  })
-                            }
-                            onPress={() => onAcceptDemotion(vault)}
-                          >
-                            {homeHere ? t('admin.fed.demotion.accept') : t('admin.fed.promotion.accept')}
-                          </Button>
-                        ) : null}
-                        {vault.heldDemotion && onRefuseDemotion ? (
-                          <Button
-                            size="small"
-                            isDisabled={busy}
-                            aria-label={t('admin.fed.promotion.refuse.of', {
-                              name,
-                              peer: nameOf(vault.heldDemotion.newHomeId),
-                            })}
-                            onPress={() => onRefuseDemotion(vault)}
-                          >
-                            {t('admin.fed.promotion.refuse')}
-                          </Button>
-                        ) : null}
+                        {held(vault).map((promotion) => (
+                          <Fragment key={promotion.newHomeId}>
+                            {onAcceptDemotion ? (
+                              <Button
+                                size="small"
+                                isDisabled={busy}
+                                aria-label={
+                                  homeHere
+                                    ? t('admin.fed.demotion.accept.of', { name, peer: nameOf(promotion.newHomeId) })
+                                    : t('admin.fed.promotion.accept.of', { name, peer: nameOf(promotion.newHomeId) })
+                                }
+                                onPress={() => onAcceptDemotion(vault, promotion.newHomeId)}
+                              >
+                                {homeHere ? t('admin.fed.demotion.accept') : t('admin.fed.promotion.accept')}
+                              </Button>
+                            ) : null}
+                            {onRefuseDemotion ? (
+                              <Button
+                                size="small"
+                                isDisabled={busy}
+                                aria-label={t('admin.fed.promotion.refuse.of', { name, peer: nameOf(promotion.newHomeId) })}
+                                onPress={() => onRefuseDemotion(vault, promotion.newHomeId)}
+                              >
+                                {t('admin.fed.promotion.refuse')}
+                              </Button>
+                            ) : null}
+                          </Fragment>
+                        ))}
                         {vault.federated && !homeHere && !vault.request ? (
                           <Button
                             size="small"
@@ -656,11 +659,13 @@ export default function Federation() {
     onSuccess: refresh,
   });
   const demotion = useMutation({
-    mutationFn: (vault: FedVault) => guard((grant) => admin.acceptDemotion(vault.id, grant)),
+    mutationFn: (v: { vault: FedVault; newHomeId: string }) =>
+      guard((grant) => admin.acceptDemotion(v.vault.id, grant, v.newHomeId)),
     onSuccess: refresh,
   });
   const refuseDemotion = useMutation({
-    mutationFn: (vault: FedVault) => guard((grant) => admin.refuseDemotion(vault.id, grant)),
+    mutationFn: (v: { vault: FedVault; newHomeId: string }) =>
+      guard((grant) => admin.refuseDemotion(v.vault.id, grant, v.newHomeId)),
     onSuccess: refresh,
   });
   if (overview.isPending) return <Loading />;
@@ -676,8 +681,8 @@ export default function Federation() {
         onPromote={(vault, homeIsDown) => promote.mutate({ vault, homeIsDown })}
         onAccept={(vault) => accept.mutate(vault)}
         onDecline={(vault) => decline.mutate(vault)}
-        onAcceptDemotion={(vault) => demotion.mutate(vault)}
-        onRefuseDemotion={(vault) => refuseDemotion.mutate(vault)}
+        onAcceptDemotion={(vault, newHomeId) => demotion.mutate({ vault, newHomeId })}
+        onRefuseDemotion={(vault, newHomeId) => refuseDemotion.mutate({ vault, newHomeId })}
         addressChanges={addressChanges.data}
         onApproveAddresses={(change) => approveAddresses.mutate(change)}
         onRefuseAddresses={(change) => refuseAddresses.mutate(change)}

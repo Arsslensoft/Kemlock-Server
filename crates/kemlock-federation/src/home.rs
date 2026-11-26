@@ -67,10 +67,11 @@ pub struct VaultFederation {
     pub replicas: Vec<ServerId>,
     /// The signed promotion record that made the current epoch, if any.
     pub promotion: Option<Vec<u8>>,
-    /// A promotion another server signed that would make it the home of a vault this server is
-    /// the home of. It is held, not applied, until this server's own admin accepts it: otherwise
-    /// any replica could take a vault over, and as its home erase this server's copy.
-    pub held_demotion: Option<Vec<u8>>,
+    /// The promotions other servers signed for this vault that wait for this server's admin, at
+    /// most one for each server that would become the home (a later one from the same server
+    /// replaces its earlier one, never another's). Held, not applied, until the admin accepts one:
+    /// otherwise any replica could take a vault over, and as its home erase this server's copy.
+    pub held_demotion: Vec<Vec<u8>>,
     /// The home of each earlier epoch, oldest first: every promotion adds the home it replaced.
     /// A server that learned of the vault at a later epoch has none for the epochs before.
     pub home_history: Vec<(u64, ServerId)>,
@@ -86,7 +87,7 @@ impl VaultFederation {
             epoch: 1,
             replicas: Vec::new(),
             promotion: None,
-            held_demotion: None,
+            held_demotion: Vec::new(),
             home_history: Vec::new(),
         }
     }
@@ -100,7 +101,7 @@ impl VaultFederation {
             epoch: 1,
             replicas,
             promotion: None,
-            held_demotion: None,
+            held_demotion: Vec::new(),
             home_history: Vec::new(),
         }
     }
@@ -129,6 +130,47 @@ impl VaultFederation {
         out.extend(self.replicas.iter().copied());
         out
     }
+}
+
+/// The held promotions of a vault as a database column keeps them: `0x01`, then each record as
+/// `u32be(length) ‖ bytes`. `None` for none.
+pub fn pack_held(records: &[Vec<u8>]) -> Option<Vec<u8>> {
+    if records.is_empty() {
+        return None;
+    }
+    let mut out = vec![1u8];
+    for record in records {
+        // A record is at most a few kilobytes.
+        out.extend_from_slice(&u32::try_from(record.len()).unwrap_or(u32::MAX).to_be_bytes());
+        out.extend_from_slice(record);
+    }
+    Some(out)
+}
+
+/// The inverse of [`pack_held`]. A column written before a vault could hold several (a record on
+/// its own, which starts with a CBOR map head, never with `0x01`) is one record.
+pub fn unpack_held(bytes: Option<&[u8]>) -> Result<Vec<Vec<u8>>> {
+    let Some(bytes) = bytes else {
+        return Ok(Vec::new());
+    };
+    let Some((&1, mut rest)) = bytes.split_first() else {
+        return Ok(vec![bytes.to_vec()]);
+    };
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let (head, tail) = rest
+            .split_first_chunk::<4>()
+            .ok_or(FedError::Malformed("a held promotion list is cut short"))?;
+        let len = usize::try_from(u32::from_be_bytes(*head))
+            .map_err(|_| FedError::Malformed("a held promotion is too long"))?;
+        if tail.len() < len {
+            return Err(FedError::Malformed("a held promotion list is cut short"));
+        }
+        let (record, after) = tail.split_at(len);
+        out.push(record.to_vec());
+        rest = after;
+    }
+    Ok(out)
 }
 
 fn ids_value(ids: &[ServerId]) -> Value {
@@ -309,7 +351,7 @@ pub fn apply_promotion(
         epoch: record.epoch,
         replicas: record.replicas.clone(),
         promotion: None,
-        held_demotion: None,
+        held_demotion: Vec::new(),
         home_history,
     })
 }
@@ -505,6 +547,23 @@ mod tests {
             directory,
             vault,
         }
+    }
+
+    #[test]
+    fn held_promotions_pack_and_unpack_and_an_old_single_record_is_one() {
+        assert_eq!(pack_held(&[]), None);
+        assert_eq!(unpack_held(None), Ok(Vec::new()));
+        let records = vec![vec![0xa2, 1, 2], vec![9; 300]];
+        let packed = pack_held(&records).expect("a column");
+        assert_eq!(unpack_held(Some(&packed)), Ok(records));
+        // What the column held before: a record, which is a CBOR map and not a list.
+        assert_eq!(
+            unpack_held(Some(&[0xa2, 0, 1, 2])),
+            Ok(vec![vec![0xa2, 0, 1, 2]])
+        );
+        // A list cut short is refused, not read as far as it goes.
+        assert!(unpack_held(Some(&packed[..packed.len() - 1])).is_err());
+        assert!(unpack_held(Some(&[1, 0, 0])).is_err());
     }
 
     #[test]

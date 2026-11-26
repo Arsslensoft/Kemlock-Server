@@ -140,7 +140,7 @@ describe('FederationView', () => {
     expect(screen.getByText('Home server asks to become the home')).toBeInTheDocument();
     expect(onAcceptDemotion).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Hand over the home of Side projects to Home server' }));
-    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }), 'a'.repeat(32));
   });
 
   it('shows a promotion held at a replica, and accepts or refuses it only on request', async () => {
@@ -172,9 +172,47 @@ describe('FederationView', () => {
     expect(onRefuseDemotion).not.toHaveBeenCalled();
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Refuse the promotion of Office server for Family' }));
-    expect(onRefuseDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }));
+    expect(onRefuseDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), office);
     await user.click(screen.getByRole('button', { name: 'Accept Office server as the home of Family' }));
-    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), office);
+  });
+
+  it('lists every promotion held for a vault and settles the one it is asked about', async () => {
+    const office = '02020202020202020202020202020202';
+    const home = 'a'.repeat(32);
+    const held = {
+      ...OVERVIEW.vaults[0],
+      heldDemotion: { newHomeId: office, epoch: 2, at: NOW - 300 },
+      heldPromotions: [
+        { newHomeId: office, epoch: 2, at: NOW - 300 },
+        { newHomeId: home, epoch: 2, at: NOW - 60 },
+      ],
+    } as FedVault;
+    const onAcceptDemotion = vi.fn();
+    const onRefuseDemotion = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, vaults: [held] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onAcceptDemotion={onAcceptDemotion}
+        onRefuseDemotion={onRefuseDemotion}
+      />,
+    );
+    expect(screen.getByText('Office server asks to become the home')).toBeInTheDocument();
+    expect(screen.getByText('Home server asks to become the home')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Accept Home server as the home of Family' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), home);
+    await user.click(screen.getByRole('button', { name: 'Refuse the promotion of Office server for Family' }));
+    expect(onRefuseDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), office);
   });
 
   it('lists the address changes a rotation brought and follows or refuses them only on request', async () => {

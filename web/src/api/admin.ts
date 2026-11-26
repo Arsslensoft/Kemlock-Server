@@ -519,6 +519,8 @@ export interface FedVault {
    * server's admin, and the vault doesn't sync until then (absent from servers that predate it).
    */
   heldDemotion?: { newHomeId: string; epoch: number; at: number } | null;
+  /** Every promotion that waits, one for each server that would become the home. */
+  heldPromotions?: Array<{ newHomeId: string; epoch: number; at: number }>;
 }
 
 export interface ConsistencyEntry {
@@ -726,6 +728,11 @@ function query(values: Record<string, string | number | undefined>): FeatureCall
 
 function withToken(token: string | undefined): Record<string, string> | undefined {
   return token ? { [STEP_UP_HEADER]: token } : undefined;
+}
+
+/** The query that names which held promotion a route means, when the caller says. */
+function pickOf(newHome: string | undefined): string {
+  return newHome ? `?newHome=${encodeURIComponent(newHome)}` : '';
 }
 
 /**
@@ -945,15 +952,15 @@ export function createAdminApi(api: AdminTransport) {
      * promotion is held become the home of a vault this server is the home of. Needs a fresh
      * check or a step-up token.
      */
-    acceptDemotion: (owner: string, grant?: string) =>
-      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    acceptDemotion: (owner: string, grant?: string, newHome?: string) =>
+      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion${pickOf(newHome)}`, undefined, grant),
     /**
      * `DELETE /admin/v1/federation/vaults/{owner}/demotion`: drops the held promotion without
      * applying it, at the home or at a replica that holds promotions for its admin. Needs a
      * step-up token.
      */
-    refuseDemotion: (owner: string, grant?: string) =>
-      act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    refuseDemotion: (owner: string, grant?: string, newHome?: string) =>
+      act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion${pickOf(newHome)}`, undefined, grant),
     /**
      * `DELETE /admin/v1/federation/peers/{id}/contest`: trusts a contested peer again (a key this
      * server replaced for it said it was stolen). Needs a step-up token.

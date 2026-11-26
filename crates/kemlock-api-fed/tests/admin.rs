@@ -622,7 +622,7 @@ async fn held_promotions_are_listed_and_refusing_one_needs_a_step_up_token() {
     let record = PromotionRecord::build(&settings, other, unix_now()).expect("a promotion");
     let signer = kemlock_federation::testing::identity(9, unix_now(), &Suite::IMPLEMENTED);
     let held = VaultFederation {
-        held_demotion: Some(record.sign(&signer.signing).expect("sign").encode()),
+        held_demotion: vec![record.sign(&signer.signing).expect("sign").encode()],
         ..settings
     };
     e.replica.store().put_vault(&held).await.expect("put");

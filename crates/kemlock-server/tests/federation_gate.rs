@@ -871,7 +871,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("a read")
         .expect("the vault");
     assert_eq!((at_c.home, at_c.epoch), (a.id, 1), "C waits for its admin");
-    assert!(at_c.held_demotion.is_some(), "C holds the promotion");
+    assert!(!at_c.held_demotion.is_empty(), "C holds the promotion");
     let at_c = c
         .facade
         .accept_demotion(owner)
@@ -909,7 +909,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("a read")
         .expect("the vault");
     assert_eq!((at_a.home, at_a.epoch), (a.id, 1), "A waits for its admin");
-    assert!(at_a.held_demotion.is_some(), "A holds the promotion");
+    assert!(!at_a.held_demotion.is_empty(), "A holds the promotion");
     // A's admin accepts it (the HTTP route asks for a fresh check).
     let at_a = a
         .facade
@@ -917,7 +917,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .await
         .expect("A's admin accepts");
     assert_eq!((at_a.home, at_a.epoch), (b.id, 2), "A took the promotion");
-    assert!(at_a.held_demotion.is_none());
+    assert!(at_a.held_demotion.is_empty());
     assert_eq!(at_a.replicas, vec![c.id, a.id]);
     // Second visit: B pulls what A wrote while it was cut off. The home-only write is of an older
     // epoch, so it is kept for the admins and applied nowhere.

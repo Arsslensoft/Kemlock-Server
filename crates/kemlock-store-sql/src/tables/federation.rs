@@ -120,7 +120,7 @@ pub(crate) mod vault_federation {
     use crate::tables::items::{owner_from, owner_parts};
     use kemlock_app::ports::StoreError;
     use kemlock_domain::ServerId;
-    use kemlock_federation::home::{Policy, VaultFederation};
+    use kemlock_federation::home::{Policy, VaultFederation, pack_held, unpack_held};
     use sea_orm::ActiveValue::Set;
     use sea_orm::entity::prelude::*;
 
@@ -205,7 +205,8 @@ pub(crate) mod vault_federation {
                 epoch: from_i64(self.epoch, "epoch")?,
                 replicas,
                 promotion: self.promotion,
-                held_demotion: self.held_demotion,
+                held_demotion: unpack_held(self.held_demotion.as_deref())
+                    .map_err(|_| corrupt("held promotions"))?,
                 home_history: unpack_history(self.home_history.as_deref())?,
             })
         }
@@ -225,7 +226,7 @@ pub(crate) mod vault_federation {
             epoch: Set(to_i64(vault.epoch, "epoch")?),
             replicas: Set(replicas),
             promotion: Set(vault.promotion.clone()),
-            held_demotion: Set(vault.held_demotion.clone()),
+            held_demotion: Set(pack_held(&vault.held_demotion)),
             home_history: Set(pack_history(&vault.home_history)),
         })
     }
@@ -244,7 +245,7 @@ pub(crate) mod vault_federation {
             );
             vault.epoch = 4;
             vault.promotion = Some(vec![1, 2, 3]);
-            vault.held_demotion = Some(vec![4, 5]);
+            vault.held_demotion = vec![vec![4, 5], vec![6]];
             let row = active(&vault).expect("fits");
             let (owner_type, owner_id) = owner_parts(vault.owner);
             let mut replicas = Vec::new();
@@ -261,7 +262,8 @@ pub(crate) mod vault_federation {
                 epoch: 4,
                 replicas,
                 promotion: Some(vec![1, 2, 3]),
-                held_demotion: Some(vec![4, 5]),
+                held_demotion: pack_held(&vault.held_demotion),
+                home_history: None,
             };
             assert_eq!(model.into_domain(), Ok(vault));
         }
@@ -277,6 +279,7 @@ pub(crate) mod vault_federation {
                 replicas: vec![0; 17],
                 promotion: None,
                 held_demotion: None,
+                home_history: None,
             };
             assert!(model.into_domain().is_err());
         }
