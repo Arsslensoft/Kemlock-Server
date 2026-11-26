@@ -605,21 +605,39 @@ describe('changing a space that has a chain', () => {
     await expect(createGroup(spaceDeps, loaded, { name: 'Eng', members: [] })).rejects.toBeInstanceOf(ApiError);
   });
 
-  it('signs nothing for a space that isn’t checked or whose keys aren’t open', async () => {
+  it('signs nothing for a space that isn’t checked', async () => {
     const { spaceDeps, api, crypto, loaded } = chainedDeps();
     const waiting = { ...loaded, trust: { kind: 'first-contact' as const, view: chained({ trusted: false }) } };
-    const closed = { ...loaded, readable: false };
-    for (const space of [waiting, closed]) {
-      await expect(createCollection(spaceDeps, space, { name: 'Support' })).rejects.toBeInstanceOf(
-        SpaceNotChecked,
-      );
-      await expect(grantAccess(spaceDeps, space, { collection: INFRA, grantee: `user:${ME}`, permission: 'view' })).rejects.toBeInstanceOf(
-        SpaceNotChecked,
-      );
-      await expect(offboardMember(spaceDeps, space, LEE, 'remove')).rejects.toBeInstanceOf(SpaceNotChecked);
-    }
+    await expect(createCollection(spaceDeps, waiting, { name: 'Support' })).rejects.toBeInstanceOf(
+      SpaceNotChecked,
+    );
+    await expect(
+      grantAccess(spaceDeps, waiting, { collection: INFRA, grantee: `user:${ME}`, permission: 'view' }),
+    ).rejects.toBeInstanceOf(SpaceNotChecked);
+    await expect(offboardMember(spaceDeps, waiting, LEE, 'remove')).rejects.toBeInstanceOf(SpaceNotChecked);
     expect(crypto.changes).toEqual([]);
     expect(api.appendChain).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin whose space key isn’t open yet make the records that need no key', async () => {
+    const { spaceDeps, api, crypto, loaded } = chainedDeps();
+    const closed = { ...loaded, readable: false };
+    // A name or a key of the space is made with the space key, which isn't open: refused.
+    await expect(createCollection(spaceDeps, closed, { name: 'Support' })).rejects.toBeInstanceOf(
+      SpaceNotChecked,
+    );
+    await expect(renameCollection(spaceDeps, closed, INFRA, 'Ops')).rejects.toBeInstanceOf(SpaceNotChecked);
+    await expect(createGroup(spaceDeps, closed, { name: 'Eng', members: [] })).rejects.toBeInstanceOf(
+      SpaceNotChecked,
+    );
+    expect(crypto.changes).toEqual([]);
+    // An invitation, a role, a grant, a removal need none.
+    await inviteMember(spaceDeps, SPACE, { email: 'theo@example.co', role: 'member', custom: [], grants: [] }, closed);
+    await changeRole(spaceDeps, closed, LEE, 'admin', []);
+    await grantAccess(spaceDeps, closed, { collection: FINANCE, grantee: `user:${LEE}`, permission: 'view' });
+    await offboardMember(spaceDeps, closed, LEE, 'remove');
+    expect(crypto.changes.map((c) => c.action)).toEqual(['invite', 'role', 'grant', 'remove']);
+    expect(api.appendChain).toHaveBeenCalledTimes(4);
   });
 
   it('shares keys it holds only when there is something to share', async () => {

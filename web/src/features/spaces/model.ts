@@ -100,14 +100,18 @@ export class ChainConflict extends Error {
 }
 
 /**
- * Whether a change to this space is made as signed records (a space with a verified chain whose
- * keys are open here), or the old way (a space with no chain). A space whose chain isn't checked,
- * or whose keys aren't open, is refused: nothing may be sealed or signed for it.
+ * Whether a change to this space is made as signed records (a space with a verified chain), or the
+ * old way (a space with no chain). A space whose chain isn't checked is refused: nothing may be
+ * sealed or signed for it. A change that makes a name or a key (`needsKeys`, the default) also
+ * needs the space's keys open here; one that doesn't (an invitation, a role, a removal, a grant, a
+ * confirmation) is made by an Admin who is still waiting for the space key, as the chain allows.
  */
-function isChained(detail: Pick<SpaceDetail, 'trust' | 'readable'>): boolean {
+function isChained(detail: Pick<SpaceDetail, 'trust' | 'readable'>, needsKeys = true): boolean {
   const trust = detail.trust;
   if (!trust || trust.kind === 'unchained') return false;
-  if (trust.kind !== 'verified' || !detail.readable) throw new SpaceNotChecked(trust.kind);
+  if (trust.kind !== 'verified' || (needsKeys && !detail.readable)) {
+    throw new SpaceNotChecked(trust.kind);
+  }
   return true;
 }
 
@@ -559,7 +563,7 @@ export async function inviteMember(
   detail?: Pick<SpaceDetail, 'view' | 'trust' | 'readable'>,
 ): Promise<unknown> {
   const custom = input.role === 'custom' ? input.custom : [];
-  if (detail && isChained(detail)) {
+  if (detail && isChained(detail, false)) {
     const found = await deps.api.lookup(spaceId, input.email.trim());
     return appendChange(deps, detail, {
       action: 'invite',
@@ -586,7 +590,7 @@ export async function confirmMember(
   if (!fingerprint.consistent) {
     throw new Error('the fingerprint worked out here differs from the worker’s');
   }
-  const chained = isChained(detail);
+  const chained = isChained(detail, false);
   const spaceId = detail.view.space.id;
   // The bundle the person compared is the member's own at their current key version, and is what
   // the fingerprint on screen is of; a bundle that is another account's, or has since changed,
@@ -727,7 +731,7 @@ export async function deleteCollection(
   detail: SpaceDetail,
   collection: string,
 ): Promise<unknown> {
-  if (isChained(detail)) {
+  if (isChained(detail, false)) {
     return appendChange(deps, detail, { action: 'collection-delete', collection });
   }
   await deps.api.deleteCollection(detail.view.space.id, collection);
@@ -764,7 +768,7 @@ export async function deleteGroup(
   detail: SpaceDetail,
   group: string,
 ): Promise<unknown> {
-  if (isChained(detail)) return appendChange(deps, detail, { action: 'group-delete', group });
+  if (isChained(detail, false)) return appendChange(deps, detail, { action: 'group-delete', group });
   await deps.api.deleteGroup(detail.view.space.id, group);
   return true;
 }
@@ -802,7 +806,7 @@ export async function setGroupMembers(
   members: string[],
 ): Promise<unknown> {
   const { grants, groups, collections } = detail.view;
-  if (isChained(detail)) {
+  if (isChained(detail, false)) {
     const current = groups.find((g) => g.id === group)?.members ?? [];
     const add = members.filter((m) => !current.includes(m));
     const remove = current.filter((m) => !members.includes(m));
@@ -831,7 +835,7 @@ export async function grantAccess(
   detail: SpaceDetail,
   input: { collection: string; grantee: string; permission: CollectionPermission },
 ): Promise<unknown> {
-  if (isChained(detail)) return appendChange(deps, detail, { action: 'grant', ...input });
+  if (isChained(detail, false)) return appendChange(deps, detail, { action: 'grant', ...input });
   const { grants, groups } = detail.view;
   const after = [
     ...grants.filter((g) => !(g.collection === input.collection && g.grantee === input.grantee)),
@@ -856,7 +860,7 @@ export async function revokeGrant(
   collection: string,
   grantee: string,
 ): Promise<unknown> {
-  if (isChained(detail)) return appendChange(deps, detail, { action: 'ungrant', collection, grantee });
+  if (isChained(detail, false)) return appendChange(deps, detail, { action: 'ungrant', collection, grantee });
   await deps.api.revokeGrant(detail.view.space.id, collection, grantee);
   return true;
 }
@@ -870,7 +874,7 @@ export async function changeRole(
   role: SpaceRole,
   custom: CustomPermission[],
 ): Promise<unknown> {
-  if (isChained(detail)) {
+  if (isChained(detail, false)) {
     return appendChange(deps, detail, {
       action: 'role',
       member: user,
@@ -894,7 +898,7 @@ export async function offboardMember(
   kind: 'revoke' | 'remove',
 ): Promise<OffboardedDto> {
   const spaceId = detail.view.space.id;
-  if (isChained(detail)) {
+  if (isChained(detail, false)) {
     const { chain } = await appendChange(deps, detail, { action: 'remove', member: user });
     return {
       exposed: [],

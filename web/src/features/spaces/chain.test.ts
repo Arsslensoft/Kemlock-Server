@@ -303,9 +303,9 @@ describe('a space with a chain, loaded', () => {
     expect(rows[0]).toMatchObject({ id: SPACE, name: null, trust: 'unverified' });
   });
 
-  it('seals nothing for a space whose keys this browser could not open', async () => {
+  it('seals nothing for a space whose chain waits for first contact', async () => {
     const { deps, api, crypto } = setup(view());
-    const loaded = { ...detail(), readable: false, trust: { kind: 'verified' as const, view: view() } };
+    const loaded = { ...detail(), trust: { kind: 'first-contact' as const, view: view({ trusted: false }) } };
     const theo = members().find((m) => m.user === THEO);
     if (!theo) throw new Error('fixture');
     const bytes = new Uint8Array(64);
