@@ -805,6 +805,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn another_peer_cannot_rewrite_a_copy_or_a_send_made_at_the_replica() {
+        let t = pair().await;
+        let copied = t.send(None);
+        t.a.store.put_send(copied.clone());
+        t.sync().await.expect("sync");
+        let local = t.send(None);
+        t.b.store.put_send(local.clone());
+        assert_eq!(t.b.store.send(copied.id), Some(copied.clone()));
+
+        // A server in the set with a newer revision of each that clears the password, disables it
+        // and ends it now: refused for both. It isn't the server the copy came from, and the
+        // other was never copied.
+        let stranger = ServerId::random();
+        for target in [&copied, &local] {
+            let mut hostile = target.clone();
+            hostile.revised_at += time::Duration::days(1);
+            hostile.password = None;
+            hostile.disabled = true;
+            hostile.access_count += 5;
+            assert_eq!(
+                t.b.store.apply_replicated_send(stranger, &hostile).await,
+                Ok(SendApply::Unchanged)
+            );
+        }
+        assert_eq!(t.b.store.send(copied.id), Some(copied.clone()));
+        assert_eq!(t.b.store.send(local.id), Some(local.clone()));
+
+        // The server the copy came from can still update it.
+        let mut update = copied.clone();
+        update.revised_at += time::Duration::days(1);
+        update.disabled = true;
+        assert_eq!(
+            t.b.store.apply_replicated_send(t.a_id, &update).await,
+            Ok(SendApply::Updated)
+        );
+        assert!(t.b.store.send(copied.id).expect("held").disabled);
+    }
+
+    #[tokio::test]
     async fn a_send_the_home_dropped_goes_from_the_replica_but_one_made_there_stays() {
         let t = pair().await;
         let gone = t.file_send(600, SendFileFormat::Kma1);

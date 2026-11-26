@@ -1278,12 +1278,17 @@ impl SendSync for MemoryStore {
         send: &SendRecord,
     ) -> Result<SendApply, StoreError> {
         let mut extras = self.extras();
+        let copied_from = extras.send_marks.get(&send.id).copied();
         let Some(held) = extras.sends.get_mut(&send.id) else {
             extras.sends.insert(send.id, send.clone());
             extras.send_marks.insert(send.id, from);
             return Ok(SendApply::Added);
         };
         if held.owner != send.owner {
+            return Ok(SendApply::Unchanged);
+        }
+        // Only the server a copy came from may change it (see the SQL store).
+        if copied_from != Some(from) {
             return Ok(SendApply::Unchanged);
         }
         let newer = send.revised_at > held.revised_at;

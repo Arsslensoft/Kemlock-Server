@@ -217,10 +217,56 @@ async fn a_copy_is_added_updated_and_dropped_but_a_local_send_is_not(store: &Sql
     assert_eq!(store.replicated_send_ids(vault, home).await, Ok(vec![]));
 }
 
+async fn only_the_server_a_copy_came_from_can_change_it(store: &SqlStore) {
+    let user = owner(store).await;
+    let (home, other) = (ServerId::random(), ServerId::random());
+
+    // A copy from `home`, and a Send made here.
+    let mut copied = note(user);
+    copied.password = Some(kemlock_domain::sends::SendPassword {
+        salt: vec![4; 32],
+        hash: vec![5; 32],
+    });
+    assert_eq!(
+        store.apply_replicated_send(home, &copied).await,
+        Ok(SendApply::Added)
+    );
+    let local = note(user);
+    SendRepo::add_send(store, &local).await.expect("local send");
+
+    // Another server in the vault's set, with a newer revision that clears the password, turns
+    // the Send off and sets its deletion date to now, changes neither of them.
+    for target in [&copied, &local] {
+        let mut hostile = target.clone();
+        hostile.revised_at = MADE + Duration::days(1);
+        hostile.password = None;
+        hostile.disabled = true;
+        hostile.deletion_at = MADE;
+        hostile.access_count = 9;
+        assert_eq!(
+            store.apply_replicated_send(other, &hostile).await,
+            Ok(SendApply::Unchanged)
+        );
+    }
+    assert_eq!(store.send_row(copied.id).await, Ok(Some(copied.clone())));
+    assert_eq!(store.send_row(local.id).await, Ok(Some(local.clone())));
+
+    // The server it came from still can.
+    let mut update = copied.clone();
+    update.revised_at = MADE + Duration::days(1);
+    update.disabled = true;
+    assert_eq!(
+        store.apply_replicated_send(home, &update).await,
+        Ok(SendApply::Updated)
+    );
+    assert!(store.send_row(copied.id).await.expect("row").expect("held").disabled);
+}
+
 async fn run_all(store: &SqlStore) {
     only_what_is_open_to_a_peer_is_listed_in_id_order(store).await;
     a_copy_is_not_handed_back_to_the_server_it_came_from(store).await;
     a_copy_is_added_updated_and_dropped_but_a_local_send_is_not(store).await;
+    only_the_server_a_copy_came_from_can_change_it(store).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

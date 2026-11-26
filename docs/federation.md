@@ -561,9 +561,11 @@ row only and is fetched from a peer the first time someone opens the Send. A fil
 MiB is not taken. A `kma1` file is stored through the blob store's `KMA1` check, as an upload is; an
 `opaque` file (a Bitwarden app's own format, which the server can't read) is held to the announced
 size alone. A file that can't be fetched or fails its check leaves its Send out until the next
-visit, and the other Sends go on. A row already held takes the peer's newer revision (the options
+visit, and the other Sends go on. A row already held that is a copy from that same peer takes the peer's newer revision (the options
 and the password, never the owner, key or file) and the larger of the two view counts, so a view
-limit used up at one server stays used up at the other. At a visit to the Send's home, a replica
+limit used up at one server stays used up at the other. Another peer's entry for the row, or any
+entry for a Send made here, changes nothing: a server in the vault's set can't clear a password or
+end a Send it didn't make. At a visit to the Send's home, a replica
 deletes the copies it made that the home no longer holds (the owner deleted the Send there) and
 their files; a Send made at the replica itself is never deleted this way (table
 `federation_replicated_sends` records which rows are copies).

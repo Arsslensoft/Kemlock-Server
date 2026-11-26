@@ -110,6 +110,17 @@ impl SendSync for SqlStore {
         if held.owner != send.owner {
             return Ok(SendApply::Unchanged);
         }
+        // Only the server a copy came from may change it. A Send made here has no such mark, and a
+        // copy from one peer isn't for another peer to rewrite (its password, view limit, expiry,
+        // deletion date): both stay as they are.
+        let copied_from = replicated::Entity::find_by_id(send.id.0)
+            .one(self.writer())
+            .await
+            .store()?
+            .map(|mark| mark.from_server);
+        if copied_from != Some(from.0) {
+            return Ok(SendApply::Unchanged);
+        }
         let newer = send.revised_at > held.revised_at;
         let more_views = send.access_count > held.access_count;
         if !newer && !more_views {
