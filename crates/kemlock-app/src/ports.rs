@@ -584,6 +584,29 @@ pub trait TwoFactorRepo: Send + Sync {
     -> impl Future<Output = Result<Vec<TwoFactor>, StoreError>> + Send;
     /// Inserts or replaces the user's enrolment of that method.
     fn put(&self, two_factor: &TwoFactor) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// Replaces the account's enrolment of `to.method` with `to`, only while its sealed secret is
+    /// still `from`, and says whether it did. A caller that read an enrolment, then writes a
+    /// change of its own (sealing a seed to the account, turning the method on), must not undo
+    /// what happened in between: a removal, or a new enrolment with another secret. The default
+    /// reads and writes in two steps; a store that serves requests concurrently overrides it with
+    /// a conditional write.
+    fn replace_if_sealed(
+        &self,
+        from: &[u8],
+        to: &TwoFactor,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            let held = self
+                .list(to.user)
+                .await?
+                .into_iter()
+                .any(|t| t.method == to.method && t.sealed_secret == from);
+            if held {
+                self.put(to).await?;
+            }
+            Ok(held)
+        }
+    }
     /// Records `step` as the newest accepted step of the user's TOTP enrolment, atomically, only
     /// if it is newer than the one recorded. `false` means the step is at or before the last
     /// accepted one (or there is no TOTP enrolment): the code is a replay and must be refused.

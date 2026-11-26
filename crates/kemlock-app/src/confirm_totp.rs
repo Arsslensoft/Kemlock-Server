@@ -29,13 +29,21 @@ impl<F: TwoFactorRepo, S: SecretSeal, O: Totp, E: Platform> ConfirmTotp<F, S, O,
         if !self.totp.verify(&opened.value, code.trim(), self.env.now()) {
             return Err(AppError::Unauthorized);
         }
-        if opened.legacy {
-            // Stored before secrets were bound to accounts: sealed again, bound.
-            enrolment.sealed_secret = seal_bound(&self.seal, PURPOSE_TOTP, user, &opened.value);
-        }
         if !enrolment.enabled || opened.legacy {
+            // Turned on, and sealed to the account if it was stored the old way, while the row
+            // still holds the secret the code was checked against: an enrolment removed or
+            // replaced since is not undone.
+            let from = enrolment.sealed_secret.clone();
+            if opened.legacy {
+                enrolment.sealed_secret =
+                    seal_bound(&self.seal, PURPOSE_TOTP, user, &opened.value);
+            }
             enrolment.enabled = true;
-            self.two_factor.put(&enrolment).await?;
+            if !self.two_factor.replace_if_sealed(&from, &enrolment).await? {
+                return Err(AppError::Invalid(
+                    "the authenticator app changed meanwhile: set it up again",
+                ));
+            }
         }
         Ok(())
     }

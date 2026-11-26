@@ -274,8 +274,10 @@ where
                     return Err(AppError::Unauthorized);
                 }
                 if opened.legacy {
-                    // Stored before secrets were bound to accounts: sealed again, bound. Failing
-                    // to write it back loses nothing, the next sign-in tries again.
+                    // Stored before secrets were bound to accounts: sealed again, bound, while the
+                    // row still holds what was read (an enrolment removed or replaced meanwhile is
+                    // not undone). Failing to write it back loses nothing, the next sign-in tries
+                    // again.
                     let bound = TwoFactor {
                         sealed_secret: seal_bound(
                             &self.seal,
@@ -285,7 +287,11 @@ where
                         ),
                         ..factor.clone()
                     };
-                    if let Err(error) = self.two_factor.put(&bound).await {
+                    if let Err(error) = self
+                        .two_factor
+                        .replace_if_sealed(&factor.sealed_secret, &bound)
+                        .await
+                    {
                         tracing::warn!(%error, "couldn't seal a TOTP secret to its account");
                     }
                 }

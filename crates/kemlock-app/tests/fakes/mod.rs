@@ -528,6 +528,19 @@ impl TwoFactorRepo for FakeStore {
         Ok(())
     }
 
+    async fn replace_if_sealed(&self, from: &[u8], to: &TwoFactor) -> Result<bool, StoreError> {
+        let mut g = self.lock();
+        match g.two_factor.iter_mut().find(|t| {
+            t.user == to.user && t.method == to.method && t.sealed_secret == from
+        }) {
+            Some(row) => {
+                *row = to.clone();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     async fn remove(&self, user: UserId, method: TwoFactorMethod) -> Result<(), StoreError> {
         let mut g = self.lock();
         g.two_factor

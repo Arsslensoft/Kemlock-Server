@@ -107,6 +107,38 @@ impl TwoFactorRepo for SqlStore {
         Ok(())
     }
 
+    /// One conditional update on the secret read: a removal or a new enrolment since leaves it
+    /// alone. The version moves when the method is turned on by it, as `put` does.
+    async fn replace_if_sealed(&self, from: &[u8], to: &TwoFactor) -> Result<bool, StoreError> {
+        let method = two_factor::method_str(to.method).to_owned();
+        let before = two_factor::Entity::find_by_id((to.user.0, method.clone()))
+            .one(self.writer())
+            .await
+            .store()?;
+        let Some(before) = before else {
+            return Ok(false);
+        };
+        let updated = two_factor::Entity::update_many()
+            .col_expr(
+                two_factor::Column::SealedSecret,
+                Expr::value(to.sealed_secret.clone()),
+            )
+            .col_expr(two_factor::Column::Enabled, Expr::value(to.enabled))
+            .filter(two_factor::Column::UserId.eq(to.user.0))
+            .filter(two_factor::Column::Method.eq(method))
+            .filter(two_factor::Column::SealedSecret.eq(from.to_vec()))
+            .exec(self.writer())
+            .await
+            .store()?;
+        if updated.rows_affected != 1 {
+            return Ok(false);
+        }
+        if before.enabled != to.enabled {
+            self.bump_version(to.user).await?;
+        }
+        Ok(true)
+    }
+
     async fn accept_totp_step(&self, user: UserId, step: u64) -> Result<bool, StoreError> {
         let step =
             i64::try_from(step).map_err(|_| StoreError::Backend("a TOTP step too large".into()))?;
