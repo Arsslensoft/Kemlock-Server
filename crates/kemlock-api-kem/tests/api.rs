@@ -545,36 +545,63 @@ async fn asking_for_logins_never_slows_an_account_down_from_other_addresses() {
 }
 
 #[tokio::test]
-async fn failed_finishes_slow_the_account_down_from_every_address() {
+async fn wrong_passwords_lock_out_only_the_address_that_sent_them() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account.set_limit(3);
+    let wrong = [9u8; 32];
+    // A stranger sends wrong passwords for sam's email: three, then they wait, even with the
+    // right password, because the count is theirs.
+    for n in 1..=3 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+        assert_eq!(reply.problem(), "unauthorized");
+    }
+    let waiting = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waiting.problem(), "rate-limited");
+    assert_eq!(waiting.header("retry-after"), Some("1"));
+    // Sam, from another address, signs in at once: the stranger's count is not sam's.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(2)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    // Another account is not affected either, and after the wait the stranger gets a try again.
+    register(&client, "alex@example.org", None).await;
+    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
+    app.clock.advance(Duration::seconds(1));
+    let again = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED);
+    let doubled = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+    assert_eq!(doubled.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(doubled.header("retry-after"), Some("2"));
+}
+
+#[tokio::test]
+async fn wrong_passwords_from_many_addresses_only_slow_the_account_and_the_right_one_gets_in() {
     let app = App::new(true);
     let client = app.client();
     register_and_sign_in(&client, "sam@example.org").await;
     let wrong = [9u8; 32];
-    // Ten wrong passwords, each from another address, so no per-IP limit is involved.
+    // Ten wrong passwords, each from another address, so no hard limit is involved.
     for n in 1..=10u8 {
         let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
-        assert_eq!(reply.problem(), "unauthorized");
     }
-    // The account now waits, whoever asks, even with the right password.
-    let slowed = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
-    assert_eq!(slowed.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(slowed.problem(), "rate-limited");
-    assert_eq!(slowed.header("retry-after"), Some("1"));
-    // Another account is not affected.
-    register(&client, "alex@example.org", None).await;
-    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(51)).await;
-    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
-    // After the delay the right password signs sam in, and clears the count.
-    app.clock.advance(Duration::seconds(1));
-    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(52)).await;
+    // The account is slowed now, whoever asks: the right password still signs in, a moment late.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
-    let again = sign_in_from(&client, "sam@example.org", &wrong, peer(53)).await;
-    assert_eq!(
-        again.status,
-        StatusCode::UNAUTHORIZED,
-        "the count started again"
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "held back about a second: {:?}",
+        started.elapsed()
     );
+    // And a right password clears the slowdown.
+    let started = std::time::Instant::now();
+    let again = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(51)).await;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.json());
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
 }
 
 /// Registers `email` (signups on), enrols and confirms a TOTP method, and returns its secret.

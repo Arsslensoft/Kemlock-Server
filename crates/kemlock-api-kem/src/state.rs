@@ -136,12 +136,19 @@ impl std::fmt::Debug for ApiSecrets {
 pub struct Limits {
     /// Password sign-in starts and two-step codes: 10 a minute per IP, then doubling delays.
     pub sign_in: Limiter,
-    /// Failed password finishes per account: 10 in 15 minutes, then doubling delays. Only
-    /// failures count, so asking for a login (which anyone can do for any email) never slows an
-    /// account down.
+    /// Wrong passwords per account and source address: 10 in 15 minutes, then doubling delays,
+    /// reserved before the password is looked at. Per source, because the account's name comes
+    /// from the request: counted per account alone, anyone could lock the owner out. Asking for
+    /// a login (which anyone can do for any email) never counts.
     pub account: Limiter,
-    /// Failed second-step codes per account: 5 in 15 minutes, then doubling delays, whichever
-    /// address or challenge they come from.
+    /// What every source's wrong passwords add up to for one account: 10 in 15 minutes, then
+    /// doubling slowdowns of at most a few seconds. It never refuses a right password; the hard
+    /// limit is `account`, per account and source.
+    pub account_slow: Limiter,
+    /// Second-step attempts per account, 5 in 15 minutes, then doubling delays, whichever address
+    /// or challenge they come from. The limit and window the Kemlock API's second steps count
+    /// under in the store (`SecondStepGuard`); the counts in this limiter's own memory are the
+    /// admin console's step-up and mailed setup codes.
     pub second_step: Limiter,
     /// DPoP proofs checked before anyone is authenticated, per IP: 120 a minute, then doubling
     /// delays. Honest devices make a handful; the limit only stops a flood.
@@ -167,6 +174,7 @@ impl Default for Limits {
         Limits {
             sign_in: Limiter::new(10, 60),
             account: Limiter::new(10, 900),
+            account_slow: Limiter::new(10, 900),
             second_step: Limiter::new(5, 900),
             proof: Limiter::new(120, 60),
             setup: Limiter::new(5, 60),

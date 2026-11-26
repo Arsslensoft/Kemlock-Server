@@ -18,7 +18,7 @@ use super::guard;
 use crate::dto::{KdfDto, decode, rfc3339};
 use crate::extract::{Authed, Body, Proof};
 use crate::openapi::ProblemDoc;
-use crate::problem::{Problem, rate_limited};
+use crate::problem::Problem;
 use crate::ratelimit::ip_key;
 use crate::state::{Api, Crypto, Store};
 use axum::extract::State;
@@ -36,7 +36,7 @@ use kemlock_app::enrol_keys::{EnrolKeys, EnrolKeysInput};
 use kemlock_app::manifests::{ManifestError, ManifestRepo};
 use kemlock_app::ports::{TokenSigner, TwoFactorMethod};
 use kemlock_app::sign_in::credential_id;
-use kemlock_app::{AppError, b64url};
+use kemlock_app::b64url;
 use kemlock_domain::manifest::SignedManifest;
 use kemlock_domain::unlock::KeyProtection;
 use kemlock_domain::{DeviceKind, Email, Owner};
@@ -372,11 +372,15 @@ where
         }
         let now = api.now();
         guard(&api.limits.sign_in, &ip_key(proof.ip), now)?;
-        let account = format!("bwhash:{}", credential_id(&request.email));
-        api.limits
-            .account
-            .blocked(&account, now)
-            .map_err(rate_limited)?;
+        // Wrong hashes count per account and source address, reserved before the hash is looked
+        // at, as wrong passwords do.
+        let attempt = attempts::begin_password_attempt(
+            &api,
+            "bwhash",
+            &credential_id(&request.email),
+            proof.ip,
+        )
+        .await?;
         let started = api
             .bitwarden_enrol()
             .start(EnrolStartInput {
@@ -386,11 +390,7 @@ where
                 jkt: proof.jkt,
             })
             .await;
-        match &started {
-            Err(AppError::Unauthorized) => api.limits.account.fail(&account, now),
-            Ok(_) => api.limits.account.clear(&account),
-            Err(_) => {}
-        }
+        attempts::end_password_attempt(&api, &attempt, &started);
         let started = started?;
         Ok(Json(BitwardenStartResponse {
             user_id: started.user.0,

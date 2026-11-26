@@ -196,9 +196,12 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     }
 
     /// `POST /kem/v1/auth/opaque/finish`: OPAQUE login, last message, with a DPoP proof whose key
-    /// the device and its tokens are bound to. A wrong password counts against the account (10
-    /// in 15 minutes, then doubling delays, whichever address they come from); a right one
-    /// clears the count.
+    /// the device and its tokens are bound to. A wrong password counts against the account as seen
+    /// from the address that sent it (10 in 15 minutes, then doubling delays, reserved before the
+    /// password is looked at), so a stranger sending wrong passwords for someone's email only
+    /// locks themselves out; what all addresses add up to only slows the account by a few
+    /// seconds, and a right password always gets in from an address that hasn't run out. A right
+    /// one clears the counts.
     pub(crate) async fn handle_opaque_finish(
         State(api): State<Self>,
         proof: Proof,
@@ -206,11 +209,16 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     ) -> Result<Json<SignInResponse>, Problem> {
         let request: OpaqueFinishRequest = body.json()?;
         check_email_len(&request.email)?;
-        let account = format!("acct:{}", credential_id(&request.email));
-        api.limits
-            .account
-            .blocked(&account, api.now())
-            .map_err(rate_limited)?;
+        // Wrong passwords count per account and source address, reserved before the password is
+        // looked at: the name comes from the request, so a count on the name alone would let
+        // anyone lock the owner out.
+        let attempt = attempts::begin_password_attempt(
+            &api,
+            "acct",
+            &credential_id(&request.email),
+            proof.ip,
+        )
+        .await?;
         let device = request.device.into_info()?;
         let login_state = decode("loginState", &request.login_state)?;
         // A login state finishes once, whether the password was right or not. Only a genuine,
@@ -233,11 +241,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
                 jkt: proof.jkt,
             })
             .await;
-        match &finished {
-            Err(AppError::Unauthorized) => api.limits.account.fail(&account, api.now()),
-            Ok(_) => api.limits.account.clear(&account),
-            Err(_) => {}
-        }
+        attempts::end_password_attempt(&api, &attempt, &finished);
         api.log_attempt(api.attempt("password", None, &finished, proof.ip, signed_in_ids))
             .await;
         let signed_in = finished?;
