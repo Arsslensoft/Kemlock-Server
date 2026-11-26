@@ -249,7 +249,7 @@ async fn two_servers_on_loopback_pair_over_http_and_replicate_an_item_over_a_web
     // dialling by themselves; each admin approves them (the console's list of address changes).
     for (node, other) in [(&a, &b), (&b, &a)] {
         node.store()
-            .trust_addresses(other.id, &[other.domain.clone()])
+            .trust_addresses(other.id, std::slice::from_ref(&other.domain))
             .await
             .expect("the admin approves the listed address");
     }

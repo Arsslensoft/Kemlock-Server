@@ -418,11 +418,10 @@ mod tests {
         assert!(warning.contains("no authentication code"), "{warning}");
         let refused = without_server_key(false, false).expect_err("refused");
         assert!(refused.contains("--allow-unauthenticated"), "{refused}");
-        assert_eq!(
+        assert!(
             parse_backup(&args(&["--allow-unauthenticated"]))
                 .expect("parses")
-                .allow_unauthenticated,
-            true
+                .allow_unauthenticated
         );
     }
 
