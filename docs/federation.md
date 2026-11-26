@@ -367,11 +367,13 @@ A `bw` record is checked by neither rule.
 
 ### Rollback
 
-A version replaces another only if it has a **higher revision**. A record whose lineage names a
-version the receiver holds at an equal or higher revision is refused, not merged: a replica that
+A version replaces the **head** only at a **higher revision**. A record whose lineage names the
+receiver's head, and whose revision is not above the head's, is refused, not merged: a replica that
 re-signs an old ciphertext as a new change naming the current head in its lineage can't roll the
 item back, with or without a writer signature. A conflict between two servers' concurrent edits is
-unaffected: neither lineage names the other.
+unaffected (neither lineage names the other), and so is a device's merge of the head with a sibling
+that is further along: only the head's revision counts, because the server makes the merge the
+head's plus one.
 
 ### Per-origin quotas
 
