@@ -4,13 +4,28 @@ use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::admin::user_state;
-use crate::tables::{bw_account_extras, email_confirmations, pending_erasures, users};
-use kemlock_app::ports::{EmailConfirmation, StoreError, UserRepo};
+use crate::tables::{
+    account_bundles, bw_account_extras, email_confirmations, pending_erasures, users,
+};
+use kemlock_app::ports::{EmailConfirmation, StoreError, StoredBundle, UserRepo};
 use kemlock_domain::{Email, User, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, TransactionTrait};
 use time::OffsetDateTime;
+
+/// Keeps the account's current bundle in its history.
+async fn keep_bundle<C: sea_orm::ConnectionTrait>(conn: &C, user: &User) -> Result<(), StoreError> {
+    account_bundles::record(
+        conn,
+        user.id.0,
+        i64::from(user.key_version),
+        &user.public_bundle,
+        &user.bundle_signature,
+        user.updated_at,
+    )
+    .await
+}
 
 impl UserRepo for SqlStore {
     async fn by_id(&self, id: UserId) -> Result<Option<User>, StoreError> {
@@ -32,15 +47,73 @@ impl UserRepo for SqlStore {
             .transpose()
     }
 
+    async fn bundle_at(
+        &self,
+        id: UserId,
+        key_version: u32,
+    ) -> Result<Option<StoredBundle>, StoreError> {
+        let kept = account_bundles::Entity::find_by_id((id.0, i64::from(key_version)))
+            .one(self.reader())
+            .await
+            .store()?
+            .map(account_bundles::Model::into_stored)
+            .transpose()?;
+        if kept.is_some() {
+            return Ok(kept);
+        }
+        // A path that wrote the account's bundle without keeping it still has the current one.
+        Ok(self
+            .by_id(id)
+            .await?
+            .filter(|u| u.key_version == key_version && !u.public_bundle.is_empty())
+            .map(|u| StoredBundle {
+                key_version: u.key_version,
+                public_bundle: u.public_bundle,
+                bundle_signature: u.bundle_signature,
+            }))
+    }
+
+    async fn bundles_of(&self, id: UserId) -> Result<Vec<StoredBundle>, StoreError> {
+        let mut all = account_bundles::all_of(self.reader(), id.0).await?;
+        if let Some(current) = self.bundle_at(id, self.by_id(id).await?.map_or(0, |u| u.key_version)).await?
+            && !all.iter().any(|b| b.key_version == current.key_version)
+        {
+            all.push(current);
+            all.sort_by_key(|b| b.key_version);
+        }
+        Ok(all)
+    }
+
     async fn insert(&self, user: &User) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
         users::Entity::insert(users::active(user))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
-        Ok(())
+        keep_bundle(&txn, user).await?;
+        // A failure above drops the transaction, which rolls it back.
+        txn.commit().await.store()
     }
 
     async fn update(&self, user: &User) -> Result<(), StoreError> {
+        let txn = self.writer().begin().await.store()?;
+        // The bundle this replaces is kept first, so a key replacement never loses the version
+        // before it: whatever path makes the replacement, it comes through here.
+        if let Some(old) = users::Entity::find_by_id(user.id.0)
+            .one(&txn)
+            .await
+            .store()?
+        {
+            account_bundles::record(
+                &txn,
+                old.id,
+                old.key_version,
+                &old.public_bundle,
+                &old.bundle_signature,
+                old.updated_at,
+            )
+            .await?;
+        }
         let row = users::ActiveModel {
             id: NotSet,
             ..users::active(user)
@@ -48,18 +121,20 @@ impl UserRepo for SqlStore {
         let result = users::Entity::update_many()
             .set(row)
             .filter(users::Column::Id.eq(user.id.0))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
         if result.rows_affected == 0 {
             return Err(StoreError::NotFound);
         }
-        Ok(())
+        keep_bundle(&txn, user).await?;
+        txn.commit().await.store()
     }
 
     async fn set_first_keys(&self, user: &User) -> Result<(), StoreError> {
         // One conditional UPDATE: it matches only while the account has no keys, so of two
         // enrolments at once the database lets one through, and only these columns change.
+        let txn = self.writer().begin().await.store()?;
         let row = users::ActiveModel {
             public_bundle: Set(user.public_bundle.clone()),
             bundle_signature: Set(user.bundle_signature.clone()),
@@ -72,15 +147,16 @@ impl UserRepo for SqlStore {
             .set(row)
             .filter(users::Column::Id.eq(user.id.0))
             .filter(users::Column::KeyVersion.eq(0))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
         if result.rows_affected > 0 {
-            return Ok(());
+            keep_bundle(&txn, user).await?;
+            return txn.commit().await.store();
         }
         // Nothing matched: no such account, or it has keys already.
         let exists = users::Entity::find_by_id(user.id.0)
-            .one(self.writer())
+            .one(&txn)
             .await
             .store()?
             .is_some();
@@ -138,6 +214,7 @@ impl UserRepo for SqlStore {
             .exec(&txn)
             .await
             .store()?;
+        keep_bundle(&txn, user).await?;
         email_confirmations::Entity::insert(email_confirmations::ActiveModel {
             user_id: Set(user.id.0),
             token_hash: Set(token_hash.to_vec()),

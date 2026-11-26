@@ -796,6 +796,11 @@ async fn erase_in(
         .store()?;
     out.events_scrubbed += dropped.rows_affected;
 
+    crate::tables::account_bundles::Entity::delete_many()
+        .filter(crate::tables::account_bundles::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
     users::Entity::delete_by_id(uid).exec(txn).await.store()?;
     Ok(out)
 }

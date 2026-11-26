@@ -486,6 +486,11 @@ async fn erase_in(txn: &DatabaseTransaction, user: UserId) -> Result<(), StoreEr
         .exec(txn)
         .await
         .store()?;
+    crate::tables::account_bundles::Entity::delete_many()
+        .filter(crate::tables::account_bundles::Column::UserId.eq(user.0))
+        .exec(txn)
+        .await
+        .store()?;
     users::Entity::delete_by_id(user.0)
         .exec(txn)
         .await

@@ -60,6 +60,15 @@ impl FirstAdminRepo for SqlStore {
                 .exec(&txn)
                 .await
                 .store()?;
+            crate::tables::account_bundles::record(
+                &txn,
+                user.id.0,
+                i64::from(user.key_version),
+                &user.public_bundle,
+                &user.bundle_signature,
+                user.updated_at,
+            )
+            .await?;
             Ok::<(), StoreError>(())
         }
         .await;
