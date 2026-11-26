@@ -168,3 +168,32 @@ async fn an_unlock_for_another_user_key_is_refused() {
         "{answer}"
     );
 }
+
+#[tokio::test]
+async fn a_kdf_change_moves_the_stamp_and_nothing_else_of_the_account() {
+    use kemlock_app::ports::UserRepo;
+    let h = Harness::new().await;
+    let (cli, user) = h.signed_in(EMAIL).await;
+    let before = UserRepo::by_id(&h.store, user)
+        .await
+        .expect("reads")
+        .expect("the account");
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/accounts/kdf",
+            Some(&cli),
+            Some(change(HASH, EMAIL, 600_000, 600_000)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = UserRepo::by_id(&h.store, user)
+        .await
+        .expect("reads")
+        .expect("the account");
+    assert_ne!(after.security_stamp, before.security_stamp);
+    let mut same = after.clone();
+    same.security_stamp = before.security_stamp;
+    same.updated_at = before.updated_at;
+    assert_eq!(same, before);
+}

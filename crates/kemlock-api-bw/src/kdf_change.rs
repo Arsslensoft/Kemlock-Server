@@ -110,7 +110,11 @@ pub(crate) async fn change_kdf<S: BwStore>(
     BwAccountRepo::update(&app.store, &account).await?;
     // As Vaultwarden does, the security stamp moves: every access token the account had, and every
     // live connection that holds one, is dead at once, not up to two hours from now.
-    let mut user = authed.user.clone();
+    // Only the stamp (and the time of the change) is written, on the account as it is now, not on
+    // the copy this request was authenticated with, so nothing changed meanwhile is written back.
+    let mut user = UserRepo::by_id(&app.store, account.user)
+        .await?
+        .ok_or(BwError::Unauthorized)?;
     user.security_stamp = random_uuid(app.env.as_ref());
     user.updated_at = app.now();
     UserRepo::update(&app.store, &user).await?;
