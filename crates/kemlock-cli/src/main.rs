@@ -22,7 +22,7 @@ commands:
                  start over with a new first admin: demotes every admin, then the next start
                  prints a new setup code (needs --yes); with --promote <email>, that existing
                  account (it needs a confirmed two-step method) becomes the admin instead
-  import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]
+  import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply] [--adopt-existing]
                  move in from Vaultwarden: prints a dry-run plan; --apply writes it to the server
                  move in from Vaultwarden: prints a dry-run plan; --apply writes (see below)
   backup [--to <folder|s3://bucket/prefix>] [--recipient <age1...>] [--allow-unauthenticated]
@@ -45,7 +45,9 @@ optional TOML file (KEMLOCK_CONFIG), and KEMLOCK_SERVER_KEY. import-vaultwarden 
 writes to Vaultwarden's data (without --apply it reads no configuration at all); its --from is
 a Vaultwarden data folder or a mysql:// or
 postgres:// URL, --files the data folder beside a MySQL or PostgreSQL server, and --twice copies
-once while Vaultwarden runs and again, for what changed, after you stop it.";
+once while Vaultwarden runs and again, for what changed, after you stop it. It writes only
+accounts and spaces an earlier import made or that do not exist yet, and lists the others;
+--adopt-existing overwrites those on purpose.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {

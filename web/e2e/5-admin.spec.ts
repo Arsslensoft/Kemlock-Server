@@ -345,7 +345,7 @@ test('the admin console: users, events, SSO, settings, migration and federation'
   // Move from Vaultwarden: the server reads the data and plans; copying is the CLI's job for now.
   await page.getByRole('link', { name: 'Move from Vaultwarden' }).click();
   await expect(page.getByRole('heading', { name: 'Move from Vaultwarden', level: 1 })).toBeVisible();
-  await page.getByLabel(/Vaultwarden data folder on this server/).fill('/srv/vaultwarden/data');
+  await page.getByLabel(/Vaultwarden database in the import folder/).fill('db.sqlite3');
   await page.getByRole('button', { name: 'Check it' }).click();
   await expect(page.getByRole('heading', { name: 'What a move would do' })).toBeVisible();
   await expectAccessible(page);

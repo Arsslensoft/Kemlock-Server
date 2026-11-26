@@ -669,9 +669,12 @@ impl From<&MigrationStatus> for MigrationDto {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MigrationStartRequest {
-    /// A Vaultwarden data folder on this server, or a `mysql://` or `postgres://` URL.
+    /// A Vaultwarden SQLite file, or a folder holding `db.sqlite3`, inside the `import` folder of
+    /// the server's data folder (a name relative to it). Database URLs and paths outside it are
+    /// refused; `kemlock-cli import-vaultwarden` takes those.
     pub from: String,
-    /// The data folder beside a MySQL or PostgreSQL server (attachments, sends, `rsa_key.pem`).
+    /// A folder inside the import folder with the attachments, sends, `rsa_key.pem` and
+    /// `config.json`, when they aren't beside the database.
     #[serde(default)]
     pub files: Option<String>,
 }

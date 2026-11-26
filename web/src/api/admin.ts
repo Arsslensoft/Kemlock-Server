@@ -412,9 +412,9 @@ export interface MigrationStatus {
 }
 
 export interface MigrationStartRequest {
-  /** A Vaultwarden data folder on this server, or a `mysql://` or `postgres://` URL. */
+  /** A SQLite file, or a folder holding `db.sqlite3`, inside the `import` folder of the data folder. */
   from: string;
-  /** The data folder beside a MySQL or PostgreSQL server (attachments, sends, `rsa_key.pem`). */
+  /** A folder inside the import folder with the attachments, sends and `rsa_key.pem`. */
   files?: string;
 }
 

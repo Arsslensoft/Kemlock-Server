@@ -1,6 +1,7 @@
 //! Accounts, devices and two-step setups.
 
 use super::rows::{self, row_time, row_uuid};
+use super::scope::USER;
 use super::{Ctx, Res, invalid};
 use crate::convert::{unix_millis, utc};
 use crate::error::StoreResult;
@@ -64,10 +65,35 @@ pub(super) fn now_ms(ctx: &Ctx) -> i64 {
 
 pub(super) async fn put_accounts(ctx: &mut Ctx, accounts: &[MappedAccount]) -> Res<()> {
     for account in accounts {
+        // An address that another account of this server holds can't be given to this one: the
+        // account is left out and listed, rather than the whole pass failing on a duplicate.
+        if email_taken(ctx, account).await? {
+            ctx.refuse(USER, account.id.0);
+            continue;
+        }
+        // An account that exists and wasn't made by an import is not Vaultwarden's to rewrite.
+        if !ctx.claim(USER, account.id.0).await? {
+            ctx.refuse(USER, account.id.0);
+            continue;
+        }
         put_account(ctx, account).await?;
         ctx.touched.insert(account.id.0);
     }
     Ok(())
+}
+
+/// Whether the account's address belongs to a user of another id. An address that isn't one
+/// Kemlock accepts is left for `put_account` to report.
+async fn email_taken(ctx: &Ctx, a: &MappedAccount) -> Res<bool> {
+    let Ok(email) = Email::parse(&a.email) else {
+        return Ok(false);
+    };
+    let holder = users::Entity::find()
+        .filter(users::Column::Email.eq(email.as_str()))
+        .one(&ctx.txn)
+        .await
+        .store()?;
+    Ok(holder.is_some_and(|user| user.id != a.id.0))
 }
 
 async fn put_account(ctx: &Ctx, a: &MappedAccount) -> Res<()> {
@@ -137,6 +163,8 @@ async fn put_account(ctx: &Ctx, a: &MappedAccount) -> Res<()> {
             .exec(txn)
             .await
             .store()?;
+        // Now that the account exists, it is the import's from here on.
+        ctx.remember(USER, id).await?;
     }
 
     let account = BwAccount {

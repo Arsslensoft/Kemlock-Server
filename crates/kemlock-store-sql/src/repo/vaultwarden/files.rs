@@ -53,8 +53,13 @@ fn refused(what: &str, key: &str) -> impl FnOnce(String) -> ImportError {
 
 /// Copies a file unchanged to where the Bitwarden API reads it: into its blob store, by the key the
 /// API names it with, so a rerun puts the same bytes again.
-pub(super) async fn copy_file(ctx: &Ctx, file: &FileCopy) -> Res<()> {
+pub(super) async fn copy_file(ctx: &mut Ctx, file: &FileCopy) -> Res<()> {
     let key = blob_key(&file.storage_key)?;
+    // Only the file of an attachment or Send the pass kept: a key is a blob another owner may hold.
+    if !ctx.file_allowed(&file.storage_key).await? {
+        ctx.refuse("file", &file.storage_key);
+        return Ok(());
+    }
     let bytes = tokio::fs::read(&file.from)
         .await
         .map_err(io(format!("can't read {}", file.from.display())))?;

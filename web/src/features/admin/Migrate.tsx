@@ -16,11 +16,13 @@ const isControl = (c: string): boolean => c.charCodeAt(0) < 32 || (c.charCodeAt(
 
 /**
  * The error a typed source earns, or undefined. This is the server's own rule (plausible text:
- * not blank, at most 1024 characters, no control characters); whether the folder or database
- * exists is the server's to say. An empty one has no error, it only keeps Check off.
+ * not blank, at most 1024 characters, no control characters); whether the file exists in the
+ * import folder is the server's to say. A database URL is never taken here, so it is told so before
+ * anything is sent. An empty one has no error, it only keeps Check off.
  */
 export function checkSource(value: string): MessageId | undefined {
   if (value.trim() === '') return undefined;
+  if (value.includes('://')) return 'admin.migrate.error.url';
   return new TextEncoder().encode(value).length > MAX_SOURCE_LENGTH || [...value].some(isControl) ? 'admin.migrate.error.source' : undefined;
 }
 
@@ -67,7 +69,7 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
   const [from, setFrom] = useState(status?.source ?? '');
   const [files, setFiles] = useState('');
   const step = stepOf(status);
-  const ready = from.trim() !== '' && checkSource(from) === undefined;
+  const ready = from.trim() !== '' && checkSource(from) === undefined && checkSource(files) === undefined;
   return (
     <>
       <PageHead title={t('admin.migrate')} lede={t('admin.migrate.lede')} />
@@ -113,7 +115,7 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
                 mono
                 value={from}
                 onChange={setFrom}
-                placeholder="/srv/vaultwarden/data"
+                placeholder="db.sqlite3"
                 hint={t('admin.migrate.pathHint')}
                 error={checkSource(from)}
                 required
@@ -123,8 +125,9 @@ export function MigrateView({ host, status, starting, error, onStart, now }: Mig
                 mono
                 value={files}
                 onChange={setFiles}
-                placeholder="/srv/vaultwarden/files"
+                placeholder="files"
                 hint={t('admin.migrate.filesHint')}
+                error={checkSource(files)}
               />
               <div className="actions">
                 <Button type="submit" variant="primary" isDisabled={starting || !ready}>

@@ -227,11 +227,58 @@ docker compose logs kemlock                                     # the setup code
 ```
 
 Vaultwarden's image listens on port 80 as root; this one runs as non-root on 8080, so change the
-container side of an old port mapping. To move from Vaultwarden, mount a copy of its data folder
-as `/data`.
+container side of an old port mapping. To move from Vaultwarden, see "Moving from Vaultwarden"
+below.
 
 The port is bound to `127.0.0.1` for a reverse proxy on the same host. A named volume
 (`volumes: [kemlock-data:/data]`) needs no `chown`.
+
+## Moving from Vaultwarden
+
+The move copies a Vaultwarden server's accounts, vaults, files and settings as they are stored, so
+nobody re-keys or signs in again, and it never changes Vaultwarden's own data. Stop Vaultwarden
+(or use `--twice` below), then use either the console or the command line.
+
+**From the admin console** (Move from Vaultwarden). The console reads only a SQLite file inside the
+`import` folder of the server's data folder, `/data/import/` in the image. Copy Vaultwarden's data
+folder (`db.sqlite3`, `attachments/`, `sends/`, `rsa_key.pem`, `config.json`) into it, for example
+`/data/import/db.sqlite3`, and name the file (or the folder that holds `db.sqlite3`) relative to
+the import folder, as plain names joined by `/` (no absolute path, drive, network share, `..` or `:`; they are refused before anything is opened). The optional second field names a folder inside it that holds the files when
+they are not beside the database. Symbolic links are followed and a path that ends up outside the
+import folder is refused; so is a database URL, and a missing source gets the same answer as a
+refused one. An admin can't put files into the import folder, so only whoever runs the server
+decides what the console may read. A MySQL or PostgreSQL Vaultwarden has to be moved with the
+command line, or exported to SQLite first.
+
+The console makes **one** move: once it has finished, it refuses to start another. People use their
+accounts here from then on, and a second pass over the same snapshot would be one click from
+undoing what they changed. **Empty the `import` folder when the move is done** (it holds your
+Vaultwarden data, password hashes and keys included); a later pass is the command line's.
+
+**From the command line**, on the server (`kemlock-cli import-vaultwarden --from <folder|url>
+[--files <folder>] [--twice] [--apply] [--adopt-existing]`): `--from` is a data folder or a
+`mysql://` or `postgres://` URL, and without `--apply` it only prints the plan.
+
+Both write only what an import made. An account or space whose id already exists on this server is
+the import's only when the import created it (the server keeps a record of each id a move created,
+`vw_import_ids`) or nothing has that id yet. Everything else that names such an account or space (its
+devices, two-step setups, memberships, items, attachments, collections, groups, Sends, events and
+files) is skipped too, so a Vaultwarden database can't rewrite, sign in as, or take ownership in
+accounts or spaces that aren't its own. Running a move again over its own earlier copy works as
+before, but never over what this server has changed since: an account whose record, vault or
+password was changed here after the import wrote it, a space that was renamed or whose members
+changed, and an item revised here after the source's date are left as they are, with everything
+that hangs off them. `--adopt-existing` overrides that too. Imported `config.json` settings become the console's own settings (Settings screen; an
+environment variable still wins) when the console has a setting of that name and accepts the
+value; the others, and every secret, are not carried and are listed in the result.
+
+What was left alone is listed in the move's result and in the admin event log
+(`admin.migration.done`, `admin.migration.failed` for the console and `admin.migration.cli` for
+the command line, with where it read from, counts by kind and the ids it refused). If this server
+already holds the same accounts from a move made before these records existed, the first run lists
+them all; run the command line once with `--adopt-existing` to overwrite them on purpose (it prints
+a warning, records the ids, and from then on the console may rerun the move). The console never
+offers that.
 
 ## Podman (Quadlet)
 

@@ -52,6 +52,7 @@ mod m20261129_040001_withheld_changes;
 mod m20261130_010001_email_changes;
 mod m20261130_020001_custom_fields;
 mod m20261201_010001_second_step_attempts;
+mod m20261201_010001_vw_import_ids;
 
 use sea_orm_migration::prelude::*;
 
@@ -109,6 +110,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261130_010001_email_changes::Migration),
             Box::new(m20261130_020001_custom_fields::Migration),
             Box::new(m20261201_010001_second_step_attempts::Migration),
+            Box::new(m20261201_010001_vw_import_ids::Migration),
         ]
     }
 }

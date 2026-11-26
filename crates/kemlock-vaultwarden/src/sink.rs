@@ -84,6 +84,12 @@ pub trait ImportSink: Send {
         keys: &[RowKey],
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// The ids of rows this sink refused to write so far, by kind (`user`, `space`, `item`, ...),
+    /// because they name something the import did not create. A sink that doesn't check says none.
+    fn refused(&self) -> BTreeMap<&'static str, Vec<String>> {
+        BTreeMap::new()
+    }
+
     /// Makes everything put so far durable, or does nothing for a sink that wrote as it went.
     fn finish(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
@@ -102,6 +108,14 @@ pub struct ApplyReport {
     pub files: usize,
     pub file_bytes: u64,
     pub deleted_rows: usize,
+    /// The ids the sink refused to write because the import did not create them, by kind. The
+    /// counts above leave these out for accounts, folders, items and attachments.
+    pub refused: BTreeMap<&'static str, Vec<String>>,
+}
+
+/// How many ids of `kind` the sink has refused so far.
+fn refused_of(sink: &impl ImportSink, kind: &str) -> usize {
+    sink.refused().get(kind).map_or(0, Vec::len)
 }
 
 /// Puts a mapped import into a sink, then deletes the rows of `deletions`. Parents go before
@@ -115,15 +129,18 @@ pub async fn apply<S: ImportSink>(
     let mut report = ApplyReport::default();
 
     sink.put_accounts(&mapped.accounts).await?;
-    report.accounts = mapped.accounts.len();
+    report.accounts = mapped.accounts.len().saturating_sub(refused_of(&*sink, "user"));
     sink.put_folders(&mapped.folders).await?;
-    report.folders = mapped.folders.len();
+    report.folders = mapped.folders.len().saturating_sub(refused_of(&*sink, "folder"));
     sink.put_items(&mapped.items).await?;
-    report.items = mapped.items.len();
+    report.items = mapped.items.len().saturating_sub(refused_of(&*sink, "item"));
     sink.put_cipher_states(&mapped.cipher_states).await?;
     report.cipher_states = mapped.cipher_states.len();
     sink.put_attachments(&mapped.attachments).await?;
-    report.attachments = mapped.attachments.len();
+    report.attachments = mapped
+        .attachments
+        .len()
+        .saturating_sub(refused_of(&*sink, "attachment"));
 
     for table in &mapped.carried {
         if !table.is_empty() {
@@ -133,7 +150,11 @@ pub async fn apply<S: ImportSink>(
     }
     if !mapped.settings.values.is_empty() || !mapped.settings.ignored.is_empty() {
         sink.put_settings(&mapped.settings).await?;
-        report.settings = mapped.settings.values.len();
+        report.settings = mapped
+            .settings
+            .values
+            .len()
+            .saturating_sub(refused_of(&*sink, "setting"));
     }
     if let Some(key) = &mapped.rsa_key {
         sink.put_rsa_key(key).await?;
@@ -160,6 +181,7 @@ pub async fn apply<S: ImportSink>(
         }
     }
 
+    report.refused = sink.refused();
     sink.finish().await?;
     Ok(report)
 }

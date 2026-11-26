@@ -23,15 +23,18 @@ describe('stepOf', () => {
 });
 
 describe('checkSource', () => {
-  it('follows the server: any plausible text, not only absolute paths', () => {
+  it('follows the server: any plausible text, which the server then holds to the import folder', () => {
     expect(checkSource('')).toBeUndefined();
     expect(checkSource('   ')).toBeUndefined();
-    expect(checkSource('/srv/vaultwarden/data')).toBeUndefined();
-    expect(checkSource('C:\\vw\\data')).toBeUndefined();
+    expect(checkSource('db.sqlite3')).toBeUndefined();
     expect(checkSource('data')).toBeUndefined();
     expect(checkSource('data/db.sqlite3')).toBeUndefined();
-    expect(checkSource('MYSQL://vw@db/vw')).toBeUndefined();
-    expect(checkSource('mariadb://vw@db/vw')).toBeUndefined();
+  });
+
+  it('never takes a database URL, which only kemlock-cli import-vaultwarden reads', () => {
+    expect(checkSource('postgres://vw@db/vw')).toBe('admin.migrate.error.url');
+    expect(checkSource('MYSQL://vw@db/vw')).toBe('admin.migrate.error.url');
+    expect(checkSource('mariadb://vw@db/vw')).toBe('admin.migrate.error.url');
   });
 
   it('refuses text the server would: too long, or with control characters', () => {
@@ -46,7 +49,7 @@ describe('MigrateView', () => {
   it('shows an error for a source that is too long, and does not read it', async () => {
     const { onStart } = view();
     const user = userEvent.setup({ delay: null });
-    await user.click(screen.getByLabelText(/Vaultwarden data folder on this server/));
+    await user.click(screen.getByLabelText(/Vaultwarden database in the import folder/));
     await user.paste('x'.repeat(1025));
     expect(await screen.findByText(/at most 1024 characters/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check it' })).toBeDisabled();
@@ -58,26 +61,35 @@ describe('MigrateView', () => {
     const check = screen.getByRole('button', { name: 'Check it' });
     expect(check).toBeDisabled();
     const user = userEvent.setup({ delay: null });
-    await user.click(screen.getByLabelText(/Vaultwarden data folder on this server/));
-    await user.paste(' /srv/vaultwarden/data ');
+    await user.click(screen.getByLabelText(/Vaultwarden database in the import folder/));
+    await user.paste(' db.sqlite3 ');
     await waitFor(() => expect(check).toBeEnabled());
     await user.click(check);
-    await waitFor(() => expect(onStart).toHaveBeenCalledWith({ from: '/srv/vaultwarden/data' }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith({ from: 'db.sqlite3' }));
   });
 
-  it('passes the data folder of a database server along', async () => {
+  it('says where the file goes, and refuses a database URL before sending anything', async () => {
+    const { onStart } = view();
+    expect(screen.getByText(/into the import folder inside this server's data folder/)).toBeInTheDocument();
+    const user = userEvent.setup({ delay: null });
+    await user.click(screen.getByLabelText(/Vaultwarden database in the import folder/));
+    await user.paste('postgres://vw@db/vaultwarden');
+    expect(await screen.findByText(/A database URL can't be given here/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check it' })).toBeDisabled();
+    expect(onStart).not.toHaveBeenCalled();
+  });
+
+  it('passes the folder of the files along', async () => {
     const { onStart } = view();
     const user = userEvent.setup({ delay: null });
-    await user.click(screen.getByLabelText(/Vaultwarden data folder on this server/));
-    await user.paste('postgres://vw@db/vaultwarden');
-    await user.click(screen.getByLabelText(/Data folder beside the database/));
-    await user.paste('/srv/vaultwarden/data');
+    await user.click(screen.getByLabelText(/Vaultwarden database in the import folder/));
+    await user.paste('db.sqlite3');
+    await user.click(screen.getByLabelText(/Folder with its files, inside the import folder/));
+    await user.paste('vw/files');
     const check = screen.getByRole('button', { name: 'Check it' });
     await waitFor(() => expect(check).toBeEnabled());
     await user.click(check);
-    await waitFor(() =>
-      expect(onStart).toHaveBeenCalledWith({ from: 'postgres://vw@db/vaultwarden', files: '/srv/vaultwarden/data' }),
-    );
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith({ from: 'db.sqlite3', files: 'vw/files' }));
   });
 
   it('shows the plan the server made, and says nothing was copied when it only reads', () => {
@@ -95,6 +107,14 @@ describe('MigrateView', () => {
     expect(screen.getByText('Read 10 minutes ago')).toBeInTheDocument();
     expect(screen.getByText(/kemlock-cli import-vaultwarden/)).toBeInTheDocument();
     expect(screen.getByText('Check it', { selector: 'li' })).toHaveAttribute('aria-current', 'step');
+  });
+
+  it('pre-fills the source of a failed move and sends it back as it was shown', async () => {
+    const { onStart } = view({ status: migration({ state: 'failed', source: 'vw/db.sqlite3', error: 'no' }) });
+    expect(screen.getByLabelText(/Vaultwarden database in the import folder/)).toHaveValue('vw/db.sqlite3');
+    const user = userEvent.setup({ delay: null });
+    await user.click(screen.getByRole('button', { name: 'Check it' }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledWith({ from: 'vw/db.sqlite3' }));
   });
 
   it('shows why a move failed, and when it ended', () => {
