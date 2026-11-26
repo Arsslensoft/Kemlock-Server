@@ -2135,7 +2135,7 @@ fn a_space_whose_chain_was_refused_is_never_served_as_having_none() {
 
 // ---- the records of a space chain --------------------------------------------------------------
 
-use crate::chain_build::Change;
+use crate::chain_build::{Change, Replacement};
 use kemlock_crypto::space_chain::uuid_text;
 
 const AT: u64 = 1_700_000_000;
@@ -2625,4 +2625,170 @@ fn a_collection_is_made_and_deleted_and_a_tampered_chain_is_refused() {
             );
         }
     }
+}
+
+#[wasm_bindgen_test]
+fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
+    let (space, general) = ([0xC1u8; 16], [0xC2u8; 16]);
+    let (me, theo) = ([0xC3u8; 16], [0xC4u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (_member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (theo_text, general_text) = (uuid_text(&theo), uuid_text(&general));
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Example Co", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+
+    // An item of General under version 1 (nothing is written while a key is marked).
+    let item = [0xC5u8; 16];
+    let sealed = owner
+        .seal_space_item(&space, &general, &item, "login", 1, br#"{"name":"vpn"}"#)
+        .expect("seals");
+
+    // Theo is let into General, and then removed: the space key and General's key are marked.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&theo_bundle.fingerprint())}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(view["space"]["marked"], true);
+
+    // An item that doesn't open, beside the one sealed above.
+    let junk = [0xC6u8; 16];
+    let served = |target: &str| {
+        find(&created["names"], "target", target)["name"]
+            .as_str()
+            .expect("name")
+            .to_owned()
+    };
+    let replacement: Replacement = serde_json::from_value(json!({
+        "items": [
+            {"id": uuid_text(&item), "collection": general_text, "kind": "login", "revision": 1,
+             "keyVersion": 1, "ciphertext": b64::encode(&sealed.ciphertext),
+             "itemKey": b64::encode(&sealed.item_key)},
+            {"id": uuid_text(&junk), "collection": general_text, "kind": "login", "revision": 1,
+             "keyVersion": 1, "ciphertext": b64::encode(&[9u8; 60]),
+             "itemKey": b64::encode(&[8u8; 60])},
+        ],
+        "names": [
+            {"target": "space", "sealed": served("space")},
+            {"target": format!("collection:{general_text}"),
+             "sealed": served(&format!("collection:{general_text}"))},
+        ],
+    }))
+    .expect("a replacement");
+
+    // A name the server serves in place of the committed one is no name to carry over.
+    let swapped = json!({"items": [], "names": [
+        {"target": "space", "sealed": served(&format!("collection:{general_text}"))},
+        {"target": format!("collection:{general_text}"),
+         "sealed": served(&format!("collection:{general_text}"))},
+    ]});
+    let swapped: Replacement = serde_json::from_value(swapped).expect("a replacement");
+    assert_eq!(
+        owner.build_key_replacement(&space, AT, &swapped).map(|_| ()),
+        Err(Error::Invalid)
+    );
+
+    let out = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &replacement)
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["records"].as_array().expect("records").len(), 1);
+    assert_eq!(out["names"].as_array().expect("names").len(), 2);
+    assert_eq!(out["seals"].as_array().expect("seals").len(), 2);
+    assert_eq!(out["held"], json!([uuid_text(&junk)]));
+    let writes = out["writes"].as_array().expect("writes");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["collection"], general_text);
+    assert_eq!(writes[0]["expectedRevision"], 1);
+    assert_eq!(writes[0]["item"]["revision"], 2);
+    assert_eq!(writes[0]["item"]["keyVersion"], 2);
+
+    // The chain with the keys record verifies, nothing is marked any more, and every key is at
+    // version 2.
+    append(&mut chain, &out);
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(view["ok"], true, "{view}");
+    assert_eq!(view["space"]["marked"], false);
+    assert_eq!(view["space"]["keyVersion"], 2);
+    assert_eq!(view["collections"][0]["keyVersion"], 2);
+    assert_eq!(view["collections"][0]["marked"], false);
+
+    // The new keys open through the chain, the names open as the chain committed them, and the
+    // item opens under its new version with what it held before.
+    open_own(&mut owner, &space, &me, &out);
+    let new_name = |target: &str| {
+        b64::decode(find(&out["names"], "target", target)["name"].as_str().expect("name"))
+            .expect("b64")
+    };
+    assert_eq!(
+        owner.open_name(&space, 2, NameKind::Space, &space, &new_name("space")),
+        Ok("Example Co".to_owned())
+    );
+    assert_eq!(
+        owner.open_name(
+            &space,
+            2,
+            NameKind::Collection,
+            &general,
+            &new_name(&format!("collection:{general_text}"))
+        ),
+        Ok("General".to_owned())
+    );
+    let owner_ref = Owner::space(space);
+    let item_out = &writes[0]["item"];
+    let opened = owner
+        .open_space_item(
+            &space,
+            &general,
+            &SealedItemRef {
+                id: &item,
+                owner: &owner_ref,
+                kind: "login",
+                revision: 2,
+                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct")).expect("b64"),
+                item_key: &b64::decode(item_out["itemKey"].as_str().expect("key")).expect("b64"),
+                key_version: Some(2),
+            },
+        )
+        .expect("the item opens under the new key");
+    assert_eq!(opened.as_slice(), br#"{"name":"vpn"}"#);
+
+    // Nothing is marked now: there is nothing to replace.
+    let again = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &serde_json::from_value(json!({"items": []})).expect("r"))
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(again["ok"], true);
+    assert!(again["records"].as_array().expect("records").is_empty());
 }
