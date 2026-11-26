@@ -406,11 +406,11 @@ impl UnpackLimits {
     pub const MIN_TOTAL_BYTES: u64 = 1 << 30;
     /// How many times its own size an archive may unpack to. Rows and attachments are already
     /// compressed or compress a few times over; a ratio beyond this is a bomb.
-    pub const RATIO: u64 = 200;
+    pub const RATIO: u64 = 50;
     /// The most entries an archive may have.
     pub const MAX_ENTRIES: u64 = 2_000_000;
 
-    /// The limits for an archive of `archive_bytes`: 200 times its size, between 1 GiB and 4 TiB.
+    /// The limits for an archive of `archive_bytes`: 50 times its size, between 1 GiB and 4 TiB.
     pub fn for_archive(archive_bytes: u64) -> Self {
         UnpackLimits {
             max_file_bytes: Self::MAX_FILE_BYTES,

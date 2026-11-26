@@ -453,8 +453,15 @@ A restore also limits what an archive can do. It refuses an archive that names `
 database file, and installs only the sealed secrets (`*.sealed`), `rsa_key.pem` and `config.json`
 from the data folder, and a `config/<name>.toml` (put beside an existing configuration file as
 `.from-backup`, never over it); it says what it skipped. Every file it writes is readable by its
-owner only. It unpacks at most 16 GiB for one file, 200 times the archive's own size in total
+owner only. It unpacks at most 16 GiB for one file, 50 times the archive's own size in total
 (between 1 GiB and 4 TiB) and 2 million files.
+
+The manifest, and with it the authentication code, is the last entry of an archive, so a restore
+unpacks the whole archive into a scratch folder in the data folder before it can check the code.
+The limits above are what bounds that: an archive somebody planted can use up to 50 times its own
+size (at least 1 GiB) of disk until the check fails and the scratch folder is removed. Keep the
+free space of the data folder's disk above that when the backup destination isn't one only you
+write to.
 
 ## Verify what you downloaded
 
