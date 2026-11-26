@@ -29,7 +29,7 @@ use kemlock_app::admin::{
     PushRelayControl, RequestKind, RequestStatus, RequestUpdate, SecretChange, SsoInput, UserQuery,
 };
 use kemlock_app::b64url;
-use kemlock_app::ports::TokenSigner;
+use kemlock_app::ports::{TokenSigner, UserRepo};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::sso::{SsoRepos, TxtLookup};
 use kemlock_domain::{CustomFieldId, FieldType, SpaceId, UserId};
@@ -466,10 +466,38 @@ where
 
     // ---- spaces ----
 
+    /// A space as the console shows it: with, when the Bitwarden API is there and the space is
+    /// one of its organizations, that and the members whose invitation link can be copied.
+    async fn describe_space(
+        &self,
+        links: &MaybeInviteLinks,
+        row: &kemlock_app::admin::AdminSpaceRow,
+    ) -> AdminSpaceDto {
+        let mut dto = AdminSpaceDto::from(row);
+        let Some(links) = &links.0 else {
+            return dto;
+        };
+        let Some(pending) = links.pending_invitations(row.id).await else {
+            return dto;
+        };
+        dto.bitwarden_organization = true;
+        for user in pending {
+            // Someone whose account is gone has no link to copy either.
+            if let Ok(Some(account)) = UserRepo::by_id(&self.api.store, user).await {
+                dto.bitwarden_invitations.push(SpaceOwnerDto {
+                    user_id: user.0,
+                    email: account.email.as_str().to_owned(),
+                });
+            }
+        }
+        dto
+    }
+
     /// `GET /admin/v1/spaces?limit&offset`.
     async fn spaces_list(
         State(env): State<Self>,
         _caller: Caller,
+        links: MaybeInviteLinks,
         parsed: Result<Query<PageQuery>, QueryRejection>,
     ) -> Result<Json<SpacesPageDto>, ApiError> {
         let q = query(parsed)?;
@@ -477,8 +505,12 @@ where
             .spaces()
             .list(q.limit.unwrap_or(50), q.offset.unwrap_or(0))
             .await?;
+        let mut spaces = Vec::with_capacity(page.spaces.len());
+        for row in &page.spaces {
+            spaces.push(env.describe_space(&links, row).await);
+        }
         json_ok(SpacesPageDto {
-            spaces: page.spaces.iter().map(AdminSpaceDto::from).collect(),
+            spaces,
             total: page.total,
         })
     }
@@ -487,10 +519,11 @@ where
     async fn space_get(
         State(env): State<Self>,
         _caller: Caller,
+        links: MaybeInviteLinks,
         Path(id): Path<String>,
     ) -> Result<Json<AdminSpaceDto>, ApiError> {
         let row = env.spaces().get(SpaceId(uuid(&id)?)).await?;
-        json_ok(AdminSpaceDto::from(&row))
+        json_ok(env.describe_space(&links, &row).await)
     }
 
     /// `PUT /admin/v1/spaces/{id}/owner`: the new owner must be a confirmed member.

@@ -264,6 +264,12 @@ pub struct AdminSpaceDto {
     pub live_items: u64,
     /// Set while the space waits for its keys to be replaced.
     pub keys_pending_since: Option<i64>,
+    /// Whether the space is a Bitwarden organization. Only the list and one-space routes say; the
+    /// answer to a change of owner leaves it false.
+    pub bitwarden_organization: bool,
+    /// The members of a Bitwarden organization who are still invited and have a Bitwarden
+    /// invitation, whose link the console can copy. Empty outside an organization.
+    pub bitwarden_invitations: Vec<SpaceOwnerDto>,
 }
 
 impl From<&AdminSpaceRow> for AdminSpaceDto {
@@ -283,6 +289,8 @@ impl From<&AdminSpaceRow> for AdminSpaceDto {
                 .collect(),
             live_items: s.live_items,
             keys_pending_since: s.keys_pending_since.map(secs),
+            bitwarden_organization: false,
+            bitwarden_invitations: Vec::new(),
         }
     }
 }

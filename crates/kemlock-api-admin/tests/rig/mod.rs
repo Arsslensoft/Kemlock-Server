@@ -379,6 +379,8 @@ impl MigrationRunner for FakeMigration {
 pub(crate) struct FakeInviteLinks {
     asked: Arc<Mutex<Vec<(SpaceId, UserId, Asker)>>>,
     answer: Arc<Mutex<Result<MemberInviteLink, InviteLinkError>>>,
+    /// Who is invited with a Bitwarden invitation, in an organization; None outside one.
+    pending: Arc<Mutex<Option<Vec<UserId>>>>,
 }
 
 impl FakeInviteLinks {
@@ -386,6 +388,7 @@ impl FakeInviteLinks {
         FakeInviteLinks {
             asked: Arc::default(),
             answer: Arc::new(Mutex::new(answer)),
+            pending: Arc::default(),
         }
     }
 
@@ -395,6 +398,12 @@ impl FakeInviteLinks {
             link: "https://vault.test/#/accept-organization/?token=secret".to_owned(),
             expires_at: 1_800_000_000,
         }))
+    }
+
+    /// Makes every space an organization where these members are invited (from now on, for a rig
+    /// that was already built on these links).
+    pub(crate) fn set_pending(&self, users: Vec<UserId>) {
+        *self.pending.lock().expect("the lock isn't poisoned") = Some(users);
     }
 
     pub(crate) fn asked(&self) -> Vec<(SpaceId, UserId, Asker)> {
@@ -432,7 +441,7 @@ impl BwInviteLinks for FakeInviteLinks {
     }
 
     fn pending_invitations(&self, _space: SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
-        Box::pin(async { None })
+        Box::pin(async move { self.pending.lock().expect("the lock isn't poisoned").clone() })
     }
 }
 

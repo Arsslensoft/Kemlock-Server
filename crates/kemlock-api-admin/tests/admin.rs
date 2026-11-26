@@ -3144,3 +3144,51 @@ async fn a_non_admin_is_refused_the_invitation_link() {
     assert_eq!(slug(&reply), "forbidden");
     assert!(links.asked().is_empty());
 }
+
+#[tokio::test]
+async fn the_console_says_which_spaces_are_organizations_and_who_has_an_invitation() {
+    for (links, organization) in [(true, true), (true, false), (false, false)] {
+        let fake = FakeInviteLinks::working();
+        let rig = if links {
+            Rig::new().with_invite_links(fake.shared())
+        } else {
+            Rig::new()
+        };
+        let root = rig.admin(ADMIN).await;
+        let ada = rig.user("ada@kemlock.test").await;
+        let ivy = rig.user("ivy@kemlock.test").await;
+        let space = SpaceId::random();
+        SpaceRepo::create(
+            &rig.spaces,
+            space_with(
+                space,
+                &[
+                    (ada.id, SpaceRole::Owner, MemberState::Confirmed),
+                    (ivy.id, SpaceRole::Member, MemberState::Invited),
+                ],
+            ),
+        )
+        .await
+        .expect("space");
+        rig.admin.track_space(space);
+        // An organization where Ivy has a Bitwarden invitation, or a space the Bitwarden API
+        // doesn't know (the links have no pending list for it).
+        if organization {
+            fake.set_pending(vec![ivy.id]);
+        }
+
+        let listed = root.get("/admin/v1/spaces").await;
+        assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.json());
+        let one = root.get(&format!("/admin/v1/spaces/{space}")).await;
+        assert_eq!(one.status, StatusCode::OK, "{:?}", one.json());
+        for seen in [listed.json()["spaces"][0].clone(), one.json()] {
+            assert_eq!(seen["bitwardenOrganization"], organization);
+            let expected = if organization {
+                json!([{"userId": ivy.id.to_string(), "email": "ivy@kemlock.test"}])
+            } else {
+                json!([])
+            };
+            assert_eq!(seen["bitwardenInvitations"], expected);
+        }
+    }
+}
