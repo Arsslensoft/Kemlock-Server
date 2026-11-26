@@ -13,6 +13,12 @@
 //! Proof ids are remembered in a [`TimedSet`]: time buckets that expire whole, hashed entries and
 //! a hard cap. At the cap a new proof is refused with [`DpopError::Overloaded`] (a 503), because
 //! forgetting ids to make room would let any proof be replayed.
+//!
+//! Two sets, so the ones anybody can fill can't starve the ones only a signed-in device can: a
+//! proof with no access token (a token endpoint, where nobody is authenticated yet and anyone
+//! may make a key and get the nonce) goes in the open set, with a smaller cap; a proof that
+//! carries a valid access token goes in the authenticated set. A full open set refuses only
+//! sign-ins and refreshes, never a call that already holds a token.
 
 use crate::replay::{Full, TimedSet};
 use kemlock_app::b64url;
@@ -28,6 +34,10 @@ pub const NONCE_WINDOW_SECS: i64 = 300;
 /// The most proof ids remembered at once. A client making a proof needs a valid signature and the
 /// current nonce, so this is far above what honest devices produce in five minutes.
 pub const MAX_TRACKED_JTIS: usize = 100_000;
+/// The most proof ids remembered at once from requests with no access token (sign-in and
+/// refresh). Anyone may make these, so they have a set and a cap of their own: filling it
+/// refuses new sign-ins, and nothing else. Honest devices make a few per sign-in.
+pub const MAX_OPEN_JTIS: usize = 25_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DpopError {
@@ -44,7 +54,10 @@ pub struct DpopVerifier {
     /// `DOMAIN` without a trailing slash: scheme, host, optional port and path prefix.
     base: String,
     nonce_key: [u8; 32],
+    /// Proof ids of requests that carried an access token.
     seen: TimedSet,
+    /// Proof ids of requests that did not: token endpoints, open to anyone.
+    seen_open: TimedSet,
 }
 
 enum PublicKey {
@@ -119,11 +132,22 @@ fn parse_part(part: &str) -> Result<Value, DpopError> {
 impl DpopVerifier {
     /// `domain` is the configured `DOMAIN`, such as `https://vault.example.org`.
     pub fn new(domain: &str, nonce_key: [u8; 32]) -> Result<Self, String> {
-        DpopVerifier::with_capacity(domain, nonce_key, MAX_TRACKED_JTIS)
+        DpopVerifier::with_capacities(domain, nonce_key, MAX_TRACKED_JTIS, MAX_OPEN_JTIS)
     }
 
-    /// [`DpopVerifier::new`] with its own cap on remembered proof ids.
+    /// [`DpopVerifier::new`] with one cap on the remembered proof ids of each set.
     pub fn with_capacity(domain: &str, nonce_key: [u8; 32], cap: usize) -> Result<Self, String> {
+        DpopVerifier::with_capacities(domain, nonce_key, cap, cap)
+    }
+
+    /// [`DpopVerifier::new`] with its own caps: `cap` for proofs that carry an access token and
+    /// `open_cap` for those that don't.
+    pub fn with_capacities(
+        domain: &str,
+        nonce_key: [u8; 32],
+        cap: usize,
+        open_cap: usize,
+    ) -> Result<Self, String> {
         let base = domain.trim().trim_end_matches('/').to_owned();
         let normal = normalise_htu(&format!("{base}/"))
             .ok_or_else(|| format!("DOMAIN {domain:?} isn't an http(s) URL"))?;
@@ -131,12 +155,18 @@ impl DpopVerifier {
             base: normal.trim_end_matches('/').to_owned(),
             nonce_key,
             seen: TimedSet::new(JTI_TTL_SECS, cap),
+            seen_open: TimedSet::new(JTI_TTL_SECS, open_cap),
         })
     }
 
-    /// How many proof ids are remembered.
+    /// How many proof ids are remembered, in both sets.
     pub fn tracked(&self) -> usize {
-        self.seen.len()
+        self.seen.len() + self.seen_open.len()
+    }
+
+    /// How many of them came from requests with no access token.
+    pub fn tracked_open(&self) -> usize {
+        self.seen_open.len()
     }
 
     /// The nonce for one 5-minute window.
@@ -244,10 +274,12 @@ impl DpopVerifier {
 
         // Last, so a proof that is retried with a new nonce isn't taken for a replay, and so
         // only proofs that passed every other check take room.
-        match self
-            .seen
-            .insert(format!("{thumbprint}:{jti}").as_bytes(), now)
-        {
+        let set = if access_token.is_some() {
+            &self.seen
+        } else {
+            &self.seen_open
+        };
+        match set.insert(format!("{thumbprint}:{jti}").as_bytes(), now) {
             Ok(true) => Ok(thumbprint),
             Ok(false) => Err(DpopError::Invalid("the proof was already used")),
             Err(Full) => Err(DpopError::Overloaded),
@@ -390,6 +422,43 @@ mod tests {
         });
         assert!(v.verify(&fresh, "POST", PATH, later, None).is_ok());
         assert_eq!(v.tracked(), 1);
+    }
+
+    #[test]
+    fn a_full_open_set_refuses_sign_ins_and_never_a_call_with_a_token() {
+        let v = DpopVerifier::with_capacities("https://vault.example.org", [3u8; 32], 5, 2)
+            .expect("a valid domain");
+        let stranger = DpopSigner::es256();
+        assert!(
+            v.verify(&good(&v, &stranger, "a"), "POST", PATH, NOW, None)
+                .is_ok()
+        );
+        assert!(
+            v.verify(&good(&v, &stranger, "b"), "POST", PATH, NOW, None)
+                .is_ok()
+        );
+        // Anyone can make keys and ask a token endpoint: the open set is now full.
+        assert_eq!(
+            v.verify(&good(&v, &stranger, "c"), "POST", PATH, NOW, None),
+            Err(DpopError::Overloaded)
+        );
+        assert_eq!(v.tracked_open(), 2);
+
+        // A device that holds an access token is not held back by it.
+        let device = DpopSigner::es256();
+        let nonce = v.current_nonce(NOW);
+        for jti in ["x", "y", "z"] {
+            let proof = device.proof(&ProofClaims {
+                access_token: Some("tok"),
+                ..claims(jti, &nonce)
+            });
+            assert!(
+                v.verify(&proof, "POST", PATH, NOW, Some("tok")).is_ok(),
+                "{jti}"
+            );
+        }
+        assert_eq!(v.tracked_open(), 2, "they took no room in the open set");
+        assert_eq!(v.tracked(), 5);
     }
 
     #[test]

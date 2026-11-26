@@ -81,6 +81,10 @@ impl<T> Crypto for T where T: PasswordAuth + SecretSeal + Totp + Platform + Clon
 
 /// The most spent login states remembered at once, like the DPoP proof ids.
 const MAX_USED_STATES: usize = 100_000;
+/// The most spent login states remembered at once from unauthenticated finishes, which anyone can
+/// fill through opaque/start and passkey options: they have a set of their own, so filling it
+/// refuses new sign-ins and nothing else (see [`crate::dpop::MAX_OPEN_JTIS`]).
+const MAX_OPEN_USED_STATES: usize = 25_000;
 /// How long after a resend of an invitation the same member's invitation can't be resent.
 pub(crate) const RESEND_WINDOW_SECS: i64 = 600;
 
@@ -198,8 +202,13 @@ pub struct Inner<S, P, K> {
     /// The settings the console changes while the server runs: sign-ups, the invitation gate and
     /// the largest file. The server's settings watcher writes to it.
     pub live: Live,
-    /// OPAQUE login states that were finished (rightly or wrongly): each is good once.
+    /// OPAQUE login states that were finished (rightly or wrongly) by a signed-in caller (the
+    /// password check before an erase or a change, the admin console's step-up): each is good
+    /// once.
     pub used_states: TimedSet,
+    /// The same for the finishes nobody is signed in for (the password sign-in, a passkey sign-in),
+    /// which anyone can start: a set of their own, so a flood of them can't refuse the other.
+    pub used_states_open: TimedSet,
     /// Devices whose use of this API was recorded in the last minute, so an authenticated request
     /// costs the store a write at most once a minute per device.
     pub(crate) recorded_use: TimedSet,
@@ -270,6 +279,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             limits: Limits::default(),
             live,
             used_states: TimedSet::new(states_ttl, MAX_USED_STATES),
+            used_states_open: TimedSet::new(states_ttl, MAX_OPEN_USED_STATES),
             recorded_use: TimedSet::new(USE_GRANULARITY.whole_seconds(), MAX_USED_STATES),
             resent_invitations: TimedSet::new(RESEND_WINDOW_SECS, MAX_USED_STATES),
             proofs: std::sync::OnceLock::new(),

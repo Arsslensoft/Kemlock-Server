@@ -212,19 +212,20 @@ impl Limiter {
     }
 }
 
-/// The key a client counts under: its IPv4 address, or its IPv6 /64, so one host can't dodge the
-/// limits by rotating addresses. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, how a dual-stack
-/// listener shows an IPv4 peer) is keyed as the IPv4 address it carries; without that, every IPv4
-/// client would share the one key of the `::ffff:0:0/64` prefix.
+/// The key a client counts under: its IPv4 address, or its IPv6 /48, so one host can't dodge the
+/// limits by rotating addresses. A site is typically given a /48 (or a /56) and a host can use any
+/// of its /64s, so counting by /64 left 65,536 keys to one customer. An IPv4-mapped IPv6 address
+/// (`::ffff:a.b.c.d`, how a dual-stack listener shows an IPv4 peer) is keyed as the IPv4 address
+/// it carries; without that, every IPv4 client would share the one key of the `::/48` prefix.
 pub fn ip_key(ip: IpAddr) -> String {
     match ip.to_canonical() {
         IpAddr::V4(v4) => format!("ip:{v4}"),
         IpAddr::V6(v6) => {
             let mut segments = v6.segments();
-            for s in &mut segments[4..] {
+            for s in &mut segments[3..] {
                 *s = 0;
             }
-            format!("ip:{}/64", Ipv6Addr::from(segments))
+            format!("ip:{}/48", Ipv6Addr::from(segments))
         }
     }
 }
@@ -444,12 +445,16 @@ mod tests {
     }
 
     #[test]
-    fn an_ipv6_client_counts_by_its_slash_64() {
+    fn an_ipv6_client_counts_by_its_slash_48() {
         let a: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd".parse().expect("ip");
         let b: IpAddr = "2001:db8:1:2:1:2:3:4".parse().expect("ip");
+        // Another /64 of the same /48 is the same client: a site has 65,536 of them.
         let c: IpAddr = "2001:db8:1:3::1".parse().expect("ip");
+        let d: IpAddr = "2001:db8:2:2::1".parse().expect("ip");
         assert_eq!(ip_key(a), ip_key(b));
-        assert_ne!(ip_key(a), ip_key(c));
+        assert_eq!(ip_key(a), ip_key(c));
+        assert_ne!(ip_key(a), ip_key(d));
+        assert_eq!(ip_key(a), "ip:2001:db8:1::/48");
         assert_eq!(ip_key("192.0.2.7".parse().expect("ip")), "ip:192.0.2.7");
     }
 

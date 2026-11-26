@@ -215,7 +215,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         // A login state finishes once, whether the password was right or not. Only a genuine,
         // fresh state is remembered, so made-up ones take no room.
         api.sign_in().check_login_state(&login_state)?;
-        match api.used_states.insert(&login_state, api.now()) {
+        match api.used_states_open.insert(&login_state, api.now()) {
             Ok(true) => {}
             Ok(false) => {
                 return Err(Problem::bad_request("the login state was already used"));
