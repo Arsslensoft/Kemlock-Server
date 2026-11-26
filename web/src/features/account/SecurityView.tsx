@@ -13,6 +13,7 @@ import { DeleteAccountCard, type DeleteAccountProps } from './DeleteAccountCard'
 import { EmergencyCard, type EmergencyCardProps } from './EmergencyCard';
 import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
+import { SignedWritesCard, type SignedWritesProps } from './SignedWritesCard';
 import { RecoveryKitCard, type RecoveryKitProps } from './RecoveryKitCard';
 import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
 import { ProofInput, proofBlank, proofValue } from './ProofInput';
@@ -47,6 +48,8 @@ export interface SecurityViewProps {
   recoveryKit?: RecoveryKitProps | undefined;
   /** The personal API key for the Bitwarden CLI: show, copy, replace. */
   apiKey?: ApiKeyProps | undefined;
+  /** Signed writes only for the account's own vault: turn on, turn off with the password. */
+  signedWrites?: SignedWritesProps | undefined;
   /** The danger zone: delete the account. */
   deleteAccount?: DeleteAccountProps | undefined;
 }
@@ -70,6 +73,7 @@ export function SecurityView({
   secondSteps,
   recoveryKit,
   apiKey,
+  signedWrites,
   deleteAccount,
 }: SecurityViewProps) {
   const t = useT();
@@ -212,6 +216,7 @@ export function SecurityView({
           <EmergencyCard {...emergency} />
 
           {apiKey ? <ApiKeyCard {...apiKey} /> : null}
+          {signedWrites ? <SignedWritesCard {...signedWrites} /> : null}
           {deleteAccount ? <DeleteAccountCard {...deleteAccount} /> : null}
         </div>
       </div>

@@ -20,6 +20,7 @@ import { useDeleteAccount } from './useDeleteAccount';
 import { useRecoveryKit } from './useRecoveryKit';
 import { useRun } from './useRun';
 import { useSecondSteps } from './useSecondSteps';
+import { useSignedWrites } from './useSignedWrites';
 import { SecurityView, type TotpState } from './SecurityView';
 
 const emergencyApi = createEmergencyApi(api);
@@ -53,6 +54,7 @@ export default function Security() {
   const secondSteps = useSecondSteps(twoStepList.data?.recoveryCodes, methods?.includes('totp') ?? false);
   const recoveryKit = useRecoveryKit();
   const apiKey = useApiKey();
+  const signedWrites = useSignedWrites(email, (methods?.length ?? 0) > 0);
   const navigate = useNavigate();
   const deleteAccount = useDeleteAccount(email, (methods?.length ?? 0) > 0, () => void navigate({ to: '/sign-in' }));
   const [confirming, setConfirming] = useState<EmergencyConfirmState | null>(null);
@@ -98,14 +100,22 @@ export default function Security() {
         secondSteps.props.busy ||
         recoveryKit.props.busy ||
         apiKey.props.busy ||
-        deleteAccount.props.busy
+        deleteAccount.props.busy ||
+        signedWrites.props.busy
       }
       error={
-        error ?? passkeyRun.error ?? secondSteps.error ?? recoveryKit.error ?? apiKey.error ?? deleteAccount.error
+        error ??
+        passkeyRun.error ??
+        secondSteps.error ??
+        recoveryKit.error ??
+        apiKey.error ??
+        signedWrites.error ??
+        deleteAccount.error
       }
       secondSteps={secondSteps.props}
       recoveryKit={recoveryKit.props}
       apiKey={apiKey.props}
+      signedWrites={signedWrites.props}
       deleteAccount={deleteAccount.props}
       totpError={totpRun.error}
       onStartTotp={() => {
