@@ -68,6 +68,7 @@ const LABELS: Record<string, MessageId> = {
   rate_sign_in_per_minute: 'admin.settings.key.rate_sign_in_per_minute',
   rate_password_failures_per_15_minutes: 'admin.settings.key.rate_password_failures_per_15_minutes',
   rate_second_step_failures_per_15_minutes: 'admin.settings.key.rate_second_step_failures_per_15_minutes',
+  rate_second_step_challenges_per_5_minutes: 'admin.settings.key.rate_second_step_challenges_per_5_minutes',
   rate_register_per_hour: 'admin.settings.key.rate_register_per_hour',
   security_contact: 'admin.settings.key.security_contact',
   security_encryption: 'admin.settings.key.security_encryption',

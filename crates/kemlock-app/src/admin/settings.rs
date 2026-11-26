@@ -248,6 +248,13 @@ pub const DEFINITIONS: &[Definition] = &[
         env: "KEMLOCK_RATE_SECOND_STEP_FAILURES",
     },
     Definition {
+        key: "rate_second_step_challenges_per_5_minutes",
+        group: "rate-limits",
+        kind: Kind::Int { min: 1, max: 1000 },
+        default: "10",
+        env: "KEMLOCK_RATE_SECOND_STEP_CHALLENGES",
+    },
+    Definition {
         key: "rate_register_per_hour",
         group: "rate-limits",
         kind: Kind::Int { min: 1, max: 1000 },

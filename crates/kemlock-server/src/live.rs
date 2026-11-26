@@ -214,6 +214,7 @@ pub struct Snapshot {
     pub rate_sign_in_per_minute: u32,
     pub rate_password_failures: u32,
     pub rate_second_step_failures: u32,
+    pub rate_second_step_challenges: u32,
     pub rate_register_per_hour: u32,
     /// The SMTP server, or none when no host is set (mail is only logged) or the settings don't
     /// make a valid one: then `smtp_error` says why and the sender in use stays as it was.
@@ -355,6 +356,7 @@ impl Snapshot {
             rate_sign_in_per_minute: count(view("rate_sign_in_per_minute")?),
             rate_password_failures: count(view("rate_password_failures_per_15_minutes")?),
             rate_second_step_failures: count(view("rate_second_step_failures_per_15_minutes")?),
+            rate_second_step_challenges: count(view("rate_second_step_challenges_per_5_minutes")?),
             rate_register_per_hour: count(view("rate_register_per_hour")?),
             smtp,
             smtp_error,
@@ -583,6 +585,9 @@ pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchM
     limits
         .second_step
         .set_limit(snapshot.rate_second_step_failures);
+    limits
+        .challenges
+        .set_limit(snapshot.rate_second_step_challenges);
     limits.register.set_limit(snapshot.rate_register_per_hour);
     mailer.follow(snapshot);
 }
@@ -960,6 +965,7 @@ mod tests {
         assert_eq!(snapshot.rate_sign_in_per_minute, 10);
         assert_eq!(snapshot.rate_password_failures, 10);
         assert_eq!(snapshot.rate_second_step_failures, 5);
+        assert_eq!(snapshot.rate_second_step_challenges, 10);
         assert_eq!(snapshot.smtp, None);
         assert_eq!(snapshot.smtp_error, None);
     }

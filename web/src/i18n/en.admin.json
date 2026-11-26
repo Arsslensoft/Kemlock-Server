@@ -171,6 +171,7 @@
   "admin.settings.key.rate_sign_in_per_minute": "Sign-in tries a minute, per address",
   "admin.settings.key.rate_password_failures_per_15_minutes": "Wrong passwords in 15 minutes, per account",
   "admin.settings.key.rate_second_step_failures_per_15_minutes": "Wrong two-step codes in 15 minutes, per account",
+  "admin.settings.key.rate_second_step_challenges_per_5_minutes": "Two-step sign-ins started in 5 minutes, per account",
   "admin.settings.key.rate_register_per_hour": "Sign-ups an hour, per address",
 
   "admin.attention.none": "Nothing needs a look.",
