@@ -21,7 +21,7 @@
 //!   `two_factor.sealed_secret`, `two_factor_recovery.sealed_code`,
 //!   `sso_settings.sealed_client_secret`,
 //!   `bw_accounts.api_key` (`sealed:` and the sealed value; a plain one, from an older database,
-//!   is sealed when it is next read),
+//!   is sealed at start-up, or when it is read before then),
 //!   `bw_account_extras.sealed_totp_secret` and `sealed_totp_recover`, and the `vw_rows` rows of the
 //!   Vaultwarden tables `twofactor` and `organization_api_key` (`data` starts with `sealed:`).
 //! - **Sealed to a key the server never holds** (the owner's, a device's, a contact's or a

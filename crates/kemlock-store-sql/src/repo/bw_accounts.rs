@@ -32,6 +32,39 @@ impl SqlStore {
         }
     }
 
+    /// Seals every API key still stored plain (an older database, or the move from Vaultwarden),
+    /// once, at start-up after the seal is set, so none waits on being read to be sealed. Returns
+    /// how many it sealed; without a seal it does nothing.
+    pub async fn seal_stored_secrets(&self) -> Result<u64, StoreError> {
+        if self.secret_seal().is_none() {
+            return Ok(0);
+        }
+        let plain = bw_accounts::Entity::find()
+            .filter(bw_accounts::Column::ApiKey.is_not_null())
+            .filter(bw_accounts::Column::ApiKey.not_like(format!("{SEALED_PREFIX}%")))
+            .all(self.writer())
+            .await
+            .store()?;
+        let mut sealed = 0;
+        for row in plain {
+            let Some(key) = row.api_key else {
+                continue;
+            };
+            let moved = bw_accounts::Entity::update_many()
+                .col_expr(
+                    bw_accounts::Column::ApiKey,
+                    Expr::value(self.kept_api_key(&key)),
+                )
+                .filter(bw_accounts::Column::UserId.eq(row.user_id))
+                .filter(bw_accounts::Column::ApiKey.eq(key.as_str()))
+                .exec(self.writer())
+                .await
+                .store()?;
+            sealed += moved.rows_affected;
+        }
+        Ok(sealed)
+    }
+
     /// The key a stored value holds. A plain one is returned as it is and sealed in the row, so
     /// the keys of an older database are sealed as they are read. A sealed one that doesn't open
     /// (the database came back with another `server.key`) is no key: its owner makes a new one,

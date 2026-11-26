@@ -117,7 +117,8 @@ impl SqlStore {
 
     /// Gives the store the seal it keeps the personal API keys of Bitwarden accounts under (the
     /// server's `server.key`, purpose `bw-api-key`). A key stored plain, by an earlier version or
-    /// by the move from Vaultwarden, is sealed when it is next read. Set once; a second call is
+    /// by the move from Vaultwarden, is sealed at start-up by `seal_stored_secrets`, or when it is
+    /// read before then. Set once; a second call is
     /// ignored.
     pub fn set_secret_seal(&self, seal: ServerSeal) {
         let _ = self.inner.secret_seal.set(seal);

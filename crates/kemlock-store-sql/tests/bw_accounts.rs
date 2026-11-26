@@ -217,3 +217,41 @@ async fn a_sealed_key_that_does_not_open_is_no_key_and_does_not_lock_the_account
         .expect("present");
     assert_eq!(read.api_key, None, "damaged, not a plain key");
 }
+
+#[tokio::test]
+async fn the_start_up_pass_seals_every_plain_key_without_anyone_reading_it() {
+    let store = memory().await;
+    let (ana, bea, cy) = (
+        user(&unique_email("bw")),
+        user(&unique_email("bw")),
+        user(&unique_email("bw")),
+    );
+    for owner in [&ana, &bea, &cy] {
+        UserRepo::insert(&store, owner).await.expect("insert user");
+    }
+    let mut with_key = account(ana.id);
+    with_key.api_key = Some("PlainOne0123456789abcdefghijklm".to_owned());
+    let mut also = account(bea.id);
+    also.api_key = Some("PlainTwo0123456789abcdefghijklm".to_owned());
+    for a in [&with_key, &also, &account(cy.id)] {
+        BwAccountRepo::insert(&store, a).await.expect("insert");
+    }
+
+    // With no seal there is nothing to do.
+    assert_eq!(store.seal_stored_secrets().await.expect("pass"), 0);
+    assert!(stored_rows(&store).await.contains("PlainOne"));
+
+    store.set_secret_seal(kemlock_crypto::seal::ServerSeal::new(&[9; 32]));
+    assert_eq!(store.seal_stored_secrets().await.expect("pass"), 2);
+    let rows = stored_rows(&store).await;
+    assert!(!rows.contains("PlainOne") && !rows.contains("PlainTwo"), "{rows}");
+    // They still read back whole, and a second pass has nothing left.
+    for (owner, a) in [(&ana, &with_key), (&bea, &also)] {
+        let back = BwAccountRepo::get(&store, owner.id)
+            .await
+            .expect("get")
+            .expect("present");
+        assert_eq!(back.api_key, a.api_key);
+    }
+    assert_eq!(store.seal_stored_secrets().await.expect("pass"), 0);
+}
