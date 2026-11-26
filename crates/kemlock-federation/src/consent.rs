@@ -13,15 +13,37 @@ use crate::extra::{MemberApply, StoredOffer};
 use crate::home::{HomeRecord, Policy, VaultFederation};
 use crate::members::{self, MemberAccount};
 use crate::message::{OfferState, Request, Response};
-use crate::ports::PeerState;
+use crate::ports::{PeerState, StoredHomeRecord};
+use crate::publish::entity_key;
 use crate::replicate::{Channel, FedStore, Replica};
-use kemlock_domain::{Owner, ServerId};
+use kemlock_domain::{Owner, ServerId, UserId};
 
 /// Whether the account's bundle parses and carries a valid signature of its own `sig1` key.
 fn bundle_is_signed(account: &MemberAccount) -> bool {
     kemlock_crypto::bundle::Bundle::from_bytes(&account.public_bundle)
         .and_then(|bundle| bundle.verify_self_signature(&account.bundle_signature))
         .is_ok()
+}
+
+/// Whether the latest `member-account` record of `user` among `records` was made before the first
+/// `space-member` record of the same user: the order a home used before replicas needed the member
+/// first.
+fn account_predates_member(records: &[StoredHomeRecord], user: UserId) -> bool {
+    let key = user.0.as_bytes().to_vec();
+    let about = |kind: &str| {
+        records
+            .iter()
+            .filter(|r| r.record.kind == kind)
+            .filter(|r| entity_key(&r.record.payload).as_deref() == Some(key.as_slice()))
+            .map(|r| r.record.index)
+    };
+    match (
+        about(members::KIND).max(),
+        about(crate::spaces::KIND_MEMBER).min(),
+    ) {
+        (Some(account), Some(member)) => account < member,
+        _ => false,
+    }
 }
 
 impl<S: FedStore> Replica<S> {
@@ -192,6 +214,11 @@ impl<S: FedStore> Replica<S> {
             tracing::debug!(kind = %record.kind, "a home record of a kind this server doesn't apply");
             return;
         }
+        self.apply_member_record(record).await;
+    }
+
+    /// Applies a `member-account` home record this server stored as applied.
+    pub(crate) async fn apply_member_record(&self, record: &HomeRecord) {
         let account = match MemberAccount::from_payload(&record.payload) {
             Ok(account) => account,
             Err(e) => {
@@ -248,10 +275,20 @@ impl<S: FedStore> Replica<S> {
         let Some(mut publisher) = self.publisher(vault).await? else {
             return Ok(0);
         };
+        // Account records a space's home made before its member records (the order before a
+        // replica needed the member first) were refused by a replica that caught up later, and an
+        // unchanged payload is never made again: such an account is published once more.
+        let existing = match vault {
+            Owner::Space(_) => self.store.home_records(vault, 0, u32::MAX).await?,
+            Owner::User(_) => Vec::new(),
+        };
         for user in self.store.member_ids(vault).await? {
             let Some(account) = self.store.member_account(user).await? else {
                 continue;
             };
+            if account_predates_member(&existing, user) {
+                publisher.forget(members::KIND, user.0.as_bytes().to_vec());
+            }
             self.publish(&mut publisher, members::KIND, account.to_payload())
                 .await?;
         }
@@ -432,6 +469,91 @@ mod tests {
             .await;
         assert_eq!(about_held, Ok(OfferState::Pending));
         assert_eq!(replica.store.offer(held.owner).await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn an_account_that_came_before_its_member_record_is_applied_once_the_member_arrives() {
+        use crate::ports::{HomeStatus, StoredHomeRecord};
+        use crate::spaces::{KIND_MEMBER, encode_member};
+        let r = replica();
+        let home = ServerId::random();
+        let snapshot = crate::testing::space_snapshot(SpaceId::random());
+        let space = Owner::Space(snapshot.state.space.id);
+        let member = snapshot.state.members[0].clone();
+        let acct = account(member.user);
+
+        // The home made the account record first (as homes did before this change), and the
+        // replica refused it for want of the member record. It is stored as applied all the same.
+        let made = record(space, home, &acct);
+        r.store
+            .put_home_record(&StoredHomeRecord {
+                signed: Vec::new(),
+                record: made.clone(),
+                status: HomeStatus::Applied,
+            })
+            .await
+            .expect("stored");
+        r.apply_home_record(&made).await;
+        assert!(r.store.applied_accounts().is_empty());
+
+        // The member record arrives and the replica knows the member: the account follows, with
+        // nothing republished.
+        r.store.set_members(space, vec![member.user]);
+        r.apply_home_record(&HomeRecord {
+            vault: space,
+            index: crate::home::home_index(1, 2),
+            epoch: 1,
+            kind: KIND_MEMBER.to_owned(),
+            payload: encode_member(&member),
+            signer: home,
+        })
+        .await;
+        assert_eq!(r.store.applied_accounts(), vec![(home, member.user)]);
+    }
+
+    #[tokio::test]
+    async fn an_account_made_before_its_space_member_record_is_published_once_more() {
+        use crate::ports::{HomeStatus, StoredHomeRecord};
+        use crate::spaces::{KIND_MEMBER, encode_member};
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let a = Replica::new(MemoryStore::new(ia.server), Arc::new(ia.clone()));
+        let snapshot = crate::testing::space_snapshot(SpaceId::random());
+        let space = Owner::Space(snapshot.state.space.id);
+        let member = snapshot.state.members[0].clone();
+        let acct = account(member.user);
+        a.federate(space, vec![ServerId::random()])
+            .await
+            .expect("federate");
+        a.store.set_members(space, vec![member.user]);
+        a.store.set_member_account(acct.clone());
+        let keep = |index: u64, kind: &str, payload: Vec<u8>| StoredHomeRecord {
+            signed: Vec::new(),
+            record: HomeRecord {
+                vault: space,
+                index: crate::home::home_index(1, index),
+                epoch: 1,
+                kind: kind.to_owned(),
+                payload,
+                signer: ia.server,
+            },
+            status: HomeStatus::Applied,
+        };
+        // The old order: the account, then the member.
+        a.store
+            .put_home_record(&keep(1, members::KIND, acct.to_payload()))
+            .await
+            .expect("stored");
+        a.store
+            .put_home_record(&keep(2, KIND_MEMBER, encode_member(&member)))
+            .await
+            .expect("stored");
+
+        assert_eq!(a.publish_members(space).await.expect("published"), 1);
+        assert_eq!(
+            a.publish_members(space).await.expect("published"),
+            0,
+            "once, not at every visit"
+        );
     }
 
 }

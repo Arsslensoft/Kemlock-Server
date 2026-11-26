@@ -168,6 +168,8 @@ struct Extras {
     members: HashMap<Owner, Vec<UserId>>,
     /// The account copies applied: the home that signed and the user.
     accounts_applied: Vec<(ServerId, UserId)>,
+    /// The accounts that live here, for `member_account`.
+    accounts_held: HashMap<UserId, crate::members::MemberAccount>,
     /// What a promotion from another server does here; holds unless a test says otherwise.
     promotion_mode: crate::extra::PromotionMode,
     /// The keys each peer used before its current one.
@@ -307,6 +309,11 @@ impl MemoryStore {
     /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
     pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
         self.extras().members.insert(vault, members);
+    }
+
+    /// An account that lives on this store, as `member_account` answers for it.
+    pub fn set_member_account(&self, account: crate::members::MemberAccount) {
+        self.extras().accounts_held.insert(account.id, account);
     }
 
     /// The account copies applied so far, as (the home that signed them, the user).
@@ -841,6 +848,13 @@ impl crate::extra::FedAdminRepo for MemoryStore {
 impl crate::extra::MemberStore for MemoryStore {
     async fn member_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
         Ok(self.extras().members.get(&vault).cloned().unwrap_or_default())
+    }
+
+    async fn member_account(
+        &self,
+        user: UserId,
+    ) -> Result<Option<crate::members::MemberAccount>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).cloned())
     }
 
     async fn apply_member_account(

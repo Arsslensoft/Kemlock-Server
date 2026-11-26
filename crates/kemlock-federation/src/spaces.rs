@@ -813,6 +813,23 @@ impl<S: FedStore> Replica<S> {
         Ok(publisher.made + chained)
     }
 
+    /// Applies the latest `member-account` home record stored for `user` in `vault` again.
+    async fn reapply_member_account(&self, vault: Owner, user: UserId) {
+        let Ok(records) = self.store.home_records(vault, 0, u32::MAX).await else {
+            return;
+        };
+        let key = user.0.as_bytes().to_vec();
+        let latest = records
+            .into_iter()
+            .filter(|r| r.status == crate::ports::HomeStatus::Applied)
+            .filter(|r| r.record.kind == crate::members::KIND)
+            .filter(|r| crate::publish::entity_key(&r.record.payload).as_deref() == Some(key.as_slice()))
+            .max_by_key(|r| r.record.index);
+        if let Some(stored) = latest {
+            self.apply_member_record(&stored.record).await;
+        }
+    }
+
     /// Applies a space home record this server stored as applied. A payload that doesn't parse is
     /// logged and left.
     pub(crate) async fn apply_space_home_record(&self, vault: Owner, kind: &str, payload: &[u8]) {
@@ -840,6 +857,12 @@ impl<S: FedStore> Replica<S> {
                 }
                 if let Err(e) = self.store.apply_space_record(space, &record).await {
                     tracing::warn!(error = %e, %kind, "a space record could not be applied");
+                } else if let SpaceRecord::Member(member) = &record
+                    && member.state == MemberState::Confirmed
+                {
+                    // The member's account may have come first and been refused for want of this
+                    // record: take the latest one the home made again, now it can be placed.
+                    self.reapply_member_account(vault, member.user).await;
                 }
             }
             Ok(None) => {}
