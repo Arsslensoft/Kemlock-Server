@@ -2,19 +2,19 @@
 //
 // docs/crypto.md ("Using the state", Manifest) accepts a space manifest only from a signer the
 // verified space chain shows as `confirmed` with `edit` on at least one collection, and checks it
-// with the bundle the chain records for that signer.
+// with the bundle the chain records for that signer. That is what answers here for a space with a
+// chain: the state the worker verified (`deps.chain`), never the server's member list. Access is
+// by grant only, so an owner or admin who holds no editing grant doesn't sign.
 //
-// The web vault does not verify the space chain on this branch (another change adds it), so what
-// answers here is the server's own view of the space, in `lookup` below: the signer must be listed
-// as `confirmed`, hold `edit` on a collection (as owner or admin, or by a grant, direct or through
-// a group), and have a bundle that is self-consistent (account, signature). For anyone but this
-// account that only shows the bundle was made by someone holding its key, not that the space
-// confirmed them, so a server that invented a member could pass its own manifest off here. This
-// account's own keys are known for certain, and are held to the bundle they make.
+// A space with no chain has no verified state, so the server's member list is all there is, and
+// what can be checked is whose keys the bundle is: the signer must be listed as `confirmed`, hold
+// `edit` on a collection (as owner or admin, or by a grant, direct or through a group), and their
+// keys must trace to a confirmation this browser can follow to itself or to a fingerprint a person
+// compared here (`verifiedRecipient`, src/features/spaces/verify.ts). A server that invented a
+// member can't pass its own manifest off that way. This account's own keys are known for certain,
+// and are held to the bundle they make.
 //
-// CHAIN HOOK: when the verified chain state is available, replace the body of `lookup` with a read
-// of it: the bundle the chain records for `signer`, null unless the chain shows them `confirmed`
-// with `edit` on at least one collection. Nothing else in this file needs to change.
+// A space whose chain is refused, can't be read, or waits for first contact has no signer at all.
 import type {
   CollectionPermission,
   GrantDto,
@@ -24,11 +24,16 @@ import type {
   SpacesApi,
 } from '@/api/spaces';
 import type { CryptoPort } from '@/crypto-port';
+import type { ChainView } from '@/crypto/types';
+import type { SpaceTrust } from '@/features/spaces/chain';
+import { MemberNotVerified, verifiedRecipient } from '@/features/spaces/verify';
 import { decodeB64 } from '@/lib/b64url';
 import { parseBundle } from '@/sharing/bundle';
+import type { PinStore } from '@/spaces/anchors';
+import type { SpaceCrypto } from '@/spaces/crypto';
 import type { SpaceSigner } from './keeper';
 
-const EDIT: CollectionPermission[] = ['edit', 'edit-hide-passwords', 'manage'];
+const EDIT: string[] = ['edit', 'edit-hide-passwords', 'manage'];
 
 function uuidText(bytes: Uint8Array): string {
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -42,25 +47,60 @@ export function canEditSomewhere(
 ): boolean {
   if (view.collections.length === 0) return false;
   if (member.role === 'owner' || member.role === 'admin') return true;
+  return editsByGrant(member.user, view);
+}
+
+/** Whether a grant to the account, or to a group it is in, lets it edit a collection that exists. */
+function editsByGrant(
+  user: string,
+  view: {
+    collections: Array<{ id: string }>;
+    grants: Array<{ collection: string; grantee: string; permission: string | CollectionPermission }>;
+    groups: Array<{ id: string; members: string[] }>;
+  },
+): boolean {
   return view.grants.some((grant) => {
     if (!EDIT.includes(grant.permission)) return false;
     if (!view.collections.some((collection) => collection.id === grant.collection)) return false;
     const [kind, id] = grant.grantee.split(':');
-    if (kind === 'user') return id === member.user;
-    if (kind === 'group') return view.groups.find((group) => group.id === id)?.members.includes(member.user) ?? false;
+    if (kind === 'user') return id === user;
+    if (kind === 'group') return view.groups.find((group) => group.id === id)?.members.includes(user) ?? false;
     return false;
   });
 }
 
 export interface SpaceSignerDeps {
   spaces: Pick<SpacesApi, 'members' | 'get'>;
-  crypto: Pick<CryptoPort, 'verifyBundle' | 'fingerprint' | 'ownFingerprint'>;
+  crypto: Pick<CryptoPort, 'fingerprint' | 'ownFingerprint'>;
   /** The signed-in account's id, or null. */
   accountId: () => string | null;
+  /**
+   * How far a space's chain can be trusted: reads it and verifies it in the worker, as the space
+   * page does (`checkSpaceChain`). `verified` carries the state the worker holds.
+   */
+  chain: (space: string, me: string) => Promise<SpaceTrust>;
+  /** What traces a member of a space with no chain: the worker's checks and this browser's pins. */
+  trace: { crypto: SpaceCrypto; pins?: PinStore | undefined };
 }
 
-/** The server's view of who may sign for `space`: the bundle of `signer`, or null. CHAIN HOOK. */
-async function lookup(deps: SpaceSignerDeps, space: string, signer: string): Promise<Uint8Array | null> {
+/** The bundle the chain records for `signer`, null unless it shows them confirmed with `edit`. */
+function chained(view: ChainView, signer: string): Uint8Array | null {
+  const member = view.members.find((candidate) => candidate.id === signer);
+  if (!member || member.status !== 'confirmed' || !member.bundle) return null;
+  if (!editsByGrant(signer, view)) return null;
+  let bundle: Uint8Array;
+  try {
+    bundle = decodeB64(member.bundle);
+  } catch {
+    return null;
+  }
+  const parsed = parseBundle(bundle);
+  if (!parsed || uuidText(parsed.accountId) !== signer) return null;
+  return bundle;
+}
+
+/** The member list's view of who may sign for a space with no chain: the bundle of `signer`, or null. */
+async function unchained(deps: SpaceSignerDeps, space: string, signer: string, me: string): Promise<Uint8Array | null> {
   const [members, view]: [MemberViewDto[], SpaceViewDto] = await Promise.all([
     deps.spaces.members(space),
     deps.spaces.get(space),
@@ -68,17 +108,34 @@ async function lookup(deps: SpaceSignerDeps, space: string, signer: string): Pro
   const member = members.find((candidate) => candidate.user === signer && candidate.state === 'confirmed');
   if (!member || !canEditSomewhere(member, view)) return null;
   let bundle: Uint8Array;
-  let signature: Uint8Array;
   try {
     bundle = decodeB64(member.publicBundle);
-    signature = decodeB64(member.bundleSignature);
   } catch {
     return null;
   }
   const parsed = parseBundle(bundle);
   if (!parsed || uuidText(parsed.accountId) !== signer) return null;
-  if (!(await deps.crypto.verifyBundle(bundle, signature))) return null;
+  // The keys must be the ones a person, or someone this browser can trace to itself, confirmed.
+  try {
+    await verifiedRecipient(
+      { crypto: deps.trace.crypto, spaceId: space, members, me, pins: deps.trace.pins },
+      member,
+    );
+  } catch (error) {
+    if (error instanceof MemberNotVerified) return null;
+    throw error;
+  }
   return bundle;
+}
+
+/** Who may sign for `space`: the bundle of `signer`, or null. */
+async function lookup(deps: SpaceSignerDeps, space: string, signer: string): Promise<Uint8Array | null> {
+  const me = deps.accountId();
+  if (me === null) return null;
+  const trust = await deps.chain(space, me);
+  if (trust.kind === 'verified') return chained(trust.view, signer);
+  if (trust.kind !== 'unchained') return null;
+  return unchained(deps, space, signer, me);
 }
 
 export function createSpaceSigner(deps: SpaceSignerDeps): SpaceSigner {
