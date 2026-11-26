@@ -798,6 +798,12 @@ async fn signing_an_account_out_ends_its_session() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let after = sam.get("/kem/v1/sync").await;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED, "{:?}", after.json());
+    // No device keeps the key it could sign back in with (a replica's device-key sign-in).
+    let devices = kemlock_app::ports::DeviceRepo::list(&rig.app.store, sam.id)
+        .await
+        .expect("devices");
+    assert!(!devices.is_empty());
+    assert!(devices.iter().all(|d| d.dpop_jkt.is_none()));
     assert_eq!(
         root.write(
             "POST",

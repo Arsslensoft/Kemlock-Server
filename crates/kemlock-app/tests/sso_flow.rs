@@ -1237,6 +1237,14 @@ async fn a_logout_token_ends_the_subjects_sessions_on_every_device() {
     // The account and its devices remain; only the sessions ended.
     assert!(sso.world.store.user(first.user).is_some());
     assert_eq!(sso.world.store.devices_of(first.user).len(), 2);
+    // No device keeps the key it could sign back in with (a replica's device-key sign-in).
+    assert!(
+        sso.world
+            .store
+            .devices_of(first.user)
+            .iter()
+            .all(|d| d.dpop_jkt.is_none())
+    );
     assert!(
         sso.world
             .store

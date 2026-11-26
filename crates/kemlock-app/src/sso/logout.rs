@@ -11,7 +11,7 @@ use crate::platform::{Platform, random_uuid};
 use crate::ports::{DeviceRepo, Event, EventLog, SecretSeal, TokenRepo, UserRepo};
 use crate::sso::error::SsoError;
 use crate::sso::ports::{OidcProvider, SsoIdentityRepo, SsoSettingsRepo};
-use kemlock_domain::UserId;
+use kemlock_domain::{Device, UserId};
 
 #[derive(Debug)]
 pub struct SsoLogout<U, D, T, R, O, S, E, V> {
@@ -77,6 +77,15 @@ where
         let devices = self.devices.list(user.id).await?;
         for device in &devices {
             self.tokens.revoke_device(device.id).await?;
+            // The device's key no longer vouches for it either: with it, a replica's device-key
+            // sign-in would put the session straight back. The trusted-device copy stays.
+            if device.dpop_jkt.is_some() {
+                let device = Device {
+                    dpop_jkt: None,
+                    ..device.clone()
+                };
+                self.devices.upsert(&device).await?;
+            }
         }
         user.security_stamp = random_uuid(&self.env);
         user.updated_at = self.env.now();
