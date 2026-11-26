@@ -12,14 +12,15 @@
 //!   migrated, and says what it did with the database it replaced.
 
 use crate::app::build;
-use crate::backups::{sqlite_file, with_suffix};
+use crate::backups::{existing_server_key, manifest_mac_key, sqlite_file, with_suffix};
 use crate::config::{Config, LogFormat};
 use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::response::Response;
 use kemlock_backup::{
-    AgeIdentity, Attachments, Manifest, is_never_restored, is_restorable_config_name,
-    is_restorable_data_file, parse_identity, read_archive, verify_unpacked,
+    AgeIdentity, Attachments, MacKey, Manifest, check_manifest_mac, is_never_restored,
+    is_restorable_config_name, is_restorable_data_file, parse_identity, read_archive,
+    verify_unpacked,
 };
 use kemlock_store_sql::{SnapshotTable, SqlStore};
 use std::net::SocketAddr;
@@ -35,6 +36,9 @@ pub struct RestoreOptions {
     pub identity: PathBuf,
     /// A copy of the `server.key` of the server that made the archive.
     pub server_key: Option<PathBuf>,
+    /// Restore an archive whose authentication code is missing, wrong or can't be checked for want
+    /// of the key (`--allow-unauthenticated`): for archives made before they were authenticated.
+    pub allow_unauthenticated: bool,
 }
 
 /// What a restore did.
@@ -61,6 +65,9 @@ pub struct DrillReport {
     pub server_started: bool,
     /// It refused a write.
     pub writes_refused: bool,
+    /// The archive's authentication code was checked against the server key and was right. False
+    /// only when the drill was told to take an archive unauthenticated.
+    pub authenticated: bool,
 }
 
 fn read_identity(path: &Path) -> Result<AgeIdentity, String> {
@@ -69,14 +76,67 @@ fn read_identity(path: &Path) -> Result<AgeIdentity, String> {
     parse_identity(&text).map_err(|e| e.to_string())
 }
 
-/// Decrypts and unpacks the archive into `dest` and checks it against its manifest.
-async fn unpack(archive: &Path, identity: &Path, dest: &Path) -> Result<Manifest, String> {
+/// What a restore does about an archive's authentication code.
+///
+/// An archive is encrypted to a public recipient, so anyone who can write the backup destination
+/// can make one. The code in `manifest.mac` is made under a key derived from the `server.key` of
+/// the server that wrote the archive, so with that key at hand the code shows the archive is that
+/// server's. Without the key, or with a missing or wrong code, the archive is restored only when
+/// the operator says so (`--allow-unauthenticated`), which is for archives made before they were
+/// authenticated. `Ok(Some(note))` means the archive was let through unchecked, and why.
+fn authenticate(
+    dir: &Path,
+    key: Option<&MacKey>,
+    allow_unauthenticated: bool,
+) -> Result<Option<String>, String> {
+    match (key, allow_unauthenticated) {
+        (Some(key), allow) => match check_manifest_mac(dir, key) {
+            Ok(()) => Ok(None),
+            Err(e) if allow => Ok(Some(format!(
+                "the archive was NOT authenticated ({e}); it was restored because \
+                 --allow-unauthenticated was given"
+            ))),
+            Err(e) => Err(format!(
+                "{e}. A restore trusts an archive only when it carries the code of this \
+                 server.key. If you made this archive yourself, before archives were \
+                 authenticated, check it with the drill and restore it with \
+                 --allow-unauthenticated. Nothing was changed"
+            )),
+        },
+        (None, true) => Ok(Some(
+            "the archive was NOT authenticated: no server.key was given to check it against; it \
+             was restored because --allow-unauthenticated was given"
+                .to_owned(),
+        )),
+        (None, false) => Err(
+            "the archive can't be checked: give the server.key of the server that made it \
+             (--server-key <file>) so its authentication code can be verified, or restore it \
+             unchecked with --allow-unauthenticated if you made it and trust it. Nothing was \
+             changed"
+                .to_owned(),
+        ),
+    }
+}
+
+/// Decrypts and unpacks the archive into `dest`, checks its authentication code (see
+/// [`authenticate`]) and checks it against its manifest. The note says the archive went through
+/// unauthenticated.
+async fn unpack(
+    archive: &Path,
+    identity: &Path,
+    dest: &Path,
+    key: Option<MacKey>,
+    allow_unauthenticated: bool,
+) -> Result<(Manifest, Option<String>), String> {
     let identity = read_identity(identity)?;
     let archive = archive.to_owned();
     let dest = dest.to_owned();
     tokio::task::spawn_blocking(move || {
         read_archive(&archive, &identity, &dest).map_err(|e| e.to_string())?;
-        verify_unpacked(&dest).map_err(|e| e.to_string())
+        // Before the manifest is trusted for anything: its code first.
+        let note = authenticate(&dest, key.as_ref(), allow_unauthenticated)?;
+        let manifest = verify_unpacked(&dest).map_err(|e| e.to_string())?;
+        Ok((manifest, note))
     })
     .await
     .map_err(|e| format!("the unpacking task stopped: {e}"))?
@@ -186,11 +246,18 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
         .map_err(|e| format!("can't make {}: {e}", config.data_folder.display()))?;
     let mut notes = Vec::new();
 
-    // The key first: a restore that can't unseal its secrets afterwards is better refused now.
+    // The key first: a restore that can't unseal its secrets afterwards is better refused now. It
+    // is also what the archive's authentication code is checked with. It is put in place only
+    // once the archive has been accepted.
     let key_path = config.data_folder.join(kemlock_backup::SERVER_KEY_FILE);
     let mut server_key_installed = false;
+    let mut key_to_install = None;
+    let mac_key;
     if let Some(source) = &options.server_key {
         let wanted = read_server_key(source)?;
+        mac_key = <[u8; 32]>::try_from(wanted.as_slice())
+            .ok()
+            .map(|key| manifest_mac_key(&key));
         match std::fs::read(&key_path) {
             Ok(existing) if existing != wanted => {
                 return Err(format!(
@@ -200,18 +267,18 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
                 ));
             }
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                write_server_key(&key_path, &wanted)?;
-                server_key_installed = true;
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => key_to_install = Some(wanted),
             Err(e) => return Err(format!("can't read {}: {e}", key_path.display())),
         }
-    } else if !key_path.exists() && config.server_key.is_none() {
-        notes.push(
-            "no server.key was given and the data folder has none: put the one stored apart in \
-             place before starting the server, or its sealed secrets won't open"
-                .to_owned(),
-        );
+    } else {
+        mac_key = existing_server_key(config).map(|key| manifest_mac_key(&key));
+        if !key_path.exists() && config.server_key.is_none() {
+            notes.push(
+                "no server.key was given and the data folder has none: put the one stored apart \
+                 in place before starting the server, or its sealed secrets won't open"
+                    .to_owned(),
+            );
+        }
     }
 
     let scratch = tempfile::Builder::new()
@@ -219,8 +286,20 @@ pub async fn restore(config: &Config, options: &RestoreOptions) -> Result<Restor
         .tempdir_in(&config.data_folder)
         .map_err(|e| format!("can't make a working folder: {e}"))?;
     let unpacked = scratch.path().join("unpacked");
-    let manifest = unpack(&options.archive, &options.identity, &unpacked).await?;
+    let (manifest, unauthenticated) = unpack(
+        &options.archive,
+        &options.identity,
+        &unpacked,
+        mac_key,
+        options.allow_unauthenticated,
+    )
+    .await?;
+    notes.extend(unauthenticated);
     refuse_planted_files(&manifest, sqlite_file(&config.database_url).as_deref())?;
+    if let Some(wanted) = key_to_install {
+        write_server_key(&key_path, &wanted)?;
+        server_key_installed = true;
+    }
 
     // The database.
     let store = SqlStore::connect(&config.database_url)
@@ -361,12 +440,14 @@ async fn read_only(request: axum::extract::Request, next: axum::middleware::Next
 /// The restore drill: restores `archive` into a scratch folder under `work_in`, starts a
 /// read-only server there, and compares row counts and file hashes with the manifest. The scratch
 /// folder is removed afterwards. `server_key` is the separately stored `server.key`: the server
-/// can start only if it unseals the archive's secrets.
+/// can start only if it unseals the archive's secrets, and the archive's authentication code is
+/// checked with it unless `allow_unauthenticated` says to take an older archive as it is.
 pub async fn restore_check(
     archive: &Path,
     identity: &Path,
     server_key: &Path,
     work_in: &Path,
+    allow_unauthenticated: bool,
 ) -> Result<DrillReport, String> {
     std::fs::create_dir_all(work_in)
         .map_err(|e| format!("can't make {}: {e}", work_in.display()))?;
@@ -378,7 +459,11 @@ pub async fn restore_check(
 
     // 1. Open the archive and check every file and every table's rows against the manifest.
     let unpacked = scratch.path().join("unpacked");
-    let manifest = unpack(archive, identity, &unpacked).await?;
+    let mac_key = <[u8; 32]>::try_from(key.as_slice())
+        .ok()
+        .map(|key| manifest_mac_key(&key));
+    let (manifest, unauthenticated) =
+        unpack(archive, identity, &unpacked, mac_key, allow_unauthenticated).await?;
     refuse_planted_files(&manifest, None)?;
 
     // 2. Lay the files out as a data folder, with the key that was stored apart.
@@ -500,6 +585,7 @@ pub async fn restore_check(
         files,
         server_started: true,
         writes_refused: write == 503,
+        authenticated: unauthenticated.is_none(),
     })
 }
 

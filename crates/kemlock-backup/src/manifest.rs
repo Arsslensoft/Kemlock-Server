@@ -117,6 +117,110 @@ impl Manifest {
     }
 }
 
+/// Where the manifest's authentication code sits in an archive, right after the manifest.
+pub const MAC_NAME: &str = "manifest.mac";
+
+/// The key an archive's manifest is authenticated with: 32 bytes the server derives from its
+/// `server.key` (HMAC-SHA-256 of the label `kemlock/v1/backup-manifest-mac` under the key), so
+/// only a server that holds `server.key` can make an archive its restore accepts. The manifest
+/// lists the SHA-256 of every file, so authenticating it authenticates the archive.
+#[derive(Clone, PartialEq, Eq)]
+pub struct MacKey([u8; 32]);
+
+impl MacKey {
+    pub const fn new(bytes: [u8; 32]) -> Self {
+        MacKey(bytes)
+    }
+}
+
+impl std::fmt::Debug for MacKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MacKey").finish_non_exhaustive()
+    }
+}
+
+/// HMAC-SHA-256 (RFC 2104) of what `data` reads, under `key` of at most 64 bytes, as lower-case
+/// hex. The input is streamed, so a manifest of any size is no memory cost.
+fn hmac_sha256_hex(key: &[u8], data: &mut impl Read) -> std::io::Result<String> {
+    debug_assert!(key.len() <= 64, "a longer key would need hashing first");
+    let mut inner_pad = [0x36u8; 64];
+    let mut outer_pad = [0x5cu8; 64];
+    for (i, byte) in key.iter().enumerate() {
+        inner_pad[i] ^= byte;
+        outer_pad[i] ^= byte;
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = data.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        inner.update(&chunk[..read]);
+    }
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner.finalize());
+    Ok(hex::encode(outer.finalize()))
+}
+
+/// The authentication code of manifest bytes: lower-case hex.
+pub fn manifest_mac(key: &MacKey, manifest: &[u8]) -> String {
+    let mut bytes = manifest;
+    // Reading a slice can't fail.
+    hmac_sha256_hex(&key.0, &mut bytes).unwrap_or_default()
+}
+
+/// Whether two codes are equal, in time that depends only on their length.
+fn same_code(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |difference, (x, y)| difference | (x ^ y))
+            == 0
+}
+
+/// Checks the unpacked archive in `dir`: its `manifest.mac` is the code of its `manifest.json`
+/// under `key`. Fails with [`BackupError::Unauthenticated`] when the code is missing or differs.
+pub fn check_manifest_mac(dir: &Path, key: &MacKey) -> Result<(), BackupError> {
+    let manifest_path = dir.join(MANIFEST_NAME);
+    let mut manifest = std::fs::File::open(&manifest_path)
+        .map_err(|e| BackupError::Manifest(format!("the archive has no {MANIFEST_NAME}: {e}")))?;
+    let expected = hmac_sha256_hex(&key.0, &mut manifest)
+        .map_err(|e| BackupError::io(format!("can't read {}", manifest_path.display()), e))?;
+
+    let mut given = String::new();
+    match std::fs::File::open(dir.join(MAC_NAME)) {
+        Ok(file) => {
+            // A code is 64 characters; never read more than a little over that.
+            file.take(256)
+                .read_to_string(&mut given)
+                .map_err(|e| BackupError::Unauthenticated(format!("{MAC_NAME} isn't text: {e}")))?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(BackupError::Unauthenticated(format!(
+                "the archive has no {MAC_NAME}: it was made before archives were authenticated, \
+                 or not by a server holding this server.key"
+            )));
+        }
+        Err(e) => {
+            return Err(BackupError::io(
+                format!("can't read {}", dir.join(MAC_NAME).display()),
+                e,
+            ));
+        }
+    }
+    if same_code(given.trim(), &expected) {
+        Ok(())
+    } else {
+        Err(BackupError::Unauthenticated(format!(
+            "the archive's {MAC_NAME} is not the one this server.key makes for its manifest: the \
+             archive was made by a server with another key, or was changed"
+        )))
+    }
+}
+
 /// A reader that hashes and counts what passes through it, so a file is read once for the archive
 /// and for its manifest entry.
 pub(crate) struct HashingReader<R> {
@@ -198,6 +302,57 @@ mod tests {
             }],
             attachments: Attachments::External,
         }
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc_4231() {
+        let mut data: &[u8] = b"Hi There";
+        assert_eq!(
+            hmac_sha256_hex(&[0x0b; 20], &mut data).expect("hashes"),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        let mut data: &[u8] = b"what do ya want for nothing?";
+        assert_eq!(
+            hmac_sha256_hex(b"Jefe", &mut data).expect("hashes"),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+    }
+
+    #[test]
+    fn a_manifest_is_authentic_only_under_the_key_that_made_its_code() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let manifest = sample().to_json().expect("json");
+        let key = MacKey::new([7; 32]);
+        std::fs::write(dir.path().join(MANIFEST_NAME), &manifest).expect("manifest");
+
+        // No code at all.
+        let err = check_manifest_mac(dir.path(), &key).expect_err("no code");
+        assert!(matches!(&err, BackupError::Unauthenticated(m) if m.contains("no manifest.mac")), "{err}");
+
+        // The right code, with the newline an editor might add.
+        let code = manifest_mac(&key, &manifest);
+        assert_eq!(code.len(), 64);
+        std::fs::write(dir.path().join(MAC_NAME), format!("{code}\n")).expect("code");
+        check_manifest_mac(dir.path(), &key).expect("authentic");
+
+        // Another key.
+        let err = check_manifest_mac(dir.path(), &MacKey::new([8; 32])).expect_err("another key");
+        assert!(matches!(&err, BackupError::Unauthenticated(_)), "{err}");
+
+        // A manifest changed after the code was made.
+        let mut edited = sample();
+        edited.files[0].sha256 = hash_bytes(b"planted");
+        std::fs::write(dir.path().join(MANIFEST_NAME), edited.to_json().expect("json"))
+            .expect("manifest");
+        let err = check_manifest_mac(dir.path(), &key).expect_err("a changed manifest");
+        assert!(matches!(&err, BackupError::Unauthenticated(_)), "{err}");
+
+        // Garbage and a huge code file are wrong codes, not a crash or a big read.
+        std::fs::write(dir.path().join(MANIFEST_NAME), &manifest).expect("manifest");
+        std::fs::write(dir.path().join(MAC_NAME), vec![b'a'; 100_000]).expect("code");
+        assert!(check_manifest_mac(dir.path(), &key).is_err());
+        std::fs::write(dir.path().join(MAC_NAME), [0xff, 0xfe, 0x00]).expect("code");
+        assert!(check_manifest_mac(dir.path(), &key).is_err());
     }
 
     #[test]

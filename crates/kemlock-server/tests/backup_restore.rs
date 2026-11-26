@@ -59,8 +59,14 @@ struct Fixture {
     ada: User,
 }
 
-/// A server with one account and a backup of it.
+/// A server with one account and a backup of it, with its authentication code.
 async fn fixture() -> Fixture {
+    fixture_with(true).await
+}
+
+/// [`fixture`], and with `authenticated` false the archive is written as one made before archives
+/// carried a code.
+async fn fixture_with(authenticated: bool) -> Fixture {
     let root = tempfile::tempdir().expect("a temp dir");
     let data = root.path().join("source");
     let config = config(&data);
@@ -88,7 +94,11 @@ async fn fixture() -> Fixture {
         recipient: identity.to_public().to_string(),
         zstd_level: 1,
     };
-    let layout = layout(&config).expect("a layout");
+    let mut layout = layout(&config).expect("a layout");
+    assert!(layout.mac_key.is_some(), "the server key is there to make the code with");
+    if !authenticated {
+        layout.mac_key = None;
+    }
     let report = run_backup(&built.store, &settings, &layout)
         .await
         .expect("the backup works");
@@ -120,7 +130,7 @@ async fn the_drill_restores_into_a_scratch_folder_and_starts_a_read_only_server(
     let f = fixture().await;
     let work = f.root.path().join("work");
 
-    let report = restore_check(&f.archive, &f.identity_file, &f.key_file, &work)
+    let report = restore_check(&f.archive, &f.identity_file, &f.key_file, &work, false)
         .await
         .expect("the drill passes");
 
@@ -143,14 +153,14 @@ async fn the_drill_fails_with_the_wrong_server_key_or_the_wrong_identity() {
 
     let wrong_key = f.root.path().join("wrong.key");
     std::fs::write(&wrong_key, [7u8; 32]).expect("a key");
-    let error = restore_check(&f.archive, &f.identity_file, &wrong_key, &work)
+    let error = restore_check(&f.archive, &f.identity_file, &wrong_key, &work, false)
         .await
         .expect_err("the sealed secrets don't open");
     assert!(error.contains("server"), "{error}");
 
     let short = f.root.path().join("short.key");
     std::fs::write(&short, [1u8; 5]).expect("a file");
-    let error = restore_check(&f.archive, &f.identity_file, &short, &work)
+    let error = restore_check(&f.archive, &f.identity_file, &short, &work, false)
         .await
         .expect_err("not a key");
     assert!(error.contains("32 bytes"), "{error}");
@@ -158,7 +168,7 @@ async fn the_drill_fails_with_the_wrong_server_key_or_the_wrong_identity() {
     let stranger = AgeIdentity::generate();
     let stranger_file = f.root.path().join("stranger.txt");
     std::fs::write(&stranger_file, stranger.to_string().expose_secret()).expect("a file");
-    let error = restore_check(&f.archive, &stranger_file, &f.key_file, &work)
+    let error = restore_check(&f.archive, &stranger_file, &f.key_file, &work, false)
         .await
         .expect_err("not the archive's identity");
     assert!(error.contains("age"), "{error}");
@@ -175,6 +185,7 @@ async fn a_restore_puts_the_account_and_the_key_files_into_a_fresh_data_folder()
             archive: f.archive.clone(),
             identity: f.identity_file.clone(),
             server_key: Some(f.key_file.clone()),
+            allow_unauthenticated: false,
         },
     )
     .await
@@ -210,6 +221,7 @@ async fn a_restore_refuses_a_data_folder_with_another_server_key() {
             archive: f.archive.clone(),
             identity: f.identity_file.clone(),
             server_key: Some(f.key_file.clone()),
+            allow_unauthenticated: false,
         },
     )
     .await
@@ -222,29 +234,6 @@ async fn a_restore_refuses_a_data_folder_with_another_server_key() {
     );
 }
 
-#[tokio::test]
-async fn a_restore_without_a_key_says_to_put_it_in_place() {
-    let f = fixture().await;
-    let target = config(&f.root.path().join("target"));
-
-    let report = restore(
-        &target,
-        &RestoreOptions {
-            archive: f.archive.clone(),
-            identity: f.identity_file.clone(),
-            server_key: None,
-        },
-    )
-    .await
-    .expect("the restore works");
-
-    assert!(!report.server_key_installed);
-    assert!(
-        report.notes.iter().any(|n| n.contains("server.key")),
-        "{:?}",
-        report.notes
-    );
-}
 
 /// The key files a restore puts down are readable by their owner only, whatever the umask and
 /// whatever mode the archive's copies had.
@@ -261,6 +250,7 @@ async fn a_restore_leaves_the_key_files_private() {
             archive: f.archive.clone(),
             identity: f.identity_file.clone(),
             server_key: Some(f.key_file.clone()),
+            allow_unauthenticated: false,
         },
     )
     .await
@@ -281,4 +271,117 @@ async fn a_restore_leaves_the_key_files_private() {
         }
     }
     assert!(checked >= 3, "the key files were restored: {checked}");
+}
+
+/// Options for a restore into `target` with the given key file.
+fn options(f: &Fixture, server_key: Option<&Path>, allow_unauthenticated: bool) -> RestoreOptions {
+    RestoreOptions {
+        archive: f.archive.clone(),
+        identity: f.identity_file.clone(),
+        server_key: server_key.map(Path::to_path_buf),
+        allow_unauthenticated,
+    }
+}
+
+#[tokio::test]
+async fn a_restore_without_a_key_is_refused_unless_told_to_take_the_archive_unchecked() {
+    let f = fixture().await;
+    let target = config(&f.root.path().join("target"));
+
+    // Nothing to check the archive's code with: refused, and nothing is changed.
+    let error = restore(&target, &options(&f, None, false))
+        .await
+        .expect_err("an unchecked archive is refused");
+    assert!(error.contains("server.key"), "{error}");
+    assert!(error.contains("--allow-unauthenticated"), "{error}");
+    assert!(error.contains("Nothing was changed"), "{error}");
+    assert!(!target.data_folder.join("db.sqlite3").exists());
+
+    // Told to, it restores, says it didn't check, and says to put the key in place.
+    let report = restore(&target, &options(&f, None, true))
+        .await
+        .expect("the restore works");
+    assert!(!report.server_key_installed);
+    assert!(
+        report.notes.iter().any(|n| n.contains("server.key")),
+        "{:?}",
+        report.notes
+    );
+    assert!(
+        report.notes.iter().any(|n| n.contains("NOT authenticated")),
+        "{:?}",
+        report.notes
+    );
+}
+
+#[tokio::test]
+async fn an_archive_made_with_another_server_key_is_refused() {
+    let f = fixture().await;
+    let target = config(&f.root.path().join("target"));
+    let other_key = f.root.path().join("other.key");
+    std::fs::write(&other_key, [9u8; 32]).expect("another key");
+
+    let error = restore(&target, &options(&f, Some(&other_key), false))
+        .await
+        .expect_err("the code doesn't match this key");
+    assert!(error.contains("manifest.mac"), "{error}");
+    assert!(error.contains("Nothing was changed"), "{error}");
+    // Neither the database nor the key was put in place.
+    assert!(!target.data_folder.join("db.sqlite3").exists());
+    assert!(!target.data_folder.join("server.key").exists());
+
+    // The drill refuses it as well.
+    let work = f.root.path().join("work");
+    let error = restore_check(&f.archive, &f.identity_file, &other_key, &work, false)
+        .await
+        .expect_err("the drill checks the code too");
+    assert!(error.contains("manifest.mac"), "{error}");
+}
+
+#[tokio::test]
+async fn an_archive_with_no_code_is_refused_unless_told_to_take_it_as_it_is() {
+    let f = fixture_with(false).await;
+    let target = config(&f.root.path().join("target"));
+
+    let error = restore(&target, &options(&f, Some(&f.key_file), false))
+        .await
+        .expect_err("no code");
+    assert!(error.contains("no manifest.mac"), "{error}");
+    assert!(!target.data_folder.join("server.key").exists());
+
+    let report = restore(&target, &options(&f, Some(&f.key_file), true))
+        .await
+        .expect("allowed");
+    assert!(report.server_key_installed);
+    assert!(
+        report.notes.iter().any(|n| n.contains("NOT authenticated")),
+        "{:?}",
+        report.notes
+    );
+
+    let work = f.root.path().join("work");
+    let drill = restore_check(&f.archive, &f.identity_file, &f.key_file, &work, true)
+        .await
+        .expect("the drill with the flag");
+    assert!(!drill.authenticated);
+}
+
+#[tokio::test]
+async fn an_archive_with_its_code_restores_with_the_key_and_the_drill_says_so() {
+    let f = fixture().await;
+    let work = f.root.path().join("work");
+    let drill = restore_check(&f.archive, &f.identity_file, &f.key_file, &work, false)
+        .await
+        .expect("the drill passes");
+    assert!(drill.authenticated);
+
+    let target = config(&f.root.path().join("target"));
+    let report = restore(&target, &options(&f, Some(&f.key_file), false))
+        .await
+        .expect("the restore works");
+    assert!(
+        report.notes.iter().all(|n| !n.contains("NOT authenticated")),
+        "{:?}",
+        report.notes
+    );
 }

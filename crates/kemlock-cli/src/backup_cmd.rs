@@ -2,8 +2,10 @@
 //!
 //! ```text
 //! kemlock-cli backup [--to <folder|s3://bucket/prefix>] [--recipient <age1...>]
-//! kemlock-cli restore <archive> --identity <file> [--server-key <file>] --yes
+//! kemlock-cli restore <archive> --identity <file> [--server-key <file>]
+//!                      [--allow-unauthenticated] --yes
 //! kemlock-cli restore --check <archive> --identity <file> --server-key <file> [--record]
+//!                      [--allow-unauthenticated]
 //! kemlock-cli restore --pre-migration <version> --yes
 //! ```
 //!
@@ -52,6 +54,9 @@ pub(crate) struct RestoreArgs {
     pub(crate) yes: bool,
     /// With `--check`: save the outcome in the server's database for the admin console.
     pub(crate) record: bool,
+    /// Takes an archive that carries no authentication code, or a wrong one, or can't be checked
+    /// for want of the server key: for archives made before they were authenticated.
+    pub(crate) allow_unauthenticated: bool,
 }
 
 fn value(
@@ -102,6 +107,7 @@ pub(crate) fn parse_restore(args: &[String]) -> Result<RestoreArgs, String> {
         server_key: None,
         yes: false,
         record: false,
+        allow_unauthenticated: false,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -116,6 +122,7 @@ pub(crate) fn parse_restore(args: &[String]) -> Result<RestoreArgs, String> {
             "--check" => check = true,
             "--yes" => parsed.yes = true,
             "--record" => parsed.record = true,
+            "--allow-unauthenticated" => parsed.allow_unauthenticated = true,
             other if other.starts_with("--") => {
                 return Err(format!("restore doesn't take {other:?}"));
             }
@@ -243,6 +250,7 @@ async fn run_restore(config: &Config, args: RestoreArgs) -> Result<(), (u8, Stri
                 &identity,
                 &server_key,
                 &config.data_folder,
+                args.allow_unauthenticated,
             )
             .await;
             if args.record {
@@ -279,6 +287,11 @@ async fn run_restore(config: &Config, args: RestoreArgs) -> Result<(), (u8, Stri
                     ""
                 }
             );
+            if report.authenticated {
+                println!("  the archive's authentication code matches the server key");
+            } else {
+                println!("  the archive was NOT authenticated (--allow-unauthenticated)");
+            }
             Ok(())
         }
         RestoreMode::Restore { archive } => {
@@ -296,6 +309,7 @@ async fn run_restore(config: &Config, args: RestoreArgs) -> Result<(), (u8, Stri
                     archive: PathBuf::from(&archive),
                     identity,
                     server_key: args.server_key.as_deref().map(PathBuf::from),
+                    allow_unauthenticated: args.allow_unauthenticated,
                 },
             )
             .await
@@ -381,6 +395,25 @@ mod tests {
                 version: "0.1.0".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn restore_takes_unauthenticated_archives_only_when_told_to() {
+        let plain =
+            parse_restore(&args(&["a.age", "--identity", "id.txt", "--yes"])).expect("a restore");
+        assert!(!plain.allow_unauthenticated);
+        let told = parse_restore(&args(&[
+            "a.age",
+            "--identity",
+            "id.txt",
+            "--allow-unauthenticated",
+            "--yes",
+        ]))
+        .expect("a restore");
+        assert!(told.allow_unauthenticated);
+        let drill = parse_restore(&args(&["--check", "a.age", "--allow-unauthenticated"]))
+            .expect("a drill");
+        assert!(drill.allow_unauthenticated);
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! The archive: a tar, compressed with zstd, encrypted to an age recipient.
 //!
 //! ```text
-//! manifest.json             row counts and file hashes (the last entry)
+//! manifest.json             row counts and file hashes
+//! manifest.mac              HMAC-SHA-256 of manifest.json's bytes, hex, under a key derived from
+//!                           server.key (the last entry; absent when no key was at hand)
 //! db/<table>.jsonl          the database as plain rows (kemlock-store-sql's snapshot)
 //! data/<name>               the data folder's files: the sealed key files, the TOML file's
 //!                           neighbours; never server.key and never the database file itself
@@ -13,12 +15,18 @@
 //! is never in one: a restore needs the operator to bring it, because it seals the OPAQUE server
 //! secret and the other secrets the server must read.
 //!
+//! The recipient is public, so it proves nothing about who wrote an archive: anyone who can write
+//! the backup destination can make one. `manifest.mac` is what ties an archive to the server that
+//! made it. Its key is HMAC-SHA-256(server.key, "kemlock/v1/backup-manifest-mac"), and the
+//! manifest it covers lists every file's SHA-256, so a restore that holds the matching
+//! `server.key` knows that nobody who lacks that key changed or made the archive.
+//!
 //! Everything here is blocking: call it from `spawn_blocking`.
 
 use crate::error::BackupError;
 use crate::manifest::{
-    Attachments, FileEntry, HashingReader, MANIFEST_FORMAT, MANIFEST_NAME, Manifest, TableEntry,
-    hash_bytes, hash_file,
+    Attachments, FileEntry, HashingReader, MAC_NAME, MANIFEST_FORMAT, MANIFEST_NAME, MacKey,
+    Manifest, TableEntry, hash_bytes, hash_file, manifest_mac,
 };
 use age::x25519::{Identity, Recipient};
 use kemlock_store_sql::Snapshot;
@@ -47,6 +55,9 @@ pub struct ArchiveSpec<'a> {
     pub attachments: Option<&'a Path>,
     pub config_file: Option<&'a Path>,
     pub recipient: &'a Recipient,
+    /// The key the manifest is authenticated with (see [`MacKey`]). `None` writes an archive
+    /// that a restore accepts only when the operator says to take it unauthenticated.
+    pub mac_key: Option<&'a MacKey>,
     /// zstd's level: 3 by default, 1 on a small machine.
     pub zstd_level: i32,
     pub created_at: OffsetDateTime,
@@ -326,7 +337,20 @@ pub fn write_archive(spec: &ArchiveSpec<'_>, out: &Path) -> Result<Manifest, Bac
             Attachments::External
         },
     };
-    append_bytes(&mut tar, MANIFEST_NAME, &manifest.to_json()?)?;
+    let manifest_json = manifest.to_json()?;
+    append_bytes(&mut tar, MANIFEST_NAME, &manifest_json)?;
+    // Right after the manifest, over its exact bytes: it lists every file's SHA-256, so the code
+    // authenticates the whole archive.
+    match spec.mac_key {
+        Some(key) => {
+            let code = manifest_mac(key, &manifest_json);
+            append_bytes(&mut tar, MAC_NAME, code.as_bytes())?;
+        }
+        None => tracing::warn!(
+            "writing a backup archive without an authentication code: no server key is \
+             available here, so a restore will refuse it unless told to take it as it is"
+        ),
+    }
 
     let compressed = tar
         .into_inner()
@@ -606,6 +630,8 @@ mod tests {
         }
     }
 
+    static TEST_MAC_KEY: MacKey = MacKey::new([7; 32]);
+
     fn spec<'a>(f: &'a Fixture, recipient: &'a Recipient, skip: &'a [PathBuf]) -> ArchiveSpec<'a> {
         ArchiveSpec {
             snapshot: &f.snapshot,
@@ -615,6 +641,7 @@ mod tests {
             attachments: Some(&f.attachments),
             config_file: Some(&f.config),
             recipient,
+            mac_key: Some(&TEST_MAC_KEY),
             zstd_level: 1,
             created_at: datetime!(2026-11-23 03:00 UTC),
         }
@@ -662,6 +689,28 @@ mod tests {
             b"blob bytes"
         );
         assert!(!unpacked.join("data/server.key").exists());
+        // The manifest's authentication code is there, and only this key makes it right.
+        crate::manifest::check_manifest_mac(&unpacked, &TEST_MAC_KEY).expect("authentic");
+        assert!(crate::manifest::check_manifest_mac(&unpacked, &MacKey::new([8; 32])).is_err());
+    }
+
+    #[test]
+    fn an_archive_written_without_a_key_has_no_code() {
+        let f = fixture();
+        let identity = Identity::generate();
+        let recipient = identity.to_public();
+        let skip = skip_list(&f);
+        let out = f._root.path().join("out.age");
+        let spec = ArchiveSpec {
+            mac_key: None,
+            ..spec(&f, &recipient, &skip)
+        };
+        write_archive(&spec, &out).expect("written");
+        let unpacked = f._root.path().join("unpacked");
+        read_archive(&out, &identity, &unpacked).expect("read");
+        assert!(!unpacked.join(MAC_NAME).exists());
+        let err = crate::manifest::check_manifest_mac(&unpacked, &TEST_MAC_KEY).expect_err("none");
+        assert!(matches!(err, BackupError::Unauthenticated(_)), "{err}");
     }
 
     #[cfg(unix)]

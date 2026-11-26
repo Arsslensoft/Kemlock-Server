@@ -412,6 +412,25 @@ the `tools` build target (`docker build --target tools`), run with `--entrypoint
 and `/data` mounted, and in the release archives. Until `kemlock-cli backup` ships, stop the container and
 copy the data folder (cold), or use the database's own dump for PostgreSQL and MySQL.
 
+A backup archive is age-encrypted to a public recipient, so the encryption says nobody else can read
+it, not who wrote it: anyone who can write to the backup destination can plant an archive. Each
+archive therefore carries `manifest.mac`, right after `manifest.json`: the hex HMAC-SHA-256 of the
+manifest's bytes, under a key derived from `server.key` (HMAC-SHA-256 of the label
+`kemlock/v1/backup-manifest-mac` under the server key). The manifest lists every file's SHA-256, so
+the code authenticates the whole archive. A restore (and the drill, `restore --check`) checks the
+code with the `server.key` it is given, with `--server-key` or the data folder's own, and refuses
+an archive whose code is missing or wrong, or that it has no key to check. For an archive you
+made yourself before archives carried a code, check it with the drill and restore it with
+`--allow-unauthenticated`; the restore then says in its notes that it did not authenticate the
+archive. A server with no `server.key` at hand writes archives with no code and logs a warning.
+
+A restore also limits what an archive can do. It refuses an archive that names `server.key` or a
+database file, and installs only the sealed secrets (`*.sealed`), `rsa_key.pem` and `config.json`
+from the data folder, and a `config/<name>.toml` (put beside an existing configuration file as
+`.from-backup`, never over it); it says what it skipped. Every file it writes is readable by its
+owner only. It unpacks at most 16 GiB for one file, 200 times the archive's own size in total
+(between 1 GiB and 4 TiB) and 2 million files.
+
 ## Verify what you downloaded
 
 Every image is signed with cosign's keyless flow by digest: a short-lived Fulcio certificate tied

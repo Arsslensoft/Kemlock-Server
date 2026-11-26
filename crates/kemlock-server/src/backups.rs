@@ -17,11 +17,11 @@ use crate::config::Config;
 use crate::live::{SettingsWatch, Snapshot};
 use kemlock_app::privacy::PrivacySettings;
 use kemlock_backup::{
-    BackupReport, BackupSettings, DataLayout, DestinationConfig, Kind, S3Destination, STATUS_KEY,
-    Schedule, Source, create_backup, status_json,
+    BackupReport, BackupSettings, DataLayout, DestinationConfig, Kind, MacKey, S3Destination,
+    STATUS_KEY, Schedule, Source, create_backup, status_json,
 };
 use kemlock_blob::{Backend, BlobConfig};
-use kemlock_crypto::rand;
+use kemlock_crypto::{hash, rand};
 use kemlock_store_sql::SqlStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -136,6 +136,27 @@ pub fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// The label the key of an archive's authentication code is derived under, from `server.key`.
+const MANIFEST_MAC_LABEL: &[u8] = b"kemlock/v1/backup-manifest-mac";
+
+/// The key an archive's manifest is authenticated with: HMAC-SHA-256 of
+/// [`MANIFEST_MAC_LABEL`] under the server key, the way the prelogin and DPoP-nonce secrets are
+/// derived from it (`app::derive_secrets`), with a label of its own so the key is good for nothing
+/// else.
+pub fn manifest_mac_key(server_key: &[u8; 32]) -> MacKey {
+    MacKey::new(hash::hmac_sha256(server_key, MANIFEST_MAC_LABEL))
+}
+
+/// This server's key as it is now: `KEMLOCK_SERVER_KEY` when set, else the data folder's
+/// `server.key`; `None` when there is neither (or it isn't a key). It is read, never made.
+pub fn existing_server_key(config: &Config) -> Option<[u8; 32]> {
+    if let Some(text) = &config.server_key {
+        return crate::keys::parse_server_key(text).ok();
+    }
+    let bytes = std::fs::read(config.data_folder.join(crate::keys::SERVER_KEY_FILE)).ok()?;
+    <[u8; 32]>::try_from(bytes).ok()
+}
+
 /// Where the server's files are: what goes into an archive besides the rows.
 pub fn layout(config: &Config) -> Result<DataLayout, String> {
     let blobs = BlobConfig::from_env(&config.data_folder).map_err(|e| e.to_string())?;
@@ -151,6 +172,7 @@ pub fn layout(config: &Config) -> Result<DataLayout, String> {
         attachments_folder,
         config_file: config.config_file.clone(),
         skip,
+        mac_key: existing_server_key(config).map(|key| manifest_mac_key(&key)),
     })
 }
 

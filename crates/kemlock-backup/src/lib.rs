@@ -33,4 +33,7 @@ pub use job::{
     PRE_MIGRATION_PREFIX, STATUS_KEY, Schedule, Source, archive_name, archive_time, create_backup,
     plan_prune, prune, status_json,
 };
-pub use manifest::{Attachments, FileEntry, MANIFEST_NAME, Manifest, TableEntry};
+pub use manifest::{
+    Attachments, FileEntry, MAC_NAME, MANIFEST_NAME, MacKey, Manifest, TableEntry,
+    check_manifest_mac, manifest_mac,
+};
