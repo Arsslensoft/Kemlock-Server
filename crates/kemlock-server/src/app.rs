@@ -475,8 +475,44 @@ async fn bind(config: &Config) -> Result<tokio::net::TcpListener, RunError> {
     }
 }
 
+/// Whether `domain` is a plain `http://` address that isn't on this machine. Kemlock serves plain
+/// HTTP only, so a public address needs a TLS proxy or tunnel in front; `localhost` and loopback
+/// addresses are the development setup and don't count.
+fn is_remote_plain_http(domain: &str) -> bool {
+    let domain = domain.trim();
+    let Some(prefix) = domain.get(.."http://".len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case("http://") {
+        return false;
+    }
+    let rest = &domain["http://".len()..];
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        Err(_) => true,
+    }
+}
+
 /// Runs the server until it is asked to stop.
 pub async fn run(config: Config) -> Result<(), RunError> {
+    if is_remote_plain_http(&config.domain) {
+        tracing::warn!(
+            domain = %config.domain,
+            "DOMAIN is a plain http:// address. Kemlock Server has no TLS of its own: put a TLS \
+             proxy or a tunnel in front of it, or sign-ins and vault data cross the network in \
+             the clear"
+        );
+    }
     if !config.ignored.is_empty() {
         tracing::warn!(
             settings = %config.ignored.join(", "),
@@ -585,6 +621,29 @@ mod tests {
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn a_plain_http_domain_off_this_machine_is_flagged() {
+        for remote in [
+            "http://vault.example.com",
+            "http://vault.example.com:8080/",
+            "HTTP://192.168.1.20:8080",
+            "http://[2001:db8::1]:8080",
+            "http://user@vault.example.com",
+        ] {
+            assert!(is_remote_plain_http(remote), "{remote}");
+        }
+        for fine in [
+            "https://vault.example.com",
+            "http://localhost:8080",
+            "http://app.localhost",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+            "",
+        ] {
+            assert!(!is_remote_plain_http(fine), "{fine}");
         }
     }
 

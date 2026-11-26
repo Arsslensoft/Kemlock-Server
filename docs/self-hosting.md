@@ -340,8 +340,10 @@ WebSocket through it. Kemlock serves the API, the web vault and both WebSocket r
   with `tailscale serve`, and nothing is open to the internet. A Cloudflare Tunnel needs no open
   port either, but Cloudflare then sees decrypted requests: vault data stays end-to-end encrypted
   and OPAQUE never sends the password, but a Compatible account's password hash passes through.
-- No proxy. Set `KEMLOCK_ACME_DOMAIN` and Kemlock gets and renews its own Let's Encrypt
-  certificate, kept in `/data/acme`.
+- No TLS of its own. Kemlock listens on plain HTTP only and gets no certificate itself, so put one
+  of the proxies above, or a tunnel, in front of any address that isn't on a network you trust.
+  A `DOMAIN` that starts with `http://` and isn't `localhost` or a loopback address makes the
+  server log a warning at start-up.
 - IPv6. Kemlock listens dual-stack on `[::]` by default. Rate limits count an IPv6 client by its
   /64.
 
