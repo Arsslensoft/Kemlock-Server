@@ -1,0 +1,50 @@
+// The warning for what the server serves of the vault against what this account's devices signed
+// (src/manifest): older copies of items, items that are gone and deleted items that came back,
+// or a signed list that is itself rolled back, forged or withheld. It shows nothing when all
+// is as signed.
+import { useSyncExternalStore } from 'react';
+import { type MessageId, useT } from '@/i18n';
+import { manifestKeeper } from '@/manifest/instance';
+import type { ManifestProblem, ManifestWarning } from '@/manifest/keeper';
+import { Notice } from '@/ui/Notice';
+
+const PROBLEM: Record<ManifestProblem, MessageId> = {
+  'rolled-back': 'manifest.notice.manifestRolledBack',
+  invalid: 'manifest.notice.manifestInvalid',
+  dropped: 'manifest.notice.manifestDropped',
+};
+
+/** The notice for a warning. Takes the warning, so it is shown and tested without the keeper. */
+export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
+  const t = useT();
+  if (warning.manifests.length === 0 && warning.items.length === 0) return null;
+  const count = (verdict: 'rolled-back' | 'missing' | 'resurrected') =>
+    warning.items.filter((item) => item.verdict === verdict).length;
+  const problems = [...new Set(warning.manifests.map((entry) => entry.problem))];
+  const rolledBack = count('rolled-back');
+  const missing = count('missing');
+  const resurrected = count('resurrected');
+  return (
+    <Notice tone="warn" live>
+      <p>
+        <b>{t('manifest.notice.title')}</b>
+      </p>
+      {problems.map((problem) => (
+        <p key={problem}>{t(PROBLEM[problem])}</p>
+      ))}
+      {rolledBack > 0 ? <p>{t('manifest.notice.rolledBack', { count: rolledBack })}</p> : null}
+      {missing > 0 ? <p>{t('manifest.notice.missing', { count: missing })}</p> : null}
+      {resurrected > 0 ? <p>{t('manifest.notice.resurrected', { count: resurrected })}</p> : null}
+      <p className="hint">{t('manifest.notice.hint')}</p>
+    </Notice>
+  );
+}
+
+export function ManifestNotice() {
+  const warning = useSyncExternalStore(
+    manifestKeeper.subscribe,
+    manifestKeeper.getWarning,
+    manifestKeeper.getWarning,
+  );
+  return <ManifestNoticeView warning={warning} />;
+}

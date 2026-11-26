@@ -11,6 +11,7 @@ import { LockBadge } from '@/ui/LockBadge';
 import { Notice } from '@/ui/Notice';
 import '@/styles/lists.css';
 import { useVault } from './hooks';
+import { ManifestNotice } from './ManifestNotice';
 import { RowCopy } from './ItemCopy';
 import { detailParts } from './itemDetails';
 import { type KeyFacts, useKeyFacts } from './keyFacts';
@@ -241,26 +242,29 @@ export default function Main() {
   const search = { q: q || undefined, fav };
 
   return (
-    <ItemListView
-      kind={kind}
-      vault={vault}
-      onVault={(next) => {
-        setVault(next);
-        // The new filter starts at the first page.
-        if (current > 1) void navigate({ to: '/vault', search: { kind, ...search } });
-      }}
-      vaults={vaults}
-      rows={rows}
-      total={filtered.length}
-      hasItems={active.length > 0}
-      page={current}
-      pages={pages}
-      onKind={(next) => void navigate({ to: '/vault', search: { kind: next, ...search } })}
-      onPage={(next) => void navigate({ to: '/vault', search: { kind, ...search, page: next } })}
-      facts={facts}
-      isLoading={isLoading}
-      error={error}
-      onRetry={() => void refetch()}
-    />
+    <>
+      <ManifestNotice />
+      <ItemListView
+        kind={kind}
+        vault={vault}
+        onVault={(next) => {
+          setVault(next);
+          // The new filter starts at the first page.
+          if (current > 1) void navigate({ to: '/vault', search: { kind, ...search } });
+        }}
+        vaults={vaults}
+        rows={rows}
+        total={filtered.length}
+        hasItems={active.length > 0}
+        page={current}
+        pages={pages}
+        onKind={(next) => void navigate({ to: '/vault', search: { kind: next, ...search } })}
+        onPage={(next) => void navigate({ to: '/vault', search: { kind, ...search, page: next } })}
+        facts={facts}
+        isLoading={isLoading}
+        error={error}
+        onRetry={() => void refetch()}
+      />
+    </>
   );
 }

@@ -740,6 +740,27 @@ manifest = "kemlock/v1/manifest" ‖ owner (17) ‖ u64be(counter) ‖ u32be(n)
 Entries are sorted by item id bytes. A tombstone's hash is 32 zero bytes. The writer signs it with
 `sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen.
 
+### How a client uses it
+
+- **Checking.** A client checks a manifest's signature before it relies on it: an account's own
+  (`user:`) with the `sig1` key of its own keys, never a bundle the server served; a space's with the
+  bundle of a signer the space vouches for ("Using the state", Manifest). It keeps, per owner, the
+  manifest of the highest counter it has verified and the ids it saw deleted, with the tombstone's
+  revision, for as long as the server keeps tombstones (180 days). It refuses a lower counter, another
+  manifest at the same counter, or none where it has seen one, and shows the person that it did.
+- **Comparing.** Against the manifest it holds, an item served at a lower revision than its entry is
+  *rolled back*; a live entry whose item is not served at all, not even as a tombstone, is *missing*
+  (only in an account's own vault: a member of a space is served just the collections they may read);
+  an id seen deleted that is served live at or below its tombstone's revision, or live where the
+  manifest lists it deleted, is *resurrected*. Each is shown to the person as a warning. An item newer
+  than its entry, or not listed, was written by a device that has not signed a manifest since (an app
+  that writes none, for one), and is accepted.
+- **Writing.** After its own writes a client signs the manifest it last accepted with each item it
+  was served at a higher revision taken in, at a counter one above the highest it knows (above the
+  server's `currentCounter` when it answers 409), and `PUT`s it. It never takes in an item served at
+  a lower revision, never drops an entry for an item the server did not serve, and never makes a
+  deleted entry live, so signing never makes a rollback, a hidden item or a resurrection permanent.
+
 ## Space chain
 
 Every change to who is in a space, their roles, the collections, groups and grants, the key
