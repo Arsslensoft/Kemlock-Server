@@ -38,6 +38,8 @@ pub mod context {
     pub const CONFIRM: &str = "confirm";
     /// A record of a space chain, signed by the member who made it.
     pub const SPACE_CHAIN: &str = "space-chain";
+    /// A signed item write, signed by the writing account.
+    pub const ITEM_WRITE: &str = "item-write";
 }
 
 /// A `sig1` public key.

@@ -12,12 +12,12 @@ use crate::{
     confirm::Statement,
     dedup, kem1,
     keys::{ITEM_WRAP_LABEL, MANIFEST_LABEL, PRIVATE_KEYS_LABEL, RootKey, SecretKey, USER_LABEL},
-    kma1, kx1, legacy_id,
+    item_write, kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
     opaque::{self, OpaqueServer},
     owner::Owner,
     password_wrap, prf_wrap, private_keys, rand, seal, sealed_box, send,
-    sig1::{self, context::BUNDLE, context::CONFIRM, context::MANIFEST},
+    sig1::{self, context::BUNDLE, context::CONFIRM, context::ITEM_WRITE, context::MANIFEST},
 };
 
 type G = RustCrypto;
@@ -59,6 +59,7 @@ pub(crate) fn all() -> Result<Vec<(&'static str, Value)>, Error> {
         ("private-keys", private_keys_doc()?),
         ("prf-wrap", prf_wrap_doc()?),
         ("confirm", confirm_doc()?),
+        ("item-write", item_write_doc()?),
         ("send", send_doc()?),
         ("space-names", space_names_doc()?),
         ("space-chain", super::space_chain::generate()?),
@@ -1187,6 +1188,129 @@ fn confirm_doc() -> Result<Value, Error> {
              member_bundle) as in bundle.json; signature = sig1 signature of the confirmer's own \
              key under context \"confirm\" over the statement (3373 bytes). The signature must \
              not verify under a wrong context or over any changed statement.",
+            cases,
+        ))
+    })
+}
+
+fn item_write_doc() -> Result<Value, Error> {
+    seeded("item-write", || {
+        let mut cases = Vec::new();
+        for (name, owner_is_space, deleted, revision, key_version, writer_key_version) in [
+            ("vault-live", false, false, 1u64, 1u32, 1u32),
+            ("space-live", true, false, 7, 3, 2),
+            ("space-tombstone", true, true, 8, 3, 2),
+            ("vault-tombstone", false, true, 2, 1, 1),
+        ] {
+            let owner_id: [u8; 16] = rnd()?;
+            let item_id: [u8; 16] = rnd()?;
+            let writer: [u8; 16] = rnd()?;
+            let ciphertext: [u8; 40] = rnd()?;
+            let item_key: [u8; 60] = rnd()?;
+            let writer_private: [u8; 64] = rnd()?;
+            let signing = sig1::SigningKey::from_bytes(&writer_private);
+            let writer_public = sig1::public_key_in::<G>(&signing)?;
+            let owner = if owner_is_space {
+                Owner::space(owner_id)
+            } else {
+                Owner::user(owner_id)
+            };
+            let sealed = (!deleted).then_some((ciphertext.as_slice(), item_key.as_slice()));
+            let envelope = item_write::envelope_hash(key_version, sealed)?;
+            let statement = item_write::Statement {
+                owner,
+                item_id,
+                kind: "login",
+                revision,
+                deleted,
+                envelope,
+                writer,
+                writer_key_version,
+            };
+            let bytes = statement.to_bytes()?;
+            let signature = sig1::sign_in::<G>(&signing, ITEM_WRITE, &bytes)?;
+            let stored = item_write::to_stored(&writer, writer_key_version, &signature)?;
+
+            // Statements that differ from the real one in one field: the signature covers none.
+            let mut other_item = item_id;
+            other_item[0] ^= 1;
+            let mut other_writer = writer;
+            other_writer[0] ^= 1;
+            let other_owner = if owner_is_space {
+                Owner::user(owner_id)
+            } else {
+                Owner::space(owner_id)
+            };
+            let mut other_envelope = envelope;
+            other_envelope[0] ^= 1;
+            let mut changed = vec![
+                ("another-owner", item_write::Statement { owner: other_owner, ..statement }),
+                ("another-item", item_write::Statement { item_id: other_item, ..statement }),
+                ("another-kind", item_write::Statement { kind: "note", ..statement }),
+                ("another-revision", item_write::Statement { revision: revision + 1, ..statement }),
+                ("another-writer", item_write::Statement { writer: other_writer, ..statement }),
+                (
+                    "another-key-version",
+                    item_write::Statement { writer_key_version: writer_key_version + 1, ..statement },
+                ),
+            ];
+            if deleted {
+                // A tombstone's hash can't be anything but zero, so it is the live flag that flips.
+                changed.push((
+                    "not-a-tombstone",
+                    item_write::Statement { deleted: false, ..statement },
+                ));
+            } else {
+                changed.push((
+                    "another-envelope",
+                    item_write::Statement { envelope: other_envelope, ..statement },
+                ));
+                changed.push((
+                    "a-tombstone",
+                    item_write::Statement { deleted: true, envelope: [0; 32], ..statement },
+                ));
+            }
+            let changed: Vec<Value> = changed
+                .into_iter()
+                .map(|(what, s)| json!({ "name": what, "statement": hx(&s.to_bytes().unwrap_or_default()) }))
+                .collect();
+
+            let mut case = json!({
+                "name": name,
+                "owner": hx(&owner.to_bytes()),
+                "item_id": hx(&item_id),
+                "kind": "login",
+                "revision": revision,
+                "replaces": revision - 1,
+                "deleted": deleted,
+                "key_version": key_version,
+                "envelope_hash": hx(&envelope),
+                "writer": hx(&writer),
+                "writer_key_version": writer_key_version,
+                "writer_private_key": hx(&writer_private),
+                "writer_public_key": hx(writer_public.as_bytes()),
+                "statement": hx(&bytes),
+                "signature": hx(&signature),
+                "stored": hx(&stored),
+                "wrong_contexts": [BUNDLE, MANIFEST, CONFIRM],
+                "changed_statements": changed,
+            });
+            if !deleted {
+                case["ciphertext"] = hx(&ciphertext);
+                case["item_key"] = hx(&item_key);
+            }
+            cases.push(case);
+        }
+        Ok(document(
+            "item-write",
+            "Signed item writes (docs/crypto.md): statement = \"kemlock/v1/item-write\" || owner \
+             (17) || item id (16) || lp(kind) || u64be(revision) || u64be(revision - 1) || \
+             u8(deleted) || envelope_hash (32) || writer id (16) || u32be(writer key version); \
+             envelope_hash = SHA-256(u32be(key_version) || lp(ciphertext) || lp(item_key)), or 32 \
+             zero bytes for a tombstone; signature = sig1 signature of the writer's own key under \
+             context \"item-write\" over the statement (3373 bytes); stored = writer id (16) || \
+             u32be(writer key version) || signature. The signature must not verify under a wrong \
+             context or over any changed statement.",
             cases,
         ))
     })
