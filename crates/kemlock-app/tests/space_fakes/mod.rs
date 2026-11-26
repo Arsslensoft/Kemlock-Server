@@ -923,6 +923,7 @@ impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
             let mut g = self.lock();
             for (item, collection) in stored.iter().zip(collections) {
                 g.item_collections.insert(item.id, collection);
+                release_written(&mut g, item, Some(collection));
             }
         }
         Ok(AppendOutcome::Appended(

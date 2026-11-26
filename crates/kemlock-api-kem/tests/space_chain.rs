@@ -1069,3 +1069,70 @@ async fn only_items_of_a_replaced_collection_are_rewritten_and_none_that_is_also
     let ok = sam.post(&uri(space), request(&[&keys])).await;
     assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
 }
+
+#[tokio::test]
+async fn a_chain_write_releases_an_item_an_earlier_replacement_held() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let id = made_item(&sam, space, collection).await;
+
+    // The first replacement holds the item, under version 1.
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["held"] = json!([id.to_string()]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert_eq!(held_ids(&rig, space).await, vec![ItemId(id)]);
+
+    // The next one re-writes it under version 3: it is live again.
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 3, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, id, 1, 3)]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    assert!(held_ids(&rig, space).await.is_empty());
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (2, 3));
+}
+
+#[tokio::test]
+async fn no_item_is_written_while_the_space_key_waits_to_be_replaced() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 2).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let invite = chain.invite(&sam.person, ana.person.id, Role::Member);
+    let confirm = chain.confirm(&sam.person, &ana.person);
+    let seal = chain.seal_space_key(&sam.person, &ana.person);
+    let remove = chain.remove(&sam.person, ana.person.id, vec![KeyRef::Space]);
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let id = made_item(&sam, space, collection).await;
+    let reply = sam.post(&uri(space), request(&[&remove])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // The space key is marked: a collection's key may be replaced, but no item is written (I1).
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, id, 1, 2)]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (1, 1));
+
+    // Nothing was appended: the record, naming the item held, is still the next one.
+    let mut body = request(&[&keys]);
+    body["held"] = json!([id.to_string()]);
+    let ok = sam.post(&uri(space), body).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
+}

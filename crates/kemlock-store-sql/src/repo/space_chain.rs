@@ -7,7 +7,7 @@
 //! `apply_in` every other space change goes through). Of two racing appends one wins; the other
 //! finds the head moved, or loses the unique key of `(space, seq)`, and is `Stale`.
 
-use super::items::write_in;
+use super::items::{release_written, write_in};
 use super::spaces::{apply_in, finish, link_item};
 use crate::error::StoreResult;
 use crate::store::SqlStore;
@@ -284,6 +284,9 @@ impl SpaceChainRepo for SqlStore {
                 let stored = write_in(&txn, self.origin(), drafts).await?;
                 for (item, collection) in stored.iter().zip(collections) {
                     link_item(&txn, item.id, space, collection).await?;
+                    // An item an earlier replacement held, written under the current key
+                    // version, is live again (I4), as any item write makes it.
+                    release_written(&txn, item, Some(collection)).await?;
                 }
             }
             let head = last.ok_or_else(|| bad("an append with no records"))?;

@@ -377,7 +377,7 @@ impl From<ChainReadError> for Problem {
 
 // ---- the use cases of one request ----
 
-fn append_use_case<S, P, K, R>(env: &Env<S, P, K, R>) -> AppendChain<R, S, S, P, S, S>
+fn append_use_case<S, P, K, R>(env: &Env<S, P, K, R>) -> AppendChain<R, S, S, P, S, S, crate::LiveHub>
 where
     S: Store,
     P: Crypto,
@@ -392,6 +392,7 @@ where
         items: env.api.store.clone(),
         tags: env.api.store.clone(),
         limits: env.api.auth_config().item_limits,
+        push: env.api.hub.clone(),
     }
 }
 

@@ -20,7 +20,7 @@ use super::ports::{SpaceItemInfo, SpaceRepo};
 use super::support::record;
 use crate::authenticate::Actor;
 use crate::dedup::TagStore;
-use crate::ports::{Clock, EventLog, ItemStore, StoreError, UserRepo};
+use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, UserRepo};
 use kemlock_crypto::space_chain::{
     self as sc, Body, ChainError, KeyRef, Limits, NameTarget, Reason, Record, SignedRecord,
 };
@@ -118,7 +118,7 @@ const CLOCK_SLACK: u64 = 600;
 
 /// Appends records to a space's chain.
 #[derive(Debug)]
-pub struct AppendChain<R, U, V, C, I, T> {
+pub struct AppendChain<R, U, V, C, I, T, N> {
     pub spaces: R,
     pub users: U,
     pub events: V,
@@ -128,9 +128,11 @@ pub struct AppendChain<R, U, V, C, I, T> {
     /// The duplicate cleaner's tags, which move to a new version with the space key.
     pub tags: T,
     pub limits: ItemLimits,
+    /// Tells devices that a replacement wrote items.
+    pub push: N,
 }
 
-impl<R, U, V, C, I, T> AppendChain<R, U, V, C, I, T>
+impl<R, U, V, C, I, T, N> AppendChain<R, U, V, C, I, T, N>
 where
     R: SpaceRepo + SpaceChainRepo,
     U: UserRepo,
@@ -138,6 +140,7 @@ where
     C: Clock,
     I: ItemStore,
     T: TagStore,
+    N: Notifier,
 {
     /// Appends `request`'s records, all or none, and returns the new head. A request is 1 to 16
     /// records, in order, all signed and sent by `actor`.
@@ -340,6 +343,8 @@ where
         let writes = self
             .writes(space, &accepted, &request, &state, actor.user, now)
             .await?;
+        // The items are written in order, so the last carries the newest change.
+        let newest = writes.last().map(|(draft, _)| draft.id);
 
         let holders = self.spaces.holders(space).await?;
         let changes = project(
@@ -419,6 +424,11 @@ where
                     now,
                 )
                 .await;
+                if let Some(id) = newest
+                    && let Ok(Some(item)) = self.items.get(id).await
+                {
+                    self.push.sync_now(Owner::Space(space), item.change).await;
+                }
                 Ok(new_head)
             }
             AppendOutcome::Stale(current) => Err(AppendError::Conflict(current)),
@@ -562,6 +572,12 @@ where
     ) -> Result<Vec<(ItemDraft, CollectionId)>, AppendError> {
         if request.writes.is_empty() {
             return Ok(Vec::new());
+        }
+        if state.space.marked {
+            // I1: while the space key is marked, no item is written.
+            return Err(AppendError::Invalid(
+                "the space key waits to be replaced: no item is written until a keys record does",
+            ));
         }
         let mut new_versions: BTreeMap<CollectionId, u32> = BTreeMap::new();
         for (rec, _, _) in accepted {
