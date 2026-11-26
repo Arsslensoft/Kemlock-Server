@@ -1217,8 +1217,8 @@ async fn user_api_key_login<S: BwStore>(
 /// `POST /api/two-factor/send-email-login`: checks who is asking, then has the mailer send the
 /// code. A password hash identifies the account, as in Vaultwarden. Anyone can call it, and it
 /// runs the server's password hash on every call, so it is limited like a sign-in: by the client
-/// address, and by account (the mails an account may ask for in a window, which also stops a
-/// stranger who knows the password from filling the owner's mailbox). An address with no account,
+/// address, and by account once the password is right (the mails an account may ask for in a
+/// window, which stops someone who has the password from filling the owner's mailbox). An address with no account,
 /// an account with no hash sent and a wrong hash get one answer, so the route can't be used to
 /// find out who has an account.
 pub(crate) async fn send_email_login<S: BwStore>(
@@ -1247,6 +1247,12 @@ pub(crate) async fn send_email_login<S: BwStore>(
     let (Some(user), Some(account), Some(hash)) = (user, account, password_hash) else {
         return Err(BwError::msg(BAD_LOGIN));
     };
+    if !check_valid_password(&account, hash) {
+        return Err(BwError::msg(BAD_LOGIN));
+    }
+    // Only a request that knows the password is counted, so a stranger can neither use the count
+    // to tell who has an account nor use up the owner's mails; the client address limit above is
+    // what stops guesses.
     let tries = BwTryRepo::count_try(
         &app.store,
         user.id,
@@ -1257,9 +1263,6 @@ pub(crate) async fn send_email_login<S: BwStore>(
     .await?;
     if tries > EMAIL_LOGIN_MAX_TRIES {
         return Err(too_many_logins());
-    }
-    if !check_valid_password(&account, hash) {
-        return Err(BwError::msg(BAD_LOGIN));
     }
     crate::two_step::steps(app)
         .email_send_login_code(&user)
