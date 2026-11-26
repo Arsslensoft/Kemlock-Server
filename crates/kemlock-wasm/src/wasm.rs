@@ -19,7 +19,7 @@ use zeroize::Zeroize;
 use crate::{
     b64,
     error::Error,
-    ids, kit, sends,
+    ids, kit, manifests, sends,
     session::{self, SealedItemRef, Session},
     sharing::{self, Facts},
     spaces::{NameKind, NewCollection},
@@ -782,8 +782,11 @@ impl Vault {
     }
 
     /// Opens the vault with an approved root key (from `openApprovedKey`). With
-    /// `sealed_private_keys` it opens the `kx1` and `sig1` private keys too. Consumes the handle
-    /// on success.
+    /// `sealed_private_keys` it opens the `kx1` and `sig1` private keys too. With `public_bundle`
+    /// (base64url, the account's bundle) it also requires those keys to be the bundle's, and
+    /// refuses to unlock otherwise: the page passes it whenever the root key came from an
+    /// approving device, which nothing on the new device authenticates. Consumes the handle on
+    /// success.
     #[wasm_bindgen(js_name = unlockWithRoot)]
     pub fn unlock_with_root(
         &mut self,
@@ -791,6 +794,7 @@ impl Vault {
         root_handle: u32,
         key_version: u32,
         sealed_private_keys: Option<String>,
+        public_bundle: Option<String>,
     ) -> Result<(), JsError> {
         let account = ids::parse_uuid(account_id).map_err(fail)?;
         let sealed = sealed_private_keys
@@ -798,8 +802,19 @@ impl Vault {
             .map(b64::decode)
             .transpose()
             .map_err(fail)?;
+        let bundle = public_bundle
+            .as_deref()
+            .map(b64::decode)
+            .transpose()
+            .map_err(fail)?;
         self.session
-            .unlock_with_root(&account, root_handle, key_version, sealed.as_deref())
+            .unlock_with_root(
+                &account,
+                root_handle,
+                key_version,
+                sealed.as_deref(),
+                bundle.as_deref(),
+            )
             .map_err(fail)
     }
 
@@ -1159,6 +1174,49 @@ impl Vault {
             .seal_collection_key_to(&space, &collection, &recipient, &recipient_id)
             .map_err(fail)?;
         Ok(b64::encode(&sealed))
+    }
+
+    /// A `sig1` signature (base64url, 3,373 bytes) of the unlocked account over a manifest
+    /// (base64url of its exact bytes, docs/crypto.md "Signed manifest"), under context
+    /// `"manifest"`. Only bytes that parse as a manifest of this account's own vault, or of a
+    /// space, are signed.
+    #[wasm_bindgen(js_name = manifestSign)]
+    pub fn manifest_sign(&self, manifest: &str) -> Result<String, JsError> {
+        let manifest = b64::decode(manifest).map_err(fail)?;
+        let signature = self.session.sign_manifest(&manifest).map_err(fail)?;
+        Ok(b64::encode(&signature))
+    }
+
+    /// Whether `signature` is the unlocked account's own `sig1` signature of `manifest`, which
+    /// must be of the account's own vault. The key is the account's own, never one the server
+    /// served. Anything malformed is simply `false`. A locked vault, or one opened without the
+    /// private keys, has no key to check with and gives no verdict at all: it throws `"locked"`,
+    /// so the page can tell "could not be verified" from "can not verify".
+    #[wasm_bindgen(js_name = manifestVerifyOwn)]
+    pub fn manifest_verify_own(&self, manifest: &str, signature: &str) -> Result<bool, JsError> {
+        let (Ok(manifest), Ok(signature)) = (b64::decode(manifest), b64::decode(signature)) else {
+            return Ok(false);
+        };
+        match self.session.verify_own_manifest(&manifest, &signature) {
+            Ok(()) => Ok(true),
+            Err(Error::Locked) => Err(fail(Error::Locked)),
+            Err(Error::Invalid) => Ok(false),
+        }
+    }
+
+    /// Whether `signature` is the `sig1` signature of the space manifest `manifest` under the key
+    /// in `signer_bundle` (the page has checked that bundle against the space's members). A
+    /// manifest of a person's vault is never accepted here. Anything malformed is `false`.
+    #[wasm_bindgen(js_name = manifestVerify)]
+    pub fn manifest_verify(&self, signer_bundle: &str, manifest: &str, signature: &str) -> bool {
+        let (Ok(bundle), Ok(manifest), Ok(signature)) = (
+            b64::decode(signer_bundle),
+            b64::decode(manifest),
+            b64::decode(signature),
+        ) else {
+            return false;
+        };
+        manifests::verify_space_manifest(&bundle, &manifest, &signature).is_ok()
     }
 
     /// Wipes every secret: all handles and the unlocked account.

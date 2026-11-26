@@ -5,6 +5,7 @@ import { createDevicesApi } from '@/api/devices';
 import { signOut } from '@/app/actions';
 import { api, configQuery, session } from '@/app/services';
 import { useSessionState } from '@/app/session';
+import { vaultCrypto } from '@/crypto-port';
 import { encodeB64 } from '@/lib/b64url';
 import { uuidBytes } from '@/sharing/bundle';
 import { sharingCrypto } from '@/sharing/crypto';
@@ -24,6 +25,14 @@ export default function Devices() {
     queryKey: ['devices', 'approvals'],
     queryFn: () => loadApprovals(devicesApi),
     refetchInterval: 10_000,
+  });
+  // Shown with each request, for the new device's fingerprint to be compared with. It needs the
+  // account's private keys, which this browser opened when it unlocked.
+  const fingerprint = useQuery({
+    queryKey: ['own-fingerprint'],
+    queryFn: () => vaultCrypto.ownFingerprint(),
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
   });
   const devices = useQuery({ queryKey: ['devices', 'list'], queryFn: () => devicesApi.devices() });
   const keyCopy = useQuery({ queryKey: ['devices', 'key-copy'], queryFn: () => devicesApi.keyCopy() });
@@ -46,6 +55,7 @@ export default function Devices() {
       addressFailed={config.isError}
       approvals={approvals.data}
       approvalsError={approvals.error ? describeAccountError(approvals.error) : undefined}
+      ownFingerprint={fingerprint.isError ? null : fingerprint.data}
       others={
         devices.data === undefined
           ? devices.isError

@@ -7,6 +7,8 @@ import { spaceDeps } from '@/features/spaces/deps';
 import { writableCollectionsKey } from '@/features/spaces/refresh';
 import { createSpaceKeyLoader, loadWritableCollections } from '@/features/spaces/keys';
 import { duplicatesViewStore } from '@/features/duplicates/viewState';
+import { manifestKeeper } from '@/manifest/instance';
+import { trackedApi } from '@/manifest/tracked';
 import { forgetKeyFacts } from './keyFacts';
 import { type KindCounts, countByKind } from './listFilters';
 import { vaultFilterStore } from './vaultFilter';
@@ -33,7 +35,14 @@ import {
 
 // Items of a space open once the worker holds the space's keys: the loader opens them on demand.
 const spaceKeys = createSpaceKeyLoader(spaceDeps);
-const deps: VaultDeps = { api, crypto: vaultCrypto, ensureSpaceKeys: spaceKeys.ensure };
+// The API the vault reads and writes through is watched by the manifest keeper (src/manifest): what
+// the server serves is checked against the signed manifest, and this browser's writes are signed in.
+const deps: VaultDeps = {
+  api: trackedApi(api, manifestKeeper),
+  crypto: vaultCrypto,
+  ensureSpaceKeys: spaceKeys.ensure,
+  served: (dto, opened) => manifestKeeper.served(dto, opened),
+};
 
 /** The files of items on this server: what a move or a copy sends again under another item, and what a download reads. */
 export const itemFiles = createItemFilesApi(api);
@@ -69,12 +78,16 @@ export const vaultKey = ['vault'] as const;
 
 export const vaultQuery = queryOptions({
   queryKey: vaultKey,
-  queryFn: () => {
+  queryFn: async () => {
     // Locking clears this query while the page is still mounted, so it asks again at once. With the
     // keys gone no item would open, and the unreadable ones would stay in the store at their
     // revision: the sync after the next unlock finds nothing new and never opens them.
     if (session.getState().status !== 'unlocked') throw new Error('the vault is locked');
-    return syncVault(deps, vaultStore);
+    const items = await syncVault(deps, vaultStore);
+    // The ledger now holds all the server serves: check it against the manifests, without waiting.
+    manifestKeeper.markComplete();
+    void manifestKeeper.verify();
+    return items;
   },
   staleTime: 15_000,
   refetchInterval: 30_000,
@@ -87,6 +100,7 @@ function publish(): void {
 /** Forgets the opened items (on lock and sign-out). */
 export function clearVault(): void {
   vaultStore.reset();
+  manifestKeeper.reset();
   spaceKeys.forget();
   forgetKeyFacts();
   // What the person had narrowed the lists to is theirs, not the next person's at this browser.

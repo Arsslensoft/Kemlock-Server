@@ -396,6 +396,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         root,
         options?.keyVersion ?? 1,
         options?.sealedPrivateKeys,
+        options?.publicBundle,
       );
     },
     async sealSpaceItem({ spaceId, collectionId, id, kind, revision, json }) {
@@ -415,6 +416,15 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         itemKey,
         toKeyVersion(keyVersion),
       );
+    },
+    async manifestSign(manifest) {
+      return (await current()).manifestSign(manifest);
+    },
+    async manifestVerifyOwn(manifest, signature) {
+      return (await current()).manifestVerifyOwn(manifest, signature);
+    },
+    async manifestVerify(signerBundle, manifest, signature) {
+      return (await current()).manifestVerify(signerBundle, manifest, signature);
     },
   };
 

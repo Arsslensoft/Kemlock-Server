@@ -1325,6 +1325,7 @@ fn a_new_device_opens_the_approved_root_key_for_its_own_request_only() {
             root,
             FIRST_KEY_VERSION,
             Some(&account.sealed_private_keys),
+            Some(&account.public_bundle),
         )
         .expect("unlock with the approved root key");
     assert!(device.is_unlocked());
@@ -1350,6 +1351,126 @@ fn a_new_device_opens_the_approved_root_key_for_its_own_request_only() {
     assert!(device.own_fingerprint().is_ok());
     // The root handle was consumed.
     assert!(device.root_slot(root).is_err());
+}
+
+#[wasm_bindgen_test]
+fn an_approved_root_key_opens_the_vault_only_with_the_accounts_own_keys() {
+    let account_id = [0x65u8; 16];
+    // Two accounts under one id: the real one, and the one a malicious server made up. Each has
+    // its own root key, sealed private keys and bundle.
+    let make = || {
+        let mut session = Session::new();
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        let account = session
+            .new_account(&account_id, master, export)
+            .expect("account");
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        session
+            .unlock(
+                &account_id,
+                &account.wrapped_root_key,
+                master,
+                export,
+                FIRST_KEY_VERSION,
+                Some(&account.sealed_private_keys),
+            )
+            .expect("unlock");
+        (session, account)
+    };
+    let (real_session, real) = make();
+    let (fake_session, fake) = make();
+    let real_root = real_session.export_root().expect("root");
+    let fake_root = fake_session.export_root().expect("root");
+
+    let mut device = Session::new();
+    let fake_handle = device.import_root(&fake_root[..]).expect("handle");
+    // The server's root key and sealed keys, against the real account's bundle: refused, nothing
+    // is unlocked, and the handle stays for the page to release.
+    assert!(
+        device
+            .unlock_with_root(
+                &account_id,
+                fake_handle,
+                FIRST_KEY_VERSION,
+                Some(&fake.sealed_private_keys),
+                Some(&real.public_bundle),
+            )
+            .is_err()
+    );
+    assert!(!device.is_unlocked());
+    assert!(device.root_slot(fake_handle).is_ok());
+
+    let real_handle = device.import_root(&real_root[..]).expect("handle");
+    // A bundle needs the private keys to be checked against it.
+    assert!(
+        device
+            .unlock_with_root(
+                &account_id,
+                real_handle,
+                FIRST_KEY_VERSION,
+                None,
+                Some(&real.public_bundle),
+            )
+            .is_err()
+    );
+    // A bundle with one half swapped for another account's keys, a bundle for another account,
+    // another key version, and bytes that are no bundle, are all refused.
+    let real_bundle = Bundle::from_bytes(&real.public_bundle).expect("bundle");
+    let fake_bundle = Bundle::from_bytes(&fake.public_bundle).expect("bundle");
+    let swapped_sig = Bundle {
+        sig1_public: fake_bundle.sig1_public.clone(),
+        ..real_bundle.clone()
+    };
+    let swapped_kx = Bundle {
+        kx1_public: fake_bundle.kx1_public.clone(),
+        ..real_bundle.clone()
+    };
+    let other_account = Bundle {
+        account_id: [0x66; 16],
+        ..real_bundle.clone()
+    };
+    let other_version = Bundle {
+        key_version: FIRST_KEY_VERSION + 1,
+        ..real_bundle.clone()
+    };
+    for bad in [
+        swapped_sig.to_bytes(),
+        swapped_kx.to_bytes(),
+        other_account.to_bytes(),
+        other_version.to_bytes(),
+        real.public_bundle[1..].to_vec(),
+    ] {
+        assert!(
+            device
+                .unlock_with_root(
+                    &account_id,
+                    real_handle,
+                    FIRST_KEY_VERSION,
+                    Some(&real.sealed_private_keys),
+                    Some(&bad),
+                )
+                .is_err()
+        );
+        assert!(!device.is_unlocked());
+    }
+
+    // The account's own keys and bundle open it.
+    device
+        .unlock_with_root(
+            &account_id,
+            real_handle,
+            FIRST_KEY_VERSION,
+            Some(&real.sealed_private_keys),
+            Some(&real.public_bundle),
+        )
+        .expect("the account's own bundle matches its keys");
+    assert!(device.is_unlocked());
+    assert_eq!(
+        device.own_fingerprint().expect("fingerprint"),
+        real.fingerprint
+    );
 }
 
 #[wasm_bindgen_test]
@@ -1513,6 +1634,7 @@ fn a_passkey_prf_wrap_opens_the_vault_on_another_device_and_only_for_its_own_inp
             root,
             key_version,
             Some(&account.sealed_private_keys),
+            None,
         )
         .expect("unlock with the PRF-opened root key");
     assert!(device.is_unlocked());
@@ -1546,6 +1668,7 @@ fn an_account_with_no_password_is_made_unlocked_and_opens_on_a_device_from_its_r
             handle,
             FIRST_KEY_VERSION,
             Some(&account.sealed_private_keys),
+            None,
         )
         .expect("unlock with the device's copy");
     let item = SealedItemRef {
@@ -1610,4 +1733,96 @@ fn the_root_key_is_sealed_to_a_spaces_recovery_key_under_its_aad() {
             Err(Error::Locked)
         );
     }
+}
+
+use crate::manifests::verify_space_manifest;
+use kemlock_crypto::manifest::{Entry, Manifest};
+
+fn manifest_bytes(owner: Owner, counter: u64) -> Vec<u8> {
+    Manifest {
+        owner,
+        counter,
+        entries: vec![
+            Entry::live([1; 16], 2, b"cipher one"),
+            Entry::tombstone([2; 16], 4),
+        ],
+    }
+    .to_bytes()
+    .expect("a manifest encodes")
+}
+
+#[wasm_bindgen_test]
+fn an_accounts_own_manifest_is_signed_and_checked_with_its_own_key() {
+    let account_id = [0x81u8; 16];
+    let (session, _) = open_account(account_id);
+    let own = manifest_bytes(Owner::user(account_id), 3);
+    let signature = session.sign_manifest(&own).expect("the account signs its manifest");
+    assert_eq!(signature.len(), 3373);
+    session
+        .verify_own_manifest(&own, &signature)
+        .expect("its own signature checks");
+
+    // One changed byte, a changed counter or another signature does not check.
+    let mut changed = own.clone();
+    changed[40] ^= 1;
+    assert!(session.verify_own_manifest(&changed, &signature).is_err());
+    let mut bad_signature = signature.clone();
+    bad_signature[10] ^= 1;
+    assert!(session.verify_own_manifest(&own, &bad_signature).is_err());
+
+    // Another person's signature does not check as this account's.
+    let (other, _) = open_account([0x82u8; 16]);
+    let theirs = other
+        .sign_manifest(&manifest_bytes(Owner::user(account_id), 3))
+        .expect_err("another account does not sign this account's manifest");
+    assert_eq!(theirs, Error::Invalid);
+    let (impostor, _) = open_account(account_id);
+    let forged = impostor.sign_manifest(&own).expect("a copy of the account signs");
+    assert!(
+        session.verify_own_manifest(&own, &forged).is_err(),
+        "a signature by other keys of the same id is not the account's"
+    );
+
+    // Only a manifest is signed, and only the account's own or a space's.
+    assert_eq!(session.sign_manifest(b"not a manifest"), Err(Error::Invalid));
+    assert_eq!(
+        session.sign_manifest(&manifest_bytes(Owner::user([0x83; 16]), 1)),
+        Err(Error::Invalid)
+    );
+    let space = manifest_bytes(Owner::space([0x84; 16]), 1);
+    let space_signature = session.sign_manifest(&space).expect("a member signs a space's");
+    // A space's manifest is not the account's own.
+    assert!(session.verify_own_manifest(&space, &space_signature).is_err());
+
+    // A vault opened without the private keys has no key to check with: no verdict, not "false".
+    let account = RootKey::generate();
+    let keyless = unlocked_with(&account, &account_id, FIRST_KEY_VERSION);
+    assert_eq!(keyless.verify_own_manifest(&own, &signature), Err(Error::Locked));
+
+    // A locked session signs and checks nothing.
+    let locked = Session::new();
+    assert_eq!(locked.sign_manifest(&own), Err(Error::Locked));
+    assert_eq!(locked.verify_own_manifest(&own, &signature), Err(Error::Locked));
+}
+
+#[wasm_bindgen_test]
+fn a_spaces_manifest_is_checked_against_its_signers_bundle_only() {
+    let space = Owner::space([0x85; 16]);
+    let (signer, signer_bundle) = open_account([0x86u8; 16]);
+    let (_, other_bundle) = open_account([0x87u8; 16]);
+    let manifest = manifest_bytes(space, 7);
+    let signature = signer.sign_manifest(&manifest).expect("a member signs");
+
+    verify_space_manifest(&signer_bundle.to_bytes(), &manifest, &signature)
+        .expect("the signer's bundle checks it");
+    assert!(verify_space_manifest(&other_bundle.to_bytes(), &manifest, &signature).is_err());
+    let mut changed = manifest.clone();
+    changed[44] ^= 1;
+    assert!(verify_space_manifest(&signer_bundle.to_bytes(), &changed, &signature).is_err());
+    assert!(verify_space_manifest(b"no bundle", &manifest, &signature).is_err());
+
+    // A person's own manifest is never taken as a space's, even under its signer's own bundle.
+    let own = manifest_bytes(Owner::user([0x86; 16]), 7);
+    let own_signature = signer.sign_manifest(&own).expect("signs its own");
+    assert!(verify_space_manifest(&signer_bundle.to_bytes(), &own, &own_signature).is_err());
 }

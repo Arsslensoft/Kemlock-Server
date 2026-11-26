@@ -414,6 +414,24 @@ phrase = the five words, lower case, joined by single spaces
   only and is never shown, or a server could substitute a key and send matching words to both
   screens.
 
+- **The keys the new device ends up with are checked.** The phrase shows the box went to the key the
+  new device made; nothing the new device holds shows that the root key inside is the account's, so a
+  server could seal a root key of its own to that key, with sealed private keys that open under it.
+  The new device therefore needs the account's bundle and sealed private keys, and opens its vault
+  only if the public halves of the `kx1` and `sig1` private keys it opens are exactly the bundle's,
+  for the account and key version it signed in with. It then shows the bundle's fingerprint
+  ("Public-key bundle and fingerprint") and treats the vault as open only after the person has typed
+  the last group of five digits as the approving device shows it (so "same" is not pressed blindly)
+  and confirmed. A mismatch, or no answer, locks the vault and ends the session. A server that
+  forged the bundle too is caught only by this comparison.
+- **What the approving device shows.** Every client that can approve (the Kemlock app, the browser
+  extension, the web vault) shows the fingerprint of its own account's bundle, worked out from its own
+  unlocked keys and never taken from the server, on a screen of its own that is reachable at any
+  time: at least on its devices screen, whether or not a request is pending, and not only inside the
+  request. The new device sends the person there after approval, when the request has gone from the
+  list, so a fingerprint shown only beside a pending request cannot be compared. An approving device
+  that cannot work the fingerprint out says so, and does not approve.
+
 `phrase.json` in test-vectors pins the digest, the five 13-bit groups, their indexes and the phrase
 for several keys, one of them with a group that wraps the list.
 
@@ -780,6 +798,34 @@ refuses a write whose counter is more than 2^32 above the one it stores for that
 no writer can set it near its limit and make every later write stale. A space's manifest may be
 written by any confirmed member with edit on a collection ("Using the state"), so this bound is what
 keeps one of them from freezing it.
+
+### How a client uses it
+
+- **Checking.** A client checks a manifest's signature before it relies on it: an account's own
+  (`user:`) with the `sig1` key of its own keys, never a bundle the server served; a space's with the
+  bundle of a signer the space vouches for ("Using the state", Manifest). It keeps, per owner, the
+  manifest of the highest counter it has verified and the ids it saw deleted, with the tombstone's
+  revision, for as long as the server keeps tombstones (180 days). It refuses a lower counter, another
+  manifest at the same counter, or none where it has seen one, and shows the person that it did.
+- **Comparing.** Against the manifest it holds, an item served at a lower revision than its entry is
+  *rolled back*; a live entry whose item is not served at all, not even as a tombstone, is *missing*
+  (a member of a space is sent every envelope of it, so this holds there too); an id seen deleted that
+  is served live at or below its tombstone's revision, or live where the manifest lists it deleted, is
+  *resurrected*; a tombstone the client did not write for an entry the manifest lists live is
+  *deleted* (another device may have deleted it, or the server is hiding it, and nothing tells
+  them apart); a revision more than 2^32 above the entry's is *implausible*. Each is shown to the
+  person as a warning. An item newer than its entry, or not listed, was written by a device that
+  has not signed a manifest since (an app that writes none, for one), and is accepted.
+- **Writing.** After its own writes, and only then, a client signs the manifest it last accepted
+  with items it was served taken in, at a counter one above the highest it knows (above the server's
+  `currentCounter` when it answers 409, unless that is 2^32 above its own), and `PUT`s it. It takes in
+  only live items whose envelope opened under its keys (the revision is sealed into the envelope, so
+  one the server made up cannot open) and tombstones it wrote itself, at a revision above the
+  entry's and not 2^32 above it. It never takes in an item served at a lower revision, never drops
+  an entry for an item the server did not serve, never makes a deleted entry live, and takes in
+  nothing for an id it flagged or saw deleted, so signing never makes a rollback, a hidden item
+  or a resurrection permanent. A tombstone that is neither served nor remembered as seen is dropped,
+  so the manifest does not outgrow the server's size limit.
 
 ## Space chain
 

@@ -22,6 +22,12 @@ export interface DevicesViewProps {
   addressFailed?: boolean;
   approvals: ApprovalRow[] | undefined;
   approvalsError?: Described | undefined;
+  /**
+   * This account's key fingerprint, shown beside each request so the person can compare it with
+   * the one the new device shows once it has opened its keys. null: this browser can't work it
+   * out; undefined: still loading.
+   */
+  ownFingerprint?: string | null | undefined;
   /** null: the server has no device list; undefined: still loading. */
   others: DeviceEntryDto[] | null | undefined;
   /** null: this device holds no key copy; undefined: still loading. */
@@ -179,6 +185,7 @@ export function DevicesView({
   addressFailed,
   approvals,
   approvalsError,
+  ownFingerprint,
   others,
   keyCopy,
   cryptoAvailable,
@@ -251,6 +258,22 @@ export function DevicesView({
         </Notice>
       ) : null}
 
+      {ownFingerprint !== undefined ? (
+        <section className="card" aria-labelledby="h-fp">
+          <div className="card-head">
+            <h2 id="h-fp">{t('devices.fingerprint.title')}</h2>
+          </div>
+          {ownFingerprint ? (
+            <p className="phrase">{ownFingerprint}</p>
+          ) : (
+            <Notice tone="warn">
+              <p>{t('devices.approval.noFingerprint')}</p>
+            </Notice>
+          )}
+          <p className="hint">{t('devices.fingerprint.hint')}</p>
+        </section>
+      ) : null}
+
       {(approvals ?? []).map((row) => (
         <section className="approval" key={row.id} aria-labelledby={`h-req-${row.id}`}>
           <div className="body">
@@ -282,7 +305,7 @@ export function DevicesView({
             </Button>
             <Button
               variant="primary"
-              isDisabled={busy || !row.phrase || !cryptoAvailable}
+              isDisabled={busy || !row.phrase || !cryptoAvailable || ownFingerprint === null}
               aria-label={t('devices.approval.approveFor', { name: row.deviceName })}
               onPress={() => onApprove(row)}
             >

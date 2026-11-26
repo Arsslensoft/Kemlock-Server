@@ -3,7 +3,7 @@
 // under the id, revision, kind and owner it was sealed with, like the real AAD), so the app's
 // logic is tested without WebAssembly.
 import type { CryptoPort } from '@/crypto-port';
-import { fromUtf8, utf8 } from '@/lib/b64url';
+import { encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
 
 const calls: string[] = [];
 
@@ -12,6 +12,8 @@ export const fakeCalls = calls;
 
 let locked = true;
 export const isFakeLocked = () => locked;
+/** The account the fake vault was opened for, for `ownFingerprint`. */
+let openedFor = '';
 
 /** The tabs that have a reload key, as IndexedDB would keep them: a test deletes one to age it out. */
 export const fakeTabKeys = new Set<string>();
@@ -58,6 +60,7 @@ export const crypto: CryptoPort = {
     calls.push('unlock');
     if (fromUtf8(wrappedRootKey) !== `wrapped:${accountId}`) throw new Error('wrong wrapped key');
     locked = false;
+    openedFor = accountId;
   },
   async sealItem({ id, owner, kind, revision, json }) {
     calls.push('sealItem');
@@ -239,6 +242,7 @@ export const crypto: CryptoPort = {
   async newSsoAccount(accountId) {
     calls.push('newSsoAccount');
     locked = false;
+    openedFor = accountId;
     return {
       publicBundle: utf8(`bundle:${accountId}`),
       bundleSignature: utf8('signature'),
@@ -285,10 +289,21 @@ export const crypto: CryptoPort = {
   async dpopReset() {
     calls.push('dpopReset');
   },
-  async unlockWithRoot(accountId, root) {
+  async unlockWithRoot(accountId, root, options) {
     calls.push('unlockWithRoot');
     if (fromUtf8(root) !== `root:${accountId}`) throw new Error("not this account's root key");
+    // Like the worker: with a bundle to check, the opened keys must be the bundle's, and the
+    // fake's bundles are `bundle:<account>`.
+    if (options?.publicBundle && fromUtf8(options.publicBundle) !== `bundle:${accountId}`) {
+      throw new Error("the keys are not the bundle's");
+    }
     locked = false;
+    openedFor = accountId;
+  },
+  async ownFingerprint() {
+    calls.push('ownFingerprint');
+    if (locked) throw new Error('the vault is locked');
+    return crypto.fingerprint(utf8(`bundle:${openedFor}`));
   },
   async sealSpaceItem({ spaceId, collectionId, id, kind, revision, json }) {
     calls.push('sealSpaceItem');
@@ -317,6 +332,25 @@ export const crypto: CryptoPort = {
       throw new Error('the item does not open under these details');
     }
     return json;
+  },
+  // The signed manifest. A signature names its signer and the manifest's bytes, so a test sees
+  // that it checks only under the key that made it and only for those bytes; the fake's bundles
+  // are `bundle:<account>`.
+  async manifestSign(manifest) {
+    calls.push('manifestSign');
+    if (locked) throw new Error('the vault is locked');
+    return utf8(`msig:${openedFor}:${encodeB64(manifest)}`);
+  },
+  async manifestVerifyOwn(manifest, signature) {
+    calls.push('manifestVerifyOwn');
+    // Like the worker: with no keys to check with there is no verdict, not a "no".
+    if (locked) throw new Error('the vault is locked');
+    return fromUtf8(signature) === `msig:${openedFor}:${encodeB64(manifest)}`;
+  },
+  async manifestVerify(signerBundle, manifest, signature) {
+    calls.push('manifestVerify');
+    const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
+    return signer !== undefined && fromUtf8(signature) === `msig:${signer}:${encodeB64(manifest)}`;
   },
 };
 
@@ -361,6 +395,7 @@ export function resetFakeCrypto(): void {
   calls.length = 0;
   locked = true;
   fakeTabKeys.clear();
+  openedFor = '';
   sendKeys.count = 0;
   deviceKeys.count = 0;
   deviceKeys.spent.clear();

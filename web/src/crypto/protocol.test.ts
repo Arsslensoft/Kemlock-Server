@@ -94,6 +94,9 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     unlockWithRoot: vi.fn(),
     sealSpaceItem: vi.fn(() => JSON.stringify({ ciphertext: 'c2k', itemKey: 'a2s', keyVersion: 2 })),
     openSpaceItem: vi.fn(() => '{"name":"vpn"}'),
+    manifestSign: vi.fn(() => 'c2lnbmF0dXJl'),
+    manifestVerifyOwn: vi.fn(() => true),
+    manifestVerify: vi.fn(() => true),
     lock: vi.fn(),
     free: vi.fn(),
     ...overrides,
@@ -464,7 +467,7 @@ describe('the dispatcher', () => {
     expect(root).toBe(33);
     expect(vault.prfOpenRoot).toHaveBeenCalledWith('cHJm', 'Y3JlZA', UUID, 3, 'd3JhcA');
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 3 }]);
-    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined);
+    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined, undefined);
   });
 
   it('makes a Recovery Kit in the worker and opens its wrap with pieces into a handle', async () => {
@@ -501,9 +504,16 @@ describe('the dispatcher', () => {
     expect(vault.openApprovedKey).toHaveBeenCalledWith(31, UUID, UUID, 'c2VhbGVk');
 
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 4, sealedPrivateKeys: 'c2s' }]);
-    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 32, 4, 'c2s');
+    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 32, 4, 'c2s', undefined);
     await dispatch('unlockWithRoot', [UUID, root]);
-    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 1, undefined);
+    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 1, undefined, undefined);
+    // The bundle the new device must check the opened keys against goes through as it is.
+    await dispatch('unlockWithRoot', [
+      UUID,
+      root,
+      { keyVersion: 4, sealedPrivateKeys: 'c2s', publicBundle: 'YnVuZGxl' },
+    ]);
+    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 4, 'c2s', 'YnVuZGxl');
   });
 
   it('answers a box that does not open with invalid and nothing else', async () => {
@@ -541,6 +551,17 @@ describe('the dispatcher', () => {
     ]);
     expect(json).toBe('{"name":"vpn"}');
     expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2);
+  });
+
+  it('signs and checks manifests in the module, with the manifest and signature as they are', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('manifestSign', ['bWFuaWZlc3Q'])).toBe('c2lnbmF0dXJl');
+    expect(vault.manifestSign).toHaveBeenCalledWith('bWFuaWZlc3Q');
+    expect(await dispatch('manifestVerifyOwn', ['bWFuaWZlc3Q', 'c2ln'])).toBe(true);
+    expect(vault.manifestVerifyOwn).toHaveBeenCalledWith('bWFuaWZlc3Q', 'c2ln');
+    expect(await dispatch('manifestVerify', ['YnVuZGxl', 'bWFuaWZlc3Q', 'c2ln'])).toBe(true);
+    expect(vault.manifestVerify).toHaveBeenCalledWith('YnVuZGxl', 'bWFuaWZlc3Q', 'c2ln');
   });
 
   it('refuses a revision or collection key version the module cannot take', async () => {

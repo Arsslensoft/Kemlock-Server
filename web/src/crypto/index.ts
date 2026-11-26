@@ -162,6 +162,10 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     unlockWithRoot: (accountId, root, options) => call('unlockWithRoot', [accountId, root, options]),
     sealSpaceItem: (input) => call('sealSpaceItem', [input]),
     openSpaceItem: (input) => call('openSpaceItem', [input]),
+    manifestSign: (manifest) => call('manifestSign', [manifest]),
+    manifestVerifyOwn: (manifest, signature) => call('manifestVerifyOwn', [manifest, signature]),
+    manifestVerify: (signerBundle, manifest, signature) =>
+      call('manifestVerify', [signerBundle, manifest, signature]),
   };
 }
 

@@ -91,7 +91,7 @@ mod tests {
     fn unlocking_with_an_unknown_root_handle_is_refused() {
         let mut session = Session::new();
         assert_eq!(
-            session.unlock_with_root(&[1; 16], 9, 1, None),
+            session.unlock_with_root(&[1; 16], 9, 1, None, None),
             Err(Error::Invalid)
         );
         assert!(!session.is_unlocked());

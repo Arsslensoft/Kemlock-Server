@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalPollResponse, ApprovalRequestBody } from '@/api/devices';
 import type { AccountKeysResponse, TokenResponse } from '@/api/types';
 import { createSession } from '@/app/session';
+import { CryptoError } from '@/crypto/types';
 import { approvalPhrase } from '@/lib/approvalPhrase';
 import { decodeB64, encodeB64, utf8 } from '@/lib/b64url';
 import { crypto, fakeApprovalBox, fakeCalls, isFakeLocked, resetFakeCrypto } from '@/test/fake-crypto';
@@ -32,6 +33,10 @@ interface Script {
   /** Overrides the phrase the server reports. */
   serverPhrase?: string;
   userId?: string;
+  /** The account's bundle as the server serves it; the fake's own is `bundle:<account>`. */
+  publicBundle?: string;
+  /** What the sealed private keys are, as served; empty for none. */
+  sealedPrivateKeys?: string;
 }
 
 const pending = (): ApprovalPollResponse => ({ status: 'pending', expiresAt: 'later', sealedKey: null });
@@ -72,21 +77,23 @@ function setup(script: Script) {
         keyVersion: 3,
         kdf: { memoryKib: 1, iterations: 1, parallelism: 1, salt: '' },
         wrappedRootKey: '',
-        publicBundle: '',
+        publicBundle: script.publicBundle ?? encodeB64(utf8(`bundle:${ACCOUNT}`)),
         bundleSignature: '',
-        sealedPrivateKeys: encodeB64(utf8('sealed')),
+        sealedPrivateKeys: script.sealedPrivateKeys ?? encodeB64(utf8('sealed')),
       }),
     ),
   };
+  const confirmFingerprint = vi.fn(async (_fingerprint: string, _signal: AbortSignal) => true);
   const deps: DeviceApprovalDeps = {
     approval,
     api,
     crypto,
+    confirmFingerprint,
     session,
     device: () => ({ name: 'Web vault', kind: 'kemlock-web' }),
     wait: async () => undefined,
   };
-  return { deps, approval, api, session, publicKey: () => publicKey };
+  return { deps, approval, api, session, confirmFingerprint, publicKey: () => publicKey };
 }
 
 describe('signInWithAnotherDevice', () => {
@@ -122,11 +129,76 @@ describe('signInWithAnotherDevice', () => {
       'openApprovedKey',
       'unlockWithRoot',
     ]);
+    // The person was asked to compare the fingerprint of the keys now in use before the vault counted as open.
+    expect(seen).toContainEqual({ step: 'compare', fingerprint: await crypto.fingerprint(utf8(`bundle:${ACCOUNT}`)) });
+    expect(run.confirmFingerprint).toHaveBeenCalledOnce();
     expect(run.approval.challenge).toHaveBeenCalledWith(REQUEST);
     expect(run.approval.verify).toHaveBeenCalledWith('chal');
     expect(run.session.getState()).toMatchObject({ status: 'unlocked', userId: ACCOUNT });
     expect(run.session.tokenStore.get()?.access).toBe('access');
     expect(isFakeLocked()).toBe(false);
+  });
+
+  it('keeps the vault shut while the person compares the fingerprints, and opens it on a match', async () => {
+    const run = setup({ polls: [approvedFor()] });
+    let statusWhileComparing = '';
+    run.confirmFingerprint.mockImplementation(async () => {
+      statusWhileComparing = run.session.getState().status;
+      return true;
+    });
+    const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
+    expect(outcome.status).toBe('signed-in');
+    expect(statusWhileComparing).toBe('locked');
+    expect(run.session.getState().status).toBe('unlocked');
+  });
+
+  it('locks the worker and ends the session when the person says the fingerprints differ', async () => {
+    const run = setup({ polls: [approvedFor()] });
+    run.confirmFingerprint.mockResolvedValue(false);
+    const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.any(ApprovalRefused) });
+    expect(outcome.status === 'failed' && (outcome.error as ApprovalRefused).reason).toBe('fingerprint');
+    expect(isFakeLocked()).toBe(true);
+    expect(fakeCalls).toContain('lock');
+    expect(run.session.getState().status).toBe('signed-out');
+    expect(run.session.tokenStore.get()).toBeUndefined();
+  });
+
+  it("refuses keys that are not the bundle's the server serves, and asks nobody to compare", async () => {
+    // The root key opens (a server sealed its own), but its private keys are not the bundle's.
+    const run = setup({ polls: [approvedFor()], publicBundle: encodeB64(utf8('bundle:somebody-else')) });
+    const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
+    // The person is told the keys were not the account's, not handed a generic failure.
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.any(ApprovalRefused) });
+    expect(outcome.status === 'failed' && (outcome.error as ApprovalRefused).reason).toBe('keys');
+    expect(run.confirmFingerprint).not.toHaveBeenCalled();
+    expect(isFakeLocked()).toBe(true);
+    expect(run.session.getState().status).toBe('signed-out');
+  });
+
+  it("does not call a worker that is not there a forgery", async () => {
+    const run = setup({ polls: [approvedFor()] });
+    run.deps.crypto = {
+      ...crypto,
+      unlockWithRoot: async () => {
+        throw new CryptoError('unavailable');
+      },
+    };
+    const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.any(CryptoError) });
+    expect(run.session.getState().status).toBe('signed-out');
+  });
+
+  it.each([
+    ['no bundle', { publicBundle: '' }],
+    ['no sealed private keys', { sealedPrivateKeys: '' }],
+  ])('refuses an account served with %s, since nothing then ties the root key to the account', async (_name, served) => {
+    const run = setup({ polls: [approvedFor()], ...served });
+    const outcome = await signInWithAnotherDevice(run.deps, 'sam@example.co', () => undefined, new AbortController().signal);
+    expect(outcome).toMatchObject({ status: 'failed', error: expect.any(ApprovalRefused) });
+    expect(fakeCalls).not.toContain('unlockWithRoot');
+    expect(isFakeLocked()).toBe(true);
+    expect(run.session.getState().status).toBe('signed-out');
   });
 
   it('seals to the account and request the approved poll names: another request is refused', async () => {
