@@ -131,8 +131,8 @@ function setup(options: { spaceSigner?: (space: string, signer: string) => Promi
       clock += ms;
     },
     /** A first sync: what the server serves, then the check. */
-    async sync(items: ItemDto[], force = true) {
-      await keeper.observe(items);
+    async sync(items: ItemDto[], force = true, opened = true) {
+      for (const dto of items) keeper.served(dto, opened);
       keeper.markComplete();
       await keeper.verify(force);
     },
@@ -256,8 +256,8 @@ describe('checking what the server serves against the manifest', () => {
     const run = setup();
     const heard = vi.fn();
     run.keeper.subscribe(heard);
-    await run.keeper.observe([item(A, 3), tombstone(B, 5)]);
-    await run.keeper.observe([item(A, 2), item(B, 4)]);
+    for (const dto of [item(A, 3), tombstone(B, 5), item(A, 2), item(B, 4)]) run.keeper.served(dto, true);
+    await run.keeper.settled();
     expect(heard).toHaveBeenCalled();
     expect(run.keeper.getWarning().items.map(({ id, verdict }) => [id, verdict])).toEqual([
       [A, 'rolled-back'],
@@ -406,27 +406,95 @@ describe('signing the next manifest after this browser writes', () => {
     expect(run.stored.get(OWN)?.counter).toBe(10);
   });
 
-  it('brings a manifest up to date after a sync that found items it does not list', async () => {
+  it("never signs by itself after a sync, however much it found the manifest lacked", async () => {
     const run = setup();
     run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 1)] }));
     await run.sync([item(A, 1), item(B, 2)]);
-    expect(run.timers).toHaveLength(1);
+    expect(run.timers).toHaveLength(0);
+    await run.keeper.flush();
+    expect(run.api.put).not.toHaveBeenCalled();
+    // Only a write of this browser's own does, and it takes the other item in with it.
+    await run.keeper.wrote([item(C, 1)]);
     await run.keeper.flush();
     expect(putBody(run.api).manifest?.counter).toBe(4);
-    expect(putBody(run.api).manifest?.entries.map((entry) => entry.id)).toEqual([A, B]);
-
-    // Up to date now: the next check plans nothing.
-    run.timers.length = 0;
-    await run.keeper.verify(true);
-    expect(run.timers).toHaveLength(0);
+    expect(putBody(run.api).manifest?.entries.map((entry) => entry.id)).toEqual([A, B, C]);
   });
 
-  it('does not bring a manifest up to date while the server is doing something wrong', async () => {
+  it("takes in only items whose envelope opened, so junk at a huge revision is not signed", async () => {
     const run = setup();
-    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 3)] }));
-    await run.sync([item(A, 1), item(B, 1)]);
-    expect(run.keeper.getWarning().items).toHaveLength(1);
-    expect(run.timers).toHaveLength(0);
+    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 1)] }));
+    run.keeper.served(item(A, 1), true);
+    run.keeper.served(item(B, 9_000_000_000), false);
+    run.keeper.served(item(C, 2), true);
+    run.keeper.markComplete();
+    await run.keeper.verify(true);
+    await run.keeper.wrote([item('44444444-4444-4444-8444-444444444444', 1)]);
+    await run.keeper.flush();
+    const ids = putBody(run.api).manifest?.entries.map((entry) => entry.id);
+    expect(ids).toEqual([A, C, '44444444-4444-4444-8444-444444444444']);
+  });
+
+  it("flags a tombstone the server served for an item the manifest lists live, and never signs it in", async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 2), await listed(B, 1)] }));
+    // A fake deletion one revision above the entry, which looks like any other device's.
+    await run.sync([tombstone(A, 3), item(B, 1)]);
+    expect(run.keeper.getWarning().items.map(({ id, verdict }) => [id, verdict])).toEqual([[A, 'deleted']]);
+    await run.keeper.wrote([item(C, 1)]);
+    await run.keeper.flush();
+    const entries = putBody(run.api).manifest?.entries ?? [];
+    expect(entries.find((entry) => entry.id === A)).toEqual(await listed(A, 2));
+  });
+
+  it("signs in a deletion this browser wrote, and does not flag it", async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 2)] }));
+    await run.sync([item(A, 2)]);
+    await run.keeper.wrote([tombstone(A, 3)]);
+    await run.keeper.flush();
+    expect(putBody(run.api).manifest?.entries).toEqual([tomb(A, 3)]);
+    // The server serves that tombstone back on the next sync; the manifest now lists it.
+    await run.sync([tombstone(A, 3)]);
+    expect(run.keeper.getWarning()).toBe(NO_WARNING);
+  });
+
+  it("does not sign in a tombstone for an item it never saw, which only bloats the manifest", async () => {
+    const run = setup();
+    await run.sync([tombstone(A, 7)]);
+    await run.keeper.wrote([item(B, 1)]);
+    await run.keeper.flush();
+    expect(putBody(run.api).manifest?.entries.map((entry) => entry.id)).toEqual([B]);
+  });
+
+  it("flags a revision no run of writes could have reached, and does not sign it", async () => {
+    const run = setup();
+    run.stored.set(OWN, served({ owner: OWN, counter: 3, entries: [await listed(A, 2)] }));
+    await run.sync([tombstone(A, 2 ** 33)]);
+    expect(run.keeper.getWarning().items.map(({ id, verdict }) => [id, verdict])).toEqual([[A, 'implausible']]);
+    await run.keeper.wrote([item(C, 1)]);
+    await run.keeper.flush();
+    expect(putBody(run.api).manifest?.entries.find((entry) => entry.id === A)).toEqual(await listed(A, 2));
+  });
+
+  it("does not let the person's own write sign in a resurrection", async () => {
+    const run = setup();
+    // This browser saw A deleted at revision 4; the manifest has since dropped the tombstone.
+    await run.records.put(`${ACCOUNT}|${OWN}`, {
+      manifest: encodeB64(encodeManifest({ owner: OWN, counter: 5, entries: [await listed(B, 1)] })),
+      counter: 5,
+      deleted: { [A]: { revision: 4, seenAt: 1_000_000 } },
+    });
+    run.stored.set(OWN, served({ owner: OWN, counter: 5, entries: [await listed(B, 1)] }));
+    // The server serves A live again at revision 3, and the person edits it, writing revision 4.
+    await run.sync([item(A, 3), item(B, 1)]);
+    expect(run.keeper.getWarning().items.map(({ id, verdict }) => [id, verdict])).toEqual([[A, 'resurrected']]);
+    await run.keeper.wrote([item(A, 4)]);
+    await run.keeper.flush();
+    expect(run.api.put).not.toHaveBeenCalled();
+    // And an unrelated write does not take it in either.
+    await run.keeper.wrote([item(C, 1)]);
+    await run.keeper.flush();
+    expect(putBody(run.api).manifest?.entries.map((entry) => entry.id)).toEqual([B, C]);
   });
 
   it('signs nothing when there is nothing new', async () => {

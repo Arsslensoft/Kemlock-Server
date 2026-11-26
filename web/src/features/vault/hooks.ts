@@ -41,6 +41,7 @@ const deps: VaultDeps = {
   api: trackedApi(api, manifestKeeper),
   crypto: vaultCrypto,
   ensureSpaceKeys: spaceKeys.ensure,
+  served: (dto, opened) => manifestKeeper.served(dto, opened),
 };
 
 /** The files of items on this server: what a move or a copy sends again under another item, and what a download reads. */

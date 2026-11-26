@@ -21,6 +21,8 @@ describe('ManifestNoticeView', () => {
         { owner: OWN, id: `${ID}x`, verdict: 'rolled-back', revision: 1, manifestRevision: 2 },
         { owner: OWN, id: 'b', verdict: 'missing', manifestRevision: 2 },
         { owner: OWN, id: 'c', verdict: 'resurrected', revision: 3 },
+        { owner: OWN, id: 'd', verdict: 'deleted', revision: 4, manifestRevision: 3 },
+        { owner: OWN, id: 'e', verdict: 'implausible', revision: 9e9, manifestRevision: 3 },
       ],
     };
     renderWithIntl(<ManifestNoticeView warning={warning} />);
@@ -28,6 +30,8 @@ describe('ManifestNoticeView', () => {
     expect(screen.getByText('2 items are older than your devices last saw them.')).toBeInTheDocument();
     expect(screen.getByText('1 item your devices saw is missing.')).toBeInTheDocument();
     expect(screen.getByText('1 deleted item came back.')).toBeInTheDocument();
+    expect(screen.getByText(/1 item was deleted by another device or by the server/)).toBeInTheDocument();
+    expect(screen.getByText('1 item has a revision it could not have reached.')).toBeInTheDocument();
     expect(screen.getByText(/tell your administrator/)).toBeInTheDocument();
   });
 

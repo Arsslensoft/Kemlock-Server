@@ -18,12 +18,14 @@ const PROBLEM: Record<ManifestProblem, MessageId> = {
 export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
   const t = useT();
   if (warning.manifests.length === 0 && warning.items.length === 0) return null;
-  const count = (verdict: 'rolled-back' | 'missing' | 'resurrected') =>
+  const count = (verdict: ManifestWarning['items'][number]['verdict']) =>
     warning.items.filter((item) => item.verdict === verdict).length;
   const problems = [...new Set(warning.manifests.map((entry) => entry.problem))];
   const rolledBack = count('rolled-back');
   const missing = count('missing');
   const resurrected = count('resurrected');
+  const deleted = count('deleted');
+  const implausible = count('implausible');
   return (
     <Notice tone="warn" live>
       <p>
@@ -35,6 +37,8 @@ export function ManifestNoticeView({ warning }: { warning: ManifestWarning }) {
       {rolledBack > 0 ? <p>{t('manifest.notice.rolledBack', { count: rolledBack })}</p> : null}
       {missing > 0 ? <p>{t('manifest.notice.missing', { count: missing })}</p> : null}
       {resurrected > 0 ? <p>{t('manifest.notice.resurrected', { count: resurrected })}</p> : null}
+      {deleted > 0 ? <p>{t('manifest.notice.deleted', { count: deleted })}</p> : null}
+      {implausible > 0 ? <p>{t('manifest.notice.implausible', { count: implausible })}</p> : null}
       <p className="hint">{t('manifest.notice.hint')}</p>
     </Notice>
   );

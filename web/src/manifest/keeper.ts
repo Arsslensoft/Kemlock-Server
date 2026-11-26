@@ -4,17 +4,18 @@
 // What it does, for the account's own vault and for each space the account's items come from:
 //
 //   - keeps a ledger of what the server served of each item: its revision and the hash of its
-//     ciphertext, tombstones included (`observe`, from every sync page; `wrote`, from this
-//     browser's own writes);
+//     ciphertext, tombstones included (`served`, from the vault as it takes in each sync page,
+//     with whether the envelope opened; `wrote`, from this browser's own writes);
 //   - after a sync (`verify`), fetches the owner's manifest, checks its signature (the account's
 //     own sig1 key for its own vault; the signer's bundle for a space, through `spaceSigner`) and
 //     its counter against the highest this browser has seen (`records`), and sorts the ledger
 //     against it (compare.ts). A lower counter, a manifest that doesn't verify or one that has
 //     gone missing, items older than their entry, missing items and deleted items that came back
 //     are reported in `getWarning()`;
-//   - after this browser's own writes (`wrote`), signs and `PUT`s the next manifest: the last one
-//     accepted, with each item served at a higher revision taken in, at a counter one above the
-//     highest known. Nothing is taken from a lower revision, so a rollback is never signed in.
+//   - after this browser's own writes (`wrote`), and only then, signs and `PUT`s the next manifest:
+//     the last one accepted, with each opened item served at a higher revision taken in, at a
+//     counter one above the highest known (compare.ts, `mergeEntries`, says what is never taken
+//     in: a rollback, a hidden item, a tombstone the server made, a resurrection, anything flagged).
 //
 // The manifest is a floor, not a list the server must match exactly: other apps write items too,
 // and what they write is newer than, or absent from, the last manifest, which is accepted.
@@ -88,12 +89,15 @@ function defaultSchedule(run: () => void, ms: number): () => void {
 const isOwnVault = (owner: string): boolean => owner.startsWith('user:');
 
 /** What the server served of an item, or null for one that is not a kem1 item this can vouch for. */
-async function servedOf(dto: ItemDto): Promise<Served | null> {
+async function servedOf(dto: ItemDto, opened: boolean, own: boolean): Promise<Served | null> {
   if (dto.format !== 'kem1') return null;
-  if (dto.deleted) return { revision: dto.revision, hash: TOMBSTONE_HASH, deleted: true };
+  if (dto.deleted) {
+    return { revision: dto.revision, hash: TOMBSTONE_HASH, deleted: true, opened: false, own };
+  }
   if (!dto.ciphertext) return null;
   try {
-    return { revision: dto.revision, hash: await ciphertextHash(decodeB64(dto.ciphertext)), deleted: false };
+    const hash = await ciphertextHash(decodeB64(dto.ciphertext));
+    return { revision: dto.revision, hash, deleted: false, opened: opened || own, own };
   } catch {
     return null;
   }
@@ -141,6 +145,8 @@ export function createManifestKeeper(deps: KeeperDeps) {
   let warning: ManifestWarning = NO_WARNING;
   let cancelTimer: (() => void) | undefined;
   let queue: Promise<void> = Promise.resolve();
+  /** Ledger updates, in the order the server served them; hashing runs ahead of it, in parallel. */
+  let ledgerTail: Promise<void> = Promise.resolve();
   const listeners = new Set<() => void>();
 
   function setWarning(next: ManifestWarning): void {
@@ -264,19 +270,6 @@ export function createManifestKeeper(deps: KeeperDeps) {
     }
     if (mine !== epoch) return;
     results.set(owner, { ...(checked.problem ? { problem: checked.problem } : {}), findings });
-    // The manifest has fallen behind what this browser was served (items another app wrote, or a
-    // write whose manifest did not get through): bring it up to date, unless the server is
-    // doing something that deserves a look first.
-    if (isOwnVault(owner) && !checked.problem && findings.length === 0) {
-      const entries = mergeEntries(checked.accepted?.entries ?? [], ledger);
-      const behind = checked.accepted
-        ? !sameEntries(entries, checked.accepted.entries)
-        : entries.length > 0;
-      if (behind) {
-        pending.add(owner);
-        planPublish();
-      }
-    }
   }
 
   async function runVerify(): Promise<void> {
@@ -306,7 +299,14 @@ export function createManifestKeeper(deps: KeeperDeps) {
       const ledger = ledgers.get(owner);
       if (!ledger) return;
       const base = checked.accepted;
-      const entries = mergeEntries(base?.entries ?? [], ledger);
+      // What the check flags, and what this device saw deleted, is not signed in: a write of the
+      // person's own must not make a rollback, a hidden item or a resurrection permanent.
+      const deleted = recordDeleted(checked.record?.deleted ?? {}, base, ledger, now());
+      const skip = new Set<string>(
+        (base ? compareLedger(base, deleted, ledger, isOwnVault(owner)) : []).map((finding) => finding.id),
+      );
+      for (const anomaly of anomalies.values()) if (anomaly.owner === owner) skip.add(anomaly.id);
+      const entries = mergeEntries(base?.entries ?? [], ledger, deleted, skip);
       if (base ? sameEntries(entries, base.entries) : entries.length === 0) return;
       const counter = Math.max(checked.floor, above) + 1;
       const next: Manifest = { owner, counter, entries };
@@ -327,7 +327,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
       await deps.records.put(checked.key, {
         manifest: encodeB64(bytes),
         counter,
-        deleted: recordDeleted(checked.record?.deleted ?? {}, next, ledger, now()),
+        deleted: recordDeleted(deleted, next, ledger, now()),
       });
       return;
     }
@@ -352,8 +352,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
         try {
           await publish(owner, account, mine);
         } catch {
-          // Not allowed, locked, or no network: the next sync finds the manifest behind and
-          // brings it up to date (the account's own vault), or the next write does.
+          // Not allowed, locked, or no network: the next write signs it again.
         }
         if (mine !== epoch) return;
       }
@@ -365,6 +364,7 @@ export function createManifestKeeper(deps: KeeperDeps) {
     reset(): void {
       epoch += 1;
       ledgers = new Map();
+      ledgerTail = Promise.resolve();
       anomalies.clear();
       results.clear();
       pending.clear();
@@ -377,12 +377,18 @@ export function createManifestKeeper(deps: KeeperDeps) {
       setWarning(NO_WARNING);
     },
 
-    /** Takes in what the server served: one sync page. Anything served lower than before is flagged. */
-    async observe(items: ItemDto[]): Promise<void> {
+    /**
+     * Takes in an item the server served in a sync, as the vault takes it in (`opened`: its
+     * envelope opened). Hashing starts at once and runs in parallel; the ledger is updated in the
+     * order the items were served. Anything served lower than before is flagged. A tombstone is
+     * recorded as served, but never signed in for an item this browser did not delete.
+     */
+    served(dto: ItemDto, opened: boolean): void {
       const mine = epoch;
-      for (const dto of items) {
-        const served = await servedOf(dto);
-        if (!served || mine !== epoch) continue;
+      const hashing = servedOf(dto, opened, false);
+      ledgerTail = ledgerTail.then(async () => {
+        const served = await hashing;
+        if (!served || mine !== epoch) return;
         const ledger = ledgerOf(dto.owner);
         const have = ledger.get(dto.id);
         if (have) {
@@ -398,28 +404,36 @@ export function createManifestKeeper(deps: KeeperDeps) {
             });
             publishWarning();
           }
-          if (served.revision <= have.revision) continue;
+          if (served.revision <= have.revision) return;
         }
         ledger.set(dto.id, served);
         dirty = true;
-      }
+      });
     },
 
     /** Takes in what this browser just wrote, and plans the manifest that lists it. */
-    async wrote(items: ItemDto[]): Promise<void> {
+    wrote(items: ItemDto[]): Promise<void> {
       const mine = epoch;
-      for (const dto of items) {
-        const served = await servedOf(dto);
-        if (!served || mine !== epoch) continue;
-        const ledger = ledgerOf(dto.owner);
-        const have = ledger.get(dto.id);
-        if (have && have.revision > served.revision) continue;
-        ledger.set(dto.id, served);
-        pending.add(dto.owner);
-        dirty = true;
-      }
-      if (pending.size > 0) planPublish();
+      const hashing = items.map((dto) => servedOf(dto, true, true));
+      ledgerTail = ledgerTail.then(async () => {
+        const all = await Promise.all(hashing);
+        items.forEach((dto, index) => {
+          const served = all[index];
+          if (!served || mine !== epoch) return;
+          const ledger = ledgerOf(dto.owner);
+          const have = ledger.get(dto.id);
+          if (have && have.revision > served.revision) return;
+          ledger.set(dto.id, served);
+          pending.add(dto.owner);
+          dirty = true;
+        });
+        if (pending.size > 0 && mine === epoch) planPublish();
+      });
+      return ledgerTail;
     },
+
+    /** Resolves once every item told to `served` and `wrote` so far is in the ledger. */
+    settled: (): Promise<void> => ledgerTail,
 
     /** The ledger now holds everything the server serves: a check can say what is missing. */
     markComplete(): void {
@@ -433,7 +447,10 @@ export function createManifestKeeper(deps: KeeperDeps) {
     verify(force = false): Promise<void> {
       if (!complete) return Promise.resolve();
       if (!force && !dirty && now() - lastVerify < VERIFY_EVERY_MS) return Promise.resolve();
-      return serially(runVerify).catch(() => undefined);
+      return serially(async () => {
+        await ledgerTail;
+        await runVerify();
+      }).catch(() => undefined);
     },
 
     flush,

@@ -757,16 +757,23 @@ Entries are sorted by item id bytes. A tombstone's hash is 32 zero bytes. The wr
   manifest at the same counter, or none where it has seen one, and shows the person that it did.
 - **Comparing.** Against the manifest it holds, an item served at a lower revision than its entry is
   *rolled back*; a live entry whose item is not served at all, not even as a tombstone, is *missing*
-  (only in an account's own vault: a member of a space is served just the collections they may read);
-  an id seen deleted that is served live at or below its tombstone's revision, or live where the
-  manifest lists it deleted, is *resurrected*. Each is shown to the person as a warning. An item newer
-  than its entry, or not listed, was written by a device that has not signed a manifest since (an app
-  that writes none, for one), and is accepted.
-- **Writing.** After its own writes a client signs the manifest it last accepted with each item it
-  was served at a higher revision taken in, at a counter one above the highest it knows (above the
-  server's `currentCounter` when it answers 409), and `PUT`s it. It never takes in an item served at
-  a lower revision, never drops an entry for an item the server did not serve, and never makes a
-  deleted entry live, so signing never makes a rollback, a hidden item or a resurrection permanent.
+  (a member of a space is sent every envelope of it, so this holds there too); an id seen deleted that
+  is served live at or below its tombstone's revision, or live where the manifest lists it deleted, is
+  *resurrected*; a tombstone the client did not write for an entry the manifest lists live is
+  *deleted* (another device may have deleted it, or the server is hiding it, and nothing tells
+  them apart); a revision more than 2^32 above the entry's is *implausible*. Each is shown to the
+  person as a warning. An item newer than its entry, or not listed, was written by a device that
+  has not signed a manifest since (an app that writes none, for one), and is accepted.
+- **Writing.** After its own writes, and only then, a client signs the manifest it last accepted
+  with items it was served taken in, at a counter one above the highest it knows (above the server's
+  `currentCounter` when it answers 409, unless that is 2^32 above its own), and `PUT`s it. It takes in
+  only live items whose envelope opened under its keys (the revision is sealed into the envelope, so
+  one the server made up cannot open) and tombstones it wrote itself, at a revision above the
+  entry's and not 2^32 above it. It never takes in an item served at a lower revision, never drops
+  an entry for an item the server did not serve, never makes a deleted entry live, and takes in
+  nothing for an id it flagged or saw deleted, so signing never makes a rollback, a hidden item
+  or a resurrection permanent. A tombstone that is neither served nor remembered as seen is dropped,
+  so the manifest does not outgrow the server's size limit.
 
 ## Space chain
 

@@ -17,12 +17,13 @@ const H1 = '01'.repeat(32);
 const H2 = '02'.repeat(32);
 const OWNER = 'user:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
-const live = (revision: number, hash = H1) => ({ revision, hash, deleted: false });
-const gone = (revision: number) => ({ revision, hash: TOMBSTONE_HASH, deleted: true });
+const live = (revision: number, hash = H1, own = false, opened = true) => ({ revision, hash, deleted: false, opened, own });
+const gone = (revision: number, own = false) => ({ revision, hash: TOMBSTONE_HASH, deleted: true, opened: false, own });
 const entry = (id: string, revision: number, hash = H1) => ({ id, revision, hash, deleted: false });
 const tomb = (id: string, revision: number) => ({ id, revision, hash: TOMBSTONE_HASH, deleted: true });
 const manifest = (entries: Manifest['entries']): Manifest => ({ owner: OWNER, counter: 4, entries });
 const ledger = (items: Record<string, ReturnType<typeof live>>): Ledger => new Map(Object.entries(items));
+const NONE = new Set<string>();
 
 describe('compareLedger', () => {
   it('has nothing to say about items that match, are newer than their entry, or are not listed', () => {
@@ -87,6 +88,25 @@ describe('compareLedger', () => {
   });
 });
 
+describe('compareLedger, for what the server could be making up', () => {
+  it('flags a tombstone this browser did not write for an item the manifest lists live', () => {
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3) }), true)).toEqual([
+      { id: A, verdict: 'deleted', revision: 3, manifestRevision: 2 },
+    ]);
+    // Its own deletion is no warning, and neither is a tombstone for an entry already deleted.
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(3, true) }), true)).toEqual([]);
+    expect(compareLedger(manifest([tomb(A, 2)]), {}, ledger({ [A]: gone(3) }), true)).toEqual([]);
+  });
+
+  it('flags a revision more than 2^32 above the entry's, but not one of this browser's own', () => {
+    const far = 2 + 2 ** 32 + 1;
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far) }), true)[0]?.verdict).toBe('implausible');
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: gone(far) }), true)[0]?.verdict).toBe('implausible');
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(far, H1, true) }), true)).toEqual([]);
+    expect(compareLedger(manifest([entry(A, 2)]), {}, ledger({ [A]: live(2 + 2 ** 32) }), true)).toEqual([]);
+  });
+});
+
 describe('recordDeleted', () => {
   it('records the tombstones of the manifest and of what was served, at the highest revision, first seen once', () => {
     const first = recordDeleted({}, manifest([tomb(A, 3), entry(B, 1)]), ledger({ [C]: gone(2) }), 100);
@@ -106,9 +126,53 @@ describe('recordDeleted', () => {
   });
 });
 
+describe('mergeEntries, for what must not be signed', () => {
+  it('takes in only live items that opened, or that this browser wrote', () => {
+    const merged = mergeEntries(
+      [entry(A, 1)],
+      ledger({ [A]: live(2, H2, false, false), [B]: live(1, H2, false, false), [C]: live(1, H2, true, false) }),
+      {},
+      NONE,
+    );
+    expect(merged).toEqual(expect.arrayContaining([entry(A, 1), entry(C, 1, H2)]));
+    expect(merged).toHaveLength(2);
+  });
+
+  it('takes in a tombstone only for this browser's own deletion or an entry already deleted', () => {
+    const base = [entry(A, 2), tomb(B, 2)];
+    const merged = mergeEntries(base, ledger({ [A]: gone(3), [B]: gone(4), [C]: gone(5) }), {}, NONE);
+    expect(merged).toEqual(expect.arrayContaining([entry(A, 2), tomb(B, 4)]));
+    expect(merged).toHaveLength(2);
+    expect(mergeEntries(base, ledger({ [A]: gone(3, true) }), {}, NONE)).toEqual(
+      expect.arrayContaining([tomb(A, 3)]),
+    );
+  });
+
+  it('skips what was flagged and what this device saw deleted, even when its own write is the newest', () => {
+    const base = [entry(A, 2)];
+    const served = ledger({ [A]: live(3, H2, true), [B]: live(4, H2, true), [C]: live(1, H2, true) });
+    const merged = mergeEntries(base, served, { [B]: { revision: 3, seenAt: 1 } }, new Set([A]));
+    expect(merged).toEqual([entry(A, 2), entry(C, 1, H2)]);
+    // A signed undelete above the tombstone this device saw is the one way through.
+    expect(mergeEntries([entry(B, 5)], ledger({ [B]: live(6, H2, true) }), { [B]: { revision: 3, seenAt: 1 } }, NONE)).toEqual([
+      entry(B, 6, H2),
+    ]);
+  });
+
+  it('refuses a revision more than 2^32 above the entry's that is not its own', () => {
+    expect(mergeEntries([entry(A, 2)], ledger({ [A]: live(3 + 2 ** 32, H2) }), {}, NONE)).toEqual([entry(A, 2)]);
+  });
+
+  it('drops a tombstone that is no longer served and no longer remembered, and keeps the others', () => {
+    const base = [tomb(A, 2), tomb(B, 2), tomb(C, 2)];
+    const merged = mergeEntries(base, ledger({ [B]: gone(2) }), { [C]: { revision: 2, seenAt: 1 } }, NONE);
+    expect(merged.map((e) => e.id).sort()).toEqual([B, C]);
+  });
+});
+
 describe('mergeEntries', () => {
   it('takes in what was served at a higher revision and what the manifest does not list', () => {
-    const merged = mergeEntries([entry(A, 1), tomb(B, 2)], ledger({ [A]: live(2, H2), [C]: gone(3) }));
+    const merged = mergeEntries([entry(A, 1), tomb(B, 2)], ledger({ [A]: live(2, H2), [C]: gone(3, true) }), { [B]: { revision: 2, seenAt: 1 } }, NONE);
     expect(merged).toEqual(
       expect.arrayContaining([entry(A, 2, H2), tomb(B, 2), tomb(C, 3)]),
     );
@@ -118,13 +182,13 @@ describe('mergeEntries', () => {
   it('never signs in a rollback, a hidden item or a resurrection', () => {
     const base = [entry(A, 3), entry(B, 2), tomb(C, 4)];
     // A is served lower, B is not served, C is served live above its tombstone.
-    const merged = mergeEntries(base, ledger({ [A]: live(1, H2), [C]: live(6, H2) }));
+    const merged = mergeEntries(base, ledger({ [A]: live(1, H2), [C]: live(6, H2) }), {}, NONE);
     expect(sameEntries(merged, base)).toBe(true);
   });
 
   it('is the same list when nothing changed, in any order', () => {
     const base = [entry(A, 3), entry(B, 2)];
-    expect(sameEntries(mergeEntries(base, ledger({ [A]: live(3), [B]: live(2) })), [...base].reverse())).toBe(true);
+    expect(sameEntries(mergeEntries(base, ledger({ [A]: live(3), [B]: live(2) }), {}, NONE), [...base].reverse())).toBe(true);
     expect(sameEntries(base, [entry(A, 3), entry(B, 2, H2)])).toBe(false);
     expect(sameEntries(base, [entry(A, 3)])).toBe(false);
   });

@@ -31,6 +31,12 @@ export interface VaultItem {
   collectionId?: string;
   /** null when the worker couldn't open it (a different key, or a kind this app can't read). */
   data: ItemData | null;
+  /**
+   * Whether the envelope opened: the worker decrypted it under the item's own id, revision, kind
+   * and owner, which no one without the key can make. `data` is null for an envelope that opened
+   * to something that is not an object, too. Absent on an item this browser just wrote.
+   */
+  opened?: boolean;
   /** Sizes of what the server holds, for the "What the server holds" card. */
   sizes: { ciphertext: number; itemKey: number };
 }
@@ -83,6 +89,12 @@ export interface VaultDeps {
    * an item of a space does not open for want of them; absent when keys are not available.
    */
   ensureSpaceKeys?: (spaceId: string) => Promise<void>;
+  /**
+   * Told of every item the server serves in a sync, as the vault takes it in: `opened` says
+   * whether its envelope opened. The manifest keeper (src/manifest) is what listens. It must
+   * return at once: it is called for every item of a page.
+   */
+  served?: (dto: ItemDto, opened: boolean) => void;
   now?: () => Date;
   newId?: () => string;
 }
@@ -171,6 +183,7 @@ export async function openDto(
   const ciphertext = decodeB64(dto.ciphertext);
   const itemKey = decodeB64(dto.itemKey);
   let data: ItemData | null = null;
+  let opened = false;
   try {
     let json: string;
     try {
@@ -182,6 +195,7 @@ export async function openDto(
       await ensureSpaceKeys(space);
       json = await openJson(crypto, dto, ciphertext, itemKey);
     }
+    opened = true;
     const parsed: unknown = JSON.parse(json);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed as ItemData;
   } catch {
@@ -195,18 +209,26 @@ export async function openDto(
     keyVersion: dto.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),
     data,
+    opened,
     sizes: { ciphertext: ciphertext.length, itemKey: itemKey.length },
   };
 }
 
 async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<void> {
   const current = store.items.get(dto.id);
-  if (current && current.revision >= dto.revision) return;
+  if (current && current.revision >= dto.revision) {
+    // Not taken in, but the keeper still wants to know what the server served: an older copy is
+    // exactly what it watches for.
+    deps.served?.(dto, false);
+    return;
+  }
   if (dto.deleted) {
     store.items.delete(dto.id);
+    deps.served?.(dto, false);
     return;
   }
   const item = await openDto(deps.crypto, dto, deps.ensureSpaceKeys);
+  deps.served?.(dto, item?.opened === true);
   if (item) store.items.set(item.id, item);
 }
 

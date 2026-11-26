@@ -24,30 +24,27 @@ function setup() {
   };
   const keeper = {
     reset: vi.fn(),
-    observe: vi.fn(async () => undefined),
     wrote: vi.fn(async () => undefined),
   };
   return { api, keeper, tracked: trackedApi(api as unknown as VaultApi, keeper) };
 }
 
 describe('trackedApi', () => {
-  it('starts the keeper over with a sync from scratch, and tells it every page served', async () => {
+  it('starts the keeper over with a sync from scratch, and hands the page back as it is', async () => {
     const run = setup();
     const result = await run.tracked.sync(undefined, 500);
     expect(result).toEqual({ notModified: false, page: { items: [ITEM], cursor: 'c1', more: false } });
     expect(run.keeper.reset).toHaveBeenCalledOnce();
-    expect(run.keeper.observe).toHaveBeenCalledWith([ITEM]);
     expect(run.api.sync).toHaveBeenCalledWith(undefined, 500);
   });
 
-  it('keeps what the keeper holds for a sync from a cursor, and tells it nothing for "not modified"', async () => {
+  it('keeps what the keeper holds for a sync from a cursor', async () => {
     const run = setup();
     await run.tracked.sync('c1', 500);
     expect(run.keeper.reset).not.toHaveBeenCalled();
-    expect(run.keeper.observe).toHaveBeenCalledOnce();
     run.api.sync.mockResolvedValueOnce({ notModified: true as never, cursor: 'c1' } as never);
-    await run.tracked.sync('c1', 500);
-    expect(run.keeper.observe).toHaveBeenCalledOnce();
+    expect(await run.tracked.sync('c1', 500)).toEqual({ notModified: true, cursor: 'c1' });
+    expect(run.keeper.reset).not.toHaveBeenCalled();
   });
 
   it('starts over when the server says the cursor is no longer good, and passes the error on', async () => {
