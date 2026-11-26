@@ -1709,6 +1709,17 @@
         ],
         "type": "object"
       },
+      "EndSessionRequest": {
+        "additionalProperties": false,
+        "description": "`POST /kem/v1/auth/sign-out`: an empty body ends this session; `{\"others\": true}` keeps it and ends\nthe device's other sessions.",
+        "properties": {
+          "others": {
+            "description": "End the device's other sessions and keep this one.",
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
       "EnrolDeviceCopy": {
         "additionalProperties": false,
         "properties": {
@@ -4041,6 +4052,10 @@
             "description": "Whether the account is the first admin.",
             "type": "boolean"
           },
+          "emailConfirmationRequired": {
+            "description": "Present (true) only when the server verifies the address of a new account and this one is\nheld back: it can't sign in until the link mailed to its address is opened.",
+            "type": "boolean"
+          },
           "userId": {
             "format": "uuid",
             "type": "string"
@@ -4068,6 +4083,17 @@
               {
                 "$ref": "#/components/schemas/PrfBody",
                 "description": "The PRF copy of the root key, when the client already has the PRF output."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FreshProof",
+                "description": "A fresh proof, as adding a second step takes: needed when the account has one on already,\nsince a passkey signs in without the password or the second step."
               },
               {
                 "type": "null"
@@ -6725,7 +6751,7 @@
                 }
               }
             },
-            "description": "The answer wasn't accepted, no registration is in progress, or the PRF copy doesn't fit"
+            "description": "The answer wasn't accepted, no registration is in progress, the PRF copy doesn't fit, or a second step is on and the fresh `proof` (a mailed code, a current code of the authenticator app, the recovery code, or `{\"webauthn\": ...}`) is missing or wrong"
           },
           "401": {
             "content": {
@@ -9386,6 +9412,169 @@
         ]
       }
     },
+    "/kem/v1/accounts/confirm-email": {
+      "get": {
+        "operationId": "doc_confirm_email_page",
+        "parameters": [
+          {
+            "description": "The token in the link of the mail, base64url",
+            "in": "query",
+            "name": "token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A small HTML page with a Confirm button that posts the token back. Nothing changes until it is pressed, so a mail scanner that opens the link spends nothing"
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A small HTML page: the link isn't valid"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "accounts"
+        ]
+      },
+      "post": {
+        "operationId": "doc_confirm_email",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "`token=` and the token of the link",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A small HTML page: the address is confirmed and the account can sign in"
+          },
+          "400": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "A small HTML page: the link is unknown, opened already or out of time"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "accounts"
+        ]
+      }
+    },
+    "/kem/v1/accounts/confirm-email/resend": {
+      "post": {
+        "operationId": "doc_resend_confirm_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Asked for, whatever the address: a new link is mailed only to an address whose account is held back and has had none for five minutes"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries"
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "tags": [
+          "accounts"
+        ]
+      }
+    },
     "/kem/v1/accounts/register/finish": {
       "post": {
         "operationId": "doc_register_finish",
@@ -9408,7 +9597,7 @@
                 }
               }
             },
-            "description": "The account exists"
+            "description": "The account exists. When the server verifies the address of a new account, `emailConfirmationRequired` is true: the account can't sign in until the link mailed to it is opened"
           },
           "409": {
             "content": {
@@ -10606,6 +10795,78 @@
         },
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/kem/v1/auth/sign-out": {
+      "post": {
+        "operationId": "doc_auth_sign_out",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/EndSessionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "With no body: this device's refresh tokens are revoked and its DPoP key unbound. With {\"others\": true}: its other sessions end and this one goes on. The device and its key copy stay either way"
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Not signed in"
+          },
+          "429": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Too many tries: wait `retryAfter` seconds",
+            "headers": {
+              "Retry-After": {
+                "description": "The seconds to wait",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "Something went wrong on the server"
+          }
+        },
+        "security": [
+          {
+            "dpop": []
+          }
+        ],
+        "tags": [
+          "trusted-device"
         ]
       }
     },
