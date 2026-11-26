@@ -207,7 +207,7 @@ describe('changing the master password', () => {
     expect(key.api.changePassword).toHaveBeenCalledWith(expect.objectContaining({ proof: answer }));
     const bare = deps();
     await changePassword(bare.wiring, input);
-    expect(bare.api.changePassword.mock.calls[0]?.[0]).not.toHaveProperty('proof');
+    expect((bare.api.changePassword.mock.calls[0] as unknown[] | undefined)?.[0]).not.toHaveProperty('proof');
   });
 
   it('sends the choice of leaving the other devices signed in', async () => {

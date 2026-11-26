@@ -8,7 +8,7 @@ import { renderWithIntl } from '@/test/render';
 import { saveBatch } from './batch';
 import { formatSize } from './details/files';
 import { LinkedItems, sublineOf } from './LinkedItems';
-import { linkInputs, linksOf, unlinkInputs } from './links';
+import { linkInputs, linksOf as linkIdsOf, unlinkInputs } from './links';
 import { type VaultDeps, VaultStore, type VaultItem } from './vault';
 
 // The card only needs its links to be anchors to the item.
@@ -117,7 +117,7 @@ function Page({
           setAll([...store.items.values()]);
         }}
       />
-      <output data-testid="stored">{JSON.stringify([...store.items.values()].map((i) => [i.id, linksOf(i.data)]))}</output>
+      <output data-testid="stored">{JSON.stringify([...store.items.values()].map((i) => [i.id, linkIdsOf(i.data)]))}</output>
     </>
   );
 }

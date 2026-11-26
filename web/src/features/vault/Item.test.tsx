@@ -13,7 +13,7 @@ const state = vi.hoisted(() => ({
   all: [] as VaultItem[],
   collections: [] as Array<{ spaceId: string; spaceName: string; collectionId: string; collectionName: string }>,
   adminFields: [] as Array<{ id: string; name: string; type: string; kinds: string | string[] }>,
-  canWrite: (_item: VaultItem) => true,
+  canWrite: (_item: VaultItem): boolean => true,
   trashing: false,
   trash: vi.fn(),
   restore: vi.fn(),

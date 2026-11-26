@@ -240,7 +240,7 @@ describe('changing the master password', () => {
     expect(profileApi.get).toHaveBeenCalledTimes(2);
   });
 
-  it('words a malformed request and a lost race here, in Profile's own words', async () => {
+  it("words a malformed request and a lost race here, in Profile's own words", async () => {
     model.changePassword.mockRejectedValueOnce(
       new ApiError(400, { type: 'urn:kemlock:problem:invalid-request', title: 'x', status: 400 } as never),
     );
