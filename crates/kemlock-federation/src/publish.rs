@@ -57,6 +57,15 @@ impl Publisher {
 }
 
 impl Publisher {
+    /// The payload last made for the entity `key` of `kind`, if any.
+    pub(crate) fn last(&self, kind: &str, key: &[u8]) -> Option<&[u8]> {
+        self.latest
+            .get(&(kind.to_owned(), key.to_vec()))
+            .map(Vec::as_slice)
+    }
+}
+
+impl Publisher {
     /// Forgets the last payload made for the entity `key` of `kind`, so the next one is made even
     /// if it is the same.
     pub(crate) fn forget(&mut self, kind: &str, key: Vec<u8>) {

@@ -65,6 +65,7 @@ pub mod relay;
 pub mod replicate;
 pub mod sendsync;
 pub mod session;
+pub mod signedflag;
 pub mod signed;
 pub mod spaces;
 pub mod suite;

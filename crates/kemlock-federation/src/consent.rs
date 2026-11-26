@@ -229,6 +229,10 @@ impl<S: FedStore> Replica<S> {
                 .await;
             return;
         }
+        if record.kind == crate::signedflag::KIND {
+            self.apply_signed_writes_record(record).await;
+            return;
+        }
         if record.kind != members::KIND {
             tracing::debug!(kind = %record.kind, "a home record of a kind this server doesn't apply");
             return;

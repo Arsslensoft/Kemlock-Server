@@ -367,6 +367,13 @@ record checks, before it applies it:
 
 A `bw` record is checked by neither rule.
 
+**The flag.** The owner's request for signed writes only (`docs/crypto.md`, "The signed-only flag")
+reaches the replicas as a home record of kind `signed-writes`, deterministic CBOR `{0: 1, 1: owner (17
+bytes), 2: 1 or 0}`, made once when the flag is set and again when it is cleared (an owner that never
+asked has none). A replica applies it under the epoch fence like every home record, and only for the
+vault whose home sent it. A server that doesn't know the kind keeps it for relaying and ignores it, so
+it is safe to publish before every server is upgraded, and such a server just doesn't hold the flag.
+
 **Mixed versions.** A server that doesn't know field 15 refuses the record and, with it, the batch it came
 in, so it stops receiving the changes of a vault whose writes are signed. A vault's writes may be signed
 only after **every server of its set is upgraded**. A server says in its descriptor that it reads

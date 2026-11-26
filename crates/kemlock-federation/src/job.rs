@@ -676,6 +676,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
             // knows the member belongs to the space.
             replica.publish_space_state(owner).await?;
             replica.publish_members(owner).await?;
+            replica.publish_signed_writes(owner).await?;
             if offer != OfferState::Accepted {
                 status.note = Some(
                     match offer {

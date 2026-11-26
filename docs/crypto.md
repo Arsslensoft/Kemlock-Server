@@ -964,9 +964,10 @@ per owner, a flag **signed-only**:
   on), as erasing the account does, because clearing it lets a stolen session write what the
   account's keys never signed. Both are logged. Erasing the owner clears it too;
 - once set, an unsigned `kem1` write or record for that owner is refused by this server and by
-  every federation peer that holds the flag. A peer holds it only when the owner asked at that
-  server; a flag set at the home is not yet carried to the replicas in a signed home record, so it
-  has to be set at each server of the set.
+  every federation peer that holds the flag. The home publishes it as a home record of kind
+  `signed-writes` (`docs/federation.md`, "Writer signatures"), signed like every home record, so the
+  replicas hold it too, and drop it when the owner clears it at the home. Ask at the home: a flag
+  set at a replica holds there only, until the home's record next says otherwise.
 
 **What stays unprotected.** `bw` items (a Bitwarden-format cipher has no `kem1` envelope), so
 Bitwarden apps' writes are accepted whatever the flag says, and so can be rolled back, deleted and
