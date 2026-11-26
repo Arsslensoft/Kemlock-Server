@@ -197,6 +197,29 @@ pub trait DeviceRepo: Send + Sync {
     fn list(&self, user: UserId) -> impl Future<Output = Result<Vec<Device>, StoreError>> + Send;
     /// Deletes the device, its refresh tokens and any key copy it holds.
     fn remove(&self, id: DeviceId) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Records that the device was seen at `at`, only while it is still registered with the DPoP
+    /// key `jkt`, and says whether it was. A device whose key was cleared meanwhile (a refresh
+    /// token used twice, sessions ended everywhere) stays as it is: writing back the whole row a
+    /// caller read earlier would put the cleared key back. The default reads and writes in two
+    /// steps; a store that serves requests concurrently overrides it with a conditional write.
+    fn touch_seen(
+        &self,
+        id: DeviceId,
+        jkt: &str,
+        at: OffsetDateTime,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            match self.get(id).await? {
+                Some(mut device) if device.dpop_jkt.as_deref() == Some(jkt) => {
+                    device.last_seen_at = at;
+                    self.upsert(&device).await?;
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+    }
 }
 
 /// A refresh token as stored: only its SHA-256, so a database copy can't be replayed.

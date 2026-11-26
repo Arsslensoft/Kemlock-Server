@@ -102,8 +102,13 @@ impl<
             return Err(AppError::SessionEnded("security-stamp-changed"));
         }
 
+        // Only the time is written, and only while the device still has this key: sessions may
+        // have been ended since it was read, and writing the whole row back would put its key back.
+        if !self.sessions.devices.touch_seen(device.id, jkt, now).await? {
+            self.sessions.tokens.revoke_family(token.family).await?;
+            return Err(AppError::SessionEnded("signed-out"));
+        }
         device.last_seen_at = now;
-        self.sessions.devices.upsert(&device).await?;
         self.sessions
             .issue(
                 &user,

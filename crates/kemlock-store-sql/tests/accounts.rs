@@ -167,6 +167,47 @@ async fn devices(store: &SqlStore) {
         2
     );
 
+    // Seen is written only while the device still has the key the caller read it with: a cleared
+    // key is not put back.
+    assert_eq!(
+        DeviceRepo::touch_seen(store, older.id, "jkt-x", datetime!(2026-06-06 06:06:06 UTC)).await,
+        Ok(false),
+        "the device has no key now"
+    );
+    let mut keyed = seen.clone();
+    keyed.dpop_jkt = Some("jkt-x".to_owned());
+    DeviceRepo::upsert(store, &keyed).await.expect("upsert");
+    assert_eq!(
+        DeviceRepo::touch_seen(store, older.id, "jkt-other", datetime!(2026-06-06 06:06:06 UTC))
+            .await,
+        Ok(false),
+        "another key"
+    );
+    assert_eq!(
+        DeviceRepo::touch_seen(store, older.id, "jkt-x", datetime!(2026-06-06 06:06:06 UTC)).await,
+        Ok(true)
+    );
+    let touched = DeviceRepo::get(store, older.id)
+        .await
+        .expect("get")
+        .expect("there");
+    assert_eq!(touched.last_seen_at, datetime!(2026-06-06 06:06:06 UTC));
+    assert_eq!(touched.dpop_jkt.as_deref(), Some("jkt-x"));
+    assert_eq!(touched.name, "Pixel 9");
+    assert_eq!(
+        DeviceRepo::touch_seen(
+            store,
+            DeviceId::random(),
+            "jkt-x",
+            datetime!(2026-06-06 06:06:06 UTC)
+        )
+        .await,
+        Ok(false),
+        "no such device"
+    );
+    // Put back as the rest of the scenario expects.
+    DeviceRepo::upsert(store, &seen).await.expect("upsert");
+
     // A device needs an account.
     let orphan = device(
         UserId::random(),

@@ -346,3 +346,70 @@ async fn a_refresh_keeps_the_time_of_the_sign_in_it_descends_from() {
     assert_eq!(claims.issued_at, world.env.now());
     assert_eq!(claims.auth_time, signed_in_at);
 }
+
+/// A device store that ends the device's session (clears its key) in the middle of a refresh:
+/// after the refresh read the device, before it wrote anything back.
+#[derive(Clone)]
+struct EndsTheSession(FakeStore);
+
+impl DeviceRepo for EndsTheSession {
+    async fn get(
+        &self,
+        id: kemlock_domain::DeviceId,
+    ) -> Result<Option<kemlock_domain::Device>, kemlock_app::ports::StoreError> {
+        let read = self.0.get(id).await?;
+        if let Some(mut device) = read.clone() {
+            device.dpop_jkt = None;
+            self.0.upsert(&device).await?;
+        }
+        Ok(read)
+    }
+
+    async fn upsert(
+        &self,
+        device: &kemlock_domain::Device,
+    ) -> Result<(), kemlock_app::ports::StoreError> {
+        self.0.upsert(device).await
+    }
+
+    async fn list(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<kemlock_domain::Device>, kemlock_app::ports::StoreError> {
+        self.0.list(user).await
+    }
+
+    async fn remove(
+        &self,
+        id: kemlock_domain::DeviceId,
+    ) -> Result<(), kemlock_app::ports::StoreError> {
+        self.0.remove(id).await
+    }
+}
+
+#[tokio::test]
+async fn a_refresh_racing_the_end_of_a_session_does_not_put_the_devices_key_back() {
+    let (world, _user, first) = signed_in().await;
+    let racing = kemlock_app::Refresh {
+        users: world.store.clone(),
+        sessions: kemlock_app::Sessions {
+            devices: EndsTheSession(world.store.clone()),
+            tokens: world.store.clone(),
+            signer: world.signer.clone(),
+            env: world.env.clone(),
+            events: world.store.clone(),
+            two_factor: world.store.clone(),
+            config: world.config,
+        },
+    };
+    let result = racing.execute(&first.refresh_token, JKT).await;
+    assert_eq!(result.map(|_| ()), Err(AppError::SessionEnded("signed-out")));
+
+    // The key the session end cleared stays cleared, and no new token was issued.
+    let device = DeviceRepo::get(&world.store, first.device)
+        .await
+        .expect("get")
+        .expect("the device is kept");
+    assert_eq!(device.dpop_jkt, None);
+    assert!(world.store.refresh_tokens().is_empty());
+}
