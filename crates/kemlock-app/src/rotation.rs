@@ -343,15 +343,19 @@ pub fn check_install(
         .iter()
         .map(|(id, revision, _)| (*id, *revision))
         .collect();
-    let staged: BTreeMap<ItemId, Revision> = staged.iter().copied().collect();
+    // A row staged for an item that is no longer live (deleted since) is of no account.
+    let staged: BTreeMap<ItemId, Revision> = staged
+        .iter()
+        .copied()
+        .filter(|(id, _)| live.contains_key(id))
+        .collect();
     if live != staged {
         let changed = live
             .iter()
             .filter(|(id, revision)| staged.get(id) != Some(revision))
             .count();
-        let extra = staged.keys().filter(|id| !live.contains_key(id)).count();
         return Err(RotationError::Incomplete(format!(
-            "items: {changed} to stage again, {extra} no longer live"
+            "items: {changed} to stage again"
         )));
     }
 
@@ -734,11 +738,10 @@ mod tests {
         let r = request();
         let ok = [(a, Revision(3)), (b, Revision(1))];
         assert_eq!(check_install(&install(r.clone()), &holdings, &ok), Ok(()));
-        // One item was edited since it was staged, one is missing, one is extra.
+        // One item was edited since it was staged, one is missing.
         for staged in [
             vec![(a, Revision(2)), (b, Revision(1))],
             vec![(a, Revision(3))],
-            vec![(a, Revision(3)), (b, Revision(1)), (ItemId::random(), Revision(1))],
         ] {
             assert!(
                 matches!(
@@ -748,6 +751,17 @@ mod tests {
                 "{staged:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_row_staged_for_an_item_deleted_since_is_ignored() {
+        let a = ItemId::random();
+        let holdings = Holdings {
+            live_items: vec![item(a, 3)],
+            ..Holdings::default()
+        };
+        let staged = [(a, Revision(3)), (ItemId::random(), Revision(1))];
+        assert_eq!(check_install(&install(request()), &holdings, &staged), Ok(()));
     }
 
     #[test]

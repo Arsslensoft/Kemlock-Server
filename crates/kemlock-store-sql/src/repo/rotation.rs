@@ -367,9 +367,10 @@ impl SqlStore {
         }
         let mut drafts = Vec::with_capacity(staged.len());
         for row in staged {
-            let item = live
-                .get(&row.item_id)
-                .ok_or_else(|| RotationError::Incomplete("items: one is gone".to_owned()))?;
+            // A row staged for an item deleted since is of no account.
+            let Some(item) = live.get(&row.item_id).filter(|item| !item.is_tombstone()) else {
+                continue;
+            };
             let base = Revision(u64::try_from(row.base_revision).unwrap_or(0));
             let next = base
                 .next()
