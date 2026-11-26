@@ -453,6 +453,10 @@ async fn write_one(
     write_over(txn, origin, draft, seq, hlc, stored).await
 }
 
+/// How far ahead of this server's clock a draft's time may pull the HLC, in milliseconds: the
+/// 300 seconds of skew a receiving server allows a change record (docs/federation.md).
+const HLC_SKEW_MS: u64 = 300_000;
+
 /// [`write_one`] given the row it read. The update must change exactly that row: one that
 /// changed none means the row was replaced or purged after it was read, and the write is refused
 /// as a conflict instead of being reported as stored.
@@ -483,8 +487,11 @@ async fn write_over(
         });
     }
 
-    // Not before the last HLC, and not before the time the draft was made.
-    *hlc = hlc.tick(unix_millis(draft.updated_at));
+    // Not before the last HLC, and not before the time the draft was made, but never further
+    // ahead than a receiving server accepts: the draft's time is the client's, and a far-future
+    // one would pin this server's clock there and break the order of every later write.
+    let ceiling = unix_millis(OffsetDateTime::now_utc()).saturating_add(HLC_SKEW_MS);
+    *hlc = hlc.tick(unix_millis(draft.updated_at).min(ceiling));
     let change = ChangeId {
         origin,
         seq: from_i64(seq, "sequence number")?,

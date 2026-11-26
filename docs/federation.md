@@ -326,7 +326,9 @@ high 48 bits) is more than 300 seconds ahead of its own clock, the skew every ch
 the rest of the page is applied, the cursor moves on, and a later comparison fetches the record
 again, when it is accepted if the clock has caught up. Old times are normal and never refused.
 Without the bound one record could carry a server's clock to the top of its range, where every
-later local write would fail. A server's own clock also stops at `2^63 - 1` instead of overflowing,
+later local write would fail. A server's own writes are held to the same bound: the time a device puts on an item pulls the clock
+forward only as far as 300 seconds past the server's own, so a wrong or hostile device clock can't
+pin it. A server's own clock also stops at `2^63 - 1` instead of overflowing,
 and at start-up it sets a stored clock more than a day ahead of the wall clock back to it (and logs
 that it did), which repairs a server a record already damaged.
 
