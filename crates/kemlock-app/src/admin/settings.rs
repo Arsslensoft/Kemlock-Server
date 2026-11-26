@@ -507,6 +507,7 @@ pub const RESERVED_DATA_NAMES: &[&str] = &[
     "kemlock",
     "config",
     "rsa_key",
+    "import",
 ];
 
 /// A folder inside the data folder: relative, with no `..` and no drive or `s3://` prefix.
@@ -899,6 +900,8 @@ mod tests {
             "Attachments/x",
             "sends",
             "server.key",
+            "import",
+            "Import/old",
             "backups/../db",
         ] {
             assert!(validate(dest, bad).is_err(), "{bad}");
