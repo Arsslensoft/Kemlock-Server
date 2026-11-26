@@ -31,6 +31,7 @@
   "admin.settings.hint.signups_allowed": "When off, people join only by an invitation or through SSO.",
   "admin.settings.hint.signups_verify": "Sends a link to the new address. The account can't sign in until the link is opened.",
   "admin.settings.hint.invitations_allowed": "Admins can invite people from Users & spaces, even while sign-up is off.",
+  "admin.settings.hint.bw_invites_auto_accept": "Takes an organization or emergency invitation of a Bitwarden app to an existing account as accepted at once, as Vaultwarden does without mail. Anyone who can invite can then put an account into their organization, with the confirmation of an admin the only check left. Only while the server sends no mail.",
   "admin.settings.hint.push_enabled": "Wakes Bitwarden's phone apps through Bitwarden's push relay, which becomes a processor of these pushes. It is sent the user, device and item ids and the kind of change, never an item's contents. Kemlock's apps are woken by this server itself, whatever this says.",
   "admin.settings.hint.kemlock_push_relay": "This server pushes to Kemlock's iPhones (Apple push) and Android phones (UnifiedPush) itself. The relay is only an optional fallback for iPhones on a server with no Apple key, and a server with an Apple key never uses it. It is sent a push token and this server's installation id, never an item or an email.",
 
@@ -156,6 +157,7 @@
   "admin.settings.key.signups_verify": "Verify the email of a new account",
   "admin.settings.key.signups_domains_whitelist": "Only these email domains may make an account",
   "admin.settings.key.invitations_allowed": "Admins may invite people",
+  "admin.settings.key.bw_invites_auto_accept": "Accept Bitwarden invitations for the invitee",
   "admin.settings.key.user_attachment_limit_kib": "Attachments per person",
   "admin.settings.key.space_attachment_limit_kib": "Attachments per space",
   "admin.settings.key.send_file_limit_kib": "Send files per person",

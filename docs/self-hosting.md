@@ -79,7 +79,7 @@ connection still updates at once, and the others when they next sync.
 
 Vaultwarden's names, read from the environment. Mail covers emailed two-step codes, the notice
 that a device signed in for the first time, device approval requests, emergency access, space
-invitations (with a link to sign in and accept) and the admin console's alerts and invitations to
+invitations (with a link to sign in and accept), the invitations of Bitwarden apps (with a link that accepts by itself, below) and the admin console's alerts and invitations to
 the server. Notice mails say enough to recognise your own activity and never carry a key, an item
 name or a link that opens anything without signing in.
 
@@ -98,6 +98,34 @@ name or a link that opens anything without signing in.
 
 A bad value stops the start and names the setting. The admin console shows whether mail is set up.
 The Kemlock API mails from a task of its own, so a slow SMTP server does not hold up a sign-in.
+
+### Invitations from Bitwarden apps (`KEMLOCK_BW_INVITES_AUTO_ACCEPT`)
+
+An invitation to an organization, or to be an emergency contact, made from a Bitwarden app to an
+account that already exists leaves that account **invited** until the person accepts. Vaultwarden
+without mail takes such an account as accepted at once; this server does not, because it lets anyone
+who can invite put another account into an organization (and bind it by that organization's
+policies) without being asked.
+
+How the person accepts:
+
+- **With mail**, they get a link of the shape Vaultwarden mails
+  (`/#/accept-organization/?organizationId=...&token=...`, `/#/accept-emergency/?id=...&token=...`).
+  Opening it accepts: the signed token in it is the proof, so they need not sign in, which an account
+  made in a Bitwarden app can't do in the web vault. It works for five days. An account that can sign
+  in to the web vault gets the usual space invitation instead, and accepts on its space page.
+- **Without mail**, the administrator who invited (and the grantor, for an emergency contact) can
+  read the same link from the Bitwarden API, `GET /api/organizations/{org}/users/{member}/invite-link`
+  or `GET /api/emergency-access/{id}/invite-link`, and hand it over. Treat it as a secret: whoever
+  opens it accepts for that account.
+
+Set `KEMLOCK_BW_INVITES_AUTO_ACCEPT=true` (or the "Accept Bitwarden invitations for the invitee"
+switch in the console, under sign-ups) to get Vaultwarden's behaviour back. It applies **only while
+no mail is set up**, and only to an account that has a password. The risk: whoever can invite an
+address can then make that account a member of their organization (an administrator still has to
+confirm it before it sees anything), and bind it by that organization's policies once it is
+confirmed. Turn it on only for a server whose members all trust each other, such as one person's
+family.
 
 ### Push to phones
 
