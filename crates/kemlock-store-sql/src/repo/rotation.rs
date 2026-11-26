@@ -27,7 +27,7 @@ use kemlock_domain::sends::SendId;
 use kemlock_domain::unlock::{EmergencyState, GrantId};
 use kemlock_domain::{
     ChangeId, DeviceId, ItemDraft, ItemFormat, ItemId, Owner, PasskeyId, RecoveryKit, Revision,
-    SpaceId, UserId,
+    SpaceId, UserId, WriteSignature,
 };
 use sea_orm::ActiveValue::Set;
 use sea_orm::{

@@ -106,7 +106,7 @@ impl<S: FedStore> Replica<S> {
 mod tests {
     use super::*;
     use crate::memory::MemoryStore;
-    use crate::ports::{HomeStatus, ReplicaStore};
+    use crate::ports::{HomeStatus, ReplicaStore, VaultRepo};
     use crate::suite::Suite;
     use crate::testing::identity;
     use kemlock_domain::{ServerId, UserId};
