@@ -1,4 +1,5 @@
-//! `kemlock-cli import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]`.
+//! `kemlock-cli import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]
+//! [--adopt-existing]`.
 //!
 //! Without `--apply` it prints the dry-run plan and writes nothing. It never writes to
 //! Vaultwarden's data in any mode: the folder's `db.sqlite3` is opened read-only, a MySQL or
@@ -8,13 +9,20 @@
 //! and `KEMLOCK_SERVER_KEY`, as the server reads them), one transaction per pass, so a failed
 //! pass leaves nothing half written and a rerun finds what an earlier one put.
 //!
+//! A pass writes only what an import made: an account or space this server already has, that no
+//! earlier import is recorded as having created, is left alone and listed. `--adopt-existing`
+//! overwrites such rows on purpose (a server that already holds the same users from an earlier
+//! move that left no record); it prints a warning and the console never offers it.
+//!
 //! `--twice` is the "short pause" method: it copies while Vaultwarden runs, waits for you to
 //! stop Vaultwarden, then reads again and applies only what changed, deletions included.
 
+use kemlock_app::admin::{AdminEvent, AdminEventRepo};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_server::Config;
 use kemlock_server::files::{BitwardenBlobs, open_blobs};
 use kemlock_server::keys::load_or_create_server_key;
+use kemlock_server::migration::describe;
 use kemlock_store_sql::{ImportFiles, ImportOptions, SqlImportSink, SqlStore};
 use kemlock_vaultwarden::{
     ApplyReport, Deletion, ImportSink, MappedImport, Source, apply, diff, map_snapshot,
@@ -36,6 +44,9 @@ pub(crate) struct ImportArgs {
     pub(crate) twice: bool,
     /// Write to Kemlock Server. Without it, only a plan is printed.
     pub(crate) apply: bool,
+    /// Overwrite accounts and spaces this server already has even though no earlier import is
+    /// recorded as having made them. Without it a pass leaves them alone and lists them.
+    pub(crate) adopt_existing: bool,
 }
 
 fn take_value(
@@ -58,6 +69,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
     let mut files = None;
     let mut twice = false;
     let mut apply = false;
+    let mut adopt_existing = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -69,6 +81,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
             "--files" => files = Some(take_value(name, inline, &mut rest)?),
             "--twice" => twice = true,
             "--apply" => apply = true,
+            "--adopt-existing" => adopt_existing = true,
             other => return Err(format!("import-vaultwarden doesn't take {other:?}")),
         }
     }
@@ -78,6 +91,7 @@ pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
         files,
         twice,
         apply,
+        adopt_existing,
     })
 }
 
@@ -87,6 +101,10 @@ trait SinkSource {
     type Sink: ImportSink;
 
     async fn open(&mut self) -> Result<Self::Sink, String>;
+
+    /// Records a finished pass in the admin event log: where it read from, what it changed and
+    /// what it left alone. A source with no log records nothing.
+    async fn audit(&mut self, _source: &str, _what: &str) {}
 }
 
 /// The server's own database and data folder.
@@ -97,11 +115,13 @@ struct SqlSinks {
     /// The file storage the Bitwarden API reads (`ATTACHMENTS_FOLDER`, or a bucket), where the
     /// attachments and Send files go.
     files: Arc<dyn ImportFiles>,
+    /// `--adopt-existing`.
+    adopt_existing: bool,
 }
 
 impl SqlSinks {
     /// Opens the database (migrating it) and reads or makes `server.key`, as the server does.
-    async fn connect(config: &Config) -> Result<SqlSinks, String> {
+    async fn connect(config: &Config, adopt_existing: bool) -> Result<SqlSinks, String> {
         std::fs::create_dir_all(&config.data_folder)
             .map_err(|e| format!("can't make {}: {e}", config.data_folder.display()))?;
         let server_key =
@@ -116,6 +136,7 @@ impl SqlSinks {
             server_key,
             data_folder: config.data_folder.clone(),
             files: Arc::new(BitwardenBlobs::new(blobs)),
+            adopt_existing,
         })
     }
 
@@ -128,14 +149,29 @@ impl SinkSource for SqlSinks {
     type Sink = SqlImportSink;
 
     async fn open(&mut self) -> Result<SqlImportSink, String> {
-        let options = ImportOptions::new(
+        let mut options = ImportOptions::new(
             self.data_folder.clone(),
             self.files.clone(),
             OffsetDateTime::now_utc(),
         );
+        options.adopt_existing = self.adopt_existing;
         SqlImportSink::begin(&self.store, ServerSeal::new(&self.server_key), options)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    async fn audit(&mut self, source: &str, what: &str) {
+        let event = AdminEvent {
+            actor: None,
+            device: None,
+            action: "admin.migration.cli".to_owned(),
+            target: Some(format!("{source}: {what}")),
+            ip: None,
+            at: OffsetDateTime::now_utc(),
+        };
+        if let Err(e) = self.store.record_admin_event(event).await {
+            eprintln!("kemlock-cli: couldn't record the move in the event log: {e}");
+        }
     }
 }
 
@@ -149,6 +185,25 @@ async fn write_pass<S: SinkSource>(
     apply(mapped, deletions, &mut sink)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Says which ids a pass left alone because no import made them, and how to overwrite them.
+fn report_left_alone(report: &ApplyReport) {
+    for (kind, ids) in &report.refused {
+        if ids.is_empty() || *kind == "setting" {
+            continue;
+        }
+        eprintln!(
+            "kemlock-cli: left alone, because no import made them ({kind}): {}",
+            ids.join(", ")
+        );
+    }
+    if report.refused.keys().any(|kind| *kind != "setting") {
+        eprintln!(
+            "kemlock-cli: add --adopt-existing to overwrite them on purpose (it replaces what \
+             this server holds for those ids)"
+        );
+    }
 }
 
 /// Waits for Enter on standard input.
@@ -170,7 +225,7 @@ pub(crate) async fn run(args: ImportArgs) -> u8 {
             return 2;
         }
     };
-    let mut sinks = match SqlSinks::connect(&config).await {
+    let mut sinks = match SqlSinks::connect(&config, args.adopt_existing).await {
         Ok(sinks) => sinks,
         Err(e) => {
             eprintln!("kemlock-cli: {e}");
@@ -221,9 +276,19 @@ async fn execute<S: SinkSource>(
             eprintln!("kemlock-cli: --apply has no store to write to");
             return 1;
         };
+        if args.adopt_existing {
+            eprintln!(
+                "WARNING: --adopt-existing is on: accounts and spaces this server already has \
+                 will be overwritten by what the source says, even though no import made them."
+            );
+        }
         println!("Writing to Kemlock Server...");
         match write_pass(sinks, &first_mapped, &[]).await {
-            Ok(report) => println!("Wrote {report:?}"),
+            Ok(report) => {
+                println!("Wrote {report:?}");
+                report_left_alone(&report);
+                sinks.audit(&source.describe(), &describe(&report)).await;
+            }
             Err(e) => {
                 eprintln!("kemlock-cli: {e}");
                 return 1;
@@ -267,7 +332,11 @@ async fn execute<S: SinkSource>(
     {
         let delta = second_mapped.delta_since(&first_mapped);
         match write_pass(sinks, &delta, &changes.deletions()).await {
-            Ok(report) => println!("Wrote the changes: {report:?}"),
+            Ok(report) => {
+                println!("Wrote the changes: {report:?}");
+                report_left_alone(&report);
+                sinks.audit(&source.describe(), &describe(&report)).await;
+            }
             Err(e) => {
                 eprintln!("kemlock-cli: {e}");
                 return 1;
@@ -377,7 +446,8 @@ mod tests {
                 from: "/data".into(),
                 files: None,
                 twice: true,
-                apply: false
+                apply: false,
+                adopt_existing: false
             })
         );
         assert_eq!(
@@ -390,9 +460,19 @@ mod tests {
                 from: "mysql://u:p@db/vw".into(),
                 files: Some("/vw-data".into()),
                 twice: false,
-                apply: true
+                apply: true,
+                adopt_existing: false
             })
         );
+    }
+
+    #[test]
+    fn adopting_existing_rows_is_an_explicit_flag() {
+        let parsed = parse_args(&args(&["--from", "/data", "--apply", "--adopt-existing"]))
+            .expect("parses");
+        assert!(parsed.adopt_existing);
+        let plain = parse_args(&args(&["--from", "/data", "--apply"])).expect("parses");
+        assert!(!plain.adopt_existing);
     }
 
     #[test]
