@@ -99,6 +99,7 @@ export function useRotateKeys(email: string, twoStep: boolean) {
         contacts: contacts.data ?? [],
         passkeys: plan.data.passkeys.length,
         emergency: plan.data.emergency.length,
+        asContact: plan.data.asContact.length,
         recovery: plan.data.recovery.length,
         hasKit: plan.data.kit !== null,
         hasPassword: plan.data.hasPassword,

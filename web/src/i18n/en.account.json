@@ -392,6 +392,7 @@
   "security.rotate.others": "Every other device is signed out and has to sign in again.",
   "security.rotate.passkeys": "{n, plural, one {# passkey stops opening the vault; set it up again under Passkeys.} other {# passkeys stop opening the vault; set them up again under Passkeys.}}",
   "security.rotate.emergency": "{n, plural, one {# emergency contact is kept only if you compare their fingerprint below; otherwise you confirm them again later.} other {# emergency contacts are kept only if you compare their fingerprints below; otherwise you confirm them again later.}}",
+  "security.rotate.asContact": "{n, plural, one {# person named you as their emergency contact: they confirm you again, to your new keys.} other {# people named you as their emergency contact: they confirm you again, to your new keys.}}",
   "security.rotate.contact": "Keep {email} as an emergency contact: I compared this fingerprint with the one on their own screen",
   "security.rotate.recovery": "{n, plural, one {# space recovery enrolment is removed unless this browser can check its space's recovery key; enrol again.} other {# space recovery enrolments are removed unless this browser can check their spaces' recovery keys; enrol again.}}",
   "security.rotate.files": "Files attached to items keep their own keys. Replace a file if you must treat its old key as known.",

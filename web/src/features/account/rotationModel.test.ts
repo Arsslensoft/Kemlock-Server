@@ -29,6 +29,7 @@ function plan(overrides: Partial<RotationPlanDto> = {}): RotationPlanDto {
     passkeys: [],
     deviceCopies: [],
     emergency: [],
+    asContact: [],
     recovery: [],
     sends: [],
     items: { count: 2 },

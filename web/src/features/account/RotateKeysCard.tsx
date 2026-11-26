@@ -25,6 +25,8 @@ export interface RotateImpact {
   contacts: RotateContact[];
   passkeys: number;
   emergency: number;
+  /** People who named this account as their emergency contact: they confirm it again. */
+  asContact: number;
   recovery: number;
   hasKit: boolean;
   hasPassword: boolean;
@@ -132,6 +134,7 @@ export function RotateKeysCard({ impact, blocked, twoStep, keyProof, busy, progr
             <li>{t('security.rotate.others')}</li>
             {impact.passkeys > 0 ? <li>{t('security.rotate.passkeys', { n: impact.passkeys })}</li> : null}
             {impact.emergency > 0 ? <li>{t('security.rotate.emergency', { n: impact.emergency })}</li> : null}
+            {impact.asContact > 0 ? <li>{t('security.rotate.asContact', { n: impact.asContact })}</li> : null}
             {impact.recovery > 0 ? <li>{t('security.rotate.recovery', { n: impact.recovery })}</li> : null}
             <li>{t('security.rotate.files')}</li>
           </ul>

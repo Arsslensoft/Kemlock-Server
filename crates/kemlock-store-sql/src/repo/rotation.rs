@@ -89,6 +89,19 @@ async fn holdings_in<C: ConnectionTrait>(db: &C, user: UserId) -> Result<Holding
         emergency.push((GrantId(row.id), state, row.grantee_id.map(UserId)));
     }
 
+    let mut as_contact = Vec::new();
+    for row in emergency_access::Entity::find()
+        .filter(emergency_access::Column::GranteeId.eq(user.0))
+        .filter(emergency_access::Column::SealedKey.is_not_null())
+        .all(db)
+        .await
+        .store()?
+    {
+        let state = EmergencyState::parse(&row.state)
+            .ok_or_else(|| StoreError::Backend("an emergency grant has an unknown state".into()))?;
+        as_contact.push((GrantId(row.id), state));
+    }
+
     let mut recovery = Vec::new();
     for row in space_recovery::Entity::find()
         .filter(space_recovery::Column::UserId.eq(user.0))
@@ -148,6 +161,7 @@ async fn holdings_in<C: ConnectionTrait>(db: &C, user: UserId) -> Result<Holding
         passkeys,
         device_copies,
         emergency,
+        as_contact,
         recovery,
         sends,
         live_items,
@@ -537,6 +551,25 @@ impl SqlStore {
                         .is_in(request.drop_emergency.iter().map(|id| id.0)),
                 )
                 .filter(emergency_access::Column::GrantorId.eq(user.0))
+                .exec(txn)
+                .await)?;
+        }
+
+        // The grants that name the account as the contact hold a box sealed to its old exchange
+        // key, which this rotation replaces: they go back to waiting for the grantor's
+        // confirmation, who then seals to the new bundle.
+        if !holdings.as_contact.is_empty() {
+            let row = emergency_access::ActiveModel {
+                sealed_key: Set(None),
+                state: Set(EmergencyState::Accepted.as_str().to_owned()),
+                recovery_initiated_at: Set(None),
+                updated_at: Set(utc(now)),
+                ..Default::default()
+            };
+            db(emergency_access::Entity::update_many()
+                .set(row)
+                .filter(emergency_access::Column::GranteeId.eq(user.0))
+                .filter(emergency_access::Column::SealedKey.is_not_null())
                 .exec(txn)
                 .await)?;
         }

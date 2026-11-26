@@ -125,6 +125,13 @@ pub(crate) struct GrantHeld {
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ContactOf {
+    id: Uuid,
+    state: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RecoveryHeld {
     space: Uuid,
     /// The `seq` of the chain record that set the recovery key the box is sealed to.
@@ -167,6 +174,9 @@ pub(crate) struct PlanDto {
     device_copies: Vec<DeviceHeld>,
     /// Grants that hold a box.
     emergency: Vec<GrantHeld>,
+    /// Grants in which this account is the contact and holds a box: they go back to waiting for
+    /// their grantors to confirm the account's new keys.
+    as_contact: Vec<ContactOf>,
     recovery: Vec<RecoveryHeld>,
     sends: Vec<SendHeld>,
     items: ItemsHeld,
@@ -207,6 +217,14 @@ impl PlanDto {
                     grantee_id: grantee.map(|user| user.0),
                     grantee_email: None,
                     grantee_bundle: None,
+                })
+                .collect(),
+            as_contact: holdings
+                .as_contact
+                .iter()
+                .map(|(id, state)| ContactOf {
+                    id: id.0,
+                    state: state.as_str().to_owned(),
                 })
                 .collect(),
             recovery: holdings
@@ -785,6 +803,7 @@ fn doc_previous_keys() {}
         PasskeyHeld,
         DeviceHeld,
         GrantHeld,
+        ContactOf,
         RecoveryHeld,
         SendHeld,
         ItemsHeld,

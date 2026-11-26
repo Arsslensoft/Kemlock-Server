@@ -65,6 +65,10 @@ pub struct Holdings {
     pub device_copies: Vec<DeviceId>,
     /// The emergency grants that hold a box, with their state and the contact's account.
     pub emergency: Vec<(GrantId, EmergencyState, Option<UserId>)>,
+    /// The grants in which the account is the **contact** and holds a box: a grantor sealed their
+    /// root key to the account's `kx1` key, which a rotation replaces, so the box opens no more.
+    /// The install sends each back to waiting for its grantor's confirmation.
+    pub as_contact: Vec<(GrantId, EmergencyState)>,
     /// The space recovery enrolments, with the `seq` of the recovery key each is sealed to.
     pub recovery: Vec<(SpaceId, u64)>,
     /// The Sends, with their kind (0 text, 1 file).

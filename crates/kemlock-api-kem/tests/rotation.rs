@@ -278,6 +278,11 @@ async fn the_plan_says_what_the_account_holds() {
         .json();
     assert_eq!(plan["emergency"][0]["granteeEmail"], EMAIL);
     assert!(plan["emergency"][0]["granteeBundle"].is_string(), "{plan}");
+    // A grant that names the account as the contact is listed: it waits for a new confirmation.
+    rig.repo.holdings.lock().expect("lock").as_contact =
+        vec![(GrantId::random(), EmergencyState::Approved)];
+    let plan = sam.call("GET", "/kem/v1/account/rotation", None).await.json();
+    assert_eq!(plan["asContact"][0]["state"], "approved");
     assert!(plan["previousKeys"].is_null());
 }
 

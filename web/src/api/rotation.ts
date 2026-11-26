@@ -25,6 +25,8 @@ export interface RotationPlanDto {
     /** The contact's bundle as the server holds it now, base64url: sealed to only once compared. */
     granteeBundle: string | null;
   }>;
+  /** Grants in which this account is the contact and holds a box: they wait for a new confirmation. */
+  asContact: Array<{ id: string; state: string }>;
   recovery: Array<{ space: string; keySeq: number }>;
   sends: Array<{ id: string; kind: 'text' | 'file' }>;
   items: { count: number };

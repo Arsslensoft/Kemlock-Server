@@ -8,14 +8,18 @@ mod common;
 
 use common::{draft, external, file, memory, put, unique_email, user};
 use kemlock_app::devices::{ApprovalRepo, KeyCopyRepo};
+use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::passkeys::PasskeyRepo;
 use kemlock_app::ports::{DeviceRepo, ItemStore, UserRepo};
 use kemlock_app::recovery_kit::RecoveryKitRepo;
 use kemlock_app::rotation::{Install, InstallRequest, RotationError, RotationStore, StagedItem};
 use kemlock_domain::DeviceKind;
-use kemlock_domain::unlock::{ApprovalId, ApprovalState, AuthRequest, DeviceKeyCopy, KeyProtection};
+use kemlock_domain::unlock::{
+    ApprovalId, ApprovalState, AuthRequest, DeviceKeyCopy, EmergencyGrant, EmergencyKind,
+    EmergencyState, GrantId, KeyProtection, SEALED_BOX_OVERHEAD,
+};
 use kemlock_domain::{
-    DeviceId, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
+    DeviceId, Email, ItemId, Owner, Passkey, PasskeyId, PrfWrap, RecoveryKit, Revision, User,
 };
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -397,12 +401,49 @@ async fn an_approval_that_holds_the_old_root_key_does_not_survive_the_install(st
     assert!(ApprovalRepo::request(store, waiting.id).await.expect("read").is_some());
 }
 
+async fn a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store: &SqlStore) {
+    let grantor = account(store).await;
+    let sam = account(store).await;
+    let mut grant = EmergencyGrant::invite(
+        GrantId::random(),
+        grantor.id,
+        Email::parse(sam.email.as_str()).expect("email"),
+        EmergencyKind::View,
+        7,
+        T0,
+    )
+    .expect("a grant");
+    grant.accept(sam.id, T0).expect("accepted");
+    grant
+        .confirm(vec![3; SEALED_BOX_OVERHEAD + 64], T0)
+        .expect("confirmed");
+    EmergencyRepo::insert_grant(store, &grant).await.expect("grant");
+
+    let held = RotationStore::holdings(store, sam.id).await.expect("holdings");
+    assert_eq!(held.as_contact, vec![(grant.id, EmergencyState::Confirmed)]);
+    assert!(held.emergency.is_empty(), "the account holds no box of its own for it");
+
+    RotationStore::install(store, install_of(&sam, request()))
+        .await
+        .expect("the install");
+    // The grantor's box was sealed to the keys the account no longer has: the grantor confirms
+    // again, to the new bundle.
+    let after = EmergencyRepo::grant(store, grant.id)
+        .await
+        .expect("read")
+        .expect("the grant");
+    assert_eq!(after.state, EmergencyState::Accepted);
+    assert_eq!(after.sealed_key, None);
+    assert_eq!(after.grantee, Some(sam.id));
+}
+
 async fn all(store: &SqlStore) {
     rotation(store).await;
     a_stale_account_row_writes_nothing(store).await;
     staging_is_per_attempt_and_can_be_abandoned(store).await;
     wraps_written_through_the_repos_are_all_seen_and_replaced(store).await;
     an_approval_that_holds_the_old_root_key_does_not_survive_the_install(store).await;
+    a_grant_that_names_the_account_as_contact_goes_back_to_waiting(store).await;
 }
 
 #[tokio::test]
