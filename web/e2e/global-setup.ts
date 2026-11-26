@@ -55,6 +55,9 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       // The journeys sign in and step up many times a minute from one address; the per-IP
       // sign-in limit (10 a minute) is for people, not for a test run.
       KEMLOCK_RATE_SIGN_IN_PER_MINUTE: process.env['KEMLOCK_RATE_SIGN_IN_PER_MINUTE'] ?? '600',
+      // The admin signs in with a two-step code in nearly every journey: more than an account is
+      // given in 5 minutes.
+      KEMLOCK_RATE_SECOND_STEP_CHALLENGES: process.env['KEMLOCK_RATE_SECOND_STEP_CHALLENGES'] ?? '600',
       DATA_FOLDER: data,
       ROCKET_ADDRESS: '127.0.0.1',
       ROCKET_PORT: port,

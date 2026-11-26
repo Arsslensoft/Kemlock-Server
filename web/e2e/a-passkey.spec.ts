@@ -1,6 +1,6 @@
 import { type CDPSession, type Page, expect, test } from '@playwright/test';
 import { expectAccessible, watchForCspProblems } from './helpers';
-import { chooseFromAccountMenu, signInAsAdmin } from './signin';
+import { chooseFromAccountMenu, nextCode, signInAsAdmin } from './signin';
 import { ADMIN } from './state';
 
 // A passkey with a virtual authenticator (the DevTools protocol's WebAuthn domain), so no key or
@@ -57,6 +57,9 @@ test('a passkey is made, confirms an admin change and signs in with no master pa
   await expect(page.getByRole('button', { name: 'Add a passkey' })).toBeEnabled();
   expect(await credentials(cdp, authenticatorId)).toHaveLength(0);
   await page.getByRole('button', { name: 'Add a passkey' }).click();
+  // The admin has a second step on, so adding a passkey asks a current code too.
+  await page.getByLabel('The code from the email').fill(await nextCode());
+  await page.getByRole('button', { name: 'Add a passkey' }).last().click();
   await expect(page.getByTestId('passkey')).toHaveCount(1);
   const [made] = await credentials(cdp, authenticatorId);
   expect(made?.isResidentCredential).toBe(true);
