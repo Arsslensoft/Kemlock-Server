@@ -69,7 +69,19 @@ impl fmt::Debug for SigningKey {
     }
 }
 
-/// Verifies an Ed25519 signature (strictly: small-order keys and non-canonical signatures fail).
+/// Refuses an Ed25519 public key that is not a canonical encoding or that has small order (the key
+/// half of the verification rule in docs/crypto.md, "Ed25519 verification rule").
+///
+/// It is a check of bytes: a 32-byte value that passes may still not be a point on the curve, which
+/// verification finds out (no signature verifies under it). Run it on every key that comes from
+/// outside, before it is stored or used; `sig1::PublicKey::from_bytes` does.
+pub fn check_public_key(public_key: &[u8; 32]) -> Result<(), Error> {
+    crate::backend::ed25519_rule::check_point(public_key)
+}
+
+/// Verifies an Ed25519 signature under the one rule of docs/crypto.md, "Ed25519 verification rule",
+/// the same on every backend: the key and the signature's `R` must be canonical points that do not
+/// have small order, `S` must be below the group order, and the equation must hold exactly.
 pub fn verify(public_key: &[u8; 32], msg: &[u8], sig: &[u8]) -> Result<(), Error> {
     Active::ed25519_verify(public_key, msg, sig)
 }
@@ -131,6 +143,32 @@ mod tests {
         let mut bad = sig;
         bad[0] ^= 1;
         assert!(verify(&key.public_key(), b"msg", &bad).is_err());
+    }
+
+    /// The identity point: with it as the key, R = identity and S = 0 verify on any message
+    /// unless the key is refused.
+    const IDENTITY: [u8; 32] = {
+        let mut point = [0u8; 32];
+        point[0] = 1;
+        point
+    };
+
+    #[test]
+    fn a_small_order_key_never_verifies_on_any_backend() {
+        let mut forged = [0u8; 64];
+        forged[..32].copy_from_slice(&IDENTITY);
+        for_backends!(B => {
+            assert!(B::ed25519_verify(&IDENTITY, b"anything", &forged).is_err(), "{}", B::NAME);
+            assert!(B::ed25519_verify(&IDENTITY, b"", &forged).is_err(), "{}", B::NAME);
+        });
+        assert!(verify(&IDENTITY, b"anything", &forged).is_err());
+        assert!(check_public_key(&IDENTITY).is_err());
+        // The same key written as y = p + 1 is not canonical.
+        let mut non_canonical = [0xff; 32];
+        non_canonical[0] = 0xee;
+        non_canonical[31] = 0x7f;
+        assert!(check_public_key(&non_canonical).is_err());
+        assert!(check_public_key(&SigningKey::from_seed(&[1; 32]).public_key()).is_ok());
     }
 
     #[test]

@@ -640,7 +640,7 @@ fn finish_input(user: UserId, ticket: Vec<u8>, upload: Vec<u8>) -> EnrolFinishIn
         upload,
         kdf: KdfParams::new_account([4u8; 16]),
         public_bundle: bundle(user),
-        bundle_signature: vec![0x11; kemlock_app::register::BUNDLE_SIGNATURE_LEN],
+        bundle_signature: bundle_signature(user),
         sealed_private_keys: vec![0x22; 64],
         wrapped_root_key: vec![0x33; kemlock_app::register::WRAPPED_ROOT_KEY_LEN],
         two_factor_code: None,

@@ -111,7 +111,8 @@ impl Rig {
             DpopSigner::es256(),
         );
         let session = register_and_sign_in_with(&client, email, |user| {
-            Person::new(*user.as_bytes(), seed).bytes()
+            let person = Person::new(*user.as_bytes(), seed);
+            (person.bytes(), person.self_signature())
         })
         .await;
         let id = UserId(session.user_id.parse().expect("a user id"));

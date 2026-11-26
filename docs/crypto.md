@@ -58,6 +58,10 @@ explicit in the code and neither a silent fallback:
   the module. OPAQUE's SHA-512 (opaque-ke is generic over digest 0.10) and Argon2id are outside it
   too. The feature will not compile together with `rustcrypto`.
 
+Ed25519 verification is not left to each library: both backends follow the one rule of "Ed25519
+verification rule" (under `sig1`), because the libraries differ on small-order and non-canonical
+inputs.
+
 ## Account keys
 
 - **Root key**: 64 random bytes, shaped like Bitwarden's user key so one account has one root
@@ -422,6 +426,47 @@ for several keys, one of them with a group that wraps the list.
 - Signature: `ML-DSA-65.Sign(sk_m, m', ctx = empty) (3309) ‖ Ed25519.Sign(sk_e, m') (64)`,
   3373 bytes. ML-DSA signing may be hedged or deterministic; verifiers accept both.
 - Verification passes only when both verify over the same `m'`.
+- The Ed25519 half of a public key must pass the key checks below when the key is parsed, so a
+  bundle or a record that carries a weak Ed25519 key is refused (invalid) before anything is
+  verified under it.
+
+### Ed25519 verification rule
+
+Every implementation of `sig1` (the server on aws-lc-rs or RustCrypto, the web vault in
+WebAssembly, the Kemlock app, the browser extension) must verify the Ed25519 half by this one rule,
+so that a record the server accepts is a record every client accepts. It is RFC 8032's check without
+the cofactor, plus the checks that make it strict. With `p = 2^255 - 19` and `L` the order of the
+base point, `Ed25519.Verify(A, m', R ‖ S)` passes only when all of these hold:
+
+1. **`A`** (the public key) is a canonical encoding: its 255-bit `y` (little endian, top bit
+   cleared) is below `p`. A `y` of `p` or more is refused, and so is a sign bit set on a point
+   whose `x` is 0. It is not one of the eight points of small order, whichever way the sign bit
+   goes: `y` is none of `0`, `1`, `p - 1`, and the two of order 8,
+   `26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05` and
+   `c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a` (little endian). And it
+   decodes to a point on the curve.
+2. **`R`** (the first 32 bytes of the signature) meets the same three conditions as `A`.
+3. **`S`** (the last 32 bytes, little endian) is below `L` = `2^252 +
+   27742317777372353535851937790883648493`. A check of the top three bits alone is not enough.
+4. `[S]B = R + [k]A` holds exactly, with no multiplication by the cofactor, where
+   `k = SHA-512(R ‖ A ‖ m') mod L` is taken over the bytes of `R` and `A` as sent.
+
+This is RustCrypto's `verify_strict` (`ed25519-dalek`) with an explicit canonical-key check added:
+`verify_strict` reads the key through curve25519-dalek's `decompress`, which accepts a `y` of `p`
+or more. aws-lc refuses an `S` of `L` or more and non-canonical keys but not a small-order `A` or
+`R`. So `kemlock-crypto` runs the byte checks of 1 to 3 itself, on both backends, before the
+library checks the equation, and both give one answer. A mixed-order key (a point plus a point of
+small order, which is not itself of small order) is not refused: the exact equation of 4 decides,
+and every implementation that follows 4 agrees.
+
+Parsing a `sig1` public key (and so a bundle) applies the byte checks of condition 1 to the Ed25519
+half and refuses the key when they fail. Whether the point is on the curve is found when something
+is verified under it, where it fails like any other wrong key; a bundle is only stored by the server
+once its own signature verifies (below). The same checks apply to any other Ed25519 public key that
+comes from outside, such as a DPoP proof's key.
+
+`sig1-edge.json` in test-vectors pins the verdicts for each edge case of "Taming the many EdDSAs"
+(Chalkias et al., 2020).
 
 ## Public-key bundle and fingerprint
 
@@ -431,7 +476,10 @@ bundle      = "kemlock/v1/bundle" ‖ account id (16) ‖ u32be(key version)
 fingerprint = SHA-512("kemlock/v1/fingerprint" ‖ bundle)
 ```
 
-The bundle is signed with the account's own `sig1` key under context `"bundle"`. People compare
+The bundle is signed with the account's own `sig1` key under context `"bundle"`. The server checks
+that signature, under the key the bundle itself carries, when an account registers its keys and
+when a device enrols them, and refuses a bundle whose signature does not verify (invalid), so no
+client is ever given a bundle that does not prove its own key. People compare
 the fingerprint as 12 groups of 5 digits: group `i` (0 to 11) is
 `u40be(fingerprint[5i .. 5i+5]) mod 100000`, written with leading zeros, so the 60 digits use the
 first 60 of the 64 hash bytes.
@@ -2255,4 +2303,4 @@ kemlock-vectors` from fixed seeds, and checked by CI to regenerate byte for byte
 its format version and a description, and `SHA256SUMS` lists them. The folder is CC0-1.0 so any
 client may copy it.
 
-Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).
+Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `sig1-edge.json` (the Ed25519 verification rule's edge cases and their verdicts), `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).

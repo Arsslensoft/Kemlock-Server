@@ -452,15 +452,16 @@ pub(crate) async fn register(
     email: &str,
     setup_grant: Option<&str>,
 ) -> (Reply, UserId) {
-    register_with(client, email, setup_grant, fakes::bundle).await
+    register_with(client, email, setup_grant, fakes::bundle_and_signature).await
 }
 
-/// [`register`] with the public-key bundle `bundle` makes for the new account's id.
+/// [`register`] with the public-key bundle and its signature that `bundle` makes for the new
+/// account's id: the server checks that the signature verifies under the key in the bundle.
 pub(crate) async fn register_with(
     client: &Client,
     email: &str,
     setup_grant: Option<&str>,
-    bundle: impl FnOnce(UserId) -> Vec<u8>,
+    bundle: impl FnOnce(UserId) -> (Vec<u8>, Vec<u8>),
 ) -> (Reply, UserId) {
     let (state, request) = kemlock_crypto::opaque::client_registration_start(&PASSWORD)
         .expect("client registration start");
@@ -477,14 +478,15 @@ pub(crate) async fn register_with(
     let (upload, _export_key) =
         kemlock_crypto::opaque::client_registration_finish(state, &PASSWORD, &response)
             .expect("client registration finish");
+    let (public_bundle, bundle_signature) = bundle(user);
     let mut finish = json!({
         "userId": user.to_string(),
         "email": email,
         "name": "Sam",
         "upload": b64(&upload),
         "kdf": {"memoryKib": 65536, "iterations": 3, "parallelism": 4, "salt": b64(&[4u8; 16])},
-        "publicBundle": b64(&bundle(user)),
-        "bundleSignature": b64(&vec![0x11u8; BUNDLE_SIGNATURE_LEN]),
+        "publicBundle": b64(&public_bundle),
+        "bundleSignature": b64(&bundle_signature),
         "sealedPrivateKeys": b64(&[0x22u8; 64]),
         "wrappedRootKey": b64(&[0x33u8; WRAPPED_ROOT_KEY_LEN]),
     });
@@ -534,14 +536,15 @@ pub(crate) fn test_device() -> Value {
 
 /// Registers (signups must be on) and signs in without a second step.
 pub(crate) async fn register_and_sign_in(client: &Client, email: &str) -> Session {
-    register_and_sign_in_with(client, email, fakes::bundle).await
+    register_and_sign_in_with(client, email, fakes::bundle_and_signature).await
 }
 
-/// [`register_and_sign_in`] with the public-key bundle `bundle` makes for the account's id.
+/// [`register_and_sign_in`] with the public-key bundle and signature `bundle` makes for the
+/// account's id.
 pub(crate) async fn register_and_sign_in_with(
     client: &Client,
     email: &str,
-    bundle: impl FnOnce(UserId) -> Vec<u8>,
+    bundle: impl FnOnce(UserId) -> (Vec<u8>, Vec<u8>),
 ) -> Session {
     let (reply, _user) = register_with(client, email, None, bundle).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());

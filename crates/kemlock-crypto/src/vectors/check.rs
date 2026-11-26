@@ -16,7 +16,7 @@ use crate::{
     backend::Backend,
     bundle::{self, Bundle},
     confirm::{STATEMENT_LEN, Statement},
-    dedup, kem1,
+    dedup, ed25519, kem1,
     keys::{ITEM_WRAP_LABEL, RootKey, SecretKey},
     kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
@@ -366,6 +366,39 @@ fn sig1_file<B: Backend>(doc: &Value) {
         sig1::verify_in::<B>(&public, context, &message, &own).expect("own signature");
         if B::NAME == "rustcrypto" {
             assert_eq!(own, signature);
+        }
+    }
+}
+
+/// The Ed25519 verification rule's edge cases: every backend gives the file's verdicts, for the
+/// key at parse time and for the whole check.
+fn sig1_edge_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let name = s(case, "name");
+        let public: [u8; 32] = arr(case, "public_key");
+        let message = bytes(case, "message");
+        let signature = bytes(case, "signature");
+        let flag = |key: &str| {
+            case[key]
+                .as_bool()
+                .unwrap_or_else(|| panic!("`{key}` is missing or not a boolean in {name}"))
+        };
+
+        assert_eq!(
+            ed25519::check_public_key(&public).is_ok(),
+            flag("key_ok"),
+            "{} key_ok of {name}",
+            B::NAME
+        );
+        assert_eq!(
+            B::ed25519_verify(&public, &message, &signature).is_ok(),
+            flag("valid"),
+            "{} valid of {name}",
+            B::NAME
+        );
+        // A refused key never verifies, whatever the signature.
+        if !flag("key_ok") {
+            assert!(!flag("valid"), "{name}");
         }
     }
 }
@@ -1561,6 +1594,7 @@ pub(crate) fn check_on<B: Backend>(name: &str, doc: &Value) {
         "kx1" => kx1_file::<B>(doc),
         "sealed-box" => sealed_box_file::<B>(doc),
         "sig1" => sig1_file::<B>(doc),
+        "sig1-edge" => sig1_edge_file::<B>(doc),
         "bundle" => bundle_file::<B>(doc),
         "kem1" => kem1_file::<B>(doc),
         "manifest" => manifest_file::<B>(doc),
