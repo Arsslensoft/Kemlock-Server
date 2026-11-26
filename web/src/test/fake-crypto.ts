@@ -343,6 +343,12 @@ export const crypto: CryptoPort = {
       fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 11111 22222',
     };
   },
+  async rotationResealLocal(_label, sealed) {
+    calls.push('rotationResealLocal');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    if (!sealed.startsWith(`v${fakeKeyVersion}:`)) throw new Error('invalid');
+    return `v${fakePendingVersion}:${sealed.slice(sealed.indexOf(':') + 1)}`;
+  },
   async rotationAbort() {
     calls.push('rotationAbort');
     fakePendingVersion = undefined;

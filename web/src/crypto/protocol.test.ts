@@ -125,6 +125,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     rotationExportRoot: vi.fn(() => 'bmV3cm9vdA'),
     rotationSealRootKey: vi.fn(() => 'Ym94'),
     rotationCommit: vi.fn(() => JSON.stringify({ keyVersion: 4, fingerprint: '12345 67890' })),
+    rotationResealLocal: vi.fn(() => 'bW92ZWQ'),
     rotationAbort: vi.fn(),
     rotationSign: vi.fn(() => 'c2lnbmVk'),
     lock: vi.fn(),
@@ -574,6 +575,8 @@ describe('the dispatcher', () => {
     expect(await dispatch('rotationSealRootKey', ['a3gx', 'emergency-access', 'YWFk'])).toBe('Ym94');
     expect(vault.rotationSealRootKey).toHaveBeenCalledWith('a3gx', 'emergency-access', 'YWFk');
     expect(await dispatch('rotationCommit', [])).toEqual({ keyVersion: 4, fingerprint: '12345 67890' });
+    expect(await dispatch('rotationResealLocal', ['anchor/one', 'b2xk'])).toBe('bW92ZWQ');
+    expect(vault.rotationResealLocal).toHaveBeenCalledWith('anchor/one', 'b2xk');
     await dispatch('rotationAbort', []);
     expect(vault.rotationAbort).toHaveBeenCalled();
     expect(await dispatch('rotationSign', [true, 'space-chain', 'bXNn'])).toBe('c2lnbmVk');

@@ -770,6 +770,11 @@ export interface CryptoApi {
   ): Promise<string>;
   /** Makes the new keys the account's; the old private keys are kept for the spaces. */
   rotationCommit(): Promise<RotationCommit>;
+  /**
+   * Moves a value this browser keeps for the account (`sealLocal`) to the new keys, for the same
+   * label. Rejects a value that does not open under the keys in use now.
+   */
+  rotationResealLocal(label: string, sealed: string): Promise<string>;
   /** Forgets a rotation that was started and not committed. */
   rotationAbort(): Promise<void>;
   /**
@@ -958,6 +963,7 @@ export interface Ops {
     result: string;
   };
   rotationCommit: { args: []; result: RotationCommit };
+  rotationResealLocal: { args: [label: string, sealed: string]; result: string };
   rotationAbort: { args: []; result: void };
   rotationSign: { args: [previous: boolean, context: string, message: string]; result: string };
 }

@@ -167,6 +167,7 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     rotationSealRootKey: (recipientKx1, context, aad) =>
       call('rotationSealRootKey', [recipientKx1, context, aad]),
     rotationCommit: () => call('rotationCommit', []),
+    rotationResealLocal: (label, sealed) => call('rotationResealLocal', [label, sealed]),
     rotationAbort: () => call('rotationAbort', []),
     rotationSign: (previous, context, message) => call('rotationSign', [previous, context, message]),
     kitReadPiece: (text) => call('kitReadPiece', [text]),

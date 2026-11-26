@@ -349,6 +349,8 @@ export interface CryptoPort {
   ): Promise<Uint8Array>;
   /** Makes the new keys the account's. */
   rotationCommit(): Promise<{ keyVersion: number; fingerprint: string }>;
+  /** Moves a value kept with `sealLocal` to the new keys; rejects one that does not open now. */
+  rotationResealLocal(label: string, sealed: string): Promise<string>;
   /** Forgets a rotation that was started and not committed. */
   rotationAbort(): Promise<void>;
   /** A sig1 signature over a space-chain signing input, by the previous key or the new one. */
@@ -644,6 +646,7 @@ export function fromWorker(api: CryptoApi): CryptoPort {
       );
     },
     rotationCommit: () => api.rotationCommit(),
+    rotationResealLocal: (label, sealed) => api.rotationResealLocal(label, sealed),
     rotationAbort: () => api.rotationAbort(),
     async rotationSign(previous, context, message) {
       return decodeB64(await api.rotationSign(previous, context, encodeB64(message)));

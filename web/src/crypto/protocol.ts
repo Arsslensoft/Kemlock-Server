@@ -455,6 +455,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async rotationCommit() {
       return parse<RotationCommit>((await current()).rotationCommit());
     },
+    async rotationResealLocal(label, sealed) {
+      return (await current()).rotationResealLocal(label, sealed);
+    },
     async rotationAbort() {
       (await current()).rotationAbort();
     },

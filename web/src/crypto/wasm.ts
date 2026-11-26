@@ -207,6 +207,7 @@ export interface WasmVault {
   rotationSealRootKey(recipientKx1: string, context: string, aad: string): string;
   /** `{keyVersion, fingerprint}`. */
   rotationCommit(): string;
+  rotationResealLocal(label: string, sealed: string): string;
   rotationAbort(): void;
   rotationSign(previous: boolean, context: string, message: string): string;
   lock(): void;
