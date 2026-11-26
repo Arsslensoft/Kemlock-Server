@@ -746,3 +746,74 @@ async fn events_of_a_deleted_vaultwarden_user_are_kept_but_not_those_naming_this
         .expect("events");
     assert_eq!(kept.events.len(), 2);
 }
+
+#[tokio::test]
+async fn a_second_pass_cannot_delete_rows_that_hang_off_what_the_import_does_not_own() {
+    use kemlock_vaultwarden::Deletion;
+
+    let store = memory().await;
+    let owner = native(&store, "grant-owner").await;
+    let (space, collection) = native_space(&store, owner).await;
+    let item = ItemId::random();
+    common::put(&store, draft(item, Owner::User(owner), None, 1)).await;
+    let before = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+
+    let key = |parts: &[String]| parts.to_vec();
+    let deletions = vec![
+        Deletion {
+            table: "ciphers_collections",
+            key: key(&[item.0.to_string(), collection.0.to_string()]),
+        },
+        Deletion {
+            table: "users_collections",
+            key: key(&[owner.0.to_string(), collection.0.to_string()]),
+        },
+        Deletion {
+            table: "collections_groups",
+            key: key(&[collection.0.to_string(), Uuid::new_v4().to_string()]),
+        },
+        Deletion {
+            table: "collections",
+            key: key(&[collection.0.to_string()]),
+        },
+        Deletion {
+            table: "ciphers",
+            key: key(&[item.0.to_string()]),
+        },
+    ];
+    let dest = tempfile::tempdir().expect("a temp dir");
+    let mut sink = SqlImportSink::begin(
+        &store,
+        ServerSeal::new(&[7u8; 32]),
+        ImportOptions::new(dest.path(), Arc::new(Files::default()), NOW),
+    )
+    .await
+    .expect("a pass opens");
+    let report = apply(&MappedImport::default(), &deletions, &mut sink)
+        .await
+        .expect("the pass applies");
+
+    for table in [
+        "ciphers_collections",
+        "users_collections",
+        "collections_groups",
+        "collections",
+        "ciphers",
+    ] {
+        assert_eq!(refused(&report, table).len(), 1, "{table}: {:?}", report.refused);
+    }
+    let after = SpaceRepo::load(&store, space)
+        .await
+        .expect("a read")
+        .expect("the space");
+    assert_eq!(after.collections.len(), before.collections.len());
+    assert_eq!(after.grants.len(), before.grants.len());
+    let kept = ItemStore::get(&store, item)
+        .await
+        .expect("a read")
+        .expect("the item");
+    assert!(kept.deleted_at.is_none(), "the item was not turned into a tombstone");
+}

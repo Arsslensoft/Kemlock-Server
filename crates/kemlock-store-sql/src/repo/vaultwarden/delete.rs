@@ -38,7 +38,7 @@ pub(super) async fn delete_rows(ctx: &mut Ctx, table: &'static str, keys: &[RowK
         let second = row_uuid(key.get(1).map(String::as_str));
         let stored_key = rows::key_text(key);
         // Only what the import owns goes: a second pass can't delete another owner's rows.
-        if !scope::delete_allowed(ctx, table, first).await? {
+        if !scope::delete_allowed(ctx, table, key).await? {
             ctx.refuse(table, &stored_key);
             continue;
         }

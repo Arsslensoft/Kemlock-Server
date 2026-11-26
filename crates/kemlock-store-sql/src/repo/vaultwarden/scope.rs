@@ -403,20 +403,25 @@ async fn admit_row(ctx: &mut Ctx, table: &str, row: &RowRef<'_>) -> Res<bool> {
     }
 }
 
-/// Whether the import may delete the Vaultwarden row `table`/`first` that a second pass learned
-/// is gone: only what it owns.
-pub(super) async fn delete_allowed(
-    ctx: &mut Ctx,
-    table: &str,
-    first: Option<Uuid>,
-) -> Res<bool> {
-    let Some(id) = first else {
-        return Ok(true);
-    };
+/// Whether the import may delete the Vaultwarden row `table`/`key` that a second pass learned
+/// is gone: only what it owns. Rows that only hang off another (a grant, a link between a cipher
+/// and a collection) are held to the owner of what they hang off.
+pub(super) async fn delete_allowed(ctx: &mut Ctx, table: &str, key: &[String]) -> Res<bool> {
+    let first = row_uuid(key.first().map(String::as_str));
+    let second = row_uuid(key.get(1).map(String::as_str));
     match table {
-        "users" => ctx.owns(USER, id).await,
-        "organizations" => ctx.owns(SPACE, id).await,
+        "users" => match first {
+            Some(user) => ctx.owns(USER, user).await,
+            None => Ok(true),
+        },
+        "organizations" => match first {
+            Some(space) => ctx.owns(SPACE, space).await,
+            None => Ok(true),
+        },
         "devices" => {
+            let Some(id) = first else {
+                return Ok(true);
+            };
             let Some(device) = devices::Entity::find_by_id(id)
                 .one(&ctx.txn)
                 .await
@@ -426,7 +431,25 @@ pub(super) async fn delete_allowed(
             };
             ctx.owns(USER, device.user_id).await
         }
-        "ciphers" | "folders" => {
+        // Attachment ids are not UUIDs.
+        "attachments" => {
+            let Some(id) = key.first() else {
+                return Ok(true);
+            };
+            let Some(row) = bw_attachments::Entity::find_by_id(id.clone())
+                .one(&ctx.txn)
+                .await
+                .store()?
+            else {
+                return Ok(true);
+            };
+            ctx.item_owner_owned(row.item_id).await
+        }
+        // [cipher, collection]: the cipher's owner.
+        "ciphers" | "folders" | "ciphers_collections" => {
+            let Some(id) = first else {
+                return Ok(true);
+            };
             let item = item_rows::Entity::find_by_id(id)
                 .one(&ctx.txn)
                 .await
@@ -436,15 +459,17 @@ pub(super) async fn delete_allowed(
                 None => Ok(true),
             }
         }
-        "collections" => match collection_space(ctx, Some(id)).await? {
-            Some(space) => ctx.owns(SPACE, space).await,
-            None => Ok(true),
-        },
-        "groups" => match group_space(ctx, Some(id)).await? {
-            Some(space) => ctx.owns(SPACE, space).await,
-            None => Ok(true),
-        },
+        "collections" => collection_owned(ctx, first).await,
+        "groups" => group_owned(ctx, first).await,
+        // [user, collection], [collection, group] and [group, membership]: the space they are in.
+        "users_collections" => collection_owned(ctx, second).await,
+        "collections_groups" => Ok(collection_owned(ctx, first).await?
+            && group_owned(ctx, second).await?),
+        "groups_users" => group_owned(ctx, first).await,
         "emergency_access" => {
+            let Some(id) = first else {
+                return Ok(true);
+            };
             let grant = emergency_access::Entity::find_by_id(id)
                 .one(&ctx.txn)
                 .await
@@ -455,5 +480,21 @@ pub(super) async fn delete_allowed(
             }
         }
         _ => Ok(true),
+    }
+}
+
+/// Whether the collection `id` is in a space the import owns; one that isn't stored is nobody's.
+async fn collection_owned(ctx: &mut Ctx, id: Option<Uuid>) -> Res<bool> {
+    match collection_space(ctx, id).await? {
+        Some(space) => ctx.owns(SPACE, space).await,
+        None => Ok(true),
+    }
+}
+
+/// Whether the group `id` is in a space the import owns; one that isn't stored is nobody's.
+async fn group_owned(ctx: &mut Ctx, id: Option<Uuid>) -> Res<bool> {
+    match group_space(ctx, id).await? {
+        Some(space) => ctx.owns(SPACE, space).await,
+        None => Ok(true),
     }
 }
