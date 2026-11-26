@@ -944,6 +944,19 @@ impl crate::extra::MemberStore for MemoryStore {
         }))
     }
 
+    async fn writer_bundle_retired_at(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).and_then(|a| {
+            a.past_bundles
+                .iter()
+                .find(|b| b.key_version == key_version)
+                .map(|b| b.superseded_at)
+        }))
+    }
+
     async fn apply_member_account(
         &self,
         _vault: Owner,

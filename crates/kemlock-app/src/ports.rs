@@ -132,6 +132,19 @@ pub trait UserRepo: Send + Sync {
         }
     }
 
+    /// When the account replaced its bundle at `key_version` with the next version, Unix seconds:
+    /// when the keys of that version stopped signing (docs/crypto.md, "Signed item writes"). `None`
+    /// for the current version, and for one the store doesn't know the end of.
+    ///
+    /// The default knows none.
+    fn bundle_retired_at(
+        &self,
+        _id: UserId,
+        _key_version: u32,
+    ) -> impl Future<Output = Result<Option<i64>, StoreError>> + Send {
+        async { Ok(None) }
+    }
+
     /// Every bundle the account has had that the store holds, oldest key version first, the
     /// current one last. The default has only the current one.
     fn bundles_of(

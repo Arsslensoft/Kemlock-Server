@@ -993,10 +993,17 @@ version) therefore keeps every bundle it had, and what it signed before stays ve
   confirmed member of a space the account is a confirmed member of. An unknown account, a version it
   never had and a caller who may not read it are the same `404`.
 - **Federation.** A `member-account` record carries the account's past bundles (payload key 14, in
-  ascending key version, at most 64). A receiver keeps the record only when each past bundle is the
+  ascending key version, at most 64), each with the time the account replaced it (`superseded
+  at`, Unix seconds). A receiver keeps the record only when each past bundle is the
   account's own, at the version it says, below the current one, and carries a valid signature of
   its own key, as the current bundle must. A peer then checks a record's writer signature against
   the bundle of the key version the signature names, and refuses it when it holds none.
+  **A replaced key signs nothing made after it was replaced.** A peer refuses a record signed under
+  a past version when the change was made (its clock, the origin's) no earlier than five minutes
+  before the time the account replaced that version: a stolen old key can't write new changes
+  once the account has moved on, whatever the signature says. The server does not need the rule
+  at write time, which already takes only the current version. A client does not apply it: it
+  has no trustworthy time for the replacement, and leans on the floor and on the server's check.
 - **A client** checks at the writer's current version as before. At an older version it takes a
   bundle from the server's history only when all of these hold: it parses as that account's bundle
   at that version; it carries a valid signature of its own key; and its fingerprint is the one the

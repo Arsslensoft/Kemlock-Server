@@ -72,6 +72,37 @@ pub(crate) async fn record<C: ConnectionTrait>(
     }
 }
 
+/// When the version after `key_version` was kept, in Unix seconds: when `key_version` was replaced.
+pub(crate) async fn retired_at<C: ConnectionTrait>(
+    conn: &C,
+    user: Uuid,
+    key_version: i64,
+) -> Result<Option<i64>, StoreError> {
+    Ok(Entity::find_by_id((user, key_version + 1))
+        .one(conn)
+        .await
+        .store()?
+        .map(|row| row.recorded_at.unix_timestamp()))
+}
+
+/// Sets when `key_version` was kept, for a copy of an account: its home knows when the version
+/// began, and this server learned of it later.
+pub(crate) async fn set_recorded_at<C: ConnectionTrait>(
+    conn: &C,
+    user: Uuid,
+    key_version: i64,
+    at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    Entity::update_many()
+        .col_expr(Column::RecordedAt, sea_orm::sea_query::Expr::value(utc(at)))
+        .filter(Column::UserId.eq(user))
+        .filter(Column::KeyVersion.eq(key_version))
+        .exec(conn)
+        .await
+        .store()?;
+    Ok(())
+}
+
 /// Every bundle kept for `user`, oldest key version first.
 pub(crate) async fn all_of<C: ConnectionTrait>(
     conn: &C,

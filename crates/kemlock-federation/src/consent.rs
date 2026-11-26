@@ -605,6 +605,7 @@ mod tests {
             key_version,
             bundle_signature: bundle.sign(&key).expect("a signature"),
             public_bundle: bundle.to_bytes(),
+            superseded_at: 1_700_000_000,
         }
     }
 

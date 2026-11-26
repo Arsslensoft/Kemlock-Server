@@ -71,6 +71,14 @@ impl UserRepo for SqlStore {
             .transpose()
     }
 
+    async fn bundle_retired_at(
+        &self,
+        id: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        account_bundles::retired_at(self.reader(), id.0, i64::from(key_version)).await
+    }
+
     async fn bundles_of(&self, id: UserId) -> Result<Vec<StoredBundle>, StoreError> {
         let mut all = account_bundles::all_of(self.reader(), id.0).await?;
         // The current one is the account's row, as in `bundle_at`.

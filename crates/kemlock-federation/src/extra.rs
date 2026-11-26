@@ -258,6 +258,17 @@ pub trait MemberStore: Send + Sync {
     ) -> impl Future<Output = R<Option<Vec<u8>>>> + Send {
         ready(Ok(None))
     }
+
+    /// When `user` replaced its bundle at `key_version`, Unix seconds, as this server knows it:
+    /// `None` for the current version and for one whose end it doesn't know. What an account's
+    /// replaced keys sign after that is not the account's.
+    fn writer_bundle_retired_at(
+        &self,
+        _user: UserId,
+        _key_version: u32,
+    ) -> impl Future<Output = R<Option<i64>>> + Send {
+        ready(Ok(None))
+    }
 }
 
 /// Attachments as federation moves them: the rows here, the bytes in blob storage.

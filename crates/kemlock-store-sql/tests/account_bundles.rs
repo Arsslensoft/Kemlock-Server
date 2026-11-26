@@ -193,3 +193,34 @@ async fn a_copy_of_a_rotated_account_carries_its_past_bundles_to_a_replica() {
         None
     );
 }
+
+#[tokio::test]
+async fn a_bundle_says_when_the_account_replaced_it() {
+    let store = memory().await;
+    let ada = user(&unique_email("ada"));
+    UserRepo::insert(&store, &ada).await.expect("insert");
+    // Nothing has replaced the first yet.
+    assert_eq!(
+        UserRepo::bundle_retired_at(&store, ada.id, 1)
+            .await
+            .expect("read"),
+        None
+    );
+    UserRepo::update(&store, &rotated(&ada, 2, 20))
+        .await
+        .expect("rotate");
+    let first = UserRepo::bundle_retired_at(&store, ada.id, 1)
+        .await
+        .expect("read")
+        .expect("replaced");
+    assert!(first > 0);
+    // The current one, and a version the account never had, have no end.
+    for version in [2, 7] {
+        assert_eq!(
+            UserRepo::bundle_retired_at(&store, ada.id, version)
+                .await
+                .expect("read"),
+            None
+        );
+    }
+}

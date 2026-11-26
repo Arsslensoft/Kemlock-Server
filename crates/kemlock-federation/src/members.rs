@@ -27,7 +27,7 @@
 //! | 11 | created at, Unix seconds |
 //! | 12 | updated at, Unix seconds |
 //! | 13 | devices: array of maps `{0: id (16), 1: name, 2: kind, 3: DPoP thumbprint (absent when none), 4: created at}` |
-//! | 14 | past bundles, absent when there are none: array of `[key version, public bundle, bundle signature]` in ascending key version, the bundles the account had before its current key version, so a replica can check a write signed under one (docs/crypto.md, "Signed item writes") |
+//! | 14 | past bundles, absent when there are none: array of `[key version, public bundle, bundle signature, superseded at (Unix seconds)]` in ascending key version, the bundles the account had before its current key version, so a replica can check a write signed under one (docs/crypto.md, "Signed item writes") |
 
 use crate::cbor::Value;
 use crate::error::{FedError, Result};
@@ -49,6 +49,9 @@ pub struct PastBundle {
     pub key_version: u32,
     pub public_bundle: Vec<u8>,
     pub bundle_signature: Vec<u8>,
+    /// When the account replaced this bundle, Unix seconds: what signs under it after that is not
+    /// the account's (docs/crypto.md, "Signed item writes").
+    pub superseded_at: i64,
 }
 
 /// One device registration of a member.
@@ -204,6 +207,7 @@ impl MemberAccount {
                                 Value::Uint(u64::from(b.key_version)),
                                 Value::bytes(&b.public_bundle),
                                 Value::bytes(&b.bundle_signature),
+                                secs(b.superseded_at),
                             ])
                         })
                         .collect(),
@@ -260,14 +264,15 @@ impl MemberAccount {
                 return Err(FedError::Malformed("too many past bundles"));
             }
             for entry in list {
-                let [version, bundle, signature] = entry.as_array()? else {
-                    return Err(FedError::Malformed("a past bundle has three parts"));
+                let [version, bundle, signature, superseded] = entry.as_array()? else {
+                    return Err(FedError::Malformed("a past bundle has four parts"));
                 };
                 past_bundles.push(PastBundle {
                     key_version: u32::try_from(version.as_uint()?)
                         .map_err(|_| FedError::Malformed("a key version is too large"))?,
                     public_bundle: bundle.as_bytes()?.to_vec(),
                     bundle_signature: signature.as_bytes()?.to_vec(),
+                    superseded_at: from_secs(superseded.as_uint()?)?,
                 });
             }
         }
@@ -392,11 +397,13 @@ mod tests {
                 key_version: 2,
                 public_bundle: vec![6; 300],
                 bundle_signature: vec![7; 100],
+                superseded_at: 1_700_000_200,
             },
             PastBundle {
                 key_version: 1,
                 public_bundle: vec![8; 300],
                 bundle_signature: vec![9; 100],
+                superseded_at: 1_700_000_100,
             },
         ];
         let back = MemberAccount::from_payload(&a.to_payload()).expect("a payload");
@@ -417,6 +424,7 @@ mod tests {
                 key_version,
                 public_bundle: vec![1; 10],
                 bundle_signature: vec![2; 10],
+                superseded_at: 1,
             })
             .collect();
         assert!(MemberAccount::from_payload(&a.to_payload()).is_err());

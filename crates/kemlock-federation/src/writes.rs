@@ -22,6 +22,10 @@ pub const SIGNED_WRITES_CAPABILITY: &str = "x-kemlock-signed-writes1";
 /// `docs/federation.md`, "Member accounts"). A server that doesn't refuses the whole record.
 pub const PAST_BUNDLES_CAPABILITY: &str = "x-kemlock-past-bundles1";
 
+/// How far past the moment an account replaced its keys a change made by a server with a slow clock
+/// may still be dated, and be taken as signed before it.
+const RETIRED_KEY_SLACK_SECS: u64 = 300;
+
 /// What to do with a record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
@@ -100,6 +104,19 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
             "a change by a writer whose keys at that version we do not hold",
         ));
     };
+    // Keys the account has replaced signed nothing after it did (a stolen old key must not write
+    // new changes): only a change made before then, by the clock of the server that accepted it.
+    if let Some(retired) = store
+        .writer_bundle_retired_at(write.writer, write.key_version)
+        .await?
+    {
+        let made = record.change.hlc.millis() / 1000;
+        if made >= u64::try_from(retired).unwrap_or(0).saturating_add(RETIRED_KEY_SLACK_SECS) {
+            return Ok(Verdict::Refuse(
+                "a change signed with keys the account had replaced by then",
+            ));
+        }
+    }
     let Some(statement) = statement_of(record) else {
         return Ok(Verdict::Refuse(
             "a change whose writer statement can't be made",
@@ -342,6 +359,8 @@ mod tests {
             key_version: 1,
             public_bundle: bundle_of(1, &old_key),
             bundle_signature: vec![0; 8],
+            // The account replaced them a long time after the records below were made.
+            superseded_at: 1_800_000_000,
         }];
         store.set_member_account(copy);
 
@@ -362,5 +381,49 @@ mod tests {
             write.key_version = 3;
         }
         assert!(verdict_is_refusal(judge(&store, &third).await));
+    }
+
+    #[tokio::test]
+    async fn the_keys_an_account_replaced_sign_nothing_made_after_it_did() {
+        use crate::members::PastBundle;
+        let writer = UserId::random();
+        let old_key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let new_key = sig1::SigningKey::from_bytes(&[6; 64]);
+        let bundle_of = |version: u32, key: &sig1::SigningKey| {
+            Bundle {
+                account_id: *writer.as_bytes(),
+                key_version: version,
+                kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("length"),
+                sig1_public: key.public_key().expect("public key"),
+            }
+            .to_bytes()
+        };
+        // The records are made at 1_700_000_000 s.
+        let held = |superseded_at: i64| {
+            let store = MemoryStore::new(ServerId::random());
+            let mut copy = account(writer, bundle_of(2, &new_key), 2);
+            copy.past_bundles = vec![PastBundle {
+                key_version: 1,
+                public_bundle: bundle_of(1, &old_key),
+                bundle_signature: vec![0; 8],
+                superseded_at,
+            }];
+            store.set_member_account(copy);
+            store
+        };
+        let record = signed_record(Owner::User(writer), writer, &old_key);
+        assert_eq!(
+            judge(&held(1_700_000_001), &record).await,
+            Ok(Verdict::Accept)
+        );
+        // A little past the moment, for a clock that runs slow, is still before it.
+        assert_eq!(
+            judge(&held(1_699_999_900), &record).await,
+            Ok(Verdict::Accept)
+        );
+        // Made after the account replaced the keys: the old key is no longer the account.
+        assert!(verdict_is_refusal(
+            judge(&held(1_699_000_000), &record).await
+        ));
     }
 }

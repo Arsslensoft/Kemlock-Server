@@ -669,8 +669,9 @@ changes. The payload is deterministic CBOR (`kemlock-federation`, `members.rs`):
 name, mode, KDF settings, the root key wrapped by the password, the public-key bundle and its
 signature, the private keys sealed under the user key, the key version, the creation and update
 times, the device registrations (id, name, kind, the thumbprint of the DPoP key, creation time)
-and the bundles the account had before its current key version, so a write it signed under one
-is checked against it (`docs/crypto.md`, "Signed item writes", "Key versions"); each is held to what
+and the bundles the account had before its current key version, each with the time it replaced
+it, so a write it signed under one is checked against it, and refused when it was made after that
+time (`docs/crypto.md`, "Signed item writes", "Key versions"); each is held to what
 the current bundle is held to.
 There is no OPAQUE record, security stamp, role, two-step method or token in it, so no password
 secret is shared, and a copy signs in only with a registered device key

@@ -341,6 +341,14 @@ impl MemberStore for SqlStore {
         }
     }
 
+    async fn writer_bundle_retired_at(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        UserRepo::bundle_retired_at(self, user, key_version).await
+    }
+
     async fn writer_bundle(
         &self,
         user: UserId,
@@ -371,16 +379,22 @@ impl MemberStore for SqlStore {
             .collect();
         // The bundles before the current one go with the copy, so a replica can check a write the
         // account signed before it replaced its keys.
-        let past_bundles = UserRepo::bundles_of(self, user)
-            .await?
-            .into_iter()
-            .filter(|b| b.key_version < account.key_version)
-            .map(|b| kemlock_federation::members::PastBundle {
+        let mut past_bundles = Vec::new();
+        for b in UserRepo::bundles_of(self, user).await? {
+            if b.key_version >= account.key_version {
+                continue;
+            }
+            // When the account replaced it: what is signed under it after that isn't the account's.
+            let superseded_at = UserRepo::bundle_retired_at(self, user, b.key_version)
+                .await?
+                .unwrap_or_else(|| account.updated_at.unix_timestamp());
+            past_bundles.push(kemlock_federation::members::PastBundle {
                 key_version: b.key_version,
                 public_bundle: b.public_bundle,
                 bundle_signature: b.bundle_signature,
-            })
-            .collect();
+                superseded_at,
+            });
+        }
         Ok(Some(MemberAccount {
             id: account.id,
             email: account.email.as_str().to_owned(),
@@ -450,7 +464,10 @@ impl MemberStore for SqlStore {
             }
             Some(_) => {}
         }
-        // What the account signed under its earlier keys is checked against these.
+        // What the account signed under its earlier keys is checked against these, and not after the
+        // home says it replaced them: a version began when the one before it ended, so each is kept
+        // as of then (the first, when the account was made), and the current one too.
+        let mut began = account.created_at;
         for past in &account.past_bundles {
             crate::tables::account_bundles::record(
                 self.writer(),
@@ -458,7 +475,17 @@ impl MemberStore for SqlStore {
                 i64::from(past.key_version),
                 &past.public_bundle,
                 &past.bundle_signature,
-                user.updated_at,
+                from_secs(began, "a past bundle's start")?,
+            )
+            .await?;
+            began = past.superseded_at;
+        }
+        if !account.past_bundles.is_empty() {
+            crate::tables::account_bundles::set_recorded_at(
+                self.writer(),
+                account.id.0,
+                i64::from(account.key_version),
+                from_secs(began, "a bundle's start")?,
             )
             .await?;
         }
