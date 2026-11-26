@@ -182,8 +182,9 @@ impl Backend for RustCrypto {
         let key = ed25519_dalek::VerifyingKey::from_bytes(public).map_err(invalid)?;
         let sig = ed25519_dalek::Signature::from_slice(sig).map_err(invalid)?;
         // `verify_strict` refuses a small-order key or R and any S not below L, and compares the
-        // recomputed R with the one sent byte for byte. aws-lc isn't known to do the first two on
-        // its own, so its backend runs the checks of `ed25519_rule` first.
+        // recomputed R with the one sent byte for byte. It accepts a non-canonical key (y of p or
+        // more), which `ed25519_rule` has refused above; aws-lc lacks the small-order checks, so
+        // its backend runs the same rule first.
         key.verify_strict(msg, &sig).map_err(invalid)
     }
 

@@ -451,9 +451,10 @@ base point, `Ed25519.Verify(A, m', R ‖ S)` passes only when all of these hold:
 4. `[S]B = R + [k]A` holds exactly, with no multiplication by the cofactor, where
    `k = SHA-512(R ‖ A ‖ m') mod L` is taken over the bytes of `R` and `A` as sent.
 
-This is RustCrypto's `verify_strict` (`ed25519-dalek`) with an explicit canonical-key check added.
-aws-lc is not known to refuse small-order keys, non-canonical points or an `S` between `L` and
-`2^253`, so `kemlock-crypto` runs the byte checks of 1 to 3 itself, on both backends, before the
+This is RustCrypto's `verify_strict` (`ed25519-dalek`) with an explicit canonical-key check added:
+`verify_strict` reads the key through curve25519-dalek's `decompress`, which accepts a `y` of `p`
+or more. aws-lc refuses an `S` of `L` or more and non-canonical keys but not a small-order `A` or
+`R`. So `kemlock-crypto` runs the byte checks of 1 to 3 itself, on both backends, before the
 library checks the equation, and both give one answer. A mixed-order key (a point plus a point of
 small order, which is not itself of small order) is not refused: the exact equation of 4 decides,
 and every implementation that follows 4 agrees.

@@ -10,11 +10,13 @@
 //! 4. `[S]B = R + [k]A` holds exactly (not multiplied by the cofactor), with
 //!    `k = SHA-512(R ‖ A ‖ M) mod L` over the bytes as sent.
 //!
-//! That is what RustCrypto's `verify_strict` checks. aws-lc's verification is not known to do all
-//! of it (nothing promises that it refuses small-order keys, non-canonical encodings or an `S`
-//! between `L` and `2^253`), so the native backend runs the checks here before calling aws-lc, and
-//! aws-lc's own exact equation does the rest. The two backends therefore accept the same
-//! signatures.
+//! Each library does part of this on its own. aws-lc (`ed25519_verify_internal`) refuses an `S` of
+//! `L` or more (a full comparison) and a non-canonical key (`y` of `p` or more, or `x = 0` with the
+//! sign bit set); it does not refuse a small-order `A` or `R`. RustCrypto's `verify_strict` refuses
+//! a small-order `A` or `R` and an `S` of `L` or more, but reads the key through curve25519-dalek's
+//! `decompress`, which accepts a `y` of `p` or more. The rule is the union, so it is stricter than
+//! `verify_strict` on non-canonical keys. Both backends run the checks here before calling their
+//! library, whose exact equation does the rest, so they accept the same signatures.
 //!
 //! The checks that need curve arithmetic (is the point on the curve) are left to the backends:
 //! both refuse a point that does not decode, and a signature can't verify under one anyway. The
