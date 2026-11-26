@@ -10,7 +10,6 @@ use axum::http::StatusCode;
 use kemlock_app::AppError;
 use kemlock_app::admin::{InviteGate, InviteTicket};
 use kemlock_app::bitwarden::{BwAccount, BwAccountRepo};
-use kemlock_app::notices::{Notice, RegisterVerifyNotice};
 use kemlock_app::ports::{StoreError, TwoFactorRepo, UserRepo};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_crypto::hash;
@@ -453,12 +452,6 @@ async fn admit<S: BwStore>(app: &App<S>, email: &str, token: Option<&str>) -> Bw
     Ok(Admission::Refused)
 }
 
-/// Whether an address has to be proven by a mailed link before its account is made
-/// (`SIGNUPS_VERIFY`): it is only asked for when the server can mail the link.
-fn verifies_signups<S: BwStore>(app: &App<S>) -> bool {
-    app.settings.signups_verify() && app.notices.mails()
-}
-
 /// `POST /identity/accounts/register/send-verification-email`. With no mail to send, the token
 /// goes straight back and the client uses it to finish. With `SIGNUPS_VERIFY` on and a mailer, the
 /// token goes only to the address, as Vaultwarden does, so whoever asks can't use an address that
@@ -472,7 +465,7 @@ pub(crate) async fn verification_token<S: BwStore>(
     if matches!(admit(app, email, invite_token).await?, Admission::Refused) {
         return Err(BwError::msg(REGISTRATION_REFUSED));
     }
-    let mail = verifies_signups(app);
+    let mail = crate::signup_hold::verifies(app);
     let now = app.now_secs();
     let claims = RegisterVerifyClaims {
         nbf: now,
@@ -489,12 +482,7 @@ pub(crate) async fn verification_token<S: BwStore>(
     if !mail {
         return Ok(Some(token));
     }
-    // An address that can't be a mailbox gets no mail, and the same answer as one that did.
-    if let Ok(to) = Email::parse(email) {
-        app.notices
-            .send(Notice::RegisterVerify(RegisterVerifyNotice { to, token }))
-            .await;
-    }
+    crate::signup_hold::mail_token(app, email, token).await;
     Ok(None)
 }
 
@@ -555,7 +543,7 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
     }
     // Where the server verifies sign-ups, the token has to be the one mailed to the address: the
     // asker never sees it. A server invitation was mailed to the address too, so it proves it.
-    if verifies_signups(app) && !verified && !matches!(admission, Admission::Invited(_)) {
+    if crate::signup_hold::verifies(app) && !verified && !matches!(admission, Admission::Invited(_)) {
         return Err(BwError::msg(
             "Email verification is required: open the link mailed to the address to finish registering",
         ));
@@ -616,6 +604,7 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         revision_ms: epoch_millis(now),
     };
     BwAccountRepo::insert(&app.store, &account).await?;
+    crate::signup_hold::hold(app, &user).await?;
     // Invitations to this address become memberships.
     app.adopt_invitations(&user).await?;
     if let Admission::Invited(invitation) = admission {

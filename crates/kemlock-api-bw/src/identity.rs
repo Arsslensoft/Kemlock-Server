@@ -920,6 +920,7 @@ async fn password_login<S: BwStore>(
         return Err(BwError::msg(DISABLED));
     }
     refuse_pending_erasure(app, &user).await?;
+    crate::signup_hold::refuse_if_held(app, &user).await?;
     require_sso(app, &user, SignInMethod::Password).await?;
     kdf_upgrade(app, &mut account, password).await?;
 
@@ -1040,6 +1041,7 @@ async fn refresh_login<S: BwStore>(
         return Err(invalid_grant());
     }
     refuse_pending_erasure(app, &user).await?;
+    crate::signup_hold::refuse_if_held(app, &user).await?;
     if account_of(app, &user).await?.is_none() {
         return Err(invalid_grant());
     }
@@ -1160,6 +1162,7 @@ async fn user_api_key_login<S: BwStore>(
     attempt.proved = true;
     attempt.user = Some(user.id);
     refuse_pending_erasure(app, &user).await?;
+    crate::signup_hold::refuse_if_held(app, &user).await?;
     require_sso(app, &user, SignInMethod::ApiKey).await?;
 
     let device_type = requested_device_type(&data, caller);
