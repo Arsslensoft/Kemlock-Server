@@ -699,6 +699,8 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
         }
 
         let report = replica.pull(channel, peer.id, owner).await?;
+        // Read before `report.counts` moves into the status.
+        let pull_refused = report.counts.refused;
         status.pulled = report.counts;
 
         let sync = replica.pull_home_records(channel, peer.id, owner).await?;
@@ -754,7 +756,7 @@ impl<S: FedStore + Leases, C: Connector> PeerRunner<S, C> {
             // A pull that left records out (a writer's keys not here yet, an origin over its quota)
             // compares at once: the comparison fetches them again.
             returned
-                || report.counts.refused > 0
+                || pull_refused > 0
                 || last.is_none_or(|t| now >= t.saturating_add(RECONCILE_EVERY_SECS))
         };
         let mut push = false;
