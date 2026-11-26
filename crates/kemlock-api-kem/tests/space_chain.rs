@@ -648,7 +648,9 @@ async fn an_item_under_a_replaced_collection_key_version_is_refused() {
     // Its key moves to version 2 by a `keys` record. Version 1 is stale now, 2 is accepted, and 3
     // names a key the chain hasn't made.
     let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
-    let reply = sam.post(&uri(space), request(&[&keys])).await;
+    let mut body = request(&[&keys]);
+    body["held"] = json!([first.json()["id"].clone()]);
+    let reply = sam.post(&uri(space), body).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     let old = sam.put_item(space, collection, 1).await;
     assert_eq!(old.status, StatusCode::CONFLICT, "{:?}", old.json());
@@ -1017,8 +1019,10 @@ async fn a_rewrite_under_another_key_version_than_the_new_one_appends_nothing() 
         .expect("the item");
     assert_eq!((stored.revision.0, stored.key_version), (1, 1));
 
-    // Nothing was appended: the same record, without the writes, is still the next one.
-    let ok = sam.post(&uri(space), request(&[&keys])).await;
+    // Nothing was appended: the same record, naming the item held, is still the next one.
+    let mut body = request(&[&keys]);
+    body["held"] = json!([id.to_string()]);
+    let ok = sam.post(&uri(space), body).await;
     assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
 }
 
@@ -1065,7 +1069,42 @@ async fn only_items_of_a_replaced_collection_are_rewritten_and_none_that_is_also
         assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
     }
 
-    // Nothing of any of it landed: the record goes in alone.
-    let ok = sam.post(&uri(space), request(&[&keys])).await;
+    // Nothing of any of it landed: the record goes in with the item held.
+    let mut body = request(&[&keys]);
+    body["held"] = json!([of_general.to_string()]);
+    let ok = sam.post(&uri(space), body).await;
     assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn a_replacement_that_leaves_a_live_item_out_is_refused_and_one_that_covers_it_is_not() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let rewritten = made_item(&sam, space, collection).await;
+    let held = made_item(&sam, space, collection).await;
+    let left_out = made_item(&sam, space, collection).await;
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+
+    // The item that is neither re-written nor held would stay under the old key version.
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, rewritten, 1, 2)]);
+    body["held"] = json!([held.to_string()]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{:?}", refused.json());
+
+    // Naming it too covers every live item: one re-written, two held.
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, rewritten, 1, 2)]);
+    body["held"] = json!([held.to_string(), left_out.to_string()]);
+    let ok = sam.post(&uri(space), body).await;
+    assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
+    assert_eq!(held_ids(&rig, space).await.len(), 2);
+
+    // Held items stay held when the key is replaced again: they need no naming a second time.
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 3, &[&sam.person]);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([rewrite(space, collection, rewritten, 2, 3)]);
+    let again = sam.post(&uri(space), body).await;
+    assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.json());
 }

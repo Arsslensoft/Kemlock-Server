@@ -551,6 +551,11 @@ where
     /// once, by a member with edit on the collection in the state the records lead to; none is also
     /// held. Each is checked as any item write is (`apply_space_write`), against the revision the
     /// request names.
+    ///
+    /// The replacement is complete (I3, "completeness check"): every live `kem1` item of a
+    /// collection whose key the request replaces is re-written or named held, except one an earlier
+    /// replacement already holds. An item left out would stay under the old key version, which I2
+    /// refuses to write to and clients refuse to read, with nothing in the chain to say so.
     async fn writes(
         &self,
         space: SpaceId,
@@ -560,9 +565,6 @@ where
         actor: UserId,
         now: time::OffsetDateTime,
     ) -> Result<Vec<(ItemDraft, CollectionId)>, AppendError> {
-        if request.writes.is_empty() {
-            return Ok(Vec::new());
-        }
         let mut new_versions: BTreeMap<CollectionId, u32> = BTreeMap::new();
         for (rec, _, _) in accepted {
             if let Body::Keys { rotate, .. } = &rec.body {
@@ -575,6 +577,9 @@ where
             }
         }
         if new_versions.is_empty() {
+            if request.writes.is_empty() {
+                return Ok(Vec::new());
+            }
             return Err(AppendError::Invalid(
                 "only a keys record that replaces a collection key is followed by re-written items",
             ));
@@ -632,6 +637,28 @@ where
                     )
                 })?;
             drafts.push((draft, *collection));
+        }
+        let already: BTreeSet<ItemId> = self
+            .spaces
+            .held_items(space)
+            .await?
+            .into_iter()
+            .collect();
+        for info in &infos {
+            let replaced = info
+                .collection
+                .is_some_and(|c| new_versions.contains_key(&c));
+            if replaced
+                && !info.deleted
+                && info.format == ItemFormat::Kem1
+                && !already.contains(&info.id)
+                && !written.contains(&info.id)
+                && !held.contains(&info.id)
+            {
+                return Err(AppendError::Invalid(
+                    "every live kem1 item of a replaced collection is re-written or named held",
+                ));
+            }
         }
         Ok(drafts)
     }
