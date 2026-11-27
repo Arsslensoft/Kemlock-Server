@@ -183,13 +183,22 @@ async fn accounts_no_import_made_are_left_alone_unless_the_operator_adopts_them(
         .await,
         2
     );
-    // The pass is in the admin event log.
+    // Each pass is in the admin event log: one entry for the pass, and one for each setting it
+    // carried (the sample config.json carries two: signups_allowed and smtp_host).
     assert_eq!(
         count(
             data.path(),
             "SELECT COUNT(*) FROM events WHERE action = 'admin.migration.cli'"
         )
         .await,
-        3
+        3 * (1 + 2)
+    );
+    assert_eq!(
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM events WHERE action = 'admin.migration.cli' AND target LIKE '%: setting %'"
+        )
+        .await,
+        3 * 2
     );
 }
