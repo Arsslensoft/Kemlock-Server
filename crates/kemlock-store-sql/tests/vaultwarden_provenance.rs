@@ -1240,6 +1240,69 @@ async fn a_second_pass_drops_two_step_and_membership_rows_only_of_what_it_owns()
 }
 
 #[tokio::test]
+async fn an_imported_smtp_host_takes_the_stored_password_with_it_and_security_stays_on() {
+    use kemlock_app::admin::SettingsRepo;
+    let carry = |pairs: &[(&str, serde_json::Value)]| {
+        let mut settings = MappedSettings::default();
+        for (name, value) in pairs {
+            settings.values.insert((*name).to_owned(), value.clone());
+        }
+        MappedImport {
+            settings,
+            ..Default::default()
+        }
+    };
+    let seed = |store: SqlStore| async move {
+        for (key, value) in [
+            ("setting.smtp_host", "mail.example.org"),
+            ("setting.smtp_security", "starttls"),
+            ("setting.smtp_password", "sealed-password"),
+        ] {
+            store.put_setting(key, value).await.expect("seeded");
+        }
+        store
+    };
+    let value = |store: SqlStore, key: &'static str| async move {
+        SettingsRepo::settings_with_prefix(&store, key)
+            .await
+            .expect("a read")
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    };
+
+    // The same host (in another case) keeps the password; a different host clears it.
+    let store = seed(memory().await).await;
+    pass(&store, &carry(&[("smtp_host", json!("MAIL.example.org"))]), false).await;
+    assert_eq!(
+        value(store.clone(), "setting.smtp_password").await.as_deref(),
+        Some("sealed-password")
+    );
+    pass(&store, &carry(&[("smtp_host", json!("evil.example.net"))]), false).await;
+    assert_eq!(value(store.clone(), "setting.smtp_password").await, None);
+    assert_eq!(
+        value(store.clone(), "setting.smtp_host").await.as_deref(),
+        Some("evil.example.net")
+    );
+
+    // With a password stored, a source can't turn the connection's encryption off.
+    let store = seed(memory().await).await;
+    let report = pass(&store, &carry(&[("smtp_security", json!("off"))]), false).await;
+    assert_eq!(refused(&report, "setting"), vec!["smtp_security".to_owned()]);
+    assert_eq!(
+        value(store.clone(), "setting.smtp_security").await.as_deref(),
+        Some("starttls")
+    );
+    // Without a stored password it may.
+    let bare = memory().await;
+    pass(&bare, &carry(&[("smtp_security", json!("off"))]), false).await;
+    assert_eq!(
+        value(bare, "setting.smtp_security").await.as_deref(),
+        Some("off")
+    );
+}
+
+#[tokio::test]
 async fn an_item_the_api_revised_after_the_source_is_not_overwritten() {
     let store = memory().await;
     let user = UserId::random();

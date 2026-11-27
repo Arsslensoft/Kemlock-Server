@@ -550,6 +550,13 @@ pub(super) async fn put_events(ctx: &Ctx, table: &Table) -> Res<()> {
 /// holds the move's own status and the server's markers. A value the console would refuse is left
 /// out.
 pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<()> {
+    let prefix = kemlock_app::admin::settings::KEY_PREFIX;
+    let password_key = format!("{prefix}smtp_password");
+    let mut password_stored = settings::Entity::find_by_id(password_key.clone())
+        .one(&ctx.txn)
+        .await
+        .store()?
+        .is_some();
     for (name, value) in &mapped.values {
         let text = match value {
             Value::String(s) => s.clone(),
@@ -559,6 +566,31 @@ pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<
             ctx.refuse("setting", name);
             continue;
         };
+        // The stored SMTP password belongs to the host it was made for, as in the console: a source
+        // that names another host takes the password with it, never to the new host.
+        if name == "smtp_host" && password_stored {
+            let old = settings::Entity::find_by_id(format!("{prefix}smtp_host"))
+                .one(&ctx.txn)
+                .await
+                .store()?
+                .map(|row| row.value.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if stored.trim().to_ascii_lowercase() != old {
+                settings::Entity::delete_by_id(password_key.clone())
+                    .exec(&ctx.txn)
+                    .await
+                    .store()?;
+                password_stored = false;
+                tracing::warn!(
+                    "the move named another SMTP host: the stored SMTP password was cleared"
+                );
+            }
+        }
+        // A source can't turn off the encryption of the connection the stored password goes over.
+        if name == "smtp_security" && stored == "off" && password_stored {
+            ctx.refuse("setting", name);
+            continue;
+        }
         let key = format!("{}{name}", kemlock_app::admin::settings::KEY_PREFIX);
         settings::Entity::delete_by_id(key.clone())
             .exec(&ctx.txn)
