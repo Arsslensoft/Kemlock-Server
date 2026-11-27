@@ -796,8 +796,16 @@ every peer. Both are envelopes whose body is deterministic CBOR:
 A **rotation** is signed with `sig1("federation-key-rotation", body)` by the *old* key. The receiver
 accepts it only when the old key is the one it holds for that server, `issued at` is not more than
 300 seconds ahead of its clock (nor older than a descriptor lives, 37 days), and the new descriptor
-is for the same server, verifies under its own key and carries another key; it then pins the new
-key and remembers the old one, with when it replaced it. A rotation that keeps the server's
+is for the same server, verifies under its own key and carries another key. The old key may be a
+stolen one, and a thief can make a new key and sign both, so a rotation **pins nothing until this
+server's admin confirms it**, as a promotion does (unless `federation_promotion` is `auto`, which
+applies it at once): it is kept, with the SHA-256 fingerprint of the new key (at most eight for one
+server), and the console lists it (`GET /admin/v1/federation/rotations`). The admin compares the
+fingerprint with the peer's admin and confirms (`POST /admin/v1/federation/peers/{id}/rotation`,
+`?fingerprint=` when several wait) or refuses (`DELETE` on the same path), both with a step-up
+token. Until then the old key stays pinned and the new key's sessions are refused; a revocation of
+the old key counts as before. On confirmation the receiver pins the new key and remembers the old
+one, with when it replaced it. A rotation that keeps the server's
 addresses takes the descriptor's operator and suites at once. One that **brings other addresses**
 does not: this server keeps dialling the addresses it knew, and the new addresses, operator and
 suites wait for its admin (`GET /admin/v1/federation/address-changes`; `POST` on

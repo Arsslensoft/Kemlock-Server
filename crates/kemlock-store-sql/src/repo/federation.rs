@@ -16,7 +16,7 @@ use crate::tables::federation::{
     vault_federation,
 };
 use crate::tables::federation_keys::{
-    peer_key_history, peer_pending_addresses, peer_trusted_addresses,
+    peer_held_rotations, peer_key_history, peer_pending_addresses, peer_trusted_addresses,
 };
 use crate::tables::federation_wiring::{federation_erasures, vault_rank_pins};
 use crate::tables::items::{self, owner_parts};
@@ -876,6 +876,11 @@ impl PeerRepo for SqlStore {
             .store()?;
         peer_trusted_addresses::Entity::delete_many()
             .filter(peer_trusted_addresses::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_held_rotations::Entity::delete_many()
+            .filter(peer_held_rotations::Column::Server.eq(id.0))
             .exec(self.writer())
             .await
             .store()?;

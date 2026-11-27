@@ -764,3 +764,43 @@ async fn a_vault_pinned_to_revision_ranking_stays_pinned() {
     let other = Owner::User(kemlock_domain::UserId::random());
     assert_eq!(store.revision_ranked(other).await, Ok(false));
 }
+
+#[tokio::test]
+async fn held_rotations_are_kept_once_for_each_key_up_to_a_few_and_go_with_the_peer() {
+    use kemlock_federation::keyrecs::{HeldRotation, KeyStore, MAX_HELD_ROTATIONS};
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    let held = |n: usize| HeldRotation {
+        server: p.id,
+        fingerprint: format!("{n:064x}"),
+        issued_at: 100,
+        received_at: 200 + n as u64,
+        envelope: vec![n as u8; 40],
+    };
+    assert_eq!(store.held_rotations().await, Ok(Vec::new()));
+
+    assert_eq!(store.put_held_rotation(&held(0)).await, Ok(true));
+    // The same key again is the same rotation.
+    assert_eq!(store.put_held_rotation(&held(0)).await, Ok(true));
+    assert_eq!(store.held_rotations().await, Ok(vec![held(0)]));
+    for n in 1..MAX_HELD_ROTATIONS {
+        assert_eq!(store.put_held_rotation(&held(n)).await, Ok(true));
+    }
+    // One more than the limit is refused, and the ones held stay.
+    assert_eq!(
+        store.put_held_rotation(&held(MAX_HELD_ROTATIONS)).await,
+        Ok(false)
+    );
+    assert_eq!(
+        store.held_rotations().await.expect("list").len(),
+        MAX_HELD_ROTATIONS
+    );
+
+    store.drop_held_rotations(p.id).await.expect("dropped");
+    assert_eq!(store.held_rotations().await, Ok(Vec::new()));
+    // Removing the peer takes what was held for it.
+    store.put_held_rotation(&held(1)).await.expect("held");
+    assert!(store.remove_peer(p.id).await.expect("removed"));
+    assert_eq!(store.held_rotations().await, Ok(Vec::new()));
+}

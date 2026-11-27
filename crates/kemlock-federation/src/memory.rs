@@ -185,6 +185,8 @@ struct Extras {
     past_keys: HashMap<ServerId, Vec<crate::keyrecs::PastKey>>,
     /// Address changes that came with rotations, for the admin.
     pending_addresses: Vec<crate::keyrecs::PendingAddresses>,
+    /// Rotations held for the admin.
+    held_rotations: Vec<crate::keyrecs::HeldRotation>,
     /// The addresses of each peer the admin chose.
     trusted_addresses: HashMap<ServerId, Vec<String>>,
     /// Vaults whose account or space does not live here, for `owns_vault`; everything else does.
@@ -469,6 +471,7 @@ impl PeerRepo for MemoryStore {
             let mut extras = self.extras();
             extras.past_keys.remove(&id);
             extras.pending_addresses.retain(|p| p.peer != id);
+            extras.held_rotations.retain(|h| h.server != id);
             extras.trusted_addresses.remove(&id);
         }
         let mut st = self.lock();
@@ -1313,6 +1316,39 @@ impl KeyStore for MemoryStore {
                 key: key.to_vec(),
                 replaced_at,
             });
+        Ok(())
+    }
+
+    async fn put_held_rotation(
+        &self,
+        held: &crate::keyrecs::HeldRotation,
+    ) -> Result<bool, StoreError> {
+        let mut extras = self.extras();
+        if extras
+            .held_rotations
+            .iter()
+            .any(|h| h.server == held.server && h.fingerprint == held.fingerprint)
+        {
+            return Ok(true);
+        }
+        let waiting = extras
+            .held_rotations
+            .iter()
+            .filter(|h| h.server == held.server)
+            .count();
+        if waiting >= crate::keyrecs::MAX_HELD_ROTATIONS {
+            return Ok(false);
+        }
+        extras.held_rotations.push(held.clone());
+        Ok(true)
+    }
+
+    async fn held_rotations(&self) -> Result<Vec<crate::keyrecs::HeldRotation>, StoreError> {
+        Ok(self.extras().held_rotations.clone())
+    }
+
+    async fn drop_held_rotations(&self, server: ServerId) -> Result<(), StoreError> {
+        self.extras().held_rotations.retain(|h| h.server != server);
         Ok(())
     }
 

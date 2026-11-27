@@ -509,6 +509,28 @@ pub(crate) struct AddressChangeDto {
     received_at: u64,
 }
 
+/// A rotation of a peer's identity key that waits for the admin: the new key is pinned only when
+/// the admin confirms it is the peer's own (compare the fingerprint with the peer's admin).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct RotationDto {
+    #[schema(value_type = String)]
+    peer: ServerId,
+    /// SHA-256 of the new identity key, in hex.
+    fingerprint: String,
+    operator: String,
+    addresses: Vec<String>,
+    issued_at: u64,
+    received_at: u64,
+}
+
+/// Which held rotation a route means: the one whose new key has this fingerprint, or the only one
+/// that waits.
+#[derive(Debug, Default, Deserialize)]
+struct RotationPick {
+    fingerprint: Option<String>,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 struct OfferDto {
@@ -1346,6 +1368,69 @@ where
     ))
 }
 
+/// `GET …/rotations`: the identity-key rotations that came from peers and wait for the admin.
+async fn held_rotations<S, C>(
+    State(state): State<AdminState<S, C>>,
+    _admin: Admin,
+) -> Result<Json<Vec<RotationDto>>, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    Ok(Json(
+        state
+            .federation
+            .held_rotations()
+            .await?
+            .into_iter()
+            .map(|r| RotationDto {
+                peer: r.server,
+                fingerprint: r.fingerprint,
+                operator: r.operator,
+                addresses: r.addresses,
+                issued_at: r.issued_at,
+                received_at: r.received_at,
+            })
+            .collect(),
+    ))
+}
+
+/// `POST …/peers/{id}/rotation`: the new key is the peer's own; pin it.
+async fn accept_rotation<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+    Query(pick): Query<RotationPick>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state
+        .federation
+        .accept_held_rotation(peer, pick.fingerprint.as_deref(), unix_now())
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE …/peers/{id}/rotation`: refuse the rotations held for the peer.
+async fn refuse_rotation<S, C>(
+    State(state): State<AdminState<S, C>>,
+    Admin(actor): Admin,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError>
+where
+    S: FedStore + Leases + 'static,
+    C: Connector + 'static,
+{
+    let peer = parse_server(&id)?;
+    require_step_up(&actor)?;
+    state.federation.refuse_held_rotations(peer).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// `POST …/peers/{id}/address-change`: follow the server to its new addresses.
 async fn approve_address_change<S, C>(
     State(state): State<AdminState<S, C>>,
@@ -1509,6 +1594,11 @@ where
         .route(
             &format!("{BASE}/address-changes"),
             get(address_changes::<S, C>),
+        )
+        .route(&format!("{BASE}/rotations"), get(held_rotations::<S, C>))
+        .route(
+            &format!("{BASE}/peers/{{id}}/rotation"),
+            post(accept_rotation::<S, C>).delete(refuse_rotation::<S, C>),
         )
         .route(
             &format!("{BASE}/peers/{{id}}/address-change"),

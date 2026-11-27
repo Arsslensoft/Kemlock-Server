@@ -68,6 +68,7 @@ mod m20261202_020001_account_bundles;
 mod m20261203_010001_key_box_signatures;
 mod m20261203_020001_rotation_staged_signatures;
 mod m20261204_050001_vault_rank_pins;
+mod m20261204_050002_held_rotations;
 
 use sea_orm_migration::prelude::*;
 
@@ -141,6 +142,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20261203_010001_key_box_signatures::Migration),
             Box::new(m20261203_020001_rotation_staged_signatures::Migration),
             Box::new(m20261204_050001_vault_rank_pins::Migration),
+            Box::new(m20261204_050002_held_rotations::Migration),
         ]
     }
 }

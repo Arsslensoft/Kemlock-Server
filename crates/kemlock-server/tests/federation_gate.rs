@@ -1646,7 +1646,23 @@ async fn a_new_identity_key_is_accepted_through_a_rotation_and_a_revocation_stop
             .is_some()
     );
 
-    // A's next visit delivers the record before it opens the session, so B pins the new key.
+    // A's next visit delivers the record before it opens the session. B holds it for its admin:
+    // the old key is still the one pinned, and the session under the new key can't open yet.
+    let _ = a.runner.run_peer(b.id, unix_now()).await;
+    let held = b.facade.held_rotations().await.expect("held rotations");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].server, a.id);
+    let waiting = PeerRepo::get_peer(b.store(), a.id)
+        .await
+        .expect("a read")
+        .expect("the peer");
+    assert_eq!(waiting.identity_key, old.public.as_bytes().to_vec());
+
+    // B's admin confirms the new key is A's own, so B pins it and the sessions open again.
+    b.facade
+        .accept_held_rotation(a.id, None, unix_now())
+        .await
+        .expect("confirmed");
     assert!(matches!(a.visit(&b).await, RunOutcome::Done(_)));
     let pinned = PeerRepo::get_peer(b.store(), a.id)
         .await
