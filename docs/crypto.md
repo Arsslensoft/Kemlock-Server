@@ -1324,7 +1324,10 @@ signature covers those), and `bw` items, which have no `kem1` envelope.
 - **Client to server.** `PUT /kem/v1/items/{id}`, `POST /kem/v1/items:batch` and the writes of a
   key replacement take three new optional members on the item: `writer` (the writing account's id),
   `writerKeyVersion` and `writeSignature` (base64url). All three or none; `writer` must be the
-  signed-in account.
+  signed-in account. The items a key replacement writes again (the `writes` of the chain append
+  route and of `POST /kem/v1/spaces/{id}/key-replacement`) and those a reseal writes through the
+  batch route are writes like any other: signed by the account that makes them, with the item's
+  collection bound, and checked the same way. A signed-only space refuses them unsigned.
 - **Stored** with the item's change, as one value `writer (16) ‖ u32be(key version) ‖ signature
   (3373)`, 3393 bytes, and **served back** on sync (`GET /kem/v1/sync`, siblings included) in the
   same three members, so any device can check it.
@@ -2360,8 +2363,20 @@ live items the record leaves held (I3), and `"writes": [{"collection", "expected
 version (an `item` is written as `PUT /kem/v1/items/{id}` takes it). They are stored in the same transaction as the records. A write is of a live item of a
 collection whose key a `keys` record of the request replaces, by a member with edit on it; an item
 is written once and is not also held; any other write is refused (`400`, or `422`
-`held-not-rotated` for a collection the request does not replace). The server refuses a record
-unless all of these hold:
+`held-not-rotated` for a collection the request does not replace).
+
+**Each re-written item is a signed write** ("Signed item writes"): the member who replaces the key
+signs it with their own `sig1` key, over the statement of a space's item, so the statement binds the
+item's collection, the new envelope (key version, ciphertext and wrapped item key) and the revision,
+and the item carries `writer`, `writerKeyVersion` and `writeSignature`. The server checks each one
+as it checks any write (the writer is the signed-in account at its current key version, the signature
+verifies under its registered bundle, `invalid-signature` otherwise), before anything is stored, and
+refuses an unsigned `kem1` re-write for a space that takes signed writes only (`422`
+`signature-required`). The web vault signs them in the worker, as it does the items its reseal
+writes again (`POST /kem/v1/items:batch`), so a signed-only space is not stuck behind its own key
+replacement and a client that holds an item at its floor takes the re-written revision in. The route
+that replaces keys without a chain (`POST /kem/v1/spaces/{id}/key-replacement`) applies the same rules. The server
+refuses a record unless all of these hold:
 
 - A1. Its bytes are canonical and within "Limits", and its body has its kind's exact shape.
 - A2. `space` is the route's space.
