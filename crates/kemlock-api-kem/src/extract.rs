@@ -301,6 +301,29 @@ pub struct Authed {
     pub security_stamp: Uuid,
 }
 
+/// How recent the sign-in behind a session must be for the changes that weaken an account's
+/// defences or open it to a new device (see [`Authed::require_fresh_sign_in`]).
+pub const FRESH_SIGN_IN_SECS: i64 = 15 * 60;
+
+impl Authed {
+    /// Whether the sign-in this session began with happened in the last [`FRESH_SIGN_IN_SECS`]. A
+    /// refresh keeps `auth_time`, so a session that has only ever been refreshed, such as a token
+    /// pair taken from a device, can read and sync but can't make these changes: the person signs
+    /// in again (the password, a passkey, SSO, or a device approval, each with its own second step)
+    /// and repeats the request. A 403 `reauth-required`.
+    pub fn require_fresh_sign_in(&self, now: i64) -> Result<(), Problem> {
+        if now.saturating_sub(self.auth_time) <= FRESH_SIGN_IN_SECS {
+            return Ok(());
+        }
+        Err(Problem::new(
+            StatusCode::FORBIDDEN,
+            "reauth-required",
+            "Sign in again to do this",
+        )
+        .detail("this change needs a sign-in from the last 15 minutes: sign in again, then repeat it"))
+    }
+}
+
 /// Marks a 401 as a refused token (RFC 9449, section 7.1); other problems pass unchanged.
 fn invalid_token(problem: Problem) -> Problem {
     if problem.status == StatusCode::UNAUTHORIZED {

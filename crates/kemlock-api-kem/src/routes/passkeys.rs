@@ -624,6 +624,7 @@ where
     W: WebAuthn + Clone + 'static,
     M: Send + Sync + 'static,
 {
+    authed.require_fresh_sign_in(api.now())?;
     manage(&api, &runtime)
         .delete(authed.actor.user, passkey_id(&id)?)
         .await?;
@@ -647,6 +648,7 @@ where
     W: WebAuthn + Clone + 'static,
     M: Send + Sync + 'static,
 {
+    authed.require_fresh_sign_in(api.now())?;
     let request: PrfBody = body.json()?;
     manage(&api, &runtime)
         .set_wrap(
@@ -711,6 +713,7 @@ where
         now,
     )?;
     let credential = credential_bytes(&request.credential)?;
+    super::two_step::require_fresh_for_first_step(&api, &authed).await?;
     require_proof_to_add(
         &api,
         &proof_steps(&api, runtime.repos.clone()),

@@ -156,6 +156,7 @@ where
     R: RecoveryKitRepo + ChallengeRepo + Clone + 'static,
 {
     guard(&api.limits.sign_in, &ip_key(authed.ip), api.now())?;
+    authed.require_fresh_sign_in(api.now())?;
     let request: CreateKitRequest = body.json()?;
     let kit = kits(&api, &repos)
         .create(
