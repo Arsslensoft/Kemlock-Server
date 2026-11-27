@@ -1743,6 +1743,56 @@ async fn secrets_are_sealed_and_never_shown() {
     assert_eq!(events[0].target.as_deref(), Some("smtp_password"));
 }
 
+#[tokio::test]
+async fn a_new_smtp_host_does_not_keep_the_stored_password() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let put = |changes: Value| {
+        let root = &root;
+        let token = &token;
+        async move {
+            root.write(
+                "PUT",
+                "/admin/v1/settings",
+                Some(json!({ "changes": changes })),
+                token,
+            )
+            .await
+        }
+    };
+    let first =
+        put(json!({"smtp_host": "mail.example.org", "smtp_password": "hunter2-hunter2"})).await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
+
+    // Pointing the host elsewhere while keeping the stored password is refused, and nothing is
+    // saved: the password would go to whoever answers at the new host.
+    let moved = put(json!({"smtp_host": "evil.example.net"})).await;
+    assert_eq!(moved.status, StatusCode::BAD_REQUEST, "{:?}", moved.json());
+    assert_eq!(
+        rig.admin.saved_setting("setting.smtp_host").as_deref(),
+        Some("mail.example.org")
+    );
+
+    // The same host, or a new host with a new password (or none), is fine.
+    assert_eq!(
+        put(json!({"smtp_host": "Mail.Example.org"})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(json!({"smtp_host": "other.example.net", "smtp_password": "another-password-1"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(json!({"smtp_host": "third.example.net", "smtp_password": null}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // SSO
 

@@ -827,6 +827,30 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                 }
             }
         }
+        // A password kept across a new mail host would be sent to whoever answers there, and an
+        // admin could point the host at a server of their own to read it: a new host takes a new
+        // password (or none) in the same save.
+        if let Some(change) = changes.get("smtp_host") {
+            let new_host = match change {
+                Change::Set(value) => value.trim().to_ascii_lowercase(),
+                Change::Reset => String::new(),
+            };
+            let old_host = self
+                .get("smtp_host")
+                .await?
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let kept = !changes.contains_key("smtp_password")
+                && self.saved().await?.contains_key("smtp_password");
+            if new_host != old_host && kept {
+                return Err(AdminError::Invalid(
+                    "smtp_host changed: enter the SMTP password again, or clear it \
+                     (smtp_password), in the same save"
+                        .to_owned(),
+                ));
+            }
+        }
         // A link can't be mailed without a mail server, and an account held back for one that never
         // comes can't be used: turning the setting on needs the SMTP settings the server needs to
         // make a mail server, saved with it or already set (a host and a sender, and a user name
