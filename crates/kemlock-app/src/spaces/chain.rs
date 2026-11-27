@@ -243,13 +243,9 @@ pub enum AppendOutcome {
     Stale(Option<ChainHead>),
 }
 
-/// How much of its limits a stored chain uses (`SpaceChainRepo::chain_usage`).
+/// How much of the chain one account signed lately (`SpaceChainRepo::chain_usage`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ChainUsage {
-    /// Records in the chain.
-    pub records: u64,
-    /// Bytes of their entries, which is what the chain's byte limit counts.
-    pub bytes: u64,
     /// Records the member signed in the last hour.
     pub by_member_hour: u64,
     /// Records the member signed in the last day.
@@ -310,9 +306,10 @@ pub trait SpaceChainRepo: Send + Sync {
         replay_state(self, space)
     }
 
-    /// What the stored chain holds and what `member` signed lately: the records and the bytes of
-    /// their entries, and the records `member` signed at or after `since_hour` and `since_day`
-    /// (Unix seconds, by the record's `at`). The default reads the whole chain.
+    /// How many records `member` signed in the chain at or after `since_hour` and `since_day`
+    /// (Unix seconds, by the record's `at`): what the quota of the append asks. The default reads
+    /// the whole chain; a store counts. The chain's own totals are not read here: the state at the
+    /// head carries them.
     fn chain_usage(
         &self,
         space: SpaceId,
@@ -323,10 +320,6 @@ pub trait SpaceChainRepo: Send + Sync {
         async move {
             let mut usage = ChainUsage::default();
             for row in self.chain_records(space, 0).await? {
-                usage.records = usage.records.saturating_add(1);
-                usage.bytes = usage
-                    .bytes
-                    .saturating_add(u64::try_from(row.entry.len()).unwrap_or(u64::MAX));
                 if row.by == member {
                     if row.at >= since_hour {
                         usage.by_member_hour = usage.by_member_hour.saturating_add(1);

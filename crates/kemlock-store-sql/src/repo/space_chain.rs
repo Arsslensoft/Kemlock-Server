@@ -29,8 +29,8 @@ use kemlock_federation::ports::{ReplicaStore, VaultRepo};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, DbBackend, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    QuerySelect, TransactionTrait,
+    ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    TransactionTrait,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -325,43 +325,9 @@ impl SpaceChainRepo for SqlStore {
         since_day: u64,
     ) -> Result<ChainUsage, StoreError> {
         let db = self.reader();
-        let total = records::Entity::find()
-            .filter(records::Column::SpaceId.eq(space.0))
-            .count(db)
-            .await
-            .store()?;
-        let signed_since = |since: u64| {
-            records::Entity::find()
-                .filter(records::Column::SpaceId.eq(space.0))
-                .filter(records::Column::Signer.eq(member.0))
-                .filter(records::Column::At.gte(i64::try_from(since).unwrap_or(i64::MAX)))
-                .count(db)
-        };
-        let by_member_hour = signed_since(since_hour).await.store()?;
-        let by_member_day = signed_since(since_day).await.store()?;
-        // The entries' lengths are added up here, not in SQL: `SUM` comes back as a different
-        // type on each backend, and so does a length unless it is cast.
-        let length = match db.get_database_backend() {
-            DbBackend::Postgres => "CAST(OCTET_LENGTH(\"entry\") AS BIGINT)",
-            DbBackend::MySql => "CAST(LENGTH(`entry`) AS SIGNED)",
-            _ => "LENGTH(\"entry\")",
-        };
-        let sizes = records::Entity::find()
-            .select_only()
-            .expr(Expr::cust(length))
-            .filter(records::Column::SpaceId.eq(space.0))
-            .into_tuple::<i64>()
-            .all(db)
-            .await
-            .store()?;
-        let bytes = sizes.into_iter().fold(0u64, |total, size| {
-            total.saturating_add(u64::try_from(size).unwrap_or(0))
-        });
         Ok(ChainUsage {
-            records: total,
-            bytes,
-            by_member_hour,
-            by_member_day,
+            by_member_hour: signed_since(db, space, member, since_hour).await?,
+            by_member_day: signed_since(db, space, member, since_day).await?,
         })
     }
 
@@ -420,6 +386,23 @@ impl SpaceChainRepo for SqlStore {
             .store()?;
         Ok(result.rows_affected > 0)
     }
+}
+
+/// How many records `member` signed in the chain at or after `since` (Unix seconds, by `at`). A count
+/// over `(space_id, signer, at)`, which an index serves.
+async fn signed_since<C: ConnectionTrait>(
+    db: &C,
+    space: SpaceId,
+    member: UserId,
+    since: u64,
+) -> Result<u64, StoreError> {
+    records::Entity::find()
+        .filter(records::Column::SpaceId.eq(space.0))
+        .filter(records::Column::Signer.eq(member.0))
+        .filter(records::Column::At.gte(i64::try_from(since).unwrap_or(i64::MAX)))
+        .count(db)
+        .await
+        .store()
 }
 
 fn grants_text(grants: &[(CollectionId, CollectionPermission)]) -> String {

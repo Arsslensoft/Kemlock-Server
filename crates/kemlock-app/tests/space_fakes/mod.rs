@@ -46,6 +46,8 @@ struct Inner {
     held: BTreeSet<ItemId>,
     recovery: BTreeMap<(SpaceId, UserId), RecoveryBox>,
     policies: BTreeMap<SpaceId, kemlock_domain::policies::SpacePolicies>,
+    /// What `chain_usage` answers, when a test sets it, in place of counting the chain.
+    usage: Option<kemlock_app::spaces::ChainUsage>,
 }
 
 /// `SpaceRepo` over maps. Items live in `I`, the item store of the test's world, so a space item
@@ -176,6 +178,11 @@ impl<I> FakeSpaces<I> {
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("the spaces lock isn't poisoned")
+    }
+
+    /// Makes `chain_usage` answer `usage`, whoever asks: a chain too long to build in a test.
+    pub(crate) fn set_usage(&self, usage: kemlock_app::spaces::ChainUsage) {
+        self.lock().usage = Some(usage);
     }
 
     /// Sets the policies the join check of the use cases reads for `space`.
@@ -918,6 +925,25 @@ impl SpaceWorld {
 }
 
 impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
+    async fn chain_usage(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        since_hour: u64,
+        since_day: u64,
+    ) -> Result<kemlock_app::spaces::ChainUsage, StoreError> {
+        let g = self.lock();
+        if let Some(usage) = g.usage {
+            return Ok(usage);
+        }
+        let mut usage = kemlock_app::spaces::ChainUsage::default();
+        for r in g.chains.get(&space).into_iter().flatten().filter(|r| r.by == member) {
+            usage.by_member_hour += u64::from(r.at >= since_hour);
+            usage.by_member_day += u64::from(r.at >= since_day);
+        }
+        Ok(usage)
+    }
+
     async fn chain_head(&self, space: SpaceId) -> Result<Option<ChainHead>, StoreError> {
         Ok(self
             .lock()
