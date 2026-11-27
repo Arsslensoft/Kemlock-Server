@@ -199,6 +199,13 @@ where
             "couldn't seal the stored secrets to their accounts; the old form stays readable"
         ),
     }
+    // A space chained before the chain's policies were enforced keeps the settings its route had
+    // set: once, the policies each chain signs are written to the table the server enforces.
+    match store.project_chain_policies().await {
+        Ok(0) => {}
+        Ok(spaces) => tracing::info!(spaces, "the policies of chained spaces follow their chains"),
+        Err(e) => tracing::warn!(error = %e, "couldn't project the policies of chained spaces"),
+    }
     // SSO settings from `SSO_*` fill an empty table; a bad value turns SSO off and says why.
     match sso::seed_from_env(&store, &crypto, &|name| std::env::var(name).ok()).await {
         Ok(true) => tracing::info!("single sign-on is set up from the SSO_* settings"),

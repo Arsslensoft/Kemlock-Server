@@ -122,6 +122,11 @@ impl SpaceMirror for SqlStore {
             }
             SpaceRecord::Held(items) => return self.replace_held(space, items).await,
             SpaceRecord::Policies(p) => {
+                // A chained space's policies are the chain's: the home's own settings row, which no
+                // chain record backs, is not what a replica enforces. They come from the chain.
+                if self.space_has_chain(space).await? {
+                    return self.project_policies_of(space).await.map(|_| ());
+                }
                 let by = p.updated_by.unwrap_or(UserId(Uuid::nil()));
                 let at = p.updated_at.unwrap_or(OffsetDateTime::UNIX_EPOCH);
                 return PolicyRepo::put_space_policies(self, space, &p.policies, by, at).await;

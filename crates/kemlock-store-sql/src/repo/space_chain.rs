@@ -19,8 +19,8 @@ use kemlock_app::spaces::{
     PendingChange, PendingExternal, SpaceChainRepo, StoredRecord, StoredSeal, pending_from_changes,
     replay_state,
 };
-use kemlock_crypto::space_chain::KeyRef;
 use kemlock_crypto::space_chain::State;
+use kemlock_crypto::space_chain::{self as sc, KeyRef};
 use kemlock_domain::spaces::{CollectionId, CollectionPermission, CustomPermissions, SpaceRole};
 use kemlock_domain::{ItemDraft, ItemId, Owner, SpaceId, UserId};
 use kemlock_federation::chain::{ChainWire, WireName, WireSeal};
@@ -30,7 +30,7 @@ use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
     ColumnTrait, ConnectionTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
-    TransactionTrait,
+    QuerySelect, TransactionTrait,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -534,7 +534,62 @@ fn pending_of(row: pending::Model) -> Result<PendingExternal, StoreError> {
     })
 }
 
+/// The setting that says the one-time pass of `project_chain_policies` was done.
+const POLICIES_PROJECTED_KEY: &str = "chain_policies_projected_v1";
+
 impl SqlStore {
+    /// Writes the policy settings the chain of `space` signs into `space_policy_settings`, which
+    /// is what the server enforces: the chain is the one place they are set on a chained space.
+    /// `false` when the space has no chain.
+    pub(crate) async fn project_policies_of(&self, space: SpaceId) -> Result<bool, StoreError> {
+        let Some((_, state)) = SpaceChainRepo::chain_state(self, space).await? else {
+            return Ok(false);
+        };
+        let creator = records::Entity::find_by_id((space.0, 0i64))
+            .one(self.reader())
+            .await
+            .store()?
+            .map(|row| UserId(row.signer))
+            .ok_or_else(|| bad("a chain with no first record"))?;
+        super::policies::upsert_policies(
+            self.writer(),
+            space,
+            &kemlock_app::spaces::chain_project::policies_of(&state.policies),
+            creator,
+            OffsetDateTime::now_utc(),
+        )
+        .await?;
+        Ok(true)
+    }
+
+    /// Once, at the first start of a server that enforces the policies a chain signs: projects the
+    /// policies of every chained space into `space_policy_settings`. Spaces chained before then
+    /// kept the settings their route (now refused on a chained space) had last set, which the
+    /// chain does not say. Returns how many spaces it wrote; cheap when it was done already.
+    pub async fn project_chain_policies(&self) -> Result<u64, StoreError> {
+        use kemlock_app::admin::SettingsRepo;
+        let done = SettingsRepo::settings_with_prefix(self, POLICIES_PROJECTED_KEY).await?;
+        if done.iter().any(|(key, _)| key == POLICIES_PROJECTED_KEY) {
+            return Ok(0);
+        }
+        let spaces: Vec<Uuid> = records::Entity::find()
+            .select_only()
+            .column(records::Column::SpaceId)
+            .filter(records::Column::Seq.eq(0i64))
+            .into_tuple()
+            .all(self.reader())
+            .await
+            .store()?;
+        let mut written = 0;
+        for space in spaces {
+            if self.project_policies_of(SpaceId(space)).await? {
+                written += 1;
+            }
+        }
+        SettingsRepo::put_setting(self, POLICIES_PROJECTED_KEY, "1").await?;
+        Ok(written)
+    }
+
     /// Whether the space has any record of a chain.
     pub(crate) async fn space_has_chain(&self, space: SpaceId) -> Result<bool, StoreError> {
         Ok(records::Entity::find()
@@ -836,6 +891,14 @@ impl SqlStore {
             Ok(())
         }
         .await;
-        finish(txn, outcome, "a failed chain record from the home").await
+        let kept = finish(txn, outcome, "a failed chain record from the home").await;
+        // A record that sets the space's policies sets what this replica enforces too: derived from
+        // the chain, never from a policies record of the home's own that no chain record backs.
+        let sets_policies = sc::Record::parse(&wire.entry)
+            .is_ok_and(|r| matches!(r.kind(), sc::Kind::Create | sc::Kind::Policies));
+        if kept.is_ok() && sets_policies {
+            self.project_policies_of(space).await?;
+        }
+        kept
     }
 }

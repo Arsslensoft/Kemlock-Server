@@ -735,6 +735,48 @@ async fn the_store_checks_whose_item_a_hold_and_a_collection_link_are_about() {
 }
 
 #[tokio::test]
+async fn an_account_that_owns_a_space_alone_is_not_erased_by_the_store() {
+    use kemlock_app::privacy::AccountEraser;
+    use kemlock_domain::User;
+
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let ana = person(&store, 2, "ana@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    join(&store, space, everyone, &sam, &ana).await;
+    let account: User = UserRepo::by_id(&store, sam.id)
+        .await
+        .expect("reads")
+        .expect("the account");
+
+    // The only owner of a space with another member: the erasure's own transaction refuses.
+    assert_eq!(
+        AccountEraser::erase_user(&store, &account).await,
+        Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
+    );
+    assert!(UserRepo::by_id(&store, sam.id).await.expect("reads").is_some());
+    assert_eq!(
+        AccountEraser::blocking_spaces(&store, sam.id).await,
+        Ok(vec![space])
+    );
+
+    // With the member gone, the space goes with its only owner.
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![ana.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Ana is removed");
+    AccountEraser::erase_user(&store, &account)
+        .await
+        .expect("erased");
+    assert_eq!(SpaceRepo::load(&store, space).await, Ok(None));
+}
+
+#[tokio::test]
 async fn deleting_a_collection_clears_its_grants_keys_and_item_links() {
     let store = memory().await;
     let sam = person(&store, 1, "sam@example.org").await;
