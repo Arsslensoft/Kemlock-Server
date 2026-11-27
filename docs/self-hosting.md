@@ -660,8 +660,10 @@ Use the exact version in the identity as above, or `v[0-9].*` to accept any rele
 A release is a version tag on a commit of the default branch (`main`). `release.yml` fails a tag on
 any other commit before it builds anything, but that is only a guard against a slip: a tag on an old
 commit runs that commit's own copy of the workflow. What stops a tag from a write token is the
-repository ruleset `tools/repo-settings.sh` creates, which lets only administrators create, move or
-delete a version tag. Do not tag a release from a branch.
+repository ruleset that `tools/repo-settings.sh` creates, which lets only administrators create,
+move or delete a version tag. That ruleset exists only once the repository owner has run the script
+(`tools/repo-settings.sh --dry-run` shows what it sends); until then any write token can still push
+a version tag. Do not tag a release from a branch.
 
 Binaries, with the bundle that sits beside each file:
 
