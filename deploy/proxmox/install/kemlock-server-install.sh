@@ -89,17 +89,24 @@ if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   echo "SHA-256 of ${asset} does not match SHA256SUMS" >&2
   exit 1
 fi
-# cosign, from Sigstore's pinned release, checked against that release's checksum file. It is kept
-# (by version) so an update does not download it again.
+# cosign, from Sigstore's pinned release. Its checksum file is fetched on every run, and the kept
+# copy (by version, so an update does not download it again) is hashed and compared with it each
+# time, so a binary that was swapped on disk is replaced or the run stops.
+# TODO(owner): hard-code the SHA-256 of cosign-linux-amd64 and cosign-linux-arm64 for
+# COSIGN_VERSION here and compare against those instead of the checksum file that sits beside the
+# binary on the same release page; no network was available to read them when this was written.
 cosign="${COSIGN_DIR}/cosign-${COSIGN_VERSION}"
-if [ ! -x "$cosign" ]; then
-  cosign_base="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}"
-  cosign_asset="cosign-linux-${cosign_arch}"
+cosign_base="https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}"
+cosign_asset="cosign-linux-${cosign_arch}"
+curl -fsSL -o "${tmp}/cosign_checksums.txt" "${cosign_base}/cosign_checksums.txt"
+cosign_expected="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/cosign_checksums.txt")"
+if [ -z "$cosign_expected" ]; then
+  echo "no checksum for ${cosign_asset} ${COSIGN_VERSION}" >&2
+  exit 1
+fi
+if [ ! -x "$cosign" ] || [ "$(sha256sum "$cosign" | awk '{print $1}')" != "$cosign_expected" ]; then
   curl -fsSL -o "${tmp}/${cosign_asset}" "${cosign_base}/${cosign_asset}"
-  curl -fsSL -o "${tmp}/cosign_checksums.txt" "${cosign_base}/cosign_checksums.txt"
-  cosign_expected="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "${tmp}/cosign_checksums.txt")"
-  cosign_actual="$(sha256sum "${tmp}/${cosign_asset}" | awk '{print $1}')"
-  if [ -z "$cosign_expected" ] || [ "$cosign_expected" != "$cosign_actual" ]; then
+  if [ "$(sha256sum "${tmp}/${cosign_asset}" | awk '{print $1}')" != "$cosign_expected" ]; then
     echo "SHA-256 of ${cosign_asset} ${COSIGN_VERSION} does not match its release's checksums" >&2
     exit 1
   fi
