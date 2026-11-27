@@ -743,12 +743,18 @@ revoked or removed
 member is a "gone" record, which takes their grants, group seats and key copies out of the replica
 too. A replica applies them only when they are of the vault's current epoch and signed by its home;
 a stale-epoch one is quarantined like the rest and shows in the vault's quarantine list for its
-admins to redo or drop. A space's home may only speak for accounts that are its own: a `space-member`, `space-keys`, group
-seat or grant that names an account **of the replica** (not a copy), or a copy that came from another
-server, is refused (the seat and the grant are left out of the group and the collection; a seat
-planted earlier for a local account is taken out), because a member's policies, Require SSO among
-them, bind them. An account the replica holds no copy of yet may be named: the member record comes
-before the account's. A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
+admins to redo or drop. **A space homed at another server binds nobody here.** A replica applies the member, group, grant and
+key records of a space as its home made them, for any account id, an account that lives on the
+replica included: that is how a person whose account is on server B (and whose vault federates to
+A) is a confirmed member of a space at A, how a copy from a third server joins one, and how the users
+of an old home keep their membership after a promotion. So what a space's policies do is decided
+by who is its home, not by who its members are: a space whose home is not this server is left out of
+every policy check here (Require SSO, single space, two-step to join, no Sends, show the email,
+master password rules and the rest), and does not count toward what the spaces of this server say.
+Require SSO means this server's identity provider only. The residual: a foreign home can list a
+local account as a member of its own space. It has no effect on the account's sign-in or on its
+policies here, and a key copy sealed to the account's real public bundle opens only for the account.
+A space's home may only change that space's own entities: a record that names a collection or group (as its own id, a parent, the group of a grant, the collection of a key copy, or one that is gone) that already exists in another space at the replica is refused and logged, and the records after it still apply. Writes to the home-only parts of a federated space
 (`/kem/v1/spaces/{id}/` `members`, `collections`, `groups`, `grants`, `key-replacement`, `reseal` and
 `policies`) are refused at a server that is not the home with `409`, a
 `urn:kemlock:problem:home-only` problem that names the home (`home.server`, `home.address`) and the

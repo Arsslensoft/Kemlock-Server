@@ -43,10 +43,20 @@ impl<R: SpaceRepo + SpaceChainRepo, P: PolicyRepo, F: TwoFactorRepo> JoinGuard<R
         if is_exempt(role) {
             return Ok(());
         }
+        // A space another server is the home of binds nobody here, and doesn't count toward what
+        // the spaces of this server say (single space and the rest).
+        let memberships = self.spaces.memberships(user).await?;
+        let binding = self
+            .spaces
+            .spaces_binding_here(&memberships.iter().map(|m| m.space).collect::<Vec<_>>())
+            .await?;
+        if !self.spaces.spaces_binding_here(&[space]).await?.contains(&space) {
+            return Ok(());
+        }
         let here = self.policies.space_policies(space).await?.policies;
         let mut others = Vec::new();
-        for m in self.spaces.memberships(user).await? {
-            if m.space != space && self.is_in(&m).await? {
+        for m in memberships {
+            if m.space != space && binding.contains(&m.space) && self.is_in(&m).await? {
                 others.push(m);
             }
         }

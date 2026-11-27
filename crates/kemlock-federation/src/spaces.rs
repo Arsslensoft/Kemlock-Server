@@ -31,7 +31,6 @@
 
 use crate::cbor::{Fields, Value};
 use crate::error::{FedError, Result};
-use crate::extra::AccountStanding;
 use crate::publish::{GONE_KEY, Publisher};
 use crate::replicate::{FedStore, Replica};
 use kemlock_app::ports::StoreError;
@@ -735,24 +734,6 @@ impl SpaceRecord {
         }
     }
 
-    /// The accounts this record names as a member, a group seat, a grantee or the owner of key
-    /// copies. A "gone" record names none: taking someone out is always safe.
-    fn user_ids(&self) -> BTreeSet<UserId> {
-        match self {
-            SpaceRecord::Member(m) => [m.user].into_iter().collect(),
-            SpaceRecord::Keys { user, .. } => [*user].into_iter().collect(),
-            SpaceRecord::Group(g) => g.members.clone(),
-            SpaceRecord::Collection { grants, .. } => grants
-                .iter()
-                .filter_map(|g| match g.grantee {
-                    Grantee::Member(user) => Some(user),
-                    Grantee::Group(_) => None,
-                })
-                .collect(),
-            _ => BTreeSet::new(),
-        }
-    }
-
     /// The kind of home record that carries it.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -881,82 +862,6 @@ impl<S: FedStore> Replica<S> {
         }
     }
 
-    /// What of `record` the home of `vault` may say. A space's home speaks for its own members, so
-    /// it may name an account only when this server has no account of that id yet (the member
-    /// record comes before the account copy) or holds a copy that came from this very home. An id
-    /// of an account that lives here, or of a copy from another server, is not the home's to name:
-    /// a member record or key copies for it are refused, and its seat in a group or its grant on a
-    /// collection is left out. A record that names a local account as a member also takes out a
-    /// membership an earlier record planted.
-    async fn admit_space_record(
-        &self,
-        vault: Owner,
-        record: SpaceRecord,
-    ) -> Result<Option<SpaceRecord>> {
-        let Owner::Space(space) = vault else {
-            return Ok(None);
-        };
-        let named = record.user_ids();
-        if named.is_empty() {
-            return Ok(Some(record));
-        }
-        let Some(held) = self.store.get_vault(vault).await? else {
-            return Ok(None);
-        };
-        let mut refused = BTreeSet::new();
-        let mut local = BTreeSet::new();
-        for user in named {
-            match self.store.account_standing(user).await? {
-                AccountStanding::Unknown => {}
-                AccountStanding::Copy(from) if from == held.home => {}
-                AccountStanding::Copy(_) => {
-                    refused.insert(user);
-                }
-                AccountStanding::Local => {
-                    refused.insert(user);
-                    local.insert(user);
-                }
-            }
-        }
-        if refused.is_empty() {
-            return Ok(Some(record));
-        }
-        tracing::warn!(
-            %space,
-            count = refused.len(),
-            "a space record names accounts that are not the home's to name: refused"
-        );
-        // What an earlier record (or an older server) put in for an account of this server goes.
-        for user in local {
-            if matches!(record, SpaceRecord::Member(_)) {
-                self.store
-                    .apply_space_record(space, &SpaceRecord::MemberGone(user))
-                    .await?;
-            }
-            self.store
-                .apply_space_record(space, &SpaceRecord::KeysGone(user))
-                .await?;
-        }
-        Ok(match record {
-            SpaceRecord::Member(_) | SpaceRecord::Keys { .. } => None,
-            SpaceRecord::Group(mut group) => {
-                group.members.retain(|user| !refused.contains(user));
-                Some(SpaceRecord::Group(group))
-            }
-            SpaceRecord::Collection {
-                collection,
-                mut grants,
-            } => {
-                grants.retain(|g| match g.grantee {
-                    Grantee::Member(user) => !refused.contains(&user),
-                    Grantee::Group(_) => true,
-                });
-                Some(SpaceRecord::Collection { collection, grants })
-            }
-            other => Some(other),
-        })
-    }
-
     /// Applies a space home record this server stored as applied. A payload that doesn't parse is
     /// logged and left.
     pub(crate) async fn apply_space_home_record(&self, vault: Owner, kind: &str, payload: &[u8]) {
@@ -982,14 +887,6 @@ impl<S: FedStore> Replica<S> {
                         return;
                     }
                 }
-                let record = match self.admit_space_record(vault, record).await {
-                    Ok(Some(record)) => record,
-                    Ok(None) => return,
-                    Err(e) => {
-                        tracing::warn!(error = %e, %kind, "a space record's accounts could not be checked: not applied");
-                        return;
-                    }
-                };
                 if let Err(e) = self.store.apply_space_record(space, &record).await {
                     tracing::warn!(error = %e, %kind, "a space record could not be applied");
                 } else if let SpaceRecord::Member(member) = &record
@@ -1413,113 +1310,5 @@ mod tests {
         };
         apply(KIND_COLLECTION, encode_collection(&fresh, &[])).await;
         assert_eq!(b.store.applied_space_records().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_spaces_home_can_only_name_accounts_that_are_its_own_or_new() {
-        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
-        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
-        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()));
-        b.pin_peer(&ia.descriptor, NOW).await.expect("pin");
-        let space = SpaceId::random();
-        let vault = Owner::Space(space);
-        b.accept_vault(vault, ia.server, vec![ib.server])
-            .await
-            .expect("accept");
-        let snap = space_snapshot(space);
-
-        // An account of this server, a copy from the home, a copy from some other server, and
-        // an id this server has never seen.
-        let victim = UserId::random();
-        let from_home = UserId::random();
-        let from_elsewhere = UserId::random();
-        let new = UserId::random();
-        b.store.set_account_standing(victim, AccountStanding::Local);
-        b.store
-            .set_account_standing(from_home, AccountStanding::Copy(ia.server));
-        b.store
-            .set_account_standing(from_elsewhere, AccountStanding::Copy(ServerId::random()));
-
-        let member = |user: UserId| Member {
-            user,
-            state: MemberState::Confirmed,
-            ..snap.state.members[1].clone()
-        };
-        for user in [victim, from_elsewhere, from_home, new] {
-            b.apply_space_home_record(vault, KIND_MEMBER, &encode_member(&member(user)))
-                .await;
-        }
-        let applied = b.store.applied_space_records();
-        let members: Vec<UserId> = applied
-            .iter()
-            .filter_map(|r| match r {
-                SpaceRecord::Member(m) => Some(m.user),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(members, vec![from_home, new], "only these may be named");
-        assert!(
-            applied
-                .iter()
-                .any(|r| matches!(r, SpaceRecord::MemberGone(u) if *u == victim)),
-            "a seat planted for a local account is taken out"
-        );
-
-        // Key copies of the local account are refused too.
-        let copy = KeyCopy {
-            collection: snap.state.collections[0].id,
-            user: victim,
-            key_version: 1,
-            sealed: vec![1; 40],
-            sealed_by: None,
-        };
-        b.apply_space_home_record(vault, KIND_KEYS, &encode_keys(victim, &[copy]))
-            .await;
-        assert!(
-            !b.store
-                .applied_space_records()
-                .iter()
-                .any(|r| matches!(r, SpaceRecord::Keys { .. })),
-            "no key copies for an account of this server"
-        );
-
-        // A group keeps its seats for the others, and a collection its grants for them.
-        let group = Group {
-            members: [victim, from_elsewhere, from_home].into_iter().collect(),
-            ..snap.state.groups[0].clone()
-        };
-        b.apply_space_home_record(vault, KIND_GROUP, &encode_group(&group))
-            .await;
-        let collection = snap.state.collections[0].clone();
-        let grants: Vec<CollectionGrant> = [victim, from_elsewhere, from_home]
-            .into_iter()
-            .map(|user| CollectionGrant {
-                collection: collection.id,
-                grantee: Grantee::Member(user),
-                permission: CollectionPermission::Edit,
-            })
-            .collect();
-        b.apply_space_home_record(
-            vault,
-            KIND_COLLECTION,
-            &encode_collection(&collection, &grants),
-        )
-        .await;
-        let applied = b.store.applied_space_records();
-        let only_home: BTreeSet<UserId> = [from_home].into_iter().collect();
-        assert!(
-            applied
-                .iter()
-                .any(|r| matches!(r, SpaceRecord::Group(g) if g.members == only_home)),
-            "the group lost the seats it had no say over"
-        );
-        assert!(
-            applied.iter().any(|r| matches!(
-                r,
-                SpaceRecord::Collection { grants, .. }
-                    if grants.len() == 1 && grants[0].grantee == Grantee::Member(from_home)
-            )),
-            "the collection lost the grants it had no say over"
-        );
     }
 }

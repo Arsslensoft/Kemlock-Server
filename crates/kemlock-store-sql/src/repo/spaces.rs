@@ -115,6 +115,31 @@ impl SpaceRepo for SqlStore {
         }))
     }
 
+    async fn spaces_binding_here(&self, ids: &[SpaceId]) -> Result<Vec<SpaceId>, StoreError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let (space_type, _) = crate::tables::items::owner_parts(Owner::Space(ids[0]));
+        let foreign: BTreeSet<Uuid> = crate::tables::federation::vault_federation::Entity::find()
+            .filter(crate::tables::federation::vault_federation::Column::OwnerType.eq(space_type))
+            .filter(
+                crate::tables::federation::vault_federation::Column::OwnerId
+                    .is_in(ids.iter().map(|id| id.0).collect::<Vec<Uuid>>()),
+            )
+            .filter(crate::tables::federation::vault_federation::Column::Home.ne(self.origin().0))
+            .all(self.reader())
+            .await
+            .store()?
+            .into_iter()
+            .map(|row| row.owner_id)
+            .collect();
+        Ok(ids
+            .iter()
+            .copied()
+            .filter(|id| !foreign.contains(&id.0))
+            .collect())
+    }
+
     async fn memberships(&self, user: UserId) -> Result<Vec<Member>, StoreError> {
         members::Entity::find()
             .filter(members::Column::UserId.eq(user.0))

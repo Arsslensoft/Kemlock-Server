@@ -156,6 +156,14 @@ impl MembershipFacts for SqlStore {
             return Ok(Vec::new());
         }
         let ids: Vec<SpaceId> = rows.iter().map(|m| SpaceId(m.space_id)).collect();
+        // A space another server is the home of binds nobody here: it is not this server's identity
+        // provider that its Require SSO would name.
+        let binding = kemlock_app::spaces::SpaceRepo::spaces_binding_here(self, &ids).await?;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|m| binding.contains(&SpaceId(m.space_id)))
+            .collect();
+        let ids: Vec<SpaceId> = rows.iter().map(|m| SpaceId(m.space_id)).collect();
         let required = self.spaces_requiring_sso(&ids).await?;
         let mut out = Vec::with_capacity(rows.len());
         for row in rows {
