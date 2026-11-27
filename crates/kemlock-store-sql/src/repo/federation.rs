@@ -18,7 +18,7 @@ use crate::tables::federation::{
 use crate::tables::federation_keys::{
     peer_key_history, peer_pending_addresses, peer_trusted_addresses,
 };
-use crate::tables::federation_wiring::federation_erasures;
+use crate::tables::federation_wiring::{federation_erasures, vault_rank_pins};
 use crate::tables::items::{self, owner_parts};
 use crate::tables::space_tables::item_collections;
 use crate::tables::{changes, server_meta};
@@ -670,6 +670,32 @@ impl ReplicaStore for SqlStore {
 
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
         kemlock_app::ports::ItemStore::signed_writes_required(self, owner).await
+    }
+
+    async fn revision_ranked(&self, owner: Owner) -> Result<bool, StoreError> {
+        let (owner_type, owner_id) = owner_parts(owner);
+        Ok(vault_rank_pins::Entity::find_by_id((owner_type, owner_id))
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some())
+    }
+
+    async fn pin_revision_ranking(&self, owner: Owner) -> Result<(), StoreError> {
+        let (owner_type, owner_id) = owner_parts(owner);
+        let inserted = vault_rank_pins::Entity::insert(vault_rank_pins::ActiveModel {
+            owner_type: Set(owner_type),
+            owner_id: Set(owner_id),
+            pinned_at: Set(time::OffsetDateTime::now_utc().unix_timestamp()),
+        })
+        .exec(self.writer())
+        .await;
+        match inserted {
+            Ok(_) => Ok(()),
+            // Pinned already, or by another write between the read and this one.
+            Err(err) if crate::error::is_unique_violation(&err) => Ok(()),
+            Err(err) => Err(crate::error::map_db(err)),
+        }
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {

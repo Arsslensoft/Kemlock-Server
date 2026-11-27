@@ -424,7 +424,10 @@ higher sequence number. (The revision comes first so that a replay of an old rev
 clock that leaves the head out of its lineage stays a sibling and never takes the head; two
 concurrent edits of one revision are still ordered by clock. A server that doesn't say
 `x-kemlock-signed-writes1` ranks by clock alone and may pick another head when revisions differ, so
-the ranking is part of what every server of a set must be upgraded for.) It
+the ranking is part of what every server of a set must be upgraded for. A server ranks
+a vault by revision from the first time every server of its set says it does, and keeps doing so:
+a server that later leaves the capability out of its own descriptor does not turn rollback
+protection off for the others.) It
 is what devices sync and what Bitwarden apps see. The others are **siblings**, kept until a write
 supersedes them; the next Kemlock app to sync merges them with its field-level merge and writes a
 version whose lineage names every one. The rule depends only on the set of versions, so servers

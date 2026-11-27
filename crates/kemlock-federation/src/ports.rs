@@ -342,6 +342,26 @@ pub trait ReplicaStore: Send + Sync {
         async { Ok(false) }
     }
 
+    /// Whether this server ranks `owner`'s versions by revision for good: once every server of the
+    /// vault's set said it does, the vault stays that way, whatever a descriptor says later.
+    ///
+    /// The default is false, for a store that keeps no such pin.
+    fn revision_ranked(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Pins `owner` to ranking by revision. Idempotent, and never undone except by erasing the
+    /// vault.
+    fn pin_revision_ranking(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
     /// The siblings of an item: the versions held beside its head.
     fn siblings(
         &self,

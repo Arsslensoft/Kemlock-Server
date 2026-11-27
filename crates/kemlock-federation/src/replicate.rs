@@ -665,6 +665,22 @@ impl<S: FedStore> Replica<S> {
 
     // ---- catching up ----
 
+    /// How this server ranks the versions of `vault`: by revision from the first time every server
+    /// of its set advertises it, and by revision from then on.
+    pub(crate) async fn rank_of(&self, vault: Owner) -> Result<Rank> {
+        if self.store.revision_ranked(vault).await? {
+            return Ok(Rank::Revision);
+        }
+        if self
+            .vault_advertises(vault, writes::SIGNED_WRITES_CAPABILITY)
+            .await?
+        {
+            self.store.pin_revision_ranking(vault).await?;
+            return Ok(Rank::Revision);
+        }
+        Ok(Rank::Clock)
+    }
+
     /// Verifies and applies records of `vault`. A record from an origin whose key we don't hold,
     /// or whose signature fails, fails the whole batch: nothing past it is applied.
     pub(crate) async fn apply_envelopes(
@@ -682,17 +698,12 @@ impl<S: FedStore> Replica<S> {
             .ok_or(FedError::UnknownVault)?;
         let me = self.server_id();
         let now_ms = crate::session::unix_now().saturating_mul(1000);
-        // The head is chosen by revision first only while every server of the vault says it ranks so
+        // The head is chosen by revision first once every server of the vault says it ranks so
         // (`x-kemlock-signed-writes1`): servers must agree on the head, and one that ranks by clock
-        // alone would pick another.
-        let rank = if self
-            .vault_advertises(vault, writes::SIGNED_WRITES_CAPABILITY)
-            .await?
-        {
-            Rank::Revision
-        } else {
-            Rank::Clock
-        };
+        // alone would pick another. Once on it stays on for the vault: a server of the set that
+        // later leaves the capability out of its own descriptor must not turn rollback protection
+        // off for the rest.
+        let rank = self.rank_of(vault).await?;
         let mut counts = Counts::default();
         for envelope in envelopes {
             let record = change::open(envelope, &keys)?;
@@ -1186,6 +1197,32 @@ mod tests {
             .await
             .expect("accept");
         Two { a, b, vault }
+    }
+
+    #[tokio::test]
+    async fn ranking_by_revision_stays_on_once_every_server_says_it_does() {
+        let t = two().await;
+        let a = t.a.server_id();
+        let address = vec!["https://a.example.org".to_owned()];
+        let capable = vec![writes::SIGNED_WRITES_CAPABILITY.to_owned()];
+        let set = |suites: Vec<String>| {
+            let b = &t.b;
+            let address = address.clone();
+            async move {
+                b.store
+                    .update_peer_descriptor(a, "A", &address, &suites)
+                    .await
+                    .expect("update");
+            }
+        };
+        // A server of the set that doesn't say it ranks by revision keeps the vault on the clock.
+        set(Vec::new()).await;
+        assert_eq!(t.b.rank_of(t.vault).await.expect("rank"), Rank::Clock);
+        set(capable).await;
+        assert_eq!(t.b.rank_of(t.vault).await.expect("rank"), Rank::Revision);
+        // It can't turn rollback protection off again by leaving the capability out.
+        set(Vec::new()).await;
+        assert_eq!(t.b.rank_of(t.vault).await.expect("rank"), Rank::Revision);
     }
 
     #[tokio::test]

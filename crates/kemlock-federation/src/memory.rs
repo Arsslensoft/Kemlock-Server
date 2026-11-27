@@ -197,6 +197,8 @@ struct Extras {
     offers: BTreeMap<Owner, crate::extra::StoredOffer>,
     /// The owners that accept signed `kem1` writes only.
     signed_only: HashSet<Owner>,
+    /// The owners pinned to ranking by revision.
+    rank_pins: HashSet<Owner>,
 }
 
 impl MemoryStore {
@@ -745,6 +747,15 @@ impl ReplicaStore for MemoryStore {
 
     async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
         Ok(self.extras().signed_only.contains(&owner))
+    }
+
+    async fn revision_ranked(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().rank_pins.contains(&owner))
+    }
+
+    async fn pin_revision_ranking(&self, owner: Owner) -> Result<(), StoreError> {
+        self.extras().rank_pins.insert(owner);
+        Ok(())
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {

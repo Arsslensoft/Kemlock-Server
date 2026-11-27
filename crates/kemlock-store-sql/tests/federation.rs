@@ -748,3 +748,19 @@ async fn a_record_that_changes_an_items_format_or_kind_is_refused() {
     assert_eq!(held.change, head.change);
     assert_eq!(held.format, kemlock_domain::ItemFormat::Kem1);
 }
+
+#[tokio::test]
+async fn a_vault_pinned_to_revision_ranking_stays_pinned() {
+    let store = memory().await;
+    let vault = user_owner();
+    assert_eq!(store.revision_ranked(vault).await, Ok(false));
+    store.pin_revision_ranking(vault).await.expect("pinned");
+    // A second pin is not an error.
+    store
+        .pin_revision_ranking(vault)
+        .await
+        .expect("pinned again");
+    assert_eq!(store.revision_ranked(vault).await, Ok(true));
+    let other = Owner::User(kemlock_domain::UserId::random());
+    assert_eq!(store.revision_ranked(other).await, Ok(false));
+}
