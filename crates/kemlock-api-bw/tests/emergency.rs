@@ -608,7 +608,7 @@ async fn the_policies_of_a_takeover_are_a_list() {
 }
 
 #[tokio::test]
-async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
+async fn the_invitation_link_accepts_only_for_the_contact_who_signs_in() {
     let h = Harness::new().await;
     let (ada, _) = h.signed_in("ada@example.com").await;
     let (bob, _) = h.signed_in("bob@example.com").await;
@@ -631,7 +631,7 @@ async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
     );
     let token = body["token"].as_str().expect("a token").to_owned();
     assert!(link.ends_with(&format!("&token={token}")), "{link}");
-    // It is a secret that accepts for the contact: no cache keeps it.
+    // It is a secret all the same: no cache keeps it.
     let bearer = format!("Bearer {ada}");
     let (status, headers, _) = h
         .send(
@@ -647,26 +647,130 @@ async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
         Some("no-store")
     );
 
-    // The token alone accepts, for the address it names, once.
+    // The token alone accepts nothing: no Authorization is a 401, and neither the grantor's session
+    // nor another account's accepts for the contact.
+    let accept = format!("/api/emergency-access/{id}/accept");
+    let (status, _) = h
+        .json("POST", &accept, None, Some(json!({"token": token})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (cat, _) = h.signed_in("cat@example.com").await;
+    for other in [&ada, &cat] {
+        let (status, body) = h
+            .json("POST", &accept, Some(other), Some(json!({"token": token})))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Claim email does not match current users email"
+        );
+    }
+    assert_eq!(first_contact(&h, &ada).await["status"], 0);
+
+    // The contact signs in and accepts with it, once.
     let (status, body) = h
-        .json(
-            "POST",
-            &format!("/api/emergency-access/{id}/accept"),
-            None,
-            Some(json!({"token": token})),
-        )
+        .json("POST", &accept, Some(&bob), Some(json!({"token": token})))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(first_contact(&h, &ada).await["status"], 1);
     let (status, _) = h
-        .json(
-            "POST",
-            &format!("/api/emergency-access/{id}/accept"),
-            None,
-            Some(json!({"token": token})),
-        )
+        .json("POST", &accept, Some(&bob), Some(json!({"token": token})))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = h.json("GET", &uri, Some(&ada), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "nothing left to hand over");
+}
+
+/// The contact's own link, signed in with nothing but the master password: an account made through
+/// the Bitwarden API has no way into the web vault and the apps have no accept screen. A wrong hash
+/// is a wrong password counted in the account's one password counter (the grant's), a token for
+/// another grant is refused before any hash, an unknown address answers as a wrong password, and a
+/// good one issues no session.
+#[tokio::test]
+async fn the_contact_accepts_with_the_master_password_and_gets_no_session() {
+    use kemlock_app::bitwarden::BwTryRepo;
+    use kemlock_app::ports::DeviceRepo;
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let bob_id = h.account("bob@example.com", HASH).await;
+    assert_eq!(
+        invite(&h, &ada, "bob@example.com", 0, 7).await,
+        StatusCode::OK
+    );
+    let id = id_of(&first_contact(&h, &ada).await);
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/emergency-access/{id}/invite-link"),
+            Some(&ada),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["token"].as_str().expect("a token").to_owned();
+    let accept = format!("/api/emergency-access/{id}/accept");
+    let with_hash = |token: String, hash: &'static str, path: String| {
+        let h = &h;
+        async move {
+            h.json(
+                "POST",
+                &path,
+                None,
+                Some(json!({"token": token, "masterPasswordHash": hash})),
+            )
+            .await
+        }
+    };
+
+    // No proof: unauthenticated. A junk token, or one for another grant: refused, nothing counted.
+    let (status, _) = h
+        .json("POST", &accept, None, Some(json!({"token": token})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = with_hash("junk".to_owned(), "wrong", accept.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let elsewhere = format!("/api/emergency-access/{}/accept", uuid::Uuid::new_v4());
+    let (status, body) = with_hash(token.clone(), "wrong", elsewhere).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "Emergency access invitation error.");
+
+    // Wrong hashes count in the grant's counter, with a wrong password at the grant.
+    for _ in 0..2 {
+        let (status, body) = with_hash(token.clone(), "wrong", accept.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Username or password is incorrect. Try again"
+        );
+    }
+    let (status, _) = h
+        .token(&Harness::password_fields("bob@example.com", "wrong"))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let tries = BwTryRepo::count_try(
+        &h.store,
+        bob_id,
+        "password",
+        h.env.time().unix_timestamp(),
+        900,
+    )
+    .await
+    .expect("a count");
+    assert_eq!(tries, 4, "two wrong hashes, a wrong password and this read");
+    assert_eq!(first_contact(&h, &ada).await["status"], 0);
+
+    // The right hash accepts, and issues no session.
+    let (status, body) = with_hash(token.clone(), HASH, accept.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.is_null() || body == json!({}) || body == json!(""),
+        "{body}"
+    );
+    assert_eq!(first_contact(&h, &ada).await["status"], 1);
+    assert!(
+        DeviceRepo::list(&h.store, bob_id)
+            .await
+            .expect("devices")
+            .is_empty()
+    );
 }

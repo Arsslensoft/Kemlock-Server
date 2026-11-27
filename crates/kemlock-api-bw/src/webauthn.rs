@@ -17,7 +17,6 @@
 //! `clientDataJSON`. The ceremonies and the stored keys are `kemlock_app::passkeys::SecurityKeys`,
 //! the same the Kemlock API uses.
 
-use crate::account::check_valid_password;
 use crate::app::{App, Authed, BwStore};
 use crate::env::Env;
 use crate::error::{BwError, BwResult};
@@ -199,7 +198,7 @@ pub(crate) fn token_is_valid<S: BwStore>(app: &App<S>, user: UserId, token: &str
 
 /// The master password, or (where the call allows one) a `userVerificationToken` this server made
 /// for this account.
-pub(crate) fn verify<S: BwStore>(
+pub(crate) async fn verify<S: BwStore>(
     app: &App<S>,
     authed: &Authed,
     master_password_hash: Option<&str>,
@@ -207,7 +206,9 @@ pub(crate) fn verify<S: BwStore>(
 ) -> BwResult<()> {
     match (master_password_hash, token) {
         (Some(hash), _) => {
-            if check_valid_password(&authed.account, hash) {
+            if app
+                .password_matches(&authed.account, hash, Some(authed.ip))
+                .await? {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))
@@ -311,7 +312,8 @@ async fn get_webauthn_challenge<S: BwStore>(
         &authed,
         data.master_password_hash.as_deref(),
         Some(&data.user_verification_token),
-    )?;
+    )
+    .await?;
     let mut options = keys
         .start_registration(authed.user.id)
         .await
@@ -334,7 +336,8 @@ async fn activate_webauthn<S: BwStore>(
         &authed,
         data.master_password_hash.as_deref(),
         data.user_verification_token.as_deref(),
-    )?;
+    )
+    .await?;
     let slot = slot_of(&data.id)?;
     let response = serde_json::to_vec(&data.device_response)
         .map_err(|_| BwError::msg("Invalid device response"))?;
@@ -358,7 +361,7 @@ async fn delete_webauthn<S: BwStore>(
 ) -> JsonResult {
     let data: DeleteData = parse(&body)?;
     let keys = keys(&app)?;
-    verify(&app, &authed, Some(&data.master_password_hash), None)?;
+    verify(&app, &authed, Some(&data.master_password_hash), None).await?;
     let list = keys
         .remove(authed.user.id, slot_of(&data.id)?)
         .await

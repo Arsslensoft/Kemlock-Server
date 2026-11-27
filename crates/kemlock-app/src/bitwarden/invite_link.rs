@@ -7,7 +7,7 @@
 //! port, which the server wires from the Bitwarden API's state: the web layers never depend on each
 //! other. A server with the Bitwarden API off provides none.
 //!
-//! Whoever opens the link accepts the invitation for that account, so the link is a secret: it goes
+//! The link accepts nothing by itself: the invitee signs in and accepts for themselves. It still goes
 //! only to someone who could remove the member, and only for a member who is still invited.
 
 use crate::notices::BoxFuture;

@@ -346,15 +346,142 @@ async fn updates_before_the_handshake_are_not_sent() {
     assert_eq!(sync_type(&next(&mut ada).await), 5);
 }
 
+/// Waits for the server to close the socket: the next thing to arrive is a close, an error or the
+/// end of the stream, not a data frame.
+async fn closes(client: &mut Client) {
+    let end = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match client.next().await {
+                None | Some(Err(_)) | Some(Ok(Wire::Close(_))) => return,
+                Some(Ok(Wire::Ping(_) | Wire::Pong(_))) => continue,
+                Some(Ok(other)) => panic!("a data frame came back: {other:?}"),
+            }
+        }
+    })
+    .await;
+    assert!(end.is_ok(), "the socket stayed open");
+}
+
 #[tokio::test]
-async fn other_frames_are_echoed_back() {
+async fn a_keep_alive_ping_is_taken_and_not_echoed() {
     let rig = rig().await;
     let mut ada = rig.open("ada", MSGPACK_HANDSHAKE).await;
     ada.send(Wire::binary(MSGPACK_PING.to_vec()))
         .await
         .expect("sent");
-    let echoed = next(&mut ada).await;
-    assert!(matches!(&echoed, Wire::Binary(b) if b.as_ref() == MSGPACK_PING));
+    // The socket stays up and the next thing it says is an update, not the ping.
+    rig.hub.nudge(Owner::User(rig.ada));
+    assert_eq!(sync_type(&next(&mut ada).await), 5);
+
+    let mut json = rig.open("grace", JSON_HANDSHAKE).await;
+    json.send(Wire::text("{\"type\":6}\u{1e}")).await.expect("sent");
+    rig.hub.nudge(Owner::User(rig.grace));
+    assert!(matches!(next(&mut json).await, Wire::Text(_)));
+}
+
+#[tokio::test]
+async fn any_other_frame_closes_the_socket() {
+    let rig = rig().await;
+    // Something that is not a ping, after the handshake.
+    let mut ada = rig.open("ada", MSGPACK_HANDSHAKE).await;
+    ada.send(Wire::binary(vec![0x04, 0x93, 0x01, 0x02, 0x03]))
+        .await
+        .expect("sent");
+    closes(&mut ada).await;
+    // A second handshake.
+    let mut again = rig.open("ada", MSGPACK_HANDSHAKE).await;
+    again
+        .send(Wire::text(MSGPACK_HANDSHAKE))
+        .await
+        .expect("sent");
+    closes(&mut again).await;
+    // A first frame that is no handshake.
+    let mut first = rig
+        .connect("/notifications/hub?access_token=ada")
+        .await;
+    first.send(Wire::text("hello")).await.expect("sent");
+    closes(&mut first).await;
+    eventually(|| rig.hub.connections() == 0).await;
+}
+
+#[tokio::test]
+async fn an_anonymous_socket_echoes_nothing() {
+    let rig = rig().await;
+    let mut anon = rig
+        .connect("/notifications/anonymous-hub?token=login-request")
+        .await;
+    anon.send(Wire::text(MSGPACK_HANDSHAKE)).await.expect("sent");
+    let reply = next(&mut anon).await;
+    assert!(matches!(&reply, Wire::Binary(b) if b.as_ref() == HANDSHAKE_RESPONSE));
+    anon.send(Wire::binary(vec![0u8; 64])).await.expect("sent");
+    closes(&mut anon).await;
+}
+
+#[tokio::test]
+async fn a_message_past_a_few_kib_closes_the_socket_before_it_is_buffered() {
+    let rig = rig().await;
+    let mut ada = rig.open("ada", MSGPACK_HANDSHAKE).await;
+    ada.send(Wire::binary(vec![7u8; 64 * 1024]))
+        .await
+        .expect("sent");
+    closes(&mut ada).await;
+    eventually(|| rig.hub.connections() == 0).await;
+
+    let mut anon = rig
+        .connect("/notifications/anonymous-hub?token=big")
+        .await;
+    anon.send(Wire::text("x".repeat(MAX_CLIENT_MESSAGE + 1)))
+        .await
+        .expect("sent");
+    closes(&mut anon).await;
+}
+
+/// A token that holds until the test says it doesn't.
+struct Revocable {
+    user: UserId,
+    valid: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl HubAuth for Revocable {
+    fn authenticate(&self, _token: &str) -> BoxFuture<'_, Option<HubIdentity>> {
+        let good = self.valid.load(Ordering::SeqCst);
+        let user = self.user;
+        Box::pin(async move { good.then_some(HubIdentity { user, device: None }) })
+    }
+}
+
+#[tokio::test]
+async fn a_socket_closes_when_its_token_stops_holding() {
+    let user = UserId::random();
+    let valid = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let hub = BwHub::new(
+        Arc::new(UserOnly),
+        HubConfig {
+            ping_every: Duration::from_millis(30),
+            recheck_every: Duration::from_millis(60),
+            ..HubConfig::default()
+        },
+    );
+    let auth = Arc::new(Revocable {
+        user,
+        valid: valid.clone(),
+    });
+    let address = serve_with_peers(router(hub.clone(), auth)).await;
+    let rig = Rig {
+        hub: hub.clone(),
+        address,
+        ada: user,
+        grace: user,
+    };
+    let mut client = rig.open("any", MSGPACK_HANDSHAKE).await;
+    eventually(|| hub.connections() == 1).await;
+    // Still good: the socket stays open through several checks.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(hub.connections(), 1);
+    // The password changed, or the account was disabled: the next check closes it.
+    valid.store(false, Ordering::SeqCst);
+    eventually(|| hub.connections() == 0).await;
+    closes(&mut client).await;
 }
 
 #[tokio::test]
@@ -363,6 +490,7 @@ async fn the_server_pings_with_vaultwardens_payload() {
         ping_every: Duration::from_millis(40),
         client_timeout: Duration::from_secs(30),
         ip_header: None,
+        ..HubConfig::default()
     })
     .await;
     let mut ada = rig.open("ada", MSGPACK_HANDSHAKE).await;
@@ -385,6 +513,7 @@ async fn a_socket_that_goes_quiet_is_dropped() {
         ping_every: Duration::from_millis(30),
         client_timeout: Duration::from_millis(100),
         ip_header: None,
+        ..HubConfig::default()
     })
     .await;
     // The client never reads again, so it never answers a ping.
@@ -673,4 +802,42 @@ async fn the_address_the_server_settled_beats_a_header_the_client_wrote() {
         connect_async(spoofed).await,
         Err(tungstenite::Error::Http(r)) if r.status() == 429
     ));
+}
+
+/// A store that fails now and then: a refusal it cannot make is `Unknown`, and the socket stays.
+struct Flaky(UserId);
+
+impl HubAuth for Flaky {
+    fn authenticate(&self, _token: &str) -> BoxFuture<'_, Option<HubIdentity>> {
+        let user = self.0;
+        Box::pin(async move { Some(HubIdentity { user, device: None }) })
+    }
+
+    fn recheck(&self, _token: &str, _user: UserId) -> BoxFuture<'_, Recheck> {
+        Box::pin(async { Recheck::Unknown })
+    }
+}
+
+#[tokio::test]
+async fn a_transient_failure_of_the_recheck_does_not_close_the_socket() {
+    let user = UserId::random();
+    let hub = BwHub::new(
+        Arc::new(UserOnly),
+        HubConfig {
+            ping_every: Duration::from_millis(30),
+            recheck_every: Duration::from_millis(30),
+            ..HubConfig::default()
+        },
+    );
+    let address = serve_with_peers(router(hub.clone(), Arc::new(Flaky(user)))).await;
+    let rig = Rig {
+        hub: hub.clone(),
+        address,
+        ada: user,
+        grace: user,
+    };
+    let _client = rig.open("any", MSGPACK_HANDSHAKE).await;
+    eventually(|| hub.connections() == 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(hub.connections(), 1, "several rechecks said Unknown");
 }

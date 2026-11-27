@@ -576,8 +576,8 @@ fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered 
     )
 }
 
-/// The invitation of the Bitwarden API to an organization. The link carries the signed token that
-/// accepts it, so opening it is all the person has to do; it runs out in five days.
+/// The invitation of the Bitwarden API to an organization. The link carries the signed token of the
+/// invitation, which accepts nothing by itself: the person signs in to accept. It runs out in five days.
 fn bw_org_invite(notice: &BwOrgInviteNotice, brand: &Branding) -> Rendered {
     let who = notice
         .inviter
@@ -592,7 +592,7 @@ fn bw_org_invite(notice: &BwOrgInviteNotice, brand: &Branding) -> Rendered {
     );
     let body = Body::new(&[
         &lead,
-        "Open this link to accept the invitation:",
+        "Open this link and sign in to accept the invitation:",
         &notice.link,
         "It runs out in five days. An administrator then confirms you before you can see anything in it. If you don't know who this is from, ignore this mail.",
     ]);
@@ -613,7 +613,7 @@ fn bw_emergency_invite(notice: &BwEmergencyInviteNotice, brand: &Branding) -> Re
     );
     let body = Body::new(&[
         &lead,
-        "Open this link to accept:",
+        "Open this link and sign in to accept:",
         &notice.link,
         "It runs out in five days. Accepting gives you nothing yet: they confirm you, and you may later ask for access, which they can refuse during the wait they chose. If you don't know who this is from, ignore this mail.",
     ]);

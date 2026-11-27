@@ -9,8 +9,8 @@ use crate::devices::bitwarden_device_id;
 use crate::error::AppError;
 use crate::platform::{Platform, random_uuid};
 use crate::ports::{
-    AccessClaims, DeviceRepo, Event, EventLog, RefreshToken, StoreError, TokenRepo, TokenSigner,
-    TwoFactorRepo,
+    AccessClaims, DeviceRepo, Event, EventLog, RefreshToken, StoreError, TokenApi, TokenRepo,
+    TokenSigner, TwoFactorRepo,
 };
 use kemlock_domain::{Device, DeviceId, DeviceKind, User, UserId};
 use time::OffsetDateTime;
@@ -178,6 +178,7 @@ impl<D: DeviceRepo, T: TokenRepo, K: TokenSigner, E: Platform, V: EventLog, F: T
                 created_at: signed_in_at,
                 expires_at: refresh_expires_at,
                 used_at: None,
+                api: TokenApi::Kemlock,
             })
             .await;
         match inserted {

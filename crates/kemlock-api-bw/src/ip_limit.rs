@@ -1,22 +1,28 @@
-//! Vaultwarden's login rate limiter, for the unauthenticated routes it guards: a token bucket per
+//! Vaultwarden's login rate limiter, for the unauthenticated routes it guards: a token         let mut seen: Vec<(i64, IpAddr)> = buckets.iter().map(|(ip, b)| (b.last_used, *ip)).collect();
+        seen.sort_unstable();
+        for (_, ip) in seen.into_iter().take(MAX_ADDRESSES / 10) {
+            buckets.remove(&ip);
+        }ucket per
 //! client address, `LOGIN_RATELIMIT_MAX_BURST` requests at once (10) and one more every
 //! `LOGIN_RATELIMIT_SECONDS` (60). A refusal is a 429; its message is the route's to choose.
 //!
 //! Kept in memory (a restart forgets it, which only lets a client have a few more tries). The map
-//! is bounded: when it is full, buckets that have refilled are dropped, and if none has, the
-//! oldest half.
+//! is bounded: when it is full, buckets that have refilled are dropped first, then the least
+//! recently used tenth. A bucket keeps its state (drained or partly) until then, so an address that
+//! keeps asking is the last to go, and a flood of new addresses can't push out a busy one.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr};
 use std::sync::{Mutex, PoisonError};
 
-/// The address a client is followed by: an IPv6 client holds a whole /64 (what a household or a
-/// mobile device gets), so changing the low 64 bits is not a new client, and an IPv4-mapped
-/// address is the IPv4 one.
-fn bucket_key(ip: IpAddr) -> IpAddr {
+/// The address a client is followed by: an IPv6 client holds a whole /56 (what a household gets,
+/// and what a mobile network may hand out per device), so changing the low 72 bits is not a new
+/// client, and an IPv4-mapped address is the IPv4 one.
+pub(crate) fn bucket_key(ip: IpAddr) -> IpAddr {
     match ip.to_canonical() {
         IpAddr::V6(v6) => {
             let mut octets = v6.octets();
+            octets[7] = 0;
             octets[8..].fill(0);
             IpAddr::V6(Ipv6Addr::from(octets))
         }
@@ -24,7 +30,7 @@ fn bucket_key(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// The most addresses followed at once.
+/// The most addresses followed at once before the map makes room.
 const MAX_ADDRESSES: usize = 10_000;
 
 #[derive(Debug)]
@@ -40,6 +46,8 @@ struct Bucket {
     tokens: u32,
     /// When the last token was given back (or the bucket was last full).
     refilled: i64,
+    /// When the address last asked, which says what to drop first when the map is full.
+    last_used: i64,
 }
 
 impl IpLimit {
@@ -53,25 +61,39 @@ impl IpLimit {
         }
     }
 
+    /// Drops the buckets that are full again, and, when that is not enough, the least recently used
+    /// ones, a bucket with some tokens spent as well as a drained one keeping its state until it is
+    /// the least recent. A busy address is the most recent, so it is the last to go.
+    fn make_room(&self, buckets: &mut HashMap<IpAddr, Bucket>, now: i64) {
+        let full = i64::from(self.burst);
+        buckets.retain(|_, b| {
+            let given = (now - b.refilled).max(0) / self.period;
+            i64::from(b.tokens).saturating_add(given) < full
+        });
+        if buckets.len() < MAX_ADDRESSES {
+            return;
+        }
+        // Down to nine tenths, the oldest use first.
+        let mut seen: Vec<i64> = buckets.values().map(|b| b.last_used).collect();
+        seen.sort_unstable();
+        let cut = seen[seen.len() / 10];
+        buckets.retain(|_, b| b.last_used > cut);
+    }
+
     /// Takes one request of `ip` at `now` (Unix seconds). `Err(seconds)` is how long until one is
     /// given back.
     pub(crate) fn check(&self, ip: IpAddr, now: i64) -> Result<(), u64> {
         let ip = bucket_key(ip);
         let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
         if buckets.len() >= MAX_ADDRESSES && !buckets.contains_key(&ip) {
-            let full_after = self.period.saturating_mul(i64::from(self.burst));
-            buckets.retain(|_, b| now - b.refilled < full_after);
-            if buckets.len() >= MAX_ADDRESSES {
-                let mut stamps: Vec<i64> = buckets.values().map(|b| b.refilled).collect();
-                stamps.sort_unstable();
-                let cut = stamps[stamps.len() / 2];
-                buckets.retain(|_, b| b.refilled > cut);
-            }
+            self.make_room(&mut buckets, now);
         }
         let bucket = buckets.entry(ip).or_insert(Bucket {
             tokens: self.burst,
             refilled: now,
+            last_used: now,
         });
+        bucket.last_used = now;
         let given = (now - bucket.refilled).max(0) / self.period;
         if given > 0 {
             let tokens = i64::from(bucket.tokens).saturating_add(given);
@@ -129,13 +151,15 @@ mod tests {
     }
 
     #[test]
-    fn an_ipv6_client_is_followed_by_its_64_bit_prefix() {
+    fn an_ipv6_client_is_followed_by_its_56_bit_prefix() {
         let limit = IpLimit::new(2, 60);
         let a: IpAddr = "2001:db8:1:2::1".parse().expect("an address");
         let b: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd"
             .parse()
             .expect("an address");
-        let elsewhere: IpAddr = "2001:db8:1:3::1".parse().expect("an address");
+        // Another /64 of the same /56 is the same client; the next /56 is not.
+        let same_56: IpAddr = "2001:db8:1:ff::1".parse().expect("an address");
+        let elsewhere: IpAddr = "2001:db8:1:100::1".parse().expect("an address");
         assert_eq!(limit.check(a, 0), Ok(()));
         assert_eq!(limit.check(b, 0), Ok(()));
         assert_eq!(
@@ -143,7 +167,36 @@ mod tests {
             Err(60),
             "one client, however it picks its low bits"
         );
+        assert_eq!(limit.check(same_56, 0), Err(60));
         assert_eq!(limit.check(elsewhere, 0), Ok(()));
+    }
+
+    #[test]
+    fn making_room_drops_the_least_recently_used_and_keeps_a_busy_drained_bucket() {
+        let limit = IpLimit::new(2, 60);
+        // One address drains its bucket and keeps asking; the map then fills with addresses that
+        // each used a token once.
+        for _ in 0..2 {
+            assert_eq!(limit.check(ONE, 0), Ok(()));
+        }
+        assert!(limit.check(ONE, 0).is_err());
+        for n in 0..u32::try_from(MAX_ADDRESSES).expect("small") {
+            let [a, b, c, d] = n.to_be_bytes();
+            assert_eq!(
+                limit.check(IpAddr::V4(Ipv4Addr::new(a | 10, b, c, d)), 1),
+                Ok(())
+            );
+            if n % 1_000 == 0 {
+                assert!(limit.check(ONE, 1).is_err());
+            }
+        }
+        // A new address is let in (the oldest tenth went), and the busy drained one is still limited.
+        assert_eq!(limit.check(OTHER, 2), Ok(()));
+        assert!(limit.check(ONE, 2).is_err(), "the busy bucket stayed");
+        // An address that asked once, a while ago, was one of those dropped: it starts afresh.
+        let first = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 0));
+        assert_eq!(limit.check(first, 3), Ok(()));
+        assert_eq!(limit.check(first, 3), Ok(()));
     }
 
     #[test]

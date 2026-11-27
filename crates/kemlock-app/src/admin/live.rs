@@ -10,7 +10,7 @@
 use super::invites::InviteGate;
 use kemlock_domain::Email;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 /// What a quota holds when there is none: no number of bytes is that many.
@@ -40,6 +40,10 @@ struct Shared {
     user_attachment_limit: AtomicU64,
     space_attachment_limit: AtomicU64,
     send_limit: AtomicU64,
+    /// Wrong second-step codes an account may try in a window (`rate_second_step_failures_per_15_minutes`).
+    second_step_limit: AtomicU32,
+    /// Wrong passwords an account may have in a window before it slows down (`rate_password_failures_per_15_minutes`).
+    password_limit: AtomicU32,
     invites: OnceLock<Arc<dyn InviteGate>>,
 }
 
@@ -79,6 +83,8 @@ impl Live {
             user_attachment_limit: AtomicU64::new(NO_QUOTA),
             space_attachment_limit: AtomicU64::new(NO_QUOTA),
             send_limit: AtomicU64::new(NO_QUOTA),
+            second_step_limit: AtomicU32::new(5),
+            password_limit: AtomicU32::new(10),
             invites: OnceLock::new(),
         }))
     }
@@ -109,6 +115,24 @@ impl Live {
 
     pub fn set_bw_invites_auto_accept(&self, on: bool) {
         self.0.bw_invites_auto_accept.store(on, Ordering::Relaxed);
+    }
+
+    /// How many second-step codes an account may try in a window before it has to wait.
+    pub fn second_step_limit(&self) -> u32 {
+        self.0.second_step_limit.load(Ordering::Relaxed).max(1)
+    }
+
+    pub fn set_second_step_limit(&self, limit: u32) {
+        self.0.second_step_limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// How many wrong passwords an account may have in a window before sign-ins for it slow down.
+    pub fn password_limit(&self) -> u32 {
+        self.0.password_limit.load(Ordering::Relaxed).max(1)
+    }
+
+    pub fn set_password_limit(&self, limit: u32) {
+        self.0.password_limit.store(limit, Ordering::Relaxed);
     }
 
     pub fn invitations_allowed(&self) -> bool {

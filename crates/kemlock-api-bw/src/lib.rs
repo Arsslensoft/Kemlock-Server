@@ -45,6 +45,7 @@ pub mod fuzzing;
 mod identity;
 pub mod imported;
 mod invite_links;
+mod hash_gate;
 mod ip_limit;
 mod kdf_change;
 mod live;

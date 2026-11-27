@@ -16,6 +16,8 @@ use kemlock_crypto::hash;
 use kemlock_domain::spaces::SpaceRole;
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use serde_json::{Value, json};
+use crate::hash_gate::Who;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 pub(crate) const PBKDF2: i32 = 0;
@@ -149,14 +151,78 @@ pub(crate) async fn prelogin<S: BwStore>(app: &App<S>, email: &str) -> BwResult<
     }))
 }
 
-/// Whether `password` (the text of the client's `masterPasswordHash`) is the account's.
-pub(crate) fn check_valid_password(account: &BwAccount, password: &str) -> bool {
-    verify_password(
-        password.as_bytes(),
-        &account.salt,
-        &account.password_hash,
-        account.password_iterations,
-    )
+impl<S: BwStore> App<S> {
+    /// Who a hash of this account's password is for: the account by a MAC of its id (so the gate's
+    /// record says nothing a database copy does not) and the client's prefix, when there is one.
+    pub(crate) fn who_of(&self, user: UserId, ip: Option<IpAddr>) -> Who {
+        let mut input = b"u".to_vec();
+        input.extend_from_slice(user.0.as_bytes());
+        Who {
+            account: Some(hash::hmac_sha256(&self.prelogin_key, &input)),
+            prefix: ip.map(crate::ip_limit::bucket_key),
+        }
+    }
+
+    /// The same for an address that has no account, by a MAC of the address, so an address with no
+    /// account is treated as one that has.
+    pub(crate) fn who_of_email(&self, email: &str, ip: Option<IpAddr>) -> Who {
+        let mut input = b"e".to_vec();
+        input.extend_from_slice(email.trim().to_lowercase().as_bytes());
+        Who {
+            account: Some(hash::hmac_sha256(&self.prelogin_key, &input)),
+            prefix: ip.map(crate::ip_limit::bucket_key),
+        }
+    }
+
+    /// Runs `work` (a PBKDF2 over a client's hash) on a blocking thread, under the gate (see
+    /// [`crate::hash_gate`]): the whole server's pool, the account's one-at-a-time and interval, and
+    /// the client prefix's one at a time. A 429 when the turn or a permit does not come in time.
+    pub(crate) async fn hashing<T: Send + 'static>(
+        &self,
+        who: Who,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> BwResult<T> {
+        self.hash_gate.run(who, work).await
+    }
+
+    /// Whether `password` (the text of the client's `masterPasswordHash`) is the account's.
+    pub(crate) async fn password_matches(
+        &self,
+        account: &BwAccount,
+        password: &str,
+        ip: Option<IpAddr>,
+    ) -> BwResult<bool> {
+        let (salt, previous, iterations) = (
+            account.salt.clone(),
+            account.password_hash.clone(),
+            account.password_iterations,
+        );
+        let secret = password.as_bytes().to_vec();
+        let who = self.who_of(account.user, ip);
+        self.hashing(who, move || {
+            verify_password(&secret, &salt, &previous, iterations)
+        })
+        .await
+    }
+
+    /// The work of a password check for an address that has no account, so that answering takes as
+    /// long as it does for one that has, and the account's turn is taken the same way: the answer
+    /// is always "incorrect", and the time says nothing about who has an account.
+    pub(crate) async fn password_decoy(
+        &self,
+        email: &str,
+        password: &str,
+        ip: Option<IpAddr>,
+    ) -> BwResult<()> {
+        let secret = password.as_bytes().to_vec();
+        let salt = self.prelogin_key;
+        let iterations = self.settings.password_iterations;
+        let who = self.who_of_email(email, ip);
+        self.hashing(who, move || {
+            let _ = std::hint::black_box(hash_password(&secret, &salt, iterations));
+        })
+        .await
+    }
 }
 
 /// Re-hashes the password with the current number of rounds when the account has fewer, as
@@ -165,16 +231,21 @@ pub(crate) async fn kdf_upgrade<S: BwStore>(
     app: &App<S>,
     account: &mut BwAccount,
     password: &str,
+    ip: IpAddr,
 ) -> BwResult<bool> {
     if account.password_iterations >= app.settings.password_iterations {
         return Ok(false);
     }
     account.password_iterations = app.settings.password_iterations;
-    account.password_hash = hash_password(
-        password.as_bytes(),
-        &account.salt,
+    let (secret, salt, iterations) = (
+        password.as_bytes().to_vec(),
+        account.salt.clone(),
         account.password_iterations,
     );
+    let who = app.who_of(account.user, Some(ip));
+    account.password_hash = app
+        .hashing(who, move || hash_password(&secret, &salt, iterations))
+        .await?;
     BwAccountRepo::update(&app.store, account).await?;
     app.touch(account.user).await?;
     Ok(true)
@@ -305,6 +376,9 @@ pub(crate) struct Registration {
     /// `inviteToken`: the token of a server invitation (Kemlock's own field; Bitwarden clients
     /// never send it).
     pub invite_token: Option<String>,
+    /// `orgInviteToken`: the token of an invitation to an organization, which the new account
+    /// accepts as it registers (Vaultwarden's field).
+    pub org_invite_token: Option<String>,
 }
 
 fn text(v: &Value, names: &[&str]) -> Option<String> {
@@ -403,6 +477,8 @@ pub(crate) fn parse_registration(body: &Value) -> BwResult<Registration> {
         hint: text(body, &["masterPasswordHint"]),
         verification_token: text(body, &["emailVerificationToken"]),
         invite_token: text(body, &["inviteToken"]),
+        // Older clients send the token of an organization invitation as `token`.
+        org_invite_token: text(body, &["orgInviteToken", "token"]),
     })
 }
 
@@ -461,12 +537,21 @@ pub(crate) async fn verification_token<S: BwStore>(
     email: &str,
     name: Option<String>,
     invite_token: Option<&str>,
+    ip: std::net::IpAddr,
 ) -> BwResult<Option<String>> {
+    let mail = crate::signup_hold::verifies(app);
+    let now = app.now_secs();
+    // A mail goes to whatever address is asked for, so an address (a client's /56) may ask for only
+    // a few, and each recipient may be mailed once in a while: without them the route mails anyone
+    // as often as it is asked.
+    if mail {
+        app.verification_mail_limit
+            .check(ip, now)
+            .map_err(|_| BwError::status(StatusCode::TOO_MANY_REQUESTS, "Too many requests"))?;
+    }
     if matches!(admit(app, email, invite_token).await?, Admission::Refused) {
         return Err(BwError::msg(REGISTRATION_REFUSED));
     }
-    let mail = crate::signup_hold::verifies(app);
-    let now = app.now_secs();
     let claims = RegisterVerifyClaims {
         nbf: now,
         exp: now + 30 * 60,
@@ -482,7 +567,10 @@ pub(crate) async fn verification_token<S: BwStore>(
     if !mail {
         return Ok(Some(token));
     }
-    crate::signup_hold::mail_token(app, email, token).await;
+    // The same answer whether the mail went or the address was mailed a moment ago.
+    if app.verification_mailed.take(email, now) {
+        crate::signup_hold::mail_token(app, email, token).await;
+    }
     Ok(None)
 }
 
@@ -513,25 +601,39 @@ pub(crate) async fn verification_clicked<S: BwStore>(
 }
 
 /// `POST /identity/accounts/register/finish`: makes a Compatible account.
-pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) -> BwResult<()> {
-    let Some(token) = &request.verification_token else {
-        return Err(BwError::msg("Registration is missing required parameters"));
+pub(crate) async fn register<S: BwStore>(
+    app: &App<S>,
+    request: Registration,
+    ip: IpAddr,
+) -> BwResult<()> {
+    // The token of an invitation to an organization that names this address was mailed to it (as a
+    // Vaultwarden invitation is), so it proves the address as the verification link does.
+    let org_proof = request
+        .org_invite_token
+        .as_deref()
+        .is_some_and(|t| crate::orgs::members::org_invite_names(app, &request.email, t));
+    let (verified, name) = match &request.verification_token {
+        Some(token) => {
+            let claims: RegisterVerifyClaims = app
+                .keys
+                .decode(
+                    token,
+                    &app.settings.issuer("register_verify"),
+                    app.now_secs(),
+                )
+                .map_err(|e| BwError::msg(e.to_string()))?;
+            if claims.sub != request.email {
+                return Err(BwError::msg(
+                    "Email verification token does not match email",
+                ));
+            }
+            (claims.verified, claims.name)
+        }
+        None if org_proof => (true, None),
+        None => {
+            return Err(BwError::msg("Registration is missing required parameters"));
+        }
     };
-    let claims: RegisterVerifyClaims = app
-        .keys
-        .decode(
-            token,
-            &app.settings.issuer("register_verify"),
-            app.now_secs(),
-        )
-        .map_err(|e| BwError::msg(e.to_string()))?;
-    if claims.sub != request.email {
-        return Err(BwError::msg(
-            "Email verification token does not match email",
-        ));
-    }
-    let verified = claims.verified;
-    let name = claims.name;
     if name.as_ref().is_some_and(|n| n.len() > 50) {
         return Err(BwError::msg(
             "The field Name must be a string with a maximum length of 50.",
@@ -542,8 +644,12 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         return Err(BwError::msg(REGISTRATION_REFUSED));
     }
     // Where the server verifies sign-ups, the token has to be the one mailed to the address: the
-    // asker never sees it. A server invitation was mailed to the address too, so it proves it.
-    if crate::signup_hold::verifies(app) && !verified && !matches!(admission, Admission::Invited(_))
+    // asker never sees it. A server invitation, or an organization's, was mailed to the address too,
+    // so it proves it.
+    if crate::signup_hold::verifies(app)
+        && !verified
+        && !org_proof
+        && !matches!(admission, Admission::Invited(_))
     {
         return Err(BwError::msg(
             "Email verification is required: open the link mailed to the address to finish registering",
@@ -557,6 +663,13 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         ))
     })?;
 
+    let salt = random_bytes::<64>(app.env.as_ref()).to_vec();
+    let iterations = app.settings.password_iterations;
+    let (secret, salt_copy) = (request.hash.as_bytes().to_vec(), salt.clone());
+    let who = app.who_of_email(&request.email, Some(ip));
+    let password_hash = app
+        .hashing(who, move || hash_password(&secret, &salt_copy, iterations))
+        .await?;
     let now = app.now();
     let user = User {
         id: kemlock_domain::UserId(random_uuid(app.env.as_ref())),
@@ -581,12 +694,9 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
         Err(StoreError::Duplicate) => return Err(BwError::msg(REGISTRATION_REFUSED)),
         Err(e) => return Err(e.into()),
     }
-
-    let salt = random_bytes::<64>(app.env.as_ref()).to_vec();
-    let iterations = app.settings.password_iterations;
     let account = BwAccount {
         user: user.id,
-        password_hash: hash_password(request.hash.as_bytes(), &salt, iterations),
+        password_hash,
         salt,
         password_iterations: iterations,
         kdf_type: kdf.kind,
@@ -608,6 +718,11 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
     crate::signup_hold::hold(app, &user).await?;
     // Invitations to this address become memberships.
     app.adopt_invitations(&user).await?;
+    // The token of an invitation to an organization, sent with the registration, is accepted for
+    // the account the registration made (and only that: a session is needed for any other).
+    if let Some(token) = request.org_invite_token.as_deref() {
+        crate::orgs::members::accept_at_registration(app, &user, token).await;
+    }
     if let Admission::Invited(invitation) = admission {
         invitation.consume().await;
     }

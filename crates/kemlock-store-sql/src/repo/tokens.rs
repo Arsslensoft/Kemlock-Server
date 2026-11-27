@@ -74,6 +74,7 @@ impl TokenRepo for SqlStore {
             expires_at: NotSet,
             security_stamp: NotSet,
             used_at: Set(Some(utc(now))),
+            api: NotSet,
         };
         let result = refresh_tokens::Entity::update_many()
             .set(mark)
@@ -153,7 +154,7 @@ impl TokenRepo for SqlStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kemlock_app::ports::{DeviceRepo, UserRepo};
+    use kemlock_app::ports::{DeviceRepo, TokenApi, UserRepo};
     use kemlock_domain::{AccountMode, Device, DeviceKind, Email, KdfParams, Role, User, UserId};
     use time::macros::datetime;
 
@@ -209,6 +210,7 @@ mod tests {
             created_at: datetime!(2026-01-02 03:04:05 UTC),
             expires_at: datetime!(2026-02-02 03:04:05 UTC),
             used_at: None,
+            api: TokenApi::Kemlock,
         };
         TokenRepo::revoke_family(&store, family)
             .await

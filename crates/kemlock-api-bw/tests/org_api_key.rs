@@ -353,3 +353,44 @@ async fn the_public_api_takes_only_the_organizations_token() {
     let (status, _) = h.json("POST", uri, Some(&token), Some(body)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn rotating_the_key_ends_the_tokens_made_with_the_old_one() {
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let org = organization(&h, &ada).await;
+    let old = api_key(&h, &ada, &org, "api-key").await["apiKey"]
+        .as_str()
+        .expect("a key")
+        .to_owned();
+    let (_, token) = connector_token(&h, &org, &old).await;
+    let token = token["access_token"].as_str().expect("a token").to_owned();
+    let public = |token: String| {
+        let h = &h;
+        async move {
+            h.json(
+                "POST",
+                "/api/public/organization/import",
+                Some(&token),
+                Some(json!({"groups": [], "members": [], "overwriteExisting": false})),
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(public(token.clone()).await, StatusCode::OK);
+
+    let rotated = api_key(&h, &ada, &org, "rotate-api-key").await["apiKey"]
+        .as_str()
+        .expect("a key")
+        .to_owned();
+    // The old token is refused at once, though it had most of its hour left.
+    assert_eq!(public(token).await, StatusCode::UNAUTHORIZED);
+    // A new sign-in with the new key works.
+    let (status, fresh) = connector_token(&h, &org, &rotated).await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    assert_eq!(
+        public(fresh["access_token"].as_str().expect("a token").to_owned()).await,
+        StatusCode::OK
+    );
+}

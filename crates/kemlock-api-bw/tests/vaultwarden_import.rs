@@ -1257,3 +1257,66 @@ async fn a_rerun_leaves_the_documents_the_api_changed_and_refreshes_the_rest() {
         true
     );
 }
+
+/// An imported Require SSO policy (type 4) turns the setting on in `space_policy_settings`, where
+/// the Kemlock and Bitwarden sign-ins read it, and a second pass that finds the policy gone turns it
+/// off again.
+#[tokio::test]
+async fn an_imported_require_sso_policy_is_kept_in_space_policy_settings() {
+    use kemlock_app::spaces::SpaceRepo;
+    let vw = tempfile::tempdir().expect("a temp folder");
+    sample_with_a_second_collection(vw.path()).await;
+    let mut conn = vwfix::writer(vw.path()).await;
+    vwfix::exec(
+        &mut conn,
+        &format!(
+            "INSERT INTO org_policies (uuid, org_uuid, atype, enabled, data)
+                VALUES ('90000000-0000-4000-8000-000000000004', '{ORG}', 4, 1, '{{}}');"
+        ),
+    )
+    .await;
+    sqlx::Connection::close(conn).await.expect("closes");
+    let h = Harness::new().await;
+    let dest = tempfile::tempdir().expect("a temp folder");
+    let first = vwfix::read_folder(vw.path()).await;
+    let mapped = map_snapshot(&first).expect("maps");
+    pass(
+        &h.store,
+        dest.path(),
+        &h.blobs,
+        h.env.time(),
+        None,
+        &mapped,
+        &[],
+    )
+    .await;
+    let space = kemlock_domain::SpaceId(uuid(ORG));
+    let required = |h: &Harness| {
+        let store = h.store.clone();
+        async move {
+            SpaceRepo::require_sso_of(&store, &[space])
+                .await
+                .expect("a read")
+                .contains(&space)
+        }
+    };
+    assert!(required(&h).await, "the imported policy binds");
+
+    let mut vwconn = vwfix::writer(vw.path()).await;
+    vwfix::exec(&mut vwconn, "DELETE FROM org_policies WHERE atype = 4;").await;
+    sqlx::Connection::close(vwconn).await.expect("closes");
+    let second = vwfix::read_folder(vw.path()).await;
+    let deletions = diff(&first, &second).deletions();
+    let delta = map_snapshot(&second).expect("maps").delta_since(&mapped);
+    pass(
+        &h.store,
+        dest.path(),
+        &h.blobs,
+        h.env.time(),
+        None,
+        &delta,
+        &deletions,
+    )
+    .await;
+    assert!(!required(&h).await, "the policy is gone, so is the setting");
+}

@@ -78,11 +78,16 @@ pub(crate) fn mirror_member(
         });
     row.role = role_of(doc.atype);
     row.custom = custom_of(doc);
+    // A member the row confirmed stays confirmed when the document says they are only invited or
+    // accepted (what they have to do on the Bitwarden side): the document is about the Bitwarden
+    // key, and writing it back must not take away what the Kemlock side confirmed.
+    let confirmed_there = row.state == MemberState::Confirmed;
     row.state = if doc.revoked() {
         MemberState::Revoked
     } else {
         match doc.status {
             CONFIRMED => MemberState::Confirmed,
+            _ if confirmed_there => MemberState::Confirmed,
             ACCEPTED => MemberState::Accepted,
             _ => MemberState::Invited,
         }
@@ -125,8 +130,10 @@ pub(crate) fn reconcile(doc: &MemberDoc, row: &Member) -> MemberDoc {
         MemberState::Revoked => held,
         MemberState::Invited => INVITED,
         MemberState::Accepted => ACCEPTED,
-        // The row has no Bitwarden key to give: a member only it confirmed waits for one.
-        MemberState::Confirmed if held == INVITED => ACCEPTED,
+        // A member the row confirmed while the Bitwarden side still has them invited has not
+        // accepted there: the invitee's own acceptance is what a Bitwarden member needs, so they stay
+        // invited, and an administrator is not made to look as if they had accepted. (A member who
+        // accepted holds ACCEPTED or CONFIRMED already, and the row's state adds nothing.)
         MemberState::Confirmed => held,
     };
     out.status = if row.state == MemberState::Revoked {
@@ -137,6 +144,10 @@ pub(crate) fn reconcile(doc: &MemberDoc, row: &Member) -> MemberDoc {
     // A key left from an earlier membership is not this one's.
     if row.state != MemberState::Revoked && state < CONFIRMED {
         out.akey.clear();
+    }
+    // Nor is a key for account recovery: someone put back to invited has enrolled in nothing yet.
+    if row.state != MemberState::Revoked && state == INVITED {
+        out.reset_password_key = None;
     }
     out
 }
@@ -239,6 +250,27 @@ impl<S: BwStore> App<S> {
             if let Ok(ptype) = key.parse::<i32>() {
                 policies.insert(ptype, doc);
             }
+        }
+        // Require SSO is kept in `space_policy_settings`, which the Kemlock API, the console and the
+        // sign-in checks read and write; the document of this type only carries what Bitwarden shows
+        // of it, so whether it is on is the table's word.
+        let sso_on = SpaceRepo::require_sso_of(&self.store, &[id])
+            .await?
+            .contains(&id);
+        match policies.get_mut(&super::policy::REQUIRE_SSO) {
+            Some(doc) => doc.enabled = sso_on,
+            None if sso_on => {
+                policies.insert(
+                    super::policy::REQUIRE_SSO,
+                    PolicyDoc {
+                        id: Uuid::from_u128(id.0.as_u128() ^ 5).to_string(),
+                        enabled: true,
+                        data: "null".to_owned(),
+                        revision_date: crate::dates::format_date(OffsetDateTime::UNIX_EPOCH),
+                    },
+                );
+            }
+            None => {}
         }
         Ok(Some(Org {
             id,
@@ -640,7 +672,7 @@ mod tests {
             ),
         );
         assert_eq!(accepted.status, ACCEPTED);
-        // A row that confirmed them gives no Bitwarden key, so they still wait for one.
+        // A row that confirmed them does not make them accepted: they have not accepted here.
         let confirmed = reconcile(
             &invited,
             &row(
@@ -649,7 +681,8 @@ mod tests {
                 MemberState::Confirmed,
             ),
         );
-        assert_eq!(confirmed.status, ACCEPTED);
+        assert_eq!(confirmed.status, INVITED);
+        assert!(confirmed.akey.is_empty());
         // A row invited again after a removal is not the old confirmed membership.
         let again = reconcile(
             &doc(USER, false, CONFIRMED),
@@ -661,5 +694,27 @@ mod tests {
         );
         assert_eq!(again.status, INVITED);
         assert!(again.akey.is_empty());
+
+        // Nor does it keep the key it enrolled for account recovery with.
+        let mut enrolled = doc(USER, false, CONFIRMED);
+        enrolled.reset_password_key = Some("4.resetkey".to_owned());
+        let back = reconcile(
+            &enrolled,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Invited,
+            ),
+        );
+        assert_eq!(back.reset_password_key, None);
+        let kept = reconcile(
+            &enrolled,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(kept.reset_password_key.as_deref(), Some("4.resetkey"));
     }
 }

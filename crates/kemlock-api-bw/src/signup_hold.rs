@@ -9,6 +9,8 @@ use crate::error::{BwError, BwResult};
 use kemlock_app::notices::{Notice, RegisterVerifyNotice};
 use kemlock_app::ports::UserRepo;
 use kemlock_domain::{Email, User};
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 /// Whether registration has to prove the address with a mailed link first: the setting is on and
 /// the server can mail the link.
@@ -55,4 +57,69 @@ pub(crate) async fn refuse_if_held<S: BwStore>(app: &App<S>, user: &User) -> BwR
         ));
     }
     Ok(())
+}
+
+/// The most addresses whose last mail is remembered.
+const MAX_RECIPIENTS: usize = 10_000;
+
+/// When each address was last mailed a verification link, so one address can't be mailed again and
+/// again by whoever asks (the Kemlock side lets a held account have a new link every
+/// [`RESEND_AFTER`](kemlock_app::signup_verify::RESEND_AFTER), and this is the same rule for an
+/// address that has no account yet). Kept in memory; a restart forgets it.
+#[derive(Debug, Default)]
+pub(crate) struct RecipientLimit {
+    last: Mutex<HashMap<String, i64>>,
+}
+
+impl RecipientLimit {
+    /// Whether `to` may be mailed at `now` (Unix seconds); if so, it counts as mailed.
+    pub(crate) fn take(&self, to: &str, now: i64) -> bool {
+        let gap = kemlock_app::signup_verify::RESEND_AFTER.whole_seconds();
+        let key = to.trim().to_lowercase();
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.get(&key).is_some_and(|at| now - at < gap) {
+            return false;
+        }
+        if last.len() >= MAX_RECIPIENTS {
+            last.retain(|_, at| now - *at < gap);
+        }
+        // A map still full of recent ones drops its oldest entry, so the limit never goes missing
+        // for the newest address (the address limit is what stops a flood of them).
+        if last.len() >= MAX_RECIPIENTS
+            && let Some(oldest) = last
+                .iter()
+                .min_by_key(|(_, at)| **at)
+                .map(|(k, _)| k.clone())
+        {
+            last.remove(&oldest);
+        }
+        last.insert(key, now);
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_is_mailed_once_in_the_gap_and_a_full_map_drops_its_oldest() {
+        let limit = RecipientLimit::default();
+        assert!(limit.take("a@example.com", 1_000));
+        assert!(!limit.take(" A@Example.com ", 1_001));
+        assert!(limit.take("b@example.com", 1_001));
+        let gap = kemlock_app::signup_verify::RESEND_AFTER.whole_seconds();
+        assert!(limit.take("a@example.com", 1_000 + gap));
+
+        // A map full of recent addresses forgets the oldest, not the limit: the newest stays held.
+        let full = RecipientLimit::default();
+        for n in 0..MAX_RECIPIENTS {
+            let at = 5_000 + i64::try_from(n).expect("small");
+            assert!(full.take(&format!("p{n}@example.com"), at));
+        }
+        let now = 5_000 + i64::try_from(MAX_RECIPIENTS).expect("small");
+        assert!(full.take("new@example.com", now));
+        assert!(!full.take("new@example.com", now + 1));
+        assert!(full.take("p0@example.com", now + 2), "the oldest was dropped");
+    }
 }

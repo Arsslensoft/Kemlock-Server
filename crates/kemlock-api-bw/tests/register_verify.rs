@@ -152,3 +152,43 @@ async fn a_server_that_can_not_mail_does_not_ask_for_what_it_can_not_send() {
     let (status, body) = finish(&h, "new@example.com", &token).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+#[tokio::test]
+async fn one_address_is_mailed_a_link_once_in_a_while_and_answers_alike() {
+    let mailbox = Arc::new(Mailbox::default());
+    let h = Harness::with_mail_set(mailbox.clone(), |s| s.signups_verify = true).await;
+    for _ in 0..3 {
+        let (status, body) = ask(&h, "victim@example.com").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(body.is_empty());
+    }
+    assert_eq!(mailbox.tokens().len(), 1, "the address was mailed once");
+    // After five minutes it may be mailed again, whatever the case it is written in.
+    h.env.advance(time::Duration::minutes(5));
+    let (status, _) = ask(&h, "Victim@Example.com").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(mailbox.tokens().len(), 2);
+}
+
+#[tokio::test]
+async fn one_client_may_ask_for_only_a_few_mails() {
+    let mailbox = Arc::new(Mailbox::default());
+    let h = Harness::with_mail_set(mailbox.clone(), |s| s.signups_verify = true).await;
+    for n in 0..5 {
+        let (status, _) = ask(&h, &format!("person{n}@example.com")).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    let (status, bytes) = ask(&h, "person5@example.com").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("Too many requests"),
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(mailbox.tokens().len(), 5);
+    // A token is given back every five minutes.
+    h.env.advance(time::Duration::minutes(5));
+    let (status, _) = ask(&h, "person5@example.com").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(mailbox.tokens().len(), 6);
+}

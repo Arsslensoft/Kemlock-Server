@@ -79,7 +79,7 @@ connection still updates at once, and the others when they next sync.
 
 Vaultwarden's names, read from the environment. Mail covers emailed two-step codes, the notice
 that a device signed in for the first time, device approval requests, emergency access, space
-invitations (with a link to sign in and accept), the invitations of Bitwarden apps (with a link that accepts by itself, below) and the admin console's alerts and invitations to
+invitations (with a link to sign in and accept), the invitations of Bitwarden apps (with a link to sign in and accept, below) and the admin console's alerts and invitations to
 the server. Notice mails say enough to recognise your own activity and never carry a key, an item
 name or a link that opens anything without signing in.
 
@@ -154,13 +154,17 @@ How the person accepts:
   press the button. The page reads the account's key settings from the server's prelogin, makes the
   master password hash in the browser's crypto worker (PBKDF2 or Argon2id, as the account has it) and
   sends the token with that hash, never the password, and needs no sign-in, which an account made in a
-  Bitwarden app could not do in the web vault. A wrong password is limited by the server. A successful
-  accept starts no session: the page ends with a link to sign in. An administrator (or, for an
-  emergency contact, the grantor) then confirms. The link works for five days.
+  Bitwarden app could not do in the web vault. The token alone accepts nothing: the hash is checked as a
+  sign-in is (the same count of wrong passwords per account, the same slowdown), and a successful
+  accept starts no session, so the page ends with a link to sign in. A person signed in to a Bitwarden
+  app can accept with that session instead. A key for account recovery is kept only with the password.
+  An administrator (or, for an emergency contact, the grantor) then confirms. The link works for five
+  days. An account that can sign in to the web vault also gets the usual space invitation, and can
+  accept on its space page.
 - **Without mail**, the administrator who invited (and the grantor, for an emergency contact) can
   read the same link from the Bitwarden API, `GET /api/organizations/{org}/users/{member}/invite-link`
-  or `GET /api/emergency-access/{id}/invite-link`, and hand it over. Treat it as a secret: whoever
-  opens it accepts for that account.
+  or `GET /api/emergency-access/{id}/invite-link`, and hand it over. The link accepts nothing by
+  itself, for an organization or an emergency contact: the person proves who they are with the master password.
 
 Set `KEMLOCK_BW_INVITES_AUTO_ACCEPT=true` (or the "Accept Bitwarden invitations for the invitee"
 switch in the console, under sign-ups) to get Vaultwarden's behaviour back. It applies **only while

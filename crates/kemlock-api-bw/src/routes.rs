@@ -34,6 +34,10 @@ pub const CLAIMED_SERVER_VERSION: &str = "2026.6.0";
 
 /// JSON bodies up to 64 MiB: an import of a large vault is one body.
 const JSON_BODY_LIMIT: usize = 64 * 1024 * 1024;
+/// The most a request with no sign-in may send: a password sign-in, a registration (whose keys are
+/// a few KiB) and the like. The server buffers a body before it can know who sent it, so these
+/// routes take no more than this, where the signed-in ones take up to the JSON limit above.
+pub(crate) const UNAUTHENTICATED_BODY_LIMIT: usize = 32 * 1024;
 /// An attachment upload is up to Vaultwarden's 525 MB, plus the multipart framing.
 const UPLOAD_BODY_LIMIT: usize = 551 * 1024 * 1024;
 
@@ -103,7 +107,16 @@ struct PreloginData {
     email: String,
 }
 
-async fn prelogin<S: BwStore>(State(app): State<App<S>>, body: Bytes) -> JsonResult {
+async fn prelogin<S: BwStore>(
+    State(app): State<App<S>>,
+    Peer(ip): Peer,
+    body: Bytes,
+) -> JsonResult {
+    // The KDF settings are what tells a real account from an invented answer (an account whose
+    // settings are not one of the six common ones is known by them), so asking is limited by address.
+    app.prelogin_limit
+        .check(ip, app.now_secs())
+        .map_err(|_| BwError::status(StatusCode::TOO_MANY_REQUESTS, "Too many requests"))?;
     let data: PreloginData = parse(&body)?;
     ok(account::prelogin(&app, &data.email).await?)
 }
@@ -156,13 +169,19 @@ fn prefers_json(headers: &HeaderMap) -> bool {
 
 async fn register_send_verification<S: BwStore>(
     State(app): State<App<S>>,
+    Peer(ip): Peer,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, BwError> {
     let data: VerificationData = parse(&body)?;
-    let token =
-        account::verification_token(&app, &data.email, data.name, data.invite_token.as_deref())
-            .await?;
+    let token = account::verification_token(
+        &app,
+        &data.email,
+        data.name,
+        data.invite_token.as_deref(),
+        ip,
+    )
+    .await?;
     // Where the server verifies sign-ups the token went to the address, and the answer is empty.
     let Some(token) = token else {
         return Ok(StatusCode::NO_CONTENT.into_response());
@@ -189,10 +208,14 @@ async fn register_verification_clicked<S: BwStore>(
     empty(account::verification_clicked(&app, &data.email, &data.email_verification_token).await)
 }
 
-async fn register_finish<S: BwStore>(State(app): State<App<S>>, body: Bytes) -> JsonResult {
+async fn register_finish<S: BwStore>(
+    State(app): State<App<S>>,
+    Peer(ip): Peer,
+    body: Bytes,
+) -> JsonResult {
     let value: Value = parse(&body)?;
     let request = account::parse_registration(&value)?;
-    account::register(&app, request).await?;
+    account::register(&app, request, ip).await?;
     ok(json!({ "object": "registerFinish" }))
 }
 
@@ -716,20 +739,31 @@ pub fn router<S: BwStore>(app: App<S>) -> Router {
     }
     Router::new()
         // identity
-        .route("/identity/accounts/prelogin", post(prelogin::<S>))
-        .route("/identity/accounts/prelogin/password", post(prelogin::<S>))
-        .route("/identity/connect/token", post(connect_token::<S>))
+        .route(
+            "/identity/accounts/prelogin",
+            post(prelogin::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
+        )
+        .route(
+            "/identity/accounts/prelogin/password",
+            post(prelogin::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
+        )
+        .route(
+            "/identity/connect/token",
+            post(connect_token::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
+        )
         .route(
             "/identity/accounts/register/send-verification-email",
-            post(register_send_verification::<S>),
+            post(register_send_verification::<S>)
+                .layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         .route(
             "/identity/accounts/register/verification-email-clicked",
-            post(register_verification_clicked::<S>),
+            post(register_verification_clicked::<S>)
+                .layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         .route(
             "/identity/accounts/register/finish",
-            post(register_finish::<S>),
+            post(register_finish::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         // account and meta
         .route("/api/config", get(config::<S>))
@@ -750,7 +784,7 @@ pub fn router<S: BwStore>(app: App<S>) -> Router {
         .route("/api/devices/knowndevice", get(known_device::<S>))
         .route(
             "/api/two-factor/send-email-login",
-            post(send_email_login::<S>),
+            post(send_email_login::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         // sync
         .route("/api/sync", get(sync::<S>))

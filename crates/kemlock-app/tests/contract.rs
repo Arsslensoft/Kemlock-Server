@@ -16,7 +16,8 @@ use kemlock_app::manifests::{
     PutManifestInput,
 };
 use kemlock_app::ports::{
-    Clock, CryptoError, DeviceRepo, RefreshToken, TokenRepo, TwoFactorMethod, TwoFactorRepo,
+    Clock, CryptoError, DeviceRepo, RefreshToken, TokenApi, TokenRepo, TwoFactorMethod,
+    TwoFactorRepo,
 };
 use kemlock_app::{Actor, AppError, DeviceInfo, SignedIn};
 use kemlock_domain::api_use::ApiKind;
@@ -517,6 +518,7 @@ async fn a_device_the_bitwarden_api_made_is_the_same_row_and_keeps_its_tokens() 
             created_at: now,
             expires_at: now + Duration::days(30),
             used_at: None,
+            api: TokenApi::Bitwarden,
         },
     )
     .await

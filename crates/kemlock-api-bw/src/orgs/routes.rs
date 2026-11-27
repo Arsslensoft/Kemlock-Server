@@ -21,13 +21,12 @@ use super::structure::{
     collections_plain, create_collection, delete_collection, delete_group, groups_list, put_policy,
     save_group, update_collection,
 };
-use crate::account::check_valid_password;
 use crate::app::{App, Authed, BwStore, MaybeAuthed};
 use crate::cipher::{CipherData, lcase_keys};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
 use crate::routes::{
-    EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse, truthy,
+    EmptyResult, JsonResult, Peer, SecretJsonResult, empty, ok, ok_no_store, parse, truthy,
 };
 use axum::Router;
 use axum::body::Bytes;
@@ -430,10 +429,16 @@ async fn org_public_key<S: BwStore>(
 }
 
 /// The owner's master password, as Vaultwarden's `PasswordOrOtpData::validate`.
-fn check_proof(authed: &Authed, data: &PasswordData) -> BwResult<()> {
+async fn check_proof<S: BwStore>(
+    app: &App<S>,
+    authed: &Authed,
+    data: &PasswordData,
+) -> BwResult<()> {
     match (data.master_password_hash.as_deref(), data.otp.as_deref()) {
         (Some(hash), None) => {
-            if check_valid_password(&authed.account, hash) {
+            if app
+                .password_matches(&authed.account, hash, Some(authed.ip))
+                .await? {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))
@@ -454,7 +459,7 @@ async fn org_api_key<S: BwStore>(
 ) -> JsonResult {
     let ctx = app.guard(&authed, &org_id, Need::Owner).await?;
     let data: PasswordData = parse(&body)?;
-    check_proof(&authed, &data)?;
+    check_proof(&app, &authed, &data).await?;
     ok(api_key::api_key(&app, &ctx, false).await?)
 }
 
@@ -466,7 +471,7 @@ async fn rotate_org_api_key<S: BwStore>(
 ) -> JsonResult {
     let ctx = app.guard(&authed, &org_id, Need::Owner).await?;
     let data: PasswordData = parse(&body)?;
-    check_proof(&authed, &data)?;
+    check_proof(&app, &authed, &data).await?;
     ok(api_key::api_key(&app, &ctx, true).await?)
 }
 
@@ -516,6 +521,9 @@ struct BulkConfirmData {
 struct AcceptData {
     token: String,
     reset_password_key: Option<String>,
+    /// The master password hash: the proof of who accepts when no one is signed in, and what a key
+    /// for account recovery needs.
+    master_password_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -644,8 +652,7 @@ async fn bulk_reinvite<S: BwStore>(
     for id in data.ids {
         let error = match members::reinvite(&app, &ctx, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line(
             "OrganizationBulkConfirmResponseModel",
@@ -658,13 +665,20 @@ async fn bulk_reinvite<S: BwStore>(
 
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
+    Peer(ip): Peer,
     MaybeAuthed(authed): MaybeAuthed,
     Path((org_id, member_id)): Path<(String, String)>,
     body: Bytes,
 ) -> EmptyResult {
     let data: AcceptData = parse(&body)?;
-    let key = data.reset_password_key;
-    empty(members::accept(&app, authed.as_ref(), &org_id, &member_id, &data.token, key).await)
+    let request = members::AcceptRequest {
+        org_id,
+        member_id,
+        token: data.token,
+        reset_key: data.reset_password_key,
+        password_hash: data.master_password_hash,
+    };
+    empty(members::accept(&app, authed.as_ref(), ip, request).await)
 }
 
 async fn invite_link_route<S: BwStore>(
@@ -704,8 +718,7 @@ async fn bulk_confirm<S: BwStore>(
         let key = invite.key.unwrap_or_default();
         let error = match members::confirm(&app, &ctx, &member_id, &key).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line(
             "OrganizationBulkConfirmResponseModel",
@@ -755,8 +768,7 @@ async fn bulk_delete_members<S: BwStore>(
         };
         let error = match members::remove(&app, &fresh, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line(
             "OrganizationBulkConfirmResponseModel",
@@ -794,8 +806,7 @@ async fn bulk_revoke<S: BwStore>(
         };
         let error = match members::revoke(&app, &fresh, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line("OrganizationUserBulkResponseModel", &id, &error));
     }
@@ -829,8 +840,7 @@ async fn bulk_restore<S: BwStore>(
         };
         let error = match members::restore(&app, &fresh, &id).await {
             Ok(()) => String::new(),
-            Err(BwError::Msg(text)) => text,
-            Err(other) => format!("{other:?}"),
+            Err(error) => error.bulk_line_text(),
         };
         lines.push(bulk_line("OrganizationUserBulkResponseModel", &id, &error));
     }
@@ -927,9 +937,12 @@ async fn reset_password_enrollment<S: BwStore>(
         otp: data.otp,
     };
     empty(
-        recovery::enroll(&app, &ctx, data.reset_password_key, || {
-            check_proof(&authed, &proof)
-        })
+        recovery::enroll(
+            &app,
+            &ctx,
+            data.reset_password_key,
+            check_proof(&app, &authed, &proof),
+        )
         .await,
     )
 }

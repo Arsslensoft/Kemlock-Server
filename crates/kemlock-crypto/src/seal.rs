@@ -19,6 +19,7 @@ use crate::{
 
 const VERSION: u8 = 1;
 const INFO_LABEL: &[u8] = b"kemlock/v1/server-seal";
+const SUBKEY_LABEL: &[u8] = b"kemlock/v1/server-subkey";
 
 /// Makes a fresh `server.key`: 32 random bytes.
 pub fn generate_server_key() -> [u8; 32] {
@@ -60,6 +61,18 @@ impl ServerSeal {
     /// Seals `value` for `purpose`, or fails when sealing can't be done.
     pub fn try_seal(&self, purpose: &str, value: &[u8]) -> Result<Vec<u8>, Error> {
         seal_in::<Active>(&self.server_key, purpose, value)
+    }
+
+    /// A key of its own for `purpose`, derived from `server.key` (HKDF, apart from the AEAD key of
+    /// the same purpose by the label). It is for a server that needs a MAC key or the like that
+    /// nothing outside the server can make.
+    pub fn subkey(&self, purpose: &str) -> Result<Zeroizing<[u8; 32]>, Error> {
+        let mut info = Vec::with_capacity(SUBKEY_LABEL.len() + 4 + purpose.len());
+        info.extend_from_slice(SUBKEY_LABEL);
+        lp(&mut info, purpose.as_bytes())?;
+        let mut key = Zeroizing::new([0u8; 32]);
+        Active::hkdf_sha256(&self.server_key, None, &info, &mut *key)?;
+        Ok(key)
     }
 
     /// Opens a sealed value, which is wiped when the result is dropped (a TOTP secret, the
@@ -131,6 +144,15 @@ mod tests {
             seal.open("totp", &sealed).expect("open").as_slice(),
             b"JBSWY3DPEHPK3PXP"
         );
+    }
+
+    #[test]
+    fn a_subkey_is_stable_per_server_key_and_purpose() {
+        let seal = ServerSeal::new(&[1; 32]);
+        let a = seal.subkey("prelogin").expect("a key");
+        assert_eq!(*a, *seal.subkey("prelogin").expect("a key"));
+        assert_ne!(*a, *seal.subkey("other").expect("a key"));
+        assert_ne!(*a, *ServerSeal::new(&[2; 32]).subkey("prelogin").expect("a key"));
     }
 
     #[test]

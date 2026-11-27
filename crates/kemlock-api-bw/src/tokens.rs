@@ -278,6 +278,40 @@ pub struct RememberClaims {
     /// from before the field existed read as 0.
     #[serde(default)]
     pub two_step_version: i64,
+    /// The token's other fields sealed under `server.key` (see [`RememberClaims::bound`]). A token
+    /// made without it, or with a proof that doesn't open, is no token: whoever holds `rsa_key.pem`
+    /// (an old copy of it, say) can sign the claims but can't make the proof.
+    #[serde(default)]
+    pub proof: String,
+}
+
+/// What `proof` seals the claims under in `server.key`.
+const REMEMBER_PURPOSE: &str = "bitwarden-remember-device";
+
+impl RememberClaims {
+    /// The text a proof covers: the device, the account, the two-step version and the expiry.
+    fn bound_text(&self) -> Vec<u8> {
+        format!(
+            "{}|{}|{}|{}",
+            self.sub, self.user_uuid, self.two_step_version, self.exp
+        )
+        .into_bytes()
+    }
+
+    /// The claims with their proof made under the server's own key, which the RSA signing key
+    /// doesn't give.
+    #[must_use]
+    pub fn bound(mut self, seal: &kemlock_crypto::seal::ServerSeal) -> Self {
+        self.proof = b64url::encode(&seal.seal(REMEMBER_PURPOSE, &self.bound_text()));
+        self
+    }
+
+    /// Whether the proof opens under the server's key to these very claims.
+    pub fn is_bound(&self, seal: &kemlock_crypto::seal::ServerSeal) -> bool {
+        b64url::decode(&self.proof)
+            .and_then(|sealed| seal.open(REMEMBER_PURPOSE, &sealed).ok())
+            .is_some_and(|text| kemlock_crypto::hash::ct_eq(&text, &self.bound_text()))
+    }
 }
 
 /// Making a 2048-bit key takes a moment, so the tests of every module share one.
@@ -295,6 +329,40 @@ mod tests {
 
     fn claims(exp: i64) -> Value {
         json!({"nbf": 1_000, "exp": exp, "iss": "https://vault.test|login", "sub": "x"})
+    }
+
+    fn remember(exp: i64) -> RememberClaims {
+        RememberClaims {
+            nbf: 1_000,
+            exp,
+            iss: "https://vault.test|2faremember".to_owned(),
+            sub: "device".to_owned(),
+            user_uuid: "user".to_owned(),
+            two_step_version: 3,
+            proof: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_remember_token_is_good_only_with_a_proof_made_under_the_servers_key() {
+        use kemlock_crypto::seal::ServerSeal;
+        let seal = ServerSeal::new(&[7; 32]);
+        let bound = remember(5_000).bound(&seal);
+        assert!(bound.is_bound(&seal));
+        // No proof (a token signed with the RSA key alone), or one under another key.
+        assert!(!remember(5_000).is_bound(&seal));
+        assert!(!bound.is_bound(&ServerSeal::new(&[8; 32])));
+        // A proof moved onto other claims doesn't fit them.
+        for other in [
+            RememberClaims { sub: "another".to_owned(), ..bound.clone() },
+            RememberClaims { user_uuid: "someone".to_owned(), ..bound.clone() },
+            RememberClaims { two_step_version: 4, ..bound.clone() },
+            RememberClaims { exp: 9_999, ..bound.clone() },
+        ] {
+            assert!(!other.is_bound(&seal));
+        }
+        let junk = RememberClaims { proof: "not a proof".to_owned(), ..bound };
+        assert!(!junk.is_bound(&seal));
     }
 
     #[test]

@@ -581,6 +581,8 @@ pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchM
     live.set_space_attachment_limit(snapshot.space_attachment_limit);
     live.set_send_limit(snapshot.send_limit);
     limits.sign_in.set_limit(snapshot.rate_sign_in_per_minute);
+    live.set_password_limit(snapshot.rate_password_failures);
+    live.set_second_step_limit(snapshot.rate_second_step_failures);
     limits.account.set_limit(snapshot.rate_password_failures);
     limits.step_up.set_limit(snapshot.rate_second_step_failures);
     limits

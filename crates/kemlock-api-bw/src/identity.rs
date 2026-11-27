@@ -9,9 +9,7 @@
 //! body or the `Device-Type` header, a 400 with `TwoFactorProviders` and `TwoFactorProviders2` for
 //! the second step, no new-device challenge, and an API-key grant that gets no refresh token.
 
-use crate::account::{
-    check_valid_password, identity_master_password_policy, kdf_upgrade, user_name,
-};
+use crate::account::{identity_master_password_policy, kdf_upgrade, user_name};
 use crate::app::{App, BwStore};
 use crate::env::{random_bytes, random_uuid};
 use crate::error::{BwError, BwResult};
@@ -24,10 +22,12 @@ use kemlock_app::devices::{NewDeviceNotice, bitwarden_device_id};
 use kemlock_app::error::AppError;
 use kemlock_app::notices::{Notice, TwoStepRecoveredNotice};
 use kemlock_app::ports::{
-    DeviceRepo, Event, EventLog, RefreshToken, TokenRepo, TwoFactorMethod, TwoFactorRepo, UserRepo,
+    DeviceRepo, Event, EventLog, RefreshToken, StoreError, TokenApi, TokenRepo, TwoFactorMethod,
+    TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::{NewSignIn, record_sign_in};
 use kemlock_app::sealed::{PURPOSE_TOTP, open_bound};
+use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
 use kemlock_app::sso::{RequireSso, SignInMethod, SsoError};
 use kemlock_app::two_step::{method_of_provider, provider_type};
 use kemlock_crypto::{hash, totp};
@@ -462,21 +462,32 @@ impl<S: BwStore> App<S> {
             .map_err(|e| BwError::Server(e.to_string()))
     }
 
-    /// Stores a new refresh token and returns its text.
+    /// Stores a new refresh token and returns its text. A rotation (`successor_of` is the hash of
+    /// the token it replaces) makes the token from that hash and the server's key, not at random:
+    /// the same old token always has the same successor, so one presented again within the grace
+    /// of a lost answer gets that token back instead of starting a second chain.
     async fn new_refresh_token(
         &self,
         user: UserId,
         device: DeviceId,
         family: Option<Uuid>,
+        successor_of: Option<[u8; 32]>,
         ttl: Duration,
     ) -> BwResult<String> {
         let now = self.now();
-        let raw = random_bytes::<32>(self.env.as_ref());
+        let raw = match successor_of {
+            Some(old) => {
+                let mut input = b"bitwarden/refresh-successor".to_vec();
+                input.extend_from_slice(&old);
+                hash::hmac_sha256(&self.prelogin_key, &input)
+            }
+            None => random_bytes::<32>(self.env.as_ref()),
+        };
         // Bound to the account's stamp, so a password change or key replacement ends it.
         let security_stamp = UserRepo::by_id(&self.store, user)
             .await?
             .map_or(Uuid::nil(), |u| u.security_stamp);
-        TokenRepo::insert(
+        let stored = TokenRepo::insert(
             &self.store,
             &RefreshToken {
                 security_stamp,
@@ -487,9 +498,18 @@ impl<S: BwStore> App<S> {
                 created_at: now,
                 expires_at: now + ttl,
                 used_at: None,
+                api: TokenApi::Bitwarden,
             },
         )
-        .await?;
+        .await;
+        match stored {
+            Ok(()) => {}
+            // The retry of a lost answer: the successor is there already, and is the same.
+            Err(StoreError::Duplicate) if successor_of.is_some() => {}
+            // The sign-in was ended while this rotation ran.
+            Err(StoreError::NotFound) if successor_of.is_some() => return Err(invalid_grant()),
+            Err(error) => return Err(error.into()),
+        }
         Ok(b64url::encode(&raw))
     }
 
@@ -623,17 +643,18 @@ impl<S: BwStore> App<S> {
             return Err(self.two_factor_challenge(user, &usable, data).await?);
         };
 
-        // The try is counted before the code is looked at, so tries that arrive together each
-        // count, and a locked account refuses even the right code until its window ends.
-        let tries = BwTryRepo::count_try(
+        // The try is reserved before the code is looked at, so tries that arrive together each
+        // count, in the count the Kemlock API's second step keeps for the account (the console's
+        // limit, then doubling waits): an account that waits refuses even the right code.
+        let reserved = SecondStepGuard::reserve_second_step(
             &self.store,
             user.id,
-            SECOND_STEP_KIND,
             self.now().unix_timestamp(),
+            self.settings.second_step_limit(),
             TRIES_WINDOW_SECS,
         )
         .await?;
-        if tries > SECOND_STEP_MAX_TRIES {
+        if let Reservation::Wait(_) = reserved {
             return Err(too_many_logins());
         }
 
@@ -683,6 +704,7 @@ impl<S: BwStore> App<S> {
                         c.sub == device.id.to_string()
                             && c.user_uuid == user.id.to_string()
                             && c.two_step_version == version
+                            && c.is_bound(&self.seal)
                     });
                 if !valid {
                     return Err(self.two_factor_challenge(user, &usable, data).await?);
@@ -720,7 +742,9 @@ impl<S: BwStore> App<S> {
             }
             _ => return Err(BwError::msg("Invalid two factor provider")),
         }
-        BwTryRepo::forget_tries(&self.store, user.id, SECOND_STEP_KIND).await?;
+        if let Err(error) = SecondStepGuard::clear_second_step(&self.store, user.id).await {
+            tracing::warn!(%error, "couldn't clear an account's second-step attempts");
+        }
 
         if data.two_factor_remember.unwrap_or(0) == 1 {
             let at = now.unix_timestamp();
@@ -731,7 +755,9 @@ impl<S: BwStore> App<S> {
                 sub: device.id.to_string(),
                 user_uuid: user.id.to_string(),
                 two_step_version: TwoFactorRepo::two_step_version(&self.store, user.id).await?,
-            };
+                proof: String::new(),
+            }
+            .bound(&self.seal);
             let token = self
                 .keys
                 .encode(&claims)
@@ -839,14 +865,10 @@ async fn account_of<S: BwStore>(app: &App<S>, user: &User) -> BwResult<Option<Bw
     Ok(BwAccountRepo::get(&app.store, user.id).await?)
 }
 
-/// The second-step codes an account may try in a window (any address): a wrong code, a remember
-/// token and a recovery code each count. Persisted (`bw_tries`), so a restart or many addresses
-/// don't give the tries back; the window is the one the Kemlock API's second step uses.
-const SECOND_STEP_KIND: &str = "second-step";
-const SECOND_STEP_MAX_TRIES: u32 = 10;
 /// The mails with a sign-in code an account may ask for in the window.
 const EMAIL_LOGIN_KIND: &str = "email-login";
 const EMAIL_LOGIN_MAX_TRIES: u32 = 5;
+/// The window of the tries an account may have (the one the Kemlock API's second step uses).
 const TRIES_WINDOW_SECS: i64 = 15 * 60;
 
 /// The 429 of a limit, in the words of Vaultwarden's own.
@@ -865,6 +887,76 @@ pub(crate) fn check_login_limit<S: BwStore>(app: &App<S>, ip: IpAddr) -> BwResul
     app.login_limit
         .check(ip, app.now_secs())
         .map_err(|_| too_many_logins())
+}
+
+/// The wrong-password tries of an account, kept apart from its second-step tries.
+const PASSWORD_KIND: &str = "password";
+
+/// Checks the master password hash of `account` for `user`, counting the try against the account
+/// whichever address it comes from (the address limit only stops one source). The try is counted
+/// before the hash is looked at, so tries that arrive together each count. Past the account's
+/// limit in a window, each try is held back, 1 second then 2 then 3, so guessing costs time and
+/// the owner's own right password always gets through (a refusal here would let anyone lock a known
+/// address out). A right password clears the count. The hash itself is
+/// checked off the async workers, a few at a time (see [`App::hashing`]).
+pub(crate) async fn check_password<S: BwStore>(
+    app: &App<S>,
+    user: &User,
+    account: &BwAccount,
+    password: &str,
+    ip: IpAddr,
+) -> BwResult<()> {
+    let limit = app.settings.password_limit();
+    let tries = BwTryRepo::count_try(
+        &app.store,
+        user.id,
+        PASSWORD_KIND,
+        app.now_secs(),
+        TRIES_WINDOW_SECS,
+    )
+    .await?;
+    if tries > limit {
+        let wait = 1u64 << (tries - limit - 1).min(8);
+        tokio::time::sleep(std::time::Duration::from_secs(
+            wait.min(app.settings.password_slowdown_secs),
+        ))
+        .await;
+    }
+    if !app.password_matches(account, password, Some(ip)).await? {
+        return Err(BwError::msg(BAD_LOGIN));
+    }
+    BwTryRepo::forget_tries(&app.store, user.id, PASSWORD_KIND).await?;
+    Ok(())
+}
+
+/// Proves, with no session, that the caller is the account of `email` by its master password hash:
+/// the address limit, the same decoy hash for an address with no account, and the same count and
+/// slowdown per account as the password grant (a wrong hash is a wrong password, a 400). Returns
+/// the account. A disabled account is refused once the password is right, as at sign-in.
+pub(crate) async fn prove_password_of<S: BwStore>(
+    app: &App<S>,
+    ip: IpAddr,
+    email: &str,
+    hash: &str,
+) -> BwResult<User> {
+    check_login_limit(app, ip)?;
+    let user = match Email::parse(&email.trim().to_lowercase()) {
+        Ok(parsed) => UserRepo::by_email(&app.store, &parsed).await?,
+        Err(_) => None,
+    };
+    let account = match &user {
+        Some(user) => account_of(app, user).await?,
+        None => None,
+    };
+    let (Some(user), Some(account)) = (user, account) else {
+        app.password_decoy(email, hash, Some(ip)).await?;
+        return Err(BwError::msg(BAD_LOGIN));
+    };
+    check_password(app, &user, &account, hash, ip).await?;
+    if UserRepo::account_disabled(&app.store, user.id).await? {
+        return Err(BwError::msg(DISABLED));
+    }
+    Ok(user)
 }
 
 async fn password_login<S: BwStore>(
@@ -896,19 +988,22 @@ async fn password_login<S: BwStore>(
         Ok(email) => UserRepo::by_email(&app.store, &email).await?,
         Err(_) => None,
     };
-    let Some(user) = user else {
-        return Err(BwError::msg(BAD_LOGIN));
-    };
-    let Some(mut account) = account_of(app, &user).await? else {
-        return Err(BwError::msg(BAD_LOGIN));
-    };
-
     let password = data.password.as_deref().unwrap_or_default();
-    // A login approved on another device isn't supported: Kemlock never starts one.
+    let account = match &user {
+        Some(user) => account_of(app, user).await?,
+        None => None,
+    };
+    let (Some(user), Some(mut account)) = (user, account) else {
+        // The work of a check is done all the same (an `authRequest` or not), so the time of the
+        // answer does not say whether the address has an account.
+        app.password_decoy(&username, password, Some(caller.ip)).await?;
+        return Err(BwError::msg(BAD_LOGIN));
+    };
+    check_password(app, &user, &account, password, caller.ip).await?;
+    // A login approved on another device isn't supported: Kemlock never starts one. It is looked at
+    // only after the password, and answers as a wrong password does, so a request that names one
+    // tells nobody whether the account exists or the password was right.
     if data.auth_request.is_some() {
-        return Err(BwError::msg("Auth request not found. Try again."));
-    }
-    if !check_valid_password(&account, password) {
         return Err(BwError::msg(BAD_LOGIN));
     }
     attempt.proved = true;
@@ -922,7 +1017,7 @@ async fn password_login<S: BwStore>(
     refuse_pending_erasure(app, &user).await?;
     crate::signup_hold::refuse_if_held(app, &user).await?;
     require_sso(app, &user, SignInMethod::Password).await?;
-    kdf_upgrade(app, &mut account, password).await?;
+    kdf_upgrade(app, &mut account, password, caller.ip).await?;
 
     let device_type = requested_device_type(&data, caller);
     let (device, is_new) = app
@@ -941,7 +1036,8 @@ async fn password_login<S: BwStore>(
         app.announce_new_device(&user, &device, caller.ip).await?;
     }
 
-    DeviceRepo::upsert(&app.store, &device).await?;
+    // Only what the sign-in changed: a key a sign-out cleared since `device_for` read it stays cleared.
+    DeviceRepo::upsert_description(&app.store, &device).await?;
     app.record_use(device.id).await;
     let identifier = app
         .note_device(
@@ -963,7 +1059,9 @@ async fn password_login<S: BwStore>(
     } else {
         REFRESH_TTL
     };
-    let refresh = app.new_refresh_token(user.id, device.id, None, ttl).await?;
+    let refresh = app
+        .new_refresh_token(user.id, device.id, None, None, ttl)
+        .await?;
 
     let mut result = json!({
         "access_token": access,
@@ -1021,10 +1119,20 @@ async fn refresh_login<S: BwStore>(
         TokenRepo::revoke_family(&app.store, token.family).await?;
         return Err(invalid_grant());
     }
+    // A Kemlock refresh token is bound to a DPoP key and was not made for this API: its holder
+    // presenting it here, as a bearer token, is a theft, and the whole sign-in goes. One from before
+    // tokens were tagged is taken only for a device that has no DPoP key.
+    if token.api == TokenApi::Kemlock {
+        TokenRepo::revoke_family(&app.store, token.family).await?;
+        return Err(invalid_grant());
+    }
     let device = DeviceRepo::get(&app.store, token.device)
         .await?
         .filter(|d| d.user == token.user)
         .ok_or_else(invalid_grant)?;
+    if token.api == TokenApi::Unknown && device.dpop_jkt.is_some() {
+        return Err(invalid_grant());
+    }
     let user = UserRepo::by_id(&app.store, token.user)
         .await?
         .ok_or_else(invalid_grant)?;
@@ -1046,14 +1154,9 @@ async fn refresh_login<S: BwStore>(
         return Err(invalid_grant());
     }
 
-    DeviceRepo::upsert(
-        &app.store,
-        &Device {
-            last_seen_at: now,
-            ..device.clone()
-        },
-    )
-    .await?;
+    // Only the time it was seen is written: the row read above may be older than a sign-out that
+    // cleared its DPoP key, and writing the whole row back would put the key back.
+    DeviceRepo::touch_last_seen(&app.store, device.id, now).await?;
     app.record_use(device.id).await;
     // What the device kept at its sign-in; a device from before that has only its kind to go by.
     let known = BwDeviceRepo::bw_device(&app.store, device.id)
@@ -1081,7 +1184,7 @@ async fn refresh_login<S: BwStore>(
     )?;
     let ttl = token.expires_at - token.created_at;
     let refresh = app
-        .new_refresh_token(user.id, device.id, Some(token.family), ttl)
+        .new_refresh_token(user.id, device.id, Some(token.family), Some(token.hash), ttl)
         .await?;
     Ok(json!({
         "refresh_token": refresh,
@@ -1178,7 +1281,8 @@ async fn user_api_key_login<S: BwStore>(
     if is_new {
         app.announce_new_device(&user, &device, caller.ip).await?;
     }
-    DeviceRepo::upsert(&app.store, &device).await?;
+    // Only what the sign-in changed: a key a sign-out cleared since `device_for` read it stays cleared.
+    DeviceRepo::upsert_description(&app.store, &device).await?;
     app.record_use(device.id).await;
     let identifier = app
         .note_device(
@@ -1245,11 +1349,14 @@ pub(crate) async fn send_email_login<S: BwStore>(
         None => None,
     };
     let (Some(user), Some(account), Some(hash)) = (user, account, password_hash) else {
+        // A hash was sent for an address with no account: the work of a check is done all the
+        // same, so the time of the answer does not say who has an account.
+        if let Some(hash) = password_hash {
+            app.password_decoy(email, hash, Some(ip)).await?;
+        }
         return Err(BwError::msg(BAD_LOGIN));
     };
-    if !check_valid_password(&account, hash) {
-        return Err(BwError::msg(BAD_LOGIN));
-    }
+    check_password(app, &user, &account, hash, ip).await?;
     // Only a request that knows the password is counted, so a stranger can neither use the count
     // to tell who has an account nor use up the owner's mails; the client address limit above is
     // what stops guesses.

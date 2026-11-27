@@ -10,8 +10,8 @@ mod common;
 use common::{device, external, file, file_url, memory, unique_email, user};
 use kemlock_app::FirstAdminRepo;
 use kemlock_app::ports::{
-    DeviceRepo, Event, EventLog, RefreshToken, ServerInfo, StoreError, TokenRepo, TwoFactor,
-    TwoFactorMethod, TwoFactorRepo, UserRepo,
+    DeviceRepo, Event, EventLog, RefreshToken, ServerInfo, StoreError, TokenApi, TokenRepo,
+    TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo,
 };
 use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
 use kemlock_domain::{DeviceId, DeviceKind, Role, UserId};
@@ -277,6 +277,7 @@ fn refresh_token(user: &UserId, device: &DeviceId, n: u8) -> RefreshToken {
         created_at: datetime!(2026-01-02 03:04:05 UTC),
         expires_at: datetime!(2026-02-02 03:04:05 UTC),
         used_at: None,
+        api: TokenApi::Kemlock,
     }
 }
 

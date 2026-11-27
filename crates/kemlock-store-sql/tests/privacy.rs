@@ -7,7 +7,8 @@ use common::{MADE_AT, device, draft, file, file_url, memory, put, tombstone, uni
 use kemlock_app::Actor;
 use kemlock_app::files::AttachmentRepo;
 use kemlock_app::ports::{
-    Clock, DeviceRepo, Event, EventLog, ItemStore, RefreshToken, StoreError, TokenRepo, UserRepo,
+    Clock, DeviceRepo, Event, EventLog, ItemStore, RefreshToken, StoreError, TokenApi, TokenRepo,
+    UserRepo,
 };
 use kemlock_app::privacy::{
     AccountData, AccountEraser, NewSignIn, PrivacyLog, PrivacySettings, RetentionStore,
@@ -586,6 +587,7 @@ async fn erasing_an_account_removes_what_is_its_and_leaves_everyone_else() {
             created_at: MADE_AT,
             expires_at: MADE_AT + Duration::days(30),
             used_at: None,
+            api: TokenApi::Kemlock,
         },
     )
     .await

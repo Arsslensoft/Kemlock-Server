@@ -66,8 +66,16 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     /// `POST /kem/v1/auth/prelogin`: the KDF settings and salt for an email.
     pub(crate) async fn handle_prelogin(
         State(api): State<Self>,
+        ClientIp(ip): ClientIp,
         body: Body,
     ) -> Result<Json<PreloginResponse>, Problem> {
+        // Its own bucket on the sign-in limit, per address: asking about many emails is how one finds
+        // the accounts whose settings are not the default, and a person asks once per sign-in.
+        guard(
+            &api.limits.sign_in,
+            &format!("prelogin:{}", ip_key(ip)),
+            api.now(),
+        )?;
         let request: EmailRequest = body.json()?;
         let kdf = api.prelogin().execute(&request.email).await?;
         Ok(Json(PreloginResponse {

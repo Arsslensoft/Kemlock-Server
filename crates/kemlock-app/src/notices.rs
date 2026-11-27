@@ -139,8 +139,8 @@ impl fmt::Debug for RegisterVerifyNotice {
 }
 
 /// The invitation of the Bitwarden API to an organization: a link that carries a signed token, which
-/// accepts the invitation on its own (the person need not sign in, since an account made through
-/// the Bitwarden API may have no other way in). The link is a secret, so it is never logged.
+/// accepts nothing by itself: the person signs in and accepts (an account made through the
+/// Bitwarden API signs in from a Bitwarden app).
 #[derive(Clone, PartialEq, Eq)]
 pub struct BwOrgInviteNotice {
     pub to: Email,

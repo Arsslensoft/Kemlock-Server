@@ -179,20 +179,18 @@ impl<S: BwStore> MembershipFacts for OrgMembership<S> {
             if member.state != kemlock_domain::spaces::MemberState::Confirmed {
                 continue;
             }
-            let Some(text) = self
-                .0
-                .doc_get(
-                    member.space.0,
-                    super::model::KIND_POLICY,
-                    &REQUIRE_SSO.to_string(),
-                )
-                .await?
-            else {
+            // On a space with a chain only the chain confirms: a row some other route wrote binds
+            // nobody (a Bitwarden confirm has no signed `confirm` record).
+            if let Some(confirmed) = SpaceRepo::chain_confirmed_members(&self.0, member.space).await?
+                && !confirmed.contains(&user)
+            {
                 continue;
-            };
-            let enabled = serde_json::from_str::<super::model::PolicyDoc>(&text)
-                .map(|p| p.enabled)
-                .unwrap_or(false);
+            }
+            // Whether the space requires SSO is `space_policy_settings`'s word, the one the Kemlock
+            // API reads too, so a member bound there is bound here.
+            let enabled = SpaceRepo::require_sso_of(&self.0, &[member.space])
+                .await?
+                .contains(&member.space);
             let role = match member.role {
                 kemlock_domain::spaces::SpaceRole::Owner => kemlock_app::sso::SpaceRole::Owner,
                 kemlock_domain::spaces::SpaceRole::Admin => kemlock_app::sso::SpaceRole::Admin,

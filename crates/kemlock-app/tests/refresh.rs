@@ -1,7 +1,7 @@
 mod fakes;
 
 use fakes::*;
-use kemlock_app::ports::{Clock, DeviceRepo, RefreshToken, TokenRepo, TokenSigner};
+use kemlock_app::ports::{Clock, DeviceRepo, RefreshToken, TokenApi, TokenRepo, TokenSigner};
 use kemlock_app::{AppError, SignedIn, TokenPair};
 use kemlock_domain::UserId;
 use time::Duration;
@@ -137,6 +137,7 @@ async fn a_token_whose_device_is_gone_ends_the_session() {
             created_at: now,
             expires_at: now + Duration::days(1),
             used_at: None,
+            api: TokenApi::Kemlock,
         },
     )
     .await

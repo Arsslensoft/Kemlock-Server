@@ -79,6 +79,23 @@ pub fn not_found_body() -> Value {
     })
 }
 
+impl BwError {
+    /// What a bulk route puts in the line of one member whose action failed: the message of a
+    /// refusal, which is meant for the client, and for anything else a bare "Error" (the detail is
+    /// logged), so a failure of the store or a file never reaches the client as a line of text.
+    pub fn bulk_line_text(self) -> String {
+        match self {
+            BwError::Msg(text) | BwError::Status(_, text) => text,
+            BwError::Unauthorized | BwError::NotFound => "Error".to_owned(),
+            BwError::Json(_) => "Error".to_owned(),
+            BwError::Server(detail) => {
+                tracing::error!(%detail, "a bulk member action failed");
+                "Error".to_owned()
+            }
+        }
+    }
+}
+
 impl IntoResponse for BwError {
     fn into_response(self) -> Response {
         match self {
@@ -102,6 +119,21 @@ impl IntoResponse for BwError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bulk_line_keeps_a_refusal_and_hides_a_failure() {
+        assert_eq!(
+            BwError::msg("User in invalid state").bulk_line_text(),
+            "User in invalid state"
+        );
+        assert_eq!(
+            BwError::status(StatusCode::TOO_MANY_REQUESTS, "Too many requests").bulk_line_text(),
+            "Too many requests"
+        );
+        let leak = BwError::Server("database error: connection refused to db:5432".to_owned());
+        assert_eq!(leak.bulk_line_text(), "Error");
+        assert_eq!(BwError::Unauthorized.bulk_line_text(), "Error");
+    }
 
     #[test]
     fn an_err_has_vaultwardens_shape() {

@@ -6,7 +6,10 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use common::{DOMAIN, HASH, Harness, USER_KEY, claims};
 use kemlock_app::admin::AdminUserRepo;
-use kemlock_app::ports::{TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo};
+use kemlock_app::ports::{
+    DeviceRepo, RefreshToken, TokenApi, TokenRepo, TwoFactor, TwoFactorMethod, TwoFactorRepo,
+    UserRepo,
+};
 use kemlock_app::privacy::{AccountEraser, ClientAddr, PrivacyLog};
 use kemlock_crypto::seal::ServerSeal;
 use serde_json::{Value, json};
@@ -515,9 +518,11 @@ async fn refresh_tokens_rotate_and_a_late_reuse_ends_the_sign_in() {
     assert_eq!(status, StatusCode::OK);
     let r2 = third["refresh_token"].as_str().expect("a token").to_owned();
 
-    // The first token again, within a minute of its use: a lost answer, retried.
-    let (status, _) = refresh(r0.clone()).await;
+    // The first token again, within a minute of its use: a lost answer, retried. It gets the
+    // successor it made (not a second chain), and a new access token.
+    let (status, again) = refresh(r0.clone()).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["refresh_token"], json!(r1), "the same successor");
 
     // Later it is a replay: it fails, and the whole sign-in's tokens go with it.
     h.env.advance(Duration::seconds(61));
@@ -533,6 +538,94 @@ async fn refresh_tokens_rotate_and_a_late_reuse_ends_the_sign_in() {
     assert_eq!(body, json!({"error": "invalid_grant"}));
     let (_, body) = h.token(&[("grant_type", "refresh_token")]).await;
     assert_eq!(body["message"], "refresh_token cannot be blank");
+}
+
+/// Puts a refresh token for `device` of `user` in the store, as the API `api` would have made it,
+/// and returns its text.
+async fn stored_refresh_token(
+    h: &Harness,
+    user: kemlock_domain::UserId,
+    device: kemlock_domain::DeviceId,
+    n: u8,
+    api: TokenApi,
+) -> String {
+    let raw = [n; 32];
+    let now = h.env.time();
+    TokenRepo::insert(
+        &h.store,
+        &RefreshToken {
+            hash: kemlock_crypto::hash::sha256(&raw),
+            family: uuid::Uuid::new_v4(),
+            user,
+            device,
+            security_stamp: UserRepo::by_id(&h.store, user)
+                .await
+                .expect("a read")
+                .expect("the user")
+                .security_stamp,
+            created_at: now,
+            expires_at: now + Duration::days(30),
+            used_at: None,
+            api,
+        },
+    )
+    .await
+    .expect("a token");
+    kemlock_app::b64url::encode(&raw)
+}
+
+#[tokio::test]
+async fn a_kemlock_refresh_token_is_refused_at_the_bitwarden_endpoint() {
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    h.login("ada@example.com", HASH).await;
+    let mut device = DeviceRepo::list(&h.store, user)
+        .await
+        .expect("the devices")
+        .remove(0);
+    let refresh = |token: String| {
+        let h = &h;
+        async move {
+            h.token(&[
+                ("grant_type", "refresh_token"),
+                ("client_id", "mobile"),
+                ("refresh_token", token.as_str()),
+            ])
+            .await
+        }
+    };
+
+    // A token the Kemlock API made is bound to a DPoP key; here it would be a bearer token.
+    let kemlock = stored_refresh_token(&h, user, device.id, 1, TokenApi::Kemlock).await;
+    let (status, body) = refresh(kemlock.clone()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body, json!({"error": "invalid_grant"}));
+    // And it ended that sign-in for good, as a stolen token does.
+    let (status, _) = refresh(kemlock).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A Bitwarden token works on a device that also holds a DPoP key (a phone on both APIs).
+    device.dpop_jkt = Some("jkt".to_owned());
+    DeviceRepo::upsert(&h.store, &device).await.expect("a key");
+    let bitwarden = stored_refresh_token(&h, user, device.id, 2, TokenApi::Bitwarden).await;
+    let (status, body) = refresh(bitwarden).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The refresh did not take the key off the device.
+    let after = DeviceRepo::get(&h.store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(after.dpop_jkt.as_deref(), Some("jkt"));
+
+    // A token from before the tag is taken only for a device with no DPoP key.
+    let legacy = stored_refresh_token(&h, user, device.id, 3, TokenApi::Unknown).await;
+    let (status, _) = refresh(legacy).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    device.dpop_jkt = None;
+    DeviceRepo::upsert(&h.store, &device).await.expect("no key");
+    let legacy = stored_refresh_token(&h, user, device.id, 4, TokenApi::Unknown).await;
+    let (status, body) = refresh(legacy).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]
@@ -779,6 +872,24 @@ async fn an_authenticator_account_gets_the_second_step_and_can_be_remembered() {
     let (status, body) = h.token(&other_device).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["TwoFactorProviders"], json!(["0"]));
+
+    // A token signed with the server's RSA key but with no proof under `server.key` (what anyone
+    // holding an old `rsa_key.pem` can make) is no token: the second step is asked again.
+    let now = h.env.time().unix_timestamp();
+    let mut claims: Value = common::keys()
+        .decode(&remember, &format!("{DOMAIN}|2faremember"), now)
+        .expect("the genuine token's claims");
+    assert!(claims["proof"].as_str().is_some_and(|p| !p.is_empty()));
+    claims.as_object_mut().expect("an object").remove("proof");
+    let forged = common::keys().encode(&claims).expect("signed");
+    let (status, body) = with("5", forged, "0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["TwoFactorProviders"], json!(["0"]));
+    // And so is one whose proof is another token's.
+    claims["proof"] = json!("AAAA");
+    let wrong = common::keys().encode(&claims).expect("signed");
+    let (status, _) = with("5", wrong, "0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // A recovery code is taken though never offered; this account (enrolled straight in the store)
     // has none, so any is refused, as Vaultwarden words it.
@@ -1485,6 +1596,104 @@ async fn password_and_api_key_sign_ins_are_rate_limited_per_address_as_vaultward
 }
 
 #[tokio::test]
+async fn a_request_with_no_sign_in_may_not_send_more_than_a_few_kib() {
+    let h = Harness::new().await;
+    let (token, _) = h.signed_in("ada@example.com").await;
+    let big = "a".repeat(40 * 1024);
+    let body = format!("{{\"email\":\"{big}\"}}");
+    for uri in [
+        "/identity/connect/token",
+        "/identity/accounts/prelogin",
+        "/identity/accounts/prelogin/password",
+        "/identity/accounts/register/send-verification-email",
+        "/identity/accounts/register/verification-email-clicked",
+        "/identity/accounts/register/finish",
+        "/api/two-factor/send-email-login",
+    ] {
+        let (status, _, _) = h
+            .send(
+                "POST",
+                uri,
+                &[("content-type", "application/json")],
+                Body::from(body.clone()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+    }
+    // A signed-in route reads it, whatever it then makes of it.
+    let bearer = format!("Bearer {token}");
+    let (status, _, _) = h
+        .send(
+            "POST",
+            "/api/folders",
+            &[
+                ("content-type", "application/json"),
+                ("authorization", bearer.as_str()),
+            ],
+            Body::from(format!("{{\"name\":\"{big}\"}}")),
+        )
+        .await;
+    assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn prelogin_is_limited_per_address() {
+    let h = Harness::with(|s| s.unauthenticated_ratelimit_max_burst = 3).await;
+    h.account("ada@example.com", HASH).await;
+    let ask = |path: &'static str| {
+        let h = &h;
+        async move {
+            h.json("POST", path, None, Some(json!({"email": "ada@example.com"})))
+                .await
+        }
+    };
+    for _ in 0..3 {
+        let (status, _) = ask("/identity/accounts/prelogin").await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // Both routes share the address's budget.
+    let (status, body) = ask("/identity/accounts/prelogin/password").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    // Ten seconds give one back.
+    h.env.advance(Duration::seconds(10));
+    let (status, _) = ask("/identity/accounts/prelogin").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn wrong_passwords_slow_an_account_down_but_never_lock_the_right_one_out() {
+    // The console's limit is 2 here, so an account slows after two wrong passwords in a window. The
+    // slowdown is switched off so the test doesn't wait; what it checks is that however many wrong
+    // passwords come, the right one is never refused.
+    let live = kemlock_app::admin::Live::new(true);
+    live.set_password_limit(2);
+    let shared = live.clone();
+    let h = Harness::with(move |s| {
+        s.live = Some(shared);
+        s.password_slowdown_secs = 0;
+    })
+    .await;
+    h.account("ada@example.com", HASH).await;
+    let wrong = || async {
+        h.token(&Harness::password_fields("ada@example.com", "not-the-hash"))
+            .await
+    };
+    // Wrong passwords count against the account whichever address they come from.
+    for _ in 0..200 {
+        let (status, body) = wrong().await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["message"], BAD_LOGIN);
+    }
+    // The right password gets in, and clears the count.
+    let (status, body) = h
+        .token(&Harness::password_fields("ada@example.com", HASH))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = wrong().await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
 async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
     let h = Harness::new().await;
     let (token, user) = h.signed_in("ada@example.com").await;
@@ -1534,7 +1743,7 @@ async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
 }
 
 #[tokio::test]
-async fn an_account_stops_taking_second_step_codes_after_ten_tries_from_any_address() {
+async fn an_account_stops_taking_second_step_codes_after_five_tries_then_waits_longer_each_time() {
     let h = Harness::new().await;
     let user = h.account("ada@example.com", HASH).await;
     let secret = [5u8; 20];
@@ -1555,23 +1764,61 @@ async fn an_account_stops_taking_second_step_codes_after_ten_tries_from_any_addr
         }
     };
 
-    for _ in 0..10 {
+    // The count is the Kemlock API's: five tries a window from any address.
+    for _ in 0..5 {
         let (status, body) = try_code("000000".to_owned()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     }
-    // The eleventh is refused, and so is the right code: the account is locked, not the address.
+    // The sixth is refused, and so is the right code: the account waits one second.
     let (status, body) = try_code(code(&h)).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
     assert_eq!(body["message"], "Too many login requests");
 
-    // The window runs out, and the right code works; it clears the count.
-    h.env.advance(Duration::minutes(16));
+    // A try after the wait goes on, and a wrong one doubles the next wait.
+    h.env.advance(Duration::seconds(1));
+    let (status, body) = try_code("000000".to_owned()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    h.env.advance(Duration::seconds(1));
+    let (status, _) = try_code(code(&h)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "two seconds are owed now");
+    h.env.advance(Duration::seconds(2));
+
+    // The right code, once the wait is over, works and clears the count.
     let (status, body) = try_code(code(&h)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    for _ in 0..10 {
+    for _ in 0..5 {
         let (status, _) = try_code("000000".to_owned()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+}
+
+/// The count is one per account across both APIs: the Kemlock API's second step reserves from the
+/// same row, so wrong codes sent to the Bitwarden token endpoint use up what the Kemlock API allows.
+#[tokio::test]
+async fn the_bitwarden_second_step_uses_the_count_of_the_kemlock_second_step() {
+    use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    let secret = [5u8; 20];
+    enrol_totp(&h, user, &secret).await;
+    let now = h.env.time().unix_timestamp();
+    // Four tries the Kemlock API made already.
+    for _ in 0..4 {
+        assert_eq!(
+            SecondStepGuard::reserve_second_step(&h.store, user, now, 5, 900)
+                .await
+                .expect("a reservation"),
+            Reservation::Granted
+        );
+    }
+    let mut f = Harness::password_fields("ada@example.com", HASH);
+    f.push(("twoFactorProvider", "0"));
+    f.push(("twoFactorToken", "000000"));
+    // One more try reaches the limit, and the next is told to wait, on this API too.
+    let (status, body) = h.token(&f).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = h.token(&f).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }
 
 #[tokio::test]
@@ -1653,4 +1900,39 @@ async fn the_personal_api_key_is_sealed_at_rest_and_still_signs_in_and_shows() {
         ])
         .await;
     assert_eq!(body["message"], "Incorrect client_secret");
+}
+
+/// The password grant writes only the device's name, kind and last-seen time, so it never puts back
+/// a DPoP key that a sign-out cleared; a device it makes is new and has none.
+#[tokio::test]
+async fn a_password_sign_in_leaves_the_devices_dpop_key_as_it_is() {
+    use kemlock_app::ports::DeviceRepo;
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    h.login("ada@example.com", HASH).await;
+    let mut device = DeviceRepo::list(&h.store, user)
+        .await
+        .expect("devices")
+        .remove(0);
+    assert_eq!(device.dpop_jkt, None);
+    device.dpop_jkt = Some("jkt".to_owned());
+    DeviceRepo::upsert(&h.store, &device).await.expect("a key");
+    h.login("ada@example.com", HASH).await;
+    let kept = DeviceRepo::get(&h.store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(kept.dpop_jkt.as_deref(), Some("jkt"));
+    // And a write that races a sign-out (a stale copy with the key) can't put it back.
+    let mut cleared = kept.clone();
+    cleared.dpop_jkt = None;
+    DeviceRepo::upsert(&h.store, &cleared).await.expect("cleared");
+    DeviceRepo::upsert_description(&h.store, &kept)
+        .await
+        .expect("described");
+    let after = DeviceRepo::get(&h.store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(after.dpop_jkt, None, "the cleared key stays cleared");
 }

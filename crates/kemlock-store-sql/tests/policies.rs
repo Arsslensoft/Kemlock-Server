@@ -484,3 +484,68 @@ async fn the_merge_migration_copies_the_old_policies_and_drops_their_table() {
     assert!(left.is_empty(), "the old table is dropped");
     db.close().await.expect("closed");
 }
+
+/// The migration that makes `space_policy_settings` the one place Require SSO lives: an
+/// organization whose Bitwarden policy document (type 4) says enabled gets it turned on in the table,
+/// a space that has a row keeps its other policies, and one whose document says off is left alone.
+#[tokio::test]
+async fn the_require_sso_migration_copies_enabled_bitwarden_policies_into_the_table() {
+    use kemlock_app::bitwarden::BwOrgStore;
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let url = common::file_url(&dir.path().join("db.sqlite3"));
+    let store = SqlStore::connect(&url).await.expect("a new database");
+    let (admin, _) = account(&store, "sso-migration-admin").await;
+    let (fresh, has_row, off, other_kind) = (
+        SpaceId::random(),
+        SpaceId::random(),
+        SpaceId::random(),
+        SpaceId::random(),
+    );
+    let two_step = SpacePolicies {
+        two_step: true,
+        ..SpacePolicies::default()
+    };
+    PolicyRepo::put_space_policies(&store, has_row, &two_step, admin, SET_AT)
+        .await
+        .expect("stored");
+    for (space, kind, key, enabled) in [
+        (fresh, "policy", "4", true),
+        (has_row, "policy", "4", true),
+        (off, "policy", "4", false),
+        // Another policy type, and another kind of document, are not Require SSO.
+        (other_kind, "policy", "3", true),
+    ] {
+        let body = format!("{{\"id\":\"x\",\"enabled\":{enabled},\"data\":\"null\"}}");
+        store
+            .doc_put(space.0, kind, key, &body)
+            .await
+            .expect("a document");
+    }
+    store.close().await.expect("closed");
+
+    let db = sea_orm::Database::connect(&url)
+        .await
+        .expect("a raw connection");
+    sea_orm::ConnectionTrait::execute_unprepared(
+        &db,
+        "DELETE FROM seaql_migrations WHERE version = 'm20261204_010003_require_sso_one_table'",
+    )
+    .await
+    .expect("the migration is forgotten");
+    db.close().await.expect("closed");
+
+    let store = SqlStore::connect(&url).await.expect("the migration runs");
+    let read = |space| PolicyRepo::space_policies(&store, space);
+    assert_eq!(
+        read(fresh).await.expect("read").policies,
+        SpacePolicies {
+            require_sso: true,
+            ..SpacePolicies::default()
+        }
+    );
+    let kept = read(has_row).await.expect("read").policies;
+    assert!(kept.require_sso && kept.two_step, "its other policies stay");
+    assert!(!read(off).await.expect("read").policies.require_sso);
+    assert!(!read(other_kind).await.expect("read").policies.require_sso);
+    store.close().await.expect("closed");
+}

@@ -4,8 +4,9 @@
 //!
 //! As Vaultwarden 1.37.5 has it: the key is 30 letters and digits kept in one document of the
 //! organization with its own id; a token made from it names that id as its subject and the
-//! organization as its client subject, lives an hour, and stays good after a rotation until it
-//! runs out, because it names the key's id and a rotation keeps the id.
+//! organization as its client subject and lives an hour. A rotation makes a new id as well as a new
+//! key, so the tokens of the old key are refused at once (Vaultwarden keeps the id, and they live
+//! out their hour).
 
 use super::guard::Ctx;
 use super::model::{ApiKeyDoc, KIND_API_KEY};
@@ -56,6 +57,9 @@ pub(crate) async fn api_key<S: BwStore>(app: &App<S>, ctx: &Ctx, rotate: bool) -
     let doc = match app.org_api_key(ctx.org.id).await? {
         Some(mut doc) if rotate => {
             doc.api_key = random_alphanumeric(app.env.as_ref(), 30);
+            // A new id too: a token names the key's id, so the tokens of the old key stop working
+            // at once (Vaultwarden keeps the id, and an old token lives out its hour).
+            doc.id = random_uuid(app.env.as_ref()).to_string();
             doc.revision_date = now;
             app.put_doc(ctx.org.id.0, KIND_API_KEY, "", &doc).await?;
             doc

@@ -182,6 +182,26 @@ async fn prelogin(client: &Client, email: &str) -> Reply {
 }
 
 #[tokio::test]
+async fn prelogin_is_limited_per_address_and_apart_from_the_sign_in_start() {
+    let app = App::new(false);
+    let client = app.client();
+    for n in 0..10 {
+        let reply = prelogin(&client, &format!("person{n}@example.org")).await;
+        assert_eq!(reply.status, StatusCode::OK, "{n}");
+    }
+    let limited = prelogin(&client, "person10@example.org").await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.problem(), "rate-limited");
+    // The sign-in start has a budget of its own.
+    let started = client
+        .post(
+            "/kem/v1/auth/opaque/start",
+            json!({"email": "a@example.org", "request": "AAAA"}),
+        )
+        .await;
+    assert_ne!(started.status, StatusCode::TOO_MANY_REQUESTS);
+}
+#[tokio::test]
 async fn prelogin_answers_for_unknown_emails_with_a_stable_fake() {
     let app = App::new(false);
     let client = app.client();

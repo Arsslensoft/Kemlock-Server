@@ -23,10 +23,13 @@ use crate::cipher::{FOLDER_KIND, StoredCipher};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::password::hash_password;
-use crate::routes::{EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse};
+use crate::routes::{
+    EmptyResult, JsonResult, Peer, SecretJsonResult, UNAUTHENTICATED_BODY_LIMIT, empty, ok,
+    ok_no_store, parse,
+};
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::routing::{get, post};
 use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice, EmergencyRepo};
@@ -426,8 +429,8 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
 }
 
 /// The signed token of an invitation to be an emergency contact and the link that carries it, in
-/// the shape Vaultwarden's mail has (`/#/accept-emergency/?id=...&token=...`). Accepting needs the
-/// token and nothing else, so the link is a secret.
+/// the shape Vaultwarden's mail has (`/#/accept-emergency/?id=...&token=...`). The token alone accepts
+/// nothing: the contact signs in and accepts, so the link only points them there.
 async fn invite_link<S: BwStore>(
     app: &App<S>,
     grant: &EmergencyGrant,
@@ -464,8 +467,8 @@ async fn invite_link<S: BwStore>(
 }
 
 /// Mails the contact that someone named them, when the server mails. A contact who can sign in to
-/// the web vault is sent the Kemlock notice; any other, the link that carries the token, which
-/// accepts by itself.
+/// the web vault is sent the Kemlock notice; any other, the link that carries the token, which the
+/// contact follows and signs in with to accept.
 async fn notify_contact<S: BwStore>(app: &App<S>, grant: &EmergencyGrant) {
     if !app.notices.mails() {
         return;
@@ -561,8 +564,11 @@ async fn resend_invite<S: BwStore>(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AcceptData {
     token: String,
+    /// The master password hash: the proof of who accepts when no one is signed in.
+    master_password_hash: Option<String>,
 }
 
 /// The claims of an emergency-access invitation link, as Vaultwarden's
@@ -575,10 +581,15 @@ struct InviteClaims {
     grantor_email: String,
 }
 
-/// `POST /api/emergency-access/{id}/accept`. The token of the link is the proof: a caller who
-/// signed in must be the contact it was made for, and one who didn't is the account of that address.
+/// `POST /api/emergency-access/{id}/accept`. The token of the link says which address was named, and
+/// the caller proves they are that account: by a session or, with none, by the master password hash
+/// in the body (an account made through the Bitwarden API can't sign in to the web vault, and the
+/// apps have no accept screen). The hash is checked as a sign-in is: the same count per account,
+/// slowdown and hashing gate, the token first, and nothing is issued. The token alone accepts
+/// nothing, so a link that leaks, or that the grantor hands over, lets nobody accept for the contact.
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
+    Peer(ip): Peer,
     MaybeAuthed(authed): MaybeAuthed,
     Path(id): Path<String>,
     body: Bytes,
@@ -595,28 +606,30 @@ async fn accept_invite<S: BwStore>(
     let signed_in;
     let me = match authed {
         Some(authed) => {
+            if claims.email != authed.user.email.as_str() {
+                return Err(BwError::msg(
+                    "Claim email does not match current users email",
+                ));
+            }
             signed_in = authed.user;
             &signed_in
         }
         None => {
-            let by_address = match Email::parse(&claims.email) {
-                Ok(email) => UserRepo::by_email(&app.store, &email).await?,
-                Err(_) => None,
+            let Some(hash) = data
+                .master_password_hash
+                .as_deref()
+                .filter(|h| !h.is_empty())
+            else {
+                return Err(BwError::Unauthorized);
             };
-            let Some(account) = by_address else {
-                return Err(BwError::msg(
-                    "Create an account with the address the invitation was sent to, then open the link again",
-                ));
-            };
-            signed_in = account;
+            // A token that is not for this grant costs no hashing.
+            if !claims.emer_id.eq_ignore_ascii_case(id.trim()) {
+                return Err(BwError::msg("Emergency access invitation error."));
+            }
+            signed_in = crate::identity::prove_password_of(&app, ip, &claims.email, hash).await?;
             &signed_in
         }
     };
-    if claims.email != me.email.as_str() {
-        return Err(BwError::msg(
-            "Claim email does not match current users email",
-        ));
-    }
     let id = parse_id(&id)?;
     let Some(mut grant) = EmergencyRepo::grant(&app.store, id).await? else {
         return Err(not_valid());
@@ -911,11 +924,16 @@ async fn password<S: BwStore>(
     };
 
     // The grantor's new password and key, and an end to every session they had.
-    account.password_hash = hash_password(
-        new_hash.as_bytes(),
-        &account.salt,
+    let (secret, salt, iterations) = (
+        new_hash.as_bytes().to_vec(),
+        account.salt.clone(),
         account.password_iterations,
     );
+    account.password_hash = app
+        .hashing(app.who_of(grantor.id, None), move || {
+            hash_password(&secret, &salt, iterations)
+        })
+        .await?;
     account.akey = new_key;
     BwAccountRepo::update(&app.store, &account).await?;
     grantor.security_stamp = random_uuid(app.env.as_ref());
@@ -970,7 +988,7 @@ pub(crate) fn routes<S: BwStore>() -> Router<App<S>> {
         )
         .route(
             "/api/emergency-access/{id}/accept",
-            post(accept_invite::<S>),
+            post(accept_invite::<S>).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_LIMIT)),
         )
         .route(
             "/api/emergency-access/{id}/invite-link",
