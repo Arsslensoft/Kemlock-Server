@@ -195,9 +195,15 @@ pub(crate) struct ChangePasswordRequest {
     /// authenticator app, the recovery code, or a security key's or passkey's answer. Works once.
     proof: Option<FreshProof>,
     /// End the sessions of every other device at once, and get new tokens for this one in the
-    /// answer. Defaults to false.
-    #[serde(default)]
+    /// answer. Defaults to true: a password changed because the old one leaked must end the
+    /// sessions that leak opened. Send false to keep the other devices signed in.
+    #[serde(default = "sign_out_others_by_default")]
     sign_out_others: bool,
+}
+
+/// What `signOutOthers` is when the request leaves it out.
+fn sign_out_others_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -758,7 +764,7 @@ fn doc_credentials_start() {}
     security(("dpop" = [])),
     request_body = ChangePasswordRequest,
     responses(
-        (status = 200, description = "The password's records are replaced; the root key and its version stay. With `signOutOthers` the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null", body = ChangedPasswordDto),
+        (status = 200, description = "The password's records are replaced; the root key and its version stay. With `signOutOthers` (the default) the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null", body = ChangedPasswordDto),
         (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; a second step is on and the proof is missing, wrong or spent; the settings, the wrap or the upload are malformed", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),

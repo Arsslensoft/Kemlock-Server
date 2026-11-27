@@ -489,6 +489,28 @@ async fn a_new_password_signs_in_and_the_old_one_does_not() {
 }
 
 #[tokio::test]
+async fn a_password_change_that_says_nothing_signs_the_other_devices_out() {
+    let rig = rig();
+    let sam = rig.person(EMAIL).await;
+    let mut body = sam.password_body(false).await;
+    body.as_object_mut()
+        .expect("an object")
+        .remove("signOutOthers");
+
+    let changed = sam
+        .call("PUT", "/kem/v1/account/password", Some(body))
+        .await;
+
+    assert_eq!(changed.status, StatusCode::OK, "{:?}", changed.body);
+    assert!(
+        changed.json()["tokens"].is_object(),
+        "the stamp was replaced, so this device got new tokens: {:?}",
+        changed.body
+    );
+    assert!(rig.mailbox.told_password(EMAIL, true));
+}
+
+#[tokio::test]
 async fn the_password_stays_when_the_old_one_is_wrong_or_the_records_are_bad() {
     let rig = rig();
     let sam = rig.person(EMAIL).await;

@@ -136,7 +136,7 @@ address over.
 | `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail, twoStep}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened, `twoStep` when the account has a second step on. |
 | `PATCH /kem/v1/account/profile` | `{name}`: trimmed, blank clears it, at most 100 characters and no control characters. Answers the profile. `403 sso-managed` for an identity provider's account. Event `account.name_changed`. |
 | `POST /kem/v1/account/credentials/start` | `{request, email?}`: OPAQUE's `RegistrationResponse` for the account's own address, or for `email`, which must be well formed and not the account's own (`400`). Answers `{response, ticket}`, and answers the same for an address another account has (see "No account enumeration"). |
-| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked when `signOutOthers` was true, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
+| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked unless `signOutOthers` was false, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
 | `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?}` with `upload` registered under `email` and `ticket` asked for it: keeps the change as pending and mails the new address. `202 {pendingEmail, expiresAt}`, for an address that has an account too. Three asks an hour per account. Event `account.email_change_requested`. |
 | `DELETE /kem/v1/account/email` | Takes the pending change back. `204`, also when there was none. |
 | `POST /kem/v1/account/email/confirm` | **No session.** `{token}`: opens the link. `200 {email}`. `409 account-changed` when the account was written meanwhile (the link still works). Event `account.email_changed`. |
@@ -156,7 +156,7 @@ address when a password is changed or for a different address than the request's
 the same way whether or not that address has an account), or made for an address the account no
 longer has, is `400 invalid-request`. A registration made for one use can't be spent on another.
 
-**`signOutOthers`** (default false) ends every other session of the account at once. The new
+**`signOutOthers`** (default true; `false` keeps the other devices signed in) ends every other session of the account at once. The new
 records and a **new security stamp** are written in the same conditional write, so every access token
 and every refresh token the account holds stops working with it, the asking device's too; nothing
 waits for a token to run out. The answer carries the asking device's new tokens (`tokens`, the same
