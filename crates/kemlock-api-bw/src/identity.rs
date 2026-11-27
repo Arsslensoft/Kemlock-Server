@@ -888,16 +888,13 @@ pub(crate) fn check_login_limit<S: BwStore>(app: &App<S>, ip: IpAddr) -> BwResul
 
 /// The wrong-password tries of an account, kept apart from its second-step tries.
 const PASSWORD_KIND: &str = "password";
-/// An account refuses every password check once it holds this many times the limit in a window,
-/// the right password included, until the window runs out.
-const PASSWORD_CAP_FACTOR: u32 = 10;
 
 /// Checks the master password hash of `account` for `user`, counting the try against the account
 /// whichever address it comes from (the address limit only stops one source). The try is counted
 /// before the hash is looked at, so tries that arrive together each count. Past the account's
 /// limit in a window, each try is held back, 1 second then 2 then 3, so guessing costs time and
-/// the owner's own right password still gets through; past ten times the limit the account refuses
-/// every try until the window ends. A right password clears the count. The hash itself is
+/// the owner's own right password always gets through (a refusal here would let anyone lock a known
+/// address out). A right password clears the count. The hash itself is
 /// checked off the async workers, a few at a time (see [`App::hashing`]).
 async fn check_password<S: BwStore>(
     app: &App<S>,
@@ -914,9 +911,6 @@ async fn check_password<S: BwStore>(
         TRIES_WINDOW_SECS,
     )
     .await?;
-    if tries > limit.saturating_mul(PASSWORD_CAP_FACTOR) {
-        return Err(too_many_logins());
-    }
     if tries > limit {
         let wait = 1u64 << (tries - limit - 1).min(8);
         tokio::time::sleep(std::time::Duration::from_secs(

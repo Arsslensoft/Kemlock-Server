@@ -1643,9 +1643,10 @@ async fn prelogin_is_limited_per_address() {
 }
 
 #[tokio::test]
-async fn wrong_passwords_are_counted_per_account_from_any_address() {
-    // The console's limit is 2 here, so an account slows after two wrong passwords in a window
-    // and refuses everything after twenty; the slowdown is switched off so the test doesn't wait.
+async fn wrong_passwords_slow_an_account_down_but_never_lock_the_right_one_out() {
+    // The console's limit is 2 here, so an account slows after two wrong passwords in a window. The
+    // slowdown is switched off so the test doesn't wait; what it checks is that however many wrong
+    // passwords come, the right one is never refused.
     let live = kemlock_app::admin::Live::new(true);
     live.set_password_limit(2);
     let shared = live.clone();
@@ -1659,36 +1660,19 @@ async fn wrong_passwords_are_counted_per_account_from_any_address() {
         h.token(&Harness::password_fields("ada@example.com", "not-the-hash"))
             .await
     };
-    // Tries from different addresses all count against the account.
-    for _ in 0..20 {
+    // Wrong passwords count against the account whichever address they come from.
+    for _ in 0..200 {
         let (status, body) = wrong().await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["message"], BAD_LOGIN);
     }
-    // The account is locked: even the right password is refused until the window ends.
-    let (status, body) = h
-        .token(&Harness::password_fields("ada@example.com", HASH))
-        .await;
-    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
-    assert_eq!(body["message"], "Too many login requests");
-    h.env.advance(Duration::minutes(16));
+    // The right password gets in, and clears the count.
     let (status, body) = h
         .token(&Harness::password_fields("ada@example.com", HASH))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-
-    // Past the limit, a right password still gets in and clears the count.
-    for _ in 0..5 {
-        wrong().await;
-    }
-    let (status, body) = h
-        .token(&Harness::password_fields("ada@example.com", HASH))
-        .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    for _ in 0..20 {
-        let (status, _) = wrong().await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "the count started again");
-    }
+    let (status, body) = wrong().await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
 #[tokio::test]
