@@ -433,3 +433,41 @@ async fn nobody_but_the_accepted_contact_fetches_the_key() {
         Err(AppError::NotFound)
     );
 }
+
+#[tokio::test]
+async fn a_timer_that_read_the_earlier_wait_cannot_approve_the_new_one() {
+    use kemlock_app::emergency::EmergencyRepo;
+    let s = scene().await;
+    let access = emergency_access(&s.world, &s.notices);
+    let grant = s.confirmed(EmergencyKind::Takeover, 7).await;
+    access.initiate(&s.kim, grant.id).await.expect("asks");
+    s.world.env.clock.advance(Duration::days(8));
+    // The timer reads the running request, whose wait has ended...
+    let read = EmergencyRepo::recovering_grants(&s.world.store)
+        .await
+        .expect("lists")
+        .remove(0);
+    // ...and before it writes, the grantor refuses it and the contact asks again: the state is
+    // the same again, but the wait is new.
+    access.reject(&s.sam, grant.id).await.expect("refuses");
+    access.initiate(&s.kim, grant.id).await.expect("asks again");
+
+    let mut approved = read.clone();
+    approved.approve_due(s.world.env.now()).expect("due");
+    assert_eq!(
+        EmergencyRepo::save_grant_at(
+            &s.world.store,
+            &approved,
+            EmergencyState::RecoveryInitiated,
+            read.updated_at,
+        )
+        .await,
+        Ok(false),
+        "the grant is not the one the timer read"
+    );
+    // The new wait is still running and ends in its own time.
+    s.world.env.clock.advance(Duration::days(1));
+    assert_eq!(approve_due(&s.world, &s.notices).execute().await, Ok(0));
+    s.world.env.clock.advance(Duration::days(7));
+    assert_eq!(approve_due(&s.world, &s.notices).execute().await, Ok(1));
+}

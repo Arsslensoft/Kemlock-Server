@@ -238,6 +238,22 @@ impl EmergencyRepo for FakeStore {
         }
     }
 
+    async fn save_grant_at(
+        &self,
+        grant: &EmergencyGrant,
+        from: EmergencyState,
+        version: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.unlock.lock();
+        match g.grants.get_mut(&grant.id) {
+            Some(stored) if stored.state == from && stored.updated_at == version => {
+                *stored = grant.clone();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     async fn recovering_grants(&self) -> Result<Vec<EmergencyGrant>, StoreError> {
         Ok(self
             .unlock

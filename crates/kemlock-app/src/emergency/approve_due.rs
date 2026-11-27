@@ -31,15 +31,18 @@ impl<U: UserRepo, R: EmergencyRepo, N: EmergencyNotices, E: Platform, V: EventLo
             if !grant.is_due(now) {
                 continue;
             }
+            // As read: the timer writes only over this very version of the grant.
+            let version = grant.updated_at;
             if grant.approve_due(now).is_err() {
                 continue;
             }
             if !self
                 .grants
-                .save_grant(&grant, EmergencyState::RecoveryInitiated)
+                .save_grant_at(&grant, EmergencyState::RecoveryInitiated, version)
                 .await?
             {
-                // The grantor refused, or another replica approved, in the meantime.
+                // The grantor refused (and the contact perhaps asked again: a new wait), or another
+                // replica approved, in the meantime.
                 continue;
             }
             approved += 1;

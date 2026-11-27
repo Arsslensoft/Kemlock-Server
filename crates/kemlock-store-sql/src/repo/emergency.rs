@@ -11,6 +11,7 @@ use kemlock_domain::unlock::{EmergencyGrant, EmergencyState, GrantId};
 use kemlock_domain::{Email, UserId};
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use time::OffsetDateTime;
 
 fn into_grants(rows: Vec<emergency_access::Model>) -> Result<Vec<EmergencyGrant>, StoreError> {
     rows.into_iter()
@@ -68,30 +69,19 @@ impl EmergencyRepo for SqlStore {
         grant: &EmergencyGrant,
         from: EmergencyState,
     ) -> Result<bool, StoreError> {
-        let mutable = emergency_access::ActiveModel {
-            id: NotSet,
-            grantor_id: NotSet,
-            grantee_email: NotSet,
-            grantee_id: Set(grant.grantee.map(|u| u.0)),
-            kind: NotSet,
-            wait_days: NotSet,
-            state: Set(grant.state.as_str().to_owned()),
-            sealed_key: Set(grant.sealed_key.clone()),
-            recovery_initiated_at: Set(grant.recovery_initiated_at.map(utc)),
-            created_at: NotSet,
-            updated_at: Set(utc(grant.updated_at)),
-        };
-        // The grant may hold a box of the grantor's root key: written under the grantor's lock.
-        let txn = begin_locked(self, grant.grantor).await?;
-        let result = emergency_access::Entity::update_many()
-            .set(mutable)
-            .filter(emergency_access::Column::Id.eq(grant.id.0))
-            .filter(emergency_access::Column::State.eq(from.as_str()))
-            .exec(&txn)
-            .await
-            .store()?;
-        txn.commit().await.store()?;
-        Ok(result.rows_affected == 1)
+        write_grant(self, grant, from, None).await
+    }
+
+    /// The same, and only if the row's `updated_at` is still `version`: a grant that was refused
+    /// and asked for again is running again with a new wait, in the same state as when it was
+    /// read, but it is not the grant the timer read.
+    async fn save_grant_at(
+        &self,
+        grant: &EmergencyGrant,
+        from: EmergencyState,
+        version: OffsetDateTime,
+    ) -> Result<bool, StoreError> {
+        write_grant(self, grant, from, Some(version)).await
     }
 
     async fn recovering_grants(&self) -> Result<Vec<EmergencyGrant>, StoreError> {
@@ -114,4 +104,39 @@ impl EmergencyRepo for SqlStore {
             .store()?;
         Ok(())
     }
+}
+
+/// Writes the grant's mutable fields when its state is `from` (and, when given, its `updated_at`
+/// is `version`), under the grantor's lock. Says whether a row was written.
+async fn write_grant(
+    store: &SqlStore,
+    grant: &EmergencyGrant,
+    from: EmergencyState,
+    version: Option<OffsetDateTime>,
+) -> Result<bool, StoreError> {
+    let mutable = emergency_access::ActiveModel {
+        id: NotSet,
+        grantor_id: NotSet,
+        grantee_email: NotSet,
+        grantee_id: Set(grant.grantee.map(|u| u.0)),
+        kind: NotSet,
+        wait_days: NotSet,
+        state: Set(grant.state.as_str().to_owned()),
+        sealed_key: Set(grant.sealed_key.clone()),
+        recovery_initiated_at: Set(grant.recovery_initiated_at.map(utc)),
+        created_at: NotSet,
+        updated_at: Set(utc(grant.updated_at)),
+    };
+    // The grant may hold a box of the grantor's root key: written under the grantor's lock.
+    let txn = begin_locked(store, grant.grantor).await?;
+    let mut update = emergency_access::Entity::update_many()
+        .set(mutable)
+        .filter(emergency_access::Column::Id.eq(grant.id.0))
+        .filter(emergency_access::Column::State.eq(from.as_str()));
+    if let Some(version) = version {
+        update = update.filter(emergency_access::Column::UpdatedAt.eq(utc(version)));
+    }
+    let result = update.exec(&txn).await.store()?;
+    txn.commit().await.store()?;
+    Ok(result.rows_affected == 1)
 }
