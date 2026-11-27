@@ -500,6 +500,7 @@ async fn the_retention_job_cuts_each_kind_at_its_default() {
     assert_eq!(report.sign_ins, 2);
     assert_eq!(report.full_ips_dropped, 1);
     assert_eq!(report.email_log, 5);
+    assert_eq!(report.held_signups, 2);
     let calls = privacy.calls();
     let cutoff = |name: &str| {
         calls
@@ -512,6 +513,8 @@ async fn the_retention_job_cuts_each_kind_at_its_default() {
     assert_eq!(cutoff("sign_ins"), now - Duration::days(90));
     assert_eq!(cutoff("trash"), now - Duration::days(30));
     assert_eq!(cutoff("email_log"), now - Duration::days(30));
+    // A signup is held for the life of its link, which a day-old hold has used up by `now`.
+    assert_eq!(cutoff("held_signups"), now);
     // Full addresses are off: any left from before go now.
     assert_eq!(cutoff("full_ips"), now);
 }

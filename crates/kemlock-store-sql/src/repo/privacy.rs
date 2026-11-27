@@ -10,6 +10,7 @@ use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::attachments;
 use crate::tables::changes;
+use crate::tables::email_confirmations;
 use crate::tables::events;
 use crate::tables::federation::{
     change_meta, home_records, item_siblings, peer_cursors, vault_federation,
@@ -1015,6 +1016,68 @@ impl RetentionStore for SqlStore {
             .store()?
             .rows_affected;
         Ok(from_events + from_sign_ins)
+    }
+
+    async fn purge_held_signups(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
+        let expired = email_confirmations::Entity::find()
+            .filter(email_confirmations::Column::ExpiresAt.lt(utc(before)))
+            .all(self.writer())
+            .await
+            .store()?;
+        let mut purged = 0u64;
+        for hold in expired {
+            let txn = self.writer().begin().await.store()?;
+            let outcome = async {
+                // Looked at again under the row's lock: the link may have been opened (the hold
+                // is gone) or replaced (it runs again) since the list was read, and an account
+                // that is confirmed now must never be erased here.
+                let mut check = email_confirmations::Entity::find_by_id(hold.user_id)
+                    .filter(email_confirmations::Column::ExpiresAt.lt(utc(before)));
+                // SQLite has one writer and no row locks.
+                if sea_orm::ConnectionTrait::get_database_backend(&txn)
+                    != sea_orm::DbBackend::Sqlite
+                {
+                    check = check.lock_exclusive();
+                }
+                let still = check.one(&txn).await.store()?;
+                if still.is_none() {
+                    return Ok::<bool, StoreError>(false);
+                }
+                let Some(row) = users::Entity::find_by_id(hold.user_id)
+                    .one(&txn)
+                    .await
+                    .store()?
+                else {
+                    return Ok(false);
+                };
+                let user = row.into_domain()?;
+                let rows = erase_in(&txn, &user, self.origin()).await?;
+                if !rows.blobs.is_empty() || !rows.cipher_files.is_empty() {
+                    // A held account can't have used its vault, so this should not happen.
+                    tracing::warn!(
+                        user = %user.id,
+                        "a held signup had files; their rows went with it"
+                    );
+                }
+                Ok(true)
+            }
+            .await;
+            match outcome {
+                Ok(erased) => {
+                    txn.commit().await.store()?;
+                    if erased {
+                        purged += 1;
+                    }
+                }
+                Err(err) => {
+                    if let Err(rollback) = txn.rollback().await {
+                        tracing::warn!(%rollback, "rollback after purging a held signup failed");
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Ok(purged)
     }
 
     async fn purge_trash(

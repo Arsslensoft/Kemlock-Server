@@ -5,7 +5,9 @@
 //! - full addresses after `full_ip_days` (at once when full addresses are off);
 //! - tombstones after 180 days, device approvals once they have expired for a day;
 //! - the trash of Bitwarden-API items after `trash_days`, with their files (see below);
-//! - the email log after `email_log_days`.
+//! - the email log after `email_log_days`;
+//! - accounts still held for an unconfirmed address once their link has run out (nobody owned the
+//!   address, and the hold would otherwise keep it from its owner for good).
 //!
 //! **Trash is purged for Bitwarden-API items only.** A Bitwarden cipher is stored as the JSON the
 //! Bitwarden API serves, with its `deletedDate` in the clear, so the server can age it out. A
@@ -41,6 +43,8 @@ pub struct RetentionReport {
     pub files_deleted: u64,
     pub files_failed: u64,
     pub email_log: u64,
+    /// Held signups whose link ran out, erased.
+    pub held_signups: u64,
 }
 
 #[derive(Debug)]
@@ -128,6 +132,8 @@ where
             .store
             .purge_email_log(retention.email_log_cutoff(now))
             .await?;
+        // A signup whose address was never confirmed, once its link has run out.
+        report.held_signups = self.store.purge_held_signups(now).await?;
         Ok(report)
     }
 }

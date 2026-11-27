@@ -233,6 +233,17 @@ pub trait RetentionStore: Send + Sync {
         now: OffsetDateTime,
     ) -> impl Future<Output = Result<Vec<PurgedTrash>, StoreError>> + Send;
 
+    /// Deletes the accounts still held back for an unconfirmed address whose link ran out before
+    /// `before`, with everything of theirs. Whoever registers an address first would otherwise keep
+    /// it for good, though they never owned it. A store with no holds leaves this as it is.
+    fn purge_held_signups(
+        &self,
+        before: OffsetDateTime,
+    ) -> impl Future<Output = Result<u64, StoreError>> + Send {
+        let _ = before;
+        async { Ok(0) }
+    }
+
     /// Deletes email-log rows older than `before`. The email log belongs to the mail sender; a
     /// store that has none leaves this as it is.
     fn purge_email_log(
