@@ -145,6 +145,10 @@ pub(crate) fn reconcile(doc: &MemberDoc, row: &Member) -> MemberDoc {
     if row.state != MemberState::Revoked && state < CONFIRMED {
         out.akey.clear();
     }
+    // Nor is a key for account recovery: someone put back to invited has enrolled in nothing yet.
+    if row.state != MemberState::Revoked && state == INVITED {
+        out.reset_password_key = None;
+    }
     out
 }
 
@@ -690,5 +694,27 @@ mod tests {
         );
         assert_eq!(again.status, INVITED);
         assert!(again.akey.is_empty());
+
+        // Nor does it keep the key it enrolled for account recovery with.
+        let mut enrolled = doc(USER, false, CONFIRMED);
+        enrolled.reset_password_key = Some("4.resetkey".to_owned());
+        let back = reconcile(
+            &enrolled,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Invited,
+            ),
+        );
+        assert_eq!(back.reset_password_key, None);
+        let kept = reconcile(
+            &enrolled,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(kept.reset_password_key.as_deref(), Some("4.resetkey"));
     }
 }
