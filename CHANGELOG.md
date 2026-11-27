@@ -10,10 +10,16 @@ merged changes by their commit titles. This file keeps the summary that people r
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-27
+
+The fixes of two security audits of 2026-11-26 (#46). Apps must follow the client-visible changes
+below; kemlock-core and kemlock-browser are being updated to match.
+
 ### Added
 
 - Re-seal keys: an owner or admin of a space with no chain seals its current keys again, signed, so
   the space has no boxes from before keys were signed (`POST /kem/v1/spaces/{id}/reseal`).
+- Root-key rotation for spaces, and device-signed item writes.
 
 ### Changed
 
@@ -21,6 +27,46 @@ merged changes by their commit titles. This file keeps the summary that people r
   chain, and the server refuses a key without the signature (docs/crypto.md, "Signed key boxes").
   Apps that seal keys must send it. Federated spaces carry the signature in new optional fields, so
   **upgrade every replica before its home**: an older replica refuses those records.
+- Ed25519 signatures are verified strictly, and new `sig1` contexts come with new test vectors.
+- A write with an old key version is refused with 409 `key-version-stale`.
+- The chain POST answers 413, 429 and 408. The policies of a chained space are set through the
+  chain; a PUT is 400.
+- `/kem/v1/live` closes on any data frame from the client.
+- Signing out other devices (`signOutOthers`) is on by default.
+- New installs have SSO email linking off and require a verified domain.
+- `rsa_key.pem` is no longer archived in backups. A restore rotates it, and it is rotated once after
+  this upgrade, so Bitwarden clients sign in again.
+- Presigned S3 uploads are off; `KEMLOCK_ATTACHMENT_PRESIGN` is ignored with a warning.
+- `IP_HEADER` without trusted proxies is ignored with a warning.
+- Federation key rotations are held for the admin by default.
+- Every event in the admin event log is worded, instead of shown as its code (#44).
+
+### Fixed
+
+- A second replication run of the same peer could deadlock the federation runner.
+- Bitwarden CLI 2026.10 signed itself out after it moved the account to 600,000 PBKDF2 rounds at
+  sign-in. That migration now ends no session; any other KDF change ends the other devices'
+  sessions at once.
+- One account signing in repeatedly could hold the password-hash slots shared by its address, so
+  other accounts there got 429.
+
+### Security
+
+- A space member can no longer move, delete or re-key another space's collections and groups by
+  their ids, through the Kemlock API or federation.
+- Nobody becomes a confirmed member of a space without accepting. A Bitwarden invitation is accepted
+  only with the invitee's session or master-password proof, and a foreign space home's policies
+  never bind local accounts, so Require SSO cannot lock someone out.
+- The web vault verifies the space chain and member confirmations before it seals or opens keys,
+  and a key received in an unsigned box is read-only.
+- The Vaultwarden import checks that what it writes belongs to the accounts it imports.
+- A federated peer can no longer take over account copies from other peers, or stop local writes
+  with a clock (HLC) value at the limit.
+- An owner or admin removed through the Kemlock API loses Bitwarden admin access too.
+- One account can no longer fill the DPoP replay set for everyone, or a chain to its record cap.
+- Bitwarden PBKDF2 runs off the async workers behind a gate.
+- The Proxmox script pins `build.func` to a commit and its SHA-256, both Proxmox installers pin the
+  cosign SHA-256s, and the Home Assistant add-on pins every base image by digest.
 
 ## [0.1.4] - 2026-11-26
 
@@ -231,7 +277,8 @@ The first release.
   - Contributing guide, DCO, code of conduct, governance, maintainers, support page, issue forms,
     a pull request template and code owners.
 
-[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Arsslensoft/Kemlock-Server/compare/v0.1.1...v0.1.2
