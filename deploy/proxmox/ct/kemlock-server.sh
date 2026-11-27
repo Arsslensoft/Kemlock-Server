@@ -5,11 +5,16 @@ export COMMUNITY_SCRIPTS_URL="${COMMUNITY_SCRIPTS_URL:-https://raw.githubusercon
 # build.func runs as root on the Proxmox host. Once both pin values below are set, it is fetched
 # from that one commit of community-scripts/core and checked against its SHA-256, never from a
 # moving branch, and the script stops if it cannot be fetched or does not match. A pin with only one
-# value, or a malformed one, stops the script. While both are
-# empty, the script takes build.func from community-scripts/core `main` as it did before, and says
-# loudly that it is not pinned. To pin: pick a commit of community-scripts/core, read its
+# value, or a malformed one, stops the script. While both are empty, the script takes build.func
+# from community-scripts/core `main` as it did before, but only after KEMLOCK_ALLOW_UNPINNED=1 or a
+# yes at a prompt, and it warns again below the screen clear. To pin: pick a commit of
+# community-scripts/core, read its
 # core/build.func, and set both values (`sha256sum build.func`). Dropped when submitting upstream,
 # like the line above (see deploy/proxmox/README.md).
+_cs_warn_unpinned() {
+  echo "WARNING: kemlock-server: build.func is NOT pinned (_cs_core_commit and _cs_core_sha256 are not set in this script)." >&2
+  echo "WARNING: it was taken from the community-scripts/core main branch and runs as root on this host." >&2
+}
 _cs_core_commit=""
 _cs_core_sha256=""
 if [[ -n "$_cs_core_commit" || -n "$_cs_core_sha256" ]] && [[ ! "$_cs_core_commit" =~ ^[0-9a-f]{40}$ || ! "$_cs_core_sha256" =~ ^[0-9a-f]{64}$ ]]; then
@@ -38,8 +43,22 @@ elif [[ -n "$_cs_core_commit" ]]; then
     rm -f "$_cs_tmp"
   fi
 else
-  echo "WARNING: kemlock-server: build.func is NOT pinned (_cs_core_commit and _cs_core_sha256 are not set in this script)." >&2
-  echo "WARNING: it will be taken from the community-scripts/core main branch and run as root on this host." >&2
+  _cs_unpinned=1
+  _cs_warn_unpinned
+  # No pin: take build.func from the moving main branch only when the person running this says
+  # so, once in the environment (KEMLOCK_ALLOW_UNPINNED=1) or at this prompt.
+  if [[ "${KEMLOCK_ALLOW_UNPINNED:-}" != 1 ]]; then
+    if [[ -t 0 ]]; then
+      read -r -p "Run an unpinned build.func from community-scripts/core main as root? [y/N] " _cs_answer || _cs_answer=""
+      [[ "$_cs_answer" == [yY] || "$_cs_answer" == [yY][eE][sS] ]] || {
+        echo "kemlock-server: stopping; set the pin in this script or run with KEMLOCK_ALLOW_UNPINNED=1" >&2
+        exit 1
+      }
+    else
+      echo "kemlock-server: stopping; there is no terminal to ask on. Set the pin in this script or run with KEMLOCK_ALLOW_UNPINNED=1" >&2
+      exit 1
+    fi
+  fi
   _cs_boot="${COMMUNITY_SCRIPTS_CORE_DIR:-$(dirname "${BASH_SOURCE[0]}")/../../core}/core/build.func"
   source "$_cs_boot" 2>/dev/null || source <(curl -fsSL "${COMMUNITY_SCRIPTS_CORE_URL:-https://raw.githubusercontent.com/community-scripts/core/main}/core/build.func")
 fi
@@ -73,6 +92,8 @@ else
 fi
 
 header_info "$APP"
+# header_info clears the screen: say again, below it, that build.func is not pinned.
+[[ "${_cs_unpinned:-}" != 1 ]] || _cs_warn_unpinned
 variables
 color
 catch_errors
