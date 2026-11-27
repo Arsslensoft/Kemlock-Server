@@ -68,6 +68,9 @@ impl EventSync for SqlStore {
         events: &[LogEntry],
     ) -> Result<usize, StoreError> {
         let (owner_type, owner_id) = owner_parts(vault);
+        let received_ms =
+            i64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+                .unwrap_or(i64::MAX);
         let mut new = 0;
         for e in events {
             let id = Uuid::from_bytes(e.id);
@@ -85,6 +88,7 @@ impl EventSync for SqlStore {
                 owner_id: Set(owner_id),
                 id: Set(id),
                 at_ms: Set(i64::try_from(e.at_ms).unwrap_or(i64::MAX)),
+                received_ms: Set(received_ms),
                 actor: Set(e.actor.map(Uuid::from_bytes)),
                 device: Set(e.device.map(Uuid::from_bytes)),
                 action: Set(cut(&e.action, MAX_ACTION)),
@@ -142,7 +146,9 @@ impl EventSync for SqlStore {
         Ok(peer_events::Entity::find()
             .filter(peer_events::Column::OwnerType.eq(owner_type))
             .filter(peer_events::Column::OwnerId.eq(owner_id))
-            .order_by_desc(peer_events::Column::AtMs)
+            // By when this server took them, never by the peer's own `at_ms`; within one page,
+            // which arrives in id order, the later id is the later event.
+            .order_by_desc(peer_events::Column::ReceivedMs)
             .order_by_desc(peer_events::Column::Id)
             .limit(u64::from(limit))
             .all(self.reader())

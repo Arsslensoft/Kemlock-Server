@@ -15,8 +15,10 @@ pub(crate) mod peer_events {
         pub owner_id: Uuid,
         #[sea_orm(primary_key, auto_increment = false)]
         pub id: Uuid,
-        /// Unix milliseconds.
+        /// Unix milliseconds, as the peer says: shown, never trusted to order anything.
         pub at_ms: i64,
+        /// Unix milliseconds this server took the event: what the list is ordered by.
+        pub received_ms: i64,
         pub actor: Option<Uuid>,
         pub device: Option<Uuid>,
         pub action: String,

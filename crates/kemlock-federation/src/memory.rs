@@ -1558,6 +1558,7 @@ impl EventSync for MemoryStore {
     }
 
     async fn peer_events(&self, vault: Owner, limit: u32) -> Result<Vec<PeerEvent>, StoreError> {
+        // Newest received first: what the console lists, whatever time a peer put on an event.
         let mut out: Vec<PeerEvent> = self
             .extras()
             .peer_events
@@ -1565,7 +1566,7 @@ impl EventSync for MemoryStore {
             .filter(|e| e.vault == vault)
             .cloned()
             .collect();
-        out.sort_by_key(|e| std::cmp::Reverse(e.entry.id));
+        out.reverse();
         out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(out)
     }

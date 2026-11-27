@@ -199,3 +199,33 @@ async fn a_peer_that_sends_events_without_end_keeps_only_the_newest_ones() {
         numbered(total).id
     );
 }
+
+#[tokio::test]
+async fn the_list_is_ordered_by_when_events_were_received_not_by_the_time_a_peer_puts_on_them() {
+    let store = memory().await;
+    let peer = ServerId::random();
+    let vault = Owner::User(kemlock_domain::UserId::random());
+    // The first event claims to be from the far future; the second, sent later, from the past.
+    let mut early = entry(1);
+    early.at_ms = i64::MAX as u64;
+    let mut late = entry(2);
+    late.at_ms = 1;
+    EventSync::store_peer_events(&store, peer, vault, &[early.clone()])
+        .await
+        .expect("stored");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    EventSync::store_peer_events(&store, peer, vault, &[late.clone()])
+        .await
+        .expect("stored");
+    let listed = EventSync::peer_events(&store, vault, 10)
+        .await
+        .expect("events");
+    let ids: Vec<[u8; 16]> = listed.iter().map(|e| e.entry.id).collect();
+    assert_eq!(
+        ids,
+        vec![late.id, early.id],
+        "the later arrival is on top, whatever its time says"
+    );
+    // The time is still shown as the peer gave it.
+    assert_eq!(listed[1].entry.at_ms, i64::MAX as u64);
+}
