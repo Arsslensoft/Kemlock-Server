@@ -23,6 +23,7 @@ use kemlock_app::ports::{
     DeviceRepo, EventLog, ItemStore, StoreError, TokenRepo, TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::{OwnErasure, PrivacyLog};
+use kemlock_app::second_step_guard::SecondStepGuard;
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_app::two_step::RecoveryCodeRepo;
@@ -47,6 +48,7 @@ pub trait BwStore:
     + BwAccountRepo
     + BwUserKeyIdRepo
     + BwTryRepo
+    + SecondStepGuard
     + BwDeviceRepo
     + ApiUseRepo
     + ChallengeRepo
@@ -72,6 +74,7 @@ impl<T> BwStore for T where
         + BwAccountRepo
         + BwUserKeyIdRepo
         + BwTryRepo
+        + SecondStepGuard
         + BwDeviceRepo
         + ApiUseRepo
         + ChallengeRepo

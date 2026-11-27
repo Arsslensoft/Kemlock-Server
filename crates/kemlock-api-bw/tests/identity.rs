@@ -1583,7 +1583,7 @@ async fn a_rotated_api_key_rejects_the_old_secret_and_takes_the_new_one() {
 }
 
 #[tokio::test]
-async fn an_account_stops_taking_second_step_codes_after_ten_tries_from_any_address() {
+async fn an_account_stops_taking_second_step_codes_after_five_tries_then_waits_longer_each_time() {
     let h = Harness::new().await;
     let user = h.account("ada@example.com", HASH).await;
     let secret = [5u8; 20];
@@ -1604,23 +1604,61 @@ async fn an_account_stops_taking_second_step_codes_after_ten_tries_from_any_addr
         }
     };
 
-    for _ in 0..10 {
+    // The count is the Kemlock API's: five tries a window from any address.
+    for _ in 0..5 {
         let (status, body) = try_code("000000".to_owned()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     }
-    // The eleventh is refused, and so is the right code: the account is locked, not the address.
+    // The sixth is refused, and so is the right code: the account waits one second.
     let (status, body) = try_code(code(&h)).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
     assert_eq!(body["message"], "Too many login requests");
 
-    // The window runs out, and the right code works; it clears the count.
-    h.env.advance(Duration::minutes(16));
+    // A try after the wait goes on, and a wrong one doubles the next wait.
+    h.env.advance(Duration::seconds(1));
+    let (status, body) = try_code("000000".to_owned()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    h.env.advance(Duration::seconds(1));
+    let (status, _) = try_code(code(&h)).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "two seconds are owed now");
+    h.env.advance(Duration::seconds(2));
+
+    // The right code, once the wait is over, works and clears the count.
     let (status, body) = try_code(code(&h)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    for _ in 0..10 {
+    for _ in 0..5 {
         let (status, _) = try_code("000000".to_owned()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
+}
+
+/// The count is one per account across both APIs: the Kemlock API's second step reserves from the
+/// same row, so wrong codes sent to the Bitwarden token endpoint use up what the Kemlock API allows.
+#[tokio::test]
+async fn the_bitwarden_second_step_uses_the_count_of_the_kemlock_second_step() {
+    use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
+    let h = Harness::new().await;
+    let user = h.account("ada@example.com", HASH).await;
+    let secret = [5u8; 20];
+    enrol_totp(&h, user, &secret).await;
+    let now = h.env.time().unix_timestamp();
+    // Four tries the Kemlock API made already.
+    for _ in 0..4 {
+        assert_eq!(
+            SecondStepGuard::reserve_second_step(&h.store, user, now, 5, 900)
+                .await
+                .expect("a reservation"),
+            Reservation::Granted
+        );
+    }
+    let mut f = Harness::password_fields("ada@example.com", HASH);
+    f.push(("twoFactorProvider", "0"));
+    f.push(("twoFactorToken", "000000"));
+    // One more try reaches the limit, and the next is told to wait, on this API too.
+    let (status, body) = h.token(&f).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = h.token(&f).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }
 
 #[tokio::test]
