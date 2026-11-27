@@ -1027,6 +1027,118 @@ async fn a_rewrite_under_another_key_version_than_the_new_one_appends_nothing() 
     assert_eq!(ok.status, StatusCode::CREATED, "{:?}", ok.json());
 }
 
+/// `write` (an entry of a request's `writes`) signed by `by` with their own key at key version 1,
+/// the statement binding `bound` as the collection (docs/crypto.md, "Signed item writes").
+fn signed_rewrite(by: &Who, space: Uuid, bound: Uuid, mut write: Value) -> Value {
+    use kemlock_crypto::{item_write, owner::Owner};
+    let item = &write["item"];
+    let ciphertext = common::unb64(item["ciphertext"].as_str().expect("a ciphertext"));
+    let item_key = common::unb64(item["itemKey"].as_str().expect("an item key"));
+    let id: Uuid = item["id"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .expect("an item id");
+    let key_version = u32::try_from(item["keyVersion"].as_u64().expect("a key version"))
+        .expect("a key version fits");
+    let statement = item_write::Statement {
+        owner: Owner::space(*space.as_bytes()),
+        item_id: *id.as_bytes(),
+        kind: "login",
+        revision: item["revision"].as_u64().expect("a revision"),
+        deleted: false,
+        envelope: item_write::envelope_hash(
+            key_version,
+            Some((ciphertext.as_slice(), item_key.as_slice())),
+        )
+        .expect("the hash"),
+        writer: *by.id.as_bytes(),
+        writer_key_version: 1,
+        collection: Some(*bound.as_bytes()),
+    };
+    let signature = b64(&statement.sign(&by.person.sig).expect("signs"));
+    write["item"]["writer"] = json!(by.id.to_string());
+    write["item"]["writerKeyVersion"] = json!(1);
+    write["item"]["writeSignature"] = json!(signature);
+    write
+}
+
+#[tokio::test]
+async fn a_signed_rewrite_is_stored_with_its_signature_and_one_that_binds_another_collection_is_refused()
+ {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let id = made_item(&sam, space, collection).await;
+
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let bare = rewrite(space, collection, id, 1, 2);
+
+    // A signature that binds another collection is no signature of this write: nothing is stored.
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([signed_rewrite(&sam, space, Uuid::new_v4(), bare.clone())]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        refused.json()
+    );
+    assert!(problem_type(&refused).ends_with("invalid-signature"));
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (1, 1));
+
+    // The one that binds the collection it is written into is stored, with the signature.
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([signed_rewrite(&sam, space, collection, bare)]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let stored = ItemStore::get(&rig.app.store, ItemId(id))
+        .await
+        .expect("read")
+        .expect("the item");
+    assert_eq!((stored.revision.0, stored.key_version), (2, 2));
+    let signature = stored.signature.expect("the signature is stored");
+    assert_eq!((signature.writer, signature.key_version), (sam.id, 1));
+}
+
+#[tokio::test]
+async fn a_space_that_takes_signed_writes_only_refuses_an_unsigned_rewrite() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let (space, collection, mut chain, _) = make(&rig, &sam).await;
+    let id = made_item(&sam, space, collection).await;
+    let asked = sam
+        .call(
+            "PUT",
+            &format!("/kem/v1/owners/space:{space}/signed-writes"),
+            None,
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT, "{:?}", asked.json());
+
+    let keys = chain.rotate_collection(&sam.person, *collection.as_bytes(), 2, &[&sam.person]);
+    let bare = rewrite(space, collection, id, 1, 2);
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([bare.clone()]);
+    let refused = sam.post(&uri(space), body).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        refused.json()
+    );
+    assert!(problem_type(&refused).ends_with("signature-required"));
+
+    // Nothing was appended or written: the same record with the signed write is the next one.
+    let mut body = request(&[&keys]);
+    body["writes"] = json!([signed_rewrite(&sam, space, collection, bare)]);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+}
+
 #[tokio::test]
 async fn only_items_of_a_replaced_collection_are_rewritten_and_none_that_is_also_held() {
     let rig = Rig::new();
