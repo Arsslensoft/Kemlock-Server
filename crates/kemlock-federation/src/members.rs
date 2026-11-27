@@ -409,6 +409,8 @@ mod tests {
         let back = MemberAccount::from_payload(&a.to_payload()).expect("a payload");
         let mut expected = a.clone();
         expected.past_bundles.sort_by_key(|b| b.key_version);
+        // The payload also writes devices in id order, and `account()` uses random ids.
+        expected.devices.sort_by_key(|d| d.id);
         assert_eq!(back, expected);
         // The same account always writes the same bytes, whatever order the list came in.
         let mut reversed = a.clone();
