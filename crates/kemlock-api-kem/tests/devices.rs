@@ -417,6 +417,34 @@ async fn approvals_need_a_signed_in_device_of_the_same_account() {
 }
 
 #[tokio::test]
+async fn a_copy_made_for_another_key_version_is_a_409_with_the_current_one() {
+    let (_app, open, session) = open_device().await;
+    let token = &session.access_token;
+    let put = |key_version: u32| {
+        open.send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "web-crypto",
+                    "keyVersion": key_version,
+                })),
+                ..Req::default()
+            },
+        )
+    };
+    let stale = put(99).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    let current = stale.json()["currentKeyVersion"].as_u64().expect("the current version");
+    assert!(open.get_authed("/kem/v1/devices/key-copy", token).await.status == StatusCode::NOT_FOUND);
+    let kept = put(u32::try_from(current).expect("a version")).await;
+    assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.json());
+}
+
+#[tokio::test]
 async fn a_device_keeps_and_fetches_its_wrapped_copy() {
     let (_app, open, session) = open_device().await;
     let token = &session.access_token;
