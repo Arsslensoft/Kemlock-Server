@@ -81,8 +81,8 @@ mod tests {
                 "/own",
                 get(|| async {
                     (
-                        [(header::X_FRAME_OPTIONS, "SAMEORIGIN")],
                         StatusCode::NOT_FOUND,
+                        [(header::X_FRAME_OPTIONS, "SAMEORIGIN")],
                         "no",
                     )
                 }),

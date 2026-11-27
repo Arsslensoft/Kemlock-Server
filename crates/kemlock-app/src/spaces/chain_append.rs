@@ -1056,7 +1056,6 @@ mod tests {
         let usage = ChainUsage {
             by_member_hour: MEMBER_RECORDS_PER_HOUR - 16,
             by_member_day: 10,
-            ..ChainUsage::default()
         };
         assert!(!over_quota(&usage, 16, false));
         assert!(over_quota(&usage, 17, false));
@@ -1065,7 +1064,6 @@ mod tests {
         let day = ChainUsage {
             by_member_hour: 0,
             by_member_day: MEMBER_RECORDS_PER_DAY,
-            ..ChainUsage::default()
         };
         assert!(!over_quota(&day, 0, false));
         assert!(over_quota(&day, 1, false));

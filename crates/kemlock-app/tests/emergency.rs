@@ -5,6 +5,7 @@ mod fakes;
 use fakes::unlock::*;
 use fakes::*;
 use kemlock_app::emergency::EmergencyEvent;
+use kemlock_app::ports::Clock;
 use kemlock_app::{Actor, AppError};
 use kemlock_domain::UserId;
 use kemlock_domain::unlock::{

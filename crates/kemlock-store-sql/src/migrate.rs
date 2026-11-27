@@ -204,7 +204,7 @@ pub(crate) fn prune_old_copies(folder: &Path, now: std::time::SystemTime) -> usi
             replaced.push((modified, entry.path()));
         }
     }
-    pre.sort_by(|a, b| b.0.cmp(&a.0));
+    pre.sort_by_key(|b| std::cmp::Reverse(b.0));
     let doomed = pre
         .into_iter()
         .skip(KEEP_PRE_MIGRATION_COPIES)
