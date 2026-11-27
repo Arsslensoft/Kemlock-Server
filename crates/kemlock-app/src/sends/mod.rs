@@ -93,6 +93,9 @@ pub enum SendsError {
     WrongPassword,
     #[error("already exists")]
     Duplicate,
+    /// The account replaced its keys after the client sealed this: it unlocks again and redoes it.
+    #[error("the account's key version is {current}")]
+    StaleKeyVersion { current: u32 },
     #[error("the file was uploaded already")]
     AlreadyUploaded,
     /// The body isn't as long as the size announced.
@@ -117,6 +120,7 @@ impl From<StoreError> for SendsError {
         match e {
             StoreError::NotFound => SendsError::NotFound,
             StoreError::Duplicate => SendsError::Duplicate,
+            StoreError::StaleKeyVersion { current } => SendsError::StaleKeyVersion { current },
             other => SendsError::Store(other.to_string()),
         }
     }

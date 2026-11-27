@@ -73,6 +73,13 @@ pub trait TagStore: Send + Sync {
         owner: Owner,
         version: u32,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
+
+    /// The live items [`waiting`](Self::waiting) counts, for a reader who sees only some of them.
+    fn waiting_items(
+        &self,
+        owner: Owner,
+        version: u32,
+    ) -> impl Future<Output = Result<Vec<ItemId>, StoreError>> + Send;
 }
 
 /// "Not duplicates" answers, seen by every member of the owner.

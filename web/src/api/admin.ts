@@ -9,6 +9,7 @@
 // /admin/v1/step-up/totp { code }`, or the two OPAQUE messages of `step-up/password/*`, answer a
 // short-lived token that goes in the `Step-Up-Token` header of the write. A write without a good
 // token is answered 403 `step-up-required`; a wrong code or password, 403 `step-up-failed`.
+import { isApiError } from './errors';
 import type { FeatureCall } from './client';
 import {
   type WireAwaiting,
@@ -239,6 +240,25 @@ export interface AdminSpace {
   liveItems: number;
   /** Set while the space waits for its keys to be replaced. */
   keysPendingSince: number | null;
+  /** Whether the space is a Bitwarden organization (the list and one-space routes say; the answer to a change of owner leaves it false). */
+  bitwardenOrganization: boolean;
+  /** The invited members of an organization who have a Bitwarden invitation, whose link can be copied. */
+  bitwardenInvitations: SpaceOwner[];
+  /**
+   * Only on the answer to a change of owner: true on a chained space, where the change is queued and
+   * takes effect when the space's owners have signed it, not now.
+   */
+  ownerChangeQueued?: boolean;
+}
+
+/**
+ * The link that accepts a member's invitation to a Bitwarden organization, for a server that can't
+ * mail it. Whoever opens it accepts for that account.
+ */
+export interface InviteLink {
+  link: string;
+  /** When it stops working, in Unix seconds. */
+  expiresAt: number;
 }
 
 export interface SpacesPage {
@@ -412,9 +432,9 @@ export interface MigrationStatus {
 }
 
 export interface MigrationStartRequest {
-  /** A Vaultwarden data folder on this server, or a `mysql://` or `postgres://` URL. */
+  /** A SQLite file, or a folder holding `db.sqlite3`, inside the `import` folder of the data folder. */
   from: string;
-  /** The data folder beside a MySQL or PostgreSQL server (attachments, sends, `rsa_key.pem`). */
+  /** A folder inside the import folder with the attachments, sends and `rsa_key.pem`. */
   files?: string;
 }
 
@@ -461,7 +481,7 @@ export interface UpdateRequestRequest {
 
 // ---- Federation ---------------------------------------------------------------------------
 
-export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked';
+export type PeerState = 'online' | 'degraded' | 'offline' | 'catching-up' | 'revoked' | 'contested';
 export type PeerOperator = 'own' | 'other';
 
 /** A server's identity as the console shows it. `identityKey` is the `sig1` public key, base64url. */
@@ -493,6 +513,10 @@ export interface Peer extends ServerView {
   pullLogs: boolean;
   /** Whether the peer sends its logs to us, for "It sends, but Pull is off here". */
   theySendLogs: boolean;
+  /** The peer reads writer signatures; every server of a vault must before its writes are signed. */
+  signedWrites: boolean;
+  /** The peer reads the past bundles of a member account. */
+  pastBundles: boolean;
   /** Set while a key mismatch against this peer is unresolved. */
   mismatch: boolean;
 }
@@ -519,6 +543,8 @@ export interface FedVault {
    * server's admin, and the vault doesn't sync until then (absent from servers that predate it).
    */
   heldDemotion?: { newHomeId: string; epoch: number; at: number } | null;
+  /** Every promotion that waits, one for each server that would become the home. */
+  heldPromotions?: Array<{ newHomeId: string; epoch: number; at: number }>;
 }
 
 export interface ConsistencyEntry {
@@ -648,6 +674,33 @@ export interface SelfSecurity {
   suites: SuiteSetting[];
 }
 
+/**
+ * The addresses a peer's key rotation brought, held for this server's admin (`GET
+ * /federation/address-changes`). This server keeps using the addresses it knew until the admin
+ * decides.
+ */
+export interface AddressChange {
+  peerId: string;
+  operator: string;
+  addresses: string[];
+  suites: string[];
+  /** Unix seconds the rotation was applied. */
+  receivedAt: number;
+}
+
+/**
+ * A key a peer's rotation brought that this server holds for its admin instead of pinning
+ * (`GET /federation/rotations`): the peer, when it was held and the SHA-256 fingerprint of the new
+ * key, which the admin compares with what the peer's admin reads out before accepting.
+ */
+export interface KeyRotation {
+  peerId: string;
+  /** Unix seconds the rotation was held. */
+  heldAt: number;
+  /** SHA-256 of the new key, as the server shows it. */
+  fingerprint: string;
+}
+
 /** How a visit to one peer went (`POST /federation/check`). */
 export interface PeerCheck {
   peerId: string;
@@ -712,6 +765,16 @@ function query(values: Record<string, string | number | undefined>): FeatureCall
 
 function withToken(token: string | undefined): Record<string, string> | undefined {
   return token ? { [STEP_UP_HEADER]: token } : undefined;
+}
+
+/** The query that names which held key rotation a route means, when the caller says. */
+function fingerOf(fingerprint: string | undefined): string {
+  return fingerprint ? `?fingerprint=${encodeURIComponent(fingerprint)}` : '';
+}
+
+/** The query that names which held promotion a route means, when the caller says. */
+function pickOf(newHome: string | undefined): string {
+  return newHome ? `?newHome=${encodeURIComponent(newHome)}` : '';
 }
 
 /**
@@ -821,6 +884,17 @@ export function createAdminApi(api: AdminTransport) {
     /** `PUT /admin/v1/spaces/{id}/owner { newOwner, demotePrevious }` */
     changeOwner: (spaceId: string, request: ChangeOwnerRequest, token?: string) =>
       put<AdminSpace>(`/spaces/${spaceId}/owner`, request, token),
+    /**
+     * `GET /admin/v1/spaces/{id}/members/{user}/invite-link`: the link that accepts a member's
+     * invitation to a Bitwarden organization. Takes a step-up token like a write, because whoever
+     * opens the link accepts for that account; it is recorded in the event log.
+     */
+    spaceInviteLink: (spaceId: string, userId: string, token?: string) =>
+      api.request<InviteLink>({
+        method: 'GET',
+        path: `${BASE}/spaces/${spaceId}/members/${userId}/invite-link`,
+        headers: withToken(token),
+      }),
 
     /** `GET /admin/v1/events?actor&action&target&from&to&limit&cursor` */
     events: (q: EventsQuery = {}) =>
@@ -900,7 +974,7 @@ export function createAdminApi(api: AdminTransport) {
     // ---- Federation: crates/kemlock-api-fed/src/admin.rs ----
     // Every write sends the step-up token it is given; the server answers 403 `step-up-required`
     // without one, and `useReauth().guard` asks for a code and tries again. It decides for itself
-    // whether a request is fresh enough (promotion is the one that asks).
+    // Promotion, demotion and the rotation of this server's identity need one too.
 
     /** `GET /admin/v1/federation`: this server, its peers, pairings, vaults and offers. */
     federation: () => get<WireOverview>('/federation').then(overviewOf),
@@ -921,18 +995,63 @@ export function createAdminApi(api: AdminTransport) {
       ),
     /**
      * `POST /admin/v1/federation/vaults/{owner}/promote` (no body): makes this server the home of a
-     * vault it holds as a replica. The server accepts a fresh check or a step-up token.
+     * vault it holds as a replica. Needs a step-up token (403 `step-up-required` without one).
      * `request.homeIsDown` is the admin's own statement; the server does not take it.
      */
     promote: (owner: string, _request: PromoteRequest, grant?: string) =>
       post<{ record: string }>(`/federation/vaults/${encodeURIComponent(owner)}/promote`, undefined, grant),
     /**
      * `POST /admin/v1/federation/vaults/{owner}/demotion` (no body): lets the server whose
-     * promotion is held become the home of a vault this server is the home of. Needs a fresh
-     * check or a step-up token.
+     * promotion is held become the home of a vault this server is the home of. Needs a step-up
+     * token (403 `step-up-required` without one).
      */
-    acceptDemotion: (owner: string, grant?: string) =>
-      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion`, undefined, grant),
+    acceptDemotion: (owner: string, grant?: string, newHome?: string) =>
+      post<unknown>(`/federation/vaults/${encodeURIComponent(owner)}/demotion${pickOf(newHome)}`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/vaults/{owner}/demotion`: drops the held promotion without
+     * applying it, at the home or at a replica that holds promotions for its admin. Needs a
+     * step-up token.
+     */
+    refuseDemotion: (owner: string, grant?: string, newHome?: string) =>
+      act('DELETE', `/federation/vaults/${encodeURIComponent(owner)}/demotion${pickOf(newHome)}`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/peers/{id}/contest`: trusts a contested peer again (a key this
+     * server replaced for it said it was stolen). Needs a step-up token.
+     */
+    clearContest: (peerId: string, grant?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/contest`, undefined, grant),
+    /** `POST /admin/v1/federation/peers/{id}/unpair`: stops copying and asks the peer to delete. Needs a step-up token. */
+    unpairPeer: (peerId: string, grant?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/unpair`, undefined, grant),
+    /** `GET /admin/v1/federation/rotations`: peer key rotations held for the admin to accept or refuse. */
+    rotations: () =>
+      get<Array<Omit<KeyRotation, 'peerId'> & { peer: string }>>('/federation/rotations').then((all) =>
+        all.map(({ peer, ...rest }): KeyRotation => ({ peerId: peer, ...rest })),
+      ),
+    /**
+     * `POST /admin/v1/federation/peers/{id}/rotation`: pins the held key as the peer's. With the
+     * `fingerprint` it is `?fingerprint=…`, and the server applies only the held key that has it (so
+     * a rotation that arrived since is not applied unseen). Needs a step-up token.
+     */
+    acceptRotation: (peerId: string, grant?: string, fingerprint?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/rotation${fingerOf(fingerprint)}`, undefined, grant),
+    /**
+     * `DELETE /admin/v1/federation/peers/{id}/rotation`: drops the held key without pinning it, the
+     * one with the `fingerprint` when given. Needs a step-up token.
+     */
+    refuseRotation: (peerId: string, grant?: string, fingerprint?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/rotation${fingerOf(fingerprint)}`, undefined, grant),
+    /** `GET /admin/v1/federation/address-changes`: what key rotations said about where a peer lives, held for the admin. */
+    addressChanges: () =>
+      get<Array<Omit<AddressChange, 'peerId'> & { peer: string }>>('/federation/address-changes').then((all) =>
+        all.map(({ peer, ...rest }): AddressChange => ({ peerId: peer, ...rest })),
+      ),
+    /** `POST /admin/v1/federation/peers/{id}/address-change`: follow the peer to its new addresses. Needs a step-up token. */
+    approveAddressChange: (peerId: string, grant?: string) =>
+      post<unknown>(`/federation/peers/${encodeURIComponent(peerId)}/address-change`, undefined, grant),
+    /** `DELETE /admin/v1/federation/peers/{id}/address-change`: keep the addresses this server knew. Needs a step-up token. */
+    refuseAddressChange: (peerId: string, grant?: string) =>
+      act('DELETE', `/federation/peers/${encodeURIComponent(peerId)}/address-change`, undefined, grant),
     /** `PUT /admin/v1/federation/vaults/{owner} { policy, replicas }`: a vault's policy at its home. */
     setVaultPolicy: (
       owner: string,
@@ -944,9 +1063,14 @@ export function createAdminApi(api: AdminTransport) {
     quarantined: (owner: string) =>
       get<WireHomeRecord[]>(`/federation/vaults/${encodeURIComponent(owner)}/quarantined`),
 
-    /** `POST /admin/v1/federation/offers/{owner}/accept`: copy a vault its home offered. */
-    federate: (owner: string, token?: string) =>
-      post<unknown>(`/federation/offers/${encodeURIComponent(owner)}/accept`, undefined, token),
+    /**
+     * `POST /admin/v1/federation/offers/{owner}/accept`: copy a vault its home offered. With
+     * `rehome` it is `?rehome=true`: the account is a copy from another server, and this server
+     * takes over as the vault's home. The plain accept answers 409 `account-copy-from-another-server` when that is the case (see
+     * `isCopyFromAnotherServer`).
+     */
+    federate: (owner: string, token?: string, rehome = false) =>
+      post<unknown>(`/federation/offers/${encodeURIComponent(owner)}/accept${rehome ? '?rehome=true' : ''}`, undefined, token),
     /** `POST /admin/v1/federation/offers/{owner}/decline` */
     declineFederation: (owner: string, token?: string) =>
       act('POST', `/federation/offers/${encodeURIComponent(owner)}/decline`, undefined, token),
@@ -960,8 +1084,11 @@ export function createAdminApi(api: AdminTransport) {
       if (overview.pairings.length === 0) return pairingOf(overview);
       return pairingOf(overview, await get<WireShareable[]>('/federation/shareable'));
     },
-    /** `POST /admin/v1/federation/pairing/code`: a new one-time code (the old one stops working). */
-    newPairingCode: () => post<PairingCode>('/federation/pairing/code'),
+    /**
+     * `POST /admin/v1/federation/pairing/code`: a new one-time code (the old one stops working).
+     * Needs a step-up token.
+     */
+    newPairingCode: (token?: string) => post<PairingCode>('/federation/pairing/code', undefined, token),
     /** `POST /admin/v1/federation/pairing { address, code }`: runs the exchange, then waits for the words. */
     connectPairing: async (address: string, code: string, grant?: string): Promise<PairingSession> => {
       const awaiting = await post<WireAwaiting>('/federation/pairing', { address, code }, grant);
@@ -1063,3 +1190,12 @@ export function createAdminApi(api: AdminTransport) {
 }
 
 export type AdminApi = ReturnType<typeof createAdminApi>;
+
+/**
+ * Whether the plain accept of an offer was refused because the account is a copy from another
+ * server (`409`, slug `account-copy-from-another-server`): the admin may then accept and move the vault's
+ * home here (`federate(owner, token, true)`).
+ */
+export function isCopyFromAnotherServer(error: unknown): boolean {
+  return isApiError(error, 'account-copy-from-another-server') && error.status === 409;
+}

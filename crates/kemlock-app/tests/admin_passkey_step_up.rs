@@ -280,17 +280,26 @@ async fn a_challenge_answers_with_its_own_options_only() {
 const KEY: &[u8] = b"security-key-one";
 
 #[tokio::test]
-async fn a_security_key_confirms_a_change_without_user_verification() {
+async fn a_security_key_confirms_a_change_only_with_user_verification() {
     let fx = fx();
     fx.keys.add(KEY);
     let challenge = fx.stepper.options(&fx.me).await.expect("options");
-    // A security-key ceremony over the key and the passkey; a passkey listed asks the browser to verify.
+    // A security-key ceremony over the key and the passkey, and the browser is asked to verify.
     assert_eq!(challenge.options["kind"], "SecurityKey");
     assert_eq!(challenge.options["allowCredentials"], 2);
     assert_eq!(challenge.options["userVerification"], "required");
 
-    // A touch-only key, as at sign-in: no user verification needed.
+    // A touch-only answer is no step-up: a key someone picked up proves nothing.
     let answer = fx.answer(&challenge.options, KEY, 1, false);
+    assert_eq!(
+        fx.stepper
+            .finish(&fx.me, &challenge.challenge, &answer)
+            .await,
+        Err(AdminError::StepUpFailed)
+    );
+    // A verified one is.
+    let challenge = fx.stepper.options(&fx.me).await.expect("options");
+    let answer = fx.answer(&challenge.options, KEY, 1, true);
     let issued = fx
         .stepper
         .finish(&fx.me, &challenge.challenge, &answer)
@@ -331,9 +340,9 @@ async fn an_admin_with_only_a_security_key_can_step_up() {
     fx.keys.add(KEY);
     let challenge = fx.stepper.options(&keys_only).await.expect("options");
     assert_eq!(challenge.options["kind"], "SecurityKey");
-    // No passkey listed: the key is not asked to verify.
-    assert!(challenge.options.get("userVerification").is_none());
-    let answer = assertion_answer(&challenge.options, KEY, None, 1, false);
+    // A security key is asked to verify too, with no passkey listed.
+    assert_eq!(challenge.options["userVerification"], "required");
+    let answer = assertion_answer(&challenge.options, KEY, None, 1, true);
     let issued = fx
         .stepper
         .finish(&keys_only, &challenge.challenge, &answer)

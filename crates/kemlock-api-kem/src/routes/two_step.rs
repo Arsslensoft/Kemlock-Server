@@ -22,6 +22,7 @@
 //! one a removal takes, and a method that is on already is refused (remove it, then add it) The Bitwarden API's `/api/two-factor/...` does the same
 //! for its clients, behind the master password.
 
+use super::attempts;
 use super::auth::token_response;
 use super::guard;
 use super::new_device::announce;
@@ -265,13 +266,11 @@ where
     let now = api.now();
     limit_second_step(api, proof.ip, &challenge, now)?;
     let step = step(api, runtime);
-    // A genuine, fresh challenge names the account its failures count against.
+    // A genuine, fresh challenge names the account its failures count against; the attempt is
+    // reserved before the code is looked at.
     let user = step.challenge_user(&challenge)?;
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
+    attempts::reserve_second_step(api, user, now).await?;
     let finished = step
         .verify(TwoStepInput {
             challenge,
@@ -281,11 +280,7 @@ where
             client: client.to_owned(),
         })
         .await;
-    match &finished {
-        Err(AppError::Unauthorized) => api.limits.second_step.fail(&account, now),
-        Ok(_) => api.limits.second_step.clear(&account),
-        Err(_) => {}
-    }
+    attempts::settle_second_step(api, user, &finished).await;
     api.log_attempt(api.attempt("two-factor", Some(user), &finished, proof.ip, token_ids))
         .await;
     let tokens = finished?;
@@ -359,19 +354,13 @@ where
     let now = api.now();
     limit_second_step(&api, proof.ip, &challenge, now)?;
     let step = api.recovery_sign_in();
-    // A genuine, fresh challenge names the account its failures count against.
+    // A genuine, fresh challenge names the account its failures count against; the attempt is
+    // reserved before the code is looked at.
     let user = step.challenge_user(&challenge)?;
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
+    attempts::reserve_second_step(&api, user, now).await?;
     let finished = step.recover(&challenge, &request.code, &proof.jkt).await;
-    match &finished {
-        Err(AppError::Unauthorized) => api.limits.second_step.fail(&account, now),
-        Ok(_) => api.limits.second_step.clear(&account),
-        Err(_) => {}
-    }
+    attempts::settle_second_step(&api, user, &finished).await;
     Ok(Json(token_response(&finished?, now)))
 }
 
@@ -625,25 +614,23 @@ where
     P: Crypto,
     K: TokenSigner + Clone + 'static,
 {
-    let now = api.now();
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
     let Some(checker) = api.assertions.get() else {
         return Err(AppError::Invalid("this server can't check a security key proof").into());
     };
     let response = serde_json::to_vec(&assertion.webauthn)
         .map_err(|_| AppError::Invalid("the security key's answer isn't valid"))?;
+    // Reserved before the answer is looked at; only a right answer gives the attempt back.
+    attempts::reserve_step_up(api, user, api.now()).await?;
     match checker.verify(user, response).await {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            attempts::forget_step_up(api, user).await;
+            Ok(())
+        }
         Err(kemlock_app::passkeys::SecurityKeyError::NoChallenge) => Err(AppError::Invalid(
             "no security key proof is in progress, or it expired: ask for options again",
         )
         .into()),
         Err(kemlock_app::passkeys::SecurityKeyError::Refused) => {
-            api.limits.second_step.fail(&account, now);
             Err(AppError::Invalid("the security key's answer wasn't accepted").into())
         }
         Err(other) => Err(AppError::from(other).into()),
@@ -705,16 +692,12 @@ where
         FreshProof::Code(code) => code.as_str(),
         FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
     };
-    let now = api.now();
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
+    // Reserved before the code is looked at; only a right code gives the attempt back.
+    attempts::reserve_step_up(api, user, api.now()).await?;
     if second_step_proof(api, user, proof, recovery).await {
+        attempts::forget_step_up(api, user).await;
         return Ok(());
     }
-    api.limits.second_step.fail(&account, now);
     Err(AppError::Invalid("the code is wrong or has run out: ask for another").into())
 }
 
@@ -843,12 +826,15 @@ where
             .into_iter()
             .find(|f| f.method == TwoFactorMethod::Totp && f.enabled);
         if let Some(factor) = totp
-            && let Ok(secret) = api
-                .crypto
-                .open(kemlock_app::sealed::PURPOSE_TOTP, &factor.sealed_secret)
+            && let Ok(secret) = kemlock_app::sealed::open_bound(
+                &api.crypto,
+                kemlock_app::sealed::PURPOSE_TOTP,
+                user,
+                &factor.sealed_secret,
+            )
             && let Some(step) = u64::try_from(api.now())
                 .ok()
-                .and_then(|now| kemlock_crypto::totp::verify_step(&secret, &entered, now))
+                .and_then(|now| kemlock_crypto::totp::verify_step(&secret.value, &entered, now))
         {
             // A code works once, as at sign-in: the step is kept per account, so a code seen
             // over a shoulder or in a log proves nothing for the rest of its window.
@@ -903,24 +889,21 @@ where
         FreshProof::Code(code) => code.trim(),
         FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
     };
-    let now = api.now();
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
+    // Reserved before the code is looked at; only a right code gives the attempt back.
+    attempts::reserve_step_up(api, user, api.now()).await?;
     // Without mail, a current code of the authenticator app or the account's recovery code proves
     // it just as well. A TOTP code is spent here (it works once); the recovery code is kept. Neither
     // needs the mail to work.
     if second_step_proof(api, user, code, recovery).await {
+        attempts::forget_step_up(api, user).await;
         return Ok(());
     }
     match steps.protected_validate(user, code, true).await {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            api.limits.second_step.fail(&account, now);
-            Err(proof_error(error))
+        Ok(()) => {
+            attempts::forget_step_up(api, user).await;
+            Ok(())
         }
+        Err(error) => Err(proof_error(error)),
     }
 }
 
@@ -951,8 +934,9 @@ where
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Records that a second step was turned on or off, and tells the owner by mail. Neither can fail
-/// the call: what they describe has happened.
+/// Records that a second step was turned on or off, or a passkey added or removed (`method` is
+/// `"passkey"`), and tells the owner by mail. Neither can fail the call: what they describe has
+/// happened.
 pub(crate) async fn announce_change<S, P, K>(
     api: &Api<S, P, K>,
     authed: &Authed,
@@ -966,10 +950,11 @@ pub(crate) async fn announce_change<S, P, K>(
     let sessions = api.sessions();
     sessions
         .record(
-            if on {
-                "account.two_step_added"
-            } else {
-                "account.two_step_removed"
+            match (method, on) {
+                ("passkey", true) => "account.passkey_added",
+                ("passkey", false) => "account.passkey_removed",
+                (_, true) => "account.two_step_added",
+                (_, false) => "account.two_step_removed",
             },
             authed.actor.user,
             Some(authed.actor.device),
@@ -1048,12 +1033,10 @@ where
     refuse_if_on(&api, authed.actor.user, TwoFactorMethod::Email).await?;
     // Each code mailed counts, 5 in 15 minutes: the route can't be used to fill a mailbox.
     let issued = format!("email-setup-codes:{}", authed.actor.user);
-    let now = api.now();
     api.limits
         .second_step
-        .blocked(&issued, now)
+        .reserve(&issued, api.now())
         .map_err(rate_limited)?;
-    api.limits.second_step.fail(&issued, now);
     two_step_of(&api, &runtime)
         .email_begin(authed.actor.user, &request.address)
         .await?;

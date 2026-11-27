@@ -30,6 +30,12 @@ pub enum StoreError {
     Duplicate,
     #[error("not found")]
     NotFound,
+    /// A wrap of the root key was written for a key version that is no longer the account's: the
+    /// account replaced its keys, and the writer, which read them earlier, must read them again.
+    /// Said under the account's row lock, so a rotation's install is either before the check or
+    /// after the write.
+    #[error("the account's key version is {current}, not the one the wrap is for")]
+    StaleKeyVersion { current: u32 },
     /// The database or file storage failed; the message is for logs, never for clients.
     #[error("store failure: {0}")]
     Backend(String),
@@ -58,6 +64,24 @@ pub trait Random: Send + Sync {
 pub trait ServerInfo: Send + Sync {
     /// This server's id, made at first start and never changed. Every change it accepts carries it.
     fn server_id(&self) -> ServerId;
+}
+
+/// A hold on an account until the link mailed to its address is opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmailConfirmation {
+    pub user: UserId,
+    /// When the link was made.
+    pub requested_at: OffsetDateTime,
+    /// When it stops working.
+    pub expires_at: OffsetDateTime,
+}
+
+/// A public-key bundle an account has had, with its self-signature, at one key version.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredBundle {
+    pub key_version: u32,
+    pub public_bundle: Vec<u8>,
+    pub bundle_signature: Vec<u8>,
 }
 
 pub trait UserRepo: Send + Sync {
@@ -91,6 +115,63 @@ pub trait UserRepo: Send + Sync {
             }
         }
     }
+    /// The account's bundle at `key_version`: the current one, or one it had before a key
+    /// replacement (docs/crypto.md, "Signed item writes"), for as long as the store keeps them.
+    /// `None` for a version the account never had, or one the store no longer holds.
+    ///
+    /// The default knows only the current bundle, for a store that keeps no history.
+    fn bundle_at(
+        &self,
+        id: UserId,
+        key_version: u32,
+    ) -> impl Future<Output = Result<Option<StoredBundle>, StoreError>> + Send {
+        async move {
+            Ok(self
+                .by_id(id)
+                .await?
+                .filter(|u| u.key_version == key_version && !u.public_bundle.is_empty())
+                .map(|u| StoredBundle {
+                    key_version: u.key_version,
+                    public_bundle: u.public_bundle,
+                    bundle_signature: u.bundle_signature,
+                }))
+        }
+    }
+
+    /// When the account replaced its bundle at `key_version` with the next version, Unix seconds:
+    /// when the keys of that version stopped signing (docs/crypto.md, "Signed item writes"). `None`
+    /// for the current version, and for one the store doesn't know the end of.
+    ///
+    /// The default knows none.
+    fn bundle_retired_at(
+        &self,
+        _id: UserId,
+        _key_version: u32,
+    ) -> impl Future<Output = Result<Option<i64>, StoreError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// Every bundle the account has had that the store holds, oldest key version first, the
+    /// current one last. The default has only the current one.
+    fn bundles_of(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<Vec<StoredBundle>, StoreError>> + Send {
+        async move {
+            Ok(self
+                .by_id(id)
+                .await?
+                .filter(|u| u.key_version > 0 && !u.public_bundle.is_empty())
+                .map(|u| StoredBundle {
+                    key_version: u.key_version,
+                    public_bundle: u.public_bundle,
+                    bundle_signature: u.bundle_signature,
+                })
+                .into_iter()
+                .collect())
+        }
+    }
+
     fn count_admins(&self) -> impl Future<Output = Result<u64, StoreError>> + Send;
     /// Whether the account may not sign in: an admin disabled it, or Vaultwarden had it disabled
     /// before the move. Sign-in and refresh on both APIs ask this and issue nothing to a disabled
@@ -109,6 +190,74 @@ pub trait UserRepo: Send + Sync {
         let _ = id;
         async { Ok(None) }
     }
+
+    /// Whether the account is held back until the link mailed to its address is opened (the
+    /// "verify the email of a new account" setting): it may not sign in or act until then. An
+    /// account with no hold is confirmed, as every account is that existed before the setting.
+    /// A store with no such holds keeps this default: nothing is held.
+    fn email_unconfirmed(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        let _ = id;
+        async { Ok(false) }
+    }
+
+    /// Inserts a new account that is held until its link is opened, in one step: the account and
+    /// its hold go in together or not at all, so the account is never there unheld. `Duplicate`
+    /// when the email is taken. The default inserts and then holds in two steps, which leaves a
+    /// moment between them; a store that serves requests concurrently overrides it with a
+    /// transaction.
+    fn insert_held(
+        &self,
+        user: &User,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            self.insert(user).await?;
+            self.hold_unconfirmed(user.id, token_hash, requested_at, expires_at)
+                .await
+        }
+    }
+
+    /// Holds the account until its link is opened, in place of any hold it had: `token_hash` is
+    /// the SHA-256 of the link's token, which stops working at `expires_at`.
+    fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = (id, token_hash, requested_at, expires_at);
+        async {
+            Err(StoreError::Backend(
+                "this store can't hold an account until its email is confirmed".to_owned(),
+            ))
+        }
+    }
+
+    /// The account's hold, if it has one: when its link was made and when it runs out.
+    fn confirmation_of(
+        &self,
+        id: UserId,
+    ) -> impl Future<Output = Result<Option<EmailConfirmation>, StoreError>> + Send {
+        let _ = id;
+        async { Ok(None) }
+    }
+
+    /// Spends the link whose token has this SHA-256: the hold is removed and the account is
+    /// said. `None` for a link that is unknown, spent or out of time at `now`.
+    fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> impl Future<Output = Result<Option<UserId>, StoreError>> + Send {
+        let _ = (token_hash, now);
+        async { Ok(None) }
+    }
 }
 
 pub trait DeviceRepo: Send + Sync {
@@ -118,6 +267,121 @@ pub trait DeviceRepo: Send + Sync {
     fn list(&self, user: UserId) -> impl Future<Output = Result<Vec<Device>, StoreError>> + Send;
     /// Deletes the device, its refresh tokens and any key copy it holds.
     fn remove(&self, id: DeviceId) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Remembers that an SSO sign-in started this device (what a back-channel logout ends). The
+    /// default keeps nothing: a store with no SSO has no logout to serve.
+    fn record_sso_session(
+        &self,
+        session: &crate::sso::SsoSession,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = session;
+        async { Ok(()) }
+    }
+
+    /// Forgets which identity signed the device in: a sign-in by another way makes it no longer an
+    /// SSO session, and a removed device has none.
+    fn forget_sso_session(
+        &self,
+        id: DeviceId,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        let _ = id;
+        async { Ok(()) }
+    }
+
+    /// Records that the device was seen at `at`, only while it is still registered with the DPoP
+    /// key `jkt`, and says whether it was. A device whose key was cleared meanwhile (a refresh
+    /// token used twice, sessions ended everywhere) stays as it is: writing back the whole row a
+    /// caller read earlier would put the cleared key back. The default reads and writes in two
+    /// steps; a store that serves requests concurrently overrides it with a conditional write.
+    fn touch_seen(
+        &self,
+        id: DeviceId,
+        jkt: &str,
+        at: OffsetDateTime,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            match self.get(id).await? {
+                Some(mut device) if device.dpop_jkt.as_deref() == Some(jkt) => {
+                    device.last_seen_at = at;
+                    self.upsert(&device).await?;
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
+    }
+
+    /// Inserts the device, or, when it is there, writes only its name, kind and last-seen time: not
+    /// its owner, its DPoP key or when it was made. A sign-in that read the row a moment ago must
+    /// not put back a key that a sign-out cleared since. The default reads and writes in two steps;
+    /// a store that serves requests concurrently overrides it with one statement.
+    fn upsert_description(
+        &self,
+        device: &Device,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            match self.get(device.id).await? {
+                Some(mut row) => {
+                    row.name.clone_from(&device.name);
+                    row.kind = device.kind;
+                    row.last_seen_at = device.last_seen_at;
+                    self.upsert(&row).await
+                }
+                None => self.upsert(device).await,
+            }
+        }
+    }
+
+    /// Records that the device was seen at `at`, whatever key it holds, and nothing else of the row:
+    /// a caller that read the row earlier must not write back what a sign-out cleared since. A
+    /// device that is gone stays gone. The default reads and writes in two steps; a store that
+    /// serves requests concurrently overrides it with one conditional write.
+    fn touch_last_seen(
+        &self,
+        id: DeviceId,
+        at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async move {
+            if let Some(mut device) = self.get(id).await? {
+                device.last_seen_at = at;
+                self.upsert(&device).await?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Which API issued a refresh token. The two APIs share one table and one token form, but a Kemlock
+/// token is bound to a DPoP key and a Bitwarden one is a bearer token, so one API refuses the
+/// other's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TokenApi {
+    /// Issued before the tag existed: no one knows. The Bitwarden API takes it only for a device
+    /// with no DPoP key.
+    #[default]
+    Unknown,
+    Kemlock,
+    Bitwarden,
+}
+
+impl TokenApi {
+    /// The value stored in the `api` column.
+    pub fn as_i16(self) -> i16 {
+        match self {
+            TokenApi::Unknown => 0,
+            TokenApi::Kemlock => 1,
+            TokenApi::Bitwarden => 2,
+        }
+    }
+
+    /// The tag a stored value stands for; one that is none of them is `Unknown`.
+    pub fn from_i16(value: i16) -> Self {
+        match value {
+            1 => TokenApi::Kemlock,
+            2 => TokenApi::Bitwarden,
+            _ => TokenApi::Unknown,
+        }
+    }
 }
 
 /// A refresh token as stored: only its SHA-256, so a database copy can't be replayed.
@@ -136,6 +400,8 @@ pub struct RefreshToken {
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub used_at: Option<OffsetDateTime>,
+    /// The API that issued the token.
+    pub api: TokenApi,
 }
 
 pub trait TokenRepo: Send + Sync {
@@ -158,6 +424,11 @@ pub trait TokenRepo: Send + Sync {
         &self,
         device: DeviceId,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// The device's refresh tokens, used or not, so a caller can tell its families apart.
+    fn device_tokens(
+        &self,
+        device: DeviceId,
+    ) -> impl Future<Output = Result<Vec<RefreshToken>, StoreError>> + Send;
 }
 
 /// One page of a delta sync.
@@ -335,6 +606,35 @@ pub trait ItemStore: Send + Sync {
         async { Ok(Vec::new()) }
     }
 
+    /// Whether `owner` accepts signed `kem1` writes only (docs/crypto.md, "The signed-only flag"):
+    /// its owner (or a space's owner or admin) asked.
+    ///
+    /// The default is false, for a store that keeps no such flag.
+    fn signed_writes_required(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Makes `owner` accept signed writes only, at `at`. Idempotent. Only a request of the owner's
+    /// own authority sets it (docs/crypto.md, "The signed-only flag").
+    fn require_signed_writes(
+        &self,
+        _owner: Owner,
+        _at: OffsetDateTime,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Makes `owner` accept unsigned writes again. Idempotent.
+    fn clear_signed_writes(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
     /// Purges tombstones deleted before `before`, moving each owner's horizon. Returns how many
     /// went.
     fn purge_tombstones(
@@ -482,6 +782,29 @@ pub trait TwoFactorRepo: Send + Sync {
     -> impl Future<Output = Result<Vec<TwoFactor>, StoreError>> + Send;
     /// Inserts or replaces the user's enrolment of that method.
     fn put(&self, two_factor: &TwoFactor) -> impl Future<Output = Result<(), StoreError>> + Send;
+    /// Replaces the account's enrolment of `to.method` with `to`, only while its sealed secret is
+    /// still `from`, and says whether it did. A caller that read an enrolment, then writes a
+    /// change of its own (sealing a seed to the account, turning the method on), must not undo
+    /// what happened in between: a removal, or a new enrolment with another secret. The default
+    /// reads and writes in two steps; a store that serves requests concurrently overrides it with
+    /// a conditional write.
+    fn replace_if_sealed(
+        &self,
+        from: &[u8],
+        to: &TwoFactor,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        async move {
+            let held = self
+                .list(to.user)
+                .await?
+                .into_iter()
+                .any(|t| t.method == to.method && t.sealed_secret == from);
+            if held {
+                self.put(to).await?;
+            }
+            Ok(held)
+        }
+    }
     /// Records `step` as the newest accepted step of the user's TOTP enrolment, atomically, only
     /// if it is newer than the one recorded. `false` means the step is at or before the last
     /// accepted one (or there is no TOTP enrolment): the code is a replay and must be refused.

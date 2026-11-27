@@ -10,7 +10,7 @@ use super::model::{
     ACCEPTED, ADMIN, AccessDoc, CollectionDoc, GroupDoc, KIND_COLLECTION, KIND_GROUP, KIND_POLICY,
     MANAGER, Org, PolicyDoc, level, permission_of,
 };
-use super::policy::{FILL_ASSIST, SINGLE_ORG, TWO_FACTOR, is_known};
+use super::policy::{FILL_ASSIST, REQUIRE_SSO, SINGLE_ORG, TWO_FACTOR, is_known};
 use crate::app::{App, BwStore};
 use crate::dates::format_date;
 use crate::env::random_uuid;
@@ -18,6 +18,7 @@ use crate::error::{BwError, BwResult};
 use crate::events::kind;
 use kemlock_app::ports::TwoFactorRepo;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
+use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_domain::UserId;
 use kemlock_domain::spaces::{Collection, CollectionGrant, CollectionId, Grantee, Group, GroupId};
 use serde::Deserialize;
@@ -565,6 +566,28 @@ pub(crate) async fn put_policy<S: BwStore>(
             "Turn off the Activate fill assist policy because it requires the Single organization policy.",
         ));
     }
+    // Require SSO closes the password to the members, so it can't be turned on where no one could
+    // sign in another way, and (as Bitwarden has it) only with Single organization on.
+    if ptype == REQUIRE_SSO && data.enabled && !enabled_now {
+        let configured = SsoSettingsRepo::sso_settings(&app.store)
+            .await?
+            .is_some_and(|settings| settings.enabled);
+        if !configured {
+            return Err(BwError::msg(
+                "Set up single sign-on on this server before turning on the Require single sign-on authentication policy.",
+            ));
+        }
+        if !org.policy_enabled(SINGLE_ORG) {
+            return Err(BwError::msg(
+                "Turn on the Single organization policy because it is required for the Require single sign-on authentication policy.",
+            ));
+        }
+    }
+    if ptype == SINGLE_ORG && !data.enabled && enabled_now && org.policy_enabled(REQUIRE_SSO) {
+        return Err(BwError::msg(
+            "Turn off the Require single sign-on authentication policy because it requires the Single organization policy.",
+        ));
+    }
     if ptype == FILL_ASSIST {
         fill_assist_check(&data)?;
     }
@@ -625,8 +648,24 @@ pub(crate) async fn put_policy<S: BwStore>(
         data: serde_json::to_string(&data.data).map_err(|e| BwError::Server(e.to_string()))?,
         revision_date: format_date(now),
     };
-    app.put_doc(org.id.0, KIND_POLICY, &ptype.to_string(), &policy)
-        .await?;
+    // Whether Require SSO is on lives in `space_policy_settings`, the one place the Kemlock API and
+    // the sign-in checks read it; the document only keeps what Bitwarden shows of it.
+    // The table and the document are written in one transaction.
+    if ptype == REQUIRE_SSO {
+        let text = serde_json::to_string(&policy).map_err(|e| BwError::Server(e.to_string()))?;
+        app.store
+            .doc_put_with_require_sso(
+                org.id.0,
+                KIND_POLICY,
+                &ptype.to_string(),
+                &text,
+                data.enabled,
+            )
+            .await?;
+    } else {
+        app.put_doc(org.id.0, KIND_POLICY, &ptype.to_string(), &policy)
+            .await?;
+    }
     app.sync_members(org).await?;
     ctx.log(app, kind::POLICY_UPDATED, &policy.id).await;
     Ok(policy_json(&org.id.to_string(), ptype, &policy))

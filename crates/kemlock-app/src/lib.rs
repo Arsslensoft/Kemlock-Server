@@ -48,11 +48,15 @@ pub mod recovery_kit;
 pub mod refresh;
 pub mod register;
 pub mod reset_admin;
+pub mod rotation;
 pub mod sealed;
+pub mod second_step_guard;
 pub mod sends;
 pub mod session;
 pub mod setup_basics;
 pub mod sign_in;
+pub mod signed_writes;
+pub mod signup_verify;
 pub mod spaces;
 pub mod sso;
 pub mod sync_delta;
@@ -72,7 +76,7 @@ pub use prelogin::Prelogin;
 pub use put_batch::PutBatch;
 pub use put_item::PutItem;
 pub use refresh::Refresh;
-pub use register::{Register, RegisterInput, RegisterStartInput, Registered};
+pub use register::{EmailHold, Register, RegisterInput, RegisterStartInput, Registered};
 pub use session::{Continued, DeviceInfo, Sessions, TokenPair};
 pub use setup_basics::{
     BackupBasics, JoinPolicy, RECORDED_DOMAIN_KEY, ServerBasics, record_domain, save_basics,

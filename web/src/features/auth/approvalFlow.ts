@@ -8,13 +8,20 @@
 //   4. the worker opens the box with aad = account id ‖ request id, the account id coming from the
 //      approved poll, so an answer can't be replayed onto another request;
 //   5. a challenge, signed for by this device's DPoP key, trades the approval for tokens, and the
-//      vault opens with the root key that never left the worker.
+//      vault opens with the root key that never left the worker;
+//   6. nothing on this device authenticates that root key, so a server could have sealed one of its
+//      own to our one-time key, with sealed private keys that open under it. The worker therefore
+//      opens the vault only if the private keys are the ones of the account's public bundle, and
+//      the person then compares that bundle's fingerprint with the one the approving device shows
+//      before the vault is treated as open (docs/crypto.md, "Device-approval phrase"). A mismatch,
+//      or no answer, locks the worker and ends the session.
 import type { Api } from '@/api/client';
 import { tokensFromResponse } from '@/api/client';
 import type { NewDeviceApi } from '@/api/devices';
 import type { DeviceDto } from '@/api/types';
 import type { Session } from '@/app/session';
 import type { CryptoPort } from '@/crypto-port';
+import { CryptoError } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 import { approvalPhrase } from '@/lib/approvalPhrase';
 import { rememberDeviceId } from '@/lib/device';
@@ -24,8 +31,13 @@ export interface DeviceApprovalDeps {
   api: Pick<Api, 'accountKeys'>;
   crypto: Pick<
     CryptoPort,
-    'newDeviceKey' | 'openApprovedKey' | 'unlockWithRoot' | 'release'
+    'newDeviceKey' | 'openApprovedKey' | 'unlockWithRoot' | 'ownFingerprint' | 'release' | 'lock'
   >;
+  /**
+   * Shows the fingerprint of the keys now in use and resolves with whether the person found it
+   * the same as the approving device's. Resolves false when `signal` aborts.
+   */
+  confirmFingerprint: (fingerprint: string, signal: AbortSignal) => Promise<boolean>;
   session: Session;
   device: () => DeviceDto;
   now?: () => number;
@@ -38,8 +50,10 @@ export interface DeviceApprovalDeps {
 export type ApprovalProgress =
   | { step: 'requesting' }
   /** The phrase to match against the approving device's, and when the request lapses. */
-  | { step: 'waiting'; phrase: string; expiresAt: string }
-  | { step: 'signing-in' };
+  | { step: 'waiting'; phrase: string; expiresAt: string; heldBack?: boolean }
+  | { step: 'signing-in' }
+  /** The vault's keys are open; the person compares this fingerprint with the approving device's. */
+  | { step: 'compare'; fingerprint: string };
 
 export type ApprovalOutcome =
   | { status: 'signed-in'; admin: boolean }
@@ -51,7 +65,7 @@ export type ApprovalOutcome =
 
 /** A fixed message for what the server said that this side will not accept. */
 export class ApprovalRefused extends Error {
-  constructor(readonly reason: 'phrase' | 'account' | 'sealed') {
+  constructor(readonly reason: 'phrase' | 'account' | 'sealed' | 'keys' | 'fingerprint') {
     super(`the approval was refused: ${reason}`);
     this.name = 'ApprovalRefused';
   }
@@ -113,7 +127,12 @@ export async function signInWithAnotherDevice(
     // another key would show up as words that do not match, and nothing is sealed to that key.
     const phrase = await approvalPhrase(made.publicKey);
     if (!samePhrase(phrase, requested.phrase)) throw new ApprovalRefused('phrase');
-    onProgress({ step: 'waiting', phrase, expiresAt: requested.expiresAt });
+    onProgress({
+      step: 'waiting',
+      phrase,
+      expiresAt: requested.expiresAt,
+      ...(requested.heldBack ? { heldBack: true } : {}),
+    });
 
     for (;;) {
       if (signal.aborted) return { status: 'cancelled' };
@@ -144,14 +163,31 @@ export async function signInWithAnotherDevice(
         });
         try {
           const keys = await deps.api.accountKeys();
-          // The unlock consumes the root handle; releasing it afterwards (in `finally`) is harmless.
-          await deps.crypto.unlockWithRoot(tokens.userId, root, {
-            keyVersion: keys.keyVersion,
-            ...(keys.sealedPrivateKeys
-              ? { sealedPrivateKeys: decodeB64(keys.sealedPrivateKeys) }
-              : {}),
-          });
+          // The approving device's box proves nothing about whose keys these are, so the sealed
+          // private keys and the bundle are both required, and the worker refuses unless the keys
+          // are the bundle's. The unlock consumes the root handle; releasing it afterwards (in
+          // `finally`) is harmless.
+          if (!keys.sealedPrivateKeys || !keys.publicBundle) throw new ApprovalRefused('keys');
+          try {
+            await deps.crypto.unlockWithRoot(tokens.userId, root, {
+              keyVersion: keys.keyVersion,
+              sealedPrivateKeys: decodeB64(keys.sealedPrivateKeys),
+              publicBundle: decodeB64(keys.publicBundle),
+            });
+          } catch (error) {
+            // The worker only says "invalid" for keys that are not the bundle's (or do not open
+            // under this root key): tell the person that, not a generic failure. A worker that
+            // is not there is another matter.
+            if (error instanceof CryptoError && error.code === 'unavailable') throw error;
+            throw new ApprovalRefused('keys');
+          }
+          const fingerprint = await deps.crypto.ownFingerprint();
+          onProgress({ step: 'compare', fingerprint });
+          if (!(await deps.confirmFingerprint(fingerprint, signal))) {
+            throw new ApprovalRefused('fingerprint');
+          }
         } catch (error) {
+          await deps.crypto.lock().catch(() => undefined);
           deps.session.end();
           throw error;
         }

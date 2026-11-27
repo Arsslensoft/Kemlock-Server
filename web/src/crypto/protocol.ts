@@ -9,8 +9,14 @@ import {
   CryptoError,
   type CryptoErrorCode,
   type ApprovedKeyHandle,
+  type BitwardenKdf,
+  type ChainAppend,
+  type ChainBuilt,
+  type ChainVerdict,
+  type ChainView,
   type DeviceKey,
   type EmergencyKeyHandle,
+  type ItemWriteSignature,
   type MasterKeyHandle,
   type NewAccount,
   type NewSpaceResult,
@@ -23,7 +29,12 @@ import {
   type MadeKit,
   type PrfWrap,
   type Ops,
+  type ResealedItem,
+  type ResealedSend,
+  type RotationCommit,
+  type RotationStart,
   type SealedCollection,
+  type SignedBox,
   type SealedItem,
   type SealedSend,
   type TotpEnrolment,
@@ -37,6 +48,12 @@ export interface DispatcherDeps {
   dpop: Dpop;
   /** This browser's trusted-device key; without it the device-copy operations are unavailable. */
   deviceWrap?: DeviceWrap;
+  /**
+   * One tab's own key for the copy a reload opens the vault from (`root`), and for the session's
+   * tokens (`session`): the same key, kept apart by the additional data. Without it the tab
+   * operations are unavailable.
+   */
+  tabWrap?: (tabId: string, purpose: 'root' | 'session') => DeviceWrap;
 }
 
 export type Dispatcher = <Op extends OpName>(
@@ -66,6 +83,56 @@ function passwordText(password: string | Uint8Array): string {
   const text = new TextDecoder().decode(password).normalize('NFC');
   password.fill(0);
   return text;
+}
+
+const BW_PBKDF2_ITERATIONS = { min: 5_000, max: 2_000_000 };
+
+/** Standard base64 of bytes, which is what a Bitwarden server reads. */
+function stdBase64(bytes: Uint8Array): string {
+  let text = '';
+  for (const byte of bytes) text += String.fromCharCode(byte);
+  return btoa(text);
+}
+
+/**
+ * The Bitwarden master password hash (see `CryptoApi.bitwardenPasswordHash`). PBKDF2 runs in
+ * WebCrypto here; Argon2id runs in the module (`argon`). The password's bytes are wiped and nothing
+ * is kept. A hostile server's prelogin can ask for an absurd cost, so settings outside Bitwarden's
+ * own bounds are refused before any work is done.
+ */
+async function bitwardenHash(
+  password: string,
+  email: string,
+  kdf: BitwardenKdf,
+  argon: (password: string, email: string, memoryKib: number, iterations: number, parallelism: number) => Promise<string>,
+): Promise<string> {
+  const mail = email.trim().toLowerCase();
+  const whole = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value);
+  if (mail === '' || !whole(kdf.iterations)) throw new CryptoError('invalid');
+  if (kdf.type === 1) {
+    if (!whole(kdf.memory) || !whole(kdf.parallelism)) throw new CryptoError('invalid');
+    const url = await argon(password, mail, kdf.memory * 1024, kdf.iterations, kdf.parallelism);
+    return stdBase64(b64urlDecode(url));
+  }
+  if (kdf.type !== 0) throw new CryptoError('invalid');
+  if (kdf.iterations < BW_PBKDF2_ITERATIONS.min || kdf.iterations > BW_PBKDF2_ITERATIONS.max) {
+    throw new CryptoError('invalid');
+  }
+  const subtle = globalThis.crypto.subtle;
+  const typed = new TextEncoder().encode(password);
+  try {
+    const first = await subtle.importKey('raw', typed, 'PBKDF2', false, ['deriveBits']);
+    const masterBits = await subtle.deriveBits(
+      { name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode(mail), iterations: kdf.iterations },
+      first,
+      256,
+    );
+    const master = await subtle.importKey('raw', masterBits, 'PBKDF2', false, ['deriveBits']);
+    const hash = await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: typed, iterations: 1 }, master, 256);
+    return stdBase64(new Uint8Array(hash));
+  } finally {
+    typed.fill(0);
+  }
 }
 
 export function createDispatcher(deps: DispatcherDeps): Dispatcher {
@@ -98,7 +165,24 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     return deps.deviceWrap;
   }
 
+  /** The wrap of the trusted-device key, or, given a tab, that tab's own reload key. */
+  function copyWrap(tabId: string | undefined): DeviceWrap {
+    if (tabId === undefined) return deviceWrap();
+    if (!deps.tabWrap) throw new CryptoError('unavailable');
+    return deps.tabWrap(tabId, 'root');
+  }
+
+  function sessionWrap(tabId: string): DeviceWrap {
+    if (!deps.tabWrap) throw new CryptoError('unavailable');
+    return deps.tabWrap(tabId, 'session');
+  }
+
   const handlers: { [Op in OpName]: (...args: Ops[Op]['args']) => Promise<Ops[Op]['result']> } = {
+    async bitwardenPasswordHash({ password, email, kdf }) {
+      return bitwardenHash(password, email, kdf, (...args) =>
+        current().then((v) => v.bitwardenArgonHash(...args)),
+      );
+    },
     async masterKey(password, kdf) {
       const v = await current();
       let text = passwordText(password);
@@ -134,8 +218,8 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async newSsoAccount(accountId) {
       return parse<NewAccount>((await current()).newSsoAccount(accountId));
     },
-    async deviceCopySeal(accountId, deviceId, keyVersion) {
-      const wrap = deviceWrap();
+    async deviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+      const wrap = copyWrap(tabId);
       const root = b64urlDecode((await current()).exportRoot());
       try {
         return b64urlEncode(await wrap.seal(root, accountId, deviceId, keyVersion));
@@ -143,16 +227,32 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         root.fill(0);
       }
     },
-    async deviceCopyOpen(accountId, deviceId, keyVersion, sealed) {
-      const root = await deviceWrap().open(b64urlDecode(sealed), accountId, deviceId, keyVersion);
+    async deviceCopyOpen(accountId, deviceId, keyVersion, sealed, tabId) {
+      const root = await copyWrap(tabId).open(b64urlDecode(sealed), accountId, deviceId, keyVersion);
       try {
         return (await current()).importRoot(b64urlEncode(root)) as ApprovedKeyHandle;
       } finally {
         root.fill(0);
       }
     },
-    async deviceCopyReset() {
-      await deviceWrap().reset();
+    async deviceCopyReset(tabId) {
+      await copyWrap(tabId).reset();
+    },
+    async tabSeal(tabId, accountId, deviceId, data) {
+      const plain = b64urlDecode(data);
+      try {
+        return b64urlEncode(await sessionWrap(tabId).seal(plain, accountId, deviceId, 0));
+      } finally {
+        plain.fill(0);
+      }
+    },
+    async tabOpen(tabId, accountId, deviceId, sealed) {
+      const plain = await sessionWrap(tabId).open(b64urlDecode(sealed), accountId, deviceId, 0);
+      try {
+        return b64urlEncode(plain);
+      } finally {
+        plain.fill(0);
+      }
     },
     async newAccount(accountId, masterKey, exportKey) {
       return parse<NewAccount>((await current()).newAccount(accountId, masterKey, exportKey));
@@ -242,6 +342,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async ownFingerprint() {
       return (await current()).ownFingerprint();
     },
+    async ownKeyVersion() {
+      return (await current()).ownKeyVersion();
+    },
     async release(handle) {
       (await current()).release(handle);
     },
@@ -250,6 +353,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
     async sealRootKey(recipientKx1, context, aad) {
       return (await current()).sealRootKey(recipientKx1, context, aad);
+    },
+    async sealEmergencyKey(publicBundle, bundleSignature, granteeId) {
+      return (await current()).sealEmergencyKey(publicBundle, bundleSignature, granteeId);
     },
     async confirmationStatement({ space, member, memberKeyVersion, fingerprint }) {
       return (await current()).confirmationStatement(
@@ -270,6 +376,17 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         toKeyVersion(check.memberKeyVersion),
         check.fingerprint,
         check.statement,
+        check.signature,
+      );
+    },
+    async verifyKeyBox(check) {
+      return (await current()).verifyKeyBox(
+        check.sealerBundle,
+        check.spaceId,
+        check.collectionId ?? '',
+        toKeyVersion(check.keyVersion),
+        check.recipientId,
+        check.sealed,
         check.signature,
       );
     },
@@ -294,11 +411,11 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         (await current()).newSpace(spaceId, collectionId, spaceName, collectionName),
       );
     },
-    async openSpace({ spaceId, keyVersion, sealed }) {
-      (await current()).openSpace(spaceId, toKeyVersion(keyVersion), sealed);
+    async openSpace({ spaceId, keyVersion, sealed, unsigned }) {
+      (await current()).openSpace(spaceId, toKeyVersion(keyVersion), sealed, unsigned);
     },
-    async openCollection({ spaceId, collectionId, keyVersion, sealed }) {
-      (await current()).openCollection(spaceId, collectionId, toKeyVersion(keyVersion), sealed);
+    async openCollection({ spaceId, collectionId, keyVersion, sealed, unsigned }) {
+      (await current()).openCollection(spaceId, collectionId, toKeyVersion(keyVersion), sealed, unsigned);
     },
     async openName({ spaceId, keyVersion, kind, id, ciphertext }) {
       return (await current()).openName(spaceId, toKeyVersion(keyVersion), kind, id, ciphertext);
@@ -310,10 +427,64 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       return parse<SealedCollection>((await current()).newCollection(spaceId, collectionId, name));
     },
     async sealSpaceKeyTo({ spaceId, recipientKx1, recipientId }) {
-      return (await current()).sealSpaceKeyTo(spaceId, recipientKx1, recipientId);
+      return parse<SignedBox>((await current()).sealSpaceKeyTo(spaceId, recipientKx1, recipientId));
     },
     async sealCollectionKeyTo({ spaceId, collectionId, recipientKx1, recipientId }) {
-      return (await current()).sealCollectionKeyTo(spaceId, collectionId, recipientKx1, recipientId);
+      return parse<SignedBox>(
+        (await current()).sealCollectionKeyTo(spaceId, collectionId, recipientKx1, recipientId),
+      );
+    },
+    async verifySpaceChain({ spaceId, records, anchor }) {
+      return parse<ChainVerdict>(
+        (await current()).verifySpaceChain(
+          spaceId,
+          JSON.stringify(records),
+          anchor === undefined ? undefined : JSON.stringify(anchor),
+        ),
+      );
+    },
+    async newChainedSpace({ spaceId, collectionId, spaceName, collectionName, at }) {
+      if (!Number.isInteger(at) || at < 0 || at > 0xffff_ffff) throw new CryptoError('invalid');
+      return parse<ChainAppend>(
+        (await current()).newChainedSpace(spaceId, collectionId, spaceName, collectionName, at),
+      );
+    },
+    async buildChainRecords({ spaceId, at, change }) {
+      if (!Number.isInteger(at) || at < 0 || at > 0xffff_ffff) throw new CryptoError('invalid');
+      return parse<ChainBuilt>(
+        (await current()).buildChainRecords(spaceId, at, JSON.stringify(change)),
+      );
+    },
+    async buildKeyReplacement({ spaceId, at, replacement }) {
+      if (!Number.isInteger(at) || at < 0 || at > 0xffff_ffff) throw new CryptoError('invalid');
+      return parse<ChainBuilt>(
+        (await current()).buildKeyReplacement(spaceId, at, JSON.stringify(replacement)),
+      );
+    },
+    async buildReseal({ spaceId, items }) {
+      return parse<ChainBuilt>((await current()).buildReseal(spaceId, JSON.stringify({ items })));
+    },
+    async sealLocal(label, text) {
+      return (await current()).sealLocal(label, text);
+    },
+    async openLocal(label, sealed) {
+      return (await current()).openLocal(label, sealed);
+    },
+    async spaceChainView(spaceId) {
+      const view = (await current()).spaceChainView(spaceId);
+      return view === undefined ? null : parse<ChainView>(view);
+    },
+    async acceptFirstContact(spaceId) {
+      (await current()).acceptFirstContact(spaceId);
+    },
+    async openChainKey({ spaceId, key, servedVersion, sealed, list }) {
+      (await current()).openChainKey(
+        spaceId,
+        key,
+        toKeyVersion(servedVersion),
+        sealed,
+        list === undefined ? undefined : JSON.stringify(list),
+      );
     },
     async newDeviceKey() {
       return parse<DeviceKey>((await current()).newDeviceKey());
@@ -341,6 +512,58 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async kitMake() {
       return parse<MadeKit>((await current()).kitMake());
     },
+    async rotationStart() {
+      return parse<RotationStart>((await current()).rotationStart());
+    },
+    async rotationResealItem({ id, owner, kind, revision, ciphertext, itemKey, keyVersion }) {
+      return parse<ResealedItem>(
+        (await current()).rotationResealItem(
+          id,
+          owner,
+          kind,
+          toRevision(revision),
+          ciphertext,
+          itemKey,
+          keyVersion,
+        ),
+      );
+    },
+    async rotationResealSend({ id, kind, sealedKey, meta }) {
+      return parse<ResealedSend>((await current()).rotationResealSend(id, kind, sealedKey, meta));
+    },
+    async rotationWrapPassword(masterKey, exportKey) {
+      return (await current()).rotationWrapPassword(masterKey, exportKey);
+    },
+    async rotationPrfWrap(prfOutput, credentialId) {
+      return parse<PrfWrap>((await current()).rotationPrfWrap(prfOutput, credentialId));
+    },
+    async rotationKitMake() {
+      return parse<MadeKit>((await current()).rotationKitMake());
+    },
+    async rotationDeviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+      const wrap = copyWrap(tabId);
+      const root = b64urlDecode((await current()).rotationExportRoot());
+      try {
+        return b64urlEncode(await wrap.seal(root, accountId, deviceId, keyVersion));
+      } finally {
+        root.fill(0);
+      }
+    },
+    async rotationSealRootKey(recipientKx1, context, aad) {
+      return (await current()).rotationSealRootKey(recipientKx1, context, aad);
+    },
+    async rotationCommit() {
+      return parse<RotationCommit>((await current()).rotationCommit());
+    },
+    async rotationResealLocal(label, sealed) {
+      return (await current()).rotationResealLocal(label, sealed);
+    },
+    async rotationAbort() {
+      (await current()).rotationAbort();
+    },
+    async rotationSign(previous, context, message) {
+      return (await current()).rotationSign(previous, context, message);
+    },
     async kitReadPiece(text) {
       return parse<KitPieceRead>((await current()).kitReadPiece(text));
     },
@@ -362,6 +585,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         root,
         options?.keyVersion ?? 1,
         options?.sealedPrivateKeys,
+        options?.publicBundle,
       );
     },
     async sealSpaceItem({ spaceId, collectionId, id, kind, revision, json }) {
@@ -370,7 +594,7 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
       );
     },
     async openSpaceItem(input) {
-      const { spaceId, collectionId, id, kind, revision, ciphertext, itemKey, keyVersion } = input;
+      const { spaceId, collectionId, id, kind, revision, ciphertext, itemKey, keyVersion, accepted } = input;
       return (await current()).openSpaceItem(
         spaceId,
         collectionId,
@@ -380,7 +604,26 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
         ciphertext,
         itemKey,
         toKeyVersion(keyVersion),
+        accepted,
       );
+    },
+    async manifestSign(manifest) {
+      return (await current()).manifestSign(manifest);
+    },
+    async manifestVerifyOwn(manifest, signature) {
+      return (await current()).manifestVerifyOwn(manifest, signature);
+    },
+    async manifestVerify(signerBundle, manifest, signature) {
+      return (await current()).manifestVerify(signerBundle, manifest, signature);
+    },
+    async itemWriteSign(fields) {
+      return parse<ItemWriteSignature>((await current()).itemWriteSign(JSON.stringify(fields)));
+    },
+    async itemWriteVerifyOwn(fields, signature) {
+      return (await current()).itemWriteVerifyOwn(JSON.stringify(fields), signature);
+    },
+    async itemWriteVerify(signerBundle, fields, signature) {
+      return (await current()).itemWriteVerify(signerBundle, JSON.stringify(fields), signature);
     },
   };
 

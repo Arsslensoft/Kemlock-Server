@@ -355,10 +355,6 @@ async fn a_malformed_kit_is_refused_and_nothing_is_kept() {
                 json!(kemlock_app::b64url::encode(&[1u8; 20])),
             ),
         ),
-        (
-            "another key version than the account's",
-            with(good.clone(), "keyVersion", json!(99)),
-        ),
     ] {
         let reply = rig.authed(&device, "POST", KIT, token, Some(body)).await;
         assert_eq!(
@@ -368,6 +364,45 @@ async fn a_malformed_kit_is_refused_and_nothing_is_kept() {
             reply.json()
         );
     }
+    let none = rig.authed(&device, "GET", KIT, token, None).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_replacement_kit_for_another_key_version_is_a_409_and_keeps_the_old_kit() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let first = rig.kit_body(user).await;
+    let made = rig
+        .authed(&device, "POST", KIT, token, Some(first.clone()))
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
+
+    let proof = rig.proof(&device, token).await;
+    let stale = with(
+        with(rig.kit_body(user).await, "keyVersion", json!(99)),
+        "proof",
+        json!(proof),
+    );
+    let reply = rig.authed(&device, "PUT", KIT, token, Some(stale)).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{:?}", reply.json());
+    assert_eq!(reply.problem(), "key-version-stale");
+    assert!(reply.json()["currentKeyVersion"].is_number());
+    let shown = rig.authed(&device, "GET", KIT, token, None).await.json();
+    assert_eq!(shown["kitId"], first["kitId"], "the old kit is untouched");
+}
+
+#[tokio::test]
+async fn a_kit_for_another_key_version_is_a_409_with_the_current_one() {
+    let rig = rig();
+    let (device, session, user) = rig.plain().await;
+    let token = session.access_token.as_str();
+    let body = with(rig.kit_body(user).await, "keyVersion", json!(99));
+    let reply = rig.authed(&device, "POST", KIT, token, Some(body)).await;
+    assert_eq!(reply.status, StatusCode::CONFLICT, "{:?}", reply.json());
+    assert_eq!(reply.problem(), "key-version-stale");
+    assert!(reply.json()["currentKeyVersion"].is_number());
     let none = rig.authed(&device, "GET", KIT, token, None).await;
     assert_eq!(none.status, StatusCode::NOT_FOUND);
 }
@@ -551,7 +586,11 @@ async fn a_bad_replacement_or_a_missing_kit_does_not_spend_the_proof() {
     assert_eq!(made.status, StatusCode::CREATED);
 
     // A malformed replacement is refused before the proof is looked at.
-    let bad = with(rig.kit_body(user).await, "keyVersion", json!(99));
+    let bad = with(
+        rig.kit_body(user).await,
+        "wrappedKey",
+        json!(kemlock_app::b64url::encode(&[1u8; 20])),
+    );
     let refused = rig
         .authed(
             &device,

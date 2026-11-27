@@ -19,12 +19,13 @@ mod sso_fakes;
 
 use axum::http::StatusCode;
 use common::{Req, b64};
+use kemlock_app::bitwarden::{Asker, InviteLinkError};
 use kemlock_app::ports::Clock;
 use kemlock_app::ports::{TwoFactorMethod, TwoFactorRepo};
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_domain::spaces::{CustomPermissions, Member, MemberState, Space, SpaceRole};
 use kemlock_domain::{SpaceId, UserId};
-use rig::{Rig, slug};
+use rig::{FakeInviteLinks, Rig, slug};
 use serde_json::{Value, json};
 use time::Duration;
 use uuid::Uuid;
@@ -70,6 +71,14 @@ fn writes(target: &str) -> Vec<(&'static str, String, Option<Value>)> {
             "PUT",
             format!("/admin/v1/spaces/{}/owner", Uuid::new_v4()),
             Some(json!({"newOwner": Uuid::new_v4()})),
+        ),
+        (
+            "GET",
+            format!(
+                "/admin/v1/spaces/{}/members/{target}/invite-link",
+                Uuid::new_v4()
+            ),
+            None,
         ),
         ("GET", "/admin/v1/events.csv".into(), None),
         (
@@ -353,6 +362,81 @@ async fn wrong_totp_codes_are_refused_and_then_slowed_down() {
         .await;
     assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
     assert!(waiting.header("retry-after").is_some());
+}
+
+#[tokio::test]
+async fn step_up_codes_and_the_second_step_at_sign_in_keep_separate_counts() {
+    use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    // Five attempts at the second step of a sign-in, counted in the store as the Kemlock API
+    // counts them: the sign-in count is at its limit and waits.
+    for _ in 0..5 {
+        let reserved =
+            SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900)
+                .await;
+        assert_eq!(reserved, Ok(Reservation::Granted));
+    }
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // The step-up has a count of its own: a wrong code is looked at and refused as wrong, not
+    // as too many tries.
+    let wrong = root
+        .send(
+            "POST",
+            "/admin/v1/step-up/totp",
+            Some(json!({"code": "000000"})),
+            None,
+        )
+        .await;
+    assert_eq!(slug(&wrong), "step-up-failed");
+    // Four more wrong step-up codes reach its own limit, and the next waits...
+    for _ in 0..4 {
+        let again = root
+            .send(
+                "POST",
+                "/admin/v1/step-up/totp",
+                Some(json!({"code": "000000"})),
+                None,
+            )
+            .await;
+        assert_eq!(slug(&again), "step-up-failed");
+    }
+    let waiting = root
+        .send(
+            "POST",
+            "/admin/v1/step-up/totp",
+            Some(json!({"code": rig.totp_code()})),
+            None,
+        )
+        .await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    // ...while the sign-in count is where it was: a right step-up clears only its own.
+    rig.app.clock.advance(Duration::seconds(1));
+    rig.next_step();
+    let ok = root
+        .send(
+            "POST",
+            "/admin/v1/step-up/totp",
+            Some(json!({"code": rig.totp_code()})),
+            None,
+        )
+        .await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    let step_up =
+        SecondStepGuard::reserve_step_up(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert_eq!(step_up, Ok(Reservation::Granted));
+    // The sign-in count is untouched: its one-second wait ran out with the clock above, so the
+    // next try is granted (the sixth, which arms the next wait), and the one after waits. A
+    // cleared count would grant both.
+    let sign_in =
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert_eq!(sign_in, Ok(Reservation::Granted));
+    let sign_in =
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert!(matches!(sign_in, Ok(Reservation::Wait(_))), "{sign_in:?}");
 }
 
 #[tokio::test]
@@ -798,6 +882,12 @@ async fn signing_an_account_out_ends_its_session() {
     assert_eq!(reply.status, StatusCode::NO_CONTENT);
     let after = sam.get("/kem/v1/sync").await;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED, "{:?}", after.json());
+    // No device keeps the key it could sign back in with (a replica's device-key sign-in).
+    let devices = kemlock_app::ports::DeviceRepo::list(&rig.app.store, sam.id)
+        .await
+        .expect("devices");
+    assert!(!devices.is_empty());
+    assert!(devices.iter().all(|d| d.dpop_jkt.is_none()));
     assert_eq!(
         root.write(
             "POST",
@@ -1462,6 +1552,100 @@ async fn the_server_is_told_when_settings_are_saved_and_only_then() {
 }
 
 #[tokio::test]
+async fn verifying_new_accounts_can_only_be_turned_on_where_mail_can_be_sent() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+
+    let refused = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "true"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
+    assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
+
+    // A host alone is not a mail server: the server needs a sender too, and a user name with its
+    // password or neither.
+    for changes in [
+        json!({"signups_verify": "true", "smtp_host": "mail.example.org"}),
+        json!({
+            "signups_verify": "true", "smtp_host": "mail.example.org",
+            "smtp_from": "vault@example.org", "smtp_username": "vault"
+        }),
+    ] {
+        let refused = root
+            .write(
+                "PUT",
+                "/admin/v1/settings",
+                Some(json!({"changes": changes})),
+                &token,
+            )
+            .await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{:?}",
+            refused.json()
+        );
+    }
+    assert_eq!(rig.admin.saved_setting("setting.signups_verify"), None);
+
+    // With the whole mail server in the same save it is taken, and then it can be changed on its
+    // own.
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {
+                "signups_verify": "true",
+                "smtp_host": "mail.example.org",
+                "smtp_from": "vault@example.org"
+            }})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    assert_eq!(
+        rig.admin.saved_setting("setting.signups_verify").as_deref(),
+        Some("true")
+    );
+    let off = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"signups_verify": "false"}})),
+            &token,
+        )
+        .await;
+    assert_eq!(off.status, StatusCode::OK, "{:?}", off.json());
+}
+
+#[tokio::test]
+async fn verifying_signups_from_the_environment_shows_as_off_while_no_mail_can_be_sent() {
+    let env = [("SIGNUPS_VERIFY", "true")];
+    // No mail server: the server holds nobody back, so the console says off.
+    let rig = Rig::with(false, &env);
+    let root = rig.admin(ADMIN).await;
+    let list = root.get("/admin/v1/settings").await.json();
+    let verify = setting(&list, "signups_verify");
+    assert_eq!(verify["source"], "env");
+    assert_eq!(verify["value"], "false");
+    // With mail it is as asked.
+    let rig = Rig::with(true, &env);
+    let root = rig.admin(ADMIN).await;
+    let list = root.get("/admin/v1/settings").await.json();
+    assert_eq!(setting(&list, "signups_verify")["value"], "true");
+}
+#[tokio::test]
 async fn settings_refuse_what_is_out_of_bounds_all_or_none() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;
@@ -1601,6 +1785,122 @@ async fn secrets_are_sealed_and_never_shown() {
     assert_eq!(events[0].target.as_deref(), Some("smtp_password"));
 }
 
+#[tokio::test]
+async fn rate_limit_settings_have_sane_caps() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    for (key, ok, too_many) in [
+        ("rate_sign_in_per_minute", "100", "101"),
+        ("rate_password_failures_per_15_minutes", "30", "31"),
+        ("rate_second_step_failures_per_15_minutes", "20", "21"),
+        ("rate_second_step_challenges_per_5_minutes", "30", "31"),
+        ("rate_register_per_hour", "50", "51"),
+    ] {
+        for (value, status) in [(ok, StatusCode::OK), (too_many, StatusCode::BAD_REQUEST)] {
+            let reply = root
+                .write(
+                    "PUT",
+                    "/admin/v1/settings",
+                    Some(json!({"changes": {key: value}})),
+                    &token,
+                )
+                .await;
+            assert_eq!(reply.status, status, "{key}={value}: {:?}", reply.json());
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_audit_trail_records_what_a_setting_was_and_became_but_never_a_secret() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let saved = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {
+                "trash_days": "45",
+                "smtp_password": "hunter2-hunter2",
+            }})),
+            &token,
+        )
+        .await;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.json());
+    let target = rig.admin.events()[0].target.clone().expect("a target");
+    assert!(target.contains("trash_days: 30 -> 45"), "{target}");
+    assert!(target.contains("smtp_password"), "{target}");
+    assert!(!target.contains("hunter2"), "{target}");
+
+    let reset = root
+        .write(
+            "PUT",
+            "/admin/v1/settings",
+            Some(json!({"changes": {"trash_days": null}})),
+            &token,
+        )
+        .await;
+    assert_eq!(reset.status, StatusCode::OK);
+    let target = rig
+        .admin
+        .events()
+        .last()
+        .and_then(|e| e.target.clone())
+        .expect("a target");
+    assert_eq!(target, "trash_days: 45 -> 30");
+}
+
+#[tokio::test]
+async fn a_new_smtp_host_does_not_keep_the_stored_password() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let put = |changes: Value| {
+        let root = &root;
+        let token = &token;
+        async move {
+            root.write(
+                "PUT",
+                "/admin/v1/settings",
+                Some(json!({ "changes": changes })),
+                token,
+            )
+            .await
+        }
+    };
+    let first =
+        put(json!({"smtp_host": "mail.example.org", "smtp_password": "hunter2-hunter2"})).await;
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
+
+    // Pointing the host elsewhere while keeping the stored password is refused, and nothing is
+    // saved: the password would go to whoever answers at the new host.
+    let moved = put(json!({"smtp_host": "evil.example.net"})).await;
+    assert_eq!(moved.status, StatusCode::BAD_REQUEST, "{:?}", moved.json());
+    assert_eq!(
+        rig.admin.saved_setting("setting.smtp_host").as_deref(),
+        Some("mail.example.org")
+    );
+
+    // The same host, or a new host with a new password (or none), is fine.
+    assert_eq!(
+        put(json!({"smtp_host": "Mail.Example.org"})).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(json!({"smtp_host": "other.example.net", "smtp_password": "another-password-1"}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(json!({"smtp_host": "third.example.net", "smtp_password": null}))
+            .await
+            .status,
+        StatusCode::OK
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // SSO
 
@@ -1644,7 +1944,9 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
         "openid is implied"
     );
     assert_eq!(shown["groupRules"][0]["role"], "admin");
-    assert_eq!(shown["linkByEmail"], true);
+    // A new install links by email only when the admin turns it on, and asks for a proven domain.
+    assert_eq!(shown["linkByEmail"], false);
+    assert_eq!(shown["requireVerifiedDomain"], true);
 
     // The stored secret is sealed: the SSO area can open it, the table doesn't hold it in clear.
     let stored = rig.sso.settings().expect("stored");
@@ -1663,6 +1965,22 @@ async fn sso_settings_are_saved_and_the_secret_is_never_returned() {
         .json();
     assert_eq!(kept["displayName"], "Renamed");
     assert_eq!(kept["clientSecretSet"], true);
+    // A new issuer takes a new secret: the stored one would go to the provider at the new address.
+    let mut moved = keep.clone();
+    moved["issuer"] = json!("https://other.example.org/realms/kemlock");
+    let refused = root
+        .write("PUT", "/admin/v1/sso", Some(moved), &token)
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
+    assert_eq!(
+        rig.sso.settings().expect("stored").issuer,
+        "https://idp.example.org/realms/kemlock"
+    );
     keep["clearClientSecret"] = json!(true);
     let cleared = root
         .write("PUT", "/admin/v1/sso", Some(keep), &token)
@@ -2158,6 +2476,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             operations += 1;
             let uri = path
                 .replace("{id}", &Uuid::new_v4().to_string())
+                .replace("{user}", &Uuid::new_v4().to_string())
                 .replace("{domain}", "example.org");
             let reply = client
                 .send(&method.to_uppercase(), &uri, Req::default())
@@ -2170,7 +2489,7 @@ async fn the_openapi_document_names_routes_the_router_answers() {
             }
         }
     }
-    assert_eq!(operations, 46, "every operation is documented once");
+    assert_eq!(operations, 47, "every operation is documented once");
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"
@@ -2188,7 +2507,9 @@ async fn every_write_in_the_document_asks_for_a_step_up_token() {
                 .map(|p| p.iter().filter_map(|p| p["name"].as_str()).collect())
                 .unwrap_or_default();
             let has_step_up = names.contains(&"Step-Up-Token");
-            let is_write = method != "get" || path.ends_with(".csv");
+            // The invitation link is a read that hands out a secret, so it asks like a write.
+            let is_write =
+                method != "get" || path.ends_with(".csv") || path.ends_with("/invite-link");
             let is_step_up_route = path.starts_with("/admin/v1/step-up/");
             if is_write && !is_step_up_route {
                 writes_seen += 1;
@@ -2198,7 +2519,7 @@ async fn every_write_in_the_document_asks_for_a_step_up_token() {
             }
         }
     }
-    assert!(writes_seen >= 18, "{writes_seen}");
+    assert!(writes_seen >= 19, "{writes_seen}");
 }
 
 #[tokio::test]
@@ -2902,4 +3223,262 @@ async fn the_document_describes_the_custom_fields_routes() {
             "{schema} is in the components"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The accept link of a Bitwarden invitation
+
+fn invite_link_uri(space: SpaceId, member: UserId) -> String {
+    format!("/admin/v1/spaces/{space}/members/{member}/invite-link")
+}
+
+#[tokio::test]
+async fn an_admin_with_a_step_up_copies_an_invitation_link_and_it_is_logged() {
+    let links = FakeInviteLinks::working();
+    let rig = Rig::new().with_invite_links(links.shared());
+    let root = rig.admin(ADMIN).await;
+    let invited = rig.user("invited@kemlock.test").await;
+    let space = SpaceId::random();
+    let uri = invite_link_uri(space, invited.id);
+
+    // The link accepts for the account, so a read without a step-up is refused.
+    let bare = root.get(&uri).await;
+    assert_eq!(bare.status, StatusCode::FORBIDDEN);
+    assert_eq!(slug(&bare), "step-up-required");
+    assert!(links.asked().is_empty());
+    assert!(rig.admin.actions().is_empty());
+
+    let token = root.step_up(&rig).await;
+    let reply = root.write("GET", &uri, None, &token).await;
+    assert_eq!(reply.status, StatusCode::OK, "{:?}", reply.json());
+    assert_eq!(
+        reply.json()["link"],
+        "https://vault.test/#/accept-organization/?token=secret"
+    );
+    assert_eq!(reply.json()["expiresAt"], 1_800_000_000);
+    assert_eq!(reply.header("cache-control"), Some("no-store"));
+    assert_eq!(links.asked(), [(space, invited.id, Asker::Server)]);
+    assert_eq!(rig.admin.actions(), ["admin.space.invite_link"]);
+    let events = rig.admin.events();
+    assert_eq!(
+        events[0].target.as_deref(),
+        Some(format!("{space}/{}", invited.id).as_str())
+    );
+}
+
+#[tokio::test]
+async fn the_invitation_link_is_refused_for_what_isnt_an_invitation() {
+    let space = SpaceId::random();
+    let member = UserId::random();
+    let uri = invite_link_uri(space, member);
+    for (answer, status, kind) in [
+        (
+            InviteLinkError::NotOrganization,
+            StatusCode::CONFLICT,
+            "wrong-state",
+        ),
+        (
+            InviteLinkError::NotInvited,
+            StatusCode::CONFLICT,
+            "wrong-state",
+        ),
+        (InviteLinkError::NotFound, StatusCode::NOT_FOUND, ""),
+    ] {
+        let links = FakeInviteLinks::answering(Err(answer.clone()));
+        let rig = Rig::new().with_invite_links(links.shared());
+        let root = rig.admin(ADMIN).await;
+        let token = root.step_up(&rig).await;
+        let reply = root.write("GET", &uri, None, &token).await;
+        assert_eq!(reply.status, status, "{answer:?}: {:?}", reply.json());
+        if !kind.is_empty() {
+            assert_eq!(slug(&reply), kind, "{answer:?}");
+        }
+        assert!(
+            rig.admin.actions().is_empty(),
+            "a refused read isn't logged"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_server_without_the_bitwarden_api_has_no_invitation_link_to_give() {
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let token = root.step_up(&rig).await;
+    let reply = root
+        .write(
+            "GET",
+            &invite_link_uri(SpaceId::random(), UserId::random()),
+            None,
+            &token,
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::CONFLICT);
+    assert_eq!(slug(&reply), "not-configured");
+    assert!(rig.admin.actions().is_empty());
+}
+
+#[tokio::test]
+async fn a_non_admin_is_refused_the_invitation_link() {
+    let links = FakeInviteLinks::working();
+    let rig = Rig::new().with_invite_links(links.shared());
+    let _root = rig.admin(ADMIN).await;
+    let sam = rig.user("sam@kemlock.test").await;
+    let uri = invite_link_uri(SpaceId::random(), sam.id);
+    let reply = sam.send("GET", &uri, None, Some("made-up")).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN);
+    assert_eq!(slug(&reply), "forbidden");
+    assert!(links.asked().is_empty());
+}
+
+#[tokio::test]
+async fn the_console_says_which_spaces_are_organizations_and_who_has_an_invitation() {
+    for (links, organization) in [(true, true), (true, false), (false, false)] {
+        let fake = FakeInviteLinks::working();
+        let rig = if links {
+            Rig::new().with_invite_links(fake.shared())
+        } else {
+            Rig::new()
+        };
+        let root = rig.admin(ADMIN).await;
+        let ada = rig.user("ada@kemlock.test").await;
+        let ivy = rig.user("ivy@kemlock.test").await;
+        let space = SpaceId::random();
+        SpaceRepo::create(
+            &rig.spaces,
+            space_with(
+                space,
+                &[
+                    (ada.id, SpaceRole::Owner, MemberState::Confirmed),
+                    (ivy.id, SpaceRole::Member, MemberState::Invited),
+                ],
+            ),
+        )
+        .await
+        .expect("space");
+        rig.admin.track_space(space);
+        // An organization where Ivy has a Bitwarden invitation, or a space the Bitwarden API
+        // doesn't know (the links have no pending list for it).
+        if organization {
+            fake.set_pending(vec![ivy.id]);
+        }
+
+        let listed = root.get("/admin/v1/spaces").await;
+        assert_eq!(listed.status, StatusCode::OK, "{:?}", listed.json());
+        let one = root.get(&format!("/admin/v1/spaces/{space}")).await;
+        assert_eq!(one.status, StatusCode::OK, "{:?}", one.json());
+        for seen in [listed.json()["spaces"][0].clone(), one.json()] {
+            assert_eq!(seen["bitwardenOrganization"], organization);
+            let expected = if organization {
+                json!([{"userId": ivy.id.to_string(), "email": "ivy@kemlock.test"}])
+            } else {
+                json!([])
+            };
+            assert_eq!(seen["bitwardenInvitations"], expected);
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_invitation_link_is_not_given_when_the_copy_cannot_be_recorded() {
+    let links = FakeInviteLinks::working();
+    let rig = Rig::new().with_invite_links(links.shared());
+    let root = rig.admin(ADMIN).await;
+    let invited = rig.user("invited@kemlock.test").await;
+    let token = root.step_up(&rig).await;
+    rig.admin.fail_events();
+
+    let reply = root
+        .write(
+            "GET",
+            &invite_link_uri(SpaceId::random(), invited.id),
+            None,
+            &token,
+        )
+        .await;
+    assert!(reply.status.is_server_error(), "{:?}", reply.status);
+    // Whatever it says, it doesn't carry the link.
+    assert!(
+        !String::from_utf8_lossy(&reply.body).contains("accept-organization"),
+        "a copy nobody recorded was handed over"
+    );
+    assert!(rig.admin.actions().is_empty());
+}
+
+#[tokio::test]
+async fn a_change_of_owner_on_a_chained_space_says_it_is_only_queued() {
+    use kemlock_app::spaces::{ChainAppend, SpaceChainRepo, StoredRecord};
+
+    let rig = Rig::new();
+    let root = rig.admin(ADMIN).await;
+    let ada = rig.user("ada@kemlock.test").await;
+    let bob = rig.user("bob@kemlock.test").await;
+    let space = SpaceId::random();
+    SpaceRepo::create(
+        &rig.spaces,
+        space_with(
+            space,
+            &[
+                (ada.id, SpaceRole::Owner, MemberState::Confirmed),
+                (bob.id, SpaceRole::Member, MemberState::Confirmed),
+            ],
+        ),
+    )
+    .await
+    .expect("space");
+    rig.admin.track_space(space);
+    let uri = format!("/admin/v1/spaces/{space}/owner");
+
+    // Without a chain the change is made, and the answer doesn't say queued.
+    let token = root.step_up(&rig).await;
+    let done = root
+        .write(
+            "PUT",
+            &uri,
+            Some(json!({"newOwner": bob.id.to_string(), "demotePrevious": false})),
+            &token,
+        )
+        .await;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.json());
+    assert_eq!(done.json()["ownerChangeQueued"], false);
+
+    // Give the space a chain: from then on a role changes only by a signed record.
+    rig.spaces
+        .chain_append(
+            space,
+            ChainAppend {
+                expected: None,
+                records: vec![StoredRecord {
+                    seq: 0,
+                    link: [1; 32],
+                    epoch: 1,
+                    by: ada.id,
+                    at: 0,
+                    entry: Vec::new(),
+                    signature: Vec::new(),
+                    cosignature: None,
+                }],
+                seals: Vec::new(),
+                names: Vec::new(),
+                changes: SpaceChanges::new(space),
+                creating: false,
+                held: Vec::new(),
+                writes: Vec::new(),
+                answers: None,
+                state: None,
+            },
+        )
+        .await
+        .expect("a chain");
+    let token = root.step_up(&rig).await;
+    let queued = root
+        .write(
+            "PUT",
+            &uri,
+            Some(json!({"newOwner": bob.id.to_string(), "demotePrevious": true})),
+            &token,
+        )
+        .await;
+    assert_eq!(queued.status, StatusCode::OK, "{:?}", queued.json());
+    assert_eq!(queued.json()["ownerChangeQueued"], true);
 }

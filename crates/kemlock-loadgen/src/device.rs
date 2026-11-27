@@ -6,9 +6,7 @@
 
 use kemlock_api_kem::testing::{DpopSigner, ProofClaims};
 use kemlock_app::b64url;
-use kemlock_app::register::{
-    BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN, FIRST_KEY_VERSION, WRAPPED_ROOT_KEY_LEN,
-};
+use kemlock_app::register::{FIRST_KEY_VERSION, WRAPPED_ROOT_KEY_LEN};
 use reqwest::Method;
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -116,12 +114,23 @@ pub(crate) fn account_password(email: &str) -> [u8; 32] {
     kemlock_crypto::hash::sha256(format!("kemlock-loadgen/v1/{email}").as_bytes())
 }
 
-fn bundle(user: &Uuid) -> Vec<u8> {
-    let mut bundle = BUNDLE_PREFIX.to_vec();
-    bundle.extend_from_slice(user.as_bytes());
-    bundle.extend_from_slice(&FIRST_KEY_VERSION.to_be_bytes());
-    bundle.resize(BUNDLE_LEN, 0x42);
-    bundle
+/// A public-key bundle for `user` and its own signature, which the server checks. Every account
+/// shares one signing key and filler exchange key: only the account id differs.
+fn bundle(user: &Uuid) -> Result<(Vec<u8>, Vec<u8>)> {
+    let signing = kemlock_crypto::sig1::SigningKey::from_bytes(&[0x5a; 64]);
+    let bundle = kemlock_crypto::bundle::Bundle {
+        account_id: *user.as_bytes(),
+        key_version: FIRST_KEY_VERSION,
+        kx1_public: kemlock_crypto::kx1::PublicKey::from_bytes(&[0x42; 1600])
+            .map_err(|e| format!("a bundle's exchange key: {e}"))?,
+        sig1_public: signing
+            .public_key()
+            .map_err(|e| format!("a bundle's signing key: {e}"))?,
+    };
+    let signature = bundle
+        .sign(&signing)
+        .map_err(|e| format!("signing a bundle: {e}"))?;
+    Ok((bundle.to_bytes(), signature))
 }
 
 /// A made-up IPv4 address in 10.0.0.0/8 for the n-th device.
@@ -249,6 +258,7 @@ impl Device {
         let (upload, _export_key) =
             kemlock_crypto::opaque::client_registration_finish(state, &password, &response)
                 .map_err(|e| format!("OPAQUE registration finish: {e}"))?;
+        let (public_bundle, bundle_signature) = bundle(&user)?;
         let finish = json!({
             "userId": user.to_string(),
             "email": email,
@@ -260,8 +270,8 @@ impl Device {
                 "parallelism": 4,
                 "salt": b64url::encode(&[4u8; 16]),
             },
-            "publicBundle": b64url::encode(&bundle(&user)),
-            "bundleSignature": b64url::encode(&vec![0x11u8; BUNDLE_SIGNATURE_LEN]),
+            "publicBundle": b64url::encode(&public_bundle),
+            "bundleSignature": b64url::encode(&bundle_signature),
             "sealedPrivateKeys": b64url::encode(&[0x22u8; 64]),
             "wrappedRootKey": b64url::encode(&[0x33u8; WRAPPED_ROOT_KEY_LEN]),
         });
@@ -383,6 +393,7 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kemlock_app::register::{BUNDLE_LEN, BUNDLE_PREFIX, BUNDLE_SIGNATURE_LEN};
 
     #[test]
     fn synthetic_addresses_differ_per_seed() {
@@ -394,8 +405,13 @@ mod tests {
     #[test]
     fn the_bundle_has_the_layout_the_server_checks() {
         let user = Uuid::new_v4();
-        let b = bundle(&user);
+        let (b, signature) = bundle(&user).expect("a bundle");
         assert_eq!(b.len(), BUNDLE_LEN);
+        assert_eq!(signature.len(), BUNDLE_SIGNATURE_LEN);
+        kemlock_crypto::bundle::Bundle::from_bytes(&b)
+            .expect("the layout parses")
+            .verify_self_signature(&signature)
+            .expect("the server checks this signature");
         assert!(b.starts_with(BUNDLE_PREFIX));
         assert_eq!(&b[17..33], user.as_bytes());
         assert_eq!(&b[33..37], &FIRST_KEY_VERSION.to_be_bytes());

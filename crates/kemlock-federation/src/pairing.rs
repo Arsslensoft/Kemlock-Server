@@ -403,10 +403,43 @@ impl fmt::Debug for PendingPairing {
     }
 }
 
+/// Whether `message` is a well-formed message 1 from another server: what [`respond`] reads before
+/// it uses the code. The hub checks it first, so a message that could not be an attempt at the code
+/// (not CBOR, a missing field, our own id) doesn't use the code up.
+pub fn check_first_message(message: &[u8], local: ServerId) -> Result<()> {
+    if message.len() > MAX_MESSAGE {
+        return Err(FedError::Pairing);
+    }
+    let value = Value::decode(message).map_err(|_| FedError::Pairing)?;
+    let f = value.as_fields().map_err(|_| FedError::Pairing)?;
+    f.only(&[0, 1, 2, 3]).map_err(|_| FedError::Pairing)?;
+    if f.uint(0).map_err(|_| FedError::Pairing)? != VERSION {
+        return Err(FedError::Pairing);
+    }
+    f.fixed::<16>(1).map_err(|_| FedError::Pairing)?;
+    f.bytes(2).map_err(|_| FedError::Pairing)?;
+    let initiator = server_id(f.fixed::<16>(3).map_err(|_| FedError::Pairing)?);
+    if initiator == local {
+        return Err(FedError::Pairing);
+    }
+    Ok(())
+}
+
 /// Answers message 1 with the code that was shown. The code is used up. Returns the state to
 /// finish with message 3, and message 2.
 pub fn respond(
     code: PairingCode,
+    local: &LocalIdentity,
+    message: &[u8],
+) -> Result<(PendingPairing, Vec<u8>)> {
+    respond_keeping(&code, local, message)
+}
+
+/// [`respond`], leaving the code with the caller: it fails only on a message that can't be read
+/// (nothing about the code can make it fail), so a caller that gets an error puts the code back,
+/// and a request that was no attempt at it doesn't use it up. Once it answers, the code is spent.
+pub fn respond_keeping(
+    code: &PairingCode,
     local: &LocalIdentity,
     message: &[u8],
 ) -> Result<(PendingPairing, Vec<u8>)> {
@@ -459,8 +492,10 @@ pub fn respond(
 }
 
 impl PendingPairing {
-    /// Reads message 3. It opens only if the initiator held the right code.
-    pub fn finish(self, message: &[u8], now: u64) -> Result<Paired> {
+    /// Reads message 3. It opens only if the initiator held the right code. A message that doesn't
+    /// open leaves this pairing as it was: it takes only `&self`, so the hub can keep it when
+    /// someone who isn't the initiator sends junk in the initiator's name.
+    pub fn finish(&self, message: &[u8], now: u64) -> Result<Paired> {
         if message.len() > MAX_MESSAGE {
             return Err(FedError::Pairing);
         }

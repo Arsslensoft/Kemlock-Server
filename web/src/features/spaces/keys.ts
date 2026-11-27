@@ -8,29 +8,54 @@
 // only keeps the form from offering what is certain to be refused.
 import type { CollectionPermission, GroupDto, SpaceViewDto } from '@/api/spaces';
 import { decodeB64 } from '@/lib/b64url';
+import { lazyContext, openUnchainedKeys, signedInAccount } from './boxes';
+import { checkSpaceChain, openChainedKeys, overlayChain } from './chain';
 import type { SpaceDeps } from './model';
 
 const EDIT: CollectionPermission[] = ['edit', 'edit-hide-passwords', 'manage'];
 
-/** Opens the space key and every collection key sealed to this account, and returns the space. */
+/**
+ * Opens the space key and every collection key sealed to this account, and returns the space.
+ * A space with a chain opens them through it (at the chain's version, under its commitments) and
+ * comes back as the chain gives it; one whose chain isn't verified, or waits for first contact,
+ * opens nothing and throws.
+ */
 export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<SpaceViewDto> {
+  return (await openSpaceKeysRead(deps, spaceId)).view;
+}
+
+/**
+ * As `openSpaceKeys`, and says which keys were opened from boxes with no signature (`space`, or
+ * `collection:<id>`): those are read-only, the worker seals and writes nothing under them.
+ */
+export async function openSpaceKeysRead(
+  deps: SpaceDeps,
+  spaceId: string,
+): Promise<{ view: SpaceViewDto; readOnly: string[] }> {
   const view = await deps.api.get(spaceId);
-  const sealed = view.me.sealedSpaceKey;
-  if (!sealed) throw new Error('the space key is not sealed to this account yet');
-  await deps.crypto.openSpace({
-    spaceId,
-    keyVersion: view.me.keyVersion ?? view.space.keyVersion,
-    sealed: decodeB64(sealed),
-  });
-  for (const copy of view.collectionKeys) {
-    await deps.crypto.openCollection({
-      spaceId,
-      collectionId: copy.collection,
-      keyVersion: copy.keyVersion,
-      sealed: decodeB64(copy.sealed),
-    });
+  const me = signedInAccount(deps, view.me.user);
+  const trust = await checkSpaceChain(deps, spaceId, me);
+  if (trust.kind === 'unverified' || trust.kind === 'first-contact') {
+    throw new Error("the space can't be checked");
   }
-  return view;
+  if (trust.kind === 'verified') {
+    const opened = await openChainedKeys(deps, spaceId, trust.view, view);
+    const chained = overlayChain(view, [], trust.view).view;
+    return {
+      view: { ...chained, collectionKeys: view.collectionKeys.filter((c) => opened.has(c.collection)) },
+      readOnly: [],
+    };
+  }
+  // Every key opens only after the member who sealed it is checked and has signed it (boxes.ts). The
+  // roster is read from the server only when a box has to be checked.
+  const readOnly = await openUnchainedKeys(
+    {
+      ...lazyContext(deps, spaceId, me),
+      access: async () => ({ grants: view.grants, groups: view.groups }),
+    },
+    { me: view.me, spaceKeyVersion: view.space.keyVersion, collectionKeys: view.collectionKeys },
+  );
+  return { view, readOnly };
 }
 
 /**
@@ -91,7 +116,7 @@ export async function loadWritableCollections(deps: SpaceDeps): Promise<Writable
     if (summary.member.state !== 'confirmed' || !summary.member.sealedSpaceKey) continue;
     const spaceId = summary.space.id;
     try {
-      const view = await openSpaceKeys(deps, spaceId);
+      const { view, readOnly } = await openSpaceKeysRead(deps, spaceId);
       const held = new Set(view.collectionKeys.map((copy) => copy.collection));
       const name = (kind: 'space' | 'collection', id: string, sealed: string) =>
         deps.crypto.openName({
@@ -104,6 +129,8 @@ export async function loadWritableCollections(deps: SpaceDeps): Promise<Writable
       const spaceName = await name('space', spaceId, view.space.name);
       for (const collection of view.collections) {
         if (!held.has(collection.id) || !canEditCollection(view, view.groups, collection.id)) continue;
+        // A key opened from an unsigned box is read-only: nothing is offered for writing under it.
+        if (readOnly.includes(`collection:${collection.id}`)) continue;
         out.push({
           spaceId,
           spaceName,

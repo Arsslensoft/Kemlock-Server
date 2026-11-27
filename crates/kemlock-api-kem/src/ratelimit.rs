@@ -12,7 +12,7 @@
 
 use kemlock_crypto::hash;
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
@@ -199,6 +199,41 @@ impl Limiter {
         }
     }
 
+    /// Reserves one try for `key` before the thing it guards is looked at, in one step under the
+    /// lock: `Err(seconds)` when the key waits (nothing is counted), else the try is counted and
+    /// goes on. The try that reaches the limit goes on and starts the wait for the next one, so
+    /// `limit` tries in a window are let through however many arrive at once, which `blocked`
+    /// then `fail` can't promise: every request that arrives before the first failure is counted
+    /// passes both. Call [`Limiter::clear`] when the try turns out right; a wrong one stays
+    /// counted, as `fail` would have counted it.
+    pub fn reserve(&self, key: &str, now: i64) -> Result<(), u64> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = state.entry(digest(key), now, self.retention_secs);
+        if let Some(wait) = entry.wait(now) {
+            return Err(wait);
+        }
+        entry.roll(now, self.window_secs);
+        entry.count = entry.count.saturating_add(1);
+        if entry.count >= self.limit() {
+            entry.raise(now);
+        }
+        Ok(())
+    }
+
+    /// Gives back one try [`Limiter::reserve`] counted for `key`, for a try that turned out not
+    /// to be what the limit is for (a right password where only wrong ones count). A wait the
+    /// reservation armed stays.
+    pub fn refund(&self, key: &str, now: i64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = state.entry(digest(key), now, self.retention_secs);
+        entry.count = entry.count.saturating_sub(1);
+    }
+
+    /// The length of a window in seconds.
+    pub fn window_secs(&self) -> i64 {
+        self.window_secs
+    }
+
     /// Forgets the count and the delay of `key`, after a success.
     pub fn clear(&self, key: &str) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -212,11 +247,48 @@ impl Limiter {
     }
 }
 
-/// The key a client counts under: its IPv4 address, or its IPv6 /64, so one host can't dodge the
-/// limits by rotating addresses. An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, how a dual-stack
-/// listener shows an IPv4 peer) is keyed as the IPv4 address it carries; without that, every IPv4
-/// client would share the one key of the `::ffff:0:0/64` prefix.
+/// The key a client counts under for the cheap per-address limits: its IPv4 address, or its IPv6
+/// /56, so one host can't dodge the limits by rotating addresses. A site is typically given a /48
+/// or a /56 and a host can use any of its /64s, so counting by /64 left 256 keys or more to one
+/// customer; a /48 would lump the 256 /56s of a larger site (a neighbour's included) together.
+/// An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`, how a dual-stack listener shows an IPv4 peer)
+/// is keyed as the IPv4 address it carries; without that, every IPv4 client would share the one
+/// key of the `::/56` prefix. For a hard limit on one account from one source use [`ip_key_64`].
 pub fn ip_key(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => format!("ip:{v4}"),
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            segments[3] &= 0xff00;
+            for s in &mut segments[4..] {
+                *s = 0;
+            }
+            format!("ip:{}/56", Ipv6Addr::from(segments))
+        }
+    }
+}
+
+/// The key a client counts under for what it may take of a shared pool (the replay set of DPoP
+/// proofs nobody is signed in for): its IPv4 address, or its IPv6 /48, the size of the block a
+/// free tunnel broker hands to anyone. A /48 holds 65,536 /64s and 256 /56s, so counting by /56
+/// would let one host take 256 shares.
+pub fn ip_key_48(ip: IpAddr) -> String {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => format!("ip:{v4}"),
+        IpAddr::V6(v6) => {
+            let mut segments = v6.segments();
+            for s in &mut segments[3..] {
+                *s = 0;
+            }
+            format!("ip:{}/48", Ipv6Addr::from(segments))
+        }
+    }
+}
+
+/// The key a client counts under for a hard limit on one account (wrong passwords): its IPv4
+/// address, or its IPv6 /64, so a neighbour in the same /56 isn't locked out by someone else's
+/// guesses.
+pub fn ip_key_64(ip: IpAddr) -> String {
     match ip.to_canonical() {
         IpAddr::V4(v4) => format!("ip:{v4}"),
         IpAddr::V6(v6) => {
@@ -229,17 +301,113 @@ pub fn ip_key(ip: IpAddr) -> String {
     }
 }
 
+/// Every value of the header `name`, in the order the request carried them, joined with commas
+/// as HTTP says a repeated header may be. A proxy that appends to a forwarded header (HAProxy's
+/// `option forwardfor`) adds its own line instead of extending the client's, and the proxy's line
+/// is last, so a reader that looks at the first line only reads what the client wrote. `None`
+/// when the header is absent or no line is text.
+pub fn joined_header(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
+    let values: Vec<&str> = headers
+        .get_all(name)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .collect();
+    (!values.is_empty()).then(|| values.join(","))
+}
+
+/// A proxy the server trusts to say who its client is: one address, or a block of them (`10.0.0.0/8`,
+/// a cluster's pod network). The block is kept as its network address and prefix length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Proxy {
+    network: IpAddr,
+    prefix: u8,
+}
+
+/// `addr` with every bit past the first `prefix` cleared.
+fn masked(addr: IpAddr, prefix: u8) -> IpAddr {
+    match addr {
+        IpAddr::V4(v4) => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - u32::from(prefix))
+            };
+            IpAddr::V4(Ipv4Addr::from(u32::from(v4) & mask))
+        }
+        IpAddr::V6(v6) => {
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u128::MAX << (128 - u32::from(prefix))
+            };
+            IpAddr::V6(Ipv6Addr::from(u128::from(v6) & mask))
+        }
+    }
+}
+
+impl Proxy {
+    /// `10.0.0.1`, `2001:db8::1` or a block of either, `10.0.0.0/8` (the prefix is 1 to 32, or 1 to
+    /// 128 for IPv6). `None` for anything else, and for `/0`, which would trust every address.
+    pub fn parse(text: &str) -> Option<Proxy> {
+        let text = text.trim();
+        let (address, prefix) = match text.split_once('/') {
+            Some((address, prefix)) => (address.trim(), Some(prefix.trim().parse::<u8>().ok()?)),
+            None => (text, None),
+        };
+        let parsed: IpAddr = address.parse().ok()?;
+        let canonical = parsed.to_canonical();
+        // A prefix on an IPv4-mapped IPv6 address could mean either width: say it the plain way.
+        if prefix.is_some() && parsed != canonical {
+            return None;
+        }
+        let widest = if canonical.is_ipv4() { 32 } else { 128 };
+        let prefix = prefix.unwrap_or(widest);
+        if prefix == 0 || prefix > widest {
+            return None;
+        }
+        Some(Proxy {
+            network: masked(canonical, prefix),
+            prefix,
+        })
+    }
+
+    /// Whether `ip` is this address or inside this block. An IPv4-mapped IPv6 address is the IPv4
+    /// address it carries.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        let ip = ip.to_canonical();
+        ip.is_ipv4() == self.network.is_ipv4() && masked(ip, self.prefix) == self.network
+    }
+}
+
+impl From<IpAddr> for Proxy {
+    /// A single address.
+    fn from(ip: IpAddr) -> Proxy {
+        let ip = ip.to_canonical();
+        Proxy {
+            network: ip,
+            prefix: if ip.is_ipv4() { 32 } else { 128 },
+        }
+    }
+}
+
+impl std::fmt::Display for Proxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix)
+    }
+}
+
 /// The real client address: the peer's, or, when the peer is a trusted proxy and the configured
 /// header names the client, the right-most address in that header that isn't itself a trusted
 /// proxy (`KEMLOCK_TRUSTED_PROXIES`, `IP_HEADER`). Every address is canonicalised first, so an
-/// IPv4 proxy listed as `10.0.0.1` matches a peer shown as `::ffff:10.0.0.1`.
-pub fn client_ip(peer: IpAddr, header: Option<&str>, trusted: &[IpAddr]) -> IpAddr {
+/// IPv4 proxy listed as `10.0.0.1` matches a peer shown as `::ffff:10.0.0.1`, and a proxy listed
+/// as a block (`10.0.0.0/8`) matches every address in it.
+pub fn client_ip(peer: IpAddr, header: Option<&str>, trusted: &[Proxy]) -> IpAddr {
     let peer = peer.to_canonical();
     let Some(header) = header else {
         return peer;
     };
-    let trusted: Vec<IpAddr> = trusted.iter().map(IpAddr::to_canonical).collect();
-    if !trusted.contains(&peer) {
+    let is_trusted = |ip: IpAddr| trusted.iter().any(|proxy| proxy.contains(ip));
+    if !is_trusted(peer) {
         return peer;
     }
     let addresses: Vec<IpAddr> = header
@@ -250,7 +418,7 @@ pub fn client_ip(peer: IpAddr, header: Option<&str>, trusted: &[IpAddr]) -> IpAd
     addresses
         .iter()
         .rev()
-        .find(|ip| !trusted.contains(ip))
+        .find(|ip| !is_trusted(**ip))
         .or(addresses.first())
         .copied()
         .unwrap_or(peer)
@@ -393,6 +561,56 @@ mod tests {
     }
 
     #[test]
+    fn a_reserved_try_counts_before_it_is_known_to_fail() {
+        let l = Limiter::new(3, 60);
+        assert_eq!(l.reserve("a", 0), Ok(()));
+        assert_eq!(l.reserve("a", 0), Ok(()));
+        // The try that reaches the limit goes on, and the next one waits.
+        assert_eq!(l.reserve("a", 0), Ok(()));
+        assert_eq!(l.reserve("a", 0), Err(1));
+        assert_eq!(l.blocked("a", 0), Err(1));
+        // After the wait one try goes on, and the wait after it doubles.
+        assert_eq!(l.reserve("a", 1), Ok(()));
+        assert_eq!(l.reserve("a", 1), Err(2));
+        // A right answer clears the count.
+        l.clear("a");
+        assert_eq!(l.reserve("a", 1), Ok(()));
+        assert_eq!(l.window_secs(), 60);
+    }
+
+    #[test]
+    fn a_refunded_try_is_not_counted() {
+        let l = Limiter::new(3, 60);
+        for _ in 0..10 {
+            assert_eq!(l.reserve("a", 0), Ok(()));
+            l.refund("a", 0);
+        }
+        assert_eq!(l.blocked("a", 0), Ok(()));
+        // Refunding more than was reserved never goes below nothing.
+        l.refund("b", 0);
+        assert_eq!(l.reserve("b", 0), Ok(()));
+        assert_eq!(l.reserve("b", 0), Ok(()));
+        assert_eq!(l.reserve("b", 0), Ok(()));
+        assert_eq!(l.reserve("b", 0), Err(1));
+    }
+
+    #[test]
+    fn parallel_tries_cannot_all_pass_before_the_first_failure_is_counted() {
+        let l = Limiter::new(5, 900);
+        let passed = std::sync::atomic::AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..32 {
+                scope.spawn(|| {
+                    if l.reserve("2fa:sam", 0).is_ok() {
+                        passed.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            }
+        });
+        assert_eq!(passed.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
     fn a_success_clears_the_failures() {
         let l = Limiter::new(2, 60);
         l.fail("a", 0);
@@ -430,15 +648,87 @@ mod tests {
     }
 
     #[test]
-    fn an_ipv6_client_counts_by_its_slash_64() {
+    fn an_ipv6_client_counts_by_its_slash_56_and_a_hard_limit_by_its_slash_64() {
         let a: IpAddr = "2001:db8:1:2:aaaa:bbbb:cccc:dddd".parse().expect("ip");
         let b: IpAddr = "2001:db8:1:2:1:2:3:4".parse().expect("ip");
+        // Another /64 of the same /56 is the same client: a site has 256 of them.
         let c: IpAddr = "2001:db8:1:3::1".parse().expect("ip");
+        // The next /56 (a neighbour's) and another /48 are not.
+        let neighbour: IpAddr = "2001:db8:1:100::1".parse().expect("ip");
+        let d: IpAddr = "2001:db8:2:2::1".parse().expect("ip");
         assert_eq!(ip_key(a), ip_key(b));
-        assert_ne!(ip_key(a), ip_key(c));
+        assert_eq!(ip_key(a), ip_key(c));
+        assert_ne!(ip_key(a), ip_key(neighbour));
+        assert_ne!(ip_key(a), ip_key(d));
+        assert_eq!(ip_key(a), "ip:2001:db8:1::/56");
         assert_eq!(ip_key("192.0.2.7".parse().expect("ip")), "ip:192.0.2.7");
+        // The hard limit on one account is finer: another /64 is another source.
+        assert_eq!(ip_key_64(a), ip_key_64(b));
+        assert_ne!(ip_key_64(a), ip_key_64(c));
+        assert_eq!(ip_key_64(a), "ip:2001:db8:1:2::/64");
+        assert_eq!(ip_key_64("192.0.2.7".parse().expect("ip")), "ip:192.0.2.7");
+        let mapped: IpAddr = "::ffff:192.0.2.7".parse().expect("ip");
+        assert_eq!(ip_key_64(mapped), "ip:192.0.2.7");
     }
 
+    #[test]
+    fn a_shared_pool_share_is_counted_by_the_slash_48() {
+        let a: IpAddr = "2001:db8:1:2::1".parse().expect("ip");
+        let other_56: IpAddr = "2001:db8:1:ff00::1".parse().expect("ip");
+        let other_48: IpAddr = "2001:db8:2::1".parse().expect("ip");
+        assert_eq!(ip_key_48(a), ip_key_48(other_56));
+        assert_ne!(ip_key_48(a), ip_key_48(other_48));
+        assert_eq!(ip_key_48(a), "ip:2001:db8:1::/48");
+        let mapped: IpAddr = "::ffff:192.0.2.7".parse().expect("ip");
+        assert_eq!(ip_key_48(mapped), "ip:192.0.2.7");
+    }
+
+    #[test]
+    fn a_proxy_may_be_an_address_or_a_block_of_them() {
+        let ip = |text: &str| text.parse::<IpAddr>().expect("ip");
+        let block = Proxy::parse("10.244.0.0/16").expect("a block");
+        assert!(block.contains(ip("10.244.3.7")));
+        assert!(block.contains(ip("::ffff:10.244.255.255")));
+        assert!(!block.contains(ip("10.245.0.1")));
+        assert!(!block.contains(ip("2001:db8::1")));
+        // Host bits are ignored: the block is its network.
+        assert_eq!(Proxy::parse("10.244.9.9/16"), Some(block));
+        assert_eq!(block.to_string(), "10.244.0.0/16");
+        let v6 = Proxy::parse("2001:db8:1::/48").expect("a block");
+        assert!(v6.contains(ip("2001:db8:1:ffff::1")));
+        assert!(!v6.contains(ip("2001:db8:2::1")));
+        // One address is a block of one.
+        let one = Proxy::parse(" 192.0.2.7 ").expect("an address");
+        assert!(one.contains(ip("192.0.2.7")) && one.contains(ip("::ffff:192.0.2.7")));
+        assert!(!one.contains(ip("192.0.2.8")));
+        assert_eq!(one, Proxy::from(ip("192.0.2.7")));
+        // Not an address, a prefix too wide for its family, and /0 (every address) are refused.
+        for bad in [
+            "",
+            "proxy",
+            "10.0.0.0/33",
+            "2001:db8::/129",
+            "10.0.0.0/0",
+            "::/0",
+            "10.0.0.0/x",
+            "10.0.0.0/",
+            "::ffff:10.0.0.0/104",
+        ] {
+            assert_eq!(Proxy::parse(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_forwarded_header_is_trusted_from_every_address_of_a_trusted_block() {
+        let block = Proxy::parse("10.0.0.0/8").expect("a block");
+        let client: IpAddr = "198.51.100.4".parse().expect("ip");
+        // Two proxies in the block: the right-most address outside it is the client.
+        let header = "203.0.113.50, 198.51.100.4, 10.1.2.3";
+        let peer: IpAddr = "10.9.9.9".parse().expect("ip");
+        assert_eq!(client_ip(peer, Some(header), &[block]), client);
+        let outsider: IpAddr = "11.0.0.1".parse().expect("ip");
+        assert_eq!(client_ip(outsider, Some(header), &[block]), outsider);
+    }
     #[test]
     fn an_ipv4_mapped_peer_is_keyed_as_its_ipv4_address() {
         // A dual-stack listener (ROCKET_ADDRESS="::") shows IPv4 peers like this.
@@ -455,13 +745,19 @@ mod tests {
         let mapped_proxy: IpAddr = "::ffff:10.0.0.1".parse().expect("ip");
         let client: IpAddr = "198.51.100.4".parse().expect("ip");
         let header = "::ffff:198.51.100.4, ::ffff:10.0.0.1";
-        assert_eq!(client_ip(mapped_proxy, Some(header), &[proxy]), client);
+        assert_eq!(
+            client_ip(mapped_proxy, Some(header), &[proxy.into()]),
+            client
+        );
         // The other way round: a mapped entry in the list, an IPv4 peer.
-        assert_eq!(client_ip(proxy, Some(header), &[mapped_proxy]), client);
+        assert_eq!(
+            client_ip(proxy, Some(header), &[mapped_proxy.into()]),
+            client
+        );
         // An untrusted mapped peer is returned canonical, so it keys per IPv4 address.
         let outsider: IpAddr = "::ffff:203.0.113.9".parse().expect("ip");
         assert_eq!(
-            client_ip(outsider, Some(header), &[proxy]),
+            client_ip(outsider, Some(header), &[proxy.into()]),
             "203.0.113.9".parse::<IpAddr>().expect("ip")
         );
     }
@@ -472,10 +768,36 @@ mod tests {
         let outsider: IpAddr = "203.0.113.9".parse().expect("ip");
         let client: IpAddr = "198.51.100.4".parse().expect("ip");
         let header = "198.51.100.4, 10.0.0.1";
-        assert_eq!(client_ip(proxy, Some(header), &[proxy]), client);
-        assert_eq!(client_ip(outsider, Some(header), &[proxy]), outsider);
-        assert_eq!(client_ip(proxy, None, &[proxy]), proxy);
-        assert_eq!(client_ip(proxy, Some("garbage"), &[proxy]), proxy);
+        assert_eq!(client_ip(proxy, Some(header), &[proxy.into()]), client);
+        assert_eq!(client_ip(outsider, Some(header), &[proxy.into()]), outsider);
+        assert_eq!(client_ip(proxy, None, &[proxy.into()]), proxy);
+        assert_eq!(client_ip(proxy, Some("garbage"), &[proxy.into()]), proxy);
+    }
+
+    #[test]
+    fn every_line_of_a_repeated_header_is_read_in_order() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(joined_header(&headers, "x-forwarded-for"), None);
+        headers.append("x-forwarded-for", "1.2.3.4".parse().expect("value"));
+        headers.append("x-forwarded-for", "198.51.100.4".parse().expect("value"));
+        assert_eq!(
+            joined_header(&headers, "x-forwarded-for").as_deref(),
+            Some("1.2.3.4,198.51.100.4")
+        );
+        // HAProxy's `option forwardfor` adds its own line after the client's: the client's own
+        // line must not decide the address.
+        let proxy: IpAddr = "10.0.0.1".parse().expect("ip");
+        let real: IpAddr = "198.51.100.4".parse().expect("ip");
+        let joined = joined_header(&headers, "x-forwarded-for");
+        assert_eq!(client_ip(proxy, joined.as_deref(), &[proxy.into()]), real);
+        let first_only = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(
+            client_ip(proxy, first_only, &[proxy.into()]),
+            "1.2.3.4".parse::<IpAddr>().expect("ip"),
+            "the first line alone is only the client's own claim"
+        );
     }
 
     #[test]
@@ -484,7 +806,7 @@ mod tests {
         let real: IpAddr = "198.51.100.4".parse().expect("ip");
         // The client sent "X-Forwarded-For: 1.2.3.4"; the proxy appended the real address.
         assert_eq!(
-            client_ip(proxy, Some("1.2.3.4, 198.51.100.4"), &[proxy]),
+            client_ip(proxy, Some("1.2.3.4, 198.51.100.4"), &[proxy.into()]),
             real
         );
     }

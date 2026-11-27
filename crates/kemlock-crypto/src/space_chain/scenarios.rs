@@ -785,6 +785,83 @@ pub(crate) fn cases<B: Backend>() -> Vec<Case> {
                 divergence: None,
             },
         );
+        // The fence names a promotion the device doesn't hold, and its signer is an Owner the
+        // device's own records removed: a server that served the chain up to that removal and
+        // then a fence signed by the removed Owner can't undo it.
+        let mut removing = w.clone();
+        let removal = removing.remove_body(&owner2);
+        removing.ok::<B>(&owner, removal);
+        removing.ok::<B>(
+            &owner,
+            Body::Policies {
+                policies: policies_with(|p| p.disable_send = true),
+            },
+        );
+        let removing_anchor = removing.anchor();
+        let mut undone = w.clone();
+        undone.ok::<B>(&owner2, fence_body(b"promotion"));
+        out.anchored(
+            "fence-by-an-owner-the-device-removed",
+            "The device accepted the removal of an Owner. It is served a chain that parts at that \
+             record with a fence signed by the removed Owner, whose promotion it doesn't hold: \
+             forked.",
+            &undone.records,
+            &removing_anchor,
+            Expect::Refused {
+                seq: Some(fork_at),
+                reason: Reason::Forked,
+            },
+        );
+        // An Owner who rekeyed since: the device accepted the rekey, and is served a fence that
+        // the Owner's old key signed at the rekey's place. The kept bundle is the new one.
+        let mut rekeyed = w.clone();
+        rekeyed.rekey::<B>(&owner2);
+        rekeyed.ok::<B>(
+            &owner,
+            Body::Policies {
+                policies: policies_with(|p| p.disable_send = true),
+            },
+        );
+        let rekeyed_anchor = rekeyed.anchor();
+        let mut leaked = w.clone();
+        leaked.ok::<B>(&owner2, fence_body(b"promotion"));
+        out.anchored(
+            "fence-by-an-owners-old-key",
+            "The device accepted an Owner's rekey. It is served a chain that parts at the rekey \
+             with a fence signed by that Owner's old key, whose promotion it doesn't hold: forked.",
+            &leaked.records,
+            &rekeyed_anchor,
+            Expect::Refused {
+                seq: Some(fork_at),
+                reason: Reason::Forked,
+            },
+        );
+        let mut unknown = anchor.clone();
+        unknown.owners = None;
+        out.anchored(
+            "fence-nothing-vouches-for",
+            "A device that keeps no Owners with its anchor and holds no promotion record is served \
+             a fence: forked.",
+            &moved.records,
+            &unknown,
+            Expect::Refused {
+                seq: Some(fork_at),
+                reason: Reason::Forked,
+            },
+        );
+        let mut holding = unknown.clone();
+        holding.promotions = vec![(uid(0xF2), crate::hash::sha256(b"promotion"))];
+        out.anchored(
+            "fence-whose-promotion-the-device-holds",
+            "The same device holds and verified the promotion record the fence names: accepted, \
+             and its own records from there to its anchor are dropped.",
+            &moved.records,
+            &holding,
+            Expect::Accepted {
+                head_seq: last_seq(&moved.records),
+                divergence: Some(fork_at),
+            },
+        );
     }
 
     // 10. The only Owner replaces their keys.

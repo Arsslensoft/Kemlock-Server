@@ -223,9 +223,9 @@ where
             .start_authentication(kind, &credentials)
             .map_err(|e| AdminError::App(ceremony_error(e)))?;
         let mut options = started.options;
-        // A passkey's answer must carry user verification, so the browser is told to verify when
-        // one is listed beside a key; the answer is checked for it either way.
-        if keys && held.iter().any(|h| h.passkey.is_some()) {
+        // The answer must carry user verification, a security key's too, so the browser is told to
+        // verify; the answer is checked for it either way.
+        {
             let inner = if options.get("publicKey").is_some() {
                 &mut options["publicKey"]
             } else {
@@ -290,9 +290,9 @@ where
                 tracing::debug!(error = %e, "a passkey step-up was refused");
                 AdminError::StepUpFailed
             })?;
-        // A passkey is possession plus a PIN or a body check: without the second, it is no more
-        // than a key someone picked up. A security key is the second step it is at sign-in.
-        if own.passkey.is_some() && !assertion.user_verified {
+        // A step-up is possession plus a PIN or a body check, for a security key as for a passkey:
+        // without the second it is no more than a key someone picked up.
+        if !assertion.user_verified {
             return Err(AdminError::StepUpFailed);
         }
         // The authenticator's counter moved whatever happens next, so keep it.

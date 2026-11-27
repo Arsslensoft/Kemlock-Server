@@ -2,4 +2,5 @@
 
 pub(crate) mod domains;
 pub(crate) mod identities;
+pub(crate) mod sessions;
 pub(crate) mod settings;

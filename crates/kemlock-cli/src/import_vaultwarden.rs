@@ -1,4 +1,5 @@
-//! `kemlock-cli import-vaultwarden --from <folder|url> [--files <folder>] [--twice] [--apply]`.
+//! `kemlock-cli import-vaultwarden (--from <folder|url> | --from-env <NAME>) [--files <folder>] [--twice]
+//! [--apply] [--adopt-existing]`.
 //!
 //! Without `--apply` it prints the dry-run plan and writes nothing. It never writes to
 //! Vaultwarden's data in any mode: the folder's `db.sqlite3` is opened read-only, a MySQL or
@@ -8,14 +9,22 @@
 //! and `KEMLOCK_SERVER_KEY`, as the server reads them), one transaction per pass, so a failed
 //! pass leaves nothing half written and a rerun finds what an earlier one put.
 //!
+//! A pass writes only what an import made: an account or space this server already has, that no
+//! earlier import is recorded as having created, is left alone and listed. `--adopt-existing`
+//! overwrites such rows on purpose (a server that already holds the same users from an earlier
+//! move that left no record); it prints a warning and the console never offers it.
+//!
 //! `--twice` is the "short pause" method: it copies while Vaultwarden runs, waits for you to
 //! stop Vaultwarden, then reads again and applies only what changed, deletions included.
 
+use kemlock_app::admin::{AdminEvent, AdminEventRepo};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_server::Config;
 use kemlock_server::files::{BitwardenBlobs, open_blobs};
 use kemlock_server::keys::load_or_create_server_key;
+use kemlock_server::migration::describe;
 use kemlock_store_sql::{ImportFiles, ImportOptions, SqlImportSink, SqlStore};
+use kemlock_vaultwarden::settings::MappedSettings;
 use kemlock_vaultwarden::{
     ApplyReport, Deletion, ImportSink, MappedImport, Source, apply, diff, map_snapshot,
     read_snapshot, render_plan,
@@ -36,6 +45,9 @@ pub(crate) struct ImportArgs {
     pub(crate) twice: bool,
     /// Write to Kemlock Server. Without it, only a plan is printed.
     pub(crate) apply: bool,
+    /// Overwrite accounts and spaces this server already has even though no earlier import is
+    /// recorded as having made them. Without it a pass leaves them alone and lists them.
+    pub(crate) adopt_existing: bool,
 }
 
 fn take_value(
@@ -54,10 +66,35 @@ fn take_value(
 
 /// Parses the arguments after `import-vaultwarden`.
 pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
+    parse_args_with(args, &|name| std::env::var(name).ok())
+}
+
+/// Whether a `--from` value is a database URL that carries a password: `scheme://user:secret@host`.
+fn url_has_password(from: &str) -> bool {
+    let Some((_, rest)) = from.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
+}
+
+/// [`parse_args`] with the environment given, for the tests.
+///
+/// A database URL carries its password, and an argument is visible to every user of the machine in
+/// the process list (and kept in the shell's history), so `--from-env <NAME>` takes the URL from an
+/// environment variable instead; `--from` with a password in it is refused for the same reason.
+fn parse_args_with(
+    args: &[String],
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<ImportArgs, String> {
     let mut from = None;
+    let mut from_env = None;
     let mut files = None;
     let mut twice = false;
     let mut apply = false;
+    let mut adopt_existing = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let (name, inline) = match arg.split_once('=') {
@@ -66,18 +103,45 @@ pub(crate) fn parse_args(args: &[String]) -> Result<ImportArgs, String> {
         };
         match name {
             "--from" => from = Some(take_value(name, inline, &mut rest)?),
+            "--from-env" => from_env = Some(take_value(name, inline, &mut rest)?),
             "--files" => files = Some(take_value(name, inline, &mut rest)?),
             "--twice" => twice = true,
             "--apply" => apply = true,
+            "--adopt-existing" => adopt_existing = true,
             other => return Err(format!("import-vaultwarden doesn't take {other:?}")),
         }
     }
-    let from = from.ok_or_else(|| "import-vaultwarden needs --from <folder|url>".to_owned())?;
+    let from = match (from, from_env) {
+        (Some(_), Some(_)) => {
+            return Err("import-vaultwarden takes --from or --from-env, not both".to_owned());
+        }
+        (Some(from), None) => {
+            if url_has_password(&from) {
+                return Err(
+                    "--from has a password in it, which every user of this machine can read in \
+                     the process list: put the URL in an environment variable and give \
+                     --from-env <NAME>"
+                        .to_owned(),
+                );
+            }
+            from
+        }
+        (None, Some(name)) => env(&name)
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("--from-env {name}: that environment variable isn't set"))?,
+        (None, None) => {
+            return Err(
+                "import-vaultwarden needs --from <folder|url> or --from-env <NAME>".to_owned(),
+            );
+        }
+    };
     Ok(ImportArgs {
         from,
         files,
         twice,
         apply,
+        adopt_existing,
     })
 }
 
@@ -87,6 +151,10 @@ trait SinkSource {
     type Sink: ImportSink;
 
     async fn open(&mut self) -> Result<Self::Sink, String>;
+
+    /// Records a finished pass in the admin event log: where it read from, what it changed and
+    /// what it left alone. A source with no log records nothing.
+    async fn audit(&mut self, _source: &str, _what: &str) {}
 }
 
 /// The server's own database and data folder.
@@ -97,12 +165,14 @@ struct SqlSinks {
     /// The file storage the Bitwarden API reads (`ATTACHMENTS_FOLDER`, or a bucket), where the
     /// attachments and Send files go.
     files: Arc<dyn ImportFiles>,
+    /// `--adopt-existing`.
+    adopt_existing: bool,
 }
 
 impl SqlSinks {
     /// Opens the database (migrating it) and reads or makes `server.key`, as the server does.
-    async fn connect(config: &Config) -> Result<SqlSinks, String> {
-        std::fs::create_dir_all(&config.data_folder)
+    async fn connect(config: &Config, adopt_existing: bool) -> Result<SqlSinks, String> {
+        kemlock_server::keys::create_data_folder(&config.data_folder)
             .map_err(|e| format!("can't make {}: {e}", config.data_folder.display()))?;
         let server_key =
             load_or_create_server_key(&config.data_folder, config.server_key.as_deref())
@@ -116,6 +186,7 @@ impl SqlSinks {
             server_key,
             data_folder: config.data_folder.clone(),
             files: Arc::new(BitwardenBlobs::new(blobs)),
+            adopt_existing,
         })
     }
 
@@ -128,14 +199,47 @@ impl SinkSource for SqlSinks {
     type Sink = SqlImportSink;
 
     async fn open(&mut self) -> Result<SqlImportSink, String> {
-        let options = ImportOptions::new(
+        let mut options = ImportOptions::new(
             self.data_folder.clone(),
             self.files.clone(),
             OffsetDateTime::now_utc(),
         );
+        options.adopt_existing = self.adopt_existing;
         SqlImportSink::begin(&self.store, ServerSeal::new(&self.server_key), options)
             .await
             .map_err(|e| e.to_string())
+    }
+
+    async fn audit(&mut self, source: &str, what: &str) {
+        let event = AdminEvent {
+            actor: None,
+            device: None,
+            action: "admin.migration.cli".to_owned(),
+            target: Some(format!("{source}: {what}")),
+            ip: None,
+            at: OffsetDateTime::now_utc(),
+        };
+        if let Err(e) = self.store.record_admin_event(event).await {
+            eprintln!("kemlock-cli: couldn't record the move in the event log: {e}");
+        }
+    }
+}
+
+/// Records each setting a pass carried over from `config.json` in the admin event log, by name and
+/// value: the source is not trusted, and an admin reading the log sees what it set.
+async fn audit_settings<S: SinkSource>(
+    sinks: &mut S,
+    source: &str,
+    settings: &MappedSettings,
+    report: &ApplyReport,
+) {
+    let refused = report.refused.get("setting").cloned().unwrap_or_default();
+    for (name, value) in &settings.values {
+        if !refused.contains(name) {
+            sinks
+                .audit(source, &format!("setting {name} = {value}"))
+                .await;
+        }
     }
 }
 
@@ -149,6 +253,35 @@ async fn write_pass<S: SinkSource>(
     apply(mapped, deletions, &mut sink)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Says which ids a pass left alone because no import made them, and how to overwrite them.
+fn report_left_alone(report: &ApplyReport) {
+    for (kind, ids) in &report.refused {
+        if ids.is_empty() || *kind == "setting" || *kind == "rsa_key" {
+            continue;
+        }
+        eprintln!(
+            "kemlock-cli: left alone, because no import made them ({kind}): {}",
+            ids.join(", ")
+        );
+    }
+    if report.refused.contains_key("rsa_key") {
+        eprintln!(
+            "kemlock-cli: rsa_key.pem was not carried: this server has Bitwarden accounts of its \
+             own, and the source's token key must not replace the key that signs their tokens"
+        );
+    }
+    if report
+        .refused
+        .keys()
+        .any(|kind| *kind != "setting" && *kind != "rsa_key")
+    {
+        eprintln!(
+            "kemlock-cli: add --adopt-existing to overwrite them on purpose (it replaces what \
+             this server holds for those ids)"
+        );
+    }
 }
 
 /// Waits for Enter on standard input.
@@ -170,7 +303,7 @@ pub(crate) async fn run(args: ImportArgs) -> u8 {
             return 2;
         }
     };
-    let mut sinks = match SqlSinks::connect(&config).await {
+    let mut sinks = match SqlSinks::connect(&config, args.adopt_existing).await {
         Ok(sinks) => sinks,
         Err(e) => {
             eprintln!("kemlock-cli: {e}");
@@ -221,9 +354,20 @@ async fn execute<S: SinkSource>(
             eprintln!("kemlock-cli: --apply has no store to write to");
             return 1;
         };
+        if args.adopt_existing {
+            eprintln!(
+                "WARNING: --adopt-existing is on: accounts and spaces this server already has \
+                 will be overwritten by what the source says, even though no import made them."
+            );
+        }
         println!("Writing to Kemlock Server...");
         match write_pass(sinks, &first_mapped, &[]).await {
-            Ok(report) => println!("Wrote {report:?}"),
+            Ok(report) => {
+                println!("Wrote {report:?}");
+                report_left_alone(&report);
+                sinks.audit(&source.describe(), &describe(&report)).await;
+                audit_settings(sinks, &source.describe(), &first_mapped.settings, &report).await;
+            }
             Err(e) => {
                 eprintln!("kemlock-cli: {e}");
                 return 1;
@@ -267,7 +411,12 @@ async fn execute<S: SinkSource>(
     {
         let delta = second_mapped.delta_since(&first_mapped);
         match write_pass(sinks, &delta, &changes.deletions()).await {
-            Ok(report) => println!("Wrote the changes: {report:?}"),
+            Ok(report) => {
+                println!("Wrote the changes: {report:?}");
+                report_left_alone(&report);
+                sinks.audit(&source.describe(), &describe(&report)).await;
+                audit_settings(sinks, &source.describe(), &delta.settings, &report).await;
+            }
             Err(e) => {
                 eprintln!("kemlock-cli: {e}");
                 return 1;
@@ -377,22 +526,71 @@ mod tests {
                 from: "/data".into(),
                 files: None,
                 twice: true,
-                apply: false
+                apply: false,
+                adopt_existing: false
             })
         );
         assert_eq!(
             parse_args(&args(&[
-                "--from=mysql://u:p@db/vw",
+                "--from=mysql://u@db/vw",
                 "--files=/vw-data",
                 "--apply"
             ])),
             Ok(ImportArgs {
-                from: "mysql://u:p@db/vw".into(),
+                from: "mysql://u@db/vw".into(),
                 files: Some("/vw-data".into()),
                 twice: false,
-                apply: true
+                apply: true,
+                adopt_existing: false
             })
         );
+    }
+
+    #[test]
+    fn a_database_url_with_a_password_comes_from_the_environment_not_the_command_line() {
+        let env = |name: &str| (name == "VW_URL").then(|| " mysql://u:secret@db/vw ".to_owned());
+        // The URL is read from the variable, trimmed.
+        let parsed = parse_args_with(&args(&["--from-env", "VW_URL", "--files=/vw-data"]), &env)
+            .expect("parses");
+        assert_eq!(parsed.from, "mysql://u:secret@db/vw");
+        assert_eq!(parsed.files.as_deref(), Some("/vw-data"));
+        let inline = parse_args_with(&args(&["--from-env=VW_URL"]), &env).expect("parses");
+        assert_eq!(inline.from, "mysql://u:secret@db/vw");
+        // A password on the command line is refused, with the way to do it instead.
+        let refused = parse_args_with(&args(&["--from", "postgres://u:secret@db/vw"]), &env)
+            .expect_err("refused");
+        assert!(refused.contains("--from-env"), "{refused}");
+        assert!(!refused.contains("secret"), "{refused}");
+        // No password, a folder and a bare user are fine.
+        for fine in [
+            "/data",
+            "mysql://u@db/vw",
+            "postgres://db/vw",
+            r"C:\vw\data",
+        ] {
+            assert!(
+                parse_args_with(&args(&["--from", fine]), &env).is_ok(),
+                "{fine}"
+            );
+        }
+        // Not both, and the variable must be set.
+        assert!(
+            parse_args_with(&args(&["--from", "/data", "--from-env", "VW_URL"]), &env).is_err()
+        );
+        assert!(parse_args_with(&args(&["--from-env", "NOPE"]), &env).is_err());
+        assert!(parse_args_with(&args(&["--from-env"]), &env).is_err());
+        // A query string's `@` is not userinfo.
+        assert!(!url_has_password("postgres://db/vw?options=a:b@c"));
+        assert!(url_has_password("mysql://root:pw@localhost:3306/vw"));
+    }
+
+    #[test]
+    fn adopting_existing_rows_is_an_explicit_flag() {
+        let parsed =
+            parse_args(&args(&["--from", "/data", "--apply", "--adopt-existing"])).expect("parses");
+        assert!(parsed.adopt_existing);
+        let plain = parse_args(&args(&["--from", "/data", "--apply"])).expect("parses");
+        assert!(!plain.adopt_existing);
     }
 
     #[test]

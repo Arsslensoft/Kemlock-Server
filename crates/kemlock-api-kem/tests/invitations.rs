@@ -9,7 +9,7 @@ use common::*;
 use kemlock_app::AppError;
 use kemlock_app::admin::{InviteGate, InviteTicket};
 use kemlock_app::notices::BoxFuture;
-use kemlock_app::register::{BUNDLE_SIGNATURE_LEN, WRAPPED_ROOT_KEY_LEN};
+use kemlock_app::register::WRAPPED_ROOT_KEY_LEN;
 use kemlock_domain::{Email, UserId};
 use serde_json::json;
 use std::sync::Arc;
@@ -85,7 +85,7 @@ async fn register_invited(client: &Client, email: &str, token: &str) -> Reply {
                 "upload": b64(&upload),
                 "kdf": {"memoryKib": 65536, "iterations": 3, "parallelism": 4, "salt": b64(&[4u8; 16])},
                 "publicBundle": b64(&fakes::bundle(user)),
-                "bundleSignature": b64(&vec![0x11u8; BUNDLE_SIGNATURE_LEN]),
+                "bundleSignature": b64(&fakes::bundle_signature(user)),
                 "sealedPrivateKeys": b64(&[0x22u8; 64]),
                 "wrappedRootKey": b64(&[0x33u8; WRAPPED_ROOT_KEY_LEN]),
                 "inviteToken": token,

@@ -5,12 +5,13 @@
 mod common;
 
 use common::{draft, memory, user};
+use kemlock_app::bitwarden::BwOrgStore;
 use kemlock_app::ports::{Clock, ItemStore, Notifier, StoreError, UserRepo};
 use kemlock_app::spaces::{
     AcceptInvitation, BundleFingerprints, CollectionRekey, ConfirmInput, ConfirmMember,
     ConfirmationFacts, CreateSpace, CreateSpaceInput, GetSpace, InviteInput, InviteMember,
-    KeyReplacement, NewCollection, Offboard, PutSpaceItem, ReplaceKeys, ReplacementInput,
-    SealedCollectionKey, SpaceChanges, SpaceRepo, SyncOwners,
+    KeyReplacement, NewCollection, OWNER_REQUIRED, Offboard, PutSpaceItem, ReplaceKeys,
+    ReplacementInput, SealedCollectionKey, SealedSpaceKey, SpaceChanges, SpaceRepo, SyncOwners,
 };
 use kemlock_app::{Actor, AuthConfig};
 use kemlock_domain::spaces::{
@@ -63,6 +64,20 @@ impl BundleFingerprints for FirstBytes {
     }
 }
 
+/// Any key box signature of the right length: these tests are of the store, not of `sig1`.
+#[derive(Clone, Copy)]
+struct AnySignature;
+
+impl kemlock_app::spaces::KeyBoxVerifier for AnySignature {
+    async fn verify(
+        &self,
+        _facts: &kemlock_app::spaces::KeyBoxFacts<'_>,
+        _signature: &[u8],
+    ) -> Result<u32, kemlock_app::spaces::SpacesError> {
+        Ok(1)
+    }
+}
+
 fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
     key[0] = 1;
@@ -107,6 +122,7 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
         spaces: store.clone(),
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner),
@@ -114,10 +130,12 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
             id: space,
             name: name(1),
             sealed_space_key: sealed_key(2),
+            space_key_signature: vec![0x55; 3373],
             collection: NewCollection {
                 id: collection,
                 name: name(3),
                 sealed_key: sealed_key(4),
+                key_signature: vec![0x55; 3373],
             },
         },
     )
@@ -166,6 +184,7 @@ async fn join(
         fingerprints: FirstBytes,
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner.id),
@@ -176,10 +195,12 @@ async fn join(
             statement: b"compared".to_vec(),
             signature: vec![0x55; 3373],
             sealed_space_key: sealed_key(5),
+            space_key_signature: vec![0x55; 3373],
             collection_keys: vec![SealedCollectionKey {
                 collection,
                 user: member.id,
                 sealed: sealed_key(6),
+                signature: vec![0x55; 3373],
             }],
         },
     )
@@ -206,6 +227,7 @@ fn write(
             ciphertext: vec![0xaa; 64],
             item_key: vec![0xbb; kemlock_domain::item::ITEM_KEY_LEN],
         }),
+        signature: None,
     }
 }
 
@@ -479,6 +501,7 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
         push: Silent,
         clock: FixedClock,
         config: AuthConfig::default(),
+        boxes: AnySignature,
     }
     .execute(
         &actor(sam.id),
@@ -486,7 +509,11 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
         ReplacementInput {
             space_key_version: 2,
             space_name: Some(name(40)),
-            sealed_space_keys: vec![(sam.id, sealed_key(20))],
+            sealed_space_keys: vec![SealedSpaceKey {
+                user: sam.id,
+                sealed: sealed_key(20),
+                signature: vec![0x55; 3373],
+            }],
             collection_names: vec![(everyone, name(41))],
             group_names: Vec::new(),
             collections: vec![CollectionRekey {
@@ -496,6 +523,7 @@ async fn offboarding_and_replacing_keys_go_through_the_store() {
                     collection: everyone,
                     user: sam.id,
                     sealed: sealed_key(21),
+                    signature: vec![0x55; 3373],
                 }],
             }],
             writes: vec![(everyone, write(space, id, Some(1), 2, 2))],
@@ -620,6 +648,148 @@ async fn removing_a_member_clears_their_grants_keys_and_group_memberships() {
         .expect("exists");
     assert!(loaded.groups.is_empty());
     assert_eq!(loaded.grants.len(), 1);
+}
+
+#[tokio::test]
+async fn removing_a_member_forgets_what_the_bitwarden_api_kept_of_them() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let ana = person(&store, 2, "ana@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    join(&store, space, everyone, &sam, &ana).await;
+    // Ana enrolled a key for account recovery (a Bitwarden member document), and Sam's is there too.
+    let document = r#"{"akey":"","accessAll":false,"atype":2,"status":2,"resetPasswordKey":"k"}"#;
+    for who in [ana.id, sam.id] {
+        BwOrgStore::doc_put(&store, space.0, "member", &who.to_string(), document)
+            .await
+            .expect("a member document");
+    }
+
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![ana.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Ana is removed");
+    assert_eq!(
+        BwOrgStore::doc_get(&store, space.0, "member", &ana.id.to_string())
+            .await
+            .expect("reads"),
+        None,
+        "an invitation later starts with nothing enrolled"
+    );
+    assert!(
+        BwOrgStore::doc_get(&store, space.0, "member", &sam.id.to_string())
+            .await
+            .expect("reads")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn the_store_checks_whose_item_a_hold_and_a_collection_link_are_about() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let zed = person(&store, 2, "zed@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    let (other, other_everyone) = make_space(&store, zed.id).await;
+
+    // An item of each space, written the ordinary way.
+    let mine = ItemId::random();
+    let theirs = ItemId::random();
+    put_space_item(&store)
+        .execute(&actor(sam.id), everyone, write(space, mine, None, 1, 1))
+        .await
+        .expect("an item of the space");
+    put_space_item(&store)
+        .execute(
+            &actor(zed.id),
+            other_everyone,
+            write(other, theirs, None, 1, 1),
+        )
+        .await
+        .expect("an item of the other space");
+
+    // A hold names only the space's own items: another space's item, and one that is nobody's,
+    // are refused whatever the caller checked.
+    store
+        .hold_items(space, &[mine])
+        .await
+        .expect("its own item");
+    for foreign in [theirs, ItemId::random()] {
+        assert_eq!(
+            store.hold_items(space, &[mine, foreign]).await,
+            Err(StoreError::Duplicate)
+        );
+    }
+    assert_eq!(store.held_items(space).await.expect("held"), vec![mine]);
+    assert!(store.held_items(other).await.expect("held").is_empty());
+
+    // An item of the space can't be written into a collection of another space.
+    let moved = put_space_item(&store)
+        .execute(
+            &actor(sam.id),
+            other_everyone,
+            write(space, mine, Some(1), 2, 1),
+        )
+        .await;
+    assert!(moved.is_err(), "{moved:?}");
+    assert_eq!(
+        SpaceRepo::item_collections(&store, &[mine])
+            .await
+            .expect("links"),
+        vec![(mine, everyone)]
+    );
+}
+
+#[tokio::test]
+async fn an_account_that_owns_a_space_alone_is_not_erased_by_the_store() {
+    use kemlock_app::privacy::AccountEraser;
+    use kemlock_domain::User;
+
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let ana = person(&store, 2, "ana@example.org").await;
+    let (space, everyone) = make_space(&store, sam.id).await;
+    join(&store, space, everyone, &sam, &ana).await;
+    let account: User = UserRepo::by_id(&store, sam.id)
+        .await
+        .expect("reads")
+        .expect("the account");
+
+    // The only owner of a space with another member: the erasure's own transaction refuses.
+    assert_eq!(
+        AccountEraser::erase_user(&store, &account).await,
+        Err(StoreError::Backend(OWNER_REQUIRED.to_owned()))
+    );
+    assert!(
+        UserRepo::by_id(&store, sam.id)
+            .await
+            .expect("reads")
+            .is_some()
+    );
+    assert_eq!(
+        AccountEraser::blocking_spaces(&store, sam.id).await,
+        Ok(vec![space])
+    );
+
+    // With the member gone, the space goes with its only owner.
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![ana.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Ana is removed");
+    AccountEraser::erase_user(&store, &account)
+        .await
+        .expect("erased");
+    assert_eq!(SpaceRepo::load(&store, space).await, Ok(None));
 }
 
 #[tokio::test]
@@ -809,4 +979,451 @@ async fn the_require_sso_policy_is_kept_per_space_and_binds_confirmed_members() 
             .expect("policies")
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn another_space_cannot_take_over_or_wipe_a_collection_or_group() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let eve = person(&store, 2, "eve@example.org").await;
+    let (victim, everyone) = make_space(&store, sam.id).await;
+    let (attacker, _) = make_space(&store, eve.id).await;
+    let group = Group {
+        id: GroupId::random(),
+        space: victim,
+        name: name(5),
+        members: BTreeSet::from([sam.id]),
+        created_at: datetime!(2026-06-01 12:00:00 UTC),
+    };
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            groups: vec![group.clone()],
+            ..SpaceChanges::new(victim)
+        },
+    )
+    .await
+    .expect("the victim's own group");
+    let before = SpaceRepo::load(&store, victim)
+        .await
+        .expect("loads")
+        .expect("exists");
+    let holders = SpaceRepo::holders(&store, victim).await.expect("holders");
+    assert_eq!(
+        SpaceRepo::collection_space(&store, everyone).await,
+        Ok(Some(victim))
+    );
+    assert_eq!(
+        SpaceRepo::group_space(&store, group.id).await,
+        Ok(Some(victim))
+    );
+    assert_eq!(
+        SpaceRepo::collection_space(&store, CollectionId::random()).await,
+        Ok(None)
+    );
+
+    // Taking the id over: the collection and the group, each under the attacker's own space.
+    let mut moved = before.collections[0].clone();
+    moved.space = attacker;
+    let mut hijacked = group.clone();
+    hijacked.space = attacker;
+    hijacked.members = BTreeSet::new();
+    let attempts = [
+        SpaceChanges {
+            collections: vec![moved],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            groups: vec![hijacked],
+            ..SpaceChanges::new(attacker)
+        },
+        // Wiping it: removals by id, and the grants and key copies under it.
+        SpaceChanges {
+            collections_removed: vec![everyone],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            groups_removed: vec![group.id],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            grants_removed: vec![(everyone, Grantee::Member(sam.id))],
+            ..SpaceChanges::new(attacker)
+        },
+        SpaceChanges {
+            key_copies_removed: vec![(everyone, sam.id)],
+            ..SpaceChanges::new(attacker)
+        },
+        // A grant on the victim's collection, to the victim's group, is just as foreign.
+        SpaceChanges {
+            grants: vec![CollectionGrant {
+                collection: everyone,
+                grantee: Grantee::Group(group.id),
+                permission: CollectionPermission::Manage,
+            }],
+            ..SpaceChanges::new(attacker)
+        },
+        // A change to one space that carries a row of another.
+        SpaceChanges {
+            groups: vec![group.clone()],
+            ..SpaceChanges::new(attacker)
+        },
+    ];
+    for changes in attempts {
+        assert_eq!(
+            SpaceRepo::apply(&store, changes).await,
+            Err(StoreError::Duplicate)
+        );
+    }
+
+    // Nothing of the victim's moved or went.
+    let after = SpaceRepo::load(&store, victim)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert_eq!(after.collections, before.collections);
+    assert_eq!(after.grants, before.grants);
+    assert_eq!(after.groups, before.groups);
+    assert_eq!(
+        SpaceRepo::holders(&store, victim).await.expect("holders"),
+        holders
+    );
+    let theirs = SpaceRepo::load(&store, attacker)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert!(theirs.groups.is_empty());
+    assert!(theirs.collections.iter().all(|c| c.id != everyone));
+
+    // The victim's own space can still change and delete them.
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            groups_removed: vec![group.id],
+            collections_removed: vec![everyone],
+            ..SpaceChanges::new(victim)
+        },
+    )
+    .await
+    .expect("the owner space deletes its own");
+    assert_eq!(
+        SpaceRepo::collection_space(&store, everyone).await,
+        Ok(None)
+    );
+}
+
+#[tokio::test]
+async fn a_change_that_leaves_a_space_with_no_confirmed_owner_is_refused() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let lee = person(&store, 2, "lee@example.org").await;
+    let (space, _) = make_space(&store, sam.id).await;
+    let sam_row = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists")
+        .members[0]
+        .clone();
+    let mut lee_row = sam_row.clone();
+    lee_row.user = lee.id;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![lee_row.clone()],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a second owner");
+
+    // Two owners each take the other out, each valid against what they read. The first lands; the
+    // second would leave members but no owner and is refused, whichever way it is done. (Sam
+    // comes back as an admin first, so that members remain.)
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![sam.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("Lee removes Sam");
+    let mut sam_back = sam_row.clone();
+    sam_back.role = SpaceRole::Admin;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![sam_back],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("an admin joins");
+    let removed = SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![lee.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await;
+    assert_eq!(removed, Err(StoreError::Backend(OWNER_REQUIRED.to_owned())));
+    let mut demoted = lee_row.clone();
+    demoted.role = SpaceRole::Admin;
+    let mut revoked = lee_row.clone();
+    revoked.state = MemberState::Revoked;
+    for member in [demoted, revoked] {
+        let refused = SpaceRepo::apply(
+            &store,
+            SpaceChanges {
+                members: vec![member],
+                ..SpaceChanges::new(space)
+            },
+        )
+        .await;
+        assert_eq!(refused, Err(StoreError::Backend(OWNER_REQUIRED.to_owned())));
+    }
+    // Lee is still the confirmed owner, and the refusals rolled back whole.
+    let after = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists");
+    let lee_now = after
+        .members
+        .iter()
+        .find(|m| m.user == lee.id)
+        .expect("Lee");
+    assert_eq!(
+        (lee_now.role, lee_now.state),
+        (SpaceRole::Owner, MemberState::Confirmed)
+    );
+    assert_eq!(after.members.len(), 2);
+
+    // A change that leaves an owner still works, and so does one that removes everyone (an
+    // organization's deletion leaves no space to manage).
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![sam.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("the admin leaves");
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members_removed: vec![lee.id],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("the last member leaves with the space");
+    let emptied = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists");
+    assert!(emptied.members.is_empty());
+}
+
+#[tokio::test]
+async fn two_owners_removing_each_other_together_leave_one_of_them() {
+    let store = memory().await;
+    let sam = person(&store, 1, "sam@example.org").await;
+    let lee = person(&store, 2, "lee@example.org").await;
+    let ana = person(&store, 3, "ana@example.org").await;
+    let (space, _) = make_space(&store, sam.id).await;
+    let sam_row = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists")
+        .members[0]
+        .clone();
+    let mut lee_row = sam_row.clone();
+    lee_row.user = lee.id;
+    let mut ana_row = sam_row.clone();
+    ana_row.user = ana.id;
+    ana_row.role = SpaceRole::Admin;
+    SpaceRepo::apply(
+        &store,
+        SpaceChanges {
+            members: vec![lee_row, ana_row],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a second owner and an admin");
+
+    // Each owner's request was valid against the two owners it read; they land together. The store
+    // takes them one at a time, so the second meets the first's result and is refused.
+    let remove = |user: UserId| {
+        let store = store.clone();
+        async move {
+            SpaceRepo::apply(
+                &store,
+                SpaceChanges {
+                    members_removed: vec![user],
+                    ..SpaceChanges::new(space)
+                },
+            )
+            .await
+        }
+    };
+    let (first, second) = tokio::join!(remove(sam.id), remove(lee.id));
+    assert_eq!(
+        [first.is_ok(), second.is_ok()]
+            .iter()
+            .filter(|ok| **ok)
+            .count(),
+        1,
+        "{first:?} {second:?}"
+    );
+    let after = SpaceRepo::load(&store, space)
+        .await
+        .expect("loads")
+        .expect("exists");
+    let owners = after
+        .members
+        .iter()
+        .filter(|m| m.role == SpaceRole::Owner && m.state == MemberState::Confirmed)
+        .count();
+    assert_eq!(owners, 1);
+}
+
+#[tokio::test]
+async fn a_rotation_counts_only_accepted_and_confirmed_memberships() {
+    use kemlock_app::rotation::RotationStore;
+    let store = memory().await;
+    let owner = person(&store, 1, "owner-rot@example.org").await;
+    let guest = person(&store, 2, "guest-rot@example.org").await;
+    let (space, collection) = make_space(&store, owner.id).await;
+    let spaces_of = |user: UserId| {
+        let store = store.clone();
+        async move {
+            RotationStore::holdings(&store, user)
+                .await
+                .expect("holdings")
+                .spaces
+        }
+    };
+    assert_eq!(spaces_of(owner.id).await, 1);
+
+    // Invited and not accepted: no membership, so a rotation need not move any space's keys.
+    InviteMember {
+        spaces: store.clone(),
+        users: store.clone(),
+        events: store.clone(),
+        clock: FixedClock,
+    }
+    .execute(
+        &actor(owner.id),
+        space,
+        InviteInput {
+            email: guest.email.clone(),
+            role: SpaceRole::Member,
+            custom: CustomPermissions::NONE,
+            grants: vec![(collection, CollectionPermission::Edit)],
+        },
+    )
+    .await
+    .expect("invited");
+    assert_eq!(spaces_of(guest.id).await, 0);
+
+    // Accepted: a member now.
+    AcceptInvitation {
+        spaces: store.clone(),
+        events: store.clone(),
+        clock: FixedClock,
+    }
+    .execute(&actor(guest.id), space)
+    .await
+    .expect("accepted");
+    assert_eq!(spaces_of(guest.id).await, 1);
+}
+
+#[tokio::test]
+async fn a_rotation_keeps_the_old_keys_for_an_account_in_a_space_and_waits_for_them_to_be_used() {
+    use kemlock_app::rotation::{
+        Install, InstallRequest, RotationError, RotationStore as Rotations,
+    };
+    let store = memory().await;
+    let owner = person(&store, 1, "owner-keys@example.org").await;
+    make_space(&store, owner.id).await;
+    let account = UserRepo::by_id(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("account");
+    let request = |from: u32| InstallRequest {
+        rotation: [7; 16],
+        from_version: from,
+        to_version: from + 1,
+        public_bundle: vec![8; 3621],
+        bundle_signature: vec![9; 3373],
+        sealed_private_keys: vec![10; 189],
+        sealed_previous_private_keys: vec![11; 189],
+        wrapped_root_key: Some(vec![12; 92]),
+        kit: None,
+        drop_kit: false,
+        device_copy: None,
+        passkeys: Vec::new(),
+        drop_passkeys: Vec::new(),
+        emergency: Vec::new(),
+        drop_emergency: Vec::new(),
+        recovery: Vec::new(),
+        drop_recovery: Vec::new(),
+        sends: Vec::new(),
+        spaces_handled: true,
+    };
+    let install = |before: &kemlock_domain::User, request: InstallRequest| {
+        let mut after = before.clone();
+        after.key_version = request.to_version;
+        after.security_stamp = uuid::Uuid::new_v4();
+        after.updated_at = datetime!(2026-12-02 10:00:00 UTC);
+        Install {
+            request,
+            before: before.clone(),
+            after,
+            device: DeviceId::random(),
+            now: datetime!(2026-12-02 10:00:00 UTC),
+            staged_since: datetime!(2026-12-02 08:00:00 UTC),
+        }
+    };
+
+    Rotations::install(&store, install(&account, request(1)))
+        .await
+        .expect("the first rotation");
+    let kept = Rotations::previous_keys(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("the old keys are kept for the space's rekey");
+    assert_eq!((kept.key_version, kept.sealed), (1, vec![11; 189]));
+
+    // A second rotation would replace them before the space has moved: refused, nothing written.
+    let after = UserRepo::by_id(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("account");
+    let second = Rotations::install(&store, install(&after, request(2))).await;
+    assert_eq!(second, Err(RotationError::SpacesPending));
+    assert_eq!(
+        UserRepo::by_id(&store, owner.id)
+            .await
+            .expect("read")
+            .expect("account")
+            .key_version,
+        2
+    );
+
+    // Once the space has moved, the keys are dropped and the next rotation goes through.
+    assert_eq!(
+        Rotations::clear_previous_keys(&store, owner.id).await,
+        Ok(true)
+    );
+    let after = UserRepo::by_id(&store, owner.id)
+        .await
+        .expect("read")
+        .expect("account");
+    Rotations::install(&store, install(&after, request(2)))
+        .await
+        .expect("the second rotation");
 }

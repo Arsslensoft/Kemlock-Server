@@ -4,12 +4,20 @@
 //! rounds to the minimum (their `MinimumKdfMigration`), so without it such an account can't sign
 //! in from them at all. The password stays the same; its hash and the wrapped user key change.
 //!
-//! Vaultwarden resets the security stamp and lets the calling device refresh its way back in.
-//! Here a refresh token is bound to the stamp, so the stamp stays and every other device's
-//! sign-in is revoked instead: the calling app keeps its session, the others sign in again with
-//! the password, whose old hash no longer matches.
+//! Vaultwarden resets the security stamp and lets the calling device refresh its way back in. Not
+//! here: the clients compare the stamp at every sync and sign themselves out when it changed, so
+//! the client that asked for the change would sign itself out (the Bitwarden CLI does). The stamp
+//! stays and every other device's sign-in is revoked instead: its access token ends at once (the
+//! session check wants a refresh token behind it), its live connections are told to sign out, and
+//! it signs in again with the password, whose old hash no longer matches. The calling device keeps
+//! its session.
+//!
+//! The clients' own migration, a PBKDF2 account under 600,000 rounds moved to exactly 600,000,
+//! ends no session. The password and the user key stay, so nothing another device holds is
+//! stale beyond what its next sync brings (the new settings and wrapped key). Otherwise the
+//! Bitwarden CLI signing in would sign out every other app of the account, a Kemlock app too.
 
-use crate::account::{Kdf, check_valid_password};
+use crate::account::{Kdf, PBKDF2};
 use crate::app::{App, Authed, BwStore};
 use crate::error::{BwError, BwResult};
 use crate::password::hash_password;
@@ -58,6 +66,9 @@ pub(crate) struct ChangeKdfData {
     master_password_hash: String,
 }
 
+/// The rounds Bitwarden clients move a weaker PBKDF2 account to at sign-in (`MinimumKdfMigration`).
+const MIGRATION_ROUNDS: i32 = 600_000;
+
 /// Vaultwarden's `post_kdf`, with its checks in its order and its messages.
 pub(crate) async fn change_kdf<S: BwStore>(
     app: &App<S>,
@@ -65,7 +76,10 @@ pub(crate) async fn change_kdf<S: BwStore>(
     data: ChangeKdfData,
 ) -> BwResult<()> {
     let mut account = authed.account.clone();
-    if !check_valid_password(&account, &data.master_password_hash) {
+    if !app
+        .password_matches(&account, &data.master_password_hash, Some(authed.ip))
+        .await?
+    {
         return Err(BwError::msg("Invalid password"));
     }
     let (auth, unlock) = (&data.authentication_data, &data.unlock_data);
@@ -94,23 +108,40 @@ pub(crate) async fn change_kdf<S: BwStore>(
         parallelism: unlock.kdf.kdf_parallelism,
     }
     .checked()?;
+    let migration = account.kdf_type == PBKDF2
+        && account.kdf_iterations < MIGRATION_ROUNDS
+        && kdf.kind == PBKDF2
+        && kdf.iterations == MIGRATION_ROUNDS;
 
     account.kdf_type = kdf.kind;
     account.kdf_iterations = kdf.iterations;
     account.kdf_memory = kdf.memory;
     account.kdf_parallelism = kdf.parallelism;
     account.password_iterations = app.settings.password_iterations;
-    account.password_hash = hash_password(
-        auth.master_password_authentication_hash.as_bytes(),
-        &account.salt,
+    let (secret, salt, iterations) = (
+        auth.master_password_authentication_hash.as_bytes().to_vec(),
+        account.salt.clone(),
         account.password_iterations,
     );
+    account.password_hash = app
+        .hashing(app.who_of(account.user, Some(authed.ip)), move || {
+            hash_password(&secret, &salt, iterations)
+        })
+        .await?;
     account.akey.clone_from(&unlock.master_key_wrapped_user_key);
     BwAccountRepo::update(&app.store, &account).await?;
-    for device in DeviceRepo::list(&app.store, account.user).await? {
-        if device.id != authed.device.id {
-            TokenRepo::revoke_device(&app.store, device.id).await?;
+    // Every other device's sign-in ends at once, but for the clients' own migration: it can't
+    // refresh, its access token is refused, and it signs in again with the password.
+    if !migration {
+        for device in DeviceRepo::list(&app.store, account.user).await? {
+            if device.id != authed.device.id {
+                TokenRepo::revoke_device(&app.store, device.id).await?;
+            }
         }
     }
-    app.touch(account.user).await
+    app.touch(account.user).await?;
+    if !migration {
+        app.sessions_ended(authed);
+    }
+    Ok(())
 }

@@ -24,6 +24,7 @@ carries the bytes, and the check is to open them and to re-seal with the nonce t
 | `kx1.json` | Hybrid exchange key: private and public key, ciphertext, shared secret, implicit-rejection outputs |
 | `sealed-box.json` | Sealed box to a `kx1` key under a context label, one case per context with the aad the clients use (device-approval, space-key, collection-key, emergency-access, account-recovery) and the parts it is built from; the contexts that must not open it |
 | `sig1.json` | Hybrid ML-DSA-65 + Ed25519 signatures, public keys from seeds |
+| `sig1-edge.json` | The Ed25519 verification rule: small-order, non-canonical and mixed-order keys, non-canonical S and R, with the verdict of each |
 | `bundle.json` | Public-key bundle, its 60-digit fingerprint (12 groups of 5), its signature |
 | `kem1.json` | Item AAD, item ciphertext, item-key wrap, with the key chain from the root key |
 | `manifest.json` | Signed manifest encoding (entries sorted, tombstones), signature |
@@ -36,10 +37,12 @@ carries the bytes, and the check is to open them and to re-seal with the nonce t
 | `private-keys.json` | The account's sealed kx1 and sig1 private keys under the user key's `private-keys` child |
 | `prf-wrap.json` | The passkey PRF wrap of the root key: salt, wrap key, aad, wrapped key |
 | `confirm.json` | Member confirmation: the 134-byte statement, the member's bundle and fingerprint behind it, the confirmer's sig1 signature, and the statements it must not cover |
+| `item-write.json` | Signed item writes: the envelope hash of a live write (`SHA-256(u32be(key version) ‖ lp(ciphertext) ‖ lp(item key))`, zero for a tombstone), the statement, the writer's sig1 signature, the 3,393-byte stored form, and the statements it must not cover |
 | `send.json` | Sends: the link, the payload and meta keys and the proof salt from the link key, the sealed payload, meta and link key with their AADs, the Argon2id password proof (also from a decomposed password), and a KMA1 file under the payload key |
 | `space-chain.json` | The space chain: the labelled hash link of the spec's two examples, records that must be refused as malformed, the record signing input and signature, seal commitments with real boxes (digest, key check, aad), and the chains of the spec's test cases, each with the verdict a verifier must give |
 
 | `space-names.json` | Names of a space, a collection and a group sealed as `kem1` envelopes under the space key's `kemlock/v1/space-name` child: the name key, the aad, the ciphertext, a rename under one key version and a second key version |
+| `rotation.json` | Rotating the root key: an item opened under the old item-wrap key and sealed again under a fresh item key at revision + 1 (old and new envelopes, wraps and aads), a Send moved to the new item-wrap key, the password and PRF wraps of the new root key at the new key version, and the new key pair, its bundle and the old pair sealed under the new user key |
 
 `SHA256SUMS` lists the files in `sha256sum -c` format.
 
@@ -66,6 +69,10 @@ lists all third-party material.
 - **sig1**: derive the public key from the seeds, verify the signature, and fail on another
   context, a changed message and a changed signature byte in either half. ML-DSA signatures in
   these files are deterministic; hedged ones verify the same.
+- **sig1-edge**: for each case, check that the key passes or fails the parse-time key check
+  (`key_ok`) and that verification of `public_key`, `message` and `signature` gives `valid`, with
+  the rule of `docs/crypto.md` ("Ed25519 verification rule"). A library that only checks the
+  signature equation will accept the small-order cases; it must not.
 - **opaque**: replay the exchange with the listed random inputs and compare every message. The
   blind scalars are 32-byte little-endian scalars; the server also draws a 64-byte dummy masking
   key before the masking nonce (RFC 9807 vectors don't list it). The configuration is that of
@@ -81,6 +88,12 @@ lists all third-party material.
   the confirmer's public key with context `confirm`. It must fail under every `wrong_contexts`
   entry and over every `changed_statements` entry (one field changed each), and with any byte of
   the statement or signature flipped.
+- **item-write**: rebuild `envelope_hash` from `key_version`, `ciphertext` and `item_key` (32 zero bytes
+  for a tombstone), then the statement from `owner`, `item_id`, `kind`, `revision`, `revision - 1`,
+  `deleted`, the hash, `writer` and `writer_key_version`, compare it with `statement`, and verify
+  `signature` under `writer_public_key` with context `item-write`. It must fail under every
+  `wrong_contexts` entry and over every `changed_statements` entry. `stored` is `writer ‖
+  u32be(writer_key_version) ‖ signature`.
 - **send**: derive the payload key and the salt from `link_key` and the meta key from `wrap_key` (never
   from `link_key`) by their labels, rebuild each aad from `send_id`
   and `kind`, open `payload`, `meta` and `sealed_key` (the first four bytes of `sealed_key` are the key

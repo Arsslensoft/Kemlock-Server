@@ -29,18 +29,25 @@
 //! So a name opens only under the space, id, kind and key version it was sealed with, and a rename
 //! under the same key version is a fresh nonce, not a new key.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use kemlock_crypto::{
-    kem1,
+    bundle::Bundle,
+    kem1, key_box,
     keys::{ITEM_WRAP_LABEL, SecretKey},
     kx1,
     owner::Owner,
     sealed_box::{self, context},
+    sig1,
+    space_chain::{
+        State,
+        client::{ItemRefusal, check_item_revision},
+    },
 };
 use zeroize::Zeroizing;
 
 use crate::{
+    chain::HeldChain,
     error::Error,
     session::{SealedItem, SealedItemRef, Session},
 };
@@ -85,11 +92,128 @@ impl NameKind {
 /// it drops (`SecretKey`), so `lock` wipes them with the rest of the session.
 #[derive(Default)]
 pub(crate) struct SpaceKeys {
-    spaces: HashMap<([u8; 16], u32), SecretKey>,
-    collections: HashMap<([u8; 16], [u8; 16], u32), SecretKey>,
+    pub(crate) spaces: HashMap<([u8; 16], u32), SecretKey>,
+    pub(crate) collections: HashMap<([u8; 16], [u8; 16], u32), SecretKey>,
+    /// The verified chains of the spaces that have one (`chain.rs`). A space in here opens and
+    /// seals keys only through its chain.
+    pub(crate) chains: HashMap<[u8; 16], HeldChain>,
+    /// Spaces whose served chain was refused: they have a chain, so they stay closed too.
+    pub(crate) refused: HashSet<[u8; 16]>,
+    /// The space keys held from a box that carried no signature (made before keys were signed, or
+    /// the server's own word): they open names and items, and nothing is sealed or written under
+    /// them (docs/crypto.md, "Signed key boxes", rule 3).
+    pub(crate) unsigned_spaces: HashSet<([u8; 16], u32)>,
+    /// The collection keys held from a box that carried no signature: read-only, as above.
+    pub(crate) unsigned_collections: HashSet<([u8; 16], [u8; 16], u32)>,
 }
 
 impl SpaceKeys {
+    /// Forgets every key held for a space.
+    pub(crate) fn drop_keys(&mut self, space: &[u8; 16]) {
+        self.spaces.retain(|(held, _), _| held != space);
+        self.collections.retain(|(held, _, _), _| held != space);
+        self.unsigned_spaces.retain(|(held, _)| held != space);
+        self.unsigned_collections
+            .retain(|(held, _, _)| held != space);
+    }
+
+    /// The verified state of a space that has a chain, when this unlock has verified it.
+    fn chain_state(&self, space: &[u8; 16]) -> Option<&State> {
+        self.chains.get(space).map(|held| &held.state)
+    }
+
+    /// Refuses an operation that opens, seals or names keys outside the chain, for a space that
+    /// has one: the page can't skip the chain by calling the older operations.
+    pub(crate) fn require_unchained(&self, space: &[u8; 16]) -> Result<(), Error> {
+        if self.chains.contains_key(space) || self.refused.contains(space) {
+            Err(Error::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Refuses sealing, or writing, under the space key of `version` when it was opened from an
+    /// unsigned box: such a key is read-only.
+    pub(crate) fn require_settled_space(
+        &self,
+        space: &[u8; 16],
+        version: u32,
+    ) -> Result<(), Error> {
+        if self.unsigned_spaces.contains(&(*space, version)) {
+            Err(Error::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// As [`SpaceKeys::require_settled_space`], for the collection key of `version`.
+    pub(crate) fn require_settled_collection(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        version: u32,
+    ) -> Result<(), Error> {
+        if self
+            .unsigned_collections
+            .contains(&(*space, *collection, version))
+        {
+            Err(Error::Invalid)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Whether an item of `collection` may be written under `version`: for a chained space, only
+    /// once first contact is done, under the collection's current key version, and while neither
+    /// it nor the space key is marked ("Using the state", "Items"). For a space with no chain,
+    /// only under a collection key opened from a signed box.
+    fn allow_item_write(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        version: u32,
+    ) -> Result<(), Error> {
+        if self.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
+        let Some(held) = self.chains.get(space) else {
+            return self.require_settled_collection(space, collection, version);
+        };
+        if !held.trusted {
+            return Err(Error::Invalid);
+        }
+        check_item_revision(&held.state, collection, version).map_err(|_| Error::Invalid)
+    }
+
+    /// Whether an item of `collection` may be opened under `version`: for a chained space, the
+    /// collection is one the chain has, at a key version it has made. A marked key doesn't hide
+    /// what was accepted before it was marked (`accepted`: the caller knows this revision is at or
+    /// below what this browser accepted before, by its signed floor or the accepted manifest), but a
+    /// revision that is not known to be one is held, not opened: after the mark, a member taken out
+    /// still holds the key and could have written it.
+    fn allow_item_open(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        version: u32,
+        accepted: bool,
+    ) -> Result<(), Error> {
+        if self.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
+        let Some(held) = self.chains.get(space) else {
+            return Ok(());
+        };
+        if !held.trusted {
+            return Err(Error::Invalid);
+        }
+        match check_item_revision(&held.state, collection, version) {
+            Ok(()) => Ok(()),
+            Err(ItemRefusal::KeyMarked) if accepted => Ok(()),
+            Err(_) => Err(Error::Invalid),
+        }
+    }
+
     fn space(&self, space: &[u8; 16], version: u32) -> Result<&SecretKey, Error> {
         self.spaces.get(&(*space, version)).ok_or(Error::Invalid)
     }
@@ -160,6 +284,8 @@ pub(crate) fn collection_key_aad(
 pub(crate) struct NewSpace {
     pub(crate) name: Vec<u8>,
     pub(crate) sealed_space_key: Vec<u8>,
+    /// The maker's `sig1` signature over `sealed_space_key` (docs/crypto.md, "Signed key boxes").
+    pub(crate) sealed_space_key_signature: Vec<u8>,
     pub(crate) collection: NewCollection,
 }
 
@@ -167,6 +293,8 @@ pub(crate) struct NewSpace {
 pub(crate) struct NewCollection {
     pub(crate) name: Vec<u8>,
     pub(crate) sealed_key: Vec<u8>,
+    /// The maker's `sig1` signature over `sealed_key`.
+    pub(crate) sealed_key_signature: Vec<u8>,
 }
 
 /// The first key version of a collection: a collection's key has versions of its own, not its
@@ -176,7 +304,35 @@ const FIRST_COLLECTION_KEY_VERSION: u32 = 1;
 /// The first key version of a space.
 const FIRST_SPACE_KEY_VERSION: u32 = 1;
 
-fn seal_name_under(
+/// A key box sealed to someone, with the sealer's signature over it (docs/crypto.md, "Signed key
+/// boxes").
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SignedBox {
+    pub(crate) sealed: Vec<u8>,
+    pub(crate) signature: Vec<u8>,
+}
+
+/// The signature of the unlocked account over a key box it sealed: the sealer is the account and
+/// the key version its own.
+fn sign_key_box(
+    sig_private: &sig1::SigningKey,
+    account: [u8; 16],
+    key_version: u32,
+    kind: key_box::Kind,
+    aad: &[u8],
+    sealed: &[u8],
+) -> Result<Vec<u8>, Error> {
+    Ok(key_box::Statement {
+        kind,
+        aad,
+        sealed_box: sealed,
+        sealer: account,
+        sealer_key_version: key_version,
+    }
+    .sign(sig_private)?)
+}
+
+pub(crate) fn seal_name_under(
     space_key: &SecretKey,
     space: &[u8; 16],
     version: u32,
@@ -215,16 +371,50 @@ impl Session {
         collection_name: &str,
     ) -> Result<NewSpace, Error> {
         let unlocked = self.unlocked_mut()?;
-        let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        let (kx_private, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         if unlocked.spaces.newest_space(space).is_ok() {
             return Err(Error::Invalid);
         }
+        unlocked.spaces.require_unchained(space)?;
         let own_public = kx_private.public_key()?;
         let own_id = unlocked.account_id;
+        let own_version = unlocked.key_version;
 
         let space_key = SecretKey::generate();
         let collection_key = SecretKey::generate();
         let version = FIRST_SPACE_KEY_VERSION;
+        // Both boxes are sealed to this account and signed by it, so a client that opens them later
+        // finds a box its own account made.
+        let space_aad = space_key_aad(space, version, &own_id);
+        let sealed_space_key = sealed_box::seal(
+            &own_public,
+            context::SPACE_KEY,
+            &space_aad,
+            space_key.as_bytes(),
+        )?;
+        let sealed_space_key_signature = sign_key_box(
+            sig_private,
+            own_id,
+            own_version,
+            key_box::Kind::Space,
+            &space_aad,
+            &sealed_space_key,
+        )?;
+        let collection_aad = collection_key_aad(space, collection, version, &own_id);
+        let sealed_key = sealed_box::seal(
+            &own_public,
+            context::COLLECTION_KEY,
+            &collection_aad,
+            collection_key.as_bytes(),
+        )?;
+        let sealed_key_signature = sign_key_box(
+            sig_private,
+            own_id,
+            own_version,
+            key_box::Kind::Collection,
+            &collection_aad,
+            &sealed_key,
+        )?;
         let made = NewSpace {
             name: seal_name_under(
                 &space_key,
@@ -234,12 +424,8 @@ impl Session {
                 space,
                 space_name,
             )?,
-            sealed_space_key: sealed_box::seal(
-                &own_public,
-                context::SPACE_KEY,
-                &space_key_aad(space, version, &own_id),
-                space_key.as_bytes(),
-            )?,
+            sealed_space_key,
+            sealed_space_key_signature,
             collection: NewCollection {
                 name: seal_name_under(
                     &space_key,
@@ -249,12 +435,8 @@ impl Session {
                     collection,
                     collection_name,
                 )?,
-                sealed_key: sealed_box::seal(
-                    &own_public,
-                    context::COLLECTION_KEY,
-                    &collection_key_aad(space, collection, version, &own_id),
-                    collection_key.as_bytes(),
-                )?,
+                sealed_key,
+                sealed_key_signature,
             },
         };
         unlocked.spaces.spaces.insert((*space, version), space_key);
@@ -273,6 +455,8 @@ impl Session {
         sealed: &[u8],
     ) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
+        // A space with a chain opens its keys through the chain (`open_chain_key`) only.
+        unlocked.spaces.require_unchained(space)?;
         let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let plain = sealed_box::open(
             kx_private,
@@ -282,6 +466,10 @@ impl Session {
         )?;
         let key = key_from(&plain)?;
         unlocked.spaces.spaces.insert((*space, key_version), key);
+        unlocked
+            .spaces
+            .unsigned_spaces
+            .remove(&(*space, key_version));
         Ok(())
     }
 
@@ -294,6 +482,7 @@ impl Session {
         sealed: &[u8],
     ) -> Result<(), Error> {
         let unlocked = self.unlocked_mut()?;
+        unlocked.spaces.require_unchained(space)?;
         let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let plain = sealed_box::open(
             kx_private,
@@ -306,6 +495,43 @@ impl Session {
             .spaces
             .collections
             .insert((*space, *collection, key_version), key);
+        unlocked
+            .spaces
+            .unsigned_collections
+            .remove(&(*space, *collection, key_version));
+        Ok(())
+    }
+
+    /// As [`Session::open_space`], for a box that carried no signature: the key opens names and
+    /// items, and is read-only (nothing is sealed or written under it).
+    pub(crate) fn open_space_unsigned(
+        &mut self,
+        space: &[u8; 16],
+        key_version: u32,
+        sealed: &[u8],
+    ) -> Result<(), Error> {
+        self.open_space(space, key_version, sealed)?;
+        self.unlocked_mut()?
+            .spaces
+            .unsigned_spaces
+            .insert((*space, key_version));
+        Ok(())
+    }
+
+    /// As [`Session::open_collection`], for a box that carried no signature (read-only, as for
+    /// [`Session::open_space_unsigned`]).
+    pub(crate) fn open_collection_unsigned(
+        &mut self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        key_version: u32,
+        sealed: &[u8],
+    ) -> Result<(), Error> {
+        self.open_collection(space, collection, key_version, sealed)?;
+        self.unlocked_mut()?
+            .spaces
+            .unsigned_collections
+            .insert((*space, *collection, key_version));
         Ok(())
     }
 
@@ -319,6 +545,38 @@ impl Session {
         ciphertext: &[u8],
     ) -> Result<String, Error> {
         let unlocked = self.unlocked()?;
+        if unlocked.spaces.refused.contains(space) {
+            return Err(Error::Invalid);
+        }
+        // A name of a chained space is shown only when it is the one the chain committed, at the
+        // name version it recorded ("Using the state", "Names").
+        if let Some(state) = unlocked.spaces.chain_state(space) {
+            if !unlocked
+                .spaces
+                .chains
+                .get(space)
+                .is_some_and(|held| held.trusted)
+            {
+                return Err(Error::Invalid);
+            }
+            let committed = match kind {
+                NameKind::Space if id == space => {
+                    Some((state.space.name_hash, state.space.name_version))
+                }
+                NameKind::Space => None,
+                NameKind::Collection => state
+                    .collections
+                    .get(id)
+                    .map(|c| (c.name_hash, c.name_version)),
+                NameKind::Group => state.groups.get(id).map(|g| (g.name_hash, g.name_version)),
+            };
+            match committed {
+                Some((hash, version))
+                    if version == key_version
+                        && hash == kemlock_crypto::hash::sha256(ciphertext) => {}
+                _ => return Err(Error::Invalid),
+            }
+        }
         let key = unlocked
             .spaces
             .space(space, key_version)?
@@ -344,6 +602,9 @@ impl Session {
         name: &str,
     ) -> Result<Vec<u8>, Error> {
         let unlocked = self.unlocked()?;
+        // A chained space's names change by records, which commit their hashes.
+        unlocked.spaces.require_unchained(space)?;
+        unlocked.spaces.require_settled_space(space, key_version)?;
         let key = unlocked.spaces.space(space, key_version)?;
         seal_name_under(key, space, key_version, kind, id, name)
     }
@@ -363,6 +624,9 @@ impl Session {
     ) -> Result<SealedItem, Error> {
         let unlocked = self.unlocked()?;
         let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
+        unlocked
+            .spaces
+            .allow_item_write(space, collection, version)?;
         let wrap = key.child(ITEM_WRAP_LABEL)?;
         let owner = Owner::space(*space);
         let item_key = SecretKey::generate();
@@ -375,18 +639,35 @@ impl Session {
         })
     }
 
-    /// Opens an item of a space's collection with the collection key of the version it says.
+    /// Opens an item of a space's collection with the collection key of the version it says, as one
+    /// this browser accepted before (a marked key doesn't hide it): the way an unlock reopens what
+    /// it already holds, and the way a key replacement reads the items it seals again.
     pub(crate) fn open_space_item(
         &self,
         space: &[u8; 16],
         collection: &[u8; 16],
         item: &SealedItemRef<'_>,
     ) -> Result<Zeroizing<Vec<u8>>, Error> {
+        self.open_space_item_as(space, collection, item, true)
+    }
+
+    /// As [`Session::open_space_item`], saying whether the revision is one this browser accepted
+    /// before the key was marked. When it is not, an item under a marked key is held, not opened.
+    pub(crate) fn open_space_item_as(
+        &self,
+        space: &[u8; 16],
+        collection: &[u8; 16],
+        item: &SealedItemRef<'_>,
+        accepted: bool,
+    ) -> Result<Zeroizing<Vec<u8>>, Error> {
         if *item.owner != Owner::space(*space) {
             return Err(Error::Invalid);
         }
         let unlocked = self.unlocked()?;
         let version = item.key_version.ok_or(Error::Invalid)?;
+        unlocked
+            .spaces
+            .allow_item_open(space, collection, version, accepted)?;
         let wrap = unlocked
             .spaces
             .collection(space, collection, version)?
@@ -411,8 +692,10 @@ impl Session {
         name: &str,
     ) -> Result<NewCollection, Error> {
         let unlocked = self.unlocked_mut()?;
-        let (kx_private, _) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        let (kx_private, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
+        unlocked.spaces.require_unchained(space)?;
         let (version, space_key) = unlocked.spaces.newest_space(space)?;
+        unlocked.spaces.require_settled_space(space, version)?;
         if unlocked.spaces.collections.contains_key(&(
             *space,
             *collection,
@@ -421,7 +704,19 @@ impl Session {
             return Err(Error::Invalid);
         }
         let own_public = kx_private.public_key()?;
+        let own_id = unlocked.account_id;
         let key = SecretKey::generate();
+        let aad = collection_key_aad(space, collection, FIRST_COLLECTION_KEY_VERSION, &own_id);
+        let sealed_key =
+            sealed_box::seal(&own_public, context::COLLECTION_KEY, &aad, key.as_bytes())?;
+        let sealed_key_signature = sign_key_box(
+            sig_private,
+            own_id,
+            unlocked.key_version,
+            key_box::Kind::Collection,
+            &aad,
+            &sealed_key,
+        )?;
         let made = NewCollection {
             name: seal_name_under(
                 space_key,
@@ -431,17 +726,8 @@ impl Session {
                 collection,
                 name,
             )?,
-            sealed_key: sealed_box::seal(
-                &own_public,
-                context::COLLECTION_KEY,
-                &collection_key_aad(
-                    space,
-                    collection,
-                    FIRST_COLLECTION_KEY_VERSION,
-                    &unlocked.account_id,
-                ),
-                key.as_bytes(),
-            )?,
+            sealed_key,
+            sealed_key_signature,
         };
         unlocked
             .spaces
@@ -450,43 +736,102 @@ impl Session {
         Ok(made)
     }
 
-    /// The newest space key held, sealed to a member's `kx1` key; `recipient_id` is their account
-    /// id. The box is bound to the space, the key's version and the recipient.
+    /// The newest space key held, sealed to a member's `kx1` key and signed by this account;
+    /// `recipient_id` is their account id. The box is bound to the space, the key's version and the
+    /// recipient.
     pub(crate) fn seal_space_key_to(
         &self,
         space: &[u8; 16],
         recipient_kx1: &[u8],
         recipient_id: &[u8; 16],
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<SignedBox, Error> {
         let unlocked = self.unlocked()?;
+        // A chained space seals to the members its chain gives, in records, not to a key the page
+        // names.
+        unlocked.spaces.require_unchained(space)?;
+        let (_, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let (version, key) = unlocked.spaces.newest_space(space)?;
+        unlocked.spaces.require_settled_space(space, version)?;
         let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
-        Ok(sealed_box::seal(
-            &public,
-            context::SPACE_KEY,
-            &space_key_aad(space, version, recipient_id),
-            key.as_bytes(),
-        )?)
+        let aad = space_key_aad(space, version, recipient_id);
+        let sealed = sealed_box::seal(&public, context::SPACE_KEY, &aad, key.as_bytes())?;
+        let signature = sign_key_box(
+            sig_private,
+            unlocked.account_id,
+            unlocked.key_version,
+            key_box::Kind::Space,
+            &aad,
+            &sealed,
+        )?;
+        Ok(SignedBox { sealed, signature })
     }
 
-    /// The newest key held of a collection, sealed to a member's `kx1` key.
+    /// The newest key held of a collection, sealed to a member's `kx1` key and signed by this
+    /// account.
     pub(crate) fn seal_collection_key_to(
         &self,
         space: &[u8; 16],
         collection: &[u8; 16],
         recipient_kx1: &[u8],
         recipient_id: &[u8; 16],
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<SignedBox, Error> {
         let unlocked = self.unlocked()?;
+        unlocked.spaces.require_unchained(space)?;
+        let (_, sig_private) = unlocked.private.as_ref().ok_or(Error::Locked)?;
         let (version, key) = unlocked.spaces.newest_collection(space, collection)?;
+        unlocked
+            .spaces
+            .require_settled_collection(space, collection, version)?;
         let public = kx1::PublicKey::from_bytes(recipient_kx1)?;
-        Ok(sealed_box::seal(
-            &public,
-            context::COLLECTION_KEY,
-            &collection_key_aad(space, collection, version, recipient_id),
-            key.as_bytes(),
-        )?)
+        let aad = collection_key_aad(space, collection, version, recipient_id);
+        let sealed = sealed_box::seal(&public, context::COLLECTION_KEY, &aad, key.as_bytes())?;
+        let signature = sign_key_box(
+            sig_private,
+            unlocked.account_id,
+            unlocked.key_version,
+            key_box::Kind::Collection,
+            &aad,
+            &sealed,
+        )?;
+        Ok(SignedBox { sealed, signature })
     }
+}
+
+/// Whether `signature` is the sealer's `sig1` signature, under their bundle's key, over exactly the
+/// key box statement these facts give, with the bundle's own account and key version as the
+/// sealer's (docs/crypto.md, "Signed key boxes"). `collection` is `None` for a space key. Public
+/// data only, so it needs no session. Anything malformed is simply `false`.
+pub(crate) fn verify_key_box(
+    sealer_bundle: &[u8],
+    space: &[u8; 16],
+    collection: Option<&[u8; 16]>,
+    key_version: u32,
+    recipient: &[u8; 16],
+    sealed: &[u8],
+    signature: &[u8],
+) -> bool {
+    let Ok(bundle) = Bundle::from_bytes(sealer_bundle) else {
+        return false;
+    };
+    let (kind, aad) = match collection {
+        None => (
+            key_box::Kind::Space,
+            key_box::space_aad(space, key_version, recipient),
+        ),
+        Some(collection) => (
+            key_box::Kind::Collection,
+            key_box::collection_aad(space, collection, key_version, recipient),
+        ),
+    };
+    key_box::Statement {
+        kind,
+        aad: &aad,
+        sealed_box: sealed,
+        sealer: bundle.account_id,
+        sealer_key_version: bundle.key_version,
+    }
+    .verify(&bundle.sig1_public, signature)
+    .is_ok()
 }
 
 #[cfg(test)]

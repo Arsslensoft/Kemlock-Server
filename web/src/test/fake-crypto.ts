@@ -3,7 +3,9 @@
 // under the id, revision, kind and owner it was sealed with, like the real AAD), so the app's
 // logic is tested without WebAssembly.
 import type { CryptoPort } from '@/crypto-port';
-import { fromUtf8, utf8 } from '@/lib/b64url';
+import type { ItemWriteFields } from '@/crypto/types';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { parseBundle, uuidBytes } from '@/sharing/bundle';
 
 const calls: string[] = [];
 
@@ -12,6 +14,19 @@ export const fakeCalls = calls;
 
 let locked = true;
 export const isFakeLocked = () => locked;
+/** The account the fake vault was opened for, for `ownFingerprint`. */
+let openedFor = '';
+/** The key version a test raises to play a key replacement; a rotation raises it too. */
+export const setFakeKeyVersion = (version: number) => {
+  fakeKeyVersion = version;
+};
+
+/** The tabs that have a reload key, as IndexedDB would keep them: a test deletes one to age it out. */
+export const fakeTabKeys = new Set<string>();
+
+/** The key version of the open account and the one a started rotation would install. */
+let fakeKeyVersion = 1;
+let fakePendingVersion: number | undefined;
 
 export const crypto: CryptoPort = {
   async masterKey(password, kdf) {
@@ -55,6 +70,7 @@ export const crypto: CryptoPort = {
     calls.push('unlock');
     if (fromUtf8(wrappedRootKey) !== `wrapped:${accountId}`) throw new Error('wrong wrapped key');
     locked = false;
+    openedFor = accountId;
   },
   async sealItem({ id, owner, kind, revision, json }) {
     calls.push('sealItem');
@@ -149,13 +165,24 @@ export const crypto: CryptoPort = {
   },
   async fingerprint(publicBundle) {
     calls.push('fingerprint');
-    const text = fromUtf8(publicBundle);
+    const parsed = parseBundle(publicBundle);
+    const text = parsed
+      ? `real:${signerOf(publicBundle) ?? ''}:${parsed.keyVersion}`
+      : fromUtf8(publicBundle);
     const sum = [...text].reduce((a, c) => (a * 31 + (c.codePointAt(0) ?? 0)) >>> 0, 11);
     return Array.from({ length: 12 }, (_, i) => String((sum + i * 7919) % 100000).padStart(5, '0')).join(' ');
   },
+  async bitwardenPasswordHash({ password, email, kdf }) {
+    calls.push('bitwardenPasswordHash');
+    // Not the real derivation: a stand-in that depends on exactly what the real one does.
+    return btoa(`${kdf.type}:${kdf.iterations}:${email.trim().toLowerCase()}:${password.length}`);
+  },
   async verifyBundle(publicBundle, bundleSignature) {
     calls.push('verifyBundle');
-    return fromUtf8(bundleSignature) === 'sig' && fromUtf8(publicBundle).startsWith('bundle:');
+    return (
+      fromUtf8(bundleSignature) === 'sig' &&
+      (parseBundle(publicBundle) !== null || fromUtf8(publicBundle).startsWith('bundle:'))
+    );
   },
   async lock() {
     calls.push('lock');
@@ -236,6 +263,7 @@ export const crypto: CryptoPort = {
   async newSsoAccount(accountId) {
     calls.push('newSsoAccount');
     locked = false;
+    openedFor = accountId;
     return {
       publicBundle: utf8(`bundle:${accountId}`),
       bundleSignature: utf8('signature'),
@@ -243,26 +271,171 @@ export const crypto: CryptoPort = {
       wrappedRootKey: new Uint8Array(),
     };
   },
-  async deviceCopySeal(accountId, deviceId, keyVersion) {
+  // Rotating the root key: the fake keeps the same failure points (an item moves only under the
+  // id, revision, kind and owner it was sealed with, once, at the next revision).
+  async rotationStart() {
+    calls.push('rotationStart');
+    if (locked) throw new Error('the vault is locked');
+    fakePendingVersion = fakeKeyVersion + 1;
+    return {
+      keyVersion: fakePendingVersion,
+      publicBundle: utf8(`bundle:${openedFor}:v${fakePendingVersion}`),
+      bundleSignature: utf8('sig'),
+      sealedPrivateKeys: utf8(`sealed:v${fakePendingVersion}`),
+      sealedPreviousPrivateKeys: utf8(`sealed:v${fakeKeyVersion}`),
+      fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 11111 22222',
+    };
+  },
+  async rotationResealItem({ id, owner, kind, revision, ciphertext }) {
+    calls.push('rotationResealItem');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    const [sid, sowner, skind, srevision, json] = JSON.parse(fromUtf8(ciphertext)) as [
+      string,
+      string,
+      string,
+      number,
+      string,
+    ];
+    if (sid !== id || sowner !== owner || skind !== kind || srevision !== revision) {
+      throw new Error('the item does not open under these details');
+    }
+    return {
+      ciphertext: utf8(JSON.stringify([id, owner, kind, revision + 1, json])),
+      itemKey: utf8(`item-key:v${fakePendingVersion}`),
+      revision: revision + 1,
+      keyVersion: fakePendingVersion,
+      writer: openedFor,
+      writerKeyVersion: fakePendingVersion,
+      writeSignature: encodeB64(utf8(`rotation-write:${openedFor}:v${fakePendingVersion}:${id}:${revision + 1}`)),
+    };
+  },
+  async rotationResealSend({ id, kind, sealedKey, meta }) {
+    calls.push('rotationResealSend');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return {
+      sealedKey: utf8(`${id}:${kind}:${fromUtf8(sealedKey)}:v${fakePendingVersion}`),
+      meta: utf8(`${fromUtf8(meta)}:v${fakePendingVersion}`),
+    };
+  },
+  async rotationWrapPassword(masterKey, exportKey) {
+    calls.push('rotationWrapPassword');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return utf8(`wrapped:v${fakePendingVersion}:${fromUtf8(masterKey)}:${fromUtf8(exportKey)}`);
+  },
+  async rotationPrfWrap(prfOutput, credentialId) {
+    calls.push('rotationPrfWrap');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return {
+      wrappedKey: utf8(JSON.stringify(['prf', fromUtf8(prfOutput), fromUtf8(credentialId)])),
+      keyVersion: fakePendingVersion,
+    };
+  },
+  async rotationKitMake() {
+    calls.push('rotationKitMake');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    const pieces = ['D', 'E', 'F'].map((c, i) => `BMCKIT1-NEWKIT22-23${i + 1}-${c.repeat(52)}-ABCD`);
+    return {
+      kitId: 'NEWKIT22',
+      pieces,
+      wrappedKey: utf8(JSON.stringify(['kit', 'NEWKIT22'])),
+      keyVersion: fakePendingVersion,
+    };
+  },
+  async rotationDeviceCopySeal(accountId, deviceId, keyVersion, tabId) {
+    calls.push('rotationDeviceCopySeal');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return utf8(
+      JSON.stringify([tabId === undefined ? 'device-copy' : `tab-copy:${tabId}`, accountId, deviceId, keyVersion]),
+    );
+  },
+  async rotationSealRootKey(recipientKx1, context, aad) {
+    calls.push('rotationSealRootKey');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    return utf8(`box:${context}:${encodeB64(recipientKx1)}:${encodeB64(aad)}`);
+  },
+  async rotationCommit() {
+    calls.push('rotationCommit');
+    if (fakePendingVersion === undefined) throw new Error('no rotation is started');
+    fakeKeyVersion = fakePendingVersion;
+    fakePendingVersion = undefined;
+    return {
+      keyVersion: fakeKeyVersion,
+      fingerprint: '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 11111 22222',
+    };
+  },
+  async rotationResealLocal(_label, sealed) {
+    calls.push('rotationResealLocal');
+    if (locked || fakePendingVersion === undefined) throw new Error('no rotation is started');
+    if (!sealed.startsWith(`v${fakeKeyVersion}:`)) throw new Error('invalid');
+    return `v${fakePendingVersion}:${sealed.slice(sealed.indexOf(':') + 1)}`;
+  },
+  async rotationAbort() {
+    calls.push('rotationAbort');
+    fakePendingVersion = undefined;
+  },
+  async rotationSign(previous, context, message) {
+    calls.push('rotationSign');
+    return utf8(`${previous ? 'old' : 'new'}:${context}:${fromUtf8(message)}`);
+  },
+  // The trusted-device copy and a tab's reload copy are sealed under different keys: a copy opens
+  // only under the key it was made with, and a tab's only while that tab's key still exists.
+  async deviceCopySeal(accountId, deviceId, keyVersion, tabId) {
     calls.push('deviceCopySeal');
     if (locked) throw new Error('the vault is locked');
-    return utf8(JSON.stringify(['device-copy', accountId, deviceId, keyVersion]));
+    if (tabId !== undefined) fakeTabKeys.add(tabId);
+    return utf8(JSON.stringify([tabId === undefined ? 'device-copy' : `tab-copy:${tabId}`, accountId, deviceId, keyVersion]));
   },
-  async deviceCopyOpen(accountId, deviceId, keyVersion, sealed) {
+  async deviceCopyOpen(accountId, deviceId, keyVersion, sealed, tabId) {
     calls.push('deviceCopyOpen');
     const [label, account, device, version] = JSON.parse(fromUtf8(sealed)) as [string, string, string, number];
-    if (label !== 'device-copy' || account !== accountId || device !== deviceId || version !== keyVersion) {
+    const expected = tabId === undefined ? 'device-copy' : `tab-copy:${tabId}`;
+    if (tabId !== undefined && !fakeTabKeys.has(tabId)) throw new Error('this tab has no key');
+    if (label !== expected || account !== accountId || device !== deviceId || version !== keyVersion) {
       throw new Error('this browser does not open this copy');
     }
     return utf8(`root:${accountId}`);
   },
-  async deviceCopyReset() {
+  async deviceCopyReset(tabId) {
     calls.push('deviceCopyReset');
+    if (tabId !== undefined) fakeTabKeys.delete(tabId);
   },
-  async unlockWithRoot(accountId, root) {
+  async tabSeal(tabId, accountId, deviceId, data) {
+    calls.push('tabSeal');
+    fakeTabKeys.add(tabId);
+    return utf8(JSON.stringify(['tab-session', tabId, accountId, deviceId, fromUtf8(data)]));
+  },
+  async tabOpen(tabId, accountId, deviceId, sealed) {
+    calls.push('tabOpen');
+    if (!fakeTabKeys.has(tabId)) throw new Error('this tab has no key');
+    const [label, tab, account, device, data] = JSON.parse(fromUtf8(sealed)) as [string, string, string, string, string];
+    if (label !== 'tab-session' || tab !== tabId || account !== accountId || device !== deviceId) {
+      throw new Error('this tab does not open this');
+    }
+    return utf8(data);
+  },
+  async dpopReset() {
+    calls.push('dpopReset');
+  },
+  async unlockWithRoot(accountId, root, options) {
     calls.push('unlockWithRoot');
     if (fromUtf8(root) !== `root:${accountId}`) throw new Error("not this account's root key");
+    // Like the worker: with a bundle to check, the opened keys must be the bundle's, and the
+    // fake's bundles are `bundle:<account>`.
+    if (options?.publicBundle && fromUtf8(options.publicBundle) !== `bundle:${accountId}`) {
+      throw new Error("the keys are not the bundle's");
+    }
     locked = false;
+    openedFor = accountId;
+  },
+  async ownKeyVersion() {
+    calls.push('ownKeyVersion');
+    if (locked) throw new Error('the vault is locked');
+    return fakeKeyVersion;
+  },
+  async ownFingerprint() {
+    calls.push('ownFingerprint');
+    if (locked) throw new Error('the vault is locked');
+    return crypto.fingerprint(utf8(`bundle:${openedFor}`));
   },
   async sealSpaceItem({ spaceId, collectionId, id, kind, revision, json }) {
     calls.push('sealSpaceItem');
@@ -292,7 +465,96 @@ export const crypto: CryptoPort = {
     }
     return json;
   },
+  // The signed manifest. A signature names its signer and the manifest's bytes, so a test sees
+  // that it checks only under the key that made it and only for those bytes; the fake's bundles
+  // are `bundle:<account>`.
+  async manifestSign(manifest) {
+    calls.push('manifestSign');
+    if (locked) throw new Error('the vault is locked');
+    return utf8(`msig:${openedFor}:${encodeB64(manifest)}`);
+  },
+  async manifestVerifyOwn(manifest, signature) {
+    calls.push('manifestVerifyOwn');
+    // Like the worker: with no keys to check with there is no verdict, not a "no".
+    if (locked) throw new Error('the vault is locked');
+    return fromUtf8(signature) === `msig:${openedFor}:${encodeB64(manifest)}`;
+  },
+  async manifestVerify(signerBundle, manifest, signature) {
+    calls.push('manifestVerify');
+    const signer = /^bundle:(.+)$/.exec(fromUtf8(signerBundle))?.[1];
+    return signer !== undefined && fromUtf8(signature) === `msig:${signer}:${encodeB64(manifest)}`;
+  },
+  // Signed item writes. A signature names its writer, the key version and every field of the
+  // write it covers, so a test sees that it checks only for that writer and only for those fields.
+  async itemWriteSign(fields) {
+    calls.push('itemWriteSign');
+    if (locked) throw new Error('the vault is locked');
+    if (fields.owner.startsWith('user:') && fields.owner !== `user:${openedFor}`) {
+      throw new Error('another account');
+    }
+    return {
+      writer: openedFor,
+      writerKeyVersion: fakeKeyVersion,
+      writeSignature: encodeB64(utf8(writeSignatureText(openedFor, fakeKeyVersion, fields))),
+    };
+  },
+  async itemWriteVerifyOwn(fields, signature) {
+    calls.push('itemWriteVerifyOwn');
+    if (locked) throw new Error('the vault is locked');
+    return (
+      fields.writer === openedFor &&
+      fields.writerKeyVersion === fakeKeyVersion &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(openedFor, fakeKeyVersion, fields)
+    );
+  },
+  async itemWriteVerify(signerBundle, fields, signature) {
+    calls.push('itemWriteVerify');
+    const signer = signerOf(signerBundle);
+    return (
+      signer !== undefined &&
+      fields.writer === signer &&
+      fromUtf8(decodeB64(signature)) === writeSignatureText(signer, fields.writerKeyVersion ?? 0, fields)
+    );
+  },
 };
+
+/**
+ * A bundle with the layout of docs/crypto.md for `account` at `version`, and nothing else in it, for
+ * tests that parse one. The fake worker reads its signer from the account id.
+ */
+export function fakeBundleOf(account: string, version: number): Uint8Array {
+  const label = utf8('kemlock/v1/bundle');
+  const out = new Uint8Array(label.length + 16 + 4 + 1600 + 1984);
+  out.set(label, 0);
+  out.set(uuidBytes(account), label.length);
+  new DataView(out.buffer).setUint32(label.length + 16, version);
+  return out;
+}
+
+/** Who a bundle names: a real-layout one by its account id, a `bundle:<account>` one by its text. */
+function signerOf(bundle: Uint8Array): string | undefined {
+  const parsed = parseBundle(bundle);
+  if (parsed) {
+    const hex = [...parsed.accountId].map((b) => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  return /^bundle:(.+)$/.exec(fromUtf8(bundle))?.[1];
+}
+
+/** What the fake's write signature says: who, at which key version, over which fields. */
+export function writeSignatureText(writer: string, keyVersion: number, fields: ItemWriteFields): string {
+  return `wsig:${writer}:${keyVersion}:${JSON.stringify([
+    fields.owner,
+    fields.id,
+    fields.kind,
+    fields.revision,
+    fields.deleted,
+    fields.keyVersion,
+    fields.ciphertext ?? '',
+    fields.itemKey ?? '',
+    fields.collectionId ?? '',
+  ])}`;
+}
 
 const deviceKeys = { count: 0, spent: new Set<string>() };
 
@@ -334,6 +596,10 @@ function openFakeSend(
 export function resetFakeCrypto(): void {
   calls.length = 0;
   locked = true;
+  fakeTabKeys.clear();
+  openedFor = '';
+  fakeKeyVersion = 1;
+  fakePendingVersion = undefined;
   sendKeys.count = 0;
   deviceKeys.count = 0;
   deviceKeys.spent.clear();

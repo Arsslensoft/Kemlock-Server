@@ -3,9 +3,9 @@
 
 use super::json::UserInfo;
 use super::model::{
-    ACCEPTED, ADMIN, CONFIRMED, CollectionDoc, GroupDoc, KIND_COLLECTION, KIND_GROUP, KIND_MEMBER,
-    KIND_ORG, KIND_PENDING, KIND_POLICY, MANAGER, MemberDoc, OWNER, Org, OrgDoc, PendingDoc,
-    PolicyDoc,
+    ACCEPTED, ADMIN, CONFIRMED, CollectionDoc, GroupDoc, INVITED, KIND_COLLECTION, KIND_GROUP,
+    KIND_MEMBER, KIND_ORG, KIND_PENDING, KIND_POLICY, MANAGER, MemberDoc, OWNER, Org, OrgDoc,
+    PendingDoc, PolicyDoc, REVOKE_DIFF, USER, level,
 };
 use crate::app::{App, BwStore};
 use crate::error::{BwError, BwResult};
@@ -31,6 +31,16 @@ fn role_of(atype: i32) -> SpaceRole {
         ADMIN => SpaceRole::Admin,
         MANAGER => SpaceRole::Custom,
         _ => SpaceRole::Member,
+    }
+}
+
+/// The Bitwarden type closest to a space role: the other way of [`role_of`].
+fn type_of(role: SpaceRole) -> i32 {
+    match role {
+        SpaceRole::Owner => OWNER,
+        SpaceRole::Admin => ADMIN,
+        SpaceRole::Custom => MANAGER,
+        SpaceRole::Member => USER,
     }
 }
 
@@ -68,11 +78,16 @@ pub(crate) fn mirror_member(
         });
     row.role = role_of(doc.atype);
     row.custom = custom_of(doc);
+    // A member the row confirmed stays confirmed when the document says they are only invited or
+    // accepted (what they have to do on the Bitwarden side): the document is about the Bitwarden
+    // key, and writing it back must not take away what the Kemlock side confirmed.
+    let confirmed_there = row.state == MemberState::Confirmed;
     row.state = if doc.revoked() {
         MemberState::Revoked
     } else {
         match doc.status {
             CONFIRMED => MemberState::Confirmed,
+            _ if confirmed_there => MemberState::Confirmed,
             ACCEPTED => MemberState::Accepted,
             _ => MemberState::Invited,
         }
@@ -86,6 +101,55 @@ pub(crate) fn mirror_member(
         None
     };
     row
+}
+
+/// A member's document as the space's own row says they stand now. The row is what the Kemlock
+/// API, the admin console and SSO group sync change, so it decides whether they are revoked, how
+/// far along they are and which role they hold; the document keeps what only Bitwarden has (the
+/// wrapped key, external ids), and `access_all` only while the row agrees with it. A member the
+/// row has demoted or taken out never keeps the access the document remembers.
+pub(crate) fn reconcile(doc: &MemberDoc, row: &Member) -> MemberDoc {
+    let mut out = doc.clone();
+
+    if role_of(doc.atype) != row.role {
+        out.atype = type_of(row.role);
+        out.access_all = level(out.atype) >= level(ADMIN);
+    }
+    match out.atype {
+        // A custom member has every collection only with the permission that says so.
+        MANAGER => {
+            out.access_all =
+                out.access_all && row.custom.contains(CustomPermissions::CREATE_COLLECTIONS);
+        }
+        USER => out.access_all = false,
+        _ => {}
+    }
+
+    let held = doc.unrevoked_status();
+    let state = match row.state {
+        MemberState::Revoked => held,
+        MemberState::Invited => INVITED,
+        MemberState::Accepted => ACCEPTED,
+        // A member the row confirmed while the Bitwarden side still has them invited has not
+        // accepted there: the invitee's own acceptance is what a Bitwarden member needs, so they stay
+        // invited, and an administrator is not made to look as if they had accepted. (A member who
+        // accepted holds ACCEPTED or CONFIRMED already, and the row's state adds nothing.)
+        MemberState::Confirmed => held,
+    };
+    out.status = if row.state == MemberState::Revoked {
+        state - REVOKE_DIFF
+    } else {
+        state
+    };
+    // A key left from an earlier membership is not this one's.
+    if row.state != MemberState::Revoked && state < CONFIRMED {
+        out.akey.clear();
+    }
+    // Nor is a key for account recovery: someone put back to invited has enrolled in nothing yet.
+    if row.state != MemberState::Revoked && state == INVITED {
+        out.reset_password_key = None;
+    }
+    out
 }
 
 fn damaged(kind: &str, error: &serde_json::Error) -> BwError {
@@ -153,9 +217,15 @@ impl<S: BwStore> App<S> {
         };
         let mut members = BTreeMap::new();
         for (key, member) in self.docs::<MemberDoc>(id.0, KIND_MEMBER).await? {
-            if let Some(uuid) = uuid_of(&key) {
-                members.insert(UserId(uuid), member);
-            }
+            let Some(uuid) = uuid_of(&key) else {
+                continue;
+            };
+            let user = UserId(uuid);
+            // Someone with no row in the space is not a member, whatever their document says.
+            let Some(row) = state.members.iter().find(|m| m.user == user) else {
+                continue;
+            };
+            members.insert(user, reconcile(&member, row));
         }
         let pending = self
             .docs::<PendingDoc>(id.0, KIND_PENDING)
@@ -180,6 +250,27 @@ impl<S: BwStore> App<S> {
             if let Ok(ptype) = key.parse::<i32>() {
                 policies.insert(ptype, doc);
             }
+        }
+        // Require SSO is kept in `space_policy_settings`, which the Kemlock API, the console and the
+        // sign-in checks read and write; the document of this type only carries what Bitwarden shows
+        // of it, so whether it is on is the table's word.
+        let sso_on = SpaceRepo::require_sso_of(&self.store, &[id])
+            .await?
+            .contains(&id);
+        match policies.get_mut(&super::policy::REQUIRE_SSO) {
+            Some(doc) => doc.enabled = sso_on,
+            None if sso_on => {
+                policies.insert(
+                    super::policy::REQUIRE_SSO,
+                    PolicyDoc {
+                        id: Uuid::from_u128(id.0.as_u128() ^ 5).to_string(),
+                        enabled: true,
+                        data: "null".to_owned(),
+                        revision_date: crate::dates::format_date(OffsetDateTime::UNIX_EPOCH),
+                    },
+                );
+            }
+            None => {}
         }
         Ok(Some(Org {
             id,
@@ -380,8 +471,16 @@ impl<S: BwStore> App<S> {
             let invited_by = Uuid::parse_str(&pending.invited_by)
                 .map(UserId)
                 .unwrap_or(user.id);
-            // Mail is off, so an invited account that registers has accepted: an admin confirms it.
-            let mut member = MemberDoc::new(pending.atype, pending.access_all, ACCEPTED);
+            // The person who registers the address may not be the one who was invited (an address
+            // is only proven when the server verifies sign-ups), so they only become invited, and
+            // accept for themselves, as any invitee does.
+            // (An operator who asked for Vaultwarden's mail-off behaviour has them accepted.)
+            let status = if self.settings.bw_invites_auto_accept() && !self.notices.mails() {
+                ACCEPTED
+            } else {
+                INVITED
+            };
+            let mut member = MemberDoc::new(pending.atype, pending.access_all, status);
             member.invited_by_email = pending.invited_by_email.clone();
             member.external_id = pending.external_id.clone();
             self.put_member(&org, user.id, &member, invited_by).await?;
@@ -422,5 +521,200 @@ impl<S: BwStore> App<S> {
     /// register when sign-ups are closed, as Vaultwarden's invitations do.
     pub(crate) async fn has_invitation(&self, email: &str) -> BwResult<bool> {
         Ok(!self.store.doc_find(KIND_PENDING, email).await?.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::datetime;
+
+    fn row(role: SpaceRole, custom: CustomPermissions, state: MemberState) -> Member {
+        let mut row = Member::invited(
+            SpaceId::random(),
+            UserId::random(),
+            role,
+            custom,
+            UserId::random(),
+            datetime!(2026-11-26 10:00:00 UTC),
+        );
+        row.state = state;
+        row
+    }
+
+    fn doc(atype: i32, access_all: bool, status: i32) -> MemberDoc {
+        let mut doc = MemberDoc::new(atype, access_all, status);
+        if status == CONFIRMED {
+            doc.akey = "4.wrapped".to_owned();
+        }
+        doc
+    }
+
+    #[test]
+    fn a_row_that_agrees_changes_nothing() {
+        let owner = doc(OWNER, true, CONFIRMED);
+        let same = reconcile(
+            &owner,
+            &row(
+                SpaceRole::Owner,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(same, owner);
+        let custom = doc(MANAGER, true, CONFIRMED);
+        let same = reconcile(
+            &custom,
+            &row(
+                SpaceRole::Custom,
+                CustomPermissions::CREATE_COLLECTIONS,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(same, custom);
+    }
+
+    #[test]
+    fn a_demoted_admin_loses_the_admin_access_of_the_document() {
+        let admin = doc(ADMIN, true, CONFIRMED);
+        let demoted = reconcile(
+            &admin,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(demoted.atype, USER);
+        assert!(!demoted.access_all);
+        assert!(!demoted.full_access());
+        assert!(demoted.confirmed(), "the state is the row's, and it agrees");
+    }
+
+    #[test]
+    fn a_custom_member_keeps_every_collection_only_while_the_row_has_the_permission() {
+        let custom = doc(MANAGER, true, CONFIRMED);
+        let without = reconcile(
+            &custom,
+            &row(
+                SpaceRole::Custom,
+                CustomPermissions::MANAGE_USERS,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(without.atype, MANAGER);
+        assert!(!without.access_all);
+        let promoted = reconcile(
+            &doc(USER, false, CONFIRMED),
+            &row(
+                SpaceRole::Admin,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(promoted.atype, ADMIN);
+        assert!(promoted.full_access());
+    }
+
+    #[test]
+    fn a_revoked_row_revokes_the_document_and_a_restored_one_waits_to_be_confirmed() {
+        let confirmed = doc(ADMIN, true, CONFIRMED);
+        let revoked = reconcile(
+            &confirmed,
+            &row(
+                SpaceRole::Admin,
+                CustomPermissions::NONE,
+                MemberState::Revoked,
+            ),
+        );
+        assert!(revoked.revoked());
+        assert_eq!(revoked.unrevoked_status(), CONFIRMED);
+        assert_eq!(
+            revoked.akey, "4.wrapped",
+            "a Bitwarden restore may bring it back"
+        );
+        // Revoking twice is the same revocation.
+        assert_eq!(
+            reconcile(
+                &revoked,
+                &row(
+                    SpaceRole::Admin,
+                    CustomPermissions::NONE,
+                    MemberState::Revoked
+                )
+            ),
+            revoked
+        );
+
+        // The Kemlock API restores a member as an accepted one.
+        let restored = reconcile(
+            &revoked,
+            &row(
+                SpaceRole::Admin,
+                CustomPermissions::NONE,
+                MemberState::Accepted,
+            ),
+        );
+        assert_eq!(restored.status, ACCEPTED);
+        assert!(!restored.full_access());
+        assert!(restored.akey.is_empty());
+    }
+
+    #[test]
+    fn an_invitation_accepted_through_the_kemlock_api_is_accepted_here() {
+        let invited = doc(USER, false, INVITED);
+        let accepted = reconcile(
+            &invited,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Accepted,
+            ),
+        );
+        assert_eq!(accepted.status, ACCEPTED);
+        // A row that confirmed them does not make them accepted: they have not accepted here.
+        let confirmed = reconcile(
+            &invited,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(confirmed.status, INVITED);
+        assert!(confirmed.akey.is_empty());
+        // A row invited again after a removal is not the old confirmed membership.
+        let again = reconcile(
+            &doc(USER, false, CONFIRMED),
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Invited,
+            ),
+        );
+        assert_eq!(again.status, INVITED);
+        assert!(again.akey.is_empty());
+
+        // Nor does it keep the key it enrolled for account recovery with.
+        let mut enrolled = doc(USER, false, CONFIRMED);
+        enrolled.reset_password_key = Some("4.resetkey".to_owned());
+        let back = reconcile(
+            &enrolled,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Invited,
+            ),
+        );
+        assert_eq!(back.reset_password_key, None);
+        let kept = reconcile(
+            &enrolled,
+            &row(
+                SpaceRole::Member,
+                CustomPermissions::NONE,
+                MemberState::Confirmed,
+            ),
+        );
+        assert_eq!(kept.reset_password_key.as_deref(), Some("4.resetkey"));
     }
 }

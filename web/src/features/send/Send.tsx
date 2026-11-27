@@ -489,7 +489,8 @@ export default function Send() {
       onDelete={(row) => remove.mutate(row.id)}
       onCopy={(row) => {
         if (!row.link) return;
-        void copyText(row.link, {}).then((ok) => {
+        // The link carries the key that opens the Send, so it is a secret as a password is.
+        void copyText(row.link, { secret: true }).then((ok) => {
           if (ok) setCopied(row.id);
         });
       }}

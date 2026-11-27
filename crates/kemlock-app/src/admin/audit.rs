@@ -4,7 +4,7 @@
 
 use super::ports::{AdminEvent, AdminEventRepo, AdminUserRepo, Mailer, Notice};
 use crate::authenticate::Actor;
-use crate::ports::Clock;
+use crate::ports::{Clock, StoreError};
 use kemlock_domain::unlock::truncate_ip;
 use std::net::IpAddr;
 use time::format_description::well_known::Rfc3339;
@@ -28,6 +28,36 @@ impl<V: AdminEventRepo, U: AdminUserRepo, M: Mailer, C: Clock> Audit<V, U, M, C>
         target: Option<String>,
         summary: &str,
     ) {
+        // Not fail-fast, so this never errors.
+        let _ = self
+            .write_and_tell(actor, ip, action, target, summary, false)
+            .await;
+    }
+
+    /// [`Audit::record`] for an action that must not happen unseen: it fails, before anyone is
+    /// told, when the event can't be written, so the caller can refuse to go on. Mailing the
+    /// other admins is still best effort.
+    pub async fn record_checked(
+        &self,
+        actor: &Actor,
+        ip: Option<IpAddr>,
+        action: &str,
+        target: Option<String>,
+        summary: &str,
+    ) -> Result<(), StoreError> {
+        self.write_and_tell(actor, ip, action, target, summary, true)
+            .await
+    }
+
+    async fn write_and_tell(
+        &self,
+        actor: &Actor,
+        ip: Option<IpAddr>,
+        action: &str,
+        target: Option<String>,
+        summary: &str,
+        fail_fast: bool,
+    ) -> Result<(), StoreError> {
         let at = self.clock.now();
         let ip = ip.map(truncate_ip);
         let event = AdminEvent {
@@ -40,15 +70,18 @@ impl<V: AdminEventRepo, U: AdminUserRepo, M: Mailer, C: Clock> Audit<V, U, M, C>
         };
         if let Err(e) = self.events.record_admin_event(event).await {
             tracing::error!(action, error = %e, "couldn't record an admin action");
+            if fail_fast {
+                return Err(e);
+            }
         }
         if !self.mail.configured() {
-            return;
+            return Ok(());
         }
         let admins = match self.users.admins().await {
             Ok(admins) => admins,
             Err(e) => {
                 tracing::warn!(error = %e, "couldn't list the admins to tell");
-                return;
+                return Ok(());
             }
         };
         let who = admins
@@ -73,5 +106,6 @@ impl<V: AdminEventRepo, U: AdminUserRepo, M: Mailer, C: Clock> Audit<V, U, M, C>
                 tracing::warn!(action, error = %e, "couldn't mail an admin about an action");
             }
         }
+        Ok(())
     }
 }

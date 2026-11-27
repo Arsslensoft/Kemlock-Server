@@ -6,7 +6,7 @@ mod sso_fakes;
 use fakes::*;
 use kemlock_app::AppError;
 use kemlock_app::sso::{
-    DomainProofs, RequireSso, SignInMethod, SpaceMembership, SpaceRole, SsoError,
+    DomainProofs, Rechecked, RequireSso, SignInMethod, SpaceMembership, SpaceRole, SsoError,
 };
 use kemlock_domain::{Role, SpaceId, User};
 use sso_fakes::*;
@@ -243,6 +243,71 @@ async fn the_record_in_dns_verifies_the_domain() {
         .await
         .expect("still verified");
     assert_eq!(still, verified);
+}
+
+#[tokio::test]
+async fn a_verified_domain_is_looked_at_again_after_a_while() {
+    let world = World::new();
+    let (repos, dns) = (FakeSsoRepos::default(), FakeDns::default());
+    let week = time::Duration::days(7);
+    let kept = proofs(&world, &repos, &dns)
+        .begin("kept.example.org")
+        .await
+        .expect("claims");
+    let lost = proofs(&world, &repos, &dns)
+        .begin("lost.example.org")
+        .await
+        .expect("claims");
+    let pending = proofs(&world, &repos, &dns)
+        .begin("pending.example.org")
+        .await
+        .expect("claims");
+    dns.publish("kept.example.org", &kept.txt_value());
+    dns.publish("lost.example.org", &lost.txt_value());
+    for domain in ["kept.example.org", "lost.example.org"] {
+        proofs(&world, &repos, &dns)
+            .check(domain)
+            .await
+            .expect("verified");
+    }
+
+    // Too soon: nothing is looked at, whatever DNS says now.
+    world.env.clock.advance(time::Duration::days(6));
+    let none_yet = FakeDns::default();
+    assert_eq!(
+        proofs(&world, &repos, &none_yet).recheck_stale(week).await,
+        Ok(Rechecked::default())
+    );
+    assert!(
+        proofs(&world, &repos, &none_yet)
+            .is_verified("lost.example.org")
+            .await
+            .expect("asks")
+    );
+
+    // A week on, the record of one is still published and the other's is gone.
+    world.env.clock.advance(time::Duration::days(1));
+    let later = FakeDns::default();
+    later.publish("kept.example.org", &kept.txt_value());
+    assert_eq!(
+        proofs(&world, &repos, &later).recheck_stale(week).await,
+        Ok(Rechecked {
+            kept: 1,
+            dropped: 1,
+            unreachable: 0
+        })
+    );
+    let check = proofs(&world, &repos, &later);
+    assert!(check.is_verified("kept.example.org").await.expect("asks"));
+    assert!(!check.is_verified("lost.example.org").await.expect("asks"));
+    assert!(!check.is_verified(&pending.domain).await.expect("asks"));
+    // The one that held is verified afresh, so it is looked at again a week later, not at once.
+    assert_eq!(
+        proofs(&world, &repos, &FakeDns::default())
+            .recheck_stale(week)
+            .await,
+        Ok(Rechecked::default())
+    );
 }
 
 #[tokio::test]

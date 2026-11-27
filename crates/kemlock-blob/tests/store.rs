@@ -363,6 +363,89 @@ async fn verify_checks_a_blob_written_some_other_way() {
     );
 }
 
+/// Where a pre-signed upload lands in a local folder's layout, which a test writes to by hand: the
+/// bucket's signed URL names this path.
+fn stage(dir: &Path, blob: BlobId, bytes: &[u8]) -> PathBuf {
+    let folder = dir.join("attachments").join("staging");
+    std::fs::create_dir_all(&folder).expect("a folder");
+    let path = folder.join(blob.to_string());
+    std::fs::write(&path, bytes).expect("a file");
+    path
+}
+
+#[tokio::test]
+async fn a_pre_signed_upload_is_checked_and_moved_so_a_later_put_cannot_change_the_file() {
+    let (store, dir) = local();
+    let blob = BlobId::random();
+    let bytes = kma1_file(500);
+    let staged = stage(dir.path(), blob, &bytes);
+
+    assert_eq!(store.verify(blob, bytes.len() as u64).await, Ok(()));
+    assert!(
+        !staged.exists(),
+        "the staging object went once it was moved"
+    );
+    assert_eq!(read(&store, blob).await.expect("reads").0, bytes);
+
+    // The signed URL still works for its lifetime: a bigger body goes to the staging name again.
+    let huge = kma1_file(70_000);
+    let again = stage(dir.path(), blob, &huge);
+    assert_eq!(
+        read(&store, blob).await.expect("reads").0,
+        bytes,
+        "what clients download didn't change"
+    );
+    // A finish retried before the attachment was marked ready sees the staging object again, and
+    // a body other than the announced one is refused.
+    assert_eq!(
+        store.verify(blob, bytes.len() as u64).await,
+        Err(BlobError::WrongSize),
+    );
+    store.delete(blob).await.expect("deleted");
+    assert!(
+        !again.exists(),
+        "deleting the blob takes its staging object too"
+    );
+    assert!(store.open(blob).await.is_err(), "and the blob itself");
+}
+
+#[tokio::test]
+async fn a_pre_signed_upload_of_the_wrong_size_or_kind_is_refused() {
+    let (store, dir) = local();
+    let bytes = kma1_file(500);
+
+    // Announced tiny, sent big.
+    let big = BlobId::random();
+    stage(dir.path(), big, &kma1_file(70_000));
+    assert_eq!(
+        store.verify(big, bytes.len() as u64).await,
+        Err(BlobError::WrongSize)
+    );
+    assert!(
+        store.open(big).await.is_err(),
+        "nothing was stored under the blob's own name"
+    );
+
+    // The right size but not a KMA1 file.
+    let zip = BlobId::random();
+    let mut other = bytes.clone();
+    other[..4].copy_from_slice(b"PK\x03\x04");
+    stage(dir.path(), zip, &other);
+    let refused = store.verify(zip, other.len() as u64).await;
+    assert!(matches!(refused, Err(BlobError::NotKma1(_))), "{refused:?}");
+    assert!(store.open(zip).await.is_err());
+
+    // The caller deletes what was refused, staging included.
+    for blob in [big, zip] {
+        store.delete(blob).await.expect("deleted");
+    }
+    assert!(
+        files_under(&dir.path().join("attachments")).is_empty(),
+        "{:?}",
+        files_under(&dir.path().join("attachments"))
+    );
+}
+
 fn bucket() -> S3Config {
     S3Config {
         endpoint: Some("http://localhost:9000".to_owned()),
@@ -383,33 +466,64 @@ async fn a_local_folder_has_no_presigned_urls() {
 }
 
 #[tokio::test]
-async fn a_bucket_signs_urls_only_when_the_setting_is_on() {
+async fn a_bucket_signs_download_urls_only_when_the_setting_is_on_and_never_upload_ones() {
     let blob = BlobId::random();
 
     let off = ObjectBlobStore::s3(&bucket(), None).expect("a bucket store");
     assert_eq!(off.presigned_upload(blob).await, Ok(None));
+    assert_eq!(off.presigned_download(blob).await, Ok(None));
 
     let on =
         ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
-    for url in [
-        on.presigned_upload(blob)
+    // A pre-signed `PUT` can't be held to the announced length, so there is none.
+    assert_eq!(on.presigned_upload(blob).await, Ok(None));
+    let url = on
+        .presigned_download(blob)
+        .await
+        .expect("signs")
+        .expect("a URL");
+    assert_eq!(url.expires_in, Duration::from_secs(300));
+    assert!(
+        url.url.starts_with("http://localhost:9000/kemlock/"),
+        "{}",
+        url.url
+    );
+    assert!(url.url.contains(&blob.to_string()), "{}", url.url);
+    assert!(url.url.contains("X-Amz-Signature="), "{}", url.url);
+}
+
+#[tokio::test]
+async fn the_purge_removes_only_the_staging_objects_past_the_grace_period() {
+    let store = ObjectBlobStore::memory();
+    let (a, b) = (BlobId::random(), BlobId::random());
+    store
+        .put_raw(&format!("staging/{a}"), b"left behind".to_vec())
+        .await
+        .expect("put");
+    store
+        .put_raw(&format!("staging/{b}"), b"left behind too".to_vec())
+        .await
+        .expect("put");
+    store
+        .put_blob_raw(a, b"a finished blob".to_vec())
+        .await
+        .expect("put");
+
+    // Nothing is old enough yet.
+    assert_eq!(store.purge_staging(Duration::from_secs(3600)).await, Ok(0));
+    assert!(
+        store
+            .get_raw(&format!("staging/{a}"))
             .await
-            .expect("signs")
-            .expect("a URL"),
-        on.presigned_download(blob)
-            .await
-            .expect("signs")
-            .expect("a URL"),
-    ] {
-        assert_eq!(url.expires_in, Duration::from_secs(300));
-        assert!(
-            url.url.starts_with("http://localhost:9000/kemlock/"),
-            "{}",
-            url.url
-        );
-        assert!(url.url.contains(&blob.to_string()), "{}", url.url);
-        assert!(url.url.contains("X-Amz-Signature="), "{}", url.url);
+            .expect("read")
+            .is_some()
+    );
+    // Past the grace period they go, and a finished blob is not under `staging/`.
+    assert_eq!(store.purge_staging(Duration::ZERO).await, Ok(2));
+    for blob in [a, b] {
+        assert_eq!(store.get_raw(&format!("staging/{blob}")).await, Ok(None));
     }
+    assert!(store.get_blob_raw(a).await.expect("read").is_some());
 }
 
 #[tokio::test]
@@ -435,9 +549,10 @@ async fn the_settings_build_the_store_they_describe() {
         presign_ttl: Duration::from_secs(60),
     };
     let store = ObjectBlobStore::from_config(&config).expect("a bucket store");
+    assert_eq!(store.presigned_upload(BlobId::random()).await, Ok(None));
     assert!(
         store
-            .presigned_upload(BlobId::random())
+            .presigned_download(BlobId::random())
             .await
             .expect("signs")
             .is_some()

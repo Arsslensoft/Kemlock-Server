@@ -190,6 +190,13 @@ impl RetentionOverrides {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub signups_allowed: bool,
+    /// "Verify the email of a new account", while the server can send mail: a new account is held
+    /// until the link mailed to its address is opened.
+    pub signups_verify: bool,
+    /// The setting is on but no SMTP server is set up, so it does nothing: no link could be sent.
+    pub signups_verify_needs_mail: bool,
+    /// `bw_invites_auto_accept`: a Bitwarden invitation to an existing account counts as accepted.
+    pub bw_invites_auto_accept: bool,
     /// Lower-case; empty means no whitelist.
     pub signups_domains: Vec<String>,
     pub invitations_allowed: bool,
@@ -207,6 +214,7 @@ pub struct Snapshot {
     pub rate_sign_in_per_minute: u32,
     pub rate_password_failures: u32,
     pub rate_second_step_failures: u32,
+    pub rate_second_step_challenges: u32,
     pub rate_register_per_hour: u32,
     /// The SMTP server, or none when no host is set (mail is only logged) or the settings don't
     /// make a valid one: then `smtp_error` says why and the sender in use stays as it was.
@@ -226,6 +234,10 @@ pub struct Snapshot {
     pub backup_destination: String,
     pub backup_destination_saved: bool,
     pub backup_recipient: String,
+    /// `federation_promotion` as the server follows it: `hold` or `auto`.
+    pub federation_promotion: String,
+    /// `space_chain_external_changes`: `queue`, `refuse` or `unchained`.
+    pub space_chain_external_changes: String,
 }
 
 fn flag(view: &SettingView) -> bool {
@@ -316,6 +328,7 @@ impl Snapshot {
             outranks.then(|| u64::try_from(int(size)).unwrap_or(1).saturating_mul(MIB));
 
         let (smtp, smtp_error) = smtp_of(settings, &views, process_env).await;
+        let verify_wanted = flag(view("signups_verify")?);
         let (push, push_error) = match push_of(settings, &views).await {
             Ok(push) => (push, None),
             Err(why) => (PushValues::default(), Some(why)),
@@ -323,6 +336,9 @@ impl Snapshot {
 
         Ok(Snapshot {
             signups_allowed: flag(view("signups_allowed")?),
+            signups_verify: verify_wanted && smtp.is_some(),
+            signups_verify_needs_mail: verify_wanted && smtp.is_none(),
+            bw_invites_auto_accept: flag(view("bw_invites_auto_accept")?),
             signups_domains: domains,
             invitations_allowed: flag(view("invitations_allowed")?),
             max_file_size,
@@ -340,6 +356,7 @@ impl Snapshot {
             rate_sign_in_per_minute: count(view("rate_sign_in_per_minute")?),
             rate_password_failures: count(view("rate_password_failures_per_15_minutes")?),
             rate_second_step_failures: count(view("rate_second_step_failures_per_15_minutes")?),
+            rate_second_step_challenges: count(view("rate_second_step_challenges_per_5_minutes")?),
             rate_register_per_hour: count(view("rate_register_per_hour")?),
             smtp,
             smtp_error,
@@ -355,6 +372,8 @@ impl Snapshot {
             backup_destination: text("backup_destination")?,
             backup_destination_saved: view("backup_destination")?.source == Source::Saved,
             backup_recipient: text("backup_recipient")?,
+            federation_promotion: text("federation_promotion")?,
+            space_chain_external_changes: text("space_chain_external_changes")?,
         })
     }
 }
@@ -548,6 +567,13 @@ impl Mailer for SwitchMailer {
 /// Puts `snapshot` into the running parts.
 pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchMailer) {
     live.set_signups_allowed(snapshot.signups_allowed);
+    live.set_signups_verify(snapshot.signups_verify);
+    if snapshot.signups_verify_needs_mail {
+        tracing::warn!(
+            "SIGNUPS_VERIFY is on but no SMTP server is set up (SMTP_HOST), so it does nothing: new accounts are not held back"
+        );
+    }
+    live.set_bw_invites_auto_accept(snapshot.bw_invites_auto_accept);
     live.set_signup_domains(&snapshot.signups_domains);
     live.set_invitations_allowed(snapshot.invitations_allowed);
     live.set_max_file_size(snapshot.max_file_size.unwrap_or(0));
@@ -555,10 +581,16 @@ pub fn apply(snapshot: &Snapshot, live: &Live, limits: &Limits, mailer: &SwitchM
     live.set_space_attachment_limit(snapshot.space_attachment_limit);
     live.set_send_limit(snapshot.send_limit);
     limits.sign_in.set_limit(snapshot.rate_sign_in_per_minute);
+    live.set_password_limit(snapshot.rate_password_failures);
+    live.set_second_step_limit(snapshot.rate_second_step_failures);
     limits.account.set_limit(snapshot.rate_password_failures);
+    limits.step_up.set_limit(snapshot.rate_second_step_failures);
     limits
         .second_step
         .set_limit(snapshot.rate_second_step_failures);
+    limits
+        .challenges
+        .set_limit(snapshot.rate_second_step_challenges);
     limits.register.set_limit(snapshot.rate_register_per_hour);
     mailer.follow(snapshot);
 }
@@ -634,6 +666,23 @@ impl SettingsWatch {
         store.set_retention_overlay(move |retention| {
             let overrides = rx.borrow().retention;
             overrides.apply_to(retention);
+        });
+    }
+
+    /// Makes the store's own reads of `federation_promotion` and `space_chain_external_changes`
+    /// see the layered values (the environment, then `kemlock.toml`, then what the console saved),
+    /// now and as they change.
+    pub fn overlay_store_settings(&self, store: &SqlStore) {
+        let rx = self.subscribe();
+        store.set_setting_overlay(move |key| {
+            let snapshot = rx.borrow();
+            match key {
+                "federation_promotion" => Some(snapshot.federation_promotion.clone()),
+                "space_chain_external_changes" => {
+                    Some(snapshot.space_chain_external_changes.clone())
+                }
+                _ => None,
+            }
         });
     }
 
@@ -788,6 +837,31 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_stores_own_settings_follow_the_config_file_too() {
+        use kemlock_federation::extra::{FedAdminRepo, PromotionMode};
+        let store = new_store().await;
+        // Nothing sets it: held, as the default says.
+        let plain = watching(&store, layered(&[], &[])).await;
+        plain.overlay_store_settings(&store);
+        assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+        // `kemlock.toml` says auto, and the store sees it though nothing was saved.
+        let from_file = watching(&store, layered(&[], &[("federation_promotion", "auto")])).await;
+        from_file.overlay_store_settings(&store);
+        assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Auto));
+        // The environment outranks the file.
+        let from_env = watching(
+            &store,
+            layered(
+                &[("KEMLOCK_FEDERATION_PROMOTION", "hold")],
+                &[("federation_promotion", "auto")],
+            ),
+        )
+        .await;
+        from_env.overlay_store_settings(&store);
+        assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+    }
+
     #[test]
     fn the_environment_outranks_the_file_and_names_map_to_settings() {
         let env = layered(
@@ -843,10 +917,17 @@ mod tests {
                 ("space_attachment_limit_kib", "2048"),
                 ("send_file_limit_kib", "512"),
                 ("invitations_allowed", "false"),
+                // Verifying a new account's address needs a mail server to send the link.
+                ("smtp_host", "mail.example.org"),
+                ("smtp_from", "ops@example.org"),
+                ("signups_verify", "true"),
+                ("bw_invites_auto_accept", "true"),
             ],
         )
         .await;
         let snapshot = watching(&store, layered(&[], &[])).await.current();
+        assert!(snapshot.signups_verify);
+        assert!(snapshot.bw_invites_auto_accept);
         assert_eq!(
             snapshot.user_attachment_limit,
             Some(0),
@@ -875,6 +956,8 @@ mod tests {
         let store = new_store().await;
         let snapshot = watching(&store, layered(&[], &[])).await.current();
         assert!(!snapshot.signups_allowed);
+        assert!(!snapshot.signups_verify);
+        assert!(!snapshot.bw_invites_auto_accept);
         assert!(snapshot.invitations_allowed);
         assert!(snapshot.signups_domains.is_empty());
         assert_eq!(snapshot.max_file_size, None);
@@ -885,6 +968,7 @@ mod tests {
         assert_eq!(snapshot.rate_sign_in_per_minute, 10);
         assert_eq!(snapshot.rate_password_failures, 10);
         assert_eq!(snapshot.rate_second_step_failures, 5);
+        assert_eq!(snapshot.rate_second_step_challenges, 10);
         assert_eq!(snapshot.smtp, None);
         assert_eq!(snapshot.smtp_error, None);
     }
@@ -972,6 +1056,32 @@ mod tests {
             .expect("stored");
         assert!(!stored.contains("hunter2"), "sealed in the store");
         assert!(!format!("{snapshot:?}").contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn verifying_new_accounts_follows_only_while_the_server_can_mail() {
+        let store = new_store().await;
+        let without = watching(&store, layered(&[("SIGNUPS_VERIFY", "true")], &[]))
+            .await
+            .current();
+        assert!(!without.signups_verify, "no link could be sent");
+        assert!(without.signups_verify_needs_mail);
+
+        let env = layered(
+            &[
+                ("SIGNUPS_VERIFY", "true"),
+                ("SMTP_HOST", "mail.example.org"),
+                ("SMTP_FROM", "vault@example.org"),
+            ],
+            &[],
+        );
+        let with = watching(&store, env).await.current();
+        assert!(with.signups_verify);
+        assert!(!with.signups_verify_needs_mail);
+
+        let off = watching(&store, layered(&[], &[])).await.current();
+        assert!(!off.signups_verify);
+        assert!(!off.signups_verify_needs_mail);
     }
 
     #[tokio::test]
@@ -1084,6 +1194,7 @@ mod tests {
         assert_eq!(limits.sign_in.limit(), 20);
         assert_eq!(limits.account.limit(), 30);
         assert_eq!(limits.second_step.limit(), 8);
+        assert_eq!(limits.step_up.limit(), 8);
         assert_eq!(limits.register.limit(), 40);
 
         // Back to the defaults when the saved values are reset.

@@ -22,17 +22,20 @@
 //! These routes need a store that keeps chains ([`SpaceChainRepo`]), so they have a router of
 //! their own, merged beside the spaces router.
 
+use super::large_bodies::{LargeBodies, LargeBody};
 use crate::dto::decode;
 use crate::problem::Problem;
 use crate::routes::spaces::{Caller, Env, mail_invitations, nonce_header};
 use crate::state::{Api, Crypto, Store};
-use axum::body::Bytes;
-use axum::extract::{FromRequest, Path, Query, Request, State};
+use axum::body::{Body, Bytes};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::get;
 use axum::routing::post;
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
+use futures_util::StreamExt;
+use kemlock_app::authenticate::Actor;
 use kemlock_app::ports::TokenSigner;
 use kemlock_app::spaces::{
     AppendChain, AppendError, AppendRequest, ChainHead, ChainReadError, GetChain, GetChainSeals,
@@ -40,31 +43,168 @@ use kemlock_app::spaces::{
     StoredRecord, StoredSeal, invitees,
 };
 use kemlock_app::{AppError, b64url};
-use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
+use kemlock_crypto::space_chain::{
+    Body as RecordBody, Id, KeyRef, NameTarget, Reason, Record, SignedRecord, State as ChainState,
+};
+use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::spaces::CustomPermissions;
-use kemlock_domain::{ItemId, SpaceId, UserId};
+use kemlock_domain::{ItemError, ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::BTreeSet;
+use std::time::{Duration, Instant};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
 
-/// The most a request to the append route may weigh: 16 records of 192 KiB, base64url, with their
-/// signatures, boxes and names.
+/// The most a request to the append route may weigh, whoever sends it: 16 records of 192 KiB,
+/// base64url, with their signatures, boxes and names.
 const MAX_CHAIN_BODY_BYTES: usize = 8 * 1024 * 1024;
 
-/// The raw body of an append, read up to [`MAX_CHAIN_BODY_BYTES`]. The ordinary body limit is
-/// 2 MiB, which a request of large records exceeds.
+/// The most a request may weigh when it replaces keys. A key replacement writes every live item of
+/// the replaced collections again in the same request, and each carries its signature ("Signed item
+/// writes", 3,373 bytes, 4.5 KiB in base64url), so the request grows with the items: this is room
+/// for about 5,000 items of ordinary size.
+const MAX_REPLACEMENT_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// The most items one request re-writes: more than [`MAX_REPLACEMENT_BODY_BYTES`] can hold.
+const MAX_REWRITES: usize = 6_000;
+
+/// A body has this long to arrive, from its first byte, and one more second for each
+/// [`BODY_RATE`] bytes it has by then: the floor is [`BODY_RATE`] a second, after this start.
+const BODY_GRACE: Duration = Duration::from_secs(30);
+const BODY_RATE: u64 = 256 * 1024;
+
+/// The longest a large body may go without a chunk.
+const CHUNK_WAIT: Duration = Duration::from_secs(15);
+
+/// The raw body of an append, and the place among the large bodies it holds, if it is one.
 #[derive(Debug)]
-struct ChainBody(Bytes);
+struct ChainBody {
+    bytes: Bytes,
+    large: Option<LargeBody>,
+}
 
-impl<S: Send + Sync> FromRequest<S> for ChainBody {
-    type Rejection = Problem;
+/// The collection keys the chain's state marks that `me` may replace, as the worker's
+/// `replace_marked` decides: a confirmed member entitled to the key, with edit on the collection.
+fn replaceable_marked(state: &ChainState, me: &Id) -> BTreeSet<Id> {
+    state
+        .keys()
+        .iter()
+        .filter_map(|key| match key {
+            KeyRef::Collection(id)
+                if state.key_marked(key)
+                    && state.entitled(key).contains(me)
+                    && state.access(me, id).is_some_and(|rights| rights.edit) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .collect()
+}
 
-    async fn from_request(req: Request, _state: &S) -> Result<Self, Problem> {
-        axum::body::to_bytes(req.into_body(), MAX_CHAIN_BODY_BYTES)
+/// Whether `actor` may send more than the ordinary limit to `space` now: the chain's state has a
+/// collection key marked that they may replace. Nothing else needs a body that large: the items of
+/// a key replacement are the only thing that does.
+async fn may_send_large<S, P, K, R>(env: &Env<S, P, K, R>, actor: &Actor, space: SpaceId) -> bool
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let Ok(Some((_, state))) = env.spaces.chain_state(space).await else {
+        return false;
+    };
+    !replaceable_marked(&state, actor.user.as_bytes()).is_empty()
+}
+
+fn too_slow() -> Problem {
+    Problem::new(
+        StatusCode::REQUEST_TIMEOUT,
+        "request-timeout",
+        "The request body arrived too slowly",
+    )
+    .detail("A body has 30 seconds, and a second more for each 256 KiB of it, to arrive")
+}
+
+/// Reads an append's body after the caller is authenticated, as a stream. At most 8 MiB is held
+/// unless `large_ok` and [`may_send_large`] say the caller may send more and a place among the
+/// large bodies is free: `413` answers otherwise (a stranger, a plain member, a space with no key
+/// to replace), and nothing past 8 MiB was buffered. Every body must keep up [`BODY_RATE`] from
+/// its first byte, and one that doesn't gives its place back.
+async fn read_chain_body<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    places: &LargeBodies,
+    actor: &Actor,
+    space: SpaceId,
+    body: Body,
+    large_ok: bool,
+) -> Result<ChainBody, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    // A place taken is dropped, and counted against the account, whatever becomes of the body.
+    let mut large: Option<LargeBody> = None;
+    let bytes = read_stream(env, places, actor, space, body, large_ok, &mut large).await?;
+    Ok(ChainBody {
+        bytes: Bytes::from(bytes),
+        large,
+    })
+}
+
+async fn read_stream<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    places: &LargeBodies,
+    actor: &Actor,
+    space: SpaceId,
+    body: Body,
+    large_ok: bool,
+    large: &mut Option<LargeBody>,
+) -> Result<Vec<u8>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let mut stream = body.into_data_stream();
+    let mut bytes: Vec<u8> = Vec::new();
+    let started = Instant::now();
+    loop {
+        // What is allowed so far is the start and a second for each 256 KiB that arrived: a chunk
+        // may not take longer than that to come, nor more than [`CHUNK_WAIT`].
+        let allowed = BODY_GRACE + Duration::from_secs(bytes.len() as u64 / BODY_RATE);
+        let wait = allowed.saturating_sub(started.elapsed()).min(CHUNK_WAIT);
+        let next = tokio::time::timeout(wait, stream.next())
             .await
-            .map(ChainBody)
-            .map_err(|_| Problem::payload_too_large())
+            .map_err(|_| too_slow())?;
+        let Some(chunk) = next else {
+            return Ok(bytes);
+        };
+        let chunk = chunk.map_err(|_| bad("the body couldn't be read"))?;
+        let total = bytes.len().saturating_add(chunk.len());
+        if large.is_none() && total > MAX_CHAIN_BODY_BYTES {
+            if !large_ok || !may_send_large(env, actor, space).await {
+                return Err(Problem::payload_too_large());
+            }
+            *large = Some(
+                places
+                    .take(*actor.user.as_bytes(), *space.as_bytes())
+                    .await?,
+            );
+        }
+        if total > MAX_REPLACEMENT_BODY_BYTES {
+            return Err(Problem::payload_too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+        let allowed = BODY_GRACE + Duration::from_secs(bytes.len() as u64 / BODY_RATE);
+        if started.elapsed() > allowed {
+            return Err(too_slow());
+        }
     }
 }
 
@@ -140,6 +280,9 @@ pub(crate) struct AppendRequestDto {
     /// Live items a `keys` record in the request leaves held.
     #[serde(default)]
     held: Vec<Uuid>,
+    /// Items a `keys` record in the request re-writes under the collection's new key version.
+    #[serde(default)]
+    writes: Vec<super::spaces::ReplacementWriteDto>,
 }
 
 /// The head of a chain.
@@ -340,6 +483,13 @@ impl From<AppendError> for Problem {
                 detail.map_or_else(|| error.reason.as_str().to_owned(), str::to_owned),
             ),
             AppendError::Invalid(why) => bad(why),
+            AppendError::JoinRefused(refusal) => Problem::from(refusal),
+            AppendError::Quota(why) => Problem::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "space-chain-quota",
+                "Too many records lately",
+            )
+            .detail(why),
             AppendError::Mismatch(why) => Problem::new(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "pending-change-mismatch",
@@ -352,6 +502,9 @@ impl From<AppendError> for Problem {
                 "A held item isn't in a collection the request rotates",
             )
             .detail(why),
+            AppendError::SignatureRequired => {
+                Problem::from(AppError::Item(ItemError::SignatureRequired))
+            }
             AppendError::NotFound => Problem::not_found(),
             AppendError::Store(message) => Problem::from(AppError::Store(message)),
         }
@@ -373,7 +526,9 @@ impl From<ChainReadError> for Problem {
 
 // ---- the use cases of one request ----
 
-fn append_use_case<S, P, K, R>(env: &Env<S, P, K, R>) -> AppendChain<R, S, S, P>
+fn append_use_case<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+) -> AppendChain<R, S, S, P, S, S, crate::LiveHub>
 where
     S: Store,
     P: Crypto,
@@ -385,6 +540,10 @@ where
         users: env.api.store.clone(),
         events: env.api.store.clone(),
         clock: env.api.crypto.clone(),
+        items: env.api.store.clone(),
+        tags: env.api.store.clone(),
+        limits: env.api.auth_config().item_limits,
+        push: env.api.hub.clone(),
     }
 }
 
@@ -392,7 +551,7 @@ where
 
 /// Reads an append request's JSON into what the use case takes.
 fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
-    let request: AppendRequestDto = serde_json::from_slice(&body.0)
+    let request: AppendRequestDto = serde_json::from_slice(&body.bytes)
         .map_err(|e| Problem::bad_request(format!("the body isn't the JSON expected: {e}")))?;
     let mut records = Vec::with_capacity(request.records.len());
     for (i, record) in request.records.iter().enumerate() {
@@ -432,19 +591,144 @@ fn read_request(body: &ChainBody) -> Result<AppendRequest, Problem> {
             sealed: decode("name", &name.name)?,
         });
     }
+    if request.writes.len() > MAX_REWRITES {
+        return Err(bad("a request re-writes at most 6,000 items"));
+    }
+    let mut written = BTreeSet::new();
+    let mut writes = Vec::with_capacity(request.writes.len());
+    for write in request.writes {
+        if !written.insert(write.item.id) {
+            return Err(bad("an item is re-written once in a request"));
+        }
+        let item = write
+            .item
+            .into_write(Some(Revision(write.expected_revision)))?;
+        writes.push((CollectionId(write.collection), item));
+    }
     Ok(AppendRequest {
         records,
         seals,
         names,
         held: request.held.iter().map(|id| ItemId(*id)).collect(),
+        writes,
     })
+}
+
+/// The re-written items of a key replacement, checked before anything is stored. First, cheaply,
+/// that the caller is a confirmed member of the space with edit on the collection of each item,
+/// from the chain's state: a stranger's request costs no signature check. Then each signature, as
+/// any item write's is (docs/crypto.md, "Signed item writes"): by the signed-in account, over the
+/// statement rebuilt from the write and the collection it names, on a blocking thread. An unsigned
+/// re-write is left to the use case, which knows whether the space takes signed writes only.
+async fn check_rewrites<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    actor: UserId,
+    space: SpaceId,
+    request: &mut AppendRequest,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    if request.writes.is_empty() {
+        return Ok(());
+    }
+    let Some((_, state)) = env
+        .spaces
+        .chain_state(space)
+        .await
+        .map_err(|e| Problem::from(AppError::Store(e.to_string())))?
+    else {
+        return Err(Problem::not_found());
+    };
+    let me = *actor.as_bytes();
+    if state.confirmed(&me).is_none() {
+        return Err(Problem::not_found());
+    }
+    for (collection, _) in &request.writes {
+        if !state
+            .access(&me, collection.0.as_bytes())
+            .is_some_and(|rights| rights.edit)
+        {
+            return Err(refused(
+                Reason::NotAllowed,
+                None,
+                "only a member with edit on a collection re-writes its items".to_owned(),
+            ));
+        }
+    }
+    // The writes go to the blocking task and come back, so none is copied.
+    let writes = std::mem::take(&mut request.writes);
+    request.writes =
+        super::write_sig::verify_writes_blocking(&env.api.store, actor, writes).await?;
+    Ok(())
+}
+
+/// What an append does once its body is read: the same for a new request and for the answer to a
+/// queued change (`pending`).
+async fn append_read<S, P, K, R>(
+    env: &Env<S, P, K, R>,
+    actor: &Actor,
+    space: SpaceId,
+    pending: Option<Uuid>,
+    body: &ChainBody,
+    replaced: &mut bool,
+) -> Result<(StatusCode, Json<HeadDto>), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
+    let mut request = read_request(body)?;
+    check_rewrites(env, actor.user, space, &mut request).await?;
+    // For a large body: the marked collection keys the caller may replace now, to tell afterwards
+    // whether the request replaced one.
+    let mut may_replace = BTreeSet::new();
+    if body.large.is_some()
+        && let Ok(Some((_, state))) = env.spaces.chain_state(space).await
+    {
+        may_replace = replaceable_marked(&state, actor.user.as_bytes());
+    }
+    let rotates = request
+        .records
+        .iter()
+        .filter_map(|record| Record::parse(&record.entry).ok())
+        .any(|record| match record.body {
+            RecordBody::Keys { rotate, .. } => rotate.iter().any(
+                |commitment| matches!(commitment.key, KeyRef::Collection(id) if may_replace.contains(&id)),
+            ),
+            _ => false,
+        });
+    let invited = invitees(&request);
+    let append = append_use_case(env);
+    let head = match pending {
+        None => append.execute(actor, space, request).await?,
+        Some(pending) => append.answer(actor, space, pending, request).await?,
+    };
+    *replaced = rotates;
+    mail_invitations(env, actor.user, &invited, space).await;
+    Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
+}
+
+impl ChainBody {
+    /// Notes how the request ended. A large body counts against the account whatever came of it,
+    /// unless it was stored and replaced a marked collection key.
+    fn settle<T>(&mut self, result: &Result<T, Problem>, replaced: bool) {
+        if let (Some(place), Ok(_), true) = (self.large.as_mut(), result, replaced) {
+            place.replaced();
+        }
+    }
 }
 
 async fn append_chain<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
+    Extension(places): Extension<LargeBodies>,
     caller: Caller,
     Path(id): Path<String>,
-    body: ChainBody,
+    body: Body,
 ) -> Result<(StatusCode, Json<HeadDto>), Problem>
 where
     S: Store,
@@ -453,21 +737,22 @@ where
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
     let space = space_id(&id)?;
-    let request = read_request(&body)?;
     let actor = caller.actor();
-    let invited = invitees(&request);
-    let head = append_use_case(&env)
-        .execute(&actor, space, request)
-        .await?;
-    mail_invitations(&env, actor.user, &invited, space).await;
-    Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
+    let mut body = read_chain_body(&env, &places, &actor, space, body, true).await?;
+    let mut replaced = false;
+    let result = append_read(&env, &actor, space, None, &body, &mut replaced).await;
+    body.settle(&result, replaced);
+    result
 }
 
+/// A queued change is answered with the records that apply it, which are small: no queued change
+/// is a `keys` record, so this route reads 8 MiB at most, from anyone.
 async fn answer_pending<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
+    Extension(places): Extension<LargeBodies>,
     caller: Caller,
     Path((id, pending)): Path<(String, String)>,
-    body: ChainBody,
+    body: Body,
 ) -> Result<(StatusCode, Json<HeadDto>), Problem>
 where
     S: Store,
@@ -477,14 +762,12 @@ where
 {
     let space = space_id(&id)?;
     let pending: Uuid = pending.parse().map_err(|_| bad("the id isn't a UUID"))?;
-    let request = read_request(&body)?;
     let actor = caller.actor();
-    let invited = invitees(&request);
-    let head = append_use_case(&env)
-        .answer(&actor, space, pending, request)
-        .await?;
-    mail_invitations(&env, actor.user, &invited, space).await;
-    Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
+    let mut body = read_chain_body(&env, &places, &actor, space, body, false).await?;
+    let mut replaced = false;
+    let result = append_read(&env, &actor, space, Some(pending), &body, &mut replaced).await;
+    body.settle(&result, replaced);
+    result
 }
 
 /// `?from=<seq>`: an integer from 0.
@@ -603,6 +886,18 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
+    router_with(api, spaces, LargeBodies::default())
+}
+
+/// [`router`] over the given places for large bodies, which the router owns: one is made for each
+/// router, and a test that wants to fill them passes its own.
+pub fn router_with<S, P, K, R>(api: Api<S, P, K>, spaces: R, places: LargeBodies) -> Router
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + SpaceChainRepo + Clone + 'static,
+{
     let env = Env { api, spaces };
     Router::new()
         .route(
@@ -625,6 +920,7 @@ where
             env.clone(),
             nonce_header::<S, P, K, R>,
         ))
+        .layer(Extension(places))
         .with_state(env)
 }
 
@@ -655,6 +951,7 @@ fn doc_get_chain() {}
         (status = 201, description = "Appended; the new head", body = HeadDto),
         (status = 409, description = "seq or prev isn't the next; the problem carries the current head"),
         (status = 422, description = "A record was refused; the problem carries the reason and the seq"),
+        (status = 429, description = "The account signed as many records of this space lately as one member who isn't an owner may (1,024 an hour, 4,096 a day)"),
     )
 )]
 #[allow(dead_code)]

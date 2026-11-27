@@ -8,10 +8,10 @@ mod common;
 use common::{external, file, memory, unique_email, user};
 use kemlock_app::ports::{StoreError, UserRepo};
 use kemlock_app::sso::{
-    GroupRule, SpaceRole, SsoIdentity, SsoIdentityRepo, SsoSettings, SsoSettingsRepo,
+    GroupRule, SpaceRole, SsoIdentity, SsoIdentityRepo, SsoSession, SsoSettings, SsoSettingsRepo,
     VerifiedDomain, VerifiedDomainRepo,
 };
-use kemlock_domain::{SpaceId, UserId};
+use kemlock_domain::{DeviceId, SpaceId, UserId};
 use kemlock_store_sql::SqlStore;
 use time::macros::datetime;
 use uuid::Uuid;
@@ -95,6 +95,7 @@ async fn identities(store: &SqlStore) {
         email: "ada@example.org".to_owned(),
         linked_at: linked,
         last_login_at: linked,
+        confirmed: true,
     };
     let first = link(ada.id, "sub-a", datetime!(2026-01-02 03:04:05 UTC));
     let second = link(ada.id, "sub-a2", datetime!(2026-01-03 03:04:05 UTC));
@@ -203,6 +204,87 @@ async fn identities(store: &SqlStore) {
     );
 }
 
+async fn sessions(store: &SqlStore) {
+    let ada = user(&unique_email("ada-sso-sessions"));
+    UserRepo::insert(store, &ada).await.expect("insert ada");
+    let issuer = format!("https://idp.example.org/{}", Uuid::new_v4().simple());
+    let at = datetime!(2026-01-02 03:04:05 UTC);
+    let session = |subject: &str, sid: Option<&str>| SsoSession {
+        device: DeviceId::random(),
+        user: ada.id,
+        issuer: issuer.clone(),
+        subject: subject.to_owned(),
+        session_id: sid.map(str::to_owned),
+        started_at: at,
+    };
+    let phone = session("sub-a", Some("sid-1"));
+    let laptop = session("sub-a", Some("sid-2"));
+    let other = session("sub-b", None);
+    for s in [&phone, &laptop, &other] {
+        SsoIdentityRepo::record_sso_session(store, s)
+            .await
+            .expect("record");
+    }
+    let find = |subject: Option<&'static str>, sid: Option<&'static str>| {
+        let issuer = issuer.clone();
+        async move {
+            let mut found = SsoIdentityRepo::sso_sessions(store, &issuer, subject, sid)
+                .await
+                .expect("find");
+            found.sort_by_key(|s| s.device.0);
+            found.into_iter().map(|s| s.device).collect::<Vec<_>>()
+        }
+    };
+    let sorted = |mut list: Vec<&SsoSession>| {
+        list.sort_by_key(|s| s.device.0);
+        list.into_iter().map(|s| s.device).collect::<Vec<_>>()
+    };
+    // A subject names every device it signed in; with a session id, only that session's.
+    assert_eq!(
+        find(Some("sub-a"), None).await,
+        sorted(vec![&phone, &laptop])
+    );
+    assert_eq!(find(Some("sub-a"), Some("sid-1")).await, vec![phone.device]);
+    assert_eq!(find(None, Some("sid-2")).await, vec![laptop.device]);
+    assert_eq!(find(Some("sub-a"), Some("sid-9")).await, Vec::new());
+    assert_eq!(find(Some("sub-b"), None).await, vec![other.device]);
+    // A session recorded with no id matches a subject-and-session token too.
+    assert_eq!(find(Some("sub-b"), Some("sid-x")).await, vec![other.device]);
+    // But a session id alone names only that session.
+    assert_eq!(find(None, Some("sid-x")).await, Vec::new());
+    // A token that names neither names no one; another issuer's sessions are not these.
+    assert_eq!(find(None, None).await, Vec::new());
+    assert_eq!(
+        SsoIdentityRepo::sso_sessions(store, "https://elsewhere.example.org", Some("sub-a"), None)
+            .await
+            .expect("find"),
+        Vec::new()
+    );
+
+    // A device that signs in again is one row: the later sign-in replaces the earlier.
+    let again = SsoSession {
+        subject: "sub-c".to_owned(),
+        session_id: None,
+        ..phone.clone()
+    };
+    SsoIdentityRepo::record_sso_session(store, &again)
+        .await
+        .expect("record again");
+    assert_eq!(find(Some("sub-a"), None).await, vec![laptop.device]);
+    assert_eq!(find(Some("sub-c"), None).await, vec![phone.device]);
+
+    // A device that signs in some other way, or is removed, has no record.
+    use kemlock_app::ports::DeviceRepo;
+    DeviceRepo::forget_sso_session(store, phone.device)
+        .await
+        .expect("forgotten");
+    assert_eq!(find(Some("sub-c"), None).await, Vec::new());
+    DeviceRepo::record_sso_session(store, &laptop)
+        .await
+        .expect("recorded through the device port");
+    assert_eq!(find(Some("sub-a"), None).await, vec![laptop.device]);
+}
+
 async fn domains(store: &SqlStore) {
     let name = |label: &str| format!("{label}-{}.example.org", Uuid::new_v4().simple());
     let (a, b) = (name("a"), name("b"));
@@ -281,6 +363,7 @@ async fn domains(store: &SqlStore) {
 async fn run_all(store: &SqlStore) {
     provider_settings(store).await;
     identities(store).await;
+    sessions(store).await;
     domains(store).await;
 }
 

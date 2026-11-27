@@ -1,9 +1,27 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CollectionDto, GrantDto, MemberDto, SpaceViewDto } from '@/api/spaces';
 import { encodeB64, utf8 } from '@/lib/b64url';
 import type { SpaceCrypto } from '@/spaces/crypto';
+import { NO_CHAIN } from '@/test/fake-space-crypto';
 import { canEditCollection, createSpaceKeyLoader, loadWritableCollections, openSpaceKeys } from './keys';
 import type { SpaceDeps } from './model';
+
+// The boxes these tests serve carry no signature; `signed` says to treat them as signed ones, so the
+// writable-collection list is tested apart from the box checks (boxes.test.ts).
+const state = vi.hoisted(() => ({ signed: true }));
+vi.mock('./boxes', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./boxes')>();
+  return {
+    ...original,
+    openUnchainedKeys: async (...args: Parameters<typeof original.openUnchainedKeys>) => {
+      const readOnly = await original.openUnchainedKeys(...args);
+      return state.signed ? [] : readOnly;
+    },
+  };
+});
+beforeEach(() => {
+  state.signed = true;
+});
 
 const SPACE = '00000000-0000-4000-8000-0000000000bb';
 const ME = '00000000-0000-4000-8000-0000000000aa';
@@ -50,6 +68,9 @@ function view(role: MemberDto['role'], grants: GrantDto[]): SpaceViewDto {
 
 function deps(spaceView: SpaceViewDto) {
   const crypto = {
+    // The server serves no chain for this space.
+    spaceChainView: vi.fn(async () => null),
+    verifySpaceChain: vi.fn(async () => NO_CHAIN),
     openSpace: vi.fn(async () => undefined),
     openCollection: vi.fn(async () => undefined),
     openName: vi.fn(async ({ ciphertext }: { ciphertext: Uint8Array }) =>
@@ -59,6 +80,7 @@ function deps(spaceView: SpaceViewDto) {
   const api = {
     list: vi.fn(async () => [{ space: spaceView.space, member: spaceView.me }]),
     get: vi.fn(async () => spaceView),
+    chain: vi.fn(async () => []),
   } as unknown as SpaceDeps['api'];
   return { api, crypto } satisfies SpaceDeps;
 }
@@ -130,6 +152,14 @@ describe('loadWritableCollections', () => {
     // C2 is view only, and C3 has no key copy for this account.
     expect(list.map((c) => c.collectionId)).toEqual([C1]);
     expect(list[0]).toMatchObject({ spaceId: SPACE, collectionName: `collection ${C1}` });
+  });
+
+  it('offers nothing under a key opened from an unsigned box: it is read-only', async () => {
+    state.signed = false;
+    const d = deps(view('owner', []));
+    expect(await loadWritableCollections(d)).toEqual([]);
+    state.signed = true;
+    expect((await loadWritableCollections(d)).length).toBeGreaterThan(0);
   });
 
   it('skips a space that is not confirmed yet, and one whose keys do not open', async () => {

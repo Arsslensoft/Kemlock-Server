@@ -58,6 +58,10 @@ explicit in the code and neither a silent fallback:
   the module. OPAQUE's SHA-512 (opaque-ke is generic over digest 0.10) and Argon2id are outside it
   too. The feature will not compile together with `rustcrypto`.
 
+Ed25519 verification is not left to each library: both backends follow the one rule of "Ed25519
+verification rule" (under `sig1`), because the libraries differ on small-order and non-canonical
+inputs.
+
 ## Account keys
 
 - **Root key**: 64 random bytes, shaped like Bitwarden's user key so one account has one root
@@ -132,7 +136,7 @@ address over.
 | `GET /kem/v1/account/profile` | `{userId, email, name, sso, hasPassword, compatible, pendingEmail, twoStep}`: `sso` is true when an identity provider is linked, `compatible` when the account is shared with Bitwarden apps, `pendingEmail` while a link can still be opened, `twoStep` when the account has a second step on. |
 | `PATCH /kem/v1/account/profile` | `{name}`: trimmed, blank clears it, at most 100 characters and no control characters. Answers the profile. `403 sso-managed` for an identity provider's account. Event `account.name_changed`. |
 | `POST /kem/v1/account/credentials/start` | `{request, email?}`: OPAQUE's `RegistrationResponse` for the account's own address, or for `email`, which must be well formed and not the account's own (`400`). Answers `{response, ticket}`, and answers the same for an address another account has (see "No account enumeration"). |
-| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked when `signOutOthers` was true, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
+| `PUT /kem/v1/account/password` | `{loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?, signOutOthers?}`: replaces the OPAQUE record, the KDF settings and the wrap in one conditional write. `200 {tokens}`: new tokens for the device that asked unless `signOutOthers` was false, else `null`. `409 account-changed` when the account was written meanwhile. Event `account.password_changed`. |
 | `POST /kem/v1/account/email` | `{email, loginState, finalization, upload, kdf, wrappedRootKey, ticket, proof?}` with `upload` registered under `email` and `ticket` asked for it: keeps the change as pending and mails the new address. `202 {pendingEmail, expiresAt}`, for an address that has an account too. Three asks an hour per account. Event `account.email_change_requested`. |
 | `DELETE /kem/v1/account/email` | Takes the pending change back. `204`, also when there was none. |
 | `POST /kem/v1/account/email/confirm` | **No session.** `{token}`: opens the link. `200 {email}`. `409 account-changed` when the account was written meanwhile (the link still works). Event `account.email_changed`. |
@@ -152,7 +156,7 @@ address when a password is changed or for a different address than the request's
 the same way whether or not that address has an account), or made for an address the account no
 longer has, is `400 invalid-request`. A registration made for one use can't be spent on another.
 
-**`signOutOthers`** (default false) ends every other session of the account at once. The new
+**`signOutOthers`** (default true; `false` keeps the other devices signed in) ends every other session of the account at once. The new
 records and a **new security stamp** are written in the same conditional write, so every access token
 and every refresh token the account holds stops working with it, the asking device's too; nothing
 waits for a token to run out. The answer carries the asking device's new tokens (`tokens`, the same
@@ -293,6 +297,8 @@ The server keeps only the kit id, the key version, when the kit was made and the
 a piece, the kit key or the root key. The wrap is also the verifier: a wrong kit key fails the AEAD
 tag, so the worker knows whether the pieces it was given are right, and a kit made for an earlier key
 version does not open (`GET /kem/v1/account/recovery-kit` says whether the kit is `current`).
+That holds for the associated data only: the root key inside is the same until the root key is
+rotated ("Rotating the root key"), which also makes a new kit.
 Regenerating makes a new kit id and key and replaces the stored wrap, so every old piece stops
 working. Pieces are not recoverable: lose 2 of 3 and the kit is gone; make a new one while signed in.
 
@@ -345,6 +351,324 @@ answers 404. Once enrolled, such an account opens its vault with a trusted-devic
 PRF wrap, or another device's approval, and `GET /kem/v1/account/keys` answers with its keys and an
 empty `wrappedRootKey`, since there is no password wrap. Adding a password later is a separate
 change.
+
+### Rotating the root key
+
+The root key never changes by itself, so every copy ever made of it keeps opening the account's
+keys, and every ciphertext they protect, for as long as the copy and its unlocking pieces exist: an
+old Recovery Kit, a passkey's PRF wrap, a stolen trusted-device copy, a former emergency contact's
+box, a space recovery box. Deleting such a copy on the server only stops the server handing it out;
+anyone who kept the copy and later gets the ciphertext (a database leak, a backup) still opens the
+current root. **Rotation** is the one operation that ends that: it makes a new random root key `R′`
+at the next key version and moves everything `R` protected under it, so a copy of `R` opens only
+what existed before the rotation.
+
+The root key is the account's own, so a rotation is the person's own act, from a device that has
+the root key open. It cannot be made for an account shared with the Bitwarden apps (`compatible`:
+the root key is the Bitwarden user key, which those apps hold: `403 compatible-account`), nor for
+one that has no keys yet (`404`).
+
+**What changes.** With `N` the account's key version, a rotation installs `N′ = N + 1` (the
+version after `N`, at most `2^32 - 1`; nothing else is accepted):
+
+| What `R` protected | Under `R′` |
+| --- | --- |
+| The password wrap ("The password wrap of the root key") | A new wrap of `R′`, same master key and export key, `aad` with `u32be(N′)`. The OPAQUE record, the settings and the salt stay. Absent for an account with no password |
+| The account's `kx1` and `sig1` private keys | **A new pair.** Both private keys were sealed under `R`, so whoever opens an old wrap opens them; a pair that stayed would go on signing and decrypting for them. The new public keys are the bundle of key version `N′`, signed by the new `sig1` key, and the pair is sealed under `R′`'s user key as "The account's private keys" says, with `u32be(N′)` |
+| The old pair | Sealed once more, **under `R′`'s user key**, with the layout and label of the private keys and `u32be(N)` in the `aad` (`sealedPreviousPrivateKeys`). It is there for one reason: the signature of a `rekey` in a space must be made by the key the space has on record, which is the old one (see "Spaces", below). It is deleted on the client's say-so once that is done |
+| Every item of the vault (`kem1`, owner `user:`) | **A fresh item key**, the item sealed under it again at revision `r + 1` (the revision is in the `aad`, so the ciphertext is new), and the item key wrapped under `R′`'s `item-wrap` child with `u32be(N′)`. Re-wrapping the old item key alone would not do: `R`'s `item-wrap` child opens every old wrap in every backup, and the item key it yields would still open today's ciphertext. A tombstone has nothing to change and keeps its revision |
+| The Sends' `sealedKey` and `meta` ("Sends") | `sealedKey` wraps the same link key `K` under `R′`'s `item-wrap` child with `u32be(N′)`, and `meta` is sealed again under the meta key derived from it. The link key and the payload stay: `K` is in links already given out, and anyone with a link is meant to read it |
+| The Recovery Kit | A new kit (new id, new key, new pieces), wrapped for `N′`. The old kit's row is replaced or deleted |
+| The passkeys' PRF wraps | A new wrap of `R′` per passkey, for `N′`. It needs the passkey's PRF output, so the person must use each passkey once; one they cannot use now loses its wrap, and the passkey stays for signing in only |
+| The trusted-device copies | Only the copy of the device that rotates is re-sealed (`deviceCopy`). Every other device's copy is deleted, with the device (below) |
+| The emergency-access boxes | A new `"emergency-access"` box of `R′` to each contact's **current** bundle. A grant the client does not re-seal returns to `accepted` with no box, and the grantor confirms it again |
+| The space recovery boxes ("Using the state") | A new `"account-recovery"` box of `R′` per enrolment, to the chain's current recovery key, with the same `keySeq`. One not re-sealed is deleted; the member enrols again |
+| The duplicate tags ("Duplicate tags") | Deleted with the rewrite of the items: they are `HMAC` under a key of the user key |
+| The signed manifest ("Signed manifest") | Not part of the install: the revisions and hashes change, and the old signature was made by the old `sig1` key. The rotating client signs a new one with the new key at a counter above the stored one, and `PUT`s it as soon as the install is done |
+
+Not touched, because they do not come from the root key: the master password, its OPAQUE record and
+KDF settings; the second step; passkeys as credentials; the space and collection keys (their
+boxes are sealed *to* the old `kx1` key, see "Spaces" below); the contents of attachments and their
+own keys. **An attachment's file key is in the item body**, so the body is new but the file's
+ciphertext is the one the old body named: a person who must treat an old copy of `R` plus an old
+backup as a threat to a file has to upload it again under a new key, which is an ordinary attachment
+edit and no part of a rotation.
+
+**The new keys, in the worker.** `R′` is 64 random bytes; its user key and children are derived as
+for any root key. The new `kx1` and `sig1` pairs are fresh random keys (never derived from the old).
+The bundle is
+`"kemlock/v1/bundle" ‖ account id ‖ u32be(N′) ‖ kx1 public ‖ sig1 public`, signed by the new `sig1`
+key under context `"bundle"`. All wraps above are the existing formats with `R′` and `u32be(N′)`;
+nothing new is invented for them. A `kx1` or `sig1` public key equal to the old one is refused by
+the server.
+
+#### The re-encryption of an item
+
+For each live item of the vault, with its `id`, `owner`, `kind`, `revision r`, `ciphertext`,
+`itemKey` and `keyVersion v`:
+
+```
+old item key = unwrap(R's item-wrap child, itemKey, aad "kemlock/v1/item-key" ‖ id ‖ owner ‖ u32be(v))
+json         = AES-256-GCM-open(old item key, ciphertext, aad "kemlock/v1/item" ‖ id ‖ u64be(r) ‖ lp(kind) ‖ owner)
+new item key = 32 fresh random bytes
+ciphertext′  = AES-256-GCM(new item key, nonce, json, aad "kemlock/v1/item" ‖ id ‖ u64be(r + 1) ‖ lp(kind) ‖ owner)
+itemKey′     = AES-256-GCM(R′'s item-wrap child, nonce, new item key, aad "kemlock/v1/item-key" ‖ id ‖ owner ‖ u32be(N′))
+```
+
+An item that does not open under `R` (a body corrupted earlier) stops the rotation: the client
+reports which one and rotates nothing. The JSON is carried over byte for byte.
+
+#### Staging, and the install in one transaction
+
+The items are the only part that can be large, so they travel apart from the install and the server
+holds them **staged**, invisible to every reader and to sync:
+
+```
+PUT /kem/v1/account/rotation/items   {rotationId, toVersion, items: [{id, baseRevision, ciphertext, itemKey, writer?, writerKeyVersion?, writeSignature?}]}
+```
+
+- `rotationId` is 16 random bytes the client makes, base64url: it names one attempt. A request with
+  another `rotationId` than the account's staged rows discards those rows first.
+- 1 to 200 items per request, and no more than fit the server's 2 MiB JSON body limit: a client
+  batches by encoded size and sends fewer items when they are large. A row is replaced when the
+  same `id` is staged again, so a request that failed is simply sent again. `baseRevision` is the revision the client read; `ciphertext`
+  and `itemKey` are as above, at revision `baseRevision + 1`. The server cannot check that; it
+  checks the lengths (`ciphertext` 28 bytes up to the item limit, `itemKey` 60 bytes), that the item
+  is live, the account's own, in format `kem1`, and at `baseRevision` now, and that `toVersion` is
+  the account's version plus one.
+- **Each item is signed.** The re-encrypted item is a write of the account like any other (revision
+  `baseRevision + 1`, `keyVersion = N′`), so the client signs it ("Signed item writes"): the statement
+  of that write, with the writer's key version `N′`, signed by the **new** `sig1` key `R′` brings,
+  and sends `writer`, `writerKeyVersion` (`N′`) and `writeSignature` beside the item, all three or
+  none. The server cannot check it when it is staged (it holds the new bundle only from the install),
+  so it keeps it with the row and checks the signature, and that the writer is the account at
+  version `N′`, at the install; see step 8.
+- `DELETE /kem/v1/account/rotation` discards the staged rows (abandoning); rows older than two hours
+  are ignored and deleted by the next request. Staged rows change nothing a device can see. A page
+  that is closed mid-rotation loses `R′` with it, and its staged rows are useless: the next attempt
+  starts over with a new `rotationId`.
+
+This is the **resumable** choice: the vault is never half rotated (no item exists under `R′` until
+the install), and a rotation that fails at any point leaves the account exactly as it was. Writing
+the items under `R′` one batch at a time through the ordinary item routes was rejected: until the
+last batch, the account would hold items its other devices cannot open, and an abandoned attempt
+would leave them unreadable for good.
+
+```
+POST /kem/v1/account/rotation
+{ "rotationId", "fromVersion": N, "toVersion": N′,
+  "loginState", "finalization", "proof"?,           the password again, as for PUT /account/password
+  "publicBundle", "bundleSignature",
+  "sealedPrivateKeys", "sealedPreviousPrivateKeys",
+  "wrappedRootKey"?,                                 the password wrap, 92 bytes
+  "kit"?: {"kitId", "wrappedKey"}, "dropKit"?: bool,
+  "deviceCopy"?: {"wrappedKey", "protection"},
+  "passkeys": [{"id", "wrappedKey"}], "dropPasskeys": [id],
+  "emergency": [{"id", "sealedKey"}], "dropEmergency": [id],
+  "recovery": [{"space", "keySeq", "box"}], "dropRecovery": [space],
+  "sends": [{"id", "sealedKey", "meta"}],
+  "spacesHandled": bool }
+```
+
+`GET /kem/v1/account/rotation` answers what the server holds that the install must cover, so the
+client builds the request from the server's own list: `{keyVersion, hasPassword, publicBundle,
+kit: {kitId} | null, passkeys: [{id, credentialId}], deviceCopies: [{deviceId}], emergency: [{id,
+state, granteeId, granteeEmail, granteeBundle}], asContact: [{id, state}], recovery: [{space, keySeq}],
+sends: [{id, kind}], items: {count}, spaces: count,
+previousKeys: {keyVersion, sealed} | null}`. `passkeys` lists only the passkeys that have a PRF wrap;
+`emergency` only grants that hold a box; `asContact` the grants in which this account is the **contact**
+and holds a box (below). `granteeBundle` is the contact's bundle as the server holds it now; a client
+seals the new root key to it only after the person compared its fingerprint with the one on the
+contact's own screen, and otherwise drops the grant, because the server could have swapped it.
+
+**What the server checks**, all of it inside the one transaction that writes, so a request that
+fails any check writes nothing and answers `409 rotation-incomplete` (what changed since the client
+read it) or `400 invalid-request` (what is malformed), and one that loses a race answers
+`409 account-changed`:
+
+1. The account is not `compatible`, is not federated (it is not a copy made by a replica, and its
+   personal vault has no replicas: `409 rotation-federated`, a limitation: another server holds
+   copies of the wraps and of the items that a rotation here cannot replace), has keys, and
+   `fromVersion` is its `key_version` and `toVersion` is the next one (`409 rotation-stale-version`
+   otherwise).
+2. With a password, the password is right and, when a second step is on, a fresh `proof` is given
+   (both as `PUT /account/password` does). **With no password, a fresh answer of a passkey or
+   security key is required** (`proof` as `{"webauthn": …}`), never a session alone, whether or not a
+   second step is on. These are checked **after** every other check that needs no secret, and after
+   the checks below on a plain read of what the account holds, so a refusal that can be known
+   (`rotation-incomplete`) does not spend a login state or a one-time proof; the transaction checks
+   again.
+3. The bundle parses, is for this account at key version `toVersion`, its signature verifies under
+   its own `sig1` key, and neither its `kx1` nor its `sig1` public key is the old bundle's. Both
+   sealed private-key blobs are exactly 189 bytes (`private-keys` above).
+4. `wrappedRootKey` is present, and 92 bytes, exactly when the account has a password wrap.
+5. Every wrap is well formed by its own length rule: a kit's id is 8 base32 characters and its wrap
+   92 bytes; each passkey wrap 92 bytes; each emergency box and recovery box the length of its
+   format; a send's `sealedKey` 64 bytes beginning with `u32be(N′)`; a `meta` 28 bytes to 16 KiB; a
+   device copy as for any copy.
+6. **Every wrap of `R` the server holds is either replaced or named as dropped, and nothing else.**
+   For passkeys, emergency grants and recovery enrolments, the ids in the list and in its `drop…`
+   list are disjoint and together are exactly the set the server holds now; for the kit, `kit` or
+   `dropKit` when one exists; for sends, the list is exactly the account's Sends. An id the server
+   does not hold, or one it holds that the request does not name (a wrap another device added while
+   the client worked), is `409 rotation-incomplete`: the client reads the plan again and redoes
+   the missing part.
+7. `deviceCopy` is the calling device's own; every other device's copy is deleted.
+8. The staged rows of `rotationId` are exactly the account's live items, each at its `baseRevision`
+   now. An item written, deleted or created since the client read it makes the answer
+   `rotation-incomplete`, naming how many; the client stages those again (a round that stages only
+   the changed items) and installs again. A live item of format `bw` is `409
+   rotation-unsupported-items`.
+   Each staged item's signature, when it has one, verifies over the statement of the write the install
+   makes (the item's id, owner and kind, revision `baseRevision + 1`, its sealed value at `N′`),
+   under the new `sig1` key of the bundle the request brings; one that doesn't is refused (`422
+   invalid-signature`), and nothing is written. An owner that takes signed writes only ("The
+   signed-only flag") has no unsigned staged item installed (`422 signature-required`): a vault that
+   asked for signed writes only stays that way through a rotation, and a client that cannot sign
+   (an old one) cannot rotate it. The signature is stored with the item like any signed write.
+9. The account is in no space, or `spacesHandled` is true (`409 spaces-need-rekey`). Only accepted and
+   confirmed memberships count: an invitation not yet accepted does not. And if an earlier
+   rotation's previous keys are still kept for the spaces, the install is refused
+   (`409 rotation-spaces-pending`): see "Spaces".
+10. The vault has at most 50,000 live items: the install is one transaction, and a larger vault is
+    refused (`400`) rather than half moved. The server writes the staged items 500 at a time.
+
+**What the server writes**, in that transaction and not before: the account's row (bundle,
+signature, sealed private keys, password wrap, `key_version = N′`, a new **security stamp**, new
+`updated_at`), conditional on the `updated_at` and stamp it read; the previous private keys; the
+items (as the ordinary write does: revision `baseRevision + 1`, `keyVersion = N′`, a new change per
+item, the item's duplicate tags deleted); the sends; the kit; the passkey wraps (the dropped ones
+removed); the emergency boxes (dropped grants back to `accepted`); the recovery boxes; the device
+copies; the account's answered device approvals (`auth_requests` that hold a root key sealed to a new
+device's one-time key); the staged rows removed. **The grants in which the account is the contact**
+hold a box the grantor sealed to the account's old `kx1` key: each goes back to `accepted` with no
+box, and its grantor confirms the account's new bundle again. The locks that make this exact: the
+install takes the `server_meta` lock that every item write takes, and the account's row lock, before
+it reads; every write of a wrap (a PRF wrap, a device copy, the kit, an emergency box, a recovery
+box, a Send, a device approval) takes the account's row lock too, so a wrap written meanwhile is
+seen, or waits. A writer that waited then reads the account's `key_version` again under that lock, and
+a wrap that is for another version is refused (`409 key-version-stale`, with `currentKeyVersion`; an
+account at version 0 accepts any), so a write made from keys read before the install can't leave a
+wrap of `R` behind. The version comes from what the write carries: a PRF wrap's and a kit's
+`keyVersion`, the `u32be` that begins a new Send's `sealedKey`, and the optional `keyVersion` of a
+Send's edit (`PUT /kem/v1/sends/{id}`), of a device copy (`PUT /kem/v1/devices/key-copy`), of an
+emergency confirmation (`POST .../emergency/grants/{id}/confirm`) and of a space recovery
+enrolment. **What this does not cover:** a request from a client that doesn't send `keyVersion`
+(one made before this field) is accepted without the check, so a Send edit's `meta`, a device copy,
+an emergency box or a recovery box made from the old keys could land after an install that replaced
+them (the next rotation covers it, as it covers any wrap, and a copy of an old version opens
+nothing); and a device approval, which carries no key version, is never checked. Nothing else the
+server holds refers to `R` afterwards: **no wrap of `R` stays in this server's database** except
+those. That holds for this server only: a backup taken earlier still has the old
+wraps and ciphertexts, a device that was offline keeps its own copy of what it opened (its trusted
+copy on the server is deleted with the device), and another server's copies are why a federated
+account is refused. After the commit, and best effort, the other devices are signed out and their rows and
+tokens deleted as `PUT /account/password` with `signOutOthers` does, and the calling device gets new
+tokens (`{keyVersion, tokens}`); the event `account.keys_rotated` is written (no key material). The
+account's address is mailed a notice, and so is the grantor of each grant the install reset above
+(the grants in which the account is the contact): the mail says their emergency contact replaced
+their keys and that they must confirm the contact again in Emergency access, until which the
+contact has no access. Every mail is best effort, sent after the commit, and carries no key
+material.
+
+Two slugs look alike and are different rules. `key-version-stale` answers **409** on
+the wrap routes above (a PRF wrap, a kit, a Send, a device copy, an emergency box, a recovery box),
+and **422** on a signed item write whose signature is for a key version the account no longer has;
+both carry `currentKeyVersion` and mean "the account's keys changed after this device unlocked:
+unlock again". `stale-key-version` (409) is another rule: a write of an item under a collection
+key version that a `keys` record has replaced (the scenario of "A write under the old version leaves
+it held"), and its `currentKeyVersion` is the collection's, not the account's.
+
+Other devices' sessions end with the stamp: each signs in again and sees at
+`GET /kem/v1/account/keys` a `keyVersion` it did not hold, so it opens with the password, a passkey,
+the new kit or another device's approval and makes its trusted-device copy again. A copy of the old
+version no longer opens (its `aad` has `u32be(N)`), and a device deletes the key and the local data
+it kept for `N`. **What a device that did not rotate does, exactly**, when it learns another device
+rotated (a `401` with `security-stamp-changed`, a push that finds its session ended, or a
+`keyVersion` it did not hold):
+
+1. It treats the session as ended and signs in again (password, passkey, the new kit or an approval).
+2. It discards the root key it held, its trusted-device wrapping key and copy, and its tab and
+   reload copies, every key derived from the old root (item-wrap, private keys, space keys it opened
+   with them), and every value it kept sealed under the old user key: space anchors, pins, key-box
+   stores, signed-owner memory. A value that does not open there is **lost, not damaged**: the device
+   asks again (first contact of each space) instead of refusing.
+3. It fetches the account's keys at the new version and verifies the new bundle against what it
+   opens, shows the new fingerprint, and drops its sync cursor: every item is at a new revision.
+4. It makes its own trusted-device copy again, for `N′`.
+5. It re-pins: another member's pin of this account is for the old fingerprint and shows "replaced
+   their keys" until it is compared again; this account's own pins of other people stay (they are
+   theirs) but are sealed again by the device that rotated, or asked again on one that did not.
+6. It removes its passkeys' unlock marks (their PRF wraps were removed unless the rotating device
+   touched them), its emergency contacts that were not confirmed again, and treats grants that name
+   the account as the contact as waiting for their grantor's new confirmation.
+7. It stops using an old Recovery Kit: its pieces open nothing.
+
+**Spaces.** Space, collection and group keys are not under `R`, but the old `kx1` key is gone: the
+boxes sealed to it can no longer be opened by a device that has not already opened them, and the
+account's `sig1` key is new. A client that is in a space therefore, **after** the install and while
+it still holds the old keys (the previous private keys let another device continue):
+
+1. in each space with a chain, appends a `rekey` ("Space chain": the bundle at `N′`, signed with the
+   old `sig1` key and cosigned with the new one), then a `seal` of each key the member holds to its
+   own new bundle (it is Awaiting those keys, and as a holder it may seal them), or waits for
+   another holder's seal;
+2. in a space with none, seals the keys it holds to its own new bundle through the key routes;
+3. then deletes the previous keys (`DELETE /kem/v1/account/rotation/previous-keys`), which takes what
+   the install takes: the password again, and the second step's proof, or with no password a
+   passkey's answer.
+
+The previous keys are kept **only for an account that is in a space**, and an install is refused
+(`409 rotation-spaces-pending`) while an earlier rotation's are still kept: a `rekey` must be
+signed by the key a space has on record, and a second rotation would replace the only copy of it.
+The server accepts a `rekey` only if its bundle is byte for byte the account's registered, current
+one, so the `rekey` must follow the install before the account rotates again.
+
+Until then the member's confirmations are for the old key version, and "Member confirmation"
+applies: every other member sees "replaced their keys" and may compare the new fingerprint. A client
+that cannot do (1) and (2) must not rotate an account that is in a space; the server asks it to say
+so with `spacesHandled` and refuses with `409 spaces-need-rekey` otherwise. The web vault does not
+do it yet, and says so.
+
+A write of an item to the account's own vault must name the account's current key version (`400`
+otherwise), in a single write and in a batch: a device that missed the rotation, or a replica
+serving an older state, can't store an item sealed under keys the account no longer has. A
+deletion carries no sealed value and is not checked.
+
+`GET /kem/v1/account/rotation` answers `previousKeys` while they exist, so a second device that
+opens the vault with the new keys can finish the spaces: it opens `sealedPreviousPrivateKeys` with
+`R′`'s user key (`aad` with `u32be(previous version)`).
+
+**What a client must do** (the Kemlock app, the browser extension and any other):
+
+- Offer rotation only to an unlocked account that is not `compatible`; say that it signs every
+  other device out and needs each passkey's use and each emergency contact's current bundle; ask
+  for the password (or, with none, the account's way in).
+- Make `R′`, the new pair and the bundle, re-encrypt every item and Send in a worker and stage
+  the items in batches with progress; never send `R′`, a key or a plaintext. Show the new
+  fingerprint afterwards.
+- Seal every wrap of `R′` before the install, and send no wrap of `R`.
+- On `409 rotation-incomplete`, read the plan again, stage the items it names and any new wrap, and
+  install again; give up after five rounds.
+- After the install and before it commits to the new keys, seal again every value it keeps locally for
+  the account under the old user key (the web vault's space anchors and pins, a key-box store, a
+  signed-owner memory): they are sealed under a child of the user key, so none opens after a
+  rotation. A client that did not rotate and finds them unreadable treats them as lost, not as
+  damaged: it asks again (first contact), and does not trust or refuse on what it cannot read.
+- After the install, sign and `PUT` a new manifest, show the new Recovery Kit once, make the
+  device's trusted-device copy, delete the key and local data of version `N` it still holds, and
+  do the spaces' part before it forgets the old keys.
+- A device that was not the one rotating treats a `keyVersion` it did not hold, on its next
+  sign-in, as "keys were rotated": it discards its copy of the root key, its sealed local data and
+  its derived keys.
+
+`rotation.json` in test-vectors pins: a root key `R` and `R′` with their user keys and `item-wrap`
+children; the item re-encryption (old ciphertext and wrap, the JSON, the new item key, ciphertext
+and wrap, with the `aad`s), and that the new envelope does not open under `R`'s keys, at revision
+`r`, or with the old item key; the Send re-wrap (`sealedKey` and `meta` under `N′`, and that the
+old ones do not open under `R′`); the password, kit and passkey wraps of `R′` at `N′`, and that the
+same wraps of `R` at `N` do not open at `N′`; the new bundle and sealed private keys at `N′`, and
+the previous private keys sealed under `R′` at `N`.
 
 ## `kx1`: the hybrid exchange key
 
@@ -410,6 +734,24 @@ phrase = the five words, lower case, joined by single spaces
   only and is never shown, or a server could substitute a key and send matching words to both
   screens.
 
+- **The keys the new device ends up with are checked.** The phrase shows the box went to the key the
+  new device made; nothing the new device holds shows that the root key inside is the account's, so a
+  server could seal a root key of its own to that key, with sealed private keys that open under it.
+  The new device therefore needs the account's bundle and sealed private keys, and opens its vault
+  only if the public halves of the `kx1` and `sig1` private keys it opens are exactly the bundle's,
+  for the account and key version it signed in with. It then shows the bundle's fingerprint
+  ("Public-key bundle and fingerprint") and treats the vault as open only after the person has typed
+  the last group of five digits as the approving device shows it (so "same" is not pressed blindly)
+  and confirmed. A mismatch, or no answer, locks the vault and ends the session. A server that
+  forged the bundle too is caught only by this comparison.
+- **What the approving device shows.** Every client that can approve (the Kemlock app, the browser
+  extension, the web vault) shows the fingerprint of its own account's bundle, worked out from its own
+  unlocked keys and never taken from the server, on a screen of its own that is reachable at any
+  time: at least on its devices screen, whether or not a request is pending, and not only inside the
+  request. The new device sends the person there after approval, when the request has gone from the
+  list, so a fingerprint shown only beside a pending request cannot be compared. An approving device
+  that cannot work the fingerprint out says so, and does not approve.
+
 `phrase.json` in test-vectors pins the digest, the five 13-bit groups, their indexes and the phrase
 for several keys, one of them with a group that wraps the list.
 
@@ -418,10 +760,52 @@ for several keys, one of them with a group that wraps the list.
 - Public key: `ML-DSA-65 public key (1952) ‖ Ed25519 public key (32)`, 1984 bytes.
 - Private key: `ML-DSA-65 seed ξ (32) ‖ Ed25519 seed (32)`, 64 bytes.
 - The signed message is `m' = "kemlock/v1/sig1" ‖ lp(context) ‖ lp(message)`. The contexts are
-  `"bundle"`, `"manifest"`, `"confirm"` and `"space-chain"` ("Space chain").
+  `"bundle"`, `"manifest"`, `"confirm"`, `"key-box"` ("Signed key boxes"), `"space-chain"` ("Space chain") and
+  `"item-write"` ("Signed item writes").
 - Signature: `ML-DSA-65.Sign(sk_m, m', ctx = empty) (3309) ‖ Ed25519.Sign(sk_e, m') (64)`,
   3373 bytes. ML-DSA signing may be hedged or deterministic; verifiers accept both.
 - Verification passes only when both verify over the same `m'`.
+- The Ed25519 half of a public key must pass the key checks below when the key is parsed, so a
+  bundle or a record that carries a weak Ed25519 key is refused (invalid) before anything is
+  verified under it.
+
+### Ed25519 verification rule
+
+Every implementation of `sig1` (the server on aws-lc-rs or RustCrypto, the web vault in
+WebAssembly, the Kemlock app, the browser extension) must verify the Ed25519 half by this one rule,
+so that a record the server accepts is a record every client accepts. It is RFC 8032's check without
+the cofactor, plus the checks that make it strict. With `p = 2^255 - 19` and `L` the order of the
+base point, `Ed25519.Verify(A, m', R ‖ S)` passes only when all of these hold:
+
+1. **`A`** (the public key) is a canonical encoding: its 255-bit `y` (little endian, top bit
+   cleared) is below `p`. A `y` of `p` or more is refused, and so is a sign bit set on a point
+   whose `x` is 0. It is not one of the eight points of small order, whichever way the sign bit
+   goes: `y` is none of `0`, `1`, `p - 1`, and the two of order 8,
+   `26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05` and
+   `c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a` (little endian). And it
+   decodes to a point on the curve.
+2. **`R`** (the first 32 bytes of the signature) meets the same three conditions as `A`.
+3. **`S`** (the last 32 bytes, little endian) is below `L` = `2^252 +
+   27742317777372353535851937790883648493`. A check of the top three bits alone is not enough.
+4. `[S]B = R + [k]A` holds exactly, with no multiplication by the cofactor, where
+   `k = SHA-512(R ‖ A ‖ m') mod L` is taken over the bytes of `R` and `A` as sent.
+
+This is RustCrypto's `verify_strict` (`ed25519-dalek`) with an explicit canonical-key check added:
+`verify_strict` reads the key through curve25519-dalek's `decompress`, which accepts a `y` of `p`
+or more. aws-lc refuses an `S` of `L` or more and non-canonical keys but not a small-order `A` or
+`R`. So `kemlock-crypto` runs the byte checks of 1 to 3 itself, on both backends, before the
+library checks the equation, and both give one answer. A mixed-order key (a point plus a point of
+small order, which is not itself of small order) is not refused: the exact equation of 4 decides,
+and every implementation that follows 4 agrees.
+
+Parsing a `sig1` public key (and so a bundle) applies the byte checks of condition 1 to the Ed25519
+half and refuses the key when they fail. Whether the point is on the curve is found when something
+is verified under it, where it fails like any other wrong key; a bundle is only stored by the server
+once its own signature verifies (below). The same checks apply to any other Ed25519 public key that
+comes from outside, such as a DPoP proof's key.
+
+`sig1-edge.json` in test-vectors pins the verdicts for each edge case of "Taming the many EdDSAs"
+(Chalkias et al., 2020).
 
 ## Public-key bundle and fingerprint
 
@@ -431,7 +815,10 @@ bundle      = "kemlock/v1/bundle" ‖ account id (16) ‖ u32be(key version)
 fingerprint = SHA-512("kemlock/v1/fingerprint" ‖ bundle)
 ```
 
-The bundle is signed with the account's own `sig1` key under context `"bundle"`. People compare
+The bundle is signed with the account's own `sig1` key under context `"bundle"`. The server checks
+that signature, under the key the bundle itself carries, when an account registers its keys and
+when a device enrols them, and refuses a bundle whose signature does not verify (invalid), so no
+client is ever given a bundle that does not prove its own key. People compare
 the fingerprint as 12 groups of 5 digits: group `i` (0 to 11) is
 `u40be(fingerprint[5i .. 5i+5]) mod 100000`, written with leading zeros, so the 60 digits use the
 first 60 of the 64 hash bytes.
@@ -494,10 +881,167 @@ On the wire an item is:
   "deleted": false }
 ```
 
-A deleted item is a tombstone: `deleted: true` with `ciphertext` and `itemKey` absent. Its
+A `kem1` item may also carry `writer`, `writerKeyVersion` and `writeSignature`, the writing
+account's signature of the write ("Signed item writes"); an owner that has seen one refuses writes
+without. A deleted item is a tombstone: `deleted: true` with `ciphertext` and `itemKey` absent. Its
 revision still moves on, so a device sees the deletion as a newer write. `deleted` is always
 present, `true` or `false`, in both directions; the server refuses an item without it. `owner` is
 `user:<uuid>` for a person's own vault and `space:<uuid>` for a space, hyphenated lower case.
+
+### Signed key boxes
+
+A sealed box is anonymous: whoever knows a member's `kx1` public key can seal anything to it, and the
+`aad` only stops a box being served as another one. So the server, which knows every member's public
+key, could make a collection key of its own, seal it to a member and serve it, and a new item that
+member wrote to that collection would be readable by the server. A space with a chain commits every
+box in the signed chain (`open_key`, "Using the state"), which authenticates it. **A space with no
+chain gets the same from the member who sealed each box signing it.**
+
+```
+statement = "kemlock/v1/key-box" ‖ lp(box context) ‖ lp(aad) ‖ lp(box)
+            ‖ sealer id (16) ‖ u32be(sealer key version)
+signature = sig1 signature of the sealer's own key, context "key-box", over the statement
+```
+
+- The box context is `"space-key"` or `"collection-key"` and `aad` is that box's own `aad` ("Sealed
+  box"), so the statement names the space, the collection, the key version and the recipient. The
+  box is the 1661 bytes of `u8(1) ‖ ct ‖ AES-256-GCM(…)`. The statement is 1756 bytes for a space key
+  and 1777 for a collection key, and the signature 3373.
+- The **sealer** is the account that made the box: the one signed in when it was sent. The key
+  version is the version of the sealer's bundle whose `sig1` key signs.
+- The signature stays beside the box, never inside it, so a box's bytes (and the seal hash a chain
+  commits) don't change.
+
+**What the server does.** Every route that takes a sealed space key or collection key for a space
+with no chain also takes the signature, base64url, next to the box: `signature` in each `{user, sealed}`,
+`{collection, user, sealed}` and `{collection, sealed}` entry of a request, `sealedSpaceKeySignature` beside
+`sealedSpaceKey` (creating a space, confirming a member) and `sealedKeySignature` beside the first
+collection's `sealedKey`. The server rebuilds the statement
+from the route (the space, the collection, the key version it will store, the recipient and the box)
+with the signed-in account as sealer and that account's registered key version, and refuses the
+request (invalid, `400`) unless the signature verifies under the `sig1` key of the sealer's
+registered bundle. It stores `sealedBy` (the sealer's id and key version) and the signature with
+each key copy, a member's space key copy and each collection key copy, and serves them with it:
+
+```json
+"sealedBy": {"account": uuid, "keyVersion": int, "signature": base64url}   or null
+```
+
+on a member's own entry (next to `sealedSpaceKey`) and on each collection key copy it serves. It
+doesn't judge the sealer's authority again: its own rules already say who may seal what. A copy the
+server holds from before signatures, and any copy of a space with a chain, has `sealedBy` `null`.
+Replacing a key (a `confirm` again, a key replacement, a grant) replaces the box and its signature
+together. Key copies the chain commits (a `confirm`, `seal`, `keys` or `collection` record) carry no
+signature.
+
+**What a client does, before it opens a key of a space with no chain.** The key is the member's own
+copy of the space key, or one of the collection copies the server serves. The client opens the box
+only when one of these holds:
+
+1. **A signed box.** `sealedBy` is present, the signature verifies over the statement the client
+   rebuilds itself (the space, key version and recipient from what it is opening, never from the
+   server's description of the box) under the `sig1` key of the sealer's bundle, and the sealer is
+   trusted:
+   - the sealer is the client's own account, and the bundle is the one the client holds (not the
+     server's copy), at the key version the signature names; or
+   - the sealer is a confirmed member whose bundle is verified as for a recipient ("Member
+     confirmation": the bundle is theirs, signed by itself, at their current key version, and their
+     confirmation traces, through members who are themselves verified, to the client's own account
+     or to a fingerprint a person compared, a **pin**), the signature's key version is that
+     bundle's, **and** the sealer held authority to seal that key:
+     - the space key: an owner or admin, or a custom member with `manage-users` (a confirmer);
+     - a collection key: an owner or admin, or a member with Manage on the collection (directly or
+       through a group), or a custom member with `manage-users` or `manage-groups` who holds a grant
+       on the collection (the confirmation and the group change seal the keys of the collections
+       they cover).
+2. **A box already accepted.** The client remembers, in its sealed local store, the SHA-256 of each
+   box it accepted for (space, key, version). A box with that hash is accepted again without the
+   sealer being checked, so a sealer who has since left, or whose account has moved to another key
+   version, doesn't lock a member out of a key they already hold. A box with another hash for the
+   same (space, key, version) is checked as 1, and is refused when it fails.
+3. **A box from before signatures.** `sealedBy` is `null`, and the rule for those is below.
+
+**Comparing first.** A signed box whose sealer the client can't trace (nobody it trusts confirmed
+them, and no person compared their fingerprint here) is not opened, and the client says which member
+a person should compare: the sealer if nobody confirmed them, or the root the walk of confirmations
+ended at. The person compares that member's fingerprint with what the member's own app shows; once
+it matches, the client trusts what that member confirmed and sealed (a **pin**, as in "Member
+confirmation"), and opens the keys. It is the comparison first contact asks for with a chain, and
+without it a space with no chain has nothing that ties a sealer to a person.
+
+A box that fails all three is not opened, and the client shows the space's keys as "Can't be
+checked". A space with a verified chain skips all of this: the chain authenticates its boxes, and
+requiring a signature there too would only repeat the work. A client that has ever been served a chain
+for a space never reads it as having none ("Using the state").
+
+**Boxes made before this change.** There are boxes no one signed, and no later signature can prove
+who made them. The rule keeps existing spaces usable without opening the door to new forgeries:
+
+- A client **accepts and remembers** an unsigned box once per (space, key, version): the first time
+  it meets one it opens it, stores its SHA-256 as in 2 and marks it "sealed before keys were
+  signed", and the key is read-only (below). The mark is shown to the person on the space ("This
+  space's keys were sealed before keys were signed. Ask an owner or admin to re-seal them."), and goes
+  when the box is replaced.
+- An unsigned box that differs from the one remembered for that (space, key, version) is refused.
+- A client also keeps, for each space, whether it ever accepted a **signed** box of it. From then on
+  it refuses an unsigned box of any key it had not already accepted: every box made since signatures
+  began carries one, so such a box is a signature taken away, or a key the server made. A box it
+  accepted before still opens (rule 2). When a space serves both kinds, a client takes the unsigned
+  boxes first, so one pass doesn't depend on the order the server lists them in.
+- An unsigned box is replaced by a signed one when the key is replaced (the next key version is
+  sealed and signed by whoever replaces it), when an owner or admin confirms the member again (which
+  seals the current space key and the member's collection keys anew), or when an owner or admin
+  **re-seals the space's keys**.
+
+**Re-sealing.** `POST /kem/v1/spaces/{id}/reseal`, for a space with no chain whose keys aren't
+waiting for a replacement, takes
+`{"members": [{"user", "sealedSpaceKey", "sealedSpaceKeySignature", "collectionKeys": [{"collection",
+"sealed", "signature"}]}]}`: a fresh box, signed as above by the signed-in owner or admin, of the
+current space key for each confirmed member listed, and of the current key of any collection that
+member already holds a copy of. The server checks them as it does on a confirmation (each box
+1661 bytes and its signature the sealer's over this box, at the current key version, for that
+member; each collection one the member holds a copy of, none twice, none waiting for replacement),
+replaces those copies and their signatures in one transaction, changes no role, grant or key
+version, and answers `200` with `{"resealed": n}`; `403` for anyone but an owner or admin, `409` for a
+space with a chain. A client re-seals only to members it verified as for a confirmation, and only
+the collection keys it holds (an owner or admin holds those of the collections it is granted), so a
+collection whose key no owner or admin holds stays unsigned until its key is replaced.
+
+**An unsigned key is read-only.** A key opened from a box with `sealedBy` null, on first sight or
+not, is read-only in the worker: names and items open under it, and the worker refuses to seal under
+it, write under it (no item, name, collection or key box of that version) or seal it to anyone
+(`SpaceKeys::require_settled_space` and `require_settled_collection` in
+`crates/kemlock-wasm/src/spaces.rs`, for space keys and collection keys alike). The page opens the
+box with `unsigned` set, offers no collection of such a space for writing, and says: "This space's
+keys were sealed before keys were signed. Ask an owner or admin to re-seal them." Writing needs a
+**signed box** (rule 1: a verified sealer) or a verified chain. Re-sealing, a key replacement or a new
+confirmation produces signed boxes, and opening one of those makes the key writable again. There is no
+fingerprint to compare for such a key and no typed digits: a key has none a person could check against
+another member's app.
+
+What this leaves open, stated plainly: a server can show **fake content in a legacy read-only space**,
+to a device that has seen no signed box of it: it can serve keys of its own, and names and items made
+under them open. It can't read what the device writes afterwards, because nothing is written under
+an unsigned key; and once the space is re-sealed, signed boxes replace the unsigned ones and the
+rules above apply. Nothing in the space is hidden from the server by a legacy key either way: a
+member who wants to be sure compares the space's members with the owners out of band.
+
+**Root key boxes.** The worker seals the root key in a few places that rely on the page being honest:
+`sealRootKey` for a device approval, `sealRootKeyForRecovery`, and `rotationSealRootKey` to any
+`kx1` key the page names. Abusing these needs script running in the vault page (XSS), which has the
+unlocked session anyway, so they add no new exposure beyond it; the page checks who it is sealing to
+(a fingerprint a person compared) before it calls them. In the same way, the self-signature check in
+`sealEmergencyKey` shows only that the bundle is internally consistent (its keys signed it), not
+whose it is: identity comes from the fingerprint the person compared, not from that check.
+
+**A sealer's key version.** The statement binds the key version of the sealer's bundle, so a client
+verifies a signature against the sealer's bundle **at the version the signature names**, not only
+their current one. A client that can get the sealer's earlier bundles (a history of bundles by key
+version, each signed by the one before it, the newest being the one it traced) verifies a box the
+sealer made before their account moved on. A client that holds only the current bundle can't: such a
+box then passes only by rule 2 on a device that already accepted it, and is replaced at the next
+replacement or confirmation, as with every key their account held. A box signed at a version the
+client has no bundle for is refused.
 
 ### Items of a space
 
@@ -727,7 +1271,255 @@ manifest = "kemlock/v1/manifest" ‖ owner (17) ‖ u64be(counter) ‖ u32be(n)
 ```
 
 Entries are sorted by item id bytes. A tombstone's hash is 32 zero bytes. The writer signs it with
-`sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen.
+`sig1` under context `"manifest"`. The counter only goes up; a device keeps the highest it has seen. A server
+refuses a write whose counter is more than 2^32 above the one it stores for that owner (`400`), so
+no writer can set it near its limit and make every later write stale. A space's manifest may be
+written by any confirmed member with edit on a collection ("Using the state"), so this bound is what
+keeps one of them from freezing it.
+
+### How a client uses it
+
+- **Checking.** A client checks a manifest's signature before it relies on it: an account's own
+  (`user:`) with the `sig1` key of its own keys, never a bundle the server served; a space's with the
+  bundle of a signer the space vouches for ("Using the state", Manifest). It keeps, per owner, the
+  manifest of the highest counter it has verified and the ids it saw deleted, with the tombstone's
+  revision, for as long as the server keeps tombstones (180 days). It refuses a lower counter, another
+  manifest at the same counter, or none where it has seen one, and shows the person that it did.
+- **Comparing.** Against the manifest it holds, an item served at a lower revision than its entry is
+  *rolled back*; a live entry whose item is not served at all, not even as a tombstone, is *missing*
+  (a member of a space is sent every envelope of it, so this holds there too); an id seen deleted that
+  is served live at or below its tombstone's revision, or live where the manifest lists it deleted, is
+  *resurrected*; a tombstone the client did not write for an entry the manifest lists live is
+  *deleted* (another device may have deleted it, or the server is hiding it, and nothing tells
+  them apart), unless the tombstone's write signature verifies ("Signed item writes"): then it is
+  a deletion by that writer and is accepted; a revision more than 2^32 above the entry's is *implausible*. Each is shown to the
+  person as a warning. An item newer than its entry, or not listed, was written by a device that
+  has not signed a manifest since (an app that writes none, for one), and is accepted.
+- **Writing.** After its own writes, and only then, a client signs the manifest it last accepted
+  with items it was served taken in, at a counter one above the highest it knows (above the server's
+  `currentCounter` when it answers 409, unless that is 2^32 above its own), and `PUT`s it. It takes in
+  only live items whose envelope opened under its keys (the revision is sealed into the envelope, so
+  one the server made up cannot open) and tombstones it wrote itself, at a revision above the
+  entry's and not 2^32 above it. It never takes in an item served at a lower revision, never drops
+  an entry for an item the server did not serve, never makes a deleted entry live, and takes in
+  nothing for an id it flagged or saw deleted, so signing never makes a rollback, a hidden item
+  or a resurrection permanent. A tombstone that is neither served nor remembered as seen is dropped,
+  so the manifest does not outgrow the server's size limit.
+
+## Signed item writes
+
+A federation change record is signed by the server that accepted the write ("Change records and
+origin signatures" in `docs/federation.md`), so on its own it proves nothing about *who* wrote the
+item. A replica in a vault's set could sign tombstones for every item, re-sign an old ciphertext it
+holds as a new revision (the `kem1` aad binds the revision, but the replica sends the old envelope
+again under its own old revision number, and a client sees "newer than the manifest"), or write
+without limit. So every `kem1` write is also signed by the **writing account**, with a `sig1` key
+only that account's devices hold. A server can pass such a signature on, but can neither make nor
+alter one.
+
+### The signature
+
+```
+statement = "kemlock/v1/item-write" ‖ owner (17) ‖ item id (16) ‖ lp(kind) ‖ u64be(revision)
+            ‖ u64be(replaces) ‖ u8(deleted) ‖ envelope hash (32)
+            ‖ writer account id (16) ‖ u32be(writer key version)
+            ‖ u8(0)                          for an item of a vault
+              or u8(1) ‖ collection id (16)  for an item of a space
+signature = sig1 signature of the writer's own key, context "item-write", over the statement
+```
+
+- `owner` is the 17-byte owner of the item (a vault or a space), `kind` is the item's kind in
+  ASCII, and `revision` is the revision written. `replaces` is the revision the write replaces:
+  `revision - 1`, so `0` for a new item. A verifier takes `replaces` from the revision and refuses
+  a statement whose `replaces` isn't that; it is in the signed bytes so a later format can lift the
+  rule without moving the signature's meaning.
+- `deleted` is `1` for a tombstone and `0` for a live revision.
+- `envelope hash` is `SHA-256(u32be(key version) ‖ lp(ciphertext) ‖ lp(item key))` of the
+  envelope as written ("`kem1`: the item envelope": `keyVersion` is the collection's for a space
+  item), and 32 zero bytes for a tombstone, as in the manifest. It binds the wrapped item key and
+  the key version as well as the ciphertext, so a replica can't pair a signed ciphertext with
+  another key.
+- `writer account id` and `writer key version` name the account and the bundle version whose
+  `sig1` key made the signature.
+- `collection` is the collection the item is written into, for an item of a space, and nothing for an
+  item of a vault: the statement has the flag byte `0` there. A statement of a space's item without
+  a collection, or of a vault's with one, is not a statement. The collection is the one `PUT`
+  names (`collectionId`), so a replica can't move a signed item into another collection, and the
+  writer's right to edit it can be checked by whoever holds the record.
+
+The statement is `21 + 17 + 16 + (4 + len(kind)) + 8 + 8 + 1 + 32 + 16 + 4 + 1` bytes, and 16 more for
+an item of a space; the signature
+is 3373 bytes. `kemlock-crypto`'s `item_write` module builds it, and `test-vectors/item-write.json`
+pins the bytes, the envelope hashes, the signatures and the statements a signature must not cover.
+
+What the signature does not cover: the server's change id, HLC time and lineage (the origin server's
+signature covers those), and `bw` items, which have no `kem1` envelope.
+
+### Who may write
+
+- **A vault** (`user:`): the writer is the owner's own account.
+- **A space** (`space:`): the writer is a confirmed member allowed to write the item's collection.
+  For a chained space that is the chain's verified state ("Using the state"): confirmed, with
+  `edit` on the collection, and the writer's bundle is the one the chain records for it. For an
+  unchained space it is the server's confirmed member list and the member's confirmed bundle
+  ("Member confirmation"). A deletion needs the same edit access as any write.
+
+### Where it travels
+
+- **Client to server.** `PUT /kem/v1/items/{id}`, `POST /kem/v1/items:batch` and the writes of a
+  key replacement take three new optional members on the item: `writer` (the writing account's id),
+  `writerKeyVersion` and `writeSignature` (base64url). All three or none; `writer` must be the
+  signed-in account. The items a key replacement writes again (the `writes` of the chain append
+  route and of `POST /kem/v1/spaces/{id}/key-replacement`) and those a reseal writes through the
+  batch route are writes like any other: signed by the account that makes them, with the item's
+  collection bound, and checked the same way. A signed-only space refuses them unsigned on the chain
+  append route and the batch route; the route that replaces keys without a chain still accepts an
+  unsigned re-write from an owner or an admin ("Accepting records").
+- **Stored** with the item's change, as one value `writer (16) ‖ u32be(key version) ‖ signature
+  (3373)`, 3393 bytes, and **served back** on sync (`GET /kem/v1/sync`, siblings included) in the
+  same three members, so any device can check it.
+- **Federation.** The change record carries the same 3393 bytes in field 15 ("Change records and
+  origin signatures" in `docs/federation.md`). The origin's signature covers the field, so a relay
+  can't strip it.
+
+### What each party checks
+
+**The server, at write time**, for a `kem1` write that carries a signature:
+
+1. `writer` is the signed-in account, and `writerKeyVersion` is that account's current key version;
+2. the signature verifies, over the statement the server rebuilds from the write, under the `sig1`
+   key of the account's registered bundle (the bundle it checked at registration);
+3. the usual item rules (`If-Match`, `revision = stored + 1`, authority over the owner or the
+   collection) already make `replaces` the stored revision;
+4. the owner isn't **signed-only** (below) unless the write is signed.
+
+A write that fails 1 or 2 is `422` `invalid-signature`; an unsigned `kem1` write to a signed-only
+owner is `422` `signature-required`. Nothing is stored. A `bw` write is never signed and is not
+subject to this.
+
+**A federation peer, on a record** (`apply`), for a `kem1` record:
+
+1. if it carries a signature, the writer must be allowed for the record's owner (the owner's own
+   account for a vault, a member of the space or one taken out of it, per the peer's replicated
+   member list), and for a space the record names the collection (field 16) and the writer must be
+   allowed to edit it (a confirmed member with edit on it, or one taken out since: what they signed
+   before is theirs); a collection or member the peer doesn't know yet is left out for now, not
+   refused. The
+   peer must hold the writer's bundle at the signature's key version (the replicated account or
+   member copy), and the signature must verify over the statement rebuilt from the record. Else the
+   record is refused, as a record from a stranger is;
+2. if it carries none and the owner is signed-only, it is refused;
+3. a record that names the head in its lineage at no higher revision than the head's is refused
+   (see "Rollback" in `docs/federation.md`);
+4. a signed record does not set the flag on this peer: only the owner's own request at that server does.
+
+**A client, on sync**, for each `kem1` revision it is served, tombstones included. It checks the
+signature under the writer's bundle, taken as follows: the account's own `sig1` key for its own
+vault, never a bundle the server served; for a space, the bundle of a writer the space vouches for
+("Using the state"), who must be allowed to write the item's collection. The verdict is one of:
+
+- `signed`: the signature verifies and the writer is allowed.
+- `unsigned`: none came.
+- `invalid`: one came and fails, or its writer isn't allowed, or `replaces` isn't `revision - 1`.
+- `unknown`: it can't be checked now: the vault is locked, the writer's bundle at that key version
+  isn't held, or the space doesn't vouch for the writer (a member who has left, say).
+
+A revision at or below the revision the client already holds is never a change. Otherwise the
+client takes a revision in as the item's current one when it is `signed`; it **never takes in an
+`invalid` one**; and for an `unsigned` or `unknown` one it follows its own record, never what the
+server says. It keeps, per owner, the highest revision of each item it has seen with a valid
+signature (the **floor**), sealed in its local store so a reload or a fresh full sync still has it.
+It takes in no `unsigned` or `unknown` revision above an item's floor, tombstones included, and
+once it has seen the owner signed it takes in none of an item it holds at all, and it shows the
+refusal to the person, who still has the revision they held. An item it never saw signed, and an
+item on a client that has never seen the owner signed, is taken in as it always was. So a server
+can't turn signing off by leaving it out for what the client has seen, which is why the signed
+manifest stays: it lists revisions the owner's devices signed, for the rest.
+
+The manifest keeper uses the verdict for deletions ("How a client uses it"): a tombstone whose
+signature verifies, by the account itself or by a member allowed to write the collection, is a
+deletion by that writer, not a "deleted by another device or the server". It is not flagged, and the
+next manifest may list the item as deleted.
+
+### The signed-only flag
+
+Bitwarden-API writes, an older Kemlock client and the import tools can't sign. So the server keeps,
+per owner, a flag **signed-only**:
+
+- it is set only when the owner asks: `PUT /kem/v1/owners/{owner}/signed-writes` (`204`), by the
+  account for its own vault, or by an owner or admin of a space for that space. A signed write does
+  not set it, because the Kemlock app doesn't sign yet and one device that does must not lock out
+  the others. The same people clear it with `DELETE` on the same path, which asks for the password
+  again (the OPAQUE messages of a fresh login, and a fresh proof beside them when a second step is
+  on), as erasing the account does, because clearing it lets a stolen session write what the
+  account's keys never signed. Both are logged. Erasing the owner clears it too;
+- once set, an unsigned `kem1` write or record for that owner is refused by this server and by
+  every federation peer that holds the flag. The home publishes it as a home record of kind
+  `signed-writes` (`docs/federation.md`, "Writer signatures"), signed like every home record, so the
+  replicas hold it too, and drop it when the owner clears it at the home. Ask at the home: a flag
+  set at a replica holds there only, until the home's record next says otherwise.
+
+**What stays unprotected.** `bw` items (a Bitwarden-format cipher has no `kem1` envelope), so
+Bitwarden apps' writes are accepted whatever the flag says, and so can be rolled back, deleted and
+re-signed by a malicious replica. A vault or space that no signing client has written is not
+signed-only, so a replica can still delete or roll back its items. And signing does not stop a
+replica from **withholding** records, or from replaying an old signed revision *to a client that
+never saw a later one*; the manifest and "Sync cursor" are what notice those. A signer who has lost
+control of the account's keys can still write. For a space, a federation peer checks that the
+writer may edit the collection the record names, from the member list and grants it holds; a
+member taken out since counts for what they signed before, since the grants then are not known.
+
+### Key versions
+
+A write names the key version of the bundle that signed it (`writerKeyVersion`), and is checked
+under **that** version's bundle. An account that replaces its keys (a new bundle at the next key
+version) therefore keeps every bundle it had, and what it signed before stays verifiable.
+
+- **The server** keeps every bundle of an account by key version: written wherever the account's
+  bundle is written, and whichever path replaces it keeps the one it replaces first, so a key
+  replacement can't lose the version before it. It accepts a **new** write only under the
+  account's **current** key version, so a replaced key can't sign again.
+- **A rotation of the root key** writes every item again at the new key version, so each is signed by
+  the new key at that version: the client signs the statement of each re-encrypted item when it
+  moves it, and the install keeps the signature with the item ("Rotating the root key", staging).
+  Without that, the items a rotation writes would be unsigned and refused by a vault that takes
+  signed writes only, and by a client that holds an item at a floor.
+- **Reading one.** `GET /kem/v1/accounts/{id}/bundles/{version}` answers
+  `{keyVersion, publicBundle, bundleSignature}` (base64url) to the account itself and to a
+  confirmed member of a space the account is a confirmed member of. An unknown account, a version it
+  never had and a caller who may not read it are the same `404`.
+- **Federation.** A `member-account` record carries the account's past bundles (payload key 14, in
+  ascending key version, at most 64), each with the time the account replaced it (`superseded
+  at`, Unix seconds). A receiver keeps the record only when each past bundle is the
+  account's own, at the version it says, below the current one, and carries a valid signature of
+  its own key, as the current bundle must. A peer then checks a record's writer signature against
+  the bundle of the key version the signature names, and refuses it when it holds none.
+  **A replaced key signs nothing made after it was replaced.** A peer refuses a record signed under
+  a past version when the change was made (its clock, the origin's) no earlier than five minutes
+  before the time the account replaced that version: a stolen old key can't write new changes
+  once the account has moved on, whatever the signature says. The server does not need the rule
+  at write time, which already takes only the current version. A client does not apply it: it
+  has no trustworthy time for the replacement, and leans on the floor and on the server's check.
+- **A client** checks at the writer's current version as before. At an older version it takes a
+  bundle from the server's history only when all of these hold: it parses as that account's bundle
+  at that version; it carries a valid signature of its own key; and its fingerprint is the one the
+  client **pinned** while that bundle was the account's current one: its own keys vouched for the
+  account's own bundle, and the verified space chain ("Using the state") for a member's. The pins
+  are kept sealed in the browser's local store, one per version, never replaced.
+  **A signer that is only the server's word** vouches nothing: a client with no verified chain for a
+  space, and no way to trace a member's keys to a confirmation it can follow, has only the server's
+  member list, and pins nothing from it, so a member's write under a key version they have since
+  replaced has no verdict there. The web vault reads a space's verified chain, or traces the keys of
+  a member of an unchained space to a confirmation it can follow, and pins what those vouch for.
+  A version the client never saw vouched has no verdict (`unknown`), and so does one above the
+  writer's current version, because a bundle the server serves for an old version is otherwise a
+  bundle the server can make up. A client that first sees an account after it replaced its keys
+  therefore cannot vouch for writes signed under the keys before.
+
+### Limits that go with it
+
+A federation server also bounds what one origin can write: a rate and a size per origin
+("Per-origin quotas" in `docs/federation.md`).
 
 ## Space chain
 
@@ -851,7 +1643,10 @@ give the same link. The **head** of a chain is `(seq, link)` of its last record.
 
 **The anchor.** For each space, a device keeps, sealed in its vault's encrypted store, the
 **anchor**: the `seq` and `epoch` of the last record it accepted, and the link of every record it
-accepted, from `seq` 0 to that one (32 bytes each, at most 2 MiB). The anchor never goes back,
+accepted, from `seq` 0 to that one (32 bytes each, at most 2 MiB), and the confirmed Owners of the
+state it accepted there, each with `SHA-256` of their bundle (the wasm module's view of a verified
+chain lists them as `anchorOwners`; "Epochs" says what they are for). An anchor kept without them
+vouches for no fence. The anchor never goes back,
 except by a fence ("Epochs"). A device that lost its anchor can't rebuild it from the server: it
 starts again from "First contact".
 
@@ -905,6 +1700,8 @@ Verification turns a chain into a **state**. The state before the first record i
 | retired ids | Ids of deleted collections and groups. They can't be used again. |
 | policies | The policy set ("`policies`"), every setting off at first. |
 | recovery key | 1600 bytes, or none. |
+| bytes | The record bytes of every record applied so far, which "Limits" counts against 64 MiB, and "The end of a chain" against the reserve. |
+| reconfirmed | By member: the `seq` of a `confirm` that confirmed them again under a newer bundle while they were confirmed ("`confirm`"), if it is still the last word on their bundle. |
 
 Terms, all taken in a given state:
 
@@ -1063,6 +1860,11 @@ entitled to anything until they are confirmed, so no key is sealed to them.
 State: the member is `confirmed` with this bundle and the confirmation `{by, statement,
 statementSignature, seq}`. Their role and grants stay. The member is now entitled to the space key
 and to every collection they have access to, and awaits those seals.
+
+A `confirm` of a member who is already `confirmed` (a newer bundle) also records its `seq` as the
+member's **reconfirmed** `seq`: nothing the member signed vouches for that bundle, so a client shows
+the new fingerprint and asks a person to compare it again. The member's own `rekey`, and a `remove`,
+clear it. It is not a rule: a record is accepted either way.
 
 #### `rekey`
 
@@ -1322,8 +2124,20 @@ after the promotion, under the old epoch, never become part of the new chain: a 
 accepted them drops them when it meets the fence ("Verification", step 1).
 
 A client that holds the promotion record for the fence's epoch, through the sync plan, checks that
-its hash is `promotion` and its new home is `home`, and refuses the chain as **bad epoch** if not. A
-client that doesn't hold it accepts the Owner's fence.
+its hash is `promotion` and its new home is `home`, and refuses the chain as **bad epoch** if not.
+
+A fence that parts the served chain from the chain a device accepted (a **divergence**, "Verification",
+step 1) is not taken on an Owner's signature alone: the Owner could be one the device's own records
+removed or demoted, and a server that is not the home could serve the chain up to that removal and
+then a fence the removed Owner signed, followed by records of the Owner's choosing. Removing an
+Owner is final. So a divergence is taken only when the device holds and verified the promotion
+record the fence names (its `home` and `promotion` are a pair the device holds), or when the fence's
+signer is a confirmed Owner in the state the device accepted at its anchor **and** the bundle the
+served chain records for the signer just before the fence is the one the device kept for them (the
+device keeps each Owner's id and `SHA-256` of their bundle with the anchor). The bundle matters: a
+fence signed with an Owner's old, leaked key, at the place where the Owner's own `rekey` was, finds
+the old bundle in the served chain and is not vouched for. A device that has neither refuses the
+chain as **forked**.
 
 ### Removal and replacement
 
@@ -1422,8 +2236,11 @@ follow the same order and names.
 1. **For each record**, in the order served, starting from the empty state `S`:
    1. *Anchor.* If the anchor has a link at this `seq` and it differs from this record's link, and no
       earlier record differed, this `seq` is the **divergence**. A divergence is allowed only at a
-      `fence`; at any other kind the chain is refused as **forked**. After a divergence, the anchor
-      isn't compared again.
+      `fence` the device vouches for (it holds the promotion the fence names, or the fence's signer is
+      an Owner of the state it accepted at its anchor, with the bundle it kept for them; "Epochs"); at
+      any other kind, or at a fence it
+      doesn't vouch for, the chain is refused as **forked**. After a divergence, the anchor isn't
+      compared again.
    2. *Position.* `space` is the space being verified (wrong space). `seq` is `S`'s head `seq` plus
       one, or `0` when `S` has no head (bad sequence). `prev` is `S`'s head link, or 32 zero bytes
       (bad link). `epoch` follows "Epochs" (bad epoch). The kind is `create` exactly when `seq` is `0`
@@ -1471,9 +2288,17 @@ once per space and device, before the device trusts the chain.
 - An invitee's device: `P` is the inviter, the `by` of the `invite` that is in effect for this
   account. If the inviter is no longer a confirmed member, `P` is a confirmed Owner the person picks.
 - A confirmed member's new device: `P` is the confirmer, the `by` of the record that last confirmed
-  this account. A device whose own account's current key signed or cosigned a record after that one
-  needs no comparison: its own key vouches for the chain.
+  this account. A device whose own account's current key signed a `rekey` after that one (the state
+  keeps the `seq` of the member's last `rekey`) needs no comparison: its own key vouches for the
+  chain. Other records the account signed since don't count, because the state doesn't keep them.
 - The creator's device made `create` itself and is its own anchor.
+
+So a client's answer is one of three, never a bare "none": **no comparison** (the creator's device, or
+an account whose own current key signed a `rekey`), **compare with `P`**, or **pick an Owner**. "Pick an
+Owner" also covers an account the chain doesn't have, a removed member, and a confirmed member nobody
+confirmed who isn't the creator; it is never read as "no comparison". Even for the first, the client
+checks that the bundle the chain records for its own account is the one it holds itself: a chain that
+records another one vouches for nothing, and the client treats it as the third answer.
 
 **What is confirmed.** The fingerprint `SHA-512("kemlock/v1/fingerprint" ‖ bundle)` of `P`'s bundle
 **as the verified chain records it at its head**, shown as the 12 groups of 5 digits or compared
@@ -1494,6 +2319,15 @@ fork, rollback and fence rules apply. When the chain later confirms this account
 that the `confirm` records its own bundle, byte for byte.
 
 ### Using the state
+
+A space with no chain is not covered by any of this. Its client takes who is in it and which key
+version is current from the server, and checks only what it can: that a member's bundle is theirs and
+that someone it can trace to itself, or to a fingerprint its person compared, confirmed exactly those
+keys, and that the member who sealed each key it opens signed it ("Signed key boxes"). A server can still hand an unchained space's members a key of its own at the next version, or
+leave one out of a replacement, and nothing in the space shows it: **an unchained space trusts the
+server for which key version is current, and a chained space doesn't.** That is why a client that has
+ever been served a chain for a space never reads the space as unchained again, and why a space is
+made as a chain wherever the client can build one.
 
 - **Bundles.** A member's keys are the chain's bundle, never the server's. A member the server lists
   but the chain doesn't confirm, or whose server bundle differs by a byte from the chain's, gets no
@@ -1525,6 +2359,15 @@ that the `confirm` records its own bundle, byte for byte.
   - after it verifies a record that marks `c` or the space key, it accepts no revision in `c` newer
     than the ones it already accepted, until the `keys` record that replaces the marked key;
   - an item that names a deleted or unknown collection is refused.
+  - **What a member taken out counts for.** A write whose signature verifies under a member the
+    space has taken out is theirs, but only for what they wrote while they were a member. A client
+    takes in such a revision only at or below the highest revision of that item it accepted before
+    (its **signed floor**, and the entry of the latest manifest it accepted), never above it, and it
+    raises the floor by none. The server can serve a revision a removed member's key makes after the
+    removal, and without this it would pass as signed, raise the floor and replace items with stubs
+    nobody can open. A revision under a marked key opens only on the same footing: the worker opens an
+    item of a marked collection (or of a space whose key is marked) only when the page says it is one
+    accepted before the mark (`accepted` of `openSpaceItem`); any other is held, not opened.
 
   Refused revisions are held and shown, as unlisted items are. The member who replaces `c`'s key
   writes again only the items it accepted and the latest manifest lists, under the new version, and
@@ -1568,6 +2411,10 @@ that the `confirm` records its own bundle, byte for byte.
   its revoke and remove are both `remove`, and its restore is a new `invite`.
 - S3. With each record that commits seals or names, it keeps the boxes and sealed names the record
   committed, by `seq`.
+- S4. A collection id and a group id belong to one space on a server. Clients choose them, so the
+  server refuses a create, a record or a change that names an id another space holds (`409`
+  `already-exists`, and `400` for a chain request), and never moves, replaces or deletes a row of another
+  space. A client chooses a fresh random UUID for each.
 
 **Serving**
 
@@ -1577,7 +2424,8 @@ that the `confirm` records its own bundle, byte for byte.
 - G2. `?from=<seq>` answers the records with `seq ≥ from`: an empty array past the head, and `400` for
   a value that isn't an integer from `0`.
 - G3. Only an invited or confirmed member gets the chain. Any other account, a removed member
-  included, gets `404`, as for every other space route.
+  included, gets `404`, as for every other space route. This holds for a `POST` too: it answers `404`, not
+  a `409` with the head, to anyone but a member of a space that exists or has a chain.
 - G4. The home and the space's replicas may serve the chain; records are signed, so a replica needs
   no trust. Only the home accepts records.
 - G5. `GET /kem/v1/spaces/{id}/chain/{seq}/seals` answers the seal hashes record `seq` committed:
@@ -1589,9 +2437,77 @@ that the `confirm` records its own bundle, byte for byte.
 "names": [{"name", "seq", "target"}…]}`: 1 to 16 records to append in order, the boxes their
 commitments cover and the sealed names their hashes cover. It appends all or none, and answers `201`
 with the new head `{"link", "seq"}`, `409` with the current head when `seq` or `prev` isn't the
-next, and `422` with the reason of "Verification" otherwise. The route that replaces keys carries its
-`keys` record the same way, beside its re-written items. The server refuses a record unless all of
-these hold:
+next, and `422` with the reason of "Verification" otherwise. A `keys` record that replaces collection
+keys is sent here, beside its re-written items: the request may also carry `"held": [uuid…]`, the
+live items the record leaves held (I3), and `"writes": [{"collection", "expectedRevision",
+"item"}…]`, the items it re-writes, each as the next revision under the collection's new key
+version (an `item` is written as `PUT /kem/v1/items/{id}` takes it). They are stored in the same transaction as the records. A write is of a live item of a
+collection whose key a `keys` record of the request replaces, by a member with edit on it; an item
+is written once and is not also held; any other write is refused (`400`, or `422`
+`held-not-rotated` for a collection the request does not replace).
+
+**Each re-written item is a signed write** ("Signed item writes"): the member who replaces the key
+signs it with their own `sig1` key, over the statement of a space's item, so the statement binds the
+item's collection, the new envelope (key version, ciphertext and wrapped item key) and the revision,
+and the item carries `writer`, `writerKeyVersion` and `writeSignature`. The server checks each one
+as it checks any write (the writer is the signed-in account at its current key version, the signature
+verifies under its registered bundle, `invalid-signature` otherwise), before anything is stored, and
+this route refuses an unsigned `kem1` re-write for a space that takes signed writes only (`422`
+`signature-required`). The web vault signs them in the worker, as it does the items its reseal
+writes again (`POST /kem/v1/items:batch`), so a signed-only space is not stuck behind its own key
+replacement and a client that holds an item at its floor takes the re-written revision in. Of the
+two key replacement routes, only this one requires it: the route that replaces keys without a chain
+(`POST /kem/v1/spaces/{id}/key-replacement`) still accepts an unsigned re-write from an owner or
+an admin in a signed-only space, so that no client is left at `423 space-keys-pending` for want of
+one that signs; a re-write there that carries a signature is checked like any other.
+
+**Who may write items here, and how many.** A request re-writes each item once, at most 6,000 of
+them. Before any signature is checked, the server reads the chain's state: the caller must be a
+confirmed member with edit on the collection of every item (`404` for a stranger, `422`
+`space-chain-refused` otherwise), so a request from someone who may not write costs no
+signature check. The signatures are then checked on a blocking thread, not on a request worker.
+
+**The size of the request.** The signatures make a key replacement about four times larger than
+it was: each re-written item adds a signature of 4.5 KiB in base64url to its envelope, and the whole
+replacement is one request. The route reads 8 MiB from any signed-in caller, as a stream, so
+nothing past 8 MiB is held for anyone else. It reads up to **32 MiB** only when the chain's state
+has a collection key marked ("Removal and replacement") that the caller may replace: a confirmed
+member entitled to that key, with edit on the collection, as the worker's replacement decides it.
+A stranger, a member who may only view, and an owner of a space with no key waiting get `413` as
+soon as the body passes 8 MiB. The pending-answer route (`POST .../chain/pending/{pending}`) never
+reads above 8 MiB: no queued change is a `keys` record.
+
+**Large bodies.** A body above 8 MiB is a *large body*, and the server limits them:
+
+- *Places.* It has two, and an account and a space have one each at a time. A request that finds
+  none waits up to ten seconds, and the next place goes to the request that has waited longest:
+  an account has one place or one turn in the queue, never two, so the queue is round-robin
+  between accounts, and a request that comes back after its turn goes behind the others. After the
+  ten seconds it is `429` with `Retry-After`, as it is at once for an account or a space that
+  has a place or a turn already.
+- *Every large body counts* against the account that sent it, whatever came of it (read, refused,
+  too slow, or stored): the account waits 60 seconds, counted from the moment the request is over,
+  before another. The one exception is a request that was stored (`201`) and replaced a marked
+  collection key, which is what the places are for: it doesn't make the account wait.
+- *A budget* of four large bodies an hour for each account, on top of the places (`429` with
+  `Retry-After`). Every large body uses one, a key replacement that was stored too.
+- *A floor on the rate.* Every body, from its first byte, has 30 seconds and one more second for
+  each 256 KiB it has by then: it must arrive at **256 KiB a second or faster** (2 Mbit/s) after a
+  30 second start, and no chunk may take more than 15 seconds; otherwise it is `408`, and a place it
+  held is free again at once. The chain's two POST routes have a timeout of five minutes of their
+  own, which this floor stays well under; the other routes keep 30 seconds. 32 MiB is room for about
+  5,000 items of ordinary size (about 6 KiB each with their signatures), which takes at most
+  2 minutes 30 at the slowest rate allowed; a space with more live items in the replaced
+  collections, or a connection slower than that, can't have its keys replaced from the web vault,
+  which says so and sends nothing.
+
+*What remains.* These limits bound what one account can ask of a server, not what several can. Two
+accounts that have accepted a space (each a member of one in which a key waits and may replace it)
+can, within their budgets of four an hour, keep both places busy and so make the key replacements of
+others wait their turn. A request waits at most ten seconds for a place and is then told to try
+again, so the delay is bounded and the queue does not grow.
+
+The server refuses a record unless all of these hold:
 
 - A1. Its bytes are canonical and within "Limits", and its body has its kind's exact shape.
 - A2. `space` is the route's space.
@@ -1618,6 +2534,25 @@ these hold:
 - A11. For each seal commitment, the request carries exactly one box per recipient the chain derives,
   each 1661 bytes starting with `u8(1)`, and `count` and the digest recomputed from them match. For
   each name hash, it carries the sealed name, 28 to 4096 bytes, whose `SHA-256` matches.
+- A12. A `confirm` is for a member who has accepted the invitation: the server's own "accepted" step
+  (S2), which comes after the `invite` record in an earlier request and before the `confirm`, and a
+  `confirm` that follows an `invite` of the same member in its own request is refused. A member the
+  server holds only as invited (never accepted) is not a member for any policy, key or sync, even
+  if the chain says `confirmed`. A later `confirm` of a member who is already confirmed (a new key
+  version) needs no new acceptance. Refused as "not allowed" (`422`).
+  A server that ran before this rule may hold members a chain confirmed who never accepted. It can't
+  tell them from the rest: the row's accepted time was written when the confirm landed, so it records
+  no consent. It repairs nothing; an Owner or Admin who finds such a member (a confirmed member they
+  never invited, or one whose invitation was never accepted) removes them with a `remove` record.
+- A13. The chain after the request is within "Limits" and keeps its end for Owners: at most 65,536
+  records and 64 MiB of record bytes (**too large**, `422`), and "The end of a chain" (**not
+  allowed**, `422`). These are A7's rules for the chain as a whole: the server applies them with the
+  state at the head, which keeps the bytes, so it adds nothing up in the append.
+- A14. An account signs at most 4,096 records of a space in a day and, unless it is an Owner or an
+  Admin of the space, 1,024 in an hour, counted by the records' `at`. A request past either is
+  refused whole (`429` `space-chain-quota`). Owners and Admins are not asked for the hour, because
+  they do the bulk work (invites, confirms, seals) and are who removes a member who sends too many.
+  The day is asked of everyone, so a stolen Owner or Admin key can't fill a chain either.
 
 **Items**
 
@@ -1722,6 +2657,30 @@ The record limit fits the largest record, a `keys` that replaces the space key a
 keys with 2,001 names packed, about 170,000 bytes, and keeps a record with its two signatures, as raw
 bytes, inside a federation home record's 256 KiB payload.
 
+**The end of a chain.** A member must not be able to fill a chain to its cap and leave no room to
+remove them. So the end of a chain is kept (a rule of "Authority", checked in step 6 of
+"Verification" by every verifier, and refused as **not allowed**). `bytes` is the chain's record
+bytes with this record (the state keeps the total, `bytes` in "State"):
+
+- **The reserve**: a record with `seq` 64,512 or more (`CHAIN_RECORDS - 1,024`), or with `bytes` over
+  62 MiB (the last 4 MiB of `CHAIN_BYTES`), is taken from anyone but an Owner only if it is a
+  `remove`, or a `keys` record whose every key is **marked** now (an Owner's `remove` marked it, so
+  the `keys` record is the replacement that follows). A `keys` record that replaces an unmarked key is
+  not taken: a member with Manage on one collection could otherwise rotate it again and again until
+  the reserve is gone.
+- **The Owner-only tail**: a record with `seq` 65,408 or more (`CHAIN_RECORDS - 128`), or with
+  `bytes` over 64 MiB less 512 KiB, is taken only from an Owner.
+- An Owner's records are always taken here, and are still bound by every other rule.
+
+A record that would take `bytes` past 64 MiB is **too large**, in the state rules as in step 0 (A13
+says the same of the server). `test-vectors/space-chain.json` has `end-of-chain` cases, which give a
+`seq`, `bytes`, the signer's role, the kind and whether the keys are marked, and say whether the
+chain takes the record: 64,511 and 64,512, 65,407 and 65,408, a `keys` record for a marked and for an
+unmarked key, and the byte limits, 62 MiB and 64 MiB less 512 KiB, on either side.
+
+The server alone applies the quota of A14: a client sees a chain as a whole and has no record of when
+each record was sent.
+
 ### Test cases
 
 `test-vectors/space-chain.json` holds a valid chain with every kind, and one chain per refusal below,
@@ -1757,7 +2716,12 @@ no chain there. In words:
 9. **Fence and dropped records.** A device anchored at `seq` 12, epoch 1, served a chain whose `seq`
    10 is a `fence` to epoch 2 and whose `seq` 0 to 9 match its anchor: accepted, and 10 to 12 of its
    own are dropped. If its link at 9 differs: forked. A device anchored at epoch 2 served the old
-   home's epoch-1 records past the fence: forked.
+   home's epoch-1 records past the fence: forked. The fence's signer is an Owner in the device's
+   own state, with the bundle the device kept (or the device holds the promotion): accepted. The
+   device's records 10 to 12 removed the signer as an Owner, or rekeyed them and the fence is signed
+   with the old key, and it holds no promotion, or it keeps no Owners with its anchor and holds no
+   promotion: forked. In the vectors, an `anchor` may also carry `owners` (a map of uuid to the hex
+   of `SHA-256` of the Owner's bundle) and `promotions` (`home` and `promotion` hash pairs).
 10. **The only Owner replaces their keys.** A `rekey` with a valid cosignature is accepted; the next
     record signed with the new key is accepted, and one signed with the old key is a bad signature. A
     `rekey` without a cosignature is malformed; with a cosignature by another key, a bad signature; to
@@ -2229,6 +3193,16 @@ mounted secret. Secrets the server must read are sealed as
 aad = lp(purpose))`, with purposes such as `"opaque-setup"`, `"totp"`, `"token-signing-key"`,
 `"smtp-password"`.
 
+Secrets that belong to one account (its TOTP seed, the sealed lists and settings of its email,
+YubiKey, Duo and security-key methods, and its recovery code) are sealed under the purpose
+`purpose ‖ ":" ‖ account id` (the id in its hyphenated lower-case form, for example
+`"totp:2f9c0d1e-…"`), so a sealed value copied into another account's row by someone who can write
+the database but doesn't hold `server.key` doesn't open there. Values stored before that was done
+are sealed under the bare purpose; they open as before and are sealed again, bound, when they are
+used for a sign-in (the TOTP seed) or written again (the other methods and the recovery code). The
+short-lived states handed to a client (login states, challenges, setup and prompt states) keep a
+bare purpose: each carries its own expiry and the account it is for.
+
 ## Test vectors
 
 `test-vectors/` holds one JSON file per format, generated by `cargo run -p kemlock-crypto --bin
@@ -2236,4 +3210,4 @@ kemlock-vectors` from fixed seeds, and checked by CI to regenerate byte for byte
 its format version and a description, and `SHA256SUMS` lists them. The folder is CC0-1.0 so any
 client may copy it.
 
-Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).
+Its files are `account-keys.json`, `password-wrap.json`, `argon2id.json`, `kx1.json`, `sealed-box.json`, `sig1.json`, `sig1-edge.json` (the Ed25519 verification rule's edge cases and their verdicts), `bundle.json`, `kem1.json`, `manifest.json`, `dedup.json`, `dedup-normalise.json`, `server-seal.json`, `opaque.json`, `legacy-ids.json`, `phrase.json`, `private-keys.json`, `prf-wrap.json`, `confirm.json` (member confirmation statements, their signatures and the statements a signature must not cover), `key-box.json` (signed key box statements for a space key and a collection key, their signatures and the statements a signature must not cover), `item-write.json` (signed item writes: envelope hashes, statements, signatures and the statements a signature must not cover), `send.json`, `space-names.json` (names of a space, a collection and a group sealed under a fixed space key) and `space-chain.json` (the space chain: a valid chain with every kind, the record encoding, the labelled link, and one chain per refusal with the `seq` and reason a verifier must give); the `federation-*.json` files of the federation wire formats, listed in `federation-SHA256SUMS`; and `public_suffix_list.dat`, the Public Suffix List snapshot the dedup site rule uses (MPL-2.0, not CC0).

@@ -33,6 +33,23 @@ describe('the settings form', () => {
     ]);
   });
 
+  it('puts the federation setting in its own group after the security ones, with its words', () => {
+    const promotion = setting({
+      key: 'federation_promotion',
+      group: 'federation',
+      kind: 'choice',
+      choices: ['hold', 'auto'],
+      default: 'hold',
+      value: 'hold',
+    });
+    expect(groupsOf([promotion, ...SETTINGS]).map((g) => g.group).slice(-2)).toEqual(['security', 'federation']);
+    view({ settings: [promotion] });
+    const card = within(screen.getByRole('region', { name: 'Federation' }));
+    expect(card.getByLabelText(/hold it for you to accept or refuse/)).toHaveValue('hold');
+    expect(errorOf(promotion, 'auto')).toBeUndefined();
+    expect(errorOf(promotion, 'whenever')).toBe('admin.settings.error.choice');
+  });
+
   it('starts from the values in effect, with a secret empty', () => {
     const draft = draftOf(SETTINGS);
     expect(draft['smtp_host']).toBe('smtp.example.org');
@@ -249,7 +266,7 @@ describe('the hint under each switch', () => {
     const signups = within(screen.getByRole('region', { name: 'Who can make an account' }));
     expect(signups.getByText('When off, people join only by an invitation or through SSO.')).toBeInTheDocument();
     expect(
-      signups.getByText("Sends a link to the new address. The account can't sign in until the link is opened."),
+      signups.getByText("Sends a link to the new address. The account can't sign in or be used until the link is opened, and single sign-on won't link to it by email before then. It needs mail: set up SMTP (a host and a sender address) first, or it does nothing."),
     ).toBeInTheDocument();
     expect(
       signups.getByText('Admins can invite people from Users & spaces, even while sign-up is off.'),
@@ -263,7 +280,7 @@ describe('the hint under each switch', () => {
       'When off, people join only by an invitation or through SSO.',
     );
     expect(named('Verify the email of a new account')).toHaveAccessibleDescription(
-      "Sends a link to the new address. The account can't sign in until the link is opened.",
+      "Sends a link to the new address. The account can't sign in or be used until the link is opened, and single sign-on won't link to it by email before then. It needs mail: set up SMTP (a host and a sender address) first, or it does nothing.",
     );
     expect(named('Admins may invite people')).toHaveAccessibleDescription(
       'Admins can invite people from Users & spaces, even while sign-up is off.',

@@ -5,10 +5,11 @@ use crate::error::StoreResult;
 use crate::lease;
 use crate::migrate;
 use kemlock_app::ports::{ServerInfo, StoreError};
+use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::ServerId;
 use kemlock_domain::privacy::Retention;
 use sea_orm::DatabaseConnection;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 /// SQL storage for accounts, devices, tokens and the vault's items, on SQLite, PostgreSQL or
 /// MySQL. Cloning is cheap: clones share the pools.
@@ -33,6 +34,19 @@ impl std::fmt::Debug for Overlay {
     }
 }
 
+/// What the server says a setting is, with the environment, the config file and the saved values
+/// layered: `None` for a setting it doesn't follow.
+type SettingOverlay = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+#[derive(Default)]
+struct SettingLookup(RwLock<Option<SettingOverlay>>);
+
+impl std::fmt::Debug for SettingLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SettingLookup").finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 struct Inner {
     /// Every write goes through here; on SQLite this pool holds a single connection.
@@ -42,13 +56,23 @@ struct Inner {
     server_id: ServerId,
     /// Applied over the saved retention settings each time they are read.
     retention_overlay: Overlay,
+    /// The layered value of the few settings the store itself reads.
+    setting_overlay: SettingLookup,
     /// The verified state of the space chains in use, each under the link of its head.
     chain_states: crate::repo::ChainStates,
+    /// Seals the secrets the store keeps that the server must show again (a personal API key),
+    /// under `server.key`. Set once, at start; a store without one (a tool that reads the
+    /// database, a test) keeps them as they come.
+    secret_seal: OnceLock<ServerSeal>,
     /// Held while a storage quota is summed and the row it covers is inserted. One server owns a
     /// database, so this serializes the check and the insert on PostgreSQL and MySQL, where a
     /// transaction alone lets two announces each read the sum before either has inserted; on SQLite
     /// the single writer connection does it already.
     quota_gate: tokio::sync::Mutex<()>,
+    /// Held across a space change that must leave the space an owner: the check reads the owners
+    /// before and after, and on PostgreSQL and MySQL two transactions could each see two owners,
+    /// each delete the other, and both commit. One server owns a database, as for `quota_gate`.
+    owner_gate: tokio::sync::Mutex<()>,
 }
 
 impl SqlStore {
@@ -64,6 +88,7 @@ impl SqlStore {
         let Pools { writer, reader } = connect::open(url, &options).await?;
         migrate::run(&writer).await?;
         let server_id = migrate::load_or_create_server_id(&writer).await?;
+        migrate::repair_future_clock(&writer, time::OffsetDateTime::now_utc()).await?;
         tracing::info!(%server_id, "database ready");
         Ok(SqlStore {
             inner: Arc::new(Inner {
@@ -71,8 +96,11 @@ impl SqlStore {
                 reader,
                 server_id,
                 retention_overlay: Overlay::default(),
+                setting_overlay: SettingLookup::default(),
                 chain_states: crate::repo::ChainStates::default(),
+                secret_seal: OnceLock::new(),
                 quota_gate: tokio::sync::Mutex::new(()),
+                owner_gate: tokio::sync::Mutex::new(()),
             }),
         })
     }
@@ -109,6 +137,19 @@ impl SqlStore {
         *slot = Some(Arc::new(overlay));
     }
 
+    /// Gives the store the seal it keeps the personal API keys of Bitwarden accounts under (the
+    /// server's `server.key`, purpose `bw-api-key`). A key stored plain, by an earlier version or
+    /// by the move from Vaultwarden, is sealed at start-up by `seal_stored_secrets`, or when it is
+    /// read before then. Set once; a second call is
+    /// ignored.
+    pub fn set_secret_seal(&self, seal: ServerSeal) {
+        let _ = self.inner.secret_seal.set(seal);
+    }
+
+    pub(crate) fn secret_seal(&self) -> Option<&ServerSeal> {
+        self.inner.secret_seal.get()
+    }
+
     /// Applies the overlay, if one is set, to `retention`.
     pub(crate) fn overlay_retention(&self, retention: &mut Retention) {
         let overlay = self
@@ -121,6 +162,36 @@ impl SqlStore {
         if let Some(overlay) = overlay {
             overlay(retention);
         }
+    }
+
+    /// Sets how the settings the store reads itself (`federation_promotion`,
+    /// `space_chain_external_changes`) are looked up: the server gives it the environment, the
+    /// config file and the saved settings, layered, so a value in `kemlock.toml` counts. Without
+    /// it the store reads the environment variable and then the saved value. Replaces an earlier
+    /// lookup.
+    pub fn set_setting_overlay(
+        &self,
+        lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
+    ) {
+        *self
+            .inner
+            .setting_overlay
+            .0
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(lookup));
+    }
+
+    /// The layered value of the setting `key` (its name, as the console shows it), if the server
+    /// set a lookup and follows it.
+    pub(crate) fn overlaid_setting(&self, key: &str) -> Option<String> {
+        let lookup = self
+            .inner
+            .setting_overlay
+            .0
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        lookup.and_then(|lookup| lookup(key))
     }
 
     /// Applies pending migrations, if any. Idempotent; `connect` already calls it.
@@ -151,6 +222,11 @@ impl SqlStore {
     /// Lock this around a quota's sum and the insert it guards.
     pub(crate) async fn quota_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.quota_gate.lock().await
+    }
+
+    /// Lock this around a space change that must leave the space a confirmed owner.
+    pub(crate) async fn owner_gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.owner_gate.lock().await
     }
 
     pub(crate) fn reader(&self) -> &DatabaseConnection {

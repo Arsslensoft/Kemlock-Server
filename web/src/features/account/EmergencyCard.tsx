@@ -4,6 +4,7 @@ import { useT } from '@/i18n';
 import type { Fingerprint } from '@/sharing/bundle';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
+import { TypeLastGroup } from '@/ui/TypeLastGroup';
 import '@/styles/account.css';
 import { SelectInput, TextInput } from './controls';
 import { daysLeft } from './emergencyModel';
@@ -67,6 +68,8 @@ export function EmergencyCard({
   }
 
   const fp = confirming?.fingerprint;
+  // "Matches" opens once the last group has been typed as the contact's own app shows it.
+  const [typedRight, setTypedRight] = useState(false);
   const contactName = confirming?.view.grant.granteeEmail ?? '';
 
   return (
@@ -100,7 +103,9 @@ export function EmergencyCard({
                 <Notice tone="error" live>
                   <p>{t('space.confirm.inconsistent')}</p>
                 </Notice>
-              ) : null}
+              ) : (
+                <TypeLastGroup key={fp.text} fingerprint={fp.text} onMatch={setTypedRight} />
+              )}
             </>
           )}
           {!cryptoAvailable ? (
@@ -112,7 +117,7 @@ export function EmergencyCard({
             <Button onPress={actions.cancelConfirm}>{t('space.confirm.notNow')}</Button>
             <Button
               variant="primary"
-              isDisabled={busy || !fp || !fp.consistent || !cryptoAvailable}
+              isDisabled={busy || !fp || !fp.consistent || !typedRight || !cryptoAvailable}
               onPress={actions.confirm}
             >
               {t('space.confirm.matches')}

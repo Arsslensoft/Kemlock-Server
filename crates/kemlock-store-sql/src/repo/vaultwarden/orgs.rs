@@ -7,6 +7,7 @@
 //! someone sets the space up there.
 
 use super::rows::{self, row_time, row_uuid};
+use super::scope::SPACE;
 use super::vault::owner_of;
 use super::{Ctx, Res};
 use crate::convert::utc;
@@ -64,6 +65,8 @@ pub(super) async fn put_organizations(ctx: &Ctx, table: &Table) -> Res<()> {
                 .exec(txn)
                 .await
                 .store()?;
+                // Now that the space exists, it is the import's from here on.
+                ctx.remember(SPACE, id).await?;
             }
         }
     }
@@ -78,6 +81,18 @@ fn role_of(atype: i64) -> &'static str {
         1 => "admin",
         3 => "custom",
         _ => "member",
+    }
+}
+
+/// The custom permissions of a member: a manager that has every collection is given the right to
+/// create collections, the permission the Bitwarden API reads as "has every collection" (a manager
+/// without it has only what its collections grant).
+fn custom_of(atype: i64, access_all: bool) -> i64 {
+    if atype == 3 && access_all {
+        // `CustomPermissions::CREATE_COLLECTIONS`.
+        1 << 2
+    } else {
+        0
     }
 }
 
@@ -131,12 +146,18 @@ pub(super) async fn put_members(ctx: &Ctx, table: &Table) -> Res<()> {
             space_id: Set(space),
             user_id: Set(user),
             role: Set(role_of(row.int("atype").unwrap_or(2)).to_owned()),
-            custom_permissions: Set(0),
+            custom_permissions: Set(custom_of(
+                row.int("atype").unwrap_or(2),
+                row.int("access_all").unwrap_or(0) != 0,
+            )),
             state: Set(state_of(status).to_owned()),
             invited_by: Set(inviter.unwrap_or(user)),
             invited_at: Set(invited_at),
             accepted_at: Set((status >= 1).then_some(invited_at)),
             sealed_space_key: Set(sealed),
+            sealed_by: Set(None),
+            sealed_by_key_version: Set(None),
+            sealed_signature: Set(None),
             key_version: Set(key_version),
             revoked_at: Set((status < 0).then_some(utc(ctx.opts.now))),
             confirmed_by: Set(None),
@@ -521,25 +542,63 @@ pub(super) async fn put_events(ctx: &Ctx, table: &Table) -> Res<()> {
     Ok(())
 }
 
-/// `config.json` settings, under their Vaultwarden names: a string as it is, anything else as
-/// JSON text.
-pub(super) async fn put_settings(ctx: &Ctx, mapped: &MappedSettings) -> Res<()> {
+/// `config.json` settings, under the key the settings code reads them from (`setting.<name>`): a
+/// string as it is, anything else as JSON text, checked as the console checks a value it is given.
+/// Only the names the move carries ([`kemlock_vaultwarden::settings::CARRIED_SETTINGS`]) that are
+/// also in the admin settings registry are kept, and never a secret (those are sealed
+/// elsewhere): a `config.json` can't make this write any other row of `settings`, which also
+/// holds the move's own status and the server's markers. A value the console would refuse is left
+/// out.
+pub(super) async fn put_settings(ctx: &mut Ctx, mapped: &MappedSettings) -> Res<()> {
+    let prefix = kemlock_app::admin::settings::KEY_PREFIX;
+    let password_key = format!("{prefix}smtp_password");
+    let mut password_stored = settings::Entity::find_by_id(password_key.clone())
+        .one(&ctx.txn)
+        .await
+        .store()?
+        .is_some();
     for (name, value) in &mapped.values {
-        // The key column is 128 characters.
-        if name.len() > 128 {
-            continue;
-        }
         let text = match value {
             Value::String(s) => s.clone(),
             other => other.to_string(),
         };
-        settings::Entity::delete_by_id(name.clone())
+        let Some(stored) = stored_value(name, &text) else {
+            ctx.refuse("setting", name);
+            continue;
+        };
+        // The stored SMTP password belongs to the host it was made for, as in the console: a source
+        // that names another host takes the password with it, never to the new host.
+        if name == "smtp_host" && password_stored {
+            let old = settings::Entity::find_by_id(format!("{prefix}smtp_host"))
+                .one(&ctx.txn)
+                .await
+                .store()?
+                .map(|row| row.value.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if stored.trim().to_ascii_lowercase() != old {
+                settings::Entity::delete_by_id(password_key.clone())
+                    .exec(&ctx.txn)
+                    .await
+                    .store()?;
+                password_stored = false;
+                tracing::warn!(
+                    "the move named another SMTP host: the stored SMTP password was cleared"
+                );
+            }
+        }
+        // A source can't turn off the encryption of the connection the stored password goes over.
+        if name == "smtp_security" && stored == "off" && password_stored {
+            ctx.refuse("setting", name);
+            continue;
+        }
+        let key = format!("{}{name}", kemlock_app::admin::settings::KEY_PREFIX);
+        settings::Entity::delete_by_id(key.clone())
             .exec(&ctx.txn)
             .await
             .store()?;
         settings::Entity::insert(settings::ActiveModel {
-            key: Set(name.clone()),
-            value: Set(text),
+            key: Set(key),
+            value: Set(stored),
         })
         .exec(&ctx.txn)
         .await
@@ -548,9 +607,63 @@ pub(super) async fn put_settings(ctx: &Ctx, mapped: &MappedSettings) -> Res<()> 
     Ok(())
 }
 
+/// Whether `name` is a setting the admin console has (and not a secret one).
+#[cfg(test)]
+fn is_registered(name: &str) -> bool {
+    kemlock_app::admin::settings::definition(name)
+        .is_some_and(|d| d.kind != kemlock_app::admin::settings::Kind::Secret)
+}
+
+/// What the settings code stores for `name` set to `text`; `None` for a name a move doesn't carry,
+/// one the settings code doesn't have, a secret, or a value it would refuse.
+fn stored_value(name: &str, text: &str) -> Option<String> {
+    if !kemlock_vaultwarden::settings::CARRIED_SETTINGS.contains(&name) {
+        return None;
+    }
+    let definition = kemlock_app::admin::settings::definition(name)?;
+    if definition.kind == kemlock_app::admin::settings::Kind::Secret {
+        return None;
+    }
+    kemlock_app::admin::settings::validate(definition, text).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn values_are_stored_as_the_console_would_store_them() {
+        assert_eq!(
+            stored_value("signups_allowed", "false").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            stored_value("signups_allowed", " Yes ").as_deref(),
+            Some("true")
+        );
+        assert_eq!(stored_value("smtp_port", "465").as_deref(), Some("465"));
+        assert_eq!(stored_value("smtp_port", "not a port"), None);
+        assert_eq!(stored_value("smtp_password", "hunter2"), None);
+        assert_eq!(stored_value("domain", "https://vault.example.org"), None);
+        // A Kemlock-only security setting is not carried, though the console has it.
+        assert_eq!(stored_value("federation_promotion", "auto"), None);
+        assert_eq!(stored_value("bw_invites_auto_accept", "true"), None);
+        assert_eq!(stored_value("backup_recipient", "age1x"), None);
+    }
+
+    #[test]
+    fn only_registered_settings_are_kept() {
+        assert!(is_registered("signups_allowed"));
+        assert!(is_registered("smtp_host"));
+        assert!(
+            !is_registered("smtp_password"),
+            "a secret is sealed elsewhere"
+        );
+        assert!(!is_registered("domain"));
+        assert!(!is_registered("migration.status"));
+        assert!(!is_registered("setting.signups_allowed"));
+        assert!(!is_registered(""));
+    }
 
     #[test]
     fn member_types_and_statuses_map_to_roles_and_states() {
@@ -563,6 +676,16 @@ mod tests {
         assert_eq!(state_of(0), "invited");
         assert_eq!(state_of(1), "accepted");
         assert_eq!(state_of(2), "confirmed");
+    }
+
+    #[test]
+    fn a_manager_with_every_collection_keeps_it_as_a_permission() {
+        // The Bitwarden API drops "every collection" from a manager whose row lacks the
+        // create-collections permission, so an import has to give it.
+        assert_eq!(custom_of(3, true), 4);
+        assert_eq!(custom_of(3, false), 0);
+        assert_eq!(custom_of(2, true), 0);
+        assert_eq!(custom_of(1, true), 0);
     }
 
     #[test]

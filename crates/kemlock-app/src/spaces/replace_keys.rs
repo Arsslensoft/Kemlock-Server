@@ -17,8 +17,9 @@
 //! collection keys leaves it alone: the dedup key doesn't come from them.
 
 use super::error::SpacesError;
+use super::key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier, check_box};
 use super::ports::{KeyReplacement, SpaceChanges, SpaceItemInfo, SpaceRepo};
-use super::support::{SealedCollectionKey, load_open, record};
+use super::support::{SealedCollectionKey, SealedSpaceKey, load_open, record};
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
 use crate::dedup::TagStore;
@@ -31,7 +32,7 @@ use kemlock_domain::{Item, ItemFormat, ItemId, ItemWrite, Owner, SpaceId, UserId
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug)]
-pub struct ReplaceKeys<R, I, T, V, N, C> {
+pub struct ReplaceKeys<R, I, T, V, N, C, K> {
     pub spaces: R,
     pub items: I,
     pub tags: T,
@@ -39,6 +40,7 @@ pub struct ReplaceKeys<R, I, T, V, N, C> {
     pub push: N,
     pub clock: C,
     pub config: AuthConfig,
+    pub boxes: K,
 }
 
 /// A replaced collection key.
@@ -59,7 +61,7 @@ pub struct ReplacementInput {
     /// The space's name under the new space key. Required when the space key is replaced.
     pub space_name: Option<Vec<u8>>,
     /// The new space key sealed to every confirmed member.
-    pub sealed_space_keys: Vec<(UserId, Vec<u8>)>,
+    pub sealed_space_keys: Vec<SealedSpaceKey>,
     /// Every collection's name under the new space key (when the space key is replaced).
     pub collection_names: Vec<(CollectionId, Vec<u8>)>,
     /// Every group's name under the new space key (when the space key is replaced).
@@ -74,8 +76,8 @@ fn invalid(why: &'static str) -> SpacesError {
     SpacesError::Rule(SpaceError::Invalid(why))
 }
 
-impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock>
-    ReplaceKeys<R, I, T, V, N, C>
+impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock, K: KeyBoxVerifier>
+    ReplaceKeys<R, I, T, V, N, C, K>
 {
     /// Lands a key replacement. Only an owner or admin may. Returns the re-written items.
     pub async fn execute(
@@ -131,8 +133,8 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
             ))?;
             check_sealed_name(&name)?;
 
-            let sealed: BTreeMap<UserId, &Vec<u8>> = unique(
-                input.sealed_space_keys.iter().map(|(u, s)| (*u, s)),
+            let sealed: BTreeMap<UserId, &SealedSpaceKey> = unique(
+                input.sealed_space_keys.iter().map(|k| (k.user, k)),
                 "the space key is sealed twice to one member",
             )?;
             let confirmed: BTreeSet<UserId> = state.confirmed_members().map(|m| m.user).collect();
@@ -142,11 +144,29 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
                 ));
             }
             for key in sealed.values() {
-                check_sealed_key(key)?;
+                check_sealed_key(&key.sealed)?;
             }
             for member in state.confirmed_members() {
                 let mut updated = member.clone();
-                updated.sealed_space_key = sealed.get(&member.user).map(|s| (*s).clone());
+                let key = sealed
+                    .get(&member.user)
+                    .ok_or(invalid("seal the new space key to every confirmed member"))?;
+                updated.sealed_space_key = Some(key.sealed.clone());
+                updated.sealed_by = Some(
+                    check_box(
+                        &self.boxes,
+                        KeyBoxFacts {
+                            space,
+                            key: KeyBoxKey::Space,
+                            key_version: version,
+                            recipient: member.user,
+                            sealed_box: &key.sealed,
+                            sealer: actor.user,
+                        },
+                        &key.signature,
+                    )
+                    .await?,
+                );
                 updated.key_version = Some(version);
                 changes.members.push(updated);
             }
@@ -211,8 +231,8 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
             if rekey.key_version != version {
                 return Err(invalid("the new collection key must be the next version"));
             }
-            let sealed: BTreeMap<UserId, &Vec<u8>> = unique(
-                rekey.keys.iter().map(|k| (k.user, &k.sealed)),
+            let sealed: BTreeMap<UserId, &SealedCollectionKey> = unique(
+                rekey.keys.iter().map(|k| (k.user, k)),
                 "a collection key is sealed twice to one member",
             )?;
             if rekey.keys.iter().any(|k| k.collection != *id)
@@ -222,13 +242,27 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
                     "seal each new collection key to exactly the members who may hold it",
                 ));
             }
-            for (user, sealed) in sealed {
-                check_sealed_key(sealed)?;
+            for (user, key) in sealed {
+                check_sealed_key(&key.sealed)?;
+                let sealed_by = check_box(
+                    &self.boxes,
+                    KeyBoxFacts {
+                        space,
+                        key: KeyBoxKey::Collection(*id),
+                        key_version: version,
+                        recipient: user,
+                        sealed_box: &key.sealed,
+                        sealer: actor.user,
+                    },
+                    &key.signature,
+                )
+                .await?;
                 changes.key_copies.push(KeyCopy {
                     collection: *id,
                     user,
                     key_version: version,
-                    sealed: sealed.clone(),
+                    sealed: key.sealed.clone(),
+                    sealed_by: Some(sealed_by),
                 });
             }
             new_versions.insert(*id, version);
@@ -298,6 +332,11 @@ impl<R: SpaceRepo, I: ItemStore, T: TagStore, V: EventLog, N: Notifier, C: Clock
                 now,
             )
             .map_err(|e| SpacesError::from_item(id, e))?;
+            // No `refuses_unsigned` here, on purpose: the caller is an owner or admin of the space, and
+            // the rewrites are a new envelope of other members' items, which no signature of theirs
+            // covers. A signed-only space must not be stuck at 423 for want of a client that signs
+            // its replacement, so an unsigned rewrite from an owner or admin is accepted; a signed
+            // one carries its signature as any write does.
             drafts.push((draft, collection));
         }
         let held: BTreeSet<ItemId> = held.into_iter().collect();

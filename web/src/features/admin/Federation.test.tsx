@@ -62,6 +62,17 @@ describe('FederationView', () => {
     expect(onSetLogs).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'Home server' }), false, true);
   });
 
+  it('tells the admin which servers must be upgraded before writes are signed', () => {
+    view({ ...OVERVIEW, peers: [peer({ signedWrites: false })] });
+    expect(screen.getByText('Upgrade needed')).toBeInTheDocument();
+    expect(screen.getByText(/doesn't read signed writes yet/)).toBeInTheDocument();
+  });
+
+  it('says nothing of upgrades when every peer reads signed writes and past keys', () => {
+    view({ ...OVERVIEW, peers: [peer()] });
+    expect(screen.queryByText('Upgrade needed')).toBeNull();
+  });
+
   it('says when a peer sends its logs and this server does not pull them', () => {
     view({ ...OVERVIEW, peers: [peer({ theySendLogs: true, pullLogs: false })] });
     expect(screen.getByText('It sends, but Pull is off here')).toBeInTheDocument();
@@ -140,7 +151,157 @@ describe('FederationView', () => {
     expect(screen.getByText('Home server asks to become the home')).toBeInTheDocument();
     expect(onAcceptDemotion).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Hand over the home of Side projects to Home server' }));
-    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }), 'a'.repeat(32));
+  });
+
+  it('shows a promotion held at a replica, and accepts or refuses it only on request', async () => {
+    const office = '02020202020202020202020202020202';
+    const held = {
+      ...OVERVIEW.vaults[0],
+      heldDemotion: { newHomeId: office, epoch: 2, at: NOW - 300 },
+    } as FedVault;
+    const onAcceptDemotion = vi.fn();
+    const onRefuseDemotion = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, vaults: [held] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onAcceptDemotion={onAcceptDemotion}
+        onRefuseDemotion={onRefuseDemotion}
+      />,
+    );
+    expect(screen.getByText('Office server asks to become the home')).toBeInTheDocument();
+    expect(onAcceptDemotion).not.toHaveBeenCalled();
+    expect(onRefuseDemotion).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Refuse the promotion of Office server for Family' }));
+    expect(onRefuseDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), office);
+    await user.click(screen.getByRole('button', { name: 'Accept Office server as the home of Family' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), office);
+  });
+
+  it('lists every promotion held for a vault and settles the one it is asked about', async () => {
+    const office = '02020202020202020202020202020202';
+    const home = 'a'.repeat(32);
+    const held = {
+      ...OVERVIEW.vaults[0],
+      heldDemotion: { newHomeId: office, epoch: 2, at: NOW - 300 },
+      heldPromotions: [
+        { newHomeId: office, epoch: 2, at: NOW - 300 },
+        { newHomeId: home, epoch: 2, at: NOW - 60 },
+      ],
+    } as FedVault;
+    const onAcceptDemotion = vi.fn();
+    const onRefuseDemotion = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, vaults: [held] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onAcceptDemotion={onAcceptDemotion}
+        onRefuseDemotion={onRefuseDemotion}
+      />,
+    );
+    expect(screen.getByText('Office server asks to become the home')).toBeInTheDocument();
+    expect(screen.getByText('Home server asks to become the home')).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Accept Home server as the home of Family' }));
+    expect(onAcceptDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), home);
+    await user.click(screen.getByRole('button', { name: 'Refuse the promotion of Office server for Family' }));
+    expect(onRefuseDemotion).toHaveBeenCalledWith(expect.objectContaining({ id: 'v1' }), office);
+  });
+
+  it('lists the address changes a rotation brought and follows or refuses them only on request', async () => {
+    const office = '02020202020202020202020202020202';
+    const change = {
+      peerId: office,
+      operator: 'Example Co IT',
+      addresses: ['https://moved.example.co'],
+      suites: [],
+      receivedAt: NOW - 120,
+    };
+    const onApproveAddresses = vi.fn();
+    const onRefuseAddresses = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={OVERVIEW}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        addressChanges={[change]}
+        onApproveAddresses={onApproveAddresses}
+        onRefuseAddresses={onRefuseAddresses}
+      />,
+    );
+    const card = within(screen.getByRole('region', { name: 'Address changes waiting' }));
+    expect(card.getByText(/Now says: https:\/\/moved\.example\.co/)).toBeInTheDocument();
+    expect(onApproveAddresses).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(card.getByRole('button', { name: 'Keep the old addresses of Office server' }));
+    expect(onRefuseAddresses).toHaveBeenCalledWith(change);
+    await user.click(card.getByRole('button', { name: 'Follow Office server to its new addresses' }));
+    expect(onApproveAddresses).toHaveBeenCalledWith(change);
+  });
+
+  it('shows no address-change card when nothing waits', () => {
+    view();
+    expect(screen.queryByRole('region', { name: 'Address changes waiting' })).not.toBeInTheDocument();
+  });
+
+  it('shows a contested server and trusts or unpairs it only on request', async () => {
+    const contested = peer({ state: 'contested' });
+    const onClearContest = vi.fn();
+    const onUnpair = vi.fn();
+    renderWithIntl(
+      <FederationView
+        overview={{ ...OVERVIEW, peers: [contested] }}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        onClearContest={onClearContest}
+        onUnpair={onUnpair}
+      />,
+    );
+    const card = within(screen.getByRole('region', { name: 'Contested servers' }));
+    expect(card.getByText('Not syncing until you decide')).toBeInTheDocument();
+    expect(onClearContest).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(card.getByRole('button', { name: 'Keep trusting Office server' }));
+    expect(onClearContest).toHaveBeenCalledWith(expect.objectContaining({ serverId: contested.serverId }));
+    await user.click(card.getByRole('button', { name: 'Unpair Office server to pair it again with a new code' }));
+    expect(onUnpair).toHaveBeenCalledWith(expect.objectContaining({ serverId: contested.serverId }));
+  });
+
+  it('shows no contested card when no server is contested', () => {
+    view();
+    expect(screen.queryByRole('region', { name: 'Contested servers' })).not.toBeInTheDocument();
   });
 
   it('leads to a peer with a key mismatch', async () => {
@@ -158,5 +319,74 @@ describe('FederationView', () => {
     expect(onCheckKeys).toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Run now' }));
     expect(onRunConsistency).toHaveBeenCalled();
+  });
+});
+
+describe('FederationView, held key rotations', () => {
+  const rotation = { peerId: 'a'.repeat(32), heldAt: NOW - 120, fingerprint: '3b9e71c4a05d2f86' };
+
+  function withRotations(props: Partial<Parameters<typeof FederationView>[0]> = {}) {
+    const handlers = { onAcceptRotation: vi.fn(), onRefuseRotation: vi.fn() };
+    renderWithIntl(
+      <FederationView
+        overview={OVERVIEW}
+        labelsOf={fakeLabels}
+        now={NOW}
+        onNavigate={vi.fn()}
+        onSetLogs={vi.fn()}
+        onCheckKeys={vi.fn()}
+        onRunConsistency={vi.fn()}
+        onPromote={vi.fn()}
+        onAccept={vi.fn()}
+        onDecline={vi.fn()}
+        rotations={[rotation]}
+        {...handlers}
+        {...props}
+      />,
+    );
+    return handlers;
+  }
+
+  it('lists the new key’s fingerprint and applies nothing until Accept or Refuse is pressed', async () => {
+    const { onAcceptRotation, onRefuseRotation } = withRotations();
+    const card = within(screen.getByRole('region', { name: 'Key changes waiting' }));
+    expect(card.getByText('3b9e71c4a05d2f86')).toBeInTheDocument();
+    expect(onAcceptRotation).not.toHaveBeenCalled();
+    const user = userEvent.setup();
+    await user.click(card.getByRole('button', { name: /^Refuse the new key of / }));
+    expect(onRefuseRotation).toHaveBeenCalledWith(rotation);
+    await user.click(card.getByRole('button', { name: /^Accept the new key of / }));
+    expect(onAcceptRotation).toHaveBeenCalledWith(rotation);
+  });
+
+  it('shows no card when nothing is held', () => {
+    withRotations({ rotations: [] });
+    expect(screen.queryByRole('region', { name: 'Key changes waiting' })).not.toBeInTheDocument();
+  });
+});
+
+describe('FederationView, an offer for an account that is a copy from another server', () => {
+  it('offers to accept and move the vault’s home here only after the plain accept said so', async () => {
+    const onAcceptRehome = vi.fn();
+    const props = {
+      overview: OVERVIEW,
+      labelsOf: fakeLabels,
+      now: NOW,
+      onNavigate: vi.fn(),
+      onSetLogs: vi.fn(),
+      onCheckKeys: vi.fn(),
+      onRunConsistency: vi.fn(),
+      onPromote: vi.fn(),
+      onAccept: vi.fn(),
+      onDecline: vi.fn(),
+      onAcceptRehome,
+    };
+    const { unmount } = renderWithIntl(<FederationView {...props} />);
+    expect(screen.queryByRole('button', { name: /move its home here/ })).not.toBeInTheDocument();
+    unmount();
+    renderWithIntl(<FederationView {...props} rehomeFor="v2" />);
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Accept Side projects and move its home here' }));
+    expect(onAcceptRehome).toHaveBeenCalledWith(expect.objectContaining({ id: 'v2' }));
+    expect(screen.getByRole('button', { name: 'Accept request to federate Side projects' })).toBeInTheDocument();
   });
 });

@@ -27,6 +27,7 @@
 //! Everything but [`session`]'s transports is sans-IO: bytes and the time go in, bytes and values
 //! come out.
 
+pub mod addr;
 pub mod admin;
 pub mod blobs;
 pub mod cbor;
@@ -59,11 +60,13 @@ pub mod outbox;
 pub mod pairing;
 pub mod ports;
 mod publish;
+pub mod quota;
 pub mod relay;
 pub mod replicate;
 pub mod sendsync;
 pub mod session;
 pub mod signed;
+pub mod signedflag;
 pub mod spaces;
 pub mod suite;
 pub mod tagsync;
@@ -73,6 +76,7 @@ pub mod testing;
 #[doc(hidden)]
 pub mod vectors;
 pub mod wire;
+pub mod writes;
 
 pub use admin::{
     DescriptorSource, Federation, KeyChange, MismatchView, PausedVault, PeerActivity, PeerCheck,

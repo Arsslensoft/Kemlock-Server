@@ -1,9 +1,9 @@
 //! Request extractors: the capped body, the client address, a DPoP proof on a token endpoint,
 //! and an authenticated actor. All reject with problem+json.
 
-use crate::dpop::DpopError;
+use crate::dpop::{DpopError, Pending};
 use crate::problem::{Problem, rate_limited};
-use crate::ratelimit::{client_ip, ip_key};
+use crate::ratelimit::{Proxy, client_ip, ip_key, ip_key_48, joined_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body as HttpBody, Bytes};
 use axum::extract::{ConnectInfo, FromRequest, FromRequestParts, Request};
@@ -27,6 +27,11 @@ pub const DPOP_NONCE: HeaderName = HeaderName::from_static("dpop-nonce");
 pub struct Body(pub Bytes);
 
 impl Body {
+    /// Whether the request had no body at all.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Parses the body as JSON, with problem+json errors.
     pub fn json<T: DeserializeOwned>(&self) -> Result<T, Problem> {
         serde_json::from_slice(&self.0)
@@ -60,13 +65,13 @@ fn peer_and_header<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
     api: &Api<S, P, K>,
 ) -> IpAddr {
     let peer = peer_address(parts);
+    // Every line of the header, not the first: a proxy may append its own line after the client's.
     let header = api
         .config
         .ip_header
         .as_deref()
-        .and_then(|name| parts.headers.get(name))
-        .and_then(|value| value.to_str().ok());
-    client_ip(peer, header, &api.config.trusted_proxies)
+        .and_then(|name| joined_header(&parts.headers, name));
+    client_ip(peer, header.as_deref(), &api.config.trusted_proxies)
 }
 
 /// Headers that say a proxy forwarded the request.
@@ -94,11 +99,11 @@ const FORWARDING_HEADERS: [&str; 5] = [
 pub fn is_secure_connection(
     peer: IpAddr,
     headers: &HeaderMap,
-    trusted_proxies: &[IpAddr],
+    trusted_proxies: &[Proxy],
     ip_header: Option<&str>,
 ) -> bool {
     let peer = peer.to_canonical();
-    if trusted_proxies.iter().any(|p| p.to_canonical() == peer) {
+    if trusted_proxies.iter().any(|proxy| proxy.contains(peer)) {
         // The nearest proxy appends last, so the last value is the one a trusted proxy wrote.
         return headers
             .get_all("x-forwarded-proto")
@@ -176,11 +181,11 @@ fn dpop_problem<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
     }
 }
 
-fn verify_proof<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
-    parts: &Parts,
+/// The proof header's text: there must be exactly one.
+fn proof_header<'a, S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
+    parts: &'a Parts,
     api: &Api<S, P, K>,
-    access_token: Option<&str>,
-) -> Result<String, Problem> {
+) -> Result<&'a str, Problem> {
     let mut values = parts.headers.get_all("dpop").iter();
     let (Some(value), None) = (values.next(), values.next()) else {
         return Err(dpop_problem(
@@ -188,11 +193,23 @@ fn verify_proof<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
             DpopError::Invalid("exactly one DPoP header is required"),
         ));
     };
-    let proof = value
+    value
         .to_str()
-        .map_err(|_| dpop_problem(api, DpopError::Invalid("the DPoP header isn't text")))?;
+        .map_err(|_| dpop_problem(api, DpopError::Invalid("the DPoP header isn't text")))
+}
+
+/// Checks the request's proof and remembers it. `source` names the client address of a request
+/// nobody is authenticated for: its proofs may take only their share of the open set.
+fn verify_proof<S: Store, P: Crypto, K: TokenSigner + Clone + 'static>(
+    parts: &Parts,
+    api: &Api<S, P, K>,
+    access_token: Option<&str>,
+    source: Option<&str>,
+) -> Result<String, Problem> {
+    let proof = proof_header(parts, api)?;
     api.dpop
-        .verify(
+        .verify_from(
+            source.map(str::as_bytes),
             proof,
             parts.method.as_str(),
             parts.uri.path(),
@@ -223,8 +240,47 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
             .proof
             .check(&ip_key(ip), api.now())
             .map_err(rate_limited)?;
-        let jkt = verify_proof(parts, api, None)?;
+        // The open set's share is per /48, not per /56: a free /48 holds 256 of the /56s.
+        let jkt = verify_proof(parts, api, None, Some(&ip_key_48(ip)))?;
         Ok(Proof { jkt, ip })
+    }
+}
+
+/// A request to the refresh endpoint: its DPoP proof checked but not remembered yet, with the
+/// thumbprint of the proof's key.
+///
+/// A refresh proof carries no access token, so remembering it on arrival would put it in the
+/// open set anyone can fill, and a full set would stop every device refreshing. The handler
+/// instead records it (in the set of proofs that belong to sessions) once the refresh token is
+/// found and bound to this key. Limited per client address like [`Proof`].
+#[derive(Clone, Debug)]
+pub struct RefreshProof {
+    pub jkt: String,
+    pub ip: IpAddr,
+    pub pending: Pending,
+}
+
+impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api<S, P, K>>
+    for RefreshProof
+{
+    type Rejection = Problem;
+
+    async fn from_request_parts(parts: &mut Parts, api: &Api<S, P, K>) -> Result<Self, Problem> {
+        let ip = peer_and_header(parts, api);
+        api.limits
+            .proof
+            .check(&ip_key(ip), api.now())
+            .map_err(rate_limited)?;
+        let proof = proof_header(parts, api)?;
+        let pending = api
+            .dpop
+            .verify_unrecorded(proof, parts.method.as_str(), parts.uri.path(), api.now())
+            .map_err(|e| dpop_problem(api, e))?;
+        Ok(RefreshProof {
+            jkt: pending.jkt.clone(),
+            ip,
+            pending,
+        })
     }
 }
 
@@ -284,12 +340,39 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> FromRequestParts<Api
         let Ok(claims) = api.signer.verify(token, api.crypto.now()) else {
             return Err(invalid_token(Problem::from(AppError::Unauthorized)));
         };
-        let jkt = verify_proof(parts, api, Some(token))?;
+        // A token anyone who registered holds is enough to get a proof into the set of
+        // authenticated ones, so each device may make only so many a minute.
+        api.limits
+            .device_proof
+            .check(&format!("device:{}", claims.device.0), api.now())
+            .map_err(rate_limited)?;
+        // The proof is checked now but remembered only once the session behind the token is
+        // found good, in the account's own share of the set: a token that is signed but refused
+        // takes no room, and no number of devices lets one account fill the set for everybody.
+        let proof = proof_header(parts, api)?;
+        let pending = api
+            .dpop
+            .verify_unrecorded_with(
+                proof,
+                parts.method.as_str(),
+                parts.uri.path(),
+                api.now(),
+                Some(token),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
+        let jkt = pending.jkt.clone();
         let actor = api
             .authenticate()
             .execute(token, &jkt)
             .await
             .map_err(|e| invalid_token(Problem::from(e)))?;
+        api.dpop
+            .record_for_account(
+                &pending,
+                format!("user:{}", claims.user).as_bytes(),
+                api.now(),
+            )
+            .map_err(|e| dpop_problem(api, e))?;
         // The device used the API; the device list shows it beside the Bitwarden API's use.
         api.note_use(actor.device).await;
         Ok(Authed {
@@ -368,7 +451,7 @@ mod tests {
     #[test]
     fn a_trusted_proxy_says_which_scheme_the_client_used() {
         let proxy = ip("10.0.0.1");
-        let trusted = [proxy];
+        let trusted = [Proxy::from(proxy)];
         let check =
             |pairs: &[(&str, &str)]| is_secure_connection(proxy, &headers(pairs), &trusted, None);
         assert!(check(&[("x-forwarded-proto", "https")]));
@@ -386,7 +469,7 @@ mod tests {
         assert!(!is_secure_connection(
             ip("127.0.0.1"),
             &headers(&[("x-forwarded-proto", "http")]),
-            &[ip("127.0.0.1")],
+            &[Proxy::from(ip("127.0.0.1"))],
             None
         ));
         // And an IPv4 proxy matches its mapped form.
@@ -400,7 +483,7 @@ mod tests {
 
     #[test]
     fn only_a_trusted_proxy_is_believed() {
-        let trusted = [ip("10.0.0.1")];
+        let trusted = [Proxy::from(ip("10.0.0.1"))];
         let https = headers(&[("x-forwarded-proto", "https")]);
         assert!(!is_secure_connection(
             ip("10.0.0.2"),

@@ -9,6 +9,15 @@ use kemlock_domain::{DeviceId, DeviceKind, Email, UserId};
 use std::future::Future;
 use time::OffsetDateTime;
 
+/// What the hourly limits need to know of an earlier request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecentRequest {
+    pub created_at: OffsetDateTime,
+    /// The request's address, cut to its /24 or /48 (what the request stored).
+    pub ip: String,
+    pub state: ApprovalState,
+}
+
 /// Pending device approvals (`auth_requests`).
 pub trait ApprovalRepo: Send + Sync {
     /// Stores a new request.
@@ -16,6 +25,16 @@ pub trait ApprovalRepo: Send + Sync {
         &self,
         request: &AuthRequest,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// Stores a new request only when the account has fewer than `max_recent` requests made after
+    /// `since`, the count and the insert in one transaction, so racing requests can't pass the
+    /// limit together. Says whether it was stored.
+    fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     fn request(
         &self,
@@ -37,13 +56,13 @@ pub trait ApprovalRepo: Send + Sync {
         from: ApprovalState,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
-    /// When the account's requests made after `since` were created, oldest first. Backs the
-    /// hourly limit.
+    /// The account's requests made after `since`, oldest first, with where each came from and how
+    /// it stands. Backs the hourly limits.
     fn requests_since(
         &self,
         user: UserId,
         since: OffsetDateTime,
-    ) -> impl Future<Output = Result<Vec<OffsetDateTime>, StoreError>> + Send;
+    ) -> impl Future<Output = Result<Vec<RecentRequest>, StoreError>> + Send;
 
     /// Deletes requests that expired before `before`. Returns how many went.
     fn purge_requests(
@@ -63,6 +82,15 @@ pub trait KeyCopyRepo: Send + Sync {
     fn put_key_copy(
         &self,
         copy: &DeviceKeyCopy,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// [`put_key_copy`](KeyCopyRepo::put_key_copy) for a copy the client made for `key_version`: a
+    /// store that can read the account refuses (`StaleKeyVersion`) a copy for a version that is no
+    /// longer the account's. `None` checks nothing. Every store implements the check.
+    fn put_key_copy_at(
+        &self,
+        copy: &DeviceKeyCopy,
+        key_version: Option<u32>,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
 
     /// Deletes the device's copy, if it has one.

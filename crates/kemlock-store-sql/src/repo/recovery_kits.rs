@@ -1,6 +1,7 @@
 //! `RecoveryKitRepo` on `recovery_kits`.
 
 use crate::error::{StoreResult, map_db};
+use crate::owner_lock::begin_locked_at;
 use crate::store::SqlStore;
 use crate::tables::recovery_kits;
 use kemlock_app::ports::StoreError;
@@ -24,16 +25,20 @@ impl RecoveryKitRepo for SqlStore {
         user: UserId,
         kit: &RecoveryKit,
     ) -> Result<bool, StoreError> {
+        let txn = begin_locked_at(self, user, Some(kit.key_version)).await?;
         let inserted = recovery_kits::Entity::insert(recovery_kits::active(user, kit))
             .on_conflict(
                 OnConflict::column(recovery_kits::Column::UserId)
                     .do_nothing()
                     .to_owned(),
             )
-            .exec(self.writer())
+            .exec(&txn)
             .await;
         match inserted {
-            Ok(_) => Ok(true),
+            Ok(_) => {
+                txn.commit().await.store()?;
+                Ok(true)
+            }
             // The account has a kit already: the conflict did nothing.
             Err(sea_orm::DbErr::RecordNotInserted) => Ok(false),
             Err(err) => Err(map_db(err)),
@@ -45,13 +50,15 @@ impl RecoveryKitRepo for SqlStore {
         user: UserId,
         kit: &RecoveryKit,
     ) -> Result<bool, StoreError> {
+        let txn = begin_locked_at(self, user, Some(kit.key_version)).await?;
         let updated = recovery_kits::Entity::update_many()
             .set(recovery_kits::active(user, kit))
             .filter(recovery_kits::Column::UserId.eq(user.0))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?
             .rows_affected;
+        txn.commit().await.store()?;
         Ok(updated > 0)
     }
 

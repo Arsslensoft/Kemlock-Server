@@ -16,8 +16,12 @@ use kemlock_app::notices::{Notices, Outbox};
 use kemlock_app::platform::Hasher;
 use kemlock_app::ports::{Clock, Random, StoreError, UserRepo};
 use kemlock_app::privacy::{EraseAccount, ErasureFiles, NoSends};
+use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
+use kemlock_app::sso::{SsoSettings, SsoSettingsRepo};
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::BlobId;
+use kemlock_domain::SpaceId;
+use kemlock_domain::spaces::{Member, MemberState};
 use kemlock_domain::{AccountMode, Email, KdfParams, Role, User, UserId};
 use kemlock_store_sql::SqlStore;
 use serde_json::{Value, json};
@@ -144,6 +148,8 @@ pub(crate) struct Harness {
     pub blobs: Arc<MemoryBlobStore>,
     /// What the API told the live channels.
     pub events: Arc<Recorder>,
+    /// The invitation links the Kemlock API and the admin API are given.
+    pub links: kemlock_app::bitwarden::SharedInviteLinks,
 }
 
 impl Harness {
@@ -243,6 +249,21 @@ impl Harness {
         Self::on_live(store, None, TwoStepParts::default(), live, |_| {}).await
     }
 
+    /// [`Harness::with_mail`] with a tweak to the settings.
+    pub(crate) async fn with_mail_set(
+        outbox: Arc<dyn Outbox>,
+        tweak: impl FnOnce(&mut BwSettings),
+    ) -> Self {
+        let store = SqlStore::connect("sqlite::memory:")
+            .await
+            .expect("an in-memory store");
+        let live = Live {
+            notices: Notices::with_outbox(outbox),
+            ..Live::default()
+        };
+        Self::on_live(store, None, TwoStepParts::default(), live, tweak).await
+    }
+
     async fn on_live(
         store: SqlStore,
         webauthn: Option<Arc<dyn kemlock_app::passkeys::WebAuthn>>,
@@ -250,6 +271,8 @@ impl Harness {
         live: Live,
         tweak: impl FnOnce(&mut BwSettings),
     ) -> Self {
+        // As the server does: the personal API keys are kept sealed.
+        store.set_secret_seal(ServerSeal::new(&SERVER_KEY));
         let env = Arc::new(TestEnv {
             now: Mutex::new(datetime!(2026-11-21 12:00:00 UTC)),
         });
@@ -261,6 +284,8 @@ impl Harness {
         // The suites sign in far more often than a person does; the rate-limit tests set their own.
         settings.login_ratelimit_max_burst = 1_000_000;
         settings.unauthenticated_ratelimit_max_burst = 1_000_000;
+        // No wait between the hashes of one account: the suites sign one in again and again.
+        settings.hash_interval = std::time::Duration::ZERO;
         tweak(&mut settings);
         let app = App::new(AppParts {
             store: store.clone(),
@@ -288,12 +313,14 @@ impl Harness {
                 })),
             },
         });
+        let links = kemlock_api_bw::invite_links(&app);
         Harness {
             router: router(app),
             store,
             env,
             blobs,
             events,
+            links,
         }
     }
 
@@ -441,6 +468,78 @@ impl Harness {
             .await
             .expect("an account");
         user.id
+    }
+
+    /// Changes one member's row in an organization's space the way the Kemlock API, the admin
+    /// console and SSO group sync do: the Bitwarden documents are left as they are.
+    pub(crate) async fn change_row(
+        &self,
+        org: &str,
+        user: UserId,
+        change: impl FnOnce(&mut Member),
+    ) {
+        let space = SpaceId(org.parse::<Uuid>().expect("an organization id"));
+        let state = SpaceRepo::load(&self.store, space)
+            .await
+            .expect("the space loads")
+            .expect("a space");
+        let mut row = state.member(user).cloned().expect("a member of the space");
+        change(&mut row);
+        let changes = SpaceChanges {
+            members: vec![row],
+            ..SpaceChanges::new(space)
+        };
+        SpaceRepo::apply(&self.store, changes)
+            .await
+            .expect("the row is written");
+    }
+
+    /// Takes a member's row out of an organization's space, as the Kemlock API's remove does.
+    pub(crate) async fn drop_row(&self, org: &str, user: UserId) {
+        let space = SpaceId(org.parse::<Uuid>().expect("an organization id"));
+        let changes = SpaceChanges {
+            members_removed: vec![user],
+            ..SpaceChanges::new(space)
+        };
+        SpaceRepo::apply(&self.store, changes)
+            .await
+            .expect("the row goes");
+    }
+
+    /// The invitee accepts through the Kemlock API's accept route (what the web vault's space page
+    /// does): the space row moves to accepted, the Bitwarden document is left as it is.
+    pub(crate) async fn accept_in_space(&self, org: &str, user: UserId) {
+        let now = self.env.time();
+        self.change_row(org, user, |row| {
+            row.state = MemberState::Accepted;
+            row.accepted_at = Some(now);
+        })
+        .await;
+    }
+
+    /// The token of an invitation link, as the mail of a server would carry it.
+    pub(crate) fn invite_token(&self, org: &str, member: UserId, email: &str) -> String {
+        let now = self.env.time().unix_timestamp();
+        keys()
+            .encode(&json!({
+                "nbf": now,
+                "exp": now + 3600,
+                "iss": format!("{DOMAIN}|invite"),
+                "sub": member.to_string(),
+                "email": email,
+                "org_id": org,
+                "member_id": member.to_string(),
+                "invited_by_email": null,
+            }))
+            .expect("a token")
+    }
+
+    /// Gives the server a single sign-on provider, which Require SSO needs.
+    pub(crate) async fn configure_sso(&self) {
+        let settings = SsoSettings::new("https://idp.example.org", "kemlock", self.env.time());
+        SsoSettingsRepo::put_sso_settings(&self.store, &settings)
+            .await
+            .expect("the provider is stored");
     }
 
     /// A signed-in account: its access token and its user id.

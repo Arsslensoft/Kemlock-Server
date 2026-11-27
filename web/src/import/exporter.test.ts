@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ME, SPACE, login, vaultItem } from '@/test/tools-fixtures';
-import { CSV_COLUMNS, exportFilename, exportItemsOf, toCsv } from './exporter';
+import { CSV_COLUMNS, exportFilename, exportItemsOf, neutralise, toCsv } from './exporter';
 
 describe('toCsv', () => {
   it('writes the header, then logins and notes with CRLF row ends', () => {
@@ -25,6 +25,55 @@ describe('toCsv', () => {
     const { written, left } = toCsv([vaultItem('card', { name: 'Visa' }), vaultItem('login', null)]);
     expect(written).toBe(0);
     expect(left).toBe(2);
+  });
+});
+
+describe('formula injection', () => {
+  const row = (csv: string) => csv.split('\r\n')[1] ?? '';
+  /** What a cell looks like in the file: quoted when it holds a quote, comma or line break. */
+  const q = (value: string) => (/[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value);
+
+  it('puts a quote in front of every text another member can write that a spreadsheet would run', () => {
+    for (const start of ['=', '+', '-', '@', '\t', '\r']) {
+      const hostile = `${start}cmd|x`;
+      const { csv } = toCsv([login(hostile, hostile, 'pw', [hostile], { notes: hostile, folder: hostile })]);
+      const safe = q(`'${hostile}`);
+      expect(row(csv), JSON.stringify(start)).toBe(`${safe},,login,${safe},${safe},,0,${safe},${safe},pw,`);
+    }
+  });
+
+  it('does the same for a note, and leaves ordinary text alone', () => {
+    const { csv } = toCsv([
+      vaultItem('note', { name: '=2+2', text: '@SUM(A1)' }),
+      login('GitHub', 'sam', 'pw', ['https://github.com']),
+    ]);
+    const rows = csv.split('\r\n');
+    expect(rows[1]).toBe(",,note,'=2+2,'@SUM(A1),,0,,,,");
+    expect(rows[2]).toBe(',,login,GitHub,,,0,https://github.com,sam,pw,');
+  });
+
+  it('keeps the quoting a comma or a quote needs, after the prefix', () => {
+    const { csv } = toCsv([login('=a,b', 'u', 'pw', [])]);
+    expect(row(csv)).toBe(`,,login,"'=a,b",,,0,,u,pw,`);
+  });
+
+  it('never alters the password or the one-time code secret, which would change the secret', () => {
+    const { csv } = toCsv([login('X', 'u', '=1+1', ['x.example'], { totp: '+JBSWY3DP' })]);
+    expect(row(csv)).toBe(',,login,X,,,0,x.example,u,=1+1,+JBSWY3DP');
+  });
+
+  it('writes every field as saved when protection is off, and by default protects', () => {
+    const hostile = login('=cmd', '+u', '=pw', ['x.example']);
+    expect(row(toCsv([hostile], { protectFormulas: false }).csv)).toBe(',,login,=cmd,,,0,x.example,+u,=pw,');
+    expect(row(toCsv([hostile], {}).csv)).toBe(",,login,'=cmd,,,0,x.example,'+u,=pw,");
+    expect(row(toCsv([hostile]).csv)).toBe(row(toCsv([hostile], { protectFormulas: true }).csv));
+  });
+
+  it('leaves a dash or an at sign in the middle of text alone', () => {
+    expect(neutralise('Wi-Fi')).toBe('Wi-Fi');
+    expect(neutralise('sam@example.co')).toBe('sam@example.co');
+    expect(neutralise('')).toBe('');
+    expect(neutralise('-1')).toBe("'-1");
   });
 });
 

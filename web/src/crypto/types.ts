@@ -19,6 +19,24 @@ export type DeviceKeyHandle = Handle<'device-key'>;
 export type ApprovedKeyHandle = Handle<'approved-key'>;
 
 /** The account's Argon2id settings, as the server returns them (`KdfDto`). */
+/** A Bitwarden account's KDF as its prelogin gives it (`kdf` 0 is PBKDF2-SHA256, 1 is Argon2id). */
+export interface BitwardenKdf {
+  type: 0 | 1;
+  iterations: number;
+  /** Argon2id only: memory in MiB, as Bitwarden counts it. */
+  memory?: number;
+  /** Argon2id only. */
+  parallelism?: number;
+}
+
+/** What the Bitwarden master password hash is made from: the typed password and the account's address. */
+export interface BitwardenHashInput {
+  password: string;
+  /** The account's email; the worker trims and lower-cases it. */
+  email: string;
+  kdf: BitwardenKdf;
+}
+
 export interface KdfSettings {
   memoryKib: number;
   iterations: number;
@@ -86,6 +104,13 @@ export interface UnlockOptions {
   keyVersion?: number;
   /** Also opens the kx1 and sig1 private keys (`ownFingerprint` needs them). */
   sealedPrivateKeys?: string;
+  /**
+   * `unlockWithRoot` only: the account's public bundle (base64url). The worker then refuses to
+   * unlock unless the opened `kx1` and `sig1` private keys are the bundle's, for this account and
+   * key version. A root key an approving device sent is authenticated by nothing on the new
+   * device, so that path always passes it (with `sealedPrivateKeys`).
+   */
+  publicBundle?: string;
 }
 
 /** What identifies an item inside its ciphertext's AAD. */
@@ -172,8 +197,8 @@ export interface TotpOptions {
   account?: string;
 }
 
-/** The sealed-box contexts under which the worker seals the root key (docs/crypto.md). */
-export type RootKeyContext = 'device-approval' | 'emergency-access';
+/** What `sealRootKey` seals under. An emergency contact's box is made by `sealEmergencyKey`, which checks the contact's bundle. */
+export type RootKeyContext = 'device-approval';
 
 /** What a space name names. */
 export type NameKind = 'space' | 'collection' | 'group';
@@ -197,6 +222,242 @@ export interface ConfirmationCheck extends ConfirmationFacts {
   signature: string;
 }
 
+// ---- the space chain (docs/crypto.md, "Space chain"; crates/kemlock-wasm/src/chain.rs) -----------
+
+/** A record of a space's chain as the server serves it: exact bytes, base64url. */
+export interface ChainRecord {
+  entry: string;
+  signature: string;
+  /** A rekey's second signature, on no other kind. */
+  cosignature?: string;
+}
+
+/** What a device keeps for a space: the last record it accepted and the link of every one. */
+export interface ChainAnchor {
+  seq: number;
+  epoch: number;
+  /** base64url of each record's link, from seq 0. */
+  links: string[];
+  /**
+   * The space's confirmed owners at `seq`, as the worker's chain view gives them (`anchorOwners`):
+   * each owner's id with the SHA-256 of their bundle. The verifier lets a fence move the chain only
+   * when one of them signed it. An anchor kept before this field has none, and is written again with
+   * it from the first verified chain after the upgrade.
+   */
+  owners?: ChainAnchorOwner[];
+  /** The promotions this browser holds: passed back to the verifier as it was told them. */
+  promotions?: ChainAnchorPromotion[];
+}
+
+/** An owner kept with an anchor: their id (uuid text) and the base64url SHA-256 of their bundle. */
+export interface ChainAnchorOwner {
+  id: string;
+  bundle: string;
+}
+
+/** A promotion record this browser holds: the new home's id and base64url SHA-256 of the record. */
+export interface ChainAnchorPromotion {
+  home: string;
+  promotion: string;
+}
+
+/** A chain the verifier refused: the spec's reason ("Verification") and the record's seq. */
+export interface ChainRefusal {
+  ok: false;
+  reason: string;
+  seq: number | null;
+}
+
+export interface ChainMember {
+  id: string;
+  role: 'owner' | 'admin' | 'custom' | 'member';
+  custom: string[];
+  status: 'invited' | 'confirmed' | 'removed';
+  invitedBy: string;
+  /** The chain's bundle of the member, base64url; once they are confirmed. */
+  bundle?: string;
+  bundleVersion?: number;
+  /** That bundle's fingerprint, 12 groups of 5 digits. */
+  fingerprint?: string;
+  confirmedBy?: string;
+  confirmedSeq?: number;
+  rekeySeq?: number;
+}
+
+/** What the person compares on first contact. */
+export interface FirstContactAsk {
+  /** self: nothing to compare; compare: the fingerprint of person; pick: one of owners. */
+  kind: 'self' | 'compare' | 'pick';
+  person?: string;
+  fingerprint?: string;
+  owners: Array<{ id: string; fingerprint: string }>;
+}
+
+/** A key of a chained space and what this account holds of it. */
+export interface ChainKey {
+  /** "space" or "collection:<uuid>" */
+  key: string;
+  version: number;
+  marked: boolean;
+  sealSeq?: number;
+  /** The commitment covers more than this account: the server's seal hash list is needed. */
+  needsList: boolean;
+}
+
+/** The verified state of a space, as the worker holds it. */
+export interface ChainView {
+  ok: true;
+  /** false for a space with no chain. */
+  chained: boolean;
+  head?: { seq: number; link: string };
+  epoch: number;
+  /** The link of every record: the anchor to keep once first contact is done. */
+  links: string[];
+  /** Whether first contact is done, so keys open. */
+  trusted: boolean;
+  firstContact?: FirstContactAsk;
+  /** The space's confirmed owners at the head with the hash of their bundle: kept in the anchor (`ChainAnchor.owners`). */
+  anchorOwners?: ChainAnchorOwner[];
+  /** Promotions the worker reports, when it does: merged into the anchor's, never replacing them. */
+  promotions?: ChainAnchorPromotion[];
+  /** The seq of the fence where the chain parted from the kept anchor. */
+  divergence?: number;
+  members: ChainMember[];
+  space: { keyVersion: number; marked: boolean; nameHash: string; nameVersion: number };
+  collections: Array<{
+    id: string;
+    parent?: string;
+    keyVersion: number;
+    marked: boolean;
+    nameHash: string;
+    nameVersion: number;
+  }>;
+  groups: Array<{ id: string; members: string[]; nameHash: string; nameVersion: number }>;
+  grants: Array<{ collection: string; grantee: string; permission: string }>;
+  keys: ChainKey[];
+}
+
+export type ChainVerdict = ChainView | ChainRefusal;
+
+/** A grant of a collection to a member, in an invitation. */
+export interface ChainCollectionGrant {
+  collection: string;
+  permission: string;
+}
+
+/**
+ * One change to a chained space that the worker makes as signed records (docs/crypto.md, "Space
+ * chain", "Kinds"): it builds them from the verified state it holds, signs them with the unlocked
+ * account's key and checks them with the verifier before returning them.
+ */
+export type ChainChange =
+  | {
+      action: 'invite';
+      member: string;
+      role: ChainMember['role'];
+      custom: string[];
+      grants: ChainCollectionGrant[];
+    }
+  | {
+      action: 'confirm';
+      member: string;
+      /** The member's bundle and its own signature, as the server registered them. */
+      bundle: string;
+      bundleSignature: string;
+      /** The 64 fingerprint bytes the person compared. */
+      fingerprint: string;
+    }
+  | { action: 'role'; member: string; role: ChainMember['role']; custom: string[] }
+  | { action: 'remove'; member: string }
+  | { action: 'grant'; collection: string; grantee: string; permission: string }
+  | { action: 'ungrant'; collection: string; grantee: string }
+  | {
+      action: 'collection';
+      collection: string;
+      name: string;
+      parent?: string;
+      /** Granted to the maker with `manage` when left out. */
+      grants?: Array<{ grantee: string; permission: string }>;
+    }
+  | { action: 'collection-delete'; collection: string }
+  | { action: 'rename'; target: string; name: string }
+  | { action: 'group'; group: string; name: string; members?: string[] }
+  | { action: 'group-members'; group: string; add: string[]; remove: string[] }
+  | { action: 'group-delete'; group: string }
+  /** Shares the keys this account holds with the members awaiting them. */
+  | { action: 'seal' };
+
+/**
+ * An item a `keys` record re-writes under its collection's new key version (or a reseal writes
+ * again). The worker signs it with the account's sig1 key, with the collection bound, as it signs
+ * any write of a space's item.
+ */
+export interface ChainWrite {
+  collection: string;
+  /** The revision being replaced; the item is written as the next one. */
+  expectedRevision: number;
+  item: {
+    id: string;
+    owner: string;
+    kind: string;
+    format: 'kem1';
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+    deleted: false;
+    collectionId: string;
+    /** The signed write ("Signed item writes"): the account that wrote it, as any write of a space's item. */
+    writer: string;
+    /** The key version of the writer's bundle that signed. */
+    writerKeyVersion: number;
+    /** The writer's sig1 signature of the statement binding the item, its envelope and its collection. */
+    writeSignature: string;
+  };
+}
+
+/** What POST /kem/v1/spaces/{id}/chain takes: records, and the boxes and names they commit. */
+export interface ChainAppend {
+  ok: true;
+  records: ChainRecord[];
+  seals: Array<{ box: string; key: string; member: string; seq: number; version: number }>;
+  names: Array<{ name: string; seq: number; target: string }>;
+  /** Live items of the replaced collections this account can't re-write (key replacement). */
+  held?: string[];
+  /** Items of the replaced collections, sealed again under their new key versions. */
+  writes?: ChainWrite[];
+  /** The keys (`space`, `collection:<uuid>`) a key replacement replaces: only items of these can be held. */
+  rotated?: string[];
+}
+
+/** The server's copy of what a key replacement seals again. */
+export interface ChainReplacement {
+  /** The live items of the space, as the server serves them. */
+  items: Array<{
+    id: string;
+    collection: string;
+    kind: string;
+    revision: number;
+    keyVersion: number;
+    ciphertext: string;
+    itemKey: string;
+  }>;
+  /** Every sealed name of the space (`space`, `collection:<uuid>`, `group:<uuid>`), base64url. */
+  names: Array<{ target: string; sealed: string }>;
+}
+
+/** Records ready to append, or the verifier's reason for refusing the change. */
+export type ChainBuilt = ChainAppend | ChainRefusal;
+
+/** An entry of the server's seal hash list for a record (GET /chain/{seq}/seals). */
+export interface SealHashEntry {
+  bundleVersion: number;
+  key: string;
+  member: string;
+  sealHash: string;
+  version: number;
+}
+
 /** A new device's one-time key: the public half for the approval request (base64url, 1,600 bytes). */
 export interface DeviceKey {
   handle: DeviceKeyHandle;
@@ -217,6 +478,34 @@ export interface SealSpaceItemInput {
   json: string;
 }
 
+/**
+ * The fields of an item write that a signature covers (docs/crypto.md, "Signed item writes"): what
+ * the server is sent, minus the signature. `ciphertext` and `itemKey` are base64url and absent on a
+ * tombstone. To check a signature, `writer` and `writerKeyVersion` name who signed.
+ */
+export interface ItemWriteFields {
+  owner: string;
+  id: string;
+  kind: string;
+  revision: number;
+  deleted: boolean;
+  keyVersion: number;
+  ciphertext?: string;
+  itemKey?: string;
+  /** The collection an item of a space is in; the signature covers it. None for a vault's item. */
+  collectionId?: string;
+  writer?: string;
+  writerKeyVersion?: number;
+}
+
+/** What signing a write answers: the three members the server takes with the item. */
+export interface ItemWriteSignature {
+  writer: string;
+  writerKeyVersion: number;
+  /** base64url, 3,373 bytes */
+  writeSignature: string;
+}
+
 /** An item of a space's collection, to open. `keyVersion` is the collection key's. */
 export interface OpenSpaceItemInput {
   spaceId: string;
@@ -227,12 +516,16 @@ export interface OpenSpaceItemInput {
   keyVersion: number;
   ciphertext: string;
   itemKey: string;
+  /** See `CryptoPort`'s: false holds an item under a marked key; left out, it is taken as accepted. */
+  accepted?: boolean;
 }
 
 /** A collection's name and its key sealed to its maker (base64url). */
 export interface SealedCollection {
   name: string;
   sealedKey: string;
+  /** The maker's sig1 signature over `sealedKey` (docs/crypto.md, "Signed key boxes"). */
+  sealedKeySignature: string;
 }
 
 export interface NewSpaceInput {
@@ -245,7 +538,30 @@ export interface NewSpaceInput {
 export interface NewSpaceResult {
   name: string;
   sealedSpaceKey: string;
+  /** The maker's sig1 signature over `sealedSpaceKey`. */
+  sealedSpaceKeySignature: string;
   collection: SealedCollection;
+}
+
+/** A key sealed to a member and the signature of the account that sealed it (base64url). */
+export interface SignedBox {
+  sealed: string;
+  signature: string;
+}
+
+/** What a key box signature is checked against (docs/crypto.md, "Signed key boxes"). */
+export interface KeyBoxCheck {
+  /** The sealer's public-key bundle; their account id and key version are its own. */
+  sealerBundle: string;
+  spaceId: string;
+  /** The collection of a collection key's box; left out for the space key's. */
+  collectionId?: string;
+  /** The version of the key the box holds. */
+  keyVersion: number;
+  /** The account id the box is sealed to, as base64url of its 16 bytes. */
+  recipientId: string;
+  sealed: string;
+  signature: string;
 }
 
 /** The names of a space's parts are encrypted under the space key of a key version. */
@@ -256,6 +572,57 @@ export interface NameAddress {
   /** The id of the space, collection or group named. */
   id: string;
 }
+
+/** What the server stores of the new keys of a rotation, and the fingerprint to show. */
+export interface RotationStart {
+  /** The key version the rotation installs: the account's plus one. */
+  keyVersion: number;
+  /** base64url */
+  publicBundle: string;
+  bundleSignature: string;
+  sealedPrivateKeys: string;
+  /** The old pair sealed under the new user key, at the old key version. */
+  sealedPreviousPrivateKeys: string;
+  /** 12 groups of 5 digits, joined by spaces */
+  fingerprint: string;
+}
+
+/** An item sealed again under the new keys: a fresh item key, at the next revision. */
+export interface ResealedItem {
+  ciphertext: string;
+  itemKey: string;
+  /** The revision it is sealed at: the old one plus one. */
+  revision: number;
+  keyVersion: number;
+  /** The account's signature of the write this makes, by the new keys (docs/crypto.md, "Rotating the root key"). */
+  writer: string;
+  writerKeyVersion: number;
+  writeSignature: string;
+}
+
+/** A Send's sealed key and meta under the new keys. */
+export interface ResealedSend {
+  sealedKey: string;
+  meta: string;
+}
+
+export interface ResealSendInput {
+  id: string;
+  /** `text` or `file` */
+  kind: string;
+  /** base64url */
+  sealedKey: string;
+  meta: string;
+}
+
+/** What a rotation's commit says: the new key version and fingerprint. */
+export interface RotationCommit {
+  keyVersion: number;
+  fingerprint: string;
+}
+
+/** The root key's sealed-box contexts a rotation seals under. */
+export type RotationBoxContext = 'emergency-access' | 'account-recovery';
 
 /**
  * Why an operation failed, and no more: a wrong password, a wrong key and a tampered byte all
@@ -281,6 +648,14 @@ export class CryptoError extends Error {
 export interface CryptoApi {
   /** `Argon2id(password, salt, m, t, p)`. A `Uint8Array` is transferred and wiped. */
   masterKey(password: string | Uint8Array, kdf: KdfSettings): Promise<MasterKeyHandle>;
+  /**
+   * The Bitwarden master password hash, standard base64: the master key is PBKDF2-SHA256(password,
+   * lower-cased email, iterations) or Argon2id(password, SHA-256(email), memory, iterations,
+   * parallelism), and the hash PBKDF2-SHA256(master key, password, 1). It is what a Bitwarden
+   * server checks in place of the password, which never leaves the worker. Nothing is kept. Settings
+   * outside the bounds a browser should honour are refused.
+   */
+  bitwardenPasswordHash(input: BitwardenHashInput): Promise<string>;
   opaqueRegisterStart(masterKey: MasterKeyHandle): Promise<OpaqueStart>;
   opaqueRegisterFinish(
     state: OpaqueStateHandle,
@@ -317,7 +692,12 @@ export interface CryptoApi {
    * key"): sealed in the worker under a non-extractable key that never leaves this browser. The
    * root key does not reach the page. Returns the blob (base64url) the server keeps.
    */
-  deviceCopySeal(accountId: string, deviceId: string, keyVersion: number): Promise<string>;
+  deviceCopySeal(
+    accountId: string,
+    deviceId: string,
+    keyVersion: number,
+    tabId?: string,
+  ): Promise<string>;
   /**
    * Opens this browser's copy into a root-key handle for `unlockWithRoot`. Refuses a copy made
    * for another account, device or key version, or by another browser.
@@ -327,9 +707,20 @@ export interface CryptoApi {
     deviceId: string,
     keyVersion: number,
     sealed: string,
+    tabId?: string,
   ): Promise<ApprovedKeyHandle>;
   /** Forgets this browser's key: its copies stop opening. */
-  deviceCopyReset(): Promise<void>;
+  deviceCopyReset(tabId?: string): Promise<void>;
+  /**
+   * With a `tabId`, the three `deviceCopy` operations above use that tab's own key instead of the
+   * trusted-device key: the copy a reload of the tab opens the vault from. The key is made on the
+   * first seal, is non-extractable, and goes when the tab's page has been silent for longer than a
+   * reload takes (`purgeTabKeys`). `tabSeal` seals the session's tokens under the same key, bound
+   * to the account and device. `data` and the result are base64url.
+   */
+  tabSeal(tabId: string, accountId: string, deviceId: string, data: string): Promise<string>;
+  /** Opens what `tabSeal` sealed; refuses anything else, and anything once the tab's key is gone. */
+  tabOpen(tabId: string, accountId: string, deviceId: string, sealed: string): Promise<string>;
   /** Opens the password wrap of the root key; consumes both handles. */
   unlock(
     accountId: string,
@@ -384,6 +775,8 @@ export interface CryptoApi {
   verifyBundle(publicBundle: string, bundleSignature: string): Promise<boolean>;
   /** The unlocked account's own fingerprint; needs `unlock` with `sealedPrivateKeys`. */
   ownFingerprint(): Promise<string>;
+  /** The key version the account is unlocked at: authenticated by the wrap that opened it. */
+  ownKeyVersion(): Promise<number>;
   /** Drops a handle that will not be used. */
   release(
     handle:
@@ -398,11 +791,17 @@ export interface CryptoApi {
   // Sharing: the account's keys given to someone else. Binary values are base64url.
 
   /**
-   * Seals the unlocked account's root key to a kx1 public key as a sealed box. `device-approval`
-   * takes `aad` = account id ‖ approval request id (32 bytes), `emergency-access` the contact's
-   * account id (16 bytes); no other context is sealed.
+   * Seals the unlocked account's root key to a kx1 public key as a sealed box under
+   * `device-approval`, with `aad` = account id ‖ approval request id (32 bytes); no other context
+   * is sealed (an emergency contact's box is `sealEmergencyKey`).
    */
   sealRootKey(recipientKx1: string, context: RootKeyContext, aad: string): Promise<string>;
+  /**
+   * Seals the unlocked account's root key to an emergency contact (`emergency-access`, `aad` their
+   * account id) from their public bundle: the worker checks the bundle's own signature and that it
+   * names `granteeId` (a UUID) before it seals, so a key the page made up is never sealed to.
+   */
+  sealEmergencyKey(publicBundle: string, bundleSignature: string, granteeId: string): Promise<string>;
   /** The 134-byte confirmation statement, the unlocked account as the confirmer. */
   confirmationStatement(facts: ConfirmationFacts): Promise<string>;
   /** A sig1 signature over a confirmation statement of this account; context `confirm` only. */
@@ -418,14 +817,19 @@ export interface CryptoApi {
 
   /** A new space: a space key and first collection key sealed to the maker, names under the key. */
   newSpace(input: NewSpaceInput): Promise<NewSpaceResult>;
-  /** Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. */
-  openSpace(input: { spaceId: string; keyVersion: number; sealed: string }): Promise<void>;
-  /** Opens a collection key sealed to me and keeps it. */
+  /**
+   * Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. `unsigned` is for a
+   * box that carried no signature: the key then opens names and items only, and the worker seals and
+   * writes nothing under it (read-only).
+   */
+  openSpace(input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }): Promise<void>;
+  /** Opens a collection key sealed to me and keeps it; `unsigned` as for `openSpace`. */
   openCollection(input: {
     spaceId: string;
     collectionId: string;
     keyVersion: number;
     sealed: string;
+    unsigned?: boolean;
   }): Promise<void>;
   openName(input: NameAddress & { ciphertext: string }): Promise<string>;
   sealName(input: NameAddress & { name: string }): Promise<string>;
@@ -440,14 +844,16 @@ export interface CryptoApi {
     spaceId: string;
     recipientKx1: string;
     recipientId: string;
-  }): Promise<string>;
+  }): Promise<SignedBox>;
   /** The newest key held of a collection, sealed to a member (bound to space, collection, version). */
   sealCollectionKeyTo(input: {
     spaceId: string;
     collectionId: string;
     recipientKx1: string;
     recipientId: string;
-  }): Promise<string>;
+  }): Promise<SignedBox>;
+  /** Whether a key box signature is the sealer's over exactly this box, for this key and recipient. */
+  verifyKeyBox(check: KeyBoxCheck): Promise<boolean>;
   /** Forgets the DPoP key (sign-out of this device). */
   dpopReset(): Promise<void>;
 
@@ -511,11 +917,166 @@ export interface CryptoApi {
   sealSpaceItem(input: SealSpaceItemInput): Promise<SealedItem>;
   /** Resolves with the item's JSON text. */
   openSpaceItem(input: OpenSpaceItemInput): Promise<string>;
+
+  // The signed manifest (docs/crypto.md, "Signed manifest"): the worker signs and checks it, so the
+  // page holds no signing key. Manifests and signatures are base64url.
+
+  /**
+   * A sig1 signature of the unlocked account over a manifest's exact bytes, context `manifest`.
+   * Only bytes that parse as a manifest of the account's own vault or of a space are signed.
+   */
+  manifestSign(manifest: string): Promise<string>;
+  /**
+   * Whether the signature is the unlocked account's own over a manifest of its own vault. The key
+   * is the account's own, never a bundle the server served, so it needs the sealed private keys
+   * at unlock: without them it rejects with `locked` rather than answering false.
+   */
+  manifestVerifyOwn(manifest: string, signature: string): Promise<boolean>;
+  /** Whether the signature is the signer's (the bundle's sig1 key) over a space's manifest. */
+  manifestVerify(signerBundle: string, manifest: string, signature: string): Promise<boolean>;
+
+  // Signed item writes (docs/crypto.md, "Signed item writes"): the worker signs a write as the
+  // unlocked account and checks the signature of one, so the page holds no signing key.
+
+  /**
+   * Signs a write as the unlocked account at its key version. Only a write for the account's own
+   * vault or a space is signed.
+   */
+  itemWriteSign(fields: ItemWriteFields): Promise<ItemWriteSignature>;
+  /**
+   * Whether the signature is the unlocked account's own over the write, which must name this
+   * account as `writer`. The key is the account's own, never a bundle the server served: without
+   * the sealed private keys it rejects with `locked` rather than answering false.
+   */
+  itemWriteVerifyOwn(fields: ItemWriteFields, signature: string): Promise<boolean>;
+  /** Whether the signature is the signer's (the bundle's sig1 key) over the write. */
+  itemWriteVerify(signerBundle: string, fields: ItemWriteFields, signature: string): Promise<boolean>;
+
+  // The space chain: verified in the worker, which keeps the state. A space that has a chain opens
+  // and seals keys only through it.
+
+  /**
+   * Verifies the chain the server served for a space against the anchor the page kept (and the
+   * head this unlock already verified) and keeps its state. A chain that is refused resolves with
+   * `{ok: false, reason, seq}`, not an error; the space is then "can't be checked".
+   */
+  verifySpaceChain(input: {
+    spaceId: string;
+    records: ChainRecord[];
+    anchor?: ChainAnchor;
+  }): Promise<ChainVerdict>;
+  /**
+   * A new space as a chain: the body of POST /kem/v1/spaces/{id}/chain, with a `create` record
+   * signed by the unlocked account, both keys sealed to it and both names under the space key.
+   * `at` is the time in Unix seconds. No key is kept: the space opens through its chain once the
+   * record is appended and verified.
+   */
+  newChainedSpace(input: NewSpaceInput & { at: number }): Promise<ChainAppend>;
+  /**
+   * The records of one change to a chained space, from the verified state the worker holds for it
+   * (first contact done), signed by the unlocked account. Resolves with `{ok: false, reason}` when
+   * the chain's rules refuse the change, and with no records when there is nothing to do.
+   */
+  buildChainRecords(input: {
+    spaceId: string;
+    /** The time in Unix seconds. */
+    at: number;
+    change: ChainChange;
+  }): Promise<ChainBuilt>;
+  /**
+   * Replaces the keys the chain marks (a removal or an ungrant marked them): a `keys` record, and
+   * the items of the replaced collections sealed again under their new key versions (`writes`),
+   * each signed as any write of a space's item is (`writer`, `writerKeyVersion`, `writeSignature`,
+   * the collection bound), with those the account can't re-write named `held`. No records when
+   * nothing can be replaced.
+   */
+  buildKeyReplacement(input: {
+    spaceId: string;
+    at: number;
+    replacement: ChainReplacement;
+  }): Promise<ChainBuilt>;
+  /**
+   * Seals again the items still under an older key version than their collection's current one
+   * (a replacement that stopped halfway, or items it held), as the next revision under the
+   * current version, each signed like a key replacement's. `held` names those this unlock can't
+   * seal again (it no longer holds their old key, or can't edit them). No record is made.
+   */
+  buildReseal(input: { spaceId: string; items: ChainReplacement['items'] }): Promise<ChainBuilt>;
+  /**
+   * Seals a text this browser keeps for the unlocked account (base64url out), bound to `label`:
+   * what sits in IndexedDB can't be read or written by anyone but this account's unlocked worker.
+   */
+  sealLocal(label: string, text: string): Promise<string>;
+  /** Opens what `sealLocal` sealed under the same label and account; anything else is `invalid`. */
+  openLocal(label: string, sealed: string): Promise<string>;
+  /** The view of the chain this unlock verified, or null when it hasn't verified one. */
+  spaceChainView(spaceId: string): Promise<ChainView | null>;
+  /** The person compared the fingerprint first contact asked for and it matched. */
+  acceptFirstContact(spaceId: string): Promise<void>;
+  /**
+   * Opens the space key ("space") or a collection key ("collection:<uuid>") of a chained space at
+   * the chain's current version. servedVersion and sealed are what the server served; list is the
+   * seal hash list of the record that committed the seal, when the chain says it is needed.
+   */
+  openChainKey(input: {
+    spaceId: string;
+    key: string;
+    servedVersion: number;
+    sealed: string;
+    list?: SealHashEntry[];
+  }): Promise<void>;
+
+  // Rotating the root key (docs/crypto.md, "Rotating the root key"): a new root key and key pair
+  // held in the worker, and each piece asked for in turn. Nothing but wraps and boxes leaves it.
+
+  /** Starts a rotation of the unlocked account (opened with its private keys). */
+  rotationStart(): Promise<RotationStart>;
+  /** Moves an item of the account's own vault to the new keys: a fresh item key, revision + 1. */
+  rotationResealItem(input: OpenItemInput): Promise<ResealedItem>;
+  /** Moves a Send's sealed key and meta to the new keys. */
+  rotationResealSend(input: ResealSendInput): Promise<ResealedSend>;
+  /** The new root key under a fresh sign-in's master key and export key; consumes both handles. */
+  rotationWrapPassword(masterKey: MasterKeyHandle, exportKey: ExportKeyHandle): Promise<string>;
+  /** The new root key under a passkey's PRF output and credential id, at the new key version. */
+  rotationPrfWrap(prfOutput: string, credentialId: string): Promise<PrfWrap>;
+  /** A new Recovery Kit for the new root key. */
+  rotationKitMake(): Promise<MadeKit>;
+  /**
+   * This browser's copy of the new root key (docs/crypto.md, "The trusted-device copy of the root
+   * key"), at the new key version. The root key does not reach the page.
+   */
+  rotationDeviceCopySeal(
+    accountId: string,
+    deviceId: string,
+    keyVersion: number,
+    tabId?: string,
+  ): Promise<string>;
+  /** Seals the new root key to a kx1 public key under `emergency-access` or `account-recovery`. */
+  rotationSealRootKey(
+    recipientKx1: string,
+    context: RotationBoxContext,
+    aad: string,
+  ): Promise<string>;
+  /** Makes the new keys the account's; the old private keys are kept for the spaces. */
+  rotationCommit(): Promise<RotationCommit>;
+  /**
+   * Moves a value this browser keeps for the account (`sealLocal`) to the new keys, for the same
+   * label. Rejects a value that does not open under the keys in use now.
+   */
+  rotationResealLocal(label: string, sealed: string): Promise<string>;
+  /** Forgets a rotation that was started and not committed. */
+  rotationAbort(): Promise<void>;
+  /**
+   * A sig1 signature over a space-chain signing input (context `space-chain`) by the key before the
+   * last rotation (`previous`) or the new one: the two signatures of a `rekey` record.
+   */
+  rotationSign(previous: boolean, context: string, message: string): Promise<string>;
 }
 
 /** Every operation the worker answers, with its arguments and result. */
 export interface Ops {
   masterKey: { args: [password: string | Uint8Array, kdf: KdfSettings]; result: MasterKeyHandle };
+  bitwardenPasswordHash: { args: [input: BitwardenHashInput]; result: string };
   opaqueRegisterStart: { args: [masterKey: MasterKeyHandle]; result: OpaqueStart };
   opaqueRegisterFinish: {
     args: [state: OpaqueStateHandle, masterKey: MasterKeyHandle, response: string];
@@ -561,8 +1122,13 @@ export interface Ops {
   fingerprint: { args: [publicBundle: string]; result: string };
   verifyBundle: { args: [publicBundle: string, bundleSignature: string]; result: boolean };
   ownFingerprint: { args: []; result: string };
+  ownKeyVersion: { args: []; result: number };
   release: { args: [handle: number]; result: void };
   dpopReset: { args: []; result: void };
+  sealEmergencyKey: {
+    args: [publicBundle: string, bundleSignature: string, granteeId: string];
+    result: string;
+  };
   sealRootKey: {
     args: [recipientKx1: string, context: RootKeyContext, aad: string];
     result: string;
@@ -577,11 +1143,13 @@ export interface Ops {
   };
   newSpace: { args: [input: NewSpaceInput]; result: NewSpaceResult };
   openSpace: {
-    args: [input: { spaceId: string; keyVersion: number; sealed: string }];
+    args: [input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }];
     result: void;
   };
   openCollection: {
-    args: [input: { spaceId: string; collectionId: string; keyVersion: number; sealed: string }];
+    args: [
+      input: { spaceId: string; collectionId: string; keyVersion: number; sealed: string; unsigned?: boolean },
+    ];
     result: void;
   };
   openName: { args: [input: NameAddress & { ciphertext: string }]; result: string };
@@ -592,14 +1160,15 @@ export interface Ops {
   };
   sealSpaceKeyTo: {
     args: [input: { spaceId: string; recipientKx1: string; recipientId: string }];
-    result: string;
+    result: SignedBox;
   };
   sealCollectionKeyTo: {
     args: [
       input: { spaceId: string; collectionId: string; recipientKx1: string; recipientId: string },
     ];
-    result: string;
+    result: SignedBox;
   };
+  verifyKeyBox: { args: [check: KeyBoxCheck]; result: boolean };
   newDeviceKey: { args: []; result: DeviceKey };
   openApprovedKey: {
     args: [deviceKey: DeviceKeyHandle, accountId: string, requestId: string, sealed: string];
@@ -625,20 +1194,95 @@ export interface Ops {
   };
   newSsoAccount: { args: [accountId: string]; result: NewAccount };
   deviceCopySeal: {
-    args: [accountId: string, deviceId: string, keyVersion: number];
+    args: [accountId: string, deviceId: string, keyVersion: number, tabId?: string];
     result: string;
   };
   deviceCopyOpen: {
-    args: [accountId: string, deviceId: string, keyVersion: number, sealed: string];
+    args: [accountId: string, deviceId: string, keyVersion: number, sealed: string, tabId?: string];
     result: ApprovedKeyHandle;
   };
-  deviceCopyReset: { args: []; result: void };
+  deviceCopyReset: { args: [tabId?: string]; result: void };
+  tabSeal: {
+    args: [tabId: string, accountId: string, deviceId: string, data: string];
+    result: string;
+  };
+  tabOpen: {
+    args: [tabId: string, accountId: string, deviceId: string, sealed: string];
+    result: string;
+  };
   unlockWithRoot: {
     args: [accountId: string, root: ApprovedKeyHandle, options?: UnlockOptions];
     result: void;
   };
   sealSpaceItem: { args: [input: SealSpaceItemInput]; result: SealedItem };
   openSpaceItem: { args: [input: OpenSpaceItemInput]; result: string };
+  manifestSign: { args: [manifest: string]; result: string };
+  manifestVerifyOwn: { args: [manifest: string, signature: string]; result: boolean };
+  manifestVerify: {
+    args: [signerBundle: string, manifest: string, signature: string];
+    result: boolean;
+  };
+  itemWriteSign: { args: [fields: ItemWriteFields]; result: ItemWriteSignature };
+  itemWriteVerifyOwn: { args: [fields: ItemWriteFields, signature: string]; result: boolean };
+  itemWriteVerify: {
+    args: [signerBundle: string, fields: ItemWriteFields, signature: string];
+    result: boolean;
+  };
+  // The space chain.
+  verifySpaceChain: {
+    args: [input: { spaceId: string; records: ChainRecord[]; anchor?: ChainAnchor }];
+    result: ChainVerdict;
+  };
+  newChainedSpace: { args: [input: NewSpaceInput & { at: number }]; result: ChainAppend };
+  buildChainRecords: {
+    args: [input: { spaceId: string; at: number; change: ChainChange }];
+    result: ChainBuilt;
+  };
+  buildKeyReplacement: {
+    args: [input: { spaceId: string; at: number; replacement: ChainReplacement }];
+    result: ChainBuilt;
+  };
+  buildReseal: {
+    args: [input: { spaceId: string; items: ChainReplacement['items'] }];
+    result: ChainBuilt;
+  };
+  sealLocal: { args: [label: string, text: string]; result: string };
+  openLocal: { args: [label: string, sealed: string]; result: string };
+  spaceChainView: { args: [spaceId: string]; result: ChainView | null };
+  acceptFirstContact: { args: [spaceId: string]; result: void };
+  openChainKey: {
+    args: [
+      input: {
+        spaceId: string;
+        key: string;
+        servedVersion: number;
+        sealed: string;
+        list?: SealHashEntry[];
+      },
+    ];
+    result: void;
+  };
+  rotationStart: { args: []; result: RotationStart };
+  rotationResealItem: { args: [input: OpenItemInput]; result: ResealedItem };
+  rotationResealSend: { args: [input: ResealSendInput]; result: ResealedSend };
+  rotationWrapPassword: {
+    args: [masterKey: MasterKeyHandle, exportKey: ExportKeyHandle];
+    result: string;
+  };
+  rotationPrfWrap: { args: [prfOutput: string, credentialId: string]; result: PrfWrap };
+  rotationKitMake: { args: []; result: MadeKit };
+  rotationDeviceCopySeal: {
+    args: [accountId: string, deviceId: string, keyVersion: number, tabId?: string];
+    result: string;
+  };
+  rotationSealRootKey: {
+    args: [recipientKx1: string, context: RotationBoxContext, aad: string];
+    result: string;
+  };
+  rotationCommit: { args: []; result: RotationCommit };
+  rotationResealLocal: { args: [label: string, sealed: string]; result: string };
+  rotationAbort: { args: []; result: void };
+  rotationSign: { args: [previous: boolean, context: string, message: string]; result: string };
 }
 
 export type OpName = keyof Ops;

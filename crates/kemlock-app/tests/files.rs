@@ -101,8 +101,10 @@ impl Files {
         }
     }
 
-    /// An item of `who`, stored at revision 1.
+    /// An item of `who`, stored at revision 1. The account is made first when it isn't there: a write
+    /// to a personal vault is checked against its account.
     async fn item_of(&self, who: &Actor) -> ItemId {
+        self.account(who.user).await;
         let id = ItemId::random();
         self.world
             .put_item()
@@ -110,6 +112,40 @@ impl Files {
             .await
             .expect("the item is stored");
         id
+    }
+
+    /// Makes the account `user` in the store, unless it is there already.
+    async fn account(&self, user: UserId) {
+        use kemlock_app::ports::UserRepo;
+        use kemlock_domain::{AccountMode, Email, KdfParams, Role, User};
+        if UserRepo::by_id(&self.world.store, user)
+            .await
+            .expect("a read")
+            .is_some()
+        {
+            return;
+        }
+        let now = time::OffsetDateTime::now_utc();
+        let account = User {
+            id: user,
+            email: Email::parse(&format!("{}@example.org", user.0)).expect("an email"),
+            name: None,
+            mode: AccountMode::KemlockOnly,
+            role: Role::User,
+            kdf: KdfParams::new_account([1; 16]),
+            opaque_record: None,
+            wrapped_root_key: vec![1; 80],
+            public_bundle: Vec::new(),
+            bundle_signature: Vec::new(),
+            sealed_private_keys: Vec::new(),
+            key_version: 0,
+            security_stamp: uuid::Uuid::new_v4(),
+            created_at: now,
+            updated_at: now,
+        };
+        UserRepo::insert(&self.world.store, &account)
+            .await
+            .expect("the account");
     }
 
     /// Starts an upload of `size` bytes and returns the attachment.

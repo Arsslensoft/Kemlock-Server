@@ -120,7 +120,7 @@ pub(crate) mod vault_federation {
     use crate::tables::items::{owner_from, owner_parts};
     use kemlock_app::ports::StoreError;
     use kemlock_domain::ServerId;
-    use kemlock_federation::home::{Policy, VaultFederation};
+    use kemlock_federation::home::{Policy, VaultFederation, pack_held, unpack_held};
     use sea_orm::ActiveValue::Set;
     use sea_orm::entity::prelude::*;
 
@@ -140,12 +140,47 @@ pub(crate) mod vault_federation {
         pub promotion: Option<Vec<u8>>,
         /// A promotion another server signed that waits for this server's admin.
         pub held_demotion: Option<Vec<u8>>,
+        /// The home of each earlier epoch: 24 bytes each, `u64be(epoch) || server id`, oldest first.
+        pub home_history: Option<Vec<u8>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
     pub enum Relation {}
 
     impl ActiveModelBehavior for ActiveModel {}
+
+    fn unpack_history(bytes: Option<&[u8]>) -> Result<Vec<(u64, ServerId)>, StoreError> {
+        let Some(bytes) = bytes else {
+            return Ok(Vec::new());
+        };
+        if !bytes.len().is_multiple_of(24) {
+            return Err(corrupt("home history"));
+        }
+        Ok(bytes
+            .as_chunks::<24>()
+            .0
+            .iter()
+            .map(|c| {
+                let mut epoch = [0u8; 8];
+                epoch.copy_from_slice(&c[..8]);
+                let mut id = [0u8; 16];
+                id.copy_from_slice(&c[8..]);
+                (u64::from_be_bytes(epoch), ServerId(Uuid::from_bytes(id)))
+            })
+            .collect())
+    }
+
+    fn pack_history(history: &[(u64, ServerId)]) -> Option<Vec<u8>> {
+        if history.is_empty() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(history.len() * 24);
+        for (epoch, home) in history {
+            out.extend_from_slice(&epoch.to_be_bytes());
+            out.extend_from_slice(home.as_bytes());
+        }
+        Some(out)
+    }
 
     impl Model {
         pub(crate) fn into_domain(self) -> Result<VaultFederation, StoreError> {
@@ -170,7 +205,9 @@ pub(crate) mod vault_federation {
                 epoch: from_i64(self.epoch, "epoch")?,
                 replicas,
                 promotion: self.promotion,
-                held_demotion: self.held_demotion,
+                held_demotion: unpack_held(self.held_demotion.as_deref())
+                    .map_err(|_| corrupt("held promotions"))?,
+                home_history: unpack_history(self.home_history.as_deref())?,
             })
         }
     }
@@ -189,7 +226,8 @@ pub(crate) mod vault_federation {
             epoch: Set(to_i64(vault.epoch, "epoch")?),
             replicas: Set(replicas),
             promotion: Set(vault.promotion.clone()),
-            held_demotion: Set(vault.held_demotion.clone()),
+            held_demotion: Set(pack_held(&vault.held_demotion)),
+            home_history: Set(pack_history(&vault.home_history)),
         })
     }
 
@@ -207,7 +245,7 @@ pub(crate) mod vault_federation {
             );
             vault.epoch = 4;
             vault.promotion = Some(vec![1, 2, 3]);
-            vault.held_demotion = Some(vec![4, 5]);
+            vault.held_demotion = vec![vec![4, 5], vec![6]];
             let row = active(&vault).expect("fits");
             let (owner_type, owner_id) = owner_parts(vault.owner);
             let mut replicas = Vec::new();
@@ -224,7 +262,8 @@ pub(crate) mod vault_federation {
                 epoch: 4,
                 replicas,
                 promotion: Some(vec![1, 2, 3]),
-                held_demotion: Some(vec![4, 5]),
+                held_demotion: pack_held(&vault.held_demotion),
+                home_history: None,
             };
             assert_eq!(model.into_domain(), Ok(vault));
         }
@@ -240,6 +279,7 @@ pub(crate) mod vault_federation {
                 replicas: vec![0; 17],
                 promotion: None,
                 held_demotion: None,
+                home_history: None,
             };
             assert!(model.into_domain().is_err());
         }
@@ -410,6 +450,8 @@ pub(crate) mod item_siblings {
         /// Unix milliseconds.
         pub updated_at_ms: i64,
         pub hlc: i64,
+        /// The writing account's signature, as `items.write_sig` holds it.
+        pub write_sig: Option<Vec<u8>>,
     }
 
     #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -445,6 +487,7 @@ pub(crate) mod item_siblings {
                     seq: from_i64(self.seq, "sequence number")?,
                     hlc: Hlc(from_i64(self.hlc, "hlc")?),
                 },
+                signature: crate::tables::items::stored_signature(self.write_sig.as_deref())?,
             })
         }
     }
@@ -469,6 +512,10 @@ pub(crate) mod item_siblings {
                 "updated_at",
             )?),
             hlc: Set(to_i64(item.change.hlc.0, "hlc")?),
+            write_sig: Set(item
+                .signature
+                .as_ref()
+                .map(kemlock_domain::WriteSignature::to_stored)),
         })
     }
 
@@ -495,6 +542,7 @@ pub(crate) mod item_siblings {
                     seq: 12,
                     hlc: Hlc::from_parts(1_700_000_000_123, 3),
                 },
+                signature: None,
             };
             let row = active(&item).expect("fits");
             assert_eq!(row.updated_at_ms, Set(1_700_000_000_123));
@@ -515,6 +563,7 @@ pub(crate) mod item_siblings {
                 deleted: false,
                 updated_at_ms: 1_700_000_000_123,
                 hlc: i64::try_from(item.change.hlc.0).expect("fits"),
+                write_sig: None,
             };
             assert_eq!(model.into_item(), Ok(item));
         }

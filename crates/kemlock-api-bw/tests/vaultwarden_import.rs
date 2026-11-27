@@ -237,8 +237,28 @@ async fn pass(
     mapped: &MappedImport,
     deletions: &[Deletion],
 ) -> ApplyReport {
+    pass_with(
+        store, files, blobs, now, retention, mapped, deletions, false,
+    )
+    .await
+}
+
+/// [`pass`], with the operator's `--adopt-existing`: rows the API changed since the last pass
+/// are written over too.
+#[allow(clippy::too_many_arguments)]
+async fn pass_with(
+    store: &SqlStore,
+    files: &Path,
+    blobs: &Arc<MemoryBlobStore>,
+    now: OffsetDateTime,
+    retention: Option<i64>,
+    mapped: &MappedImport,
+    deletions: &[Deletion],
+    adopt_existing: bool,
+) -> ApplyReport {
     let mut options = ImportOptions::new(files, Arc::new(IntoBlobs(blobs.clone())), now);
     options.events_retention_days = retention;
+    options.adopt_existing = adopt_existing;
     let mut sink = SqlImportSink::begin(store, ServerSeal::new(&SERVER_KEY), options)
         .await
         .expect("a pass opens");
@@ -515,8 +535,12 @@ async fn imports_the_sample_and_serves_it_as_vaultwarden_would_then_applies_a_se
     assert_eq!(factors[0].method, TwoFactorMethod::Totp);
     assert!(factors[0].enabled);
     assert_eq!(
+        // Sealed to the account, as every per-account secret is.
         ServerSeal::new(&SERVER_KEY)
-            .open("totp", &factors[0].sealed_secret)
+            .open(
+                &kemlock_app::sealed::bound_purpose("totp", alice),
+                &factors[0].sealed_secret,
+            )
             .expect("opens with the server key")
             .as_slice(),
         TOTP_SECRET
@@ -589,15 +613,25 @@ async fn imports_the_sample_and_serves_it_as_vaultwarden_would_then_applies_a_se
         sqlx::query_scalar::<sqlx::Sqlite, String>("SELECT value FROM settings WHERE key = ?")
             .bind(key)
     };
+    // Only the names of the admin settings list are carried, under the key the settings code reads:
+    // `domain` is not one of them.
     assert_eq!(
-        setting("domain")
+        count(
+            &mut conn,
+            "SELECT COUNT(*) FROM settings WHERE key = 'domain'"
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        setting("setting.smtp_host")
             .fetch_one(&mut conn)
             .await
             .expect("a setting"),
-        "https://vault.example.org"
+        "mail.example.org"
     );
     assert_eq!(
-        setting("signups_allowed")
+        setting("setting.signups_allowed")
             .fetch_one(&mut conn)
             .await
             .expect("a setting"),
@@ -688,6 +722,8 @@ DELETE FROM emergency_access;
     }
     let delta = second_mapped.delta_since(&first_mapped);
     assert_eq!(delta.items.len(), 2, "the renamed login and the new note");
+    // Alice changed a cipher through the API since the first pass, so a plain second pass leaves her
+    // alone rather than roll her change back.
     pass(
         &store,
         dest.path(),
@@ -696,6 +732,26 @@ DELETE FROM emergency_access;
         Some(90),
         &delta,
         &deletions,
+    )
+    .await;
+    assert_eq!(
+        sync(&h, &token).await["folders"],
+        json!([folder_json(
+            "2.folder|iv|mac",
+            "2024-03-02T00:00:00.000000Z"
+        )]),
+        "a user the API changed is not written over"
+    );
+    // The operator takes the changes in on purpose.
+    pass_with(
+        &store,
+        dest.path(),
+        &h.blobs,
+        now,
+        Some(90),
+        &delta,
+        &deletions,
+        true,
     )
     .await;
 
@@ -1200,4 +1256,67 @@ async fn a_rerun_leaves_the_documents_the_api_changed_and_refreshes_the_rest() {
         doc(&h, ORG, "member", BOB).await.expect("bob")["accessAll"],
         true
     );
+}
+
+/// An imported Require SSO policy (type 4) turns the setting on in `space_policy_settings`, where
+/// the Kemlock and Bitwarden sign-ins read it, and a second pass that finds the policy gone turns it
+/// off again.
+#[tokio::test]
+async fn an_imported_require_sso_policy_is_kept_in_space_policy_settings() {
+    use kemlock_app::spaces::SpaceRepo;
+    let vw = tempfile::tempdir().expect("a temp folder");
+    sample_with_a_second_collection(vw.path()).await;
+    let mut conn = vwfix::writer(vw.path()).await;
+    vwfix::exec(
+        &mut conn,
+        &format!(
+            "INSERT INTO org_policies (uuid, org_uuid, atype, enabled, data)
+                VALUES ('90000000-0000-4000-8000-000000000004', '{ORG}', 4, 1, '{{}}');"
+        ),
+    )
+    .await;
+    sqlx::Connection::close(conn).await.expect("closes");
+    let h = Harness::new().await;
+    let dest = tempfile::tempdir().expect("a temp folder");
+    let first = vwfix::read_folder(vw.path()).await;
+    let mapped = map_snapshot(&first).expect("maps");
+    pass(
+        &h.store,
+        dest.path(),
+        &h.blobs,
+        h.env.time(),
+        None,
+        &mapped,
+        &[],
+    )
+    .await;
+    let space = kemlock_domain::SpaceId(uuid(ORG));
+    let required = |h: &Harness| {
+        let store = h.store.clone();
+        async move {
+            SpaceRepo::require_sso_of(&store, &[space])
+                .await
+                .expect("a read")
+                .contains(&space)
+        }
+    };
+    assert!(required(&h).await, "the imported policy binds");
+
+    let mut vwconn = vwfix::writer(vw.path()).await;
+    vwfix::exec(&mut vwconn, "DELETE FROM org_policies WHERE atype = 4;").await;
+    sqlx::Connection::close(vwconn).await.expect("closes");
+    let second = vwfix::read_folder(vw.path()).await;
+    let deletions = diff(&first, &second).deletions();
+    let delta = map_snapshot(&second).expect("maps").delta_since(&mapped);
+    pass(
+        &h.store,
+        dest.path(),
+        &h.blobs,
+        h.env.time(),
+        None,
+        &delta,
+        &deletions,
+    )
+    .await;
+    assert!(!required(&h).await, "the policy is gone, so is the setting");
 }

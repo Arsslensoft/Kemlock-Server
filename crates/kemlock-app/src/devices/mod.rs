@@ -12,13 +12,14 @@ mod key_copy;
 pub mod ports;
 
 pub use approvals::{
-    Answer, AnswerApproval, ApprovalRequestInput, ListApprovals, PendingApproval, Poll,
-    PollApproval, PurgeApprovals, RequestApproval, Requested, phrase_for,
+    Answer, AnswerApproval, ApprovalRequestInput, ListApprovals, NOTICES_PER_HOUR, PendingApproval,
+    Poll, PollApproval, PurgeApprovals, RequestApproval, Requested, phrase_for,
 };
 pub use bitwarden_id::{MAX_IDENTIFIER_LEN, bitwarden_device_id};
 pub use device_key_sign_in::{DeviceKeySignIn, PURPOSE_DEVICE_KEY_CHALLENGE};
 pub use device_sign_in::{DeviceSignIn, PURPOSE_DEVICE_CHALLENGE};
-pub use key_copy::{KeyCopies, SignOutDevice, UntrustDevice};
+pub use key_copy::{EndSession, KeyCopies, SignOutDevice, UntrustDevice};
 pub use ports::{
     ApprovalRepo, DeviceNotices, DevicesStore, KeyCopyRepo, LogNotices, NewDeviceNotice,
+    RecentRequest,
 };

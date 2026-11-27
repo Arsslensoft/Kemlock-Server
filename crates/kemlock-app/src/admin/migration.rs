@@ -78,9 +78,9 @@ impl MigrationStatus {
 /// What starting a move needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MigrationRequest {
-    /// A Vaultwarden data folder, or a `mysql://` or `postgres://` URL.
+    /// A SQLite file (or folder with `db.sqlite3`) inside the data folder's `import` folder.
     pub from: String,
-    /// The data folder beside a MySQL or PostgreSQL server (attachments, sends, `rsa_key.pem`).
+    /// A folder inside the import folder with the attachments, sends and `rsa_key.pem`.
     pub files: Option<String>,
     /// The admin who started it.
     pub by: UserId,

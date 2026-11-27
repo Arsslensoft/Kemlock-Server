@@ -126,6 +126,30 @@ const confirmEmail = createRoute({
   component: lazyRouteComponent(() => import('@/features/account/ConfirmEmail')),
 });
 
+/**
+ * The links Bitwarden's mails carry: an invitation is accepted on a button press and a sign-up is
+ * finished on the token in the link, so they are public, as `/confirm-email` is. Bitwarden writes
+ * them with the route in the hash (`/#/accept-organization/?…`); `main.tsx` moves that into the path
+ * first and keeps the values in the fragment, which the page reads once and removes from the address.
+ */
+const accept = {
+  organization: createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/accept-organization',
+    component: lazyRouteComponent(() => import('@/features/invitations/AcceptOrganization')),
+  }),
+  emergency: createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/accept-emergency',
+    component: lazyRouteComponent(() => import('@/features/invitations/AcceptEmergency')),
+  }),
+  signup: createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/finish-signup',
+    component: lazyRouteComponent(() => import('@/features/invitations/FinishSignup')),
+  }),
+};
+
 // ---- First-run setup ----------------------------------------------------------------------
 
 /** Steps after the admin account exists need that admin signed in with the vault open. */
@@ -414,6 +438,9 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   about,
   confirmEmail,
+  accept.organization,
+  accept.emergency,
+  accept.signup,
   setupCode,
   setupAdmin,
   setupTwoStep,

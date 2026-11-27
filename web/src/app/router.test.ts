@@ -109,6 +109,24 @@ describe('the link mailed to a new address', () => {
   });
 });
 
+describe('the links of an invitation or a sign-up', () => {
+  it('need no sign-in and keep their values in the fragment', async () => {
+    for (const status of ['signed-out', 'locked', 'unlocked'] as const) {
+      const org = await visit('/accept-organization#organizationId=o&organizationUserId=u&token=a.b', status);
+      expect(org.pathname, status).toBe('/accept-organization');
+      expect(org.router.state.location.hash, status).toContain('token=a.b');
+      // The page reads the fragment itself; nothing of it is read as a search.
+      expect(org.search['token'], status).toBeUndefined();
+      const emergency = await visit('/accept-emergency#id=g&token=t', status);
+      expect(emergency.pathname, status).toBe('/accept-emergency');
+      expect(emergency.router.state.location.hash, status).toContain('id=g');
+      const signup = await visit('/finish-signup#email=a%40b.c&token=t', status);
+      expect(signup.pathname, status).toBe('/finish-signup');
+      expect(signup.router.state.location.hash, status).toContain('email=a%40b.c');
+    }
+  });
+});
+
 describe('the new item route', () => {
   it('opens the form of any kind named in its search', async () => {
     for (const kind of ['login', 'note', 'file', 'otp', 'backup-codes', 'passkey', 'card', 'identity', 'contact', 'certificate', 'ssh-key', 'pgp-key']) {

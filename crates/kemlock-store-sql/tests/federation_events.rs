@@ -135,8 +135,12 @@ async fn what_a_peer_sent_is_kept_once_and_goes_with_the_peer() {
         .await
         .expect("events");
     assert_eq!(held.len(), 4);
-    assert_eq!(held[0].entry.id, entry(3).id, "newest first");
-    assert_eq!(held[0].entry.target.as_deref(), Some("target 3"));
+    // Newest first by when this server took them (0d357263); within one page, the later id. The
+    // two peers' pages can land in the same millisecond, so only one peer's order is fixed.
+    let from_peer: Vec<_> = held.iter().filter(|e| e.from == peer).collect();
+    assert_eq!(from_peer[0].entry.id, entry(3).id, "newest first");
+    assert_eq!(from_peer[0].entry.target.as_deref(), Some("target 3"));
+    assert_eq!(held.iter().filter(|e| e.from == other).count(), 1);
     assert_eq!(
         EventSync::peer_events(&store, vault, 2)
             .await
@@ -156,4 +160,76 @@ async fn what_a_peer_sent_is_kept_once_and_goes_with_the_peer() {
         .expect("events");
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].from, other);
+}
+
+#[tokio::test]
+async fn a_peer_that_sends_events_without_end_keeps_only_the_newest_ones() {
+    let store = memory().await;
+    let peer = ServerId::random();
+    let vault = Owner::User(kemlock_domain::UserId::random());
+    let numbered = |n: u32| {
+        let mut id = [0u8; 16];
+        id[12..].copy_from_slice(&n.to_be_bytes());
+        LogEntry {
+            id,
+            at_ms: 1_800_000_000_000 + u64::from(n),
+            actor: None,
+            device: None,
+            action: "login".to_owned(),
+            target: None,
+        }
+    };
+    // 10,050 events in pages of 500, a little over the 10,000 the store keeps for one peer.
+    let total = 10_050u32;
+    let mut next = 1u32;
+    while next <= total {
+        let last = (next + 499).min(total);
+        let page: Vec<LogEntry> = (next..=last).map(numbered).collect();
+        EventSync::store_peer_events(&store, peer, vault, &page)
+            .await
+            .expect("stored");
+        next = last + 1;
+    }
+    let kept = EventSync::peer_events(&store, vault, 20_000)
+        .await
+        .expect("events");
+    assert_eq!(kept.len(), 10_000);
+    // The oldest went; the newest stays, and is the cursor a pull resumes from.
+    assert!(kept.iter().all(|e| e.entry.id > numbered(50).id));
+    assert_eq!(
+        EventSync::peer_events_cursor(&store, peer, vault)
+            .await
+            .expect("cursor"),
+        numbered(total).id
+    );
+}
+
+#[tokio::test]
+async fn the_list_is_ordered_by_when_events_were_received_not_by_the_time_a_peer_puts_on_them() {
+    let store = memory().await;
+    let peer = ServerId::random();
+    let vault = Owner::User(kemlock_domain::UserId::random());
+    // The first event claims to be from the far future; the second, sent later, from the past.
+    let mut early = entry(1);
+    early.at_ms = i64::MAX as u64;
+    let mut late = entry(2);
+    late.at_ms = 1;
+    EventSync::store_peer_events(&store, peer, vault, &[early.clone()])
+        .await
+        .expect("stored");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    EventSync::store_peer_events(&store, peer, vault, &[late.clone()])
+        .await
+        .expect("stored");
+    let listed = EventSync::peer_events(&store, vault, 10)
+        .await
+        .expect("events");
+    let ids: Vec<[u8; 16]> = listed.iter().map(|e| e.entry.id).collect();
+    assert_eq!(
+        ids,
+        vec![late.id, early.id],
+        "the later arrival is on top, whatever its time says"
+    );
+    // The time is still shown as the peer gave it.
+    assert_eq!(listed[1].entry.at_ms, i64::MAX as u64);
 }

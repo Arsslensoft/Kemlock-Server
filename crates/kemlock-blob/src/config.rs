@@ -9,10 +9,12 @@
 //!   takes either) are read. A bucket should abort incomplete multipart uploads after a day by a
 //!   lifecycle rule: an upload cut off mid-way can't clean up after itself.
 //! - `KEMLOCK_ATTACHMENT_MAX_SIZE`: the most bytes one file may have, default 100 MiB.
-//! - `KEMLOCK_ATTACHMENT_PRESIGN` (default false): on the Kemlock API only, let clients send and
-//!   fetch files straight to and from the bucket through pre-signed URLs that live
-//!   `KEMLOCK_ATTACHMENT_PRESIGN_TTL` seconds (default 900). Needs a bucket the clients can
-//!   reach. The Bitwarden API always streams through the server.
+//! - `KEMLOCK_ATTACHMENT_PRESIGN` and `KEMLOCK_ATTACHMENT_PRESIGN_TTL`: accepted and ignored. Direct
+//!   uploads to a bucket are off until a size-bound signature is supported (a POST policy with
+//!   `content-length-range`): a pre-signed `PUT` can't be held to the length the upload announced.
+//!   Every upload and download goes through the server, which holds the size and the quota. Setting
+//!   `KEMLOCK_ATTACHMENT_PRESIGN=true` logs one warning at start. Objects an earlier version left
+//!   under `staging/` are removed by the orphan purge.
 //!
 //! A setting saved from the admin console will replace these when the console exists.
 
@@ -57,6 +59,7 @@ pub struct BlobConfig {
     /// The most bytes one `KMA1` file may have.
     pub max_size: u64,
     /// Whether to hand out pre-signed bucket URLs on the Kemlock API (a bucket only).
+    /// Always false: see the module docs. `KEMLOCK_ATTACHMENT_PRESIGN` is read and ignored.
     pub presign: bool,
     pub presign_ttl: Duration,
 }
@@ -78,7 +81,7 @@ pub enum ConfigError {
 
 /// 100 MiB.
 const DEFAULT_MAX_SIZE: u64 = 100 * 1024 * 1024;
-const DEFAULT_PRESIGN_TTL_SECS: u64 = 900;
+const DEFAULT_PRESIGN_TTL_SECS: u64 = 300;
 
 fn flag(name: &'static str, value: Option<String>, default: bool) -> Result<bool, ConfigError> {
     match value.as_deref().map(str::trim) {
@@ -119,6 +122,19 @@ fn number(name: &'static str, value: Option<String>, default: u64) -> Result<u64
     }
 }
 
+/// Says once that pre-signed uploads are off, when the setting asked for them, and gives `false`.
+fn ignored_presign(asked: bool) -> bool {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    if asked {
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "KEMLOCK_ATTACHMENT_PRESIGN is ignored: presigned uploads are off until a size-bound \n                 signature is supported; files go through the server"
+            );
+        });
+    }
+    false
+}
+
 impl BlobConfig {
     /// Reads the settings through `get`, which returns a variable's non-empty value. Tests pass a
     /// map; the server calls [`BlobConfig::from_env`].
@@ -155,11 +171,11 @@ impl BlobConfig {
                 get("KEMLOCK_ATTACHMENT_MAX_SIZE"),
                 DEFAULT_MAX_SIZE,
             )?,
-            presign: flag(
+            presign: ignored_presign(flag(
                 "KEMLOCK_ATTACHMENT_PRESIGN",
                 get("KEMLOCK_ATTACHMENT_PRESIGN"),
                 false,
-            )?,
+            )?),
             presign_ttl: Duration::from_secs(number(
                 "KEMLOCK_ATTACHMENT_PRESIGN_TTL",
                 get("KEMLOCK_ATTACHMENT_PRESIGN_TTL"),
@@ -200,7 +216,7 @@ mod tests {
         );
         assert_eq!(c.max_size, 100 * 1024 * 1024);
         assert!(!c.presign);
-        assert_eq!(c.presign_ttl, Duration::from_secs(900));
+        assert_eq!(c.presign_ttl, Duration::from_secs(300));
     }
 
     #[test]
@@ -257,13 +273,14 @@ mod tests {
     }
 
     #[test]
-    fn presigning_is_opt_in() {
+    fn presigning_is_accepted_and_ignored() {
         let c = config(&[
             ("KEMLOCK_ATTACHMENT_PRESIGN", "yes"),
             ("KEMLOCK_ATTACHMENT_PRESIGN_TTL", "60"),
         ])
         .expect("valid");
-        assert!(c.presign);
+        // Accepted and ignored: direct uploads are off.
+        assert!(!c.presign);
         assert_eq!(c.presign_ttl, Duration::from_secs(60));
     }
 

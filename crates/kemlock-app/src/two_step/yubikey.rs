@@ -1,7 +1,7 @@
 //! YubiKey OTPs (Bitwarden's type 3), as Vaultwarden's `yubikey.rs` has them.
 
 use super::TwoStep;
-use super::data::{PURPOSE_YUBIKEY, YubikeyData, open, sealed};
+use super::data::{PURPOSE_YUBIKEY, YubikeyData, open_row, sealed_row};
 use super::ports::YubicoError;
 use crate::error::AppError;
 use crate::passkeys::ChallengeRepo;
@@ -34,8 +34,9 @@ where
         else {
             return Ok(None);
         };
-        let data = open::<YubikeyData, _>(&self.seal, PURPOSE_YUBIKEY, &row.sealed_secret)
-            .ok_or_else(|| AppError::Store("a stored YubiKey setup doesn't open".to_owned()))?;
+        let data =
+            open_row::<YubikeyData, _>(&self.seal, PURPOSE_YUBIKEY, user, &row.sealed_secret)
+                .ok_or_else(|| AppError::Store("a stored YubiKey setup doesn't open".to_owned()))?;
         Ok(Some(data))
     }
 
@@ -97,7 +98,7 @@ where
             .put(&TwoFactor {
                 user,
                 method: TwoFactorMethod::YubiKey,
-                sealed_secret: sealed(&self.seal, PURPOSE_YUBIKEY, &data),
+                sealed_secret: sealed_row(&self.seal, PURPOSE_YUBIKEY, user, &data),
                 enabled: true,
                 created_at: self.env.now(),
             })

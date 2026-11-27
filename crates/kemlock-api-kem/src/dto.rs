@@ -8,7 +8,7 @@ use kemlock_app::{AppError, DeviceInfo, JoinPolicy, ServerBasics, b64url};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::{
     DeviceId, DeviceKind, Item, ItemFormat, ItemId, ItemKind, ItemWrite, KdfParams, Owner,
-    Revision, Sealed,
+    Revision, Sealed, UserId, WriteSignature,
 };
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -307,6 +307,10 @@ pub struct RegisterFinishResponse {
     pub user_id: Uuid,
     /// Whether the account is the first admin.
     pub admin: bool,
+    /// Present (true) only when the server verifies the address of a new account and this one is
+    /// held back: it can't sign in until the link mailed to its address is opened.
+    #[serde(skip_serializing_if = "is_false")]
+    pub email_confirmation_required: bool,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -517,6 +521,17 @@ pub struct ItemDto {
     /// false; a client may send it back unchanged but the server ignores it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub held: bool,
+    /// The account that wrote this revision and signed it (docs/crypto.md, "Signed item writes").
+    /// On a write it must be the signed-in account; `writerKeyVersion` and `writeSignature` come
+    /// with it or not at all. Absent on an item written without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer: Option<Uuid>,
+    /// The key version of the writer's bundle that signed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_key_version: Option<u32>,
+    /// The writer's `sig1` signature of the write, 3373 bytes, base64url.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_signature: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -543,6 +558,12 @@ impl ItemDto {
             collection_id: None,
             deleted_at: item.deleted_at.and_then(rfc3339),
             held: false,
+            writer: item.signature.as_ref().map(|s| s.writer.0),
+            writer_key_version: item.signature.as_ref().map(|s| s.key_version),
+            write_signature: item
+                .signature
+                .as_ref()
+                .map(|s| b64url::encode(&s.signature)),
         }
     }
 
@@ -586,6 +607,23 @@ impl ItemDto {
                 item_key: decode("itemKey", item_key)?,
             })
         };
+        let signature = match (
+            self.writer,
+            self.writer_key_version,
+            self.write_signature.as_deref(),
+        ) {
+            (None, None, None) => None,
+            (Some(writer), Some(key_version), Some(signature)) => Some(WriteSignature {
+                writer: UserId(writer),
+                key_version,
+                signature: decode("writeSignature", signature)?,
+            }),
+            _ => {
+                return Err(Problem::bad_request(
+                    "writer, writerKeyVersion and writeSignature come together or not at all",
+                ));
+            }
+        };
         Ok(ItemWrite {
             id: self.id,
             owner: self.owner,
@@ -595,6 +633,7 @@ impl ItemDto {
             revision: Revision(self.revision),
             key_version: self.key_version,
             sealed,
+            signature,
         })
     }
 }
@@ -774,6 +813,37 @@ impl FreshProof {
     }
 }
 
+/// Whether an owner takes signed writes only.
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SignedWritesDto {
+    pub required: bool,
+}
+
+/// Takes an owner off the signed-only list (docs/crypto.md, "The signed-only flag"): the password
+/// again, as erasing the account asks for it, because turning the flag off lets unsigned writes in.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClearSignedWritesRequest {
+    /// What `POST /auth/opaque/start` answered, unread.
+    pub login_state: String,
+    /// The client's OPAQUE `CredentialFinalization`.
+    pub finalization: String,
+    /// A fresh proof, needed beside the password when the account has a second step on.
+    pub proof: Option<FreshProof>,
+}
+
+/// An account's public-key bundle at one key version (docs/crypto.md, "Signed item writes").
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleAtDto {
+    pub key_version: u32,
+    /// The bundle, base64url.
+    pub public_bundle: String,
+    /// The account's own `sig1` signature of the bundle, base64url.
+    pub bundle_signature: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -797,6 +867,7 @@ mod tests {
                 seq: 9,
                 hlc: Hlc(1),
             },
+            signature: None,
         }
     }
 

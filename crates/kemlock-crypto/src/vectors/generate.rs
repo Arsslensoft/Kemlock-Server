@@ -10,14 +10,18 @@ use crate::{
     backend::{Backend, rustcrypto::RustCrypto},
     bundle::{self, Bundle},
     confirm::Statement,
-    dedup, kem1,
+    dedup, item_write, kem1,
+    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     keys::{ITEM_WRAP_LABEL, MANIFEST_LABEL, PRIVATE_KEYS_LABEL, RootKey, SecretKey, USER_LABEL},
     kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
     opaque::{self, OpaqueServer},
     owner::Owner,
-    password_wrap, prf_wrap, private_keys, rand, seal, sealed_box, send,
-    sig1::{self, context::BUNDLE, context::CONFIRM, context::MANIFEST},
+    password_wrap, prf_wrap, private_keys, rand, rotation, seal, sealed_box, send,
+    sig1::{
+        self, context::BUNDLE, context::CONFIRM, context::ITEM_WRITE, context::KEY_BOX,
+        context::MANIFEST,
+    },
 };
 
 type G = RustCrypto;
@@ -46,6 +50,7 @@ pub(crate) fn all() -> Result<Vec<(&'static str, Value)>, Error> {
         ("kx1", kx1_doc()?),
         ("sealed-box", sealed_box_doc()?),
         ("sig1", sig1_doc()?),
+        ("sig1-edge", super::sig1_edge::generate()),
         ("bundle", bundle_doc()?),
         ("kem1", kem1_doc()?),
         ("manifest", manifest_doc()?),
@@ -58,9 +63,12 @@ pub(crate) fn all() -> Result<Vec<(&'static str, Value)>, Error> {
         ("private-keys", private_keys_doc()?),
         ("prf-wrap", prf_wrap_doc()?),
         ("confirm", confirm_doc()?),
+        ("item-write", item_write_doc()?),
+        ("key-box", key_box_doc()?),
         ("send", send_doc()?),
         ("space-names", space_names_doc()?),
         ("space-chain", super::space_chain::generate()?),
+        ("rotation", rotation_doc()?),
     ])
 }
 
@@ -1191,6 +1199,334 @@ fn confirm_doc() -> Result<Value, Error> {
     })
 }
 
+fn key_box_doc() -> Result<Value, Error> {
+    seeded("key-box", || {
+        let mut cases = Vec::new();
+        for (name, kind) in [
+            ("space-key", KeyBoxKind::Space),
+            ("collection-key", KeyBoxKind::Collection),
+        ] {
+            let space: [u8; 16] = rnd()?;
+            let collection: [u8; 16] = rnd()?;
+            let recipient: [u8; 16] = rnd()?;
+            let sealer: [u8; 16] = rnd()?;
+            let key_version = 2u32;
+            let sealer_key_version = 3u32;
+
+            // A real box of a random key, to a recipient key made for the case.
+            let recipient_private: [u8; 96] = rnd()?;
+            let recipient_public =
+                kx1::public_key_in::<G>(&kx1::PrivateKey::from_bytes(&recipient_private))?;
+            let secret: [u8; 32] = rnd()?;
+            let aad = match kind {
+                KeyBoxKind::Space => key_box::space_aad(&space, key_version, &recipient),
+                KeyBoxKind::Collection => {
+                    key_box::collection_aad(&space, &collection, key_version, &recipient)
+                }
+            };
+            let sealed =
+                sealed_box::seal_in::<G>(&recipient_public, kind.context(), &aad, &secret)?;
+
+            let sealer_private: [u8; 64] = rnd()?;
+            let signing = sig1::SigningKey::from_bytes(&sealer_private);
+            let sealer_public = sig1::public_key_in::<G>(&signing)?;
+
+            let statement = KeyBoxStatement {
+                kind,
+                aad: &aad,
+                sealed_box: &sealed,
+                sealer,
+                sealer_key_version,
+            };
+            let bytes = statement.to_bytes()?;
+            let signature = sig1::sign_in::<G>(&signing, KEY_BOX, &bytes)?;
+
+            // Statements that differ from the real one in one field: the signature covers none.
+            let mut other_box = sealed.clone();
+            other_box[700] ^= 1;
+            let mut other_recipient = recipient;
+            other_recipient[0] ^= 1;
+            let other_aad = match kind {
+                KeyBoxKind::Space => key_box::space_aad(&space, key_version, &other_recipient),
+                KeyBoxKind::Collection => {
+                    key_box::collection_aad(&space, &collection, key_version, &other_recipient)
+                }
+            };
+            let later_aad = match kind {
+                KeyBoxKind::Space => key_box::space_aad(&space, key_version + 1, &recipient),
+                KeyBoxKind::Collection => {
+                    key_box::collection_aad(&space, &collection, key_version + 1, &recipient)
+                }
+            };
+            let mut other_sealer = sealer;
+            other_sealer[0] ^= 1;
+            let changed: Vec<Value> = [
+                (
+                    "another-box",
+                    KeyBoxStatement {
+                        sealed_box: &other_box,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-recipient",
+                    KeyBoxStatement {
+                        aad: &other_aad,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-key-version",
+                    KeyBoxStatement {
+                        aad: &later_aad,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-sealer",
+                    KeyBoxStatement {
+                        sealer: other_sealer,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-sealer-key-version",
+                    KeyBoxStatement {
+                        sealer_key_version: sealer_key_version + 1,
+                        ..statement
+                    },
+                ),
+            ]
+            .into_iter()
+            .map(|(what, s)| -> Result<Value, Error> {
+                Ok(json!({ "name": what, "statement": hx(&s.to_bytes()?) }))
+            })
+            .collect::<Result<_, Error>>()?;
+
+            cases.push(json!({
+                "name": name,
+                "context": kind.context(),
+                "space": hx(&space),
+                "collection": (kind == KeyBoxKind::Collection).then(|| hx(&collection)),
+                "key_version": key_version,
+                "recipient": hx(&recipient),
+                "recipient_private_key": hx(&recipient_private),
+                "secret": hx(&secret),
+                "aad": hx(&aad),
+                "box": hx(&sealed),
+                "sealer": hx(&sealer),
+                "sealer_key_version": sealer_key_version,
+                "sealer_private_key": hx(&sealer_private),
+                "sealer_public_key": hx(sealer_public.as_bytes()),
+                "statement": hx(&bytes),
+                "signature": hx(&signature),
+                "wrong_contexts": [BUNDLE, MANIFEST, CONFIRM],
+                "changed_statements": changed,
+            }));
+        }
+        Ok(document(
+            "key-box",
+            "Signed key boxes (docs/crypto.md): statement = \"kemlock/v1/key-box\" || \
+             lp(context) || lp(aad) || lp(box) || sealer id (16) || u32be(sealer key version), \
+             where context is \"space-key\" or \"collection-key\", aad is that box's aad as in \
+             sealed-box.json and box is the 1661-byte sealed box of `secret` to the recipient \
+             key of `recipient_private_key`; signature = sig1 signature of the sealer's own key \
+             under context \"key-box\" over the statement (3373 bytes). The signature must not \
+             verify under a wrong context or over any changed statement. `collection` is null \
+             for a space key.",
+            cases,
+        ))
+    })
+}
+
+fn item_write_doc() -> Result<Value, Error> {
+    seeded("item-write", || {
+        let mut cases = Vec::new();
+        for (name, owner_is_space, deleted, revision, key_version, writer_key_version) in [
+            ("vault-live", false, false, 1u64, 1u32, 1u32),
+            ("space-live", true, false, 7, 3, 2),
+            ("space-tombstone", true, true, 8, 3, 2),
+            ("vault-tombstone", false, true, 2, 1, 1),
+        ] {
+            let owner_id: [u8; 16] = rnd()?;
+            let item_id: [u8; 16] = rnd()?;
+            let writer: [u8; 16] = rnd()?;
+            let ciphertext: [u8; 40] = rnd()?;
+            let item_key: [u8; 60] = rnd()?;
+            let writer_private: [u8; 64] = rnd()?;
+            let signing = sig1::SigningKey::from_bytes(&writer_private);
+            let writer_public = sig1::public_key_in::<G>(&signing)?;
+            // An item of a space is written into a collection, which the signature covers.
+            let collection: Option<[u8; 16]> = if owner_is_space { Some(rnd()?) } else { None };
+            let owner = if owner_is_space {
+                Owner::space(owner_id)
+            } else {
+                Owner::user(owner_id)
+            };
+            let sealed = (!deleted).then_some((ciphertext.as_slice(), item_key.as_slice()));
+            let envelope = item_write::envelope_hash(key_version, sealed)?;
+            let statement = item_write::Statement {
+                owner,
+                item_id,
+                kind: "login",
+                revision,
+                deleted,
+                envelope,
+                writer,
+                writer_key_version,
+                collection,
+            };
+            let bytes = statement.to_bytes()?;
+            let signature = sig1::sign_in::<G>(&signing, ITEM_WRITE, &bytes)?;
+            let stored = item_write::to_stored(&writer, writer_key_version, &signature)?;
+
+            // Statements that differ from the real one in one field: the signature covers none.
+            let mut other_item = item_id;
+            other_item[0] ^= 1;
+            let mut other_writer = writer;
+            other_writer[0] ^= 1;
+            let other_owner = if owner_is_space {
+                Owner::user(owner_id)
+            } else {
+                Owner::space(owner_id)
+            };
+            let mut other_envelope = envelope;
+            other_envelope[0] ^= 1;
+            let mut changed = vec![
+                (
+                    "another-collection",
+                    item_write::Statement {
+                        collection: Some(other_item),
+                        ..statement
+                    },
+                ),
+                (
+                    "another-owner",
+                    item_write::Statement {
+                        owner: other_owner,
+                        // A vault's item has no collection and a space's has one.
+                        collection: if owner_is_space {
+                            None
+                        } else {
+                            Some(other_item)
+                        },
+                        ..statement
+                    },
+                ),
+                (
+                    "another-item",
+                    item_write::Statement {
+                        item_id: other_item,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-kind",
+                    item_write::Statement {
+                        kind: "note",
+                        ..statement
+                    },
+                ),
+                (
+                    "another-revision",
+                    item_write::Statement {
+                        revision: revision + 1,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-writer",
+                    item_write::Statement {
+                        writer: other_writer,
+                        ..statement
+                    },
+                ),
+                (
+                    "another-key-version",
+                    item_write::Statement {
+                        writer_key_version: writer_key_version + 1,
+                        ..statement
+                    },
+                ),
+            ];
+            if deleted {
+                // A tombstone's hash can't be anything but zero, so it is the live flag that flips.
+                changed.push((
+                    "not-a-tombstone",
+                    item_write::Statement {
+                        deleted: false,
+                        ..statement
+                    },
+                ));
+            } else {
+                changed.push((
+                    "another-envelope",
+                    item_write::Statement {
+                        envelope: other_envelope,
+                        ..statement
+                    },
+                ));
+                changed.push((
+                    "a-tombstone",
+                    item_write::Statement {
+                        deleted: true,
+                        envelope: [0; 32],
+                        ..statement
+                    },
+                ));
+            }
+            // A vault's item names no collection, so a statement that does is no statement.
+            if !owner_is_space {
+                changed.remove(0);
+            }
+            let changed: Vec<Value> = changed
+                .into_iter()
+                .map(|(what, s)| json!({ "name": what, "statement": hx(&s.to_bytes().unwrap_or_default()) }))
+                .collect();
+
+            let mut case = json!({
+                "name": name,
+                "owner": hx(&owner.to_bytes()),
+                "item_id": hx(&item_id),
+                "kind": "login",
+                "revision": revision,
+                "replaces": revision - 1,
+                "deleted": deleted,
+                "key_version": key_version,
+                "envelope_hash": hx(&envelope),
+                "writer": hx(&writer),
+                "writer_key_version": writer_key_version,
+                "collection": collection.as_ref().map(|c| hx(c)),
+                "writer_private_key": hx(&writer_private),
+                "writer_public_key": hx(writer_public.as_bytes()),
+                "statement": hx(&bytes),
+                "signature": hx(&signature),
+                "stored": hx(&stored),
+                "wrong_contexts": [BUNDLE, MANIFEST, CONFIRM],
+                "changed_statements": changed,
+            });
+            if !deleted {
+                case["ciphertext"] = hx(&ciphertext);
+                case["item_key"] = hx(&item_key);
+            }
+            cases.push(case);
+        }
+        Ok(document(
+            "item-write",
+            "Signed item writes (docs/crypto.md): statement = \"kemlock/v1/item-write\" || owner \
+             (17) || item id (16) || lp(kind) || u64be(revision) || u64be(revision - 1) || \
+             u8(deleted) || envelope_hash (32) || writer id (16) || u32be(writer key version) \
+             || u8(0), or u8(1) || collection id (16) (a collection exactly when the owner is a space); \
+             envelope_hash = SHA-256(u32be(key_version) || lp(ciphertext) || lp(item_key)), or 32 \
+             zero bytes for a tombstone; signature = sig1 signature of the writer's own key under \
+             context \"item-write\" over the statement (3373 bytes); stored = writer id (16) || \
+             u32be(writer key version) || signature. The signature must not verify under a wrong \
+             context or over any changed statement.",
+            cases,
+        ))
+    })
+}
+
 /// A version 4 UUID from random bytes.
 fn uuid_v4(mut id: [u8; 16]) -> [u8; 16] {
     id[6] = (id[6] & 0x0f) | 0x40;
@@ -1403,6 +1739,277 @@ fn space_names_doc() -> Result<Value, Error> {
              \"collection-name\" or \"group-name\", owner is 0x02 || space_id and key_version is \
              the space key version. There is no item-key wrap: name_key is the item key. A name \
              must not open under another space, id, kind, key version or owner.",
+            cases,
+        ))
+    })
+}
+
+/// A user key's `item-wrap` child, from a root key's bytes.
+fn item_wrap_of(root: &[u8; 64]) -> Result<SecretKey, Error> {
+    RootKey::from_bytes(root)
+        .user_key_in::<G>()?
+        .child_in::<G>(ITEM_WRAP_LABEL)
+}
+
+fn rotation_doc() -> Result<Value, Error> {
+    seeded("rotation", || {
+        let mut cases = Vec::new();
+
+        // An item moved from the old root key to a new one.
+        for (name, old_version, new_version, revision, kind, json) in [
+            (
+                "login-first-rotation",
+                1u32,
+                2u32,
+                4u64,
+                "login",
+                r#"{"name":"Bank","username":"ada","password":"hunter2"}"#,
+            ),
+            (
+                "note-third-rotation",
+                3u32,
+                4u32,
+                1u64,
+                "note",
+                r#"{"name":"Plan","text":"line one\nline two"}"#,
+            ),
+        ] {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let old_wrap = item_wrap_of(&old_root)?;
+            let new_wrap = item_wrap_of(&new_root)?;
+            let id: [u8; 16] = rnd()?;
+            let owner = Owner::user(rnd()?);
+            let old_key = SecretKey::from_bytes(&rnd()?);
+            let old_ciphertext =
+                kem1::seal_item_in::<G>(&old_key, &id, revision, kind, &owner, json.as_bytes())?;
+            let old_wrapped =
+                kem1::wrap_item_key_in::<G>(&old_wrap, &old_key, &id, &owner, old_version)?;
+            let moved = rotation::reseal_item_in::<G>(
+                &old_wrap,
+                old_version,
+                &new_wrap,
+                new_version,
+                &id,
+                &owner,
+                kind,
+                revision,
+                &old_ciphertext,
+                &old_wrapped,
+            )?;
+            let new_key = kem1::unwrap_item_key_in::<G>(
+                &new_wrap,
+                &moved.item_key,
+                &id,
+                &owner,
+                new_version,
+            )?;
+            cases.push(json!({
+                "name": name,
+                "type": "item",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "old_item_wrap_key": hx(old_wrap.as_bytes()),
+                "new_item_wrap_key": hx(new_wrap.as_bytes()),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "item_id": hx(&id),
+                "owner": hx(&owner.to_bytes()),
+                "kind": kind,
+                "revision": revision,
+                "json": hx(json.as_bytes()),
+                "old_item_key": hx(old_key.as_bytes()),
+                "old_ciphertext": hx(&old_ciphertext),
+                "old_wrapped_item_key": hx(&old_wrapped),
+                "new_revision": moved.revision,
+                "new_item_key": hx(new_key.as_bytes()),
+                "new_ciphertext": hx(&moved.ciphertext),
+                "new_wrapped_item_key": hx(&moved.item_key),
+                "new_item_aad": hx(&kem1::item_aad(&id, moved.revision, kind, &owner)?),
+                "new_item_key_aad": hx(&kem1::item_key_aad(&id, &owner, new_version)),
+            }));
+        }
+
+        // A Send moved: the link key stays, its sealed key and meta move.
+        for (name, kind, old_version, new_version, meta) in [
+            (
+                "text-send",
+                send::Kind::Text,
+                1u32,
+                2u32,
+                r#"{"name":"Wi-Fi","notes":"guest"}"#,
+            ),
+            (
+                "file-send",
+                send::Kind::File,
+                2u32,
+                3u32,
+                r#"{"name":"Scan","notes":""}"#,
+            ),
+        ] {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let old_wrap = item_wrap_of(&old_root)?;
+            let new_wrap = item_wrap_of(&new_root)?;
+            let send_id: [u8; 16] = rnd()?;
+            let link_key = SecretKey::from_bytes(&rnd()?);
+            let old_sealed_key =
+                send::wrap_link_key_in::<G>(&old_wrap, &link_key, &send_id, old_version)?;
+            let old_meta =
+                send::seal_meta_in::<G>(&old_wrap, &send_id, old_version, kind, meta.as_bytes())?;
+            let moved = rotation::reseal_send_in::<G>(
+                &old_wrap,
+                &new_wrap,
+                new_version,
+                &send_id,
+                kind,
+                &old_sealed_key,
+                &old_meta,
+            )?;
+            cases.push(json!({
+                "name": name,
+                "type": "send",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "old_item_wrap_key": hx(old_wrap.as_bytes()),
+                "new_item_wrap_key": hx(new_wrap.as_bytes()),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "send_id": hx(&send_id),
+                "send_kind": kind.as_str(),
+                "link_key": hx(link_key.as_bytes()),
+                "meta_json": hx(meta.as_bytes()),
+                "old_sealed_key": hx(&old_sealed_key),
+                "old_meta": hx(&old_meta),
+                "new_sealed_key": hx(&moved.sealed_key),
+                "new_meta": hx(&moved.meta),
+                "new_key_aad": hx(&send::key_aad(&send_id, new_version)),
+            }));
+        }
+
+        // The wraps of the new root key: the formats are the old ones at the new version.
+        {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let account: [u8; 16] = rnd()?;
+            let master: [u8; 32] = rnd()?;
+            let export: [u8; 64] = rnd()?;
+            let prf_output: [u8; 32] = rnd()?;
+            let credential_id: [u8; 24] = rnd()?;
+            let (old_version, new_version) = (1u32, 2u32);
+            let password_old = password_wrap::seal_in::<G>(
+                &master,
+                &export,
+                &RootKey::from_bytes(&old_root),
+                &account,
+                old_version,
+            )?;
+            let password_new = password_wrap::seal_in::<G>(
+                &master,
+                &export,
+                &RootKey::from_bytes(&new_root),
+                &account,
+                new_version,
+            )?;
+            let prf_old = prf_wrap::seal_in::<G>(
+                &prf_output,
+                &credential_id,
+                &RootKey::from_bytes(&old_root),
+                &account,
+                old_version,
+            )?;
+            let prf_new = prf_wrap::seal_in::<G>(
+                &prf_output,
+                &credential_id,
+                &RootKey::from_bytes(&new_root),
+                &account,
+                new_version,
+            )?;
+            cases.push(json!({
+                "name": "wraps-of-the-new-root-key",
+                "type": "wraps",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "account_id": hx(&account),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "master_key": hx(&master),
+                "export_key": hx(&export),
+                "prf_output": hx(&prf_output),
+                "credential_id": hx(&credential_id),
+                "password_wrap_old": hx(&password_old),
+                "password_wrap_new": hx(&password_new),
+                "prf_wrap_old": hx(&prf_old),
+                "prf_wrap_new": hx(&prf_new),
+            }));
+        }
+
+        // The new key pair, its bundle, and the old pair sealed under the new user key.
+        {
+            let old_root: [u8; 64] = rnd()?;
+            let new_root: [u8; 64] = rnd()?;
+            let account: [u8; 16] = rnd()?;
+            let (old_version, new_version) = (1u32, 2u32);
+            let old_kx: [u8; 96] = rnd()?;
+            let old_sig: [u8; 64] = rnd()?;
+            let new_kx: [u8; 96] = rnd()?;
+            let new_sig: [u8; 64] = rnd()?;
+            let new_kx_private = kx1::PrivateKey::from_bytes(&new_kx);
+            let new_sig_private = sig1::SigningKey::from_bytes(&new_sig);
+            let bundle = Bundle {
+                account_id: account,
+                key_version: new_version,
+                kx1_public: kx1::public_key_in::<G>(&new_kx_private)?,
+                sig1_public: sig1::public_key_in::<G>(&new_sig_private)?,
+            };
+            let bundle_bytes = bundle.to_bytes();
+            let bundle_signature = sig1::sign_in::<G>(&new_sig_private, BUNDLE, &bundle_bytes)?;
+            let new_user = RootKey::from_bytes(&new_root).user_key_in::<G>()?;
+            let sealed_new = private_keys::seal_in::<G>(
+                &new_user,
+                &new_kx_private,
+                &new_sig_private,
+                &account,
+                new_version,
+            )?;
+            let sealed_previous = private_keys::seal_in::<G>(
+                &new_user,
+                &kx1::PrivateKey::from_bytes(&old_kx),
+                &sig1::SigningKey::from_bytes(&old_sig),
+                &account,
+                old_version,
+            )?;
+            cases.push(json!({
+                "name": "new-key-pair-and-previous-keys",
+                "type": "keys",
+                "old_root_key": hx(&old_root),
+                "new_root_key": hx(&new_root),
+                "account_id": hx(&account),
+                "old_key_version": old_version,
+                "new_key_version": new_version,
+                "old_kx1_private_key": hx(&old_kx),
+                "old_sig1_private_key": hx(&old_sig),
+                "new_kx1_private_key": hx(&new_kx),
+                "new_sig1_private_key": hx(&new_sig),
+                "new_bundle": hx(&bundle_bytes),
+                "new_bundle_signature": hx(&bundle_signature),
+                "new_user_key": hx(new_user.as_bytes()),
+                "sealed_private_keys": hx(&sealed_new),
+                "sealed_previous_private_keys": hx(&sealed_previous),
+            }));
+        }
+
+        Ok(document(
+            "rotation",
+            "Rotating the root key (docs/crypto.md): an item is opened under the old item-wrap key \
+             and sealed again under a fresh item key at revision + 1, the new item key wrapped \
+             under the new item-wrap key at the new key version (new_item_aad, \
+             new_item_key_aad); a Send keeps its link key and gets a new sealed key and meta under \
+             the new item-wrap key and version; the password and PRF wraps of the new root key are \
+             the existing formats at the new key version, and the old ones do not open there; the \
+             new kx1 and sig1 pair is sealed under the new user key at the new version, with the \
+             bundle at the new version signed by the new sig1 key, and the old pair is sealed under \
+             the new user key at the old version.",
             cases,
         ))
     })

@@ -45,6 +45,15 @@ test('a new browser signs in through an open device, with the phrase matching on
   await expect(approver.first()).toHaveText(words, { timeout: 60_000 });
   await page.getByRole('button', { name: /^Approve / }).first().click();
 
+  // The new device shows the account's key fingerprint and opens only when it is compared with the
+  // one the approving device shows: the last group is typed as that device shows it.
+  const fingerprint = page.getByRole('region', { name: "Your account's key fingerprint" }).locator('.phrase');
+  const shown = ((await fingerprint.textContent()) ?? '').trim();
+  await fresh
+    .getByLabel('Type the last group of digits as the other device shows it')
+    .fill(shown.split(/\s+/).pop() ?? '');
+  await fresh.getByRole('button', { name: 'They are the same' }).click();
+
   // The new device signs in with the key it was sent, without the master password.
   await expect(fresh).toHaveURL(/\/vault$/, { timeout: 90_000 });
   await expect(fresh.getByRole('button', { name: 'New item' })).toBeVisible();

@@ -36,6 +36,7 @@ mod files;
 mod org_docs;
 mod orgs;
 mod rows;
+mod scope;
 mod vault;
 
 use crate::error::StoreResult;
@@ -51,7 +52,7 @@ use kemlock_vaultwarden::mapping::{
 use kemlock_vaultwarden::settings::MappedSettings;
 use kemlock_vaultwarden::snapshot::{RowKey, Table};
 use sea_orm::{DatabaseTransaction, TransactionTrait};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::PathBuf;
 use time::OffsetDateTime;
@@ -112,6 +113,10 @@ pub struct ImportOptions {
     pub now: OffsetDateTime,
     /// Events older than this many days before `now` are not imported; `None` imports them all.
     pub events_retention_days: Option<i64>,
+    /// Writes over users and spaces that already exist even though no earlier pass recorded
+    /// creating them. Off unless an operator asks for it on the command line; the admin console
+    /// never sets it. See `scope`.
+    pub adopt_existing: bool,
 }
 
 impl ImportOptions {
@@ -125,6 +130,7 @@ impl ImportOptions {
             files,
             now,
             events_retention_days: Some(DEFAULT_EVENTS_RETENTION_DAYS),
+            adopt_existing: false,
         }
     }
 }
@@ -137,6 +143,15 @@ pub(super) struct Ctx {
     pub(super) opts: ImportOptions,
     /// Accounts whose vault changed: their revision date moves at the end, so apps sync.
     pub(super) touched: BTreeSet<Uuid>,
+    /// The users the import owns that this pass has taken or found (see `scope`).
+    pub(super) users: BTreeSet<Uuid>,
+    /// The spaces the import owns that this pass has taken or found.
+    pub(super) spaces: BTreeSet<Uuid>,
+    /// What the pass left alone because the import doesn't own it: ids by kind.
+    pub(super) refused: BTreeMap<&'static str, BTreeSet<String>>,
+    /// The token key to write into the data folder once the transaction has committed (see
+    /// `files::put_rsa_key`).
+    pub(super) rsa_key: Option<MappedRsaKey>,
 }
 
 /// The store side of a move, over one transaction. See the module docs.
@@ -168,6 +183,10 @@ impl SqlImportSink {
                 seal,
                 opts: options,
                 touched: BTreeSet::new(),
+                users: BTreeSet::new(),
+                spaces: BTreeSet::new(),
+                refused: BTreeMap::new(),
+                rsa_key: None,
             }),
         })
     }
@@ -205,6 +224,8 @@ impl ImportSink for SqlImportSink {
 
     async fn put_carried(&mut self, table: &Table) -> Result<(), ImportError> {
         let ctx = self.ctx()?;
+        // Only the rows of users and spaces the import owns are written.
+        let table = &scope::admit(ctx, table).await?;
         rows::put_table(ctx, table).await?;
         match table.name() {
             "devices" => accounts::put_devices(ctx, table).await,
@@ -245,12 +266,26 @@ impl ImportSink for SqlImportSink {
         delete::delete_rows(self.ctx()?, table, keys).await
     }
 
+    fn refused(&self) -> BTreeMap<&'static str, Vec<String>> {
+        self.ctx.as_ref().map_or_else(BTreeMap::new, |ctx| {
+            ctx.refused
+                .iter()
+                .map(|(kind, ids)| (*kind, ids.iter().cloned().collect()))
+                .collect()
+        })
+    }
+
     /// Moves the revision date of every account whose vault changed, then commits.
     async fn finish(&mut self) -> Result<(), ImportError> {
         let ctx = self.ctx.take().ok_or(ImportError::Finished)?;
         org_docs::sync(&ctx).await?;
         vault::bump_revisions(&ctx).await?;
+        scope::refresh_marks(&ctx).await?;
         ctx.txn.commit().await.store()?;
+        // Only now: a pass that failed or rolled back leaves the server's token key as it was.
+        if let Some(key) = &ctx.rsa_key {
+            files::write_rsa_key(&ctx.opts.files_root, key)?;
+        }
         Ok(())
     }
 }

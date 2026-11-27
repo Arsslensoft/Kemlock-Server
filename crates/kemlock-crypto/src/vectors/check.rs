@@ -16,13 +16,14 @@ use crate::{
     backend::Backend,
     bundle::{self, Bundle},
     confirm::{STATEMENT_LEN, Statement},
-    dedup, kem1,
+    dedup, ed25519, item_write, kem1,
+    key_box::{self, Kind as KeyBoxKind, Statement as KeyBoxStatement},
     keys::{ITEM_WRAP_LABEL, RootKey, SecretKey},
     kma1, kx1, legacy_id,
     manifest::{Entry, Manifest},
     opaque::{self, OpaqueServer},
     owner::Owner,
-    password_wrap, prf_wrap, private_keys, seal, sealed_box, send,
+    password_wrap, prf_wrap, private_keys, rotation, seal, sealed_box, send,
     sig1::{self, context::BUNDLE, context::MANIFEST},
     wire::lp,
 };
@@ -366,6 +367,39 @@ fn sig1_file<B: Backend>(doc: &Value) {
         sig1::verify_in::<B>(&public, context, &message, &own).expect("own signature");
         if B::NAME == "rustcrypto" {
             assert_eq!(own, signature);
+        }
+    }
+}
+
+/// The Ed25519 verification rule's edge cases: every backend gives the file's verdicts, for the
+/// key at parse time and for the whole check.
+fn sig1_edge_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let name = s(case, "name");
+        let public: [u8; 32] = arr(case, "public_key");
+        let message = bytes(case, "message");
+        let signature = bytes(case, "signature");
+        let flag = |key: &str| {
+            case[key]
+                .as_bool()
+                .unwrap_or_else(|| panic!("`{key}` is missing or not a boolean in {name}"))
+        };
+
+        assert_eq!(
+            ed25519::check_public_key(&public).is_ok(),
+            flag("key_ok"),
+            "{} key_ok of {name}",
+            B::NAME
+        );
+        assert_eq!(
+            B::ed25519_verify(&public, &message, &signature).is_ok(),
+            flag("valid"),
+            "{} valid of {name}",
+            B::NAME
+        );
+        // A refused key never verifies, whatever the signature.
+        if !flag("key_ok") {
+            assert!(!flag("valid"), "{name}");
         }
     }
 }
@@ -1272,6 +1306,280 @@ fn confirm_file<B: Backend>(doc: &Value) {
     }
 }
 
+fn item_write_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let name = s(case, "name");
+        let owner: [u8; 17] = arr(case, "owner");
+        let item_id: [u8; 16] = arr(case, "item_id");
+        let kind = s(case, "kind");
+        let revision = int(case, "revision");
+        assert_eq!(int(case, "replaces"), revision - 1, "{name}");
+        let deleted = case["deleted"].as_bool().expect("deleted is a flag");
+        let key_version = u32::try_from(int(case, "key_version")).expect("u32");
+        let writer: [u8; 16] = arr(case, "writer");
+        let writer_version = u32::try_from(int(case, "writer_key_version")).expect("u32");
+        let collection: Option<[u8; 16]> = case
+            .get("collection")
+            .filter(|v| !v.is_null())
+            .map(|_| arr(case, "collection"));
+        assert_eq!(
+            collection.is_some(),
+            owner[0] == 2,
+            "{name}: a collection exactly when the owner is a space"
+        );
+
+        // The envelope hash, rebuilt by hand from the documented layout.
+        let envelope: [u8; 32] = arr(case, "envelope_hash");
+        if deleted {
+            assert_eq!(envelope, [0; 32], "{name}");
+            assert!(case.get("ciphertext").is_none(), "{name}");
+        } else {
+            let ciphertext = bytes(case, "ciphertext");
+            let item_key = bytes(case, "item_key");
+            let mut data = key_version.to_be_bytes().to_vec();
+            lp(&mut data, &ciphertext).expect("lp");
+            lp(&mut data, &item_key).expect("lp");
+            assert_eq!(B::sha256(&data), envelope, "{} {name}", B::NAME);
+            assert_eq!(
+                item_write::envelope_hash(
+                    key_version,
+                    Some((ciphertext.as_slice(), item_key.as_slice()))
+                )
+                .expect("hash"),
+                envelope,
+                "{name}"
+            );
+        }
+
+        // The statement, rebuilt by hand.
+        let mut expected = b"kemlock/v1/item-write".to_vec();
+        expected.extend_from_slice(&owner);
+        expected.extend_from_slice(&item_id);
+        lp(&mut expected, kind.as_bytes()).expect("lp");
+        expected.extend_from_slice(&revision.to_be_bytes());
+        expected.extend_from_slice(&(revision - 1).to_be_bytes());
+        expected.push(u8::from(deleted));
+        expected.extend_from_slice(&envelope);
+        expected.extend_from_slice(&writer);
+        expected.extend_from_slice(&writer_version.to_be_bytes());
+        match collection {
+            Some(collection) => {
+                expected.push(1);
+                expected.extend_from_slice(&collection);
+            }
+            None => expected.push(0),
+        }
+        let statement = bytes(case, "statement");
+        assert_eq!(statement, expected, "{name}");
+        let rebuilt = item_write::Statement {
+            owner: Owner::from_bytes(&owner).expect("an owner"),
+            item_id,
+            kind,
+            revision,
+            deleted,
+            envelope,
+            writer,
+            writer_key_version: writer_version,
+            collection,
+        };
+        assert_eq!(rebuilt.to_bytes().expect("encode"), statement, "{name}");
+
+        let public =
+            sig1::PublicKey::from_bytes(&bytes(case, "writer_public_key")).expect("public key");
+        let signing = sig1::SigningKey::from_bytes(&arr(case, "writer_private_key"));
+        assert_eq!(
+            sig1::public_key_in::<B>(&signing).expect("public"),
+            public,
+            "{} {name}",
+            B::NAME
+        );
+        let signature = bytes(case, "signature");
+        assert_eq!(signature.len(), sig1::SIGNATURE_LEN);
+        sig1::verify_in::<B>(&public, "item-write", &statement, &signature)
+            .expect("the write verifies");
+        rebuilt
+            .verify(&public, &signature)
+            .expect("the crate's own verification agrees");
+        assert_eq!(
+            item_write::to_stored(&writer, writer_version, &signature).expect("stored"),
+            bytes(case, "stored"),
+            "{name}"
+        );
+
+        for context in list(case, "wrong_contexts") {
+            let context = context.as_str().expect("a context");
+            assert_ne!(context, "item-write");
+            assert!(
+                sig1::verify_in::<B>(&public, context, &statement, &signature).is_err(),
+                "{name} {context}"
+            );
+        }
+        for changed in list(case, "changed_statements") {
+            let other = bytes(changed, "statement");
+            assert_ne!(other, statement, "{name} {}", s(changed, "name"));
+            assert!(
+                sig1::verify_in::<B>(&public, "item-write", &other, &signature).is_err(),
+                "{name} {}",
+                s(changed, "name")
+            );
+        }
+        for index in [0usize, 3308, 3309, 3372] {
+            assert!(
+                sig1::verify_in::<B>(
+                    &public,
+                    "item-write",
+                    &statement,
+                    &flip(signature.clone(), index)
+                )
+                .is_err(),
+                "{name} byte {index}"
+            );
+        }
+        let own = sig1::sign_in::<B>(&signing, "item-write", &statement).expect("sign");
+        sig1::verify_in::<B>(&public, "item-write", &statement, &own).expect("own signature");
+        if B::NAME == "rustcrypto" {
+            assert_eq!(own, signature, "{name}");
+        }
+    }
+}
+
+fn key_box_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let name = s(case, "name");
+        let context = s(case, "context");
+        let kind = match context {
+            "space-key" => KeyBoxKind::Space,
+            "collection-key" => KeyBoxKind::Collection,
+            other => panic!("{name}: no key box for {other}"),
+        };
+        let space: [u8; 16] = arr(case, "space");
+        let recipient: [u8; 16] = arr(case, "recipient");
+        let sealer: [u8; 16] = arr(case, "sealer");
+        let key_version = u32::try_from(int(case, "key_version")).expect("u32");
+        let sealer_version = u32::try_from(int(case, "sealer_key_version")).expect("u32");
+
+        // The aad is the one of the sealed-box contexts.
+        let aad = bytes(case, "aad");
+        let rebuilt = match kind {
+            KeyBoxKind::Space => key_box::space_aad(&space, key_version, &recipient),
+            KeyBoxKind::Collection => {
+                let collection: [u8; 16] = arr(case, "collection");
+                key_box::collection_aad(&space, &collection, key_version, &recipient)
+            }
+        };
+        assert_eq!(aad, rebuilt, "{name}");
+        assert_eq!(
+            aad.len(),
+            match kind {
+                KeyBoxKind::Space => 36,
+                KeyBoxKind::Collection => 52,
+            },
+            "{name}"
+        );
+
+        // The box is a real box of the key, and opens for the recipient.
+        let boxed = bytes(case, "box");
+        assert_eq!(boxed.len(), key_box::BOX_LEN, "{name}");
+        assert_eq!(boxed[0], 1, "{name}");
+        let private = kx1::PrivateKey::from_bytes(&arr(case, "recipient_private_key"));
+        let opened = sealed_box::open_in::<B>(&private, context, &aad, &boxed).expect("open");
+        assert_eq!(
+            opened.as_slice(),
+            bytes(case, "secret"),
+            "{} {name}",
+            B::NAME
+        );
+
+        // The statement, rebuilt by hand from the documented layout.
+        let mut expected = b"kemlock/v1/key-box".to_vec();
+        lp(&mut expected, context.as_bytes()).expect("lp");
+        lp(&mut expected, &aad).expect("lp");
+        lp(&mut expected, &boxed).expect("lp");
+        expected.extend_from_slice(&sealer);
+        expected.extend_from_slice(&sealer_version.to_be_bytes());
+        let statement = bytes(case, "statement");
+        assert_eq!(
+            statement.len(),
+            match kind {
+                KeyBoxKind::Space => 1756,
+                KeyBoxKind::Collection => 1777,
+            },
+            "{name}"
+        );
+        assert_eq!(statement, expected, "{name}");
+        let rebuilt = KeyBoxStatement {
+            kind,
+            aad: &aad,
+            sealed_box: &boxed,
+            sealer,
+            sealer_key_version: sealer_version,
+        };
+        assert_eq!(rebuilt.to_bytes().expect("statement"), statement, "{name}");
+
+        let public =
+            sig1::PublicKey::from_bytes(&bytes(case, "sealer_public_key")).expect("public key");
+        let signing = sig1::SigningKey::from_bytes(&arr(case, "sealer_private_key"));
+        assert_eq!(
+            sig1::public_key_in::<B>(&signing).expect("public"),
+            public,
+            "{} {name}",
+            B::NAME
+        );
+        let signature = bytes(case, "signature");
+        assert_eq!(signature.len(), sig1::SIGNATURE_LEN, "{name}");
+        sig1::verify_in::<B>(&public, "key-box", &statement, &signature)
+            .expect("the box signature verifies");
+        rebuilt
+            .verify(&public, &signature)
+            .expect("the crate's own verification agrees");
+
+        for wrong in list(case, "wrong_contexts") {
+            let wrong = wrong.as_str().expect("a context");
+            assert_ne!(wrong, "key-box");
+            assert!(
+                sig1::verify_in::<B>(&public, wrong, &statement, &signature).is_err(),
+                "{name} {wrong}"
+            );
+        }
+        for changed in list(case, "changed_statements") {
+            let other = bytes(changed, "statement");
+            assert_eq!(other.len(), statement.len(), "{name}");
+            assert_ne!(other, statement, "{name} {}", s(changed, "name"));
+            assert!(
+                sig1::verify_in::<B>(&public, "key-box", &other, &signature).is_err(),
+                "{name} {}",
+                s(changed, "name")
+            );
+        }
+        assert!(
+            sig1::verify_in::<B>(
+                &public,
+                "key-box",
+                &flip(statement.clone(), 700),
+                &signature
+            )
+            .is_err()
+        );
+        for index in [0usize, 3308, 3309, 3372] {
+            assert!(
+                sig1::verify_in::<B>(
+                    &public,
+                    "key-box",
+                    &statement,
+                    &flip(signature.clone(), index)
+                )
+                .is_err(),
+                "{name} byte {index}"
+            );
+        }
+        let own = sig1::sign_in::<B>(&signing, "key-box", &statement).expect("sign");
+        sig1::verify_in::<B>(&public, "key-box", &statement, &own).expect("own signature");
+        if B::NAME == "rustcrypto" {
+            assert_eq!(own, signature, "{name}");
+        }
+    }
+}
+
 fn prf_wrap_file<B: Backend>(doc: &Value) {
     for case in cases(doc) {
         let prf_output: [u8; 32] = arr(case, "prf_output");
@@ -1550,6 +1858,304 @@ fn send_file<B: Backend>(doc: &Value) {
     }
 }
 
+fn rotation_wrap_of<B: Backend>(root: &[u8; 64]) -> SecretKey {
+    RootKey::from_bytes(root)
+        .user_key_in::<B>()
+        .expect("user key")
+        .child_in::<B>(ITEM_WRAP_LABEL)
+        .expect("item-wrap child")
+}
+
+fn rotation_file<B: Backend>(doc: &Value) {
+    for case in cases(doc) {
+        let old_root: [u8; 64] = arr(case, "old_root_key");
+        let new_root: [u8; 64] = arr(case, "new_root_key");
+        let old_version = u32::try_from(int(case, "old_key_version")).expect("u32");
+        let new_version = u32::try_from(int(case, "new_key_version")).expect("u32");
+        assert_eq!(new_version, old_version + 1);
+        match s(case, "type") {
+            "item" => {
+                let old_wrap = rotation_wrap_of::<B>(&old_root);
+                let new_wrap = rotation_wrap_of::<B>(&new_root);
+                assert_eq!(
+                    old_wrap.as_bytes().as_slice(),
+                    bytes(case, "old_item_wrap_key")
+                );
+                assert_eq!(
+                    new_wrap.as_bytes().as_slice(),
+                    bytes(case, "new_item_wrap_key")
+                );
+                let id: [u8; 16] = arr(case, "item_id");
+                let owner = Owner::from_bytes(&arr(case, "owner")).expect("owner");
+                let kind = s(case, "kind");
+                let revision = int(case, "revision");
+                assert_eq!(int(case, "new_revision"), revision + 1);
+                let json = bytes(case, "json");
+
+                // The old envelope opens under the old keys.
+                let old_key = kem1::unwrap_item_key_in::<B>(
+                    &old_wrap,
+                    &bytes(case, "old_wrapped_item_key"),
+                    &id,
+                    &owner,
+                    old_version,
+                )
+                .expect("the old wrap opens");
+                assert_eq!(old_key.as_bytes().as_slice(), bytes(case, "old_item_key"));
+                let old_plain = kem1::open_item_in::<B>(
+                    &old_key,
+                    &id,
+                    revision,
+                    kind,
+                    &owner,
+                    &bytes(case, "old_ciphertext"),
+                )
+                .expect("the old ciphertext opens");
+                assert_eq!(old_plain.as_slice(), json.as_slice());
+
+                // The new one opens under the new keys, at the next revision, with another key.
+                let new_ciphertext = bytes(case, "new_ciphertext");
+                let new_wrapped = bytes(case, "new_wrapped_item_key");
+                let new_key = kem1::unwrap_item_key_in::<B>(
+                    &new_wrap,
+                    &new_wrapped,
+                    &id,
+                    &owner,
+                    new_version,
+                )
+                .expect("the new wrap opens");
+                assert_eq!(new_key.as_bytes().as_slice(), bytes(case, "new_item_key"));
+                assert_ne!(new_key.as_bytes(), old_key.as_bytes());
+                let new_plain = kem1::open_item_in::<B>(
+                    &new_key,
+                    &id,
+                    revision + 1,
+                    kind,
+                    &owner,
+                    &new_ciphertext,
+                )
+                .expect("the new ciphertext opens");
+                assert_eq!(new_plain.as_slice(), json.as_slice());
+                assert_eq!(
+                    kem1::item_aad(&id, revision + 1, kind, &owner).expect("aad"),
+                    bytes(case, "new_item_aad")
+                );
+                assert_eq!(
+                    kem1::item_key_aad(&id, &owner, new_version),
+                    bytes(case, "new_item_key_aad")
+                );
+
+                // Nothing of the old keys opens the new envelope.
+                for version in [old_version, new_version] {
+                    assert!(
+                        kem1::unwrap_item_key_in::<B>(
+                            &old_wrap,
+                            &new_wrapped,
+                            &id,
+                            &owner,
+                            version
+                        )
+                        .is_err(),
+                        "{}",
+                        B::NAME
+                    );
+                }
+                for rev in [revision, revision + 1] {
+                    assert!(
+                        kem1::open_item_in::<B>(&old_key, &id, rev, kind, &owner, &new_ciphertext)
+                            .is_err()
+                    );
+                }
+                assert!(
+                    kem1::open_item_in::<B>(&new_key, &id, revision, kind, &owner, &new_ciphertext)
+                        .is_err()
+                );
+
+                // The function makes a valid move again, from the old envelope.
+                let again = rotation::reseal_item_in::<B>(
+                    &old_wrap,
+                    old_version,
+                    &new_wrap,
+                    new_version,
+                    &id,
+                    &owner,
+                    kind,
+                    revision,
+                    &bytes(case, "old_ciphertext"),
+                    &bytes(case, "old_wrapped_item_key"),
+                )
+                .expect("reseals");
+                assert_eq!(again.revision, revision + 1);
+            }
+            "send" => {
+                let old_wrap = rotation_wrap_of::<B>(&old_root);
+                let new_wrap = rotation_wrap_of::<B>(&new_root);
+                let send_id: [u8; 16] = arr(case, "send_id");
+                let kind = send::Kind::parse(s(case, "send_kind")).expect("kind");
+                let link_key = SecretKey::from_bytes(&arr(case, "link_key"));
+                let meta = bytes(case, "meta_json");
+
+                let new_sealed_key = bytes(case, "new_sealed_key");
+                let new_meta = bytes(case, "new_meta");
+                let (opened, version) =
+                    send::unwrap_link_key_in::<B>(&new_wrap, &new_sealed_key, &send_id)
+                        .expect("the new sealed key opens");
+                assert_eq!(version, new_version);
+                assert_eq!(opened.as_bytes(), link_key.as_bytes());
+                let plain =
+                    send::open_meta_in::<B>(&new_wrap, &send_id, new_version, kind, &new_meta)
+                        .expect("the new meta opens");
+                assert_eq!(plain.as_slice(), meta.as_slice());
+                let mut aad = b"kemlock/v1/send-key".to_vec();
+                aad.extend_from_slice(&send_id);
+                aad.extend_from_slice(&new_version.to_be_bytes());
+                assert_eq!(aad, bytes(case, "new_key_aad"));
+
+                // The old ones open under the old key, and the new ones do not.
+                let (old_opened, old_seen) = send::unwrap_link_key_in::<B>(
+                    &old_wrap,
+                    &bytes(case, "old_sealed_key"),
+                    &send_id,
+                )
+                .expect("the old sealed key opens");
+                assert_eq!(old_seen, old_version);
+                assert_eq!(old_opened.as_bytes(), link_key.as_bytes());
+                assert!(
+                    send::unwrap_link_key_in::<B>(&old_wrap, &new_sealed_key, &send_id).is_err()
+                );
+                for version in [old_version, new_version] {
+                    assert!(
+                        send::open_meta_in::<B>(&old_wrap, &send_id, version, kind, &new_meta)
+                            .is_err()
+                    );
+                }
+            }
+            "wraps" => {
+                let account: [u8; 16] = arr(case, "account_id");
+                let master: [u8; 32] = arr(case, "master_key");
+                let export: [u8; 64] = arr(case, "export_key");
+                let prf_output: [u8; 32] = arr(case, "prf_output");
+                let credential = bytes(case, "credential_id");
+                let old_pw = bytes(case, "password_wrap_old");
+                let new_pw = bytes(case, "password_wrap_new");
+                let old_prf = bytes(case, "prf_wrap_old");
+                let new_prf = bytes(case, "prf_wrap_new");
+
+                let opened =
+                    password_wrap::open_in::<B>(&master, &export, &new_pw, &account, new_version)
+                        .expect("the new password wrap opens at the new version");
+                assert_eq!(opened.as_bytes().as_slice(), new_root.as_slice());
+                let opened =
+                    password_wrap::open_in::<B>(&master, &export, &old_pw, &account, old_version)
+                        .expect("the old password wrap opens at the old version");
+                assert_eq!(opened.as_bytes().as_slice(), old_root.as_slice());
+                assert!(
+                    password_wrap::open_in::<B>(&master, &export, &old_pw, &account, new_version)
+                        .is_err()
+                );
+                assert!(
+                    password_wrap::open_in::<B>(&master, &export, &new_pw, &account, old_version)
+                        .is_err()
+                );
+
+                let opened = prf_wrap::open_in::<B>(
+                    &prf_output,
+                    &credential,
+                    &new_prf,
+                    &account,
+                    new_version,
+                )
+                .expect("the new PRF wrap opens at the new version");
+                assert_eq!(opened.as_bytes().as_slice(), new_root.as_slice());
+                let opened = prf_wrap::open_in::<B>(
+                    &prf_output,
+                    &credential,
+                    &old_prf,
+                    &account,
+                    old_version,
+                )
+                .expect("the old PRF wrap opens at the old version");
+                assert_eq!(opened.as_bytes().as_slice(), old_root.as_slice());
+                assert!(
+                    prf_wrap::open_in::<B>(
+                        &prf_output,
+                        &credential,
+                        &old_prf,
+                        &account,
+                        new_version
+                    )
+                    .is_err()
+                );
+            }
+            "keys" => {
+                let account: [u8; 16] = arr(case, "account_id");
+                let new_user = RootKey::from_bytes(&new_root)
+                    .user_key_in::<B>()
+                    .expect("user key");
+                assert_eq!(new_user.as_bytes().as_slice(), bytes(case, "new_user_key"));
+
+                let bundle = Bundle::from_bytes(&bytes(case, "new_bundle")).expect("bundle");
+                assert_eq!(bundle.account_id, account);
+                assert_eq!(bundle.key_version, new_version);
+                bundle
+                    .verify_self_signature(&bytes(case, "new_bundle_signature"))
+                    .expect("the bundle is signed by its own key");
+
+                let (kx, sig) = private_keys::open_in::<B>(
+                    &new_user,
+                    &bytes(case, "sealed_private_keys"),
+                    &account,
+                    new_version,
+                )
+                .expect("the new keys open under the new user key");
+                assert_eq!(kx.as_bytes().as_slice(), bytes(case, "new_kx1_private_key"));
+                assert_eq!(
+                    sig.as_bytes().as_slice(),
+                    bytes(case, "new_sig1_private_key")
+                );
+
+                let (old_kx, old_sig) = private_keys::open_in::<B>(
+                    &new_user,
+                    &bytes(case, "sealed_previous_private_keys"),
+                    &account,
+                    old_version,
+                )
+                .expect("the previous keys open under the new user key at the old version");
+                assert_eq!(
+                    old_kx.as_bytes().as_slice(),
+                    bytes(case, "old_kx1_private_key")
+                );
+                assert_eq!(
+                    old_sig.as_bytes().as_slice(),
+                    bytes(case, "old_sig1_private_key")
+                );
+                assert_ne!(old_kx.as_bytes(), kx.as_bytes());
+                assert_ne!(old_sig.as_bytes(), sig.as_bytes());
+
+                // The old user key opens neither.
+                let old_user = RootKey::from_bytes(&old_root)
+                    .user_key_in::<B>()
+                    .expect("user key");
+                for (sealed, version) in [
+                    ("sealed_private_keys", new_version),
+                    ("sealed_previous_private_keys", old_version),
+                ] {
+                    assert!(
+                        private_keys::open_in::<B>(
+                            &old_user,
+                            &bytes(case, sealed),
+                            &account,
+                            version
+                        )
+                        .is_err()
+                    );
+                }
+            }
+            other => panic!("rotation: unknown case type {other}"),
+        }
+    }
+}
+
 // ---- running them -----------------------------------------------------------------------------
 
 /// Checks one file on one backend; the backend-independent files are left to [`check_slow`].
@@ -1561,6 +2167,7 @@ pub(crate) fn check_on<B: Backend>(name: &str, doc: &Value) {
         "kx1" => kx1_file::<B>(doc),
         "sealed-box" => sealed_box_file::<B>(doc),
         "sig1" => sig1_file::<B>(doc),
+        "sig1-edge" => sig1_edge_file::<B>(doc),
         "bundle" => bundle_file::<B>(doc),
         "kem1" => kem1_file::<B>(doc),
         "manifest" => manifest_file::<B>(doc),
@@ -1572,9 +2179,12 @@ pub(crate) fn check_on<B: Backend>(name: &str, doc: &Value) {
         "private-keys" => private_keys_file::<B>(doc),
         "prf-wrap" => prf_wrap_file::<B>(doc),
         "confirm" => confirm_file::<B>(doc),
+        "item-write" => item_write_file::<B>(doc),
+        "key-box" => key_box_file::<B>(doc),
         "send" => send_file::<B>(doc),
         "space-names" => space_names_file::<B>(doc),
         "space-chain" => super::space_chain::check::<B>(doc),
+        "rotation" => rotation_file::<B>(doc),
         "argon2id" | "opaque" => {}
         other => panic!("no check for {other}"),
     }

@@ -13,7 +13,9 @@ import { DeleteAccountCard, type DeleteAccountProps } from './DeleteAccountCard'
 import { EmergencyCard, type EmergencyCardProps } from './EmergencyCard';
 import { groupSecret } from './emergencyModel';
 import { PasskeysCard, type PasskeysCardProps } from './PasskeysCard';
+import { SignedWritesCard, type SignedWritesProps } from './SignedWritesCard';
 import { RecoveryKitCard, type RecoveryKitProps } from './RecoveryKitCard';
+import { RotateKeysCard, type RotateKeysProps } from './RotateKeysCard';
 import { SecondStepsCard, type SecondStepsProps } from './SecondStepsCard';
 import { ProofInput, proofBlank, proofValue } from './ProofInput';
 import type { Described } from './errors';
@@ -45,8 +47,12 @@ export interface SecurityViewProps {
   secondSteps?: SecondStepsProps | undefined;
   /** The Recovery Kit: make, make again, remove. */
   recoveryKit?: RecoveryKitProps | undefined;
+  /** Rotating the root key: a new one, and everything it protects moved under it. */
+  rotateKeys?: RotateKeysProps | undefined;
   /** The personal API key for the Bitwarden CLI: show, copy, replace. */
   apiKey?: ApiKeyProps | undefined;
+  /** Signed writes only for the account's own vault: turn on, turn off with the password. */
+  signedWrites?: SignedWritesProps | undefined;
   /** The danger zone: delete the account. */
   deleteAccount?: DeleteAccountProps | undefined;
 }
@@ -69,7 +75,9 @@ export function SecurityView({
   passkeys,
   secondSteps,
   recoveryKit,
+  rotateKeys,
   apiKey,
+  signedWrites,
   deleteAccount,
 }: SecurityViewProps) {
   const t = useT();
@@ -158,7 +166,7 @@ export function SecurityView({
                         {t('twoStep.typeKey')}
                         <span className="cmd">
                           <code>{groupSecret(totp.enrol.secret)}</code>
-                          <CopyButton value={totp.enrol.secret} label={t('twoStep.copyKey')} big />
+                          <CopyButton value={totp.enrol.secret} label={t('twoStep.copyKey')} secret big />
                         </span>
                       </li>
                       <li>{t('twoStep.typeCode')}</li>
@@ -196,6 +204,7 @@ export function SecurityView({
             {passkeys ? <PasskeysCard {...passkeys} /> : null}
             {secondSteps ? <SecondStepsCard {...secondSteps} /> : null}
             {recoveryKit ? <RecoveryKitCard {...recoveryKit} /> : null}
+            {rotateKeys ? <RotateKeysCard {...rotateKeys} /> : null}
             {later.map((method) => (
               <div className="row" key={method}>
                 <div className="grow">
@@ -212,6 +221,7 @@ export function SecurityView({
           <EmergencyCard {...emergency} />
 
           {apiKey ? <ApiKeyCard {...apiKey} /> : null}
+          {signedWrites ? <SignedWritesCard {...signedWrites} /> : null}
           {deleteAccount ? <DeleteAccountCard {...deleteAccount} /> : null}
         </div>
       </div>

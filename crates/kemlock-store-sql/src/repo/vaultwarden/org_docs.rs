@@ -17,7 +17,9 @@
 use super::rows::{self, row_uuid};
 use super::{Ctx, Res};
 use crate::error::StoreResult;
+use crate::repo::policies::upsert_require_sso_in;
 use crate::tables::bw_docs;
+use kemlock_domain::SpaceId;
 use kemlock_vaultwarden::vwtime::{format_date, parse_db_time};
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
@@ -32,6 +34,8 @@ const KIND_MEMBER: &str = "member";
 const KIND_COLLECTION: &str = "collection";
 const KIND_GROUP: &str = "group";
 const KIND_POLICY: &str = "policy";
+/// Bitwarden's number of the Require single sign-on policy, which `space_policy_settings` keeps.
+const REQUIRE_SSO: i64 = 4;
 const KIND_API_KEY: &str = "apikey";
 /// Scope: the organization; key: a cipher id; body: the ids of its collections.
 const KIND_LINKS: &str = "cc";
@@ -110,6 +114,17 @@ async fn put_doc(ctx: &Ctx, scope: Uuid, kind: &str, key: &str, body: &Value) ->
     .await
     .store()?;
     rows::put_row(ctx, RECORDS, &record, &json!({ "body": text }), false).await
+}
+
+/// Sets Require SSO in `space_policy_settings` to what the organization's policy document of that
+/// type says now (the one a pass wrote, or the API's own if it changed it since).
+async fn sync_require_sso(ctx: &Ctx, org: Uuid) -> Res<()> {
+    let enabled = current(ctx, org, KIND_POLICY, &REQUIRE_SSO.to_string())
+        .await?
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|doc| doc.get("enabled").and_then(Value::as_bool))
+        .unwrap_or(false);
+    Ok(upsert_require_sso_in(&ctx.txn, SpaceId(org), enabled).await?)
 }
 
 async fn drop_doc(ctx: &Ctx, scope: Uuid, kind: &str, key: &str) -> Res<()> {
@@ -216,6 +231,9 @@ pub(super) async fn sync(ctx: &Ctx) -> Res<()> {
             &body,
         )
         .await?;
+        if number(&row, "atype", 0) == REQUIRE_SSO {
+            sync_require_sso(ctx, org).await?;
+        }
     }
     for (_, row) in rows::all_rows(ctx, "organization_api_key").await? {
         let Some(org) = row_uuid(rows::text(&row, "org_uuid")) else {
@@ -338,6 +356,10 @@ pub(super) async fn forget_group(ctx: &Ctx, group: Uuid) -> Res<()> {
 pub(super) async fn forget_policy(ctx: &Ctx, row: &Value) -> Res<()> {
     if let Some(org) = row_uuid(rows::text(row, "org_uuid")) {
         delete_doc(ctx, org, KIND_POLICY, &number(row, "atype", 0).to_string()).await?;
+        // A policy that is gone is off, in the table the Kemlock API reads as well.
+        if number(row, "atype", 0) == REQUIRE_SSO {
+            upsert_require_sso_in(&ctx.txn, SpaceId(org), false).await?;
+        }
     }
     Ok(())
 }

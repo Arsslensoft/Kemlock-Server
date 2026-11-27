@@ -157,6 +157,12 @@ impl From<AppError> for Problem {
                 "account-being-deleted",
                 "This account is being deleted",
             ),
+            AppError::EmailNotConfirmed => Problem::new(
+                StatusCode::FORBIDDEN,
+                "email-not-confirmed",
+                "This account's email address isn't confirmed",
+            )
+            .detail("Open the link mailed to the address, or ask for a new one."),
             AppError::SsoRequired { space } => Problem::new(
                 StatusCode::FORBIDDEN,
                 "sso-required",
@@ -176,6 +182,12 @@ impl From<AppError> for Problem {
                 "already-exists",
                 "That already exists",
             ),
+            AppError::StaleKeyVersion { current } => Problem::new(
+                StatusCode::CONFLICT,
+                "key-version-stale",
+                "The account's keys changed since this device unlocked",
+            )
+            .with("currentKeyVersion", json!(current)),
             AppError::FullSyncRequired => Problem::new(
                 StatusCode::GONE,
                 "full-sync-required",
@@ -268,6 +280,18 @@ fn item_problem(e: &ItemError) -> Problem {
             "item-too-large",
             "The item is larger than this server allows",
         ),
+        ItemError::BadSignature => Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid-signature",
+            "The write's signature is not valid",
+        )
+        .detail(e.to_string()),
+        ItemError::SignatureRequired => Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "signature-required",
+            "This owner accepts signed writes only",
+        )
+        .detail(e.to_string()),
     }
 }
 
@@ -346,6 +370,12 @@ mod tests {
         assert_eq!(
             disabled.to_json()["type"],
             "urn:kemlock:problem:account-disabled"
+        );
+        let unconfirmed = Problem::from(AppError::EmailNotConfirmed);
+        assert_eq!(unconfirmed.status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            unconfirmed.to_json()["type"],
+            "urn:kemlock:problem:email-not-confirmed"
         );
         let required = Problem::from(AppError::SsoRequired {
             space: kemlock_domain::SpaceId::random(),

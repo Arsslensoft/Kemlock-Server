@@ -19,8 +19,8 @@ use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
 use kemlock_app::devices::{
-    Answer, AnswerApproval, ApprovalRequestInput, DeviceSignIn, DevicesStore, KeyCopies,
-    ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
+    Answer, AnswerApproval, ApprovalRequestInput, DeviceSignIn, DevicesStore, EndSession,
+    KeyCopies, ListApprovals, PendingApproval, Poll, PollApproval, RequestApproval, SignOutDevice,
     UntrustDevice,
 };
 use kemlock_app::notices::Notices;
@@ -28,7 +28,7 @@ use kemlock_app::ports::TokenSigner;
 use kemlock_app::sso::RequireSso;
 use kemlock_app::{Sessions, TokenPair, b64url};
 use kemlock_domain::unlock::{ApprovalId, DeviceKeyCopy, KeyProtection};
-use kemlock_domain::{DeviceId, DeviceKind};
+use kemlock_domain::{DeviceId, DeviceKind, Email};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use time::OffsetDateTime;
@@ -40,16 +40,23 @@ use uuid::Uuid;
 /// stops one address spraying requests at many accounts.
 const REQUESTS_PER_IP_PER_HOUR: u32 = 30;
 
+/// Requests per address and email an hour, whether or not the email has an account: so one address
+/// can't use up an account's 10 (and the owner's mailbox) alone, and the 429 it gets past this is
+/// the same for every email.
+const REQUESTS_PER_EMAIL_PER_IP_PER_HOUR: u32 = 3;
+
 /// The limiter of this router, held in an extension so the shared `Api` state needn't know it.
 #[derive(Debug)]
 pub(crate) struct DeviceLimits {
     requests: Limiter,
+    per_email: Limiter,
 }
 
 impl DeviceLimits {
     fn new() -> Self {
         DeviceLimits {
             requests: Limiter::new(REQUESTS_PER_IP_PER_HOUR, 3600),
+            per_email: Limiter::new(REQUESTS_PER_EMAIL_PER_IP_PER_HOUR, 3600),
         }
     }
 }
@@ -96,6 +103,11 @@ pub(crate) struct ApprovalRequestResponse {
     /// Five words, shown beside the ones the approving device shows.
     pub(crate) phrase: String,
     pub(crate) expires_at: String,
+    /// `true` when the account was getting so many requests that this one was held back among
+    /// them: it is stored and shown on the account's open devices like the rest, but its owner
+    /// may be slow to find it. Left out otherwise.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) held_back: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -189,6 +201,9 @@ pub(crate) struct KeyCopyRequest {
     /// `"secure-enclave"`, `"keystore"`, `"web-crypto"`, `"browser"` or `"software"`.
     #[schema(value_type = String)]
     pub(crate) protection: KeyProtection,
+    /// The account's key version the copy was made for. A copy for a version that is no longer
+    /// the account's is refused with `409 key-version-stale`; absent (an old client) is accepted.
+    pub(crate) key_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -212,6 +227,16 @@ impl KeyCopyResponse {
             updated_at: iso(copy.updated_at),
         }
     }
+}
+
+/// `POST /kem/v1/auth/sign-out`: an empty body ends this session; `{"others": true}` keeps it and ends
+/// the device's other sessions.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EndSessionRequest {
+    /// End the device's other sessions and keep this one.
+    #[serde(default)]
+    pub(crate) others: bool,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -296,6 +321,15 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         }
     }
 
+    fn end_session(&self) -> EndSession<S, S, P, S> {
+        EndSession {
+            devices: self.store.clone(),
+            tokens: self.store.clone(),
+            clock: self.crypto.clone(),
+            events: self.store.clone(),
+        }
+    }
+
     fn sign_out_device(&self) -> SignOutDevice<S, S, S, P, S> {
         SignOutDevice {
             devices: self.store.clone(),
@@ -320,12 +354,25 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
     ) -> Result<(StatusCode, Json<ApprovalRequestResponse>), Problem> {
         guard(&limits.requests, &ip_key(proof.ip), api.now())?;
         let request: ApprovalRequestBody = body.json()?;
+        // A malformed request is refused before it counts against the address's requests for an
+        // email: only a request that could be stored spends any of that.
+        let device = request.device.into_info()?;
+        let public_key = decode("publicKey", &request.public_key)?;
+        // An email too long to be one is refused by the use case; it isn't counted here.
+        if request.email.len() <= Email::MAX_LEN {
+            let email = request.email.trim().to_lowercase();
+            guard(
+                &limits.per_email,
+                &format!("{email}|{}", ip_key(proof.ip)),
+                api.now(),
+            )?;
+        }
         let requested = api
             .request_approval()
             .execute(ApprovalRequestInput {
                 email: request.email,
-                device: request.device.into_info()?,
-                public_key: decode("publicKey", &request.public_key)?,
+                device,
+                public_key,
                 jkt: proof.jkt,
                 ip: proof.ip,
             })
@@ -336,6 +383,7 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
                 request_id: requested.id.0,
                 phrase: requested.phrase,
                 expires_at: iso(requested.expires_at),
+                held_back: requested.held_back,
             }),
         ))
     }
@@ -455,10 +503,11 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         let request: KeyCopyRequest = body.json()?;
         let copy = api
             .key_copies()
-            .put(
+            .put_at(
                 &authed.actor,
                 decode("wrappedKey", &request.wrapped_key)?,
                 request.protection,
+                request.key_version,
             )
             .await?;
         Ok(Json(KeyCopyResponse::from_copy(&copy)))
@@ -495,6 +544,28 @@ impl<S: Store + DevicesStore, P: Crypto, K: TokenSigner + Clone + 'static> Api<S
         api.untrust_device()
             .execute(&authed.actor, DeviceId(device))
             .await?;
+        Ok(StatusCode::NO_CONTENT)
+    }
+
+    /// `POST /kem/v1/auth/sign-out`: ends this device's session only, or, with `{"others": true}`, its
+    /// other sessions and not this one. The key copy stays either way.
+    pub(crate) async fn handle_auth_sign_out(
+        State(api): State<Self>,
+        authed: Authed,
+        body: Body,
+    ) -> Result<StatusCode, Problem> {
+        let others = if body.is_empty() {
+            false
+        } else {
+            body.json::<EndSessionRequest>()?.others
+        };
+        if others {
+            api.end_session()
+                .execute_others(&authed.actor, authed.auth_time)
+                .await?;
+        } else {
+            api.end_session().execute(&authed.actor).await?;
+        }
         Ok(StatusCode::NO_CONTENT)
     }
 
@@ -554,6 +625,10 @@ where
         .route(
             "/kem/v1/devices/{id}/key-copy",
             delete(A::<S, P, K>::handle_device_untrust),
+        )
+        .route(
+            "/kem/v1/auth/sign-out",
+            post(A::<S, P, K>::handle_auth_sign_out),
         )
         .route(
             "/kem/v1/devices/sign-out",
@@ -638,7 +713,10 @@ fn doc_approval_answer() {}
     put, path = "/kem/v1/devices/key-copy", tag = "trusted-device",
     security(("dpop" = [])),
     request_body = KeyCopyRequest,
-    responses((status = 200, description = "Stored", body = KeyCopyResponse))
+    responses(
+        (status = 200, description = "Stored", body = KeyCopyResponse),
+        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
+    )
 )]
 #[allow(dead_code)]
 fn doc_key_copy_put() {}
@@ -676,6 +754,18 @@ fn doc_key_copy_delete() {}
 fn doc_device_untrust() {}
 
 #[utoipa::path(
+    post, path = "/kem/v1/auth/sign-out", tag = "trusted-device",
+    security(("dpop" = [])),
+    request_body = Option<EndSessionRequest>,
+    responses(
+        (status = 204, description = "With no body: this device's refresh tokens are revoked and its DPoP key unbound. With {\"others\": true}: its other sessions end and this one goes on. The device and its key copy stay either way"),
+        (status = 401, description = "Not signed in", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_auth_sign_out() {}
+
+#[utoipa::path(
     post, path = "/kem/v1/devices/sign-out", tag = "trusted-device",
     security(("dpop" = [])),
     request_body = SignOutRequest,
@@ -701,6 +791,7 @@ fn doc_device_sign_out() {}
         doc_key_copy_get,
         doc_key_copy_delete,
         doc_device_untrust,
+        doc_auth_sign_out,
         doc_device_sign_out
     ),
     components(schemas(
@@ -715,6 +806,7 @@ fn doc_device_sign_out() {}
         ApprovalAnswerRequest,
         KeyCopyRequest,
         KeyCopyResponse,
+        EndSessionRequest,
         SignOutRequest
     ))
 )]

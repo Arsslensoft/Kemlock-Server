@@ -8,11 +8,13 @@
 use crate::error::AppError;
 use crate::platform::Platform;
 use crate::ports::{
-    DeviceRepo, EventLog, PasswordAuth, SecretSeal, TokenRepo, TokenSigner, Totp, TwoFactorMethod,
-    TwoFactorRepo, UserRepo, Zeroizing,
+    DeviceRepo, EventLog, PasswordAuth, SecretSeal, TokenRepo, TokenSigner, Totp, TwoFactor,
+    TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
 use crate::privacy::ensure_not_pending;
-use crate::sealed::{Challenge, LoginState, PURPOSE_CHALLENGE, PURPOSE_LOGIN, PURPOSE_TOTP};
+use crate::sealed::{
+    Challenge, LoginState, PURPOSE_CHALLENGE, PURPOSE_LOGIN, PURPOSE_TOTP, open_bound, seal_bound,
+};
 use crate::session::{DeviceInfo, Sessions, TokenPair};
 use crate::sso::{MembershipFacts, RequireSso, SignInMethod};
 use kemlock_domain::{Device, Email, User, UserId};
@@ -167,6 +169,10 @@ where
         if self.users.account_disabled(user.id).await? {
             return Err(AppError::AccountDisabled);
         }
+        // Said only to whoever proved the password: a new account whose address isn't confirmed.
+        if self.sessions.config.signups_verify && self.users.email_unconfirmed(user.id).await? {
+            return Err(AppError::EmailNotConfirmed);
+        }
         ensure_not_pending(&self.users, user.id).await?;
         // Only now, with the password proved: the answer never tells a stranger which accounts
         // a space has locked to single sign-on.
@@ -202,6 +208,8 @@ where
             device_name: input.device.name,
             device_kind: input.device.kind,
             jkt: input.jkt,
+            via_sso: false,
+            sso: None,
         };
         Ok(SignedIn::SecondStep(SecondStep {
             challenge: self.seal.seal(PURPOSE_CHALLENGE, &challenge.encode()),
@@ -213,6 +221,28 @@ where
     /// uses it to count second-step failures per account before the code is looked at.
     pub fn challenge_user(&self, challenge: &[u8]) -> Result<UserId, AppError> {
         Ok(self.open_challenge(challenge)?.user)
+    }
+
+    /// What every finish of a second step must pass before its answer is looked at, whichever
+    /// method it is: the account still exists, is not disabled, is not waiting out an erasure,
+    /// and, for a challenge a password's first step made, no space it is an ordinary member of
+    /// has turned Require SSO on since (the second step of an SSO sign-in is not held to it).
+    /// [`SignIn::second_step`] runs the same checks for the authenticator app.
+    pub async fn check_second_step_allowed(&self, challenge: &[u8]) -> Result<(), AppError> {
+        let challenge = self.open_challenge(challenge)?;
+        let user = self
+            .users
+            .by_id(challenge.user)
+            .await?
+            .ok_or(AppError::Unauthorized)?;
+        if self.users.account_disabled(user.id).await? {
+            return Err(AppError::AccountDisabled);
+        }
+        ensure_not_pending(&self.users, user.id).await?;
+        if !challenge.via_sso {
+            self.sso.check(&user, SignInMethod::Password).await?;
+        }
+        Ok(())
     }
 
     fn open_challenge(&self, challenge: &[u8]) -> Result<Challenge, AppError> {
@@ -246,7 +276,14 @@ where
             return Err(AppError::AccountDisabled);
         }
         ensure_not_pending(&self.users, user.id).await?;
-        self.sso.check(&user, SignInMethod::Password).await?;
+        // The second step of an SSO sign-in is not a way round Require SSO: only a password's is
+        // held to it.
+        let first_step = if challenge.via_sso {
+            SignInMethod::Sso
+        } else {
+            SignInMethod::Password
+        };
+        self.sso.check(&user, first_step).await?;
         let factor = self
             .two_factor
             .list(user.id)
@@ -256,18 +293,35 @@ where
             .ok_or(AppError::Unauthorized)?;
         match factor.method {
             TwoFactorMethod::Totp => {
-                let secret = self
-                    .seal
-                    .open(PURPOSE_TOTP, &factor.sealed_secret)
-                    .map_err(|_| AppError::Store("a stored TOTP secret doesn't open".to_owned()))?;
+                let opened = open_bound(&self.seal, PURPOSE_TOTP, user.id, &factor.sealed_secret)
+                    .map_err(|_| {
+                    AppError::Store("a stored TOTP secret doesn't open".to_owned())
+                })?;
                 let step = self
                     .totp
-                    .verify_step(&secret, input.code.trim(), now)
+                    .verify_step(&opened.value, input.code.trim(), now)
                     .ok_or(AppError::Unauthorized)?;
                 // The same step can be accepted once: a code seen over a shoulder or in a
                 // proxy log is useless for the rest of its window.
                 if !self.two_factor.accept_totp_step(user.id, step).await? {
                     return Err(AppError::Unauthorized);
+                }
+                if opened.legacy {
+                    // Stored before secrets were bound to accounts: sealed again, bound, while the
+                    // row still holds what was read (an enrolment removed or replaced meanwhile is
+                    // not undone). Failing to write it back loses nothing, the next sign-in tries
+                    // again.
+                    let bound = TwoFactor {
+                        sealed_secret: seal_bound(&self.seal, PURPOSE_TOTP, user.id, &opened.value),
+                        ..factor.clone()
+                    };
+                    if let Err(error) = self
+                        .two_factor
+                        .replace_if_sealed(&factor.sealed_secret, &bound)
+                        .await
+                    {
+                        tracing::warn!(%error, "couldn't seal a TOTP secret to its account");
+                    }
                 }
             }
             // These have their own calls: a security key answers a challenge of its own
@@ -295,6 +349,9 @@ where
                 &input.jkt,
             )
             .await?;
+        self.sessions
+            .start_sso_session(challenge.sso.as_ref(), user.id, &device)
+            .await?;
         self.complete(&user, device, &input.jkt).await
     }
 
@@ -302,6 +359,19 @@ where
     /// remembers the state as used, so made-up states take no room in that memory.
     pub fn check_login_state(&self, sealed: &[u8]) -> Result<(), AppError> {
         self.open_login_state(sealed).map(|_| ())
+    }
+
+    /// [`SignIn::check_login_state`], and the state must be the one started for `email`. The API
+    /// checks this before it counts a try against the account, so a state made for another
+    /// account (or for nobody) spends nobody's attempts.
+    pub fn check_login_state_for(&self, sealed: &[u8], email: &str) -> Result<(), AppError> {
+        let state = self.open_login_state(sealed)?;
+        if !constant_time_eq(&state.credential_id, &credential_id(email)) {
+            return Err(AppError::Invalid(
+                "the login state belongs to another email",
+            ));
+        }
+        Ok(())
     }
 
     fn open_login_state(&self, sealed: &[u8]) -> Result<LoginState, AppError> {

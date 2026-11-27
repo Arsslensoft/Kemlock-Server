@@ -76,6 +76,7 @@ export function SpaceListView({
                     {t(`space.role.${row.role}`)} · {t(`space.state.${row.state}`)}
                   </div>
                 </div>
+                {row.trust ? <span className="tag warn">{t('space.chain.tag')}</span> : null}
                 {row.keysPending ? <span className="tag warn">{t('space.keysPending')}</span> : null}
                 <Button
                   size="small"

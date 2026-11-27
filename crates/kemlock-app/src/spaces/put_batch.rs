@@ -13,8 +13,10 @@ use super::ports::SpaceRepo;
 use super::support::load_state;
 use crate::authenticate::Actor;
 use crate::config::AuthConfig;
-use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier};
+use crate::error::AppError;
+use crate::ports::{Clock, Event, EventLog, ItemStore, Notifier, UserRepo};
 use crate::put_batch::MAX_BATCH;
+use crate::put_item::check_key_version;
 use kemlock_domain::spaces::{CollectionId, SpaceError, SpaceState, apply_space_write};
 use kemlock_domain::{ChangeId, Item, ItemError, ItemId, ItemWrite, Owner, SpaceId};
 use std::collections::{BTreeMap, HashSet};
@@ -38,7 +40,18 @@ fn item_error(id: ItemId, e: ItemError) -> SpacesError {
     }
 }
 
-impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceBatch<R, I, V, N, C> {
+/// A refused key version of a vault item as this module's error.
+fn key_version_error(e: AppError) -> SpacesError {
+    match e {
+        AppError::Invalid(why) => SpaceError::Invalid(why).into(),
+        AppError::Store(message) => SpacesError::Store(message),
+        _ => SpacesError::NotFound,
+    }
+}
+
+impl<R: SpaceRepo, I: ItemStore, V: EventLog + UserRepo, N: Notifier, C: Clock>
+    PutSpaceBatch<R, I, V, N, C>
+{
     /// Stores every write or none, returning the items as stored. Each write comes with the
     /// collection it belongs in: required for an item of a space, absent for one of the actor's
     /// own vault. A refused write names its item (`StaleItem`), and nothing is stored. An item
@@ -72,6 +85,11 @@ impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceBat
                             SpaceError::Invalid("an item of a vault has no collection").into()
                         );
                     }
+                    // As `PutBatch` does: a vault item sealed under another key version than the
+                    // account's current one is refused, whatever else the batch holds.
+                    check_key_version(&self.events, actor.user, &write)
+                        .await
+                        .map_err(key_version_error)?;
                     write
                         .apply(stored.as_ref(), actor.user, self.config.item_limits, now)
                         .map_err(|e| item_error(id, e))?
@@ -109,6 +127,9 @@ impl<R: SpaceRepo, I: ItemStore, V: EventLog, N: Notifier, C: Clock> PutSpaceBat
                     .map_err(|e| item_error(id, e))?
                 }
             };
+            if crate::signed_writes::refuses_unsigned(&self.items, &draft).await? {
+                return Err(item_error(id, ItemError::SignatureRequired));
+            }
             let collection = matches!(draft.owner, Owner::Space(_))
                 .then_some(collection)
                 .flatten();

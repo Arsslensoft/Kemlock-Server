@@ -554,6 +554,24 @@ async fn clock(store: &SqlStore) {
     assert!(batch[2].change.hlc > batch[1].change.hlc);
 }
 
+/// A draft made far in the future (a wrong or hostile client clock) doesn't pull the HLC with it.
+async fn clock_ignores_a_far_future_draft(store: &SqlStore) {
+    let owner = user_owner();
+    let mut ahead = draft(ItemId::random(), owner, None, 1);
+    ahead.updated_at = datetime!(2100-01-01 00:00:00 UTC);
+    let written = put(store, ahead).await;
+    let now_ms =
+        u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000).expect("a time");
+    assert!(
+        written.change.hlc.millis() <= now_ms + 61_000,
+        "the clock stayed near the server's, at {}",
+        written.change.hlc.millis()
+    );
+    // And a later write still orders after it.
+    let next = put(store, draft(ItemId::random(), owner, None, 1)).await;
+    assert!(next.change.hlc > written.change.hlc);
+}
+
 /// A cursor per owner: an owner the device has just joined is read from empty, whatever sequence
 /// numbers of this server the device has seen of other owners.
 async fn owner_cursors(store: &SqlStore) {
@@ -652,6 +670,7 @@ async fn run_all(store: &SqlStore) {
     owner_cursors(store).await;
     tombstones(store).await;
     clock(store).await;
+    clock_ignores_a_far_future_draft(store).await;
 }
 
 #[tokio::test]
@@ -677,4 +696,100 @@ async fn mysql_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_MYSQL_URL").await {
         run_all(&store).await;
     }
+}
+
+#[tokio::test]
+async fn a_signed_write_is_kept_with_the_item_and_does_not_set_the_flag() {
+    let store = memory().await;
+    let writer = kemlock_domain::UserId::random();
+    let owner = kemlock_domain::Owner::User(writer);
+    let other = user_owner();
+    let id = ItemId::random();
+    let signature = kemlock_domain::WriteSignature {
+        writer,
+        key_version: 2,
+        signature: vec![5; kemlock_domain::WriteSignature::SIGNATURE_LEN],
+    };
+
+    // Unsigned writes leave no flag.
+    put(&store, draft(ItemId::random(), owner, None, 1)).await;
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+
+    let mut signed = draft(id, owner, None, 1);
+    signed.signature = Some(signature.clone());
+    let stored = put(&store, signed).await;
+    assert_eq!(stored.signature, Some(signature.clone()));
+    assert_eq!(
+        get(&store, id).await.expect("the item").signature,
+        Some(signature.clone())
+    );
+    // Only the owner's own request sets the flag, not a signed write.
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+    ItemStore::require_signed_writes(&store, owner, MADE_AT)
+        .await
+        .expect("asked");
+    assert!(
+        ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+    // It is the owner's, and no other's.
+    assert!(
+        !ItemStore::signed_writes_required(&store, other)
+            .await
+            .expect("flag")
+    );
+
+    // The signature comes back on a sync, and a newer unsigned write replaces it.
+    let page = ItemStore::changes_since(&store, &[owner], &VersionVector::new(), 10)
+        .await
+        .expect("a page");
+    assert!(
+        page.items
+            .iter()
+            .any(|i| i.id == id && i.signature == Some(signature.clone()))
+    );
+    let replaced = put(&store, draft(id, owner, Some(1), 2)).await;
+    assert_eq!(replaced.signature, None);
+}
+
+#[tokio::test]
+async fn an_owner_may_ask_for_signed_writes_and_clear_it_again() {
+    let store = memory().await;
+    let owner = user_owner();
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+    ItemStore::require_signed_writes(&store, owner, MADE_AT)
+        .await
+        .expect("asked");
+    ItemStore::require_signed_writes(&store, owner, MADE_AT)
+        .await
+        .expect("asked twice");
+    assert!(
+        ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
+    ItemStore::clear_signed_writes(&store, owner)
+        .await
+        .expect("cleared");
+    ItemStore::clear_signed_writes(&store, owner)
+        .await
+        .expect("cleared twice");
+    assert!(
+        !ItemStore::signed_writes_required(&store, owner)
+            .await
+            .expect("flag")
+    );
 }

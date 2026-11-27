@@ -8,6 +8,9 @@ import type { Api, SyncResult } from '@/api/client';
 import { isApiError } from '@/api/errors';
 import type { ItemDto } from '@/api/types';
 import type { CryptoPort, SealedItem } from '@/crypto-port';
+import type { SignedFloor } from '@/spaces/anchors';
+import { type Manifest, ciphertextHash } from '@/manifest/format';
+import type { WriteChecker, WriteVerdict } from '@/manifest/writes';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 
 export type ItemData = {
@@ -25,12 +28,20 @@ export interface VaultItem {
   id: string;
   owner: string;
   kind: string;
+  /** The format the item has: what it was served in, or `kem1` for what this browser wrote. */
+  format?: ItemDto['format'];
   revision: number;
   keyVersion: number;
   /** The collection an item of a space is in; absent for an item of the account's own vault. */
   collectionId?: string;
   /** null when the worker couldn't open it (a different key, or a kind this app can't read). */
   data: ItemData | null;
+  /**
+   * Whether the envelope opened: the worker decrypted it under the item's own id, revision, kind
+   * and owner, which no one without the key can make. `data` is null for an envelope that opened
+   * to something that is not an object, too. Absent on an item this browser just wrote.
+   */
+  opened?: boolean;
   /** Sizes of what the server holds, for the "What the server holds" card. */
   sizes: { ciphertext: number; itemKey: number };
 }
@@ -57,10 +68,27 @@ export function sealedData(existing: VaultItem | undefined, id: string, fields: 
 
 export class VaultStore {
   readonly items = new Map<string, VaultItem>();
+  /**
+   * The owners this session has seen a valid write signature for. Once an owner is here, an
+   * unsigned or unverifiable newer revision of an item this session holds is not taken in
+   * (docs/crypto.md, "Signed item writes"): a server can't turn signing off by leaving it out.
+   */
+  readonly signedOwners = new Set<string>();
+  /**
+   * Per owner, the highest revision of each item seen with a valid write signature, kept across
+   * reloads in the sealed local store (`VaultDeps.floors`). A newer revision of such an item that
+   * comes unsigned is not taken in, whether or not this session holds the item.
+   */
+  readonly floors = new Map<string, Map<string, number>>();
+  /** Owners whose floor changed since it was last kept. */
+  readonly dirtyFloors = new Set<string>();
   cursor: string | undefined;
 
   reset(): void {
     this.items.clear();
+    this.signedOwners.clear();
+    this.floors.clear();
+    this.dirtyFloors.clear();
     this.cursor = undefined;
   }
 
@@ -83,6 +111,36 @@ export interface VaultDeps {
    * an item of a space does not open for want of them; absent when keys are not available.
    */
   ensureSpaceKeys?: (spaceId: string) => Promise<void>;
+  /**
+   * Told of every item the server serves in a sync, as the vault takes it in: `opened` says
+   * whether its envelope opened. The manifest keeper (src/manifest) is what listens. It must
+   * return at once: it is called for every item of a page.
+   */
+  served?: (dto: ItemDto, opened: boolean, verdict?: WriteVerdict) => void;
+  /**
+   * Checks the write signature of an item the server serves (src/manifest/writes.ts). Without it
+   * nothing is checked and every revision is taken in as before.
+   */
+  writes?: Pick<WriteChecker, 'verdict' | 'beginSync'>;
+  /**
+   * Told of a revision that was served and not taken in because of its signature: `invalid` (one
+   * came and fails), or `unsigned` and `unknown` for an item of an owner whose writes are signed.
+   */
+  rejected?: (dto: ItemDto, verdict: Exclude<WriteVerdict, 'signed'>) => void;
+  /**
+   * Keeps, per owner, the highest signed revision of each item across reloads (sealed by the
+   * worker, `src/spaces/anchors.ts`). Without it the memory lasts as long as the vault's.
+   */
+  floors?: {
+    load(owner: string): Promise<SignedFloor>;
+    save(owner: string, floor: SignedFloor): Promise<void>;
+  };
+  /**
+   * The last verified manifest of an owner (src/manifest/keeper.ts), null when there is none: with the
+   * signed floor, what an item had to be at before a member's removal for their writes to count, and
+   * before a key was marked for an item under it to open.
+   */
+  acceptedManifest?: (owner: string) => Promise<Manifest | null>;
   now?: () => Date;
   newId?: () => string;
 }
@@ -136,6 +194,7 @@ async function openJson(
   dto: ItemDto,
   ciphertext: Uint8Array,
   itemKey: Uint8Array,
+  accepted?: boolean,
 ): Promise<string> {
   const space = spaceOf(dto.owner);
   if (space === null) {
@@ -159,6 +218,7 @@ async function openJson(
     keyVersion: dto.keyVersion,
     ciphertext,
     itemKey,
+    ...(accepted === undefined ? {} : { accepted }),
   });
 }
 
@@ -166,22 +226,45 @@ export async function openDto(
   crypto: VaultCrypto,
   dto: ItemDto,
   ensureSpaceKeys?: (spaceId: string) => Promise<void>,
+  /**
+   * Whether this revision is one this browser accepted before the key of its collection was marked
+   * (at or below its signed floor or the accepted manifest). Asked only when an item of a space
+   * does not open: an item under a marked key opens only when this says yes, and is held otherwise
+   * (docs/crypto.md, "Using the state", Items). Left out, the worker's default stands.
+   */
+  acceptedBefore?: () => Promise<boolean>,
 ): Promise<VaultItem | null> {
   if (dto.deleted || !dto.ciphertext || !dto.itemKey) return null;
   const ciphertext = decodeB64(dto.ciphertext);
   const itemKey = decodeB64(dto.itemKey);
   let data: ItemData | null = null;
-  try {
-    let json: string;
+  let opened = false;
+  // Opens, loading the space's keys once when they are not held yet.
+  const openWithKeys = async (accepted?: boolean): Promise<string> => {
     try {
-      json = await openJson(crypto, dto, ciphertext, itemKey);
+      return await openJson(crypto, dto, ciphertext, itemKey, accepted);
     } catch (error) {
       // An item of a space opens once the worker holds that space's keys: load them, then once more.
       const space = spaceOf(dto.owner);
       if (space === null || !ensureSpaceKeys) throw error;
       await ensureSpaceKeys(space);
-      json = await openJson(crypto, dto, ciphertext, itemKey);
+      return openJson(crypto, dto, ciphertext, itemKey, accepted);
     }
+  };
+  try {
+    let json: string;
+    if (acceptedBefore && spaceOf(dto.owner) !== null) {
+      try {
+        json = await openWithKeys(false);
+      } catch (error) {
+        // Under a marked key only what was accepted before the mark opens: the rest is held.
+        if (!(await acceptedBefore())) throw error;
+        json = await openWithKeys(true);
+      }
+    } else {
+      json = await openWithKeys();
+    }
+    opened = true;
     const parsed: unknown = JSON.parse(json);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed as ItemData;
   } catch {
@@ -191,27 +274,127 @@ export async function openDto(
     id: dto.id,
     owner: dto.owner,
     kind: dto.kind,
+    format: dto.format,
     revision: dto.revision,
     keyVersion: dto.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),
     data,
+    opened,
     sizes: { ciphertext: ciphertext.length, itemKey: itemKey.length },
   };
 }
 
+/** The signed floor of an owner: from this session, or from the sealed store. A store that can't be read is an empty floor, which only means less is refused. */
+async function floorOf(deps: VaultDeps, store: VaultStore, owner: string): Promise<Map<string, number>> {
+  let floor = store.floors.get(owner);
+  if (!floor) {
+    let kept: SignedFloor = {};
+    try {
+      kept = (await deps.floors?.load(owner)) ?? {};
+    } catch {
+      kept = {};
+    }
+    floor = new Map(Object.entries(kept));
+    store.floors.set(owner, floor);
+    if (floor.size > 0) store.signedOwners.add(owner);
+  }
+  return floor;
+}
+
+/** Keeps the floors that changed. Never throws: a failure only means less is remembered. */
+async function keepFloors(deps: VaultDeps, store: VaultStore): Promise<void> {
+  for (const owner of [...store.dirtyFloors]) {
+    store.dirtyFloors.delete(owner);
+    try {
+      await deps.floors?.save(owner, Object.fromEntries(store.floors.get(owner) ?? []));
+    } catch {
+      store.dirtyFloors.add(owner);
+    }
+  }
+}
+
 async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<void> {
   const current = store.items.get(dto.id);
-  if (current && current.revision >= dto.revision) return;
-  if (dto.deleted) {
-    store.items.delete(dto.id);
+  // An item keeps the format it was made in. A revision that says another (a `bw` label on a `kem1`
+  // item would skip every signature check) is not taken in, and the item is not deleted for it.
+  if (current?.format !== undefined && current.format !== dto.format) {
+    deps.served?.(dto, false, undefined);
+    deps.rejected?.(dto, 'invalid');
     return;
   }
-  const item = await openDto(deps.crypto, dto, deps.ensureSpaceKeys);
+  let verdict = await deps.writes?.verdict(dto);
+  const floor = await floorOf(deps, store, dto.owner);
+  const floorBefore = floor.get(dto.id);
+  // What this browser had accepted of the item before this revision: its signed floor and the
+  // accepted manifest's entry (a member taken out signed before they were taken out only up to it).
+  const acceptedBefore = async (): Promise<boolean> =>
+    dto.revision <= Math.max(floorBefore ?? 0, await manifestRevision(deps, store, dto.owner, dto.id));
+  // A write signed by a member taken out of the space: theirs, but only what they wrote while they
+  // were a member. A revision above the floor and the manifest is not taken in, and raises nothing: a
+  // server that holds a removed member's key could otherwise have it pass as signed, raise the floor
+  // and replace items with stubs nobody can open.
+  // It must be the very revision this browser accepted, not any revision at or below it: the revision
+  // number alone is a number a removed member's key can still sign, so the revision must be the
+  // floor's, or the accepted manifest's entry with the ciphertext's hash.
+  const acceptedExactly = async (): Promise<boolean> => {
+    if (floorBefore === dto.revision) return true;
+    const entry = await manifestEntry(deps, store, dto.owner, dto.id);
+    if (!entry || entry.deleted || entry.revision !== dto.revision || !dto.ciphertext) return false;
+    return entry.hash === (await ciphertextHash(decodeB64(dto.ciphertext)));
+  };
+  let former = false;
+  if (verdict === 'former') {
+    if (!(await acceptedExactly())) {
+      deps.served?.(dto, false, verdict);
+      deps.rejected?.(dto, 'former');
+      return;
+    }
+    verdict = 'signed';
+    former = true;
+  }
+  if (verdict === 'signed') {
+    store.signedOwners.add(dto.owner);
+    if (!former && (floor.get(dto.id) ?? 0) < dto.revision) {
+      floor.set(dto.id, dto.revision);
+      store.dirtyFloors.add(dto.owner);
+    }
+  }
+  const floored = floor.get(dto.id);
+  if (current && current.revision >= dto.revision) {
+    // Not taken in, but the keeper still wants to know what the server served: an older copy is
+    // exactly what it watches for.
+    deps.served?.(dto, false, verdict);
+    return;
+  }
+  // A signature that fails is never taken in. An item without one, or one that can't be checked,
+  // is taken in until this browser has seen the item signed (the floor, kept across reloads) or,
+  // for an item the session holds, the owner's writes signed; after that no unsigned revision of it
+  // is, whether above the floor (undoing the signing) or at or below it (an older copy served as
+  // the item's, as a full sync with nothing held would take it).
+  const newerThanSigned = floored !== undefined;
+  if (
+    verdict === 'invalid' ||
+    ((verdict === 'unsigned' || verdict === 'unknown') &&
+      (newerThanSigned || (current && store.signedOwners.has(dto.owner))))
+  ) {
+    deps.served?.(dto, false, verdict);
+    deps.rejected?.(dto, verdict);
+    return;
+  }
+  if (dto.deleted) {
+    store.items.delete(dto.id);
+    deps.served?.(dto, false, verdict);
+    return;
+  }
+  const item = await openDto(deps.crypto, dto, deps.ensureSpaceKeys, acceptedBefore);
+  deps.served?.(dto, item?.opened === true, verdict);
   if (item) store.items.set(item.id, item);
 }
 
 /** Pulls every change since the stored cursor (everything, the first time) into the store. */
 export async function syncVault(deps: VaultDeps, store: VaultStore): Promise<VaultItem[]> {
+  deps.writes?.beginSync();
+  manifests.delete(store);
   let since = store.cursor;
   for (;;) {
     let result: SyncResult;
@@ -227,6 +410,7 @@ export async function syncVault(deps: VaultDeps, store: VaultStore): Promise<Vau
     }
     if (result.notModified) break;
     for (const dto of result.page.items) await apply(deps, store, dto);
+    await keepFloors(deps, store);
     store.cursor = result.page.cursor;
     since = result.page.cursor;
     if (!result.page.more) break;
@@ -310,6 +494,7 @@ export async function saveItem(
     id,
     owner,
     kind: input.kind,
+    format: 'kem1',
     revision,
     keyVersion: sealed.keyVersion,
     ...(dto.collectionId ? { collectionId: dto.collectionId } : {}),
@@ -407,4 +592,36 @@ export function loginOf(item: VaultItem): { username: string; password: string; 
 export function noteOf(item: VaultItem): string {
   const text = item.data?.['text'];
   return typeof text === 'string' ? text : '';
+}
+
+/** The accepted manifests read during one sync, by owner: asked once per owner, however many items. */
+const manifests = new WeakMap<VaultStore, Map<string, Promise<Manifest | null>>>();
+
+/**
+ * The revision the accepted manifest of `owner` lists for an item, or 0: the other half of what
+ * this browser accepted before (with the signed floor). A manifest that can't be read is none.
+ */
+async function manifestRevision(deps: VaultDeps, store: VaultStore, owner: string, id: string): Promise<number> {
+  return (await manifestEntry(deps, store, owner, id))?.revision ?? 0;
+}
+
+/** The accepted manifest's entry for an item, when there is one. */
+async function manifestEntry(
+  deps: VaultDeps,
+  store: VaultStore,
+  owner: string,
+  id: string,
+): Promise<Manifest['entries'][number] | undefined> {
+  if (!deps.acceptedManifest) return undefined;
+  let byOwner = manifests.get(store);
+  if (!byOwner) {
+    byOwner = new Map();
+    manifests.set(store, byOwner);
+  }
+  let asked = byOwner.get(owner);
+  if (!asked) {
+    asked = deps.acceptedManifest(owner).catch(() => null);
+    byOwner.set(owner, asked);
+  }
+  return (await asked)?.entries.find((entry) => entry.id === id);
 }

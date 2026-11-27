@@ -6,13 +6,16 @@
 //! in one transaction: an upsert of its entity, with the grants of a collection and the key copies
 //! of a member replaced as a set, or the removal of an entity that is gone.
 
+use crate::error::StoreResult;
 use crate::store::SqlStore;
+use crate::tables::space_tables::{collections, groups};
 use kemlock_app::policies::PolicyRepo;
 use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
-use kemlock_domain::spaces::{Grantee, MemberState};
+use kemlock_domain::spaces::{CollectionId, Grantee, GroupId, MemberState};
 use kemlock_domain::{SpaceId, UserId};
 use kemlock_federation::spaces::{PolicyState, SpaceMirror, SpaceRecord, SpaceSnapshot};
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::collections::BTreeSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -69,6 +72,39 @@ impl SpaceMirror for SqlStore {
         self.keep_chain_wire(space, record).await
     }
 
+    async fn ids_held_elsewhere(
+        &self,
+        space: SpaceId,
+        collections: &[CollectionId],
+        groups: &[GroupId],
+    ) -> Result<bool, StoreError> {
+        if !collections.is_empty() {
+            let ids: Vec<Uuid> = collections.iter().map(|c| c.0).collect();
+            let taken = collections::Entity::find()
+                .filter(collections::Column::Id.is_in(ids))
+                .filter(collections::Column::SpaceId.ne(space.0))
+                .one(self.writer())
+                .await
+                .store()?;
+            if taken.is_some() {
+                return Ok(true);
+            }
+        }
+        if !groups.is_empty() {
+            let ids: Vec<Uuid> = groups.iter().map(|g| g.0).collect();
+            let taken = groups::Entity::find()
+                .filter(groups::Column::Id.is_in(ids))
+                .filter(groups::Column::SpaceId.ne(space.0))
+                .one(self.writer())
+                .await
+                .store()?;
+            if taken.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     async fn apply_space_record(
         &self,
         space: SpaceId,
@@ -86,6 +122,11 @@ impl SpaceMirror for SqlStore {
             }
             SpaceRecord::Held(items) => return self.replace_held(space, items).await,
             SpaceRecord::Policies(p) => {
+                // A chained space's policies are the chain's: the home's own settings row, which no
+                // chain record backs, is not what a replica enforces. They come from the chain.
+                if self.space_has_chain(space).await? {
+                    return self.project_policies_of(space).await.map(|_| ());
+                }
                 let by = p.updated_by.unwrap_or(UserId(Uuid::nil()));
                 let at = p.updated_at.unwrap_or(OffsetDateTime::UNIX_EPOCH);
                 return PolicyRepo::put_space_policies(self, space, &p.policies, by, at).await;

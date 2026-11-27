@@ -22,8 +22,10 @@ pub mod manifest;
 
 pub use age::x25519::Identity as AgeIdentity;
 pub use archive::{
-    ArchiveSpec, SERVER_KEY_FILE, parse_identity, parse_recipient, read_archive, verify_unpacked,
-    write_archive,
+    ArchiveSpec, SERVER_KEY_FILE, TOKEN_KEY_FILE, UnpackLimits, create_private_dir,
+    create_private_file, is_never_restored, is_restorable_config_name, is_restorable_data_file,
+    is_token_key_file, parse_identity, parse_recipient, read_archive, read_archive_within,
+    verify_unpacked, write_archive,
 };
 pub use destination::{ArchiveInfo, Destination, DestinationConfig, S3Destination};
 pub use error::BackupError;
@@ -32,4 +34,7 @@ pub use job::{
     PRE_MIGRATION_PREFIX, STATUS_KEY, Schedule, Source, archive_name, archive_time, create_backup,
     plan_prune, prune, status_json,
 };
-pub use manifest::{Attachments, FileEntry, MANIFEST_NAME, Manifest, TableEntry};
+pub use manifest::{
+    Attachments, FileEntry, MAC_NAME, MANIFEST_NAME, MacKey, Manifest, TableEntry,
+    check_manifest_mac, manifest_mac,
+};

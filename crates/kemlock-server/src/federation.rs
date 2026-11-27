@@ -625,4 +625,25 @@ where
             })
         })
     }
+
+    fn audit<'a>(
+        &'a self,
+        actor: &'a AdminActor,
+        action: &'static str,
+        target: Option<String>,
+    ) -> BoxFut<'a, ()> {
+        Box::pin(async move {
+            let event = Event {
+                actor: Some(actor.user),
+                device: None,
+                action,
+                target,
+                at: self.api.crypto.now(),
+            };
+            // The audit log failing must not undo what the admin asked for, but it is said.
+            if let Err(e) = self.api.store.record(event).await {
+                tracing::warn!(error = %e, action, "a federation admin write could not be logged");
+            }
+        })
+    }
 }

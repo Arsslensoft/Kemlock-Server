@@ -3,7 +3,7 @@
 //! an HLC time not before the last one, a log entry) and keeps the replication state beside them.
 
 use crate::change::{ChangeRecord, MAX_LINEAGE};
-use crate::conflict::{Version, merge};
+use crate::conflict::{Rank, Version, merge_ranked};
 use crate::eventsync::{EventSync, LogEntry, PeerEvent};
 use crate::extra::{ErasureOutbox, PendingErasure, VaultErased, VaultErasure};
 use crate::hashtree::{Leaf, leaf_digest};
@@ -24,7 +24,8 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::BlobId;
 use kemlock_domain::sends::{SendId, SendRecord};
 use kemlock_domain::{
-    ChangeId, Hlc, Item, ItemDraft, ItemId, Owner, Revision, ServerId, SpaceId, VersionVector,
+    ChangeId, Hlc, Item, ItemDraft, ItemId, Owner, Revision, ServerId, SpaceId, UserId,
+    VersionVector,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -57,6 +58,8 @@ struct State {
     cursors: HashMap<(ServerId, Owner), VersionVector>,
     vaults: HashMap<Owner, VaultFederation>,
     home_records: Vec<StoredHomeRecord>,
+    /// The collection of each item of a space, as the newest version applied names it.
+    collections: HashMap<ItemId, kemlock_domain::spaces::CollectionId>,
 }
 
 fn millis(time: OffsetDateTime) -> u64 {
@@ -128,6 +131,7 @@ impl State {
         self.ensure_meta(&item);
         let meta = self.meta.get(&ChangeKey::of(&item.change));
         Exported {
+            collection: self.collections.get(&item.id).copied(),
             lineage: meta.map(|m| m.lineage.clone()).unwrap_or_default(),
             signature: meta.and_then(|m| m.signature.clone()),
             item,
@@ -163,6 +167,44 @@ struct Extras {
     sends: BTreeMap<SendId, SendRecord>,
     send_marks: HashMap<SendId, ServerId>,
     withheld: HashMap<(ServerId, Owner), Withheld>,
+    /// The members `member_ids` answers with, by vault.
+    members: HashMap<Owner, Vec<UserId>>,
+    /// The members `writer_ids` adds to them: those who left.
+    former_members: HashMap<Owner, Vec<UserId>>,
+    /// What `space_has_collection` answers, where a test says: absent means yes.
+    has_collection: HashMap<(Owner, kemlock_domain::spaces::CollectionId), Option<bool>>,
+    /// What `writer_may_edit` answers, where a test says: absent means yes.
+    edits: HashMap<(Owner, UserId, kemlock_domain::spaces::CollectionId), Option<bool>>,
+    /// The account copies applied: the home that signed and the user.
+    accounts_applied: Vec<(ServerId, UserId)>,
+    /// The accounts that live here, for `member_account`.
+    accounts_held: HashMap<UserId, crate::members::MemberAccount>,
+    /// What `account_standing` answers, where a test says: absent means nothing is held.
+    standings: HashMap<UserId, crate::extra::AccountStanding>,
+    /// What a promotion from another server does here; holds unless a test says otherwise.
+    promotion_mode: crate::extra::PromotionMode,
+    /// The keys each peer used before its current one.
+    past_keys: HashMap<ServerId, Vec<crate::keyrecs::PastKey>>,
+    /// Address changes that came with rotations, for the admin.
+    pending_addresses: Vec<crate::keyrecs::PendingAddresses>,
+    /// Rotations held for the admin.
+    held_rotations: Vec<crate::keyrecs::HeldRotation>,
+    /// The addresses of each peer the admin chose.
+    trusted_addresses: HashMap<ServerId, Vec<String>>,
+    /// Vaults whose account or space does not live here, for `owns_vault`; everything else does.
+    unowned: HashSet<Owner>,
+    /// Personal vaults whose account lives on this store (not a copy), for `erase_vault`.
+    local_accounts: HashSet<Owner>,
+    /// The attachment rows, for `BlobSync`.
+    attachments: Vec<kemlock_domain::Attachment>,
+    /// Where each peer's list of a vault's attachments stopped.
+    blob_cursors: HashMap<(ServerId, Owner), [u8; 16]>,
+    /// The offers received from homes, by vault.
+    offers: BTreeMap<Owner, crate::extra::StoredOffer>,
+    /// The owners that accept signed `kem1` writes only.
+    signed_only: HashSet<Owner>,
+    /// The owners pinned to ranking by revision.
+    rank_pins: HashSet<Owner>,
 }
 
 impl MemoryStore {
@@ -184,12 +226,24 @@ impl MemoryStore {
                 cursors: HashMap::new(),
                 vaults: HashMap::new(),
                 home_records: Vec::new(),
+                collections: HashMap::new(),
             })),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes `owner` take signed writes only, or not, as the admin's route (or the home's record
+    /// of it) does.
+    pub fn set_signed_only(&self, owner: Owner, required: bool) {
+        let mut extras = self.extras();
+        if required {
+            extras.signed_only.insert(owner);
+        } else {
+            extras.signed_only.remove(&owner);
+        }
     }
 
     /// Writes an item as this server's own change, as `ItemStore::put` does.
@@ -221,6 +275,7 @@ impl MemoryStore {
             item: item.id,
             hlc,
         });
+        drop(st);
         Ok(item)
     }
 
@@ -259,6 +314,98 @@ impl MemoryStore {
     pub fn set_space_snapshot(&self, snapshot: SpaceSnapshot) {
         let space = snapshot.state.space.id;
         self.extras().snapshots.insert(space, snapshot);
+    }
+
+    /// Sets what this store answers for the `federation_promotion` setting.
+    pub fn set_promotion_mode(&self, mode: crate::extra::PromotionMode) {
+        self.extras().promotion_mode = mode;
+    }
+
+    /// Says whether the account or space of `vault` lives on this store (it does unless told it
+    /// doesn't), for `owns_vault`.
+    pub fn set_owned(&self, vault: Owner, owned: bool) {
+        let mut extras = self.extras();
+        if owned {
+            extras.unowned.remove(&vault);
+        } else {
+            extras.unowned.insert(vault);
+        }
+    }
+
+    /// Says the account of the personal vault `vault` lives here, so an erasure of it is refused.
+    pub fn set_local_account(&self, vault: Owner) {
+        self.extras().local_accounts.insert(vault);
+    }
+
+    /// Adds an attachment row, as an upload would have left it.
+    pub fn put_attachment(&self, attachment: kemlock_domain::Attachment) {
+        self.extras().attachments.push(attachment);
+    }
+
+    /// The attachment rows held.
+    pub fn attachments(&self) -> Vec<kemlock_domain::Attachment> {
+        self.extras().attachments.clone()
+    }
+
+    /// Sets who `member_ids` answers for `vault`: the members this store "knows" of it.
+    pub fn set_members(&self, vault: Owner, members: Vec<UserId>) {
+        self.extras().members.insert(vault, members);
+    }
+
+    /// Sets what `space_has_collection` answers for `collection` of `vault`.
+    pub fn set_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+        answer: Option<bool>,
+    ) {
+        self.extras()
+            .has_collection
+            .insert((vault, collection), answer);
+    }
+
+    /// Sets what `writer_may_edit` answers for `user` and `collection` of `vault`.
+    pub fn set_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+        answer: Option<bool>,
+    ) {
+        self.extras()
+            .edits
+            .insert((vault, user, collection), answer);
+    }
+
+    /// Puts a version of an item of a space into `collection`, as a write that names it does.
+    pub fn put_in_collection(
+        &self,
+        draft: ItemDraft,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Item, StoreError> {
+        let item = self.put(draft)?;
+        self.lock().collections.insert(item.id, collection);
+        Ok(item)
+    }
+
+    /// Sets who `writer_ids` adds to the members of `vault`: accounts that were members.
+    pub fn set_former_members(&self, vault: Owner, members: Vec<UserId>) {
+        self.extras().former_members.insert(vault, members);
+    }
+
+    /// An account that lives on this store, as `member_account` answers for it.
+    pub fn set_member_account(&self, account: crate::members::MemberAccount) {
+        self.extras().accounts_held.insert(account.id, account);
+    }
+
+    /// Sets what `account_standing` answers for `user`.
+    pub fn set_account_standing(&self, user: UserId, standing: crate::extra::AccountStanding) {
+        self.extras().standings.insert(user, standing);
+    }
+
+    /// The account copies applied so far, as (the home that signed them, the user).
+    pub fn applied_accounts(&self) -> Vec<(ServerId, UserId)> {
+        self.extras().accounts_applied.clone()
     }
 
     /// The space records applied at this replica, in order.
@@ -336,6 +483,13 @@ impl PeerRepo for MemoryStore {
     }
 
     async fn remove_peer(&self, id: ServerId) -> Result<bool, StoreError> {
+        {
+            let mut extras = self.extras();
+            extras.past_keys.remove(&id);
+            extras.pending_addresses.retain(|p| p.peer != id);
+            extras.held_rotations.retain(|h| h.server != id);
+            extras.trusted_addresses.remove(&id);
+        }
         let mut st = self.lock();
         st.switches.remove(&id);
         st.cursors.retain(|(peer, _), _| *peer != id);
@@ -507,10 +661,11 @@ impl ReplicaStore for MemoryStore {
         Ok(())
     }
 
-    async fn apply(
+    async fn apply_ranked(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
+        rank: Rank,
     ) -> Result<ApplyOutcome, StoreError> {
         let incoming_item = record
             .to_item()
@@ -530,6 +685,13 @@ impl ReplicaStore for MemoryStore {
         }
 
         let held_items = st.versions_of(record.item);
+        // An item keeps the format and the kind it was made with (see the SQL store).
+        if held_items
+            .iter()
+            .any(|held| held.format != incoming_item.format || held.kind != incoming_item.kind)
+        {
+            return Ok(ApplyOutcome::Refused);
+        }
         for item in &held_items {
             st.ensure_meta(item);
         }
@@ -543,7 +705,10 @@ impl ReplicaStore for MemoryStore {
             })
             .collect();
         let held_head = st.heads.get(&record.item).map(|h| ChangeKey::of(&h.change));
-        let m = merge(&held, held_head, &Version::of(record));
+        let m = merge_ranked(&held, held_head, &Version::of(record), rank);
+        if m.regressed {
+            return Ok(ApplyOutcome::Refused);
+        }
         if !m.kept {
             return Ok(ApplyOutcome::Duplicate);
         }
@@ -576,11 +741,50 @@ impl ReplicaStore for MemoryStore {
             },
         );
         st.last_hlc = st.last_hlc.max(record.change.hlc);
-        Ok(if m.head == key {
+        if m.head == key
+            && let Some(collection) = record.collection
+        {
+            st.collections.insert(record.item, collection);
+        }
+        let outcome = if m.head == key {
             ApplyOutcome::Applied
         } else {
             ApplyOutcome::Sibling
-        })
+        };
+        drop(st);
+        Ok(outcome)
+    }
+
+    async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
+        Ok(self.lock().log.iter().any(|e| e.key == key))
+    }
+
+    async fn newest_change_of(&self, origin: ServerId) -> Result<Option<(u64, Hlc)>, StoreError> {
+        Ok(self
+            .lock()
+            .log
+            .iter()
+            .filter(|e| e.key.origin == origin)
+            .max_by_key(|e| e.key.seq)
+            .map(|e| (e.key.seq, e.hlc)))
+    }
+
+    async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
+        self.set_signed_only(owner, required);
+        Ok(())
+    }
+
+    async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().signed_only.contains(&owner))
+    }
+
+    async fn revision_ranked(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.extras().rank_pins.contains(&owner))
+    }
+
+    async fn pin_revision_ranking(&self, owner: Owner) -> Result<(), StoreError> {
+        self.extras().rank_pins.insert(owner);
+        Ok(())
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {
@@ -686,6 +890,66 @@ impl MemoryStore {
 }
 
 impl crate::extra::FedAdminRepo for MemoryStore {
+    async fn put_offer(&self, offer: &crate::extra::StoredOffer) -> Result<(), StoreError> {
+        self.extras().offers.insert(offer.vault, offer.clone());
+        Ok(())
+    }
+
+    async fn offer(&self, vault: Owner) -> Result<Option<crate::extra::StoredOffer>, StoreError> {
+        Ok(self.extras().offers.get(&vault).cloned())
+    }
+
+    async fn list_offers(&self) -> Result<Vec<crate::extra::StoredOffer>, StoreError> {
+        Ok(self.extras().offers.values().cloned().collect())
+    }
+
+    async fn owns_vault(&self, vault: Owner) -> Result<bool, StoreError> {
+        Ok(!self.extras().unowned.contains(&vault))
+    }
+
+    async fn trusted_addresses(&self, peer: ServerId) -> Result<Vec<String>, StoreError> {
+        Ok(self
+            .extras()
+            .trusted_addresses
+            .get(&peer)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn trust_addresses(
+        &self,
+        peer: ServerId,
+        addresses: &[String],
+    ) -> Result<(), StoreError> {
+        let mut extras = self.extras();
+        let held = extras.trusted_addresses.entry(peer).or_default();
+        for address in addresses {
+            if !held.contains(address) {
+                held.push(address.clone());
+            }
+        }
+        Ok(())
+    }
+
+    async fn update_peer_descriptor(
+        &self,
+        peer: ServerId,
+        operator: &str,
+        addresses: &[String],
+        suites: &[String],
+    ) -> Result<(), StoreError> {
+        if let Some(held) = self.lock().peers.get_mut(&peer) {
+            operator.clone_into(&mut held.operator);
+            held.addresses = addresses.to_vec();
+            held.suites = suites.to_vec();
+        }
+        Ok(())
+    }
+
+    async fn promotion_mode(&self) -> Result<crate::extra::PromotionMode, StoreError> {
+        Ok(self.extras().promotion_mode)
+    }
+
     async fn local_vaults(&self) -> Result<Vec<VaultInfo>, StoreError> {
         Ok(self.vault_infos())
     }
@@ -732,8 +996,194 @@ impl crate::extra::FedAdminRepo for MemoryStore {
         Ok(self.extras().mismatches.get(&peer).cloned())
     }
 }
-impl crate::extra::MemberStore for MemoryStore {}
-impl crate::extra::BlobSync for MemoryStore {}
+impl crate::extra::MemberStore for MemoryStore {
+    async fn member_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        Ok(self
+            .extras()
+            .members
+            .get(&vault)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn writer_may_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+        _made_secs: u64,
+    ) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .extras()
+            .edits
+            .get(&(vault, user, collection))
+            .copied()
+            .unwrap_or(Some(true)))
+    }
+
+    async fn space_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .extras()
+            .has_collection
+            .get(&(vault, collection))
+            .copied()
+            .unwrap_or(Some(true)))
+    }
+
+    async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        let extras = self.extras();
+        let mut ids = extras.members.get(&vault).cloned().unwrap_or_default();
+        ids.extend(
+            extras
+                .former_members
+                .get(&vault)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        Ok(ids)
+    }
+
+    async fn member_account(
+        &self,
+        user: UserId,
+    ) -> Result<Option<crate::members::MemberAccount>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).cloned())
+    }
+
+    async fn writer_bundle(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).and_then(|a| {
+            if a.key_version == key_version {
+                Some(a.public_bundle.clone())
+            } else {
+                a.past_bundles
+                    .iter()
+                    .find(|b| b.key_version == key_version)
+                    .map(|b| b.public_bundle.clone())
+            }
+        }))
+    }
+
+    async fn writer_bundle_retired_at(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        Ok(self.extras().accounts_held.get(&user).and_then(|a| {
+            a.past_bundles
+                .iter()
+                .find(|b| b.key_version == key_version)
+                .map(|b| b.superseded_at)
+        }))
+    }
+
+    async fn apply_member_account(
+        &self,
+        _vault: Owner,
+        home: ServerId,
+        account: &crate::members::MemberAccount,
+    ) -> Result<crate::extra::MemberApply, StoreError> {
+        self.extras().accounts_applied.push((home, account.id));
+        Ok(crate::extra::MemberApply::Applied)
+    }
+
+    async fn account_standing(
+        &self,
+        user: UserId,
+    ) -> Result<crate::extra::AccountStanding, StoreError> {
+        Ok(self
+            .extras()
+            .standings
+            .get(&user)
+            .copied()
+            .unwrap_or(crate::extra::AccountStanding::Unknown))
+    }
+}
+impl crate::extra::BlobSync for MemoryStore {
+    async fn blob_cursor(&self, peer: ServerId, vault: Owner) -> Result<[u8; 16], StoreError> {
+        Ok(self
+            .extras()
+            .blob_cursors
+            .get(&(peer, vault))
+            .copied()
+            .unwrap_or([0; 16]))
+    }
+
+    async fn set_blob_cursor(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        after: [u8; 16],
+    ) -> Result<(), StoreError> {
+        self.extras().blob_cursors.insert((peer, vault), after);
+        Ok(())
+    }
+
+    async fn attachments_after(
+        &self,
+        owner: Owner,
+        after: kemlock_domain::AttachmentId,
+        limit: u32,
+    ) -> Result<Vec<kemlock_domain::Attachment>, StoreError> {
+        let mut found: Vec<_> = self
+            .extras()
+            .attachments
+            .iter()
+            .filter(|a| a.owner == owner && a.id > after)
+            .cloned()
+            .collect();
+        found.sort_by_key(|a| a.id);
+        found.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok(found)
+    }
+
+    async fn attachment_of_blob(
+        &self,
+        blob: BlobId,
+    ) -> Result<Option<kemlock_domain::Attachment>, StoreError> {
+        Ok(self
+            .extras()
+            .attachments
+            .iter()
+            .find(|a| a.blob == blob)
+            .cloned())
+    }
+
+    async fn attachment(
+        &self,
+        id: kemlock_domain::AttachmentId,
+    ) -> Result<Option<kemlock_domain::Attachment>, StoreError> {
+        Ok(self
+            .extras()
+            .attachments
+            .iter()
+            .find(|a| a.id == id)
+            .cloned())
+    }
+
+    async fn add_replicated_attachment(
+        &self,
+        attachment: &kemlock_domain::Attachment,
+    ) -> Result<bool, StoreError> {
+        let mut extras = self.extras();
+        if extras
+            .attachments
+            .iter()
+            .any(|a| a.id == attachment.id || a.blob == attachment.blob)
+        {
+            return Ok(false);
+        }
+        extras.attachments.push(attachment.clone());
+        Ok(true)
+    }
+}
 
 impl ErasureOutbox for MemoryStore {
     async fn pending_erasures(&self, peer: ServerId) -> Result<Vec<PendingErasure>, StoreError> {
@@ -758,6 +1208,9 @@ impl ErasureOutbox for MemoryStore {
 
 impl VaultErasure for MemoryStore {
     async fn erase_vault(&self, vault: Owner) -> Result<VaultErased, StoreError> {
+        if self.extras().local_accounts.contains(&vault) {
+            return Err(StoreError::Duplicate);
+        }
         // What federation keeps beside the vault's items goes too: its event log copies, its
         // duplicate tags and its matching switch.
         {
@@ -798,6 +1251,27 @@ impl VaultErasure for MemoryStore {
 }
 
 impl SpaceMirror for MemoryStore {
+    async fn ids_held_elsewhere(
+        &self,
+        space: SpaceId,
+        collections: &[kemlock_domain::spaces::CollectionId],
+        groups: &[kemlock_domain::spaces::GroupId],
+    ) -> Result<bool, StoreError> {
+        Ok(self
+            .extras()
+            .snapshots
+            .iter()
+            .filter(|(other, _)| **other != space)
+            .any(|(_, snapshot)| {
+                snapshot
+                    .state
+                    .collections
+                    .iter()
+                    .any(|c| collections.contains(&c.id))
+                    || snapshot.state.groups.iter().any(|g| groups.contains(&g.id))
+            }))
+    }
+
     async fn space_snapshot(&self, space: SpaceId) -> Result<Option<SpaceSnapshot>, StoreError> {
         Ok(self.extras().snapshots.get(&space).cloned())
     }
@@ -875,6 +1349,98 @@ impl KeyStore for MemoryStore {
             }
             None => Err(StoreError::NotFound),
         }
+    }
+
+    async fn past_keys(&self, peer: ServerId) -> Result<Vec<crate::keyrecs::PastKey>, StoreError> {
+        Ok(self
+            .extras()
+            .past_keys
+            .get(&peer)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn push_past_key(
+        &self,
+        peer: ServerId,
+        key: &[u8],
+        replaced_at: u64,
+    ) -> Result<(), StoreError> {
+        self.extras()
+            .past_keys
+            .entry(peer)
+            .or_default()
+            .push(crate::keyrecs::PastKey {
+                key: key.to_vec(),
+                replaced_at,
+            });
+        Ok(())
+    }
+
+    async fn put_held_rotation(
+        &self,
+        held: &crate::keyrecs::HeldRotation,
+    ) -> Result<bool, StoreError> {
+        let mut extras = self.extras();
+        if extras
+            .held_rotations
+            .iter()
+            .any(|h| h.server == held.server && h.fingerprint == held.fingerprint)
+        {
+            return Ok(true);
+        }
+        let waiting = extras
+            .held_rotations
+            .iter()
+            .filter(|h| h.server == held.server)
+            .count();
+        if waiting >= crate::keyrecs::MAX_HELD_ROTATIONS {
+            return Ok(false);
+        }
+        extras.held_rotations.push(held.clone());
+        Ok(true)
+    }
+
+    async fn held_rotations(&self) -> Result<Vec<crate::keyrecs::HeldRotation>, StoreError> {
+        Ok(self.extras().held_rotations.clone())
+    }
+
+    async fn drop_held_rotations(&self, server: ServerId) -> Result<(), StoreError> {
+        self.extras().held_rotations.retain(|h| h.server != server);
+        Ok(())
+    }
+
+    async fn put_pending_addresses(
+        &self,
+        pending: &crate::keyrecs::PendingAddresses,
+    ) -> Result<(), StoreError> {
+        let mut extras = self.extras();
+        extras.pending_addresses.retain(|p| p.peer != pending.peer);
+        extras.pending_addresses.push(pending.clone());
+        Ok(())
+    }
+
+    async fn pending_addresses(
+        &self,
+        peer: ServerId,
+    ) -> Result<Option<crate::keyrecs::PendingAddresses>, StoreError> {
+        Ok(self
+            .extras()
+            .pending_addresses
+            .iter()
+            .find(|p| p.peer == peer)
+            .cloned())
+    }
+
+    async fn list_pending_addresses(
+        &self,
+    ) -> Result<Vec<crate::keyrecs::PendingAddresses>, StoreError> {
+        Ok(self.extras().pending_addresses.clone())
+    }
+
+    async fn clear_pending_addresses(&self, peer: ServerId) -> Result<(), StoreError> {
+        self.extras().pending_addresses.retain(|p| p.peer != peer);
+        Ok(())
     }
 }
 
@@ -1013,6 +1579,7 @@ impl EventSync for MemoryStore {
     }
 
     async fn peer_events(&self, vault: Owner, limit: u32) -> Result<Vec<PeerEvent>, StoreError> {
+        // Newest received first: what the console lists, whatever time a peer put on an event.
         let mut out: Vec<PeerEvent> = self
             .extras()
             .peer_events
@@ -1020,7 +1587,7 @@ impl EventSync for MemoryStore {
             .filter(|e| e.vault == vault)
             .cloned()
             .collect();
-        out.sort_by_key(|e| std::cmp::Reverse(e.entry.id));
+        out.reverse();
         out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         Ok(out)
     }
@@ -1090,7 +1657,14 @@ impl SendSync for MemoryStore {
         from: ServerId,
         send: &SendRecord,
     ) -> Result<SendApply, StoreError> {
+        // See the SQL store: the revision follows the copy's server or the vault's home.
+        let from_home = self
+            .lock()
+            .vaults
+            .get(&Owner::User(send.owner))
+            .is_some_and(|v| v.policy == crate::home::Policy::Federated && v.home == from);
         let mut extras = self.extras();
+        let copied_from = extras.send_marks.get(&send.id).copied();
         let Some(held) = extras.sends.get_mut(&send.id) else {
             extras.sends.insert(send.id, send.clone());
             extras.send_marks.insert(send.id, from);
@@ -1099,7 +1673,8 @@ impl SendSync for MemoryStore {
         if held.owner != send.owner {
             return Ok(SendApply::Unchanged);
         }
-        let newer = send.revised_at > held.revised_at;
+        let may_revise = copied_from == Some(from) || from_home;
+        let newer = may_revise && send.revised_at > held.revised_at;
         let more_views = send.access_count > held.access_count;
         if newer {
             let (file, count) = (held.file, held.access_count);

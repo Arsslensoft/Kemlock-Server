@@ -10,10 +10,13 @@ use crate::store::SqlStore;
 use crate::tables::attachments::{self, READY};
 use crate::tables::events;
 use crate::tables::federation::{item_siblings, peers};
+use crate::tables::federation_keys::peer_trusted_addresses;
 use crate::tables::federation_wiring::{
-    federation_erasures, peer_acknowledgements, replicated_accounts, vault_offers,
+    federation_erasures, peer_acknowledgements, peer_blob_cursors, replicated_accounts,
+    vault_offers,
 };
 use crate::tables::items::{owner_from, owner_parts};
+use crate::tables::settings;
 use kemlock_app::ports::{DeviceRepo, Event, StoreError, UserRepo};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_domain::spaces::MemberState;
@@ -22,17 +25,23 @@ use kemlock_domain::{
     UserId,
 };
 use kemlock_federation::extra::{
-    Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply, MemberStore,
-    PendingErasure, StoredOffer, VaultErased, VaultErasure,
+    AccountStanding, Acknowledgement, BlobSync, ErasureOutbox, FedAdminRepo, Leases, MemberApply,
+    MemberStore, PendingErasure, PromotionMode, StoredOffer, VaultErased, VaultErasure,
 };
+use kemlock_federation::home::Policy;
 use kemlock_federation::insight::{MismatchRecord, PeerSecurityRecord, VaultInfo};
 use kemlock_federation::members::{MemberAccount, MemberDevice};
+use kemlock_federation::ports::VaultRepo;
 use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait};
 use std::collections::HashSet;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// The setting `federation_promotion` as the console saves it, and the variable that overrides it.
+const PROMOTION_SETTING: &str = "setting.federation_promotion";
+const PROMOTION_ENV: &str = "KEMLOCK_FEDERATION_PROMOTION";
 
 fn now_secs() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
@@ -43,6 +52,65 @@ fn from_secs(secs: i64, what: &str) -> Result<OffsetDateTime, StoreError> {
 }
 
 impl FedAdminRepo for SqlStore {
+    async fn trusted_addresses(&self, peer: ServerId) -> Result<Vec<String>, StoreError> {
+        Ok(peer_trusted_addresses::Entity::find()
+            .filter(peer_trusted_addresses::Column::Peer.eq(peer.0))
+            .order_by_asc(peer_trusted_addresses::Column::Address)
+            .all(self.reader())
+            .await
+            .store()?
+            .into_iter()
+            .map(|row| row.address)
+            .collect())
+    }
+
+    async fn trust_addresses(
+        &self,
+        peer: ServerId,
+        addresses: &[String],
+    ) -> Result<(), StoreError> {
+        let held = self.trusted_addresses(peer).await?;
+        for address in addresses {
+            let address = address.trim();
+            // The column is a key, so it has a length; a longer address is never trusted.
+            if address.is_empty() || address.len() > 512 || held.iter().any(|h| h == address) {
+                continue;
+            }
+            let inserted =
+                peer_trusted_addresses::Entity::insert(peer_trusted_addresses::ActiveModel {
+                    peer: Set(peer.0),
+                    address: Set(address.to_owned()),
+                })
+                .exec(self.writer())
+                .await;
+            match inserted {
+                Ok(_) => {}
+                // Another write put it there between the read and this one.
+                Err(err) if is_unique_violation(&err) => {}
+                Err(err) => return Err(map_db(err)),
+            }
+        }
+        Ok(())
+    }
+
+    async fn promotion_mode(&self) -> Result<PromotionMode, StoreError> {
+        // The server's layered value (environment, `kemlock.toml`, saved) when it gave one.
+        if let Some(value) = self.overlaid_setting("federation_promotion") {
+            return Ok(PromotionMode::parse(&value));
+        }
+        // The environment, then what the console saved, then `hold`: anything but `auto` holds.
+        if let Ok(value) = std::env::var(PROMOTION_ENV)
+            && !value.trim().is_empty()
+        {
+            return Ok(PromotionMode::parse(&value));
+        }
+        let saved = settings::Entity::find_by_id(PROMOTION_SETTING.to_owned())
+            .one(self.reader())
+            .await
+            .store()?;
+        Ok(saved.map_or(PromotionMode::Hold, |row| PromotionMode::parse(&row.value)))
+    }
+
     async fn update_peer_descriptor(
         &self,
         peer: ServerId,
@@ -256,6 +324,102 @@ impl MemberStore for SqlStore {
         }
     }
 
+    async fn writer_may_edit(
+        &self,
+        vault: Owner,
+        user: UserId,
+        collection: kemlock_domain::spaces::CollectionId,
+        made_secs: u64,
+    ) -> Result<Option<bool>, StoreError> {
+        let Owner::Space(space) = vault else {
+            return Ok(Some(false));
+        };
+        let Some(state) = SpaceRepo::load(self, space).await? else {
+            return Ok(None);
+        };
+        if state.collection(collection).is_none() {
+            return Ok(None);
+        }
+        let Some(member) = state.members.iter().find(|m| m.user == user) else {
+            return Ok(Some(false));
+        };
+        Ok(Some(match member.state {
+            MemberState::Confirmed => state.access(user, collection).is_some_and(|a| a.edit),
+            // Taken out since: what they signed before is theirs, and only where they could edit
+            // (their grants stay with the row) and only up to when they were taken out.
+            MemberState::Revoked => {
+                member.revoked_at.is_some_and(|at| {
+                    let until = u64::try_from(at.unix_timestamp())
+                        .unwrap_or(0)
+                        .saturating_add(kemlock_federation::extra::WRITE_SKEW_SECS);
+                    made_secs <= until
+                }) && state.access(user, collection).is_some_and(|a| a.edit)
+            }
+            _ => false,
+        }))
+    }
+
+    async fn space_has_collection(
+        &self,
+        vault: Owner,
+        collection: kemlock_domain::spaces::CollectionId,
+    ) -> Result<Option<bool>, StoreError> {
+        let Owner::Space(space) = vault else {
+            return Ok(Some(false));
+        };
+        let Some(state) = SpaceRepo::load(self, space).await? else {
+            return Ok(None);
+        };
+        if state.collection(collection).is_some() {
+            return Ok(Some(true));
+        }
+        // Another space's collection is a refusal; one nobody here holds yet may still arrive.
+        let elsewhere = crate::tables::space_tables::collections::Entity::find_by_id(collection.0)
+            .one(self.reader())
+            .await
+            .store()?
+            .is_some();
+        Ok(if elsewhere { Some(false) } else { None })
+    }
+
+    async fn writer_ids(&self, vault: Owner) -> Result<Vec<UserId>, StoreError> {
+        match vault {
+            Owner::User(_) => MemberStore::member_ids(self, vault).await,
+            // A member who was taken out keeps their row, and what they wrote before is theirs.
+            Owner::Space(space) => Ok(SpaceRepo::load(self, space)
+                .await?
+                .map(|state| {
+                    state
+                        .members
+                        .iter()
+                        .filter(|m| {
+                            matches!(m.state, MemberState::Confirmed | MemberState::Revoked)
+                        })
+                        .map(|m| m.user)
+                        .collect()
+                })
+                .unwrap_or_default()),
+        }
+    }
+
+    async fn writer_bundle_retired_at(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<i64>, StoreError> {
+        UserRepo::bundle_retired_at(self, user, key_version).await
+    }
+
+    async fn writer_bundle(
+        &self,
+        user: UserId,
+        key_version: u32,
+    ) -> Result<Option<Vec<u8>>, StoreError> {
+        Ok(UserRepo::bundle_at(self, user, key_version)
+            .await?
+            .map(|b| b.public_bundle))
+    }
+
     async fn member_account(&self, user: UserId) -> Result<Option<MemberAccount>, StoreError> {
         let Some(account) = UserRepo::by_id(self, user).await? else {
             return Ok(None);
@@ -274,6 +438,24 @@ impl MemberStore for SqlStore {
                 created_at: d.created_at.unix_timestamp(),
             })
             .collect();
+        // The bundles before the current one go with the copy, so a replica can check a write the
+        // account signed before it replaced its keys.
+        let mut past_bundles = Vec::new();
+        for b in UserRepo::bundles_of(self, user).await? {
+            if b.key_version >= account.key_version {
+                continue;
+            }
+            // When the account replaced it: what is signed under it after that isn't the account's.
+            let superseded_at = UserRepo::bundle_retired_at(self, user, b.key_version)
+                .await?
+                .unwrap_or_else(|| account.updated_at.unix_timestamp());
+            past_bundles.push(kemlock_federation::members::PastBundle {
+                key_version: b.key_version,
+                public_bundle: b.public_bundle,
+                bundle_signature: b.bundle_signature,
+                superseded_at,
+            });
+        }
         Ok(Some(MemberAccount {
             id: account.id,
             email: account.email.as_str().to_owned(),
@@ -288,19 +470,42 @@ impl MemberStore for SqlStore {
             created_at: account.created_at.unix_timestamp(),
             updated_at: account.updated_at.unix_timestamp(),
             devices,
+            past_bundles,
         }))
     }
 
     async fn apply_member_account(
         &self,
+        vault: Owner,
         home: ServerId,
         account: &MemberAccount,
     ) -> Result<MemberApply, StoreError> {
         let existing = UserRepo::by_id(self, account.id).await?;
-        let replicated = MemberStore::is_replica_account(self, account.id).await?;
+        let copy = replicated_accounts::Entity::find_by_id(account.id.0)
+            .one(self.writer())
+            .await
+            .store()?;
+        let replicated = copy.is_some();
         if existing.is_some() && !replicated {
             // An account of this server: a copy never replaces it.
             return Ok(MemberApply::Refused);
+        }
+        match vault {
+            // The home of the account's own personal vault is its authority, and replaces a copy
+            // that came in some other way (through a space).
+            Owner::User(_) => {}
+            Owner::Space(_) => {
+                // A space's home may not speak for an account whose personal vault this server
+                // federates: that vault's home does. Where it doesn't, a copy follows the
+                // server it came from, and no other: the home of one vault must not take over
+                // the copy of an account that belongs to another.
+                let personal = VaultRepo::get_vault(self, Owner::User(account.id)).await?;
+                if personal.is_some_and(|v| v.policy == Policy::Federated)
+                    || copy.is_some_and(|c| c.home != home.0)
+                {
+                    return Ok(MemberApply::Refused);
+                }
+            }
         }
         let user = user_of(account, existing.as_ref())?;
         if let Some(other) = UserRepo::by_email(self, &user.email).await?
@@ -319,6 +524,31 @@ impl MemberStore for SqlStore {
                 changed = true;
             }
             Some(_) => {}
+        }
+        // What the account signed under its earlier keys is checked against these, and not after the
+        // home says it replaced them: a version began when the one before it ended, so each is kept
+        // as of then (the first, when the account was made), and the current one too.
+        let mut began = account.created_at;
+        for past in &account.past_bundles {
+            crate::tables::account_bundles::record(
+                self.writer(),
+                account.id.0,
+                i64::from(past.key_version),
+                &past.public_bundle,
+                &past.bundle_signature,
+                from_secs(began, "a past bundle's start")?,
+            )
+            .await?;
+            began = past.superseded_at;
+        }
+        if !account.past_bundles.is_empty() {
+            crate::tables::account_bundles::set_recorded_at(
+                self.writer(),
+                account.id.0,
+                i64::from(account.key_version),
+                from_secs(began, "a bundle's start")?,
+            )
+            .await?;
         }
         if !replicated {
             replicated_accounts::Entity::insert(replicated_accounts::ActiveModel {
@@ -354,6 +584,15 @@ impl MemberStore for SqlStore {
         for registration in &account.devices {
             let created_at = from_secs(registration.created_at, "a copied device's creation time")?;
             let previous = current.iter().find(|d| d.id == registration.id);
+            if previous.is_none()
+                && let Some(other) = DeviceRepo::get(self, registration.id).await?
+                && other.user != account.id
+            {
+                // A device id is global, and the upsert would move that device, with the key it
+                // registered, to this account: a home can't take another account's device.
+                tracing::warn!(user = %account.id, "a copied account listed a device of another account: skipped");
+                continue;
+            }
             let device = Device {
                 id: registration.id,
                 user: account.id,
@@ -382,9 +621,64 @@ impl MemberStore for SqlStore {
             .store()?
             .is_some())
     }
+
+    async fn account_standing(&self, user: UserId) -> Result<AccountStanding, StoreError> {
+        let copy = replicated_accounts::Entity::find_by_id(user.0)
+            .one(self.writer())
+            .await
+            .store()?;
+        if let Some(copy) = copy {
+            return Ok(AccountStanding::Copy(ServerId(copy.home)));
+        }
+        Ok(if UserRepo::by_id(self, user).await?.is_some() {
+            AccountStanding::Local
+        } else {
+            AccountStanding::Unknown
+        })
+    }
 }
 
 impl BlobSync for SqlStore {
+    async fn blob_cursor(&self, peer: ServerId, vault: Owner) -> Result<[u8; 16], StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        Ok(
+            peer_blob_cursors::Entity::find_by_id((peer.0, owner_type, owner_id))
+                .one(self.reader())
+                .await
+                .store()?
+                .map_or([0; 16], |row| *row.after.as_bytes()),
+        )
+    }
+
+    async fn set_blob_cursor(
+        &self,
+        peer: ServerId,
+        vault: Owner,
+        after: [u8; 16],
+    ) -> Result<(), StoreError> {
+        let (owner_type, owner_id) = owner_parts(vault);
+        let conflict = OnConflict::columns([
+            peer_blob_cursors::Column::Peer,
+            peer_blob_cursors::Column::OwnerType,
+            peer_blob_cursors::Column::OwnerId,
+        ])
+        .update_column(peer_blob_cursors::Column::After)
+        .to_owned();
+        let inserted = peer_blob_cursors::Entity::insert(peer_blob_cursors::ActiveModel {
+            peer: Set(peer.0),
+            owner_type: Set(owner_type),
+            owner_id: Set(owner_id),
+            after: Set(Uuid::from_bytes(after)),
+        })
+        .on_conflict(conflict)
+        .exec(self.writer())
+        .await;
+        match inserted {
+            Ok(_) | Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+            Err(err) => Err(map_db(err)),
+        }
+    }
+
     async fn attachments_after(
         &self,
         owner: Owner,

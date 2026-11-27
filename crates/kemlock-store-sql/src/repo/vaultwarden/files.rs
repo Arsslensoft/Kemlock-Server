@@ -1,7 +1,11 @@
 //! Files: attachments and Send files copied under the data folder, and `rsa_key.pem`.
 
-use super::{Ctx, ImportError, Res, invalid};
+use super::{Ctx, ImportError, Res, invalid, scope};
+use crate::error::StoreResult;
+use crate::tables::{bw_accounts, vw_import_ids};
 use kemlock_vaultwarden::mapping::{FileCopy, MappedRsaKey};
+use sea_orm::sea_query::Query;
+use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -53,8 +57,13 @@ fn refused(what: &str, key: &str) -> impl FnOnce(String) -> ImportError {
 
 /// Copies a file unchanged to where the Bitwarden API reads it: into its blob store, by the key the
 /// API names it with, so a rerun puts the same bytes again.
-pub(super) async fn copy_file(ctx: &Ctx, file: &FileCopy) -> Res<()> {
+pub(super) async fn copy_file(ctx: &mut Ctx, file: &FileCopy) -> Res<()> {
     let key = blob_key(&file.storage_key)?;
+    // Only the file of an attachment or Send the pass kept: a key is a blob another owner may hold.
+    if !ctx.file_allowed(&file.storage_key).await? {
+        ctx.refuse("file", &file.storage_key);
+        return Ok(());
+    }
     let bytes = tokio::fs::read(&file.from)
         .await
         .map_err(io(format!("can't read {}", file.from.display())))?;
@@ -106,11 +115,42 @@ fn write_file(path: &Path, bytes: &[u8], private: bool) -> Res<()> {
     std::fs::rename(&part, path).map_err(io(format!("can't move {} into place", path.display())))
 }
 
-/// Keeps `rsa_key.pem` (and `rsa_key.pub.pem` when there is one) in the data folder, where the
-/// Bitwarden API reads its token key, so the tokens Bitwarden apps hold still verify. A server
-/// that is already running keeps the key it loaded until it restarts.
-pub(super) async fn put_rsa_key(ctx: &Ctx, key: &MappedRsaKey) -> Res<()> {
-    let root = &ctx.opts.files_root;
+/// Whether the server has Bitwarden accounts that no move created: accounts of its own, whose
+/// tokens and "remember this device" tokens the server's token key signs.
+async fn has_other_bitwarden_accounts(ctx: &Ctx) -> Res<bool> {
+    let imported = Query::select()
+        .column(vw_import_ids::Column::Id)
+        .from(vw_import_ids::Entity)
+        .and_where(vw_import_ids::Column::Kind.eq(scope::USER))
+        .to_owned();
+    Ok(bw_accounts::Entity::find()
+        .filter(bw_accounts::Column::UserId.not_in_subquery(imported))
+        .one(&ctx.txn)
+        .await
+        .store()?
+        .is_some())
+}
+
+/// Takes `rsa_key.pem` (and `rsa_key.pub.pem` when there is one) for the data folder, where the
+/// Bitwarden API reads its token key, so the tokens Bitwarden apps hold still verify. It is
+/// written after the pass commits ([`write_rsa_key`]), never before: a pass that fails leaves the
+/// key as it was. A server that is already running keeps the key it loaded until it restarts.
+///
+/// A server that already has Bitwarden accounts of its own keeps its key. The key of a source is
+/// not that server's to replace: whoever ever held the old Vaultwarden data could then sign
+/// "remember this device" and registration tokens for its accounts. The key is then left out and
+/// reported as left alone (`refused` kind `rsa_key`).
+pub(super) async fn put_rsa_key(ctx: &mut Ctx, key: &MappedRsaKey) -> Res<()> {
+    if has_other_bitwarden_accounts(ctx).await? {
+        ctx.refuse("rsa_key", "rsa_key.pem");
+        return Ok(());
+    }
+    ctx.rsa_key = Some(key.clone());
+    Ok(())
+}
+
+/// Writes the key a pass took, into `root`.
+pub(super) fn write_rsa_key(root: &Path, key: &MappedRsaKey) -> Res<()> {
     write_file(&root.join("rsa_key.pem"), &key.private_pem, true)?;
     if let Some(public) = &key.public_pem {
         write_file(&root.join("rsa_key.pub.pem"), public, false)?;

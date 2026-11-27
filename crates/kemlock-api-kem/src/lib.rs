@@ -11,6 +11,7 @@
 pub mod dpop;
 pub mod dto;
 pub mod extract;
+pub mod finish_gate;
 pub mod jws;
 pub mod live;
 pub mod openapi;
@@ -28,6 +29,9 @@ pub use live::LiveHub;
 pub use problem::Problem;
 pub use routes::account::{AccountServices, router as account_router};
 pub use routes::api_key::{ApiKeyApiDoc, api_key_router};
+pub use routes::attempts::{
+    forget_second_step, forget_step_up, reserve_second_step, reserve_step_up,
+};
 pub use routes::custom_fields::{
     CustomFieldDto, CustomFieldsDto, KindsDto, router as custom_fields_router,
 };
@@ -37,6 +41,10 @@ pub use routes::duplicates::{
 pub use routes::files::{
     DownloadLinkDto, FileDto, FilesApi, FilesDoc, StartFileRequest, StartFileResponse, files_router,
 };
+pub use routes::invite_link::{
+    MaybeInviteLinks, openapi as invite_link_openapi, router as invite_link_router,
+};
+pub use routes::large_bodies::LargeBodies as ChainLargeBodies;
 pub use routes::passkeys::{PasskeyRuntime, PasskeysApiDoc, passkeys_router};
 pub use routes::policies::{
     MasterPasswordDto, PoliciesDoc, PoliciesDto, SpacePoliciesDto, policies_router, with_join_guard,
@@ -44,11 +52,15 @@ pub use routes::policies::{
 pub use routes::profile::{ProfileApiDoc, profile_router};
 pub use routes::push::router as push_router;
 pub use routes::recovery_kit::{RecoveryKitApiDoc, recovery_kit_router};
+pub use routes::rotation::{RotationApiDoc, rotation_router};
 pub use routes::sends::{
     AccessDto, AccessRequest, CreateSendRequest, SendDto, SendsApi, SendsDoc, UpdateSendRequest,
     sends_router,
 };
-pub use routes::space_chain::{openapi as space_chain_openapi, router as space_chain_router};
+pub use routes::space_chain::{
+    openapi as space_chain_openapi, router as space_chain_router,
+    router_with as space_chain_router_with,
+};
 pub use routes::space_recovery::{
     openapi as space_recovery_openapi, router as space_recovery_router,
 };

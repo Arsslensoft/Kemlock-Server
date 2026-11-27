@@ -60,8 +60,8 @@ $LG serve --accounts accounts.json --proxy-listen 127.0.0.1:9100 --proxy-account
 cursor=$(jq -r '.accounts[0].cursor' accounts.json)
 
 # Unchanged sync: must answer 304 without a database read. Target p50 1 ms, p95 5 ms on the VPS.
-oha -z 30s -c 16 --no-tui "http://127.0.0.1:9100/kem/v1/sync?since=$cursor"
-oha -z 30s -c 16 --no-tui --output-format json "http://127.0.0.1:9100/kem/v1/sync?since=$cursor" > oha-sync0.json
+oha -z 30s -c 2 -q 3 --no-tui "http://127.0.0.1:9100/kem/v1/sync?since=$cursor"
+oha -z 30s -c 2 -q 3 --no-tui --output-format json "http://127.0.0.1:9100/kem/v1/sync?since=$cursor" > oha-sync0.json
 ```
 
 The proxy adds one loopback hop, a fraction of a millisecond, and each run is compared with

@@ -3,6 +3,8 @@ mod fakes;
 use fakes::*;
 use kemlock_app::AppError;
 use kemlock_app::ports::{SecretSeal, TwoFactorMethod};
+use kemlock_app::sealed::bound_purpose;
+use kemlock_domain::UserId;
 
 #[tokio::test]
 async fn enrolling_stores_a_sealed_secret_that_is_not_yet_enabled() {
@@ -35,8 +37,24 @@ async fn enrolling_stores_a_sealed_secret_that_is_not_yet_enabled() {
     assert!(!rows[0].enabled);
     // Sealed: the stored bytes are not the 20-byte secret itself.
     assert!(rows[0].sealed_secret.len() > 20);
-    assert!(world.seal.open("totp", &rows[0].sealed_secret).is_ok());
+    assert!(
+        world
+            .seal
+            .open(&bound_purpose("totp", user), &rows[0].sealed_secret)
+            .is_ok()
+    );
+    // Bound to the account: not the bare purpose, another purpose or another account.
+    assert!(world.seal.open("totp", &rows[0].sealed_secret).is_err());
     assert!(world.seal.open("webauthn", &rows[0].sealed_secret).is_err());
+    assert!(
+        world
+            .seal
+            .open(
+                &bound_purpose("totp", UserId::random()),
+                &rows[0].sealed_secret
+            )
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -140,4 +158,78 @@ async fn a_code_for_the_next_step_still_passes() {
         .execute(user, &code)
         .await
         .expect("the previous step's code is accepted");
+}
+
+/// A store whose account removes its authenticator in the middle of a confirmation: after the
+/// confirmation read the enrolment, before it wrote anything.
+#[derive(Clone)]
+struct RemovesAfterReading(FakeStore);
+
+impl kemlock_app::ports::TwoFactorRepo for RemovesAfterReading {
+    async fn list(
+        &self,
+        user: UserId,
+    ) -> Result<Vec<kemlock_app::ports::TwoFactor>, kemlock_app::ports::StoreError> {
+        let read = self.0.list(user).await?;
+        kemlock_app::ports::TwoFactorRepo::remove(&self.0, user, TwoFactorMethod::Totp).await?;
+        Ok(read)
+    }
+
+    async fn put(
+        &self,
+        two_factor: &kemlock_app::ports::TwoFactor,
+    ) -> Result<(), kemlock_app::ports::StoreError> {
+        kemlock_app::ports::TwoFactorRepo::put(&self.0, two_factor).await
+    }
+
+    async fn accept_totp_step(
+        &self,
+        user: UserId,
+        step: u64,
+    ) -> Result<bool, kemlock_app::ports::StoreError> {
+        kemlock_app::ports::TwoFactorRepo::accept_totp_step(&self.0, user, step).await
+    }
+
+    async fn remove(
+        &self,
+        user: UserId,
+        method: TwoFactorMethod,
+    ) -> Result<(), kemlock_app::ports::StoreError> {
+        kemlock_app::ports::TwoFactorRepo::remove(&self.0, user, method).await
+    }
+
+    async fn replace_if_sealed(
+        &self,
+        from: &[u8],
+        to: &kemlock_app::ports::TwoFactor,
+    ) -> Result<bool, kemlock_app::ports::StoreError> {
+        kemlock_app::ports::TwoFactorRepo::replace_if_sealed(&self.0, from, to).await
+    }
+}
+
+#[tokio::test]
+async fn confirming_does_not_bring_back_an_authenticator_removed_in_the_meantime() {
+    let world = World::new().with_signups();
+    let user = make_user(&world, "sam@example.org").await;
+    world
+        .enrol_totp()
+        .execute(user)
+        .await
+        .expect("enrolment works");
+    let code = totp_code(&world, user);
+
+    let racing = kemlock_app::ConfirmTotp {
+        two_factor: RemovesAfterReading(world.store.clone()),
+        seal: world.seal.clone(),
+        totp: world.totp.clone(),
+        env: world.env.clone(),
+    };
+    assert!(matches!(
+        racing.execute(user, &code).await,
+        Err(AppError::Invalid(_))
+    ));
+    assert!(
+        world.store.two_factor_of(user).is_empty(),
+        "the removal stands"
+    );
 }

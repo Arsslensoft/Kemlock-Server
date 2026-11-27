@@ -227,3 +227,100 @@ describe('a request that fails', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 });
+
+describe('the Bitwarden invitation link', () => {
+  const LINK = 'https://vault.example.org/#/accept-organization/?token=secret';
+  const WITH_TWO: typeof SPACES = [
+    {
+      ...(SPACES[0] as (typeof SPACES)[number]),
+      bitwardenInvitations: [
+        { userId: 'u1', email: 'jordan@example.co' },
+        { userId: 'u3', email: 'ana@example.co' },
+      ],
+    },
+    ...SPACES.slice(1),
+  ];
+
+  it('is not offered where the console has no route for it', () => {
+    view();
+    expect(screen.queryByRole('button', { name: /invitation link/i })).not.toBeInTheDocument();
+  });
+
+  it('is offered only on a Bitwarden organization', () => {
+    view({ onInviteLink: vi.fn() });
+    expect(
+      screen.getByRole('button', { name: 'Copy a Bitwarden invitation link for space s1aaaaaa' }),
+    ).toBeInTheDocument();
+    // The other space is no organization.
+    expect(
+      screen.queryByRole('button', { name: 'Copy a Bitwarden invitation link for space s2bbbbbb' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('lists only the invited members with a Bitwarden invitation, asks for the one picked and shows the link once', async () => {
+    const onInviteLink = vi.fn().mockResolvedValue(LINK);
+    view({ onInviteLink, spaces: WITH_TWO });
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Copy a Bitwarden invitation link for space s1aaaaaa' }),
+    );
+    const pick = screen.getByLabelText('Invited member of space s1aaaaaa');
+    // Not every account on the server: sam and riley have no invitation to this space.
+    expect(within(pick).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'jordan@example.co',
+      'ana@example.co',
+    ]);
+    await user.selectOptions(pick, 'u3');
+    expect(screen.queryByText(LINK)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Get the link' }));
+    expect(onInviteLink).toHaveBeenCalledWith(WITH_TWO[0], 'u3');
+    expect(await screen.findByText(LINK)).toBeInTheDocument();
+    expect(screen.getByText(/Whoever opens this link accepts the invitation for that account/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Copy invitation link' })).toBeInTheDocument();
+
+    // Picking another member clears the link, so it is never taken for theirs.
+    await user.selectOptions(pick, 'u1');
+    expect(screen.queryByText(LINK)).not.toBeInTheDocument();
+  });
+
+  it('says so when nobody in the organization is waiting, and keeps the panel closeable', async () => {
+    view({
+      onInviteLink: vi.fn(),
+      spaces: [{ ...(SPACES[0] as (typeof SPACES)[number]), bitwardenInvitations: [] }],
+    });
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Copy a Bitwarden invitation link for space s1aaaaaa' }),
+    );
+    expect(screen.getByText(/No member of space s1aaaaaa is waiting with a Bitwarden invitation/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Get the link' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('group', { name: 'Bitwarden invitation link' })).not.toBeInTheDocument();
+  });
+
+  it('shows no link when the request failed, and keeps the panel open', async () => {
+    const onInviteLink = vi.fn().mockResolvedValue(undefined);
+    view({ onInviteLink });
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Copy a Bitwarden invitation link for space s1aaaaaa' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Get the link' }));
+    expect(onInviteLink).toHaveBeenCalledWith(SPACES[0], 'u1');
+    expect(screen.queryByText(/Whoever opens this link/)).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Bitwarden invitation link' })).toBeInTheDocument();
+  });
+});
+
+describe('UsersView, a change of owner on a chained space', () => {
+  it('says it is queued for the space’s owners to sign, and says nothing when it was not', () => {
+    view({ ownerQueuedFor: 's1aaaaaaaa' });
+    expect(screen.getByText(/change of owner of s1aaaaaa is queued/)).toBeInTheDocument();
+    expect(screen.getByText(/owners must sign it before it takes effect/)).toBeInTheDocument();
+  });
+
+  it('shows no such notice by default', () => {
+    view();
+    expect(screen.queryByText(/is queued/)).not.toBeInTheDocument();
+  });
+});

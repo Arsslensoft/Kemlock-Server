@@ -27,6 +27,8 @@ pub const HOME_RECORD_CONTEXT: &str = "federation-home-record";
 pub const MAX_REPLICAS: usize = 32;
 /// The largest home-record payload.
 pub const MAX_PAYLOAD: usize = 256 * 1024;
+/// The most earlier epochs whose home a vault remembers.
+pub const MAX_HOME_HISTORY: usize = 256;
 
 /// The admin's choice per vault. Local is the default and means the vault never leaves its server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,10 +67,14 @@ pub struct VaultFederation {
     pub replicas: Vec<ServerId>,
     /// The signed promotion record that made the current epoch, if any.
     pub promotion: Option<Vec<u8>>,
-    /// A promotion another server signed that would make it the home of a vault this server is
-    /// the home of. It is held, not applied, until this server's own admin accepts it: otherwise
-    /// any replica could take a vault over, and as its home erase this server's copy.
-    pub held_demotion: Option<Vec<u8>>,
+    /// The promotions other servers signed for this vault that wait for this server's admin, at
+    /// most one for each server that would become the home (a later one from the same server
+    /// replaces its earlier one, never another's). Held, not applied, until the admin accepts one:
+    /// otherwise any replica could take a vault over, and as its home erase this server's copy.
+    pub held_demotion: Vec<Vec<u8>>,
+    /// The home of each earlier epoch, oldest first: every promotion adds the home it replaced.
+    /// A server that learned of the vault at a later epoch has none for the epochs before.
+    pub home_history: Vec<(u64, ServerId)>,
 }
 
 impl VaultFederation {
@@ -81,7 +87,8 @@ impl VaultFederation {
             epoch: 1,
             replicas: Vec::new(),
             promotion: None,
-            held_demotion: None,
+            held_demotion: Vec::new(),
+            home_history: Vec::new(),
         }
     }
 
@@ -94,7 +101,8 @@ impl VaultFederation {
             epoch: 1,
             replicas,
             promotion: None,
-            held_demotion: None,
+            held_demotion: Vec::new(),
+            home_history: Vec::new(),
         }
     }
 
@@ -103,12 +111,70 @@ impl VaultFederation {
         self.home == server || self.replicas.contains(&server)
     }
 
+    /// The server that was the home in `epoch`, when this server knows: the current home for the
+    /// current epoch, the recorded one for an earlier epoch, and `None` for an epoch it never
+    /// saw (or a later one).
+    pub fn epoch_home(&self, epoch: u64) -> Option<ServerId> {
+        if epoch == self.epoch {
+            return Some(self.home);
+        }
+        self.home_history
+            .iter()
+            .find(|(e, _)| *e == epoch)
+            .map(|(_, home)| *home)
+    }
+
     /// The servers in failover order: the home first, then each replica.
     pub fn order(&self) -> Vec<ServerId> {
         let mut out = vec![self.home];
         out.extend(self.replicas.iter().copied());
         out
     }
+}
+
+/// The held promotions of a vault as a database column keeps them: `0x01`, then each record as
+/// `u32be(length) ‖ bytes`. `None` for none.
+pub fn pack_held(records: &[Vec<u8>]) -> Option<Vec<u8>> {
+    if records.is_empty() {
+        return None;
+    }
+    let mut out = vec![1u8];
+    for record in records {
+        // A record is at most a few kilobytes.
+        out.extend_from_slice(
+            &u32::try_from(record.len())
+                .unwrap_or(u32::MAX)
+                .to_be_bytes(),
+        );
+        out.extend_from_slice(record);
+    }
+    Some(out)
+}
+
+/// The inverse of [`pack_held`]. A column written before a vault could hold several (a record on
+/// its own, which starts with a CBOR map head, never with `0x01`) is one record.
+pub fn unpack_held(bytes: Option<&[u8]>) -> Result<Vec<Vec<u8>>> {
+    let Some(bytes) = bytes else {
+        return Ok(Vec::new());
+    };
+    let Some((&1, mut rest)) = bytes.split_first() else {
+        return Ok(vec![bytes.to_vec()]);
+    };
+    let mut out = Vec::new();
+    while !rest.is_empty() {
+        let (head, tail) = rest
+            .split_first_chunk::<4>()
+            .ok_or(FedError::Malformed("a held promotion list is cut short"))?;
+        let len = usize::try_from(u32::from_be_bytes(*head))
+            .map_err(|_| FedError::Malformed("a held promotion is too long"))?;
+        if tail.len() < len {
+            return Err(FedError::Malformed("a held promotion list is cut short"));
+        }
+        let (record, after) = tail.split_at(len);
+        out.push(record.to_vec());
+        rest = after;
+    }
+    Ok(out)
 }
 
 fn ids_value(ids: &[ServerId]) -> Value {
@@ -277,6 +343,11 @@ pub fn apply_promotion(
             "the promotion changes the set of servers",
         ));
     }
+    let mut home_history = current.home_history.clone();
+    home_history.push((current.epoch, current.home));
+    if home_history.len() > MAX_HOME_HISTORY {
+        home_history.remove(0);
+    }
     Ok(VaultFederation {
         owner: current.owner,
         policy: Policy::Federated,
@@ -284,7 +355,8 @@ pub fn apply_promotion(
         epoch: record.epoch,
         replicas: record.replicas.clone(),
         promotion: None,
-        held_demotion: None,
+        held_demotion: Vec::new(),
+        home_history,
     })
 }
 
@@ -482,6 +554,23 @@ mod tests {
     }
 
     #[test]
+    fn held_promotions_pack_and_unpack_and_an_old_single_record_is_one() {
+        assert_eq!(pack_held(&[]), None);
+        assert_eq!(unpack_held(None), Ok(Vec::new()));
+        let records = vec![vec![0xa2, 1, 2], vec![9; 300]];
+        let packed = pack_held(&records).expect("a column");
+        assert_eq!(unpack_held(Some(&packed)), Ok(records));
+        // What the column held before: a record, which is a CBOR map and not a list.
+        assert_eq!(
+            unpack_held(Some(&[0xa2, 0, 1, 2])),
+            Ok(vec![vec![0xa2, 0, 1, 2]])
+        );
+        // A list cut short is refused, not read as far as it goes.
+        assert!(unpack_held(Some(&packed[..packed.len() - 1])).is_err());
+        assert!(unpack_held(Some(&[1, 0, 0])).is_err());
+    }
+
+    #[test]
     fn the_order_is_home_then_replicas() {
         let w = world();
         assert_eq!(w.vault.order(), w.ids);
@@ -510,6 +599,12 @@ mod tests {
         assert_eq!(next.home, w.ids[2]);
         assert_eq!(next.epoch, 2);
         assert_eq!(next.order(), vec![w.ids[2], w.ids[1], w.ids[0]]);
+        // The new home's record of who held each epoch.
+        assert_eq!(next.epoch_home(1), Some(w.ids[0]));
+        assert_eq!(next.epoch_home(2), Some(w.ids[2]));
+        assert_eq!(next.epoch_home(3), None);
+        assert_eq!(w.vault.epoch_home(1), Some(w.ids[0]));
+        assert_eq!(w.vault.epoch_home(2), None);
     }
 
     #[test]

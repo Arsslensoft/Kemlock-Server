@@ -8,7 +8,7 @@
 use crate::archive::{ArchiveSpec, parse_recipient, write_archive};
 use crate::destination::{ArchiveInfo, Destination, DestinationConfig};
 use crate::error::BackupError;
-use crate::manifest::Manifest;
+use crate::manifest::{MacKey, Manifest};
 use kemlock_store_sql::{Snapshot, SqlStore};
 use std::path::PathBuf;
 use time::{Duration, OffsetDateTime, Time, UtcOffset};
@@ -88,6 +88,9 @@ pub struct DataLayout {
     pub config_file: Option<PathBuf>,
     /// The SQLite database and its `-wal` and `-shm` files, which never go into an archive.
     pub skip: Vec<PathBuf>,
+    /// The key the archive's manifest is authenticated with, derived from `server.key`; `None`
+    /// when the server has no key at hand, which makes an archive a restore takes only on request.
+    pub mac_key: Option<MacKey>,
 }
 
 /// What a backup did.
@@ -236,7 +239,7 @@ pub async fn create_backup(
 ) -> Result<BackupReport, BackupError> {
     let recipient = parse_recipient(&settings.recipient)?;
     let destination = Destination::open(&settings.destination)?;
-    std::fs::create_dir_all(&layout.data_folder)
+    crate::archive::create_private_dir(&layout.data_folder)
         .map_err(|e| BackupError::io(format!("can't make {}", layout.data_folder.display()), e))?;
     // Work in a folder of the data folder: it is the one place the image lets the server write.
     let work = tempfile::Builder::new()
@@ -264,6 +267,7 @@ pub async fn create_backup(
                 attachments: layout.attachments_folder.as_deref(),
                 config_file: layout.config_file.as_deref(),
                 recipient: &recipient,
+                mac_key: layout.mac_key.as_ref(),
                 zstd_level: level,
                 created_at: now,
             };

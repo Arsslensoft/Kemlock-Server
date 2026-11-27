@@ -131,6 +131,41 @@ impl Scene {
 }
 
 #[tokio::test]
+async fn a_box_for_another_key_version_is_a_409_and_stores_nothing() {
+    let s = scene().await;
+    let id = s.invite("view", 7).await;
+    let accepted = s
+        .kim(
+            "POST",
+            &format!("/kem/v1/emergency/grants/{id}/accept"),
+            None,
+        )
+        .await;
+    assert_eq!(accepted.status, StatusCode::OK, "{:?}", accepted.json());
+    let stale = s
+        .sam(
+            "POST",
+            &format!("/kem/v1/emergency/grants/{id}/confirm"),
+            Some(json!({"sealedKey": sealed_box(), "keyVersion": 99})),
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    let current = stale.json()["currentKeyVersion"].clone();
+    assert!(current.is_number(), "{:?}", stale.json());
+    // Still waiting for a confirmation, and the right version is kept.
+    let kept = s
+        .sam(
+            "POST",
+            &format!("/kem/v1/emergency/grants/{id}/confirm"),
+            Some(json!({"sealedKey": sealed_box(), "keyVersion": current})),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.json());
+    assert_eq!(kept.json()["state"], "confirmed");
+}
+
+#[tokio::test]
 async fn the_whole_path_from_invitation_to_the_sealed_key() {
     let mut s = scene().await;
 

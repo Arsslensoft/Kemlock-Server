@@ -28,6 +28,13 @@ pub struct BwSettings {
     pub origin: String,
     /// `SIGNUPS_ALLOWED`.
     pub signups_allowed: bool,
+    /// `SIGNUPS_VERIFY`: an address is proven by a mailed link before its account is made. Only
+    /// when the server mails; the start value, which `live` replaces while the server runs.
+    pub signups_verify: bool,
+    /// `KEMLOCK_BW_INVITES_AUTO_ACCEPT`: an invitation to an existing account with a password counts
+    /// as accepted at once, when the server doesn't mail, as Vaultwarden does. The start value, which
+    /// `live` replaces while the server runs.
+    pub bw_invites_auto_accept: bool,
     /// `KEMLOCK_BITWARDEN_COMPAT`: with it off, every Bitwarden route answers 404.
     pub compat: bool,
     /// Rounds for new password hashes; an account hashed with fewer is upgraded at its next sign-in.
@@ -46,6 +53,14 @@ pub struct BwSettings {
     /// `UNAUTHENTICATED_RATELIMIT_MAX_BURST`: requests an address may make at once on those routes
     /// (50; they share it, so it is more lenient than the login one).
     pub unauthenticated_ratelimit_max_burst: u32,
+    /// The least time between two password hash checks of one account (a second): a right password
+    /// still passes, only a little later. The tests set it to nothing.
+    pub hash_interval: std::time::Duration,
+    /// How long a password hash check waits for its turn and a free place before it is answered 429.
+    pub hash_wait: std::time::Duration,
+    /// The longest, in seconds, a password check is held back once its account has more wrong
+    /// passwords in a window than the console allows (3).
+    pub password_slowdown_secs: u64,
     /// `ORG_GROUPS_ENABLED`: Vaultwarden has it off by default; spaces have groups, so this server
     /// has it on.
     pub org_groups_enabled: bool,
@@ -65,12 +80,17 @@ impl BwSettings {
             domain,
             origin,
             signups_allowed,
+            signups_verify: false,
+            bw_invites_auto_accept: false,
             compat: true,
             password_iterations: PASSWORD_ITERATIONS,
             login_ratelimit_seconds: 60,
             login_ratelimit_max_burst: 10,
             unauthenticated_ratelimit_seconds: 60,
             unauthenticated_ratelimit_max_burst: 50,
+            password_slowdown_secs: 3,
+            hash_interval: crate::hash_gate::DEFAULT_INTERVAL,
+            hash_wait: crate::hash_gate::DEFAULT_WAIT,
             org_events_enabled: false,
             org_groups_enabled: true,
             live: None,
@@ -121,6 +141,20 @@ impl BwSettings {
             .map_or(self.signups_allowed, Live::signups_allowed)
     }
 
+    /// Whether a Bitwarden invitation to an existing account is taken as accepted at once.
+    pub fn bw_invites_auto_accept(&self) -> bool {
+        self.live
+            .as_ref()
+            .map_or(self.bw_invites_auto_accept, Live::bw_invites_auto_accept)
+    }
+
+    /// Whether registration has to prove the address with a mailed link first.
+    pub fn signups_verify(&self) -> bool {
+        self.live
+            .as_ref()
+            .map_or(self.signups_verify, Live::signups_verify)
+    }
+
     /// Whether `email` may register without an invitation: sign-ups are on, or (with a domain
     /// whitelist) its domain is on it.
     pub(crate) fn signups_open_for(&self, email: &str) -> bool {
@@ -129,6 +163,17 @@ impl BwSettings {
             (Some(live), Err(_)) => live.signups_allowed(),
             (None, _) => self.signups_allowed,
         }
+    }
+
+    /// How many second-step codes an account may try in a window: the console's setting, else 5.
+    pub(crate) fn second_step_limit(&self) -> u32 {
+        self.live.as_ref().map_or(5, Live::second_step_limit)
+    }
+
+    /// How many wrong passwords an account may have in a window before it slows down: the
+    /// console's setting, else 10.
+    pub(crate) fn password_limit(&self) -> u32 {
+        self.live.as_ref().map_or(10, Live::password_limit)
     }
 
     /// The gate that checks server invitation tokens, while invitations are on.

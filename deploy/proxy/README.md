@@ -20,6 +20,12 @@ IP_HEADER=X-Forwarded-For
 KEMLOCK_TRUSTED_PROXIES=<the proxy's address>
 ```
 
+Kemlock reads every `X-Forwarded-For` line and takes the right-most address that is not a trusted
+proxy, so a proxy may add its own line or extend the client's. Still, have the outermost proxy
+drop any such header the client sent, so the only addresses in it are the ones your proxies wrote
+(HAProxy: `http-request del-header X-Forwarded-For` before `option forwardfor`, as the example
+does).
+
 `DOMAIN` must be the public address clients use, because DPoP proofs are checked against it.
 The examples terminate TLS at the proxy; where a file says `listen 80` or `bind :80`, add your
 certificate (certbot, `bind :443 ssl crt ...`) as its comments show.

@@ -27,6 +27,7 @@
 //! | 11 | created at, Unix seconds |
 //! | 12 | updated at, Unix seconds |
 //! | 13 | devices: array of maps `{0: id (16), 1: name, 2: kind, 3: DPoP thumbprint (absent when none), 4: created at}` |
+//! | 14 | past bundles, absent when there are none: array of `[key version, public bundle, bundle signature, superseded at (Unix seconds)]` in ascending key version, the bundles the account had before its current key version, so a replica can check a write signed under one (docs/crypto.md, "Signed item writes") |
 
 use crate::cbor::Value;
 use crate::error::{FedError, Result};
@@ -39,6 +40,19 @@ pub const KIND: &str = "member-account";
 pub const VERSION: u64 = 1;
 /// The most device registrations one account copy carries.
 pub const MAX_DEVICES: usize = 64;
+/// The most past bundles one account copy carries: one for each key replacement.
+pub const MAX_PAST_BUNDLES: usize = 64;
+
+/// A public-key bundle an account had before its current one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PastBundle {
+    pub key_version: u32,
+    pub public_bundle: Vec<u8>,
+    pub bundle_signature: Vec<u8>,
+    /// When the account replaced this bundle, Unix seconds: what signs under it after that is not
+    /// the account's (docs/crypto.md, "Signed item writes").
+    pub superseded_at: i64,
+}
 
 /// One device registration of a member.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +86,8 @@ pub struct MemberAccount {
     pub updated_at: i64,
     /// Sorted by id, so one account always encodes to the same bytes.
     pub devices: Vec<MemberDevice>,
+    /// The bundles before the current key version, in ascending key version.
+    pub past_bundles: Vec<PastBundle>,
 }
 
 fn kind_name(kind: DeviceKind) -> &'static str {
@@ -132,6 +148,8 @@ impl MemberAccount {
     pub fn to_payload(&self) -> Vec<u8> {
         let mut devices = self.devices.clone();
         devices.sort_by_key(|d| d.id);
+        let mut past = self.past_bundles.clone();
+        past.sort_by_key(|b| b.key_version);
         let mut entries = vec![
             (0, Value::Uint(VERSION)),
             (1, Value::bytes(self.id.as_bytes())),
@@ -179,6 +197,23 @@ impl MemberAccount {
                 ),
             ),
         ]);
+        if !past.is_empty() {
+            entries.push((
+                14,
+                Value::Array(
+                    past.iter()
+                        .map(|b| {
+                            Value::Array(vec![
+                                Value::Uint(u64::from(b.key_version)),
+                                Value::bytes(&b.public_bundle),
+                                Value::bytes(&b.bundle_signature),
+                                secs(b.superseded_at),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ));
+        }
         Value::map(entries).encode()
     }
 
@@ -186,7 +221,7 @@ impl MemberAccount {
     pub fn from_payload(payload: &[u8]) -> Result<MemberAccount> {
         let value = Value::decode(payload)?;
         let f = value.as_fields()?;
-        f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])?;
+        f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])?;
         if f.uint(0)? != VERSION {
             return Err(FedError::Malformed("an unknown member account version"));
         }
@@ -222,6 +257,25 @@ impl MemberAccount {
                 created_at: from_secs(d.uint(4)?)?,
             });
         }
+        let mut past_bundles = Vec::new();
+        if let Some(list) = f.get(14) {
+            let list = list.as_array()?;
+            if list.len() > MAX_PAST_BUNDLES {
+                return Err(FedError::Malformed("too many past bundles"));
+            }
+            for entry in list {
+                let [version, bundle, signature, superseded] = entry.as_array()? else {
+                    return Err(FedError::Malformed("a past bundle has four parts"));
+                };
+                past_bundles.push(PastBundle {
+                    key_version: u32::try_from(version.as_uint()?)
+                        .map_err(|_| FedError::Malformed("a key version is too large"))?,
+                    public_bundle: bundle.as_bytes()?.to_vec(),
+                    bundle_signature: signature.as_bytes()?.to_vec(),
+                    superseded_at: from_secs(superseded.as_uint()?)?,
+                });
+            }
+        }
         let account = MemberAccount {
             id: UserId(uuid16(f.fixed::<16>(1)?)),
             email: f.text(2)?.to_owned(),
@@ -240,6 +294,7 @@ impl MemberAccount {
             created_at: from_secs(f.uint(11)?)?,
             updated_at: from_secs(f.uint(12)?)?,
             devices,
+            past_bundles,
         };
         if account.to_payload() != payload {
             return Err(FedError::Invalid("the member account is not canonical"));
@@ -266,6 +321,7 @@ mod tests {
             key_version: 1,
             created_at: 1_700_000_000,
             updated_at: 1_700_000_100,
+            past_bundles: Vec::new(),
             devices: vec![
                 MemberDevice {
                     id: DeviceId::random(),
@@ -328,6 +384,57 @@ mod tests {
         let mut value = Value::decode(&payload).expect("decode");
         if let Value::Map(entries) = &mut value {
             entries.push((20, Value::Uint(1)));
+        }
+        assert!(MemberAccount::from_payload(&value.encode()).is_err());
+    }
+
+    #[test]
+    fn past_bundles_travel_in_key_order_and_round_trip() {
+        let mut a = account();
+        a.key_version = 3;
+        a.past_bundles = vec![
+            PastBundle {
+                key_version: 2,
+                public_bundle: vec![6; 300],
+                bundle_signature: vec![7; 100],
+                superseded_at: 1_700_000_200,
+            },
+            PastBundle {
+                key_version: 1,
+                public_bundle: vec![8; 300],
+                bundle_signature: vec![9; 100],
+                superseded_at: 1_700_000_100,
+            },
+        ];
+        let back = MemberAccount::from_payload(&a.to_payload()).expect("a payload");
+        let mut expected = a.clone();
+        expected.past_bundles.sort_by_key(|b| b.key_version);
+        // The payload also writes devices in id order, and `account()` uses random ids.
+        expected.devices.sort_by_key(|d| d.id);
+        assert_eq!(back, expected);
+        // The same account always writes the same bytes, whatever order the list came in.
+        let mut reversed = a.clone();
+        reversed.past_bundles.reverse();
+        assert_eq!(reversed.to_payload(), a.to_payload());
+    }
+
+    #[test]
+    fn too_many_past_bundles_or_a_malformed_one_are_refused() {
+        let mut a = account();
+        a.past_bundles = (1..=u32::try_from(MAX_PAST_BUNDLES).expect("small") + 1)
+            .map(|key_version| PastBundle {
+                key_version,
+                public_bundle: vec![1; 10],
+                bundle_signature: vec![2; 10],
+                superseded_at: 1,
+            })
+            .collect();
+        assert!(MemberAccount::from_payload(&a.to_payload()).is_err());
+
+        let payload = account().to_payload();
+        let mut value = Value::decode(&payload).expect("decode");
+        if let Value::Map(entries) = &mut value {
+            entries.push((14, Value::Array(vec![Value::Array(vec![Value::Uint(1)])])));
         }
         assert!(MemberAccount::from_payload(&value.encode()).is_err());
     }

@@ -16,6 +16,7 @@ use kemlock_federation::ports::{
 use kemlock_federation::wire::ChangeKey;
 use kemlock_store_sql::SqlStore;
 use time::Duration;
+use uuid::Uuid;
 
 fn peer(n: u8) -> Peer {
     Peer {
@@ -100,6 +101,7 @@ async fn vault_settings_cursors_and_home_records_round_trip() {
     // A promotion replaces the row.
     settings.epoch = 2;
     settings.promotion = Some(vec![9, 9]);
+    settings.home_history = vec![(1, ServerId::random())];
     settings.replicas.reverse();
     store.put_vault(&settings).await.expect("put again");
     assert_eq!(
@@ -227,6 +229,52 @@ async fn apply_all(to: &SqlStore, records: &[(ChangeRecord, Vec<u8>)]) -> Vec<Ap
         );
     }
     outcomes
+}
+
+#[tokio::test]
+async fn a_version_of_a_space_keeps_the_collection_its_record_names_and_exports_it_again() {
+    let a = memory().await;
+    let b = memory().await;
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let id = ItemId::random();
+    let collection = kemlock_domain::spaces::CollectionId(Uuid::new_v4());
+    let moved_to = kemlock_domain::spaces::CollectionId(Uuid::new_v4());
+    put(&a, draft(id, space, None, 1)).await;
+    let (record, signature) = records_of(&a, space).await.remove(0);
+    // The item is in the collection its newest version names, here and when it is sent on.
+    let first = record.in_collection(Some(collection));
+    assert_eq!(
+        ReplicaStore::apply(&b, &first, &signature).await,
+        Ok(ApplyOutcome::Applied)
+    );
+    let page = ReplicaStore::export_since(&b, space, &VersionVector::new(), 10)
+        .await
+        .expect("export");
+    assert_eq!(page.entries[0].collection, Some(collection));
+
+    // A newer version that names another collection moves it.
+    put(&a, draft(id, space, Some(1), 2)).await;
+    let newest = records_of(&a, space)
+        .await
+        .into_iter()
+        .find(|(r, _)| r.revision == Revision(2))
+        .expect("revision 2");
+    let second = newest.0.in_collection(Some(moved_to));
+    assert_eq!(
+        ReplicaStore::apply(&b, &second, &newest.1).await,
+        Ok(ApplyOutcome::Applied)
+    );
+    let page = ReplicaStore::export_since(&b, space, &VersionVector::new(), 10)
+        .await
+        .expect("export");
+    assert!(page.entries.iter().all(|e| e.collection == Some(moved_to)));
+    // A vault's item has none.
+    let vault = user_owner();
+    put(&a, draft(ItemId::random(), vault, None, 1)).await;
+    let page = ReplicaStore::export_since(&a, vault, &VersionVector::new(), 10)
+        .await
+        .expect("export");
+    assert!(page.entries.iter().all(|e| e.collection.is_none()));
 }
 
 #[tokio::test]
@@ -382,4 +430,377 @@ async fn a_signature_is_kept_once_and_an_item_id_of_another_owner_is_refused() {
     let records = records_of(&a, owner).await;
     let outcome = ReplicaStore::apply(&b, &records[0].0, &records[0].1).await;
     assert!(matches!(outcome, Err(StoreError::Duplicate)));
+}
+
+/// A peer's record with an HLC time at the top of the range used to raise `last_hlc` to it, and
+/// the next local write then took a time the column can't hold: every write failed, across
+/// restarts. The clock stops at the limit now, and the start-up repair sets it back.
+#[tokio::test]
+async fn a_record_with_a_huge_hlc_time_neither_stops_local_writes_nor_survives_a_restart() {
+    let (store, dir) = common::file().await;
+    let source = memory().await;
+    let owner = user_owner();
+    put(&source, draft(ItemId::random(), owner, None, 1)).await;
+    let (mut record, signature) = records_of(&source, owner).await.remove(0);
+    record.change.hlc = Hlc(u64::MAX >> 1);
+    assert_eq!(
+        ReplicaStore::apply(&store, &record, &signature)
+            .await
+            .expect("apply"),
+        ApplyOutcome::Applied
+    );
+
+    // The clock is at the limit: a local write still goes through, at the limit.
+    let written = put(&store, draft(ItemId::random(), user_owner(), None, 1)).await;
+    assert_eq!(written.change.hlc, Hlc::MAX);
+
+    // After a restart the clock is back at the wall clock.
+    let url = common::file_url(&dir.path().join("kemlock.db"));
+    drop(store);
+    let store = SqlStore::connect(&url).await.expect("reconnect");
+    let written = put(&store, draft(ItemId::random(), user_owner(), None, 1)).await;
+    let now_ms = u64::try_from(time::OffsetDateTime::now_utc().unix_timestamp() * 1000)
+        .expect("a time after 1970");
+    assert!(
+        written.change.hlc.millis() <= now_ms + 60_000,
+        "the repaired clock is near the wall clock, not at {}",
+        written.change.hlc.millis()
+    );
+    assert!(written.change.hlc.millis() >= now_ms - 60_000);
+}
+
+#[tokio::test]
+async fn a_promotion_is_held_unless_the_saved_setting_says_auto() {
+    use kemlock_federation::extra::{FedAdminRepo, PromotionMode};
+    let store = memory().await;
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+    store
+        .put_setting("setting.federation_promotion", "auto")
+        .await
+        .expect("saved");
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Auto));
+    // Anything else, a misspelling included, holds.
+    store
+        .put_setting("setting.federation_promotion", "atuo")
+        .await
+        .expect("saved");
+    assert_eq!(store.promotion_mode().await, Ok(PromotionMode::Hold));
+}
+
+#[tokio::test]
+async fn past_keys_and_pending_addresses_are_kept_per_peer_and_go_with_the_peer() {
+    use kemlock_federation::keyrecs::{KeyStore, PendingAddresses};
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    assert!(store.past_keys(p.id).await.expect("keys").is_empty());
+
+    store
+        .push_past_key(p.id, &[1; 1984], 100)
+        .await
+        .expect("push");
+    store
+        .push_past_key(p.id, &[2; 1984], 200)
+        .await
+        .expect("push");
+    let kept = store.past_keys(p.id).await.expect("keys");
+    assert_eq!(
+        kept.iter()
+            .map(|k| (k.key[0], k.replaced_at))
+            .collect::<Vec<_>>(),
+        vec![(1, 100), (2, 200)],
+        "oldest first"
+    );
+
+    let pending = PendingAddresses {
+        peer: p.id,
+        operator: "Operator 1".to_owned(),
+        addresses: vec!["https://moved.example.org".to_owned()],
+        suites: vec!["kfed1-mlkem1024x25519-aes256gcm".to_owned()],
+        received_at: 300,
+    };
+    store.put_pending_addresses(&pending).await.expect("put");
+    assert_eq!(
+        store.pending_addresses(p.id).await,
+        Ok(Some(pending.clone()))
+    );
+    assert_eq!(
+        store.list_pending_addresses().await,
+        Ok(vec![pending.clone()])
+    );
+    // A second change replaces the first.
+    let newer = PendingAddresses {
+        received_at: 400,
+        ..pending
+    };
+    store.put_pending_addresses(&newer).await.expect("replace");
+    assert_eq!(store.list_pending_addresses().await, Ok(vec![newer]));
+    store.clear_pending_addresses(p.id).await.expect("clear");
+    assert_eq!(store.pending_addresses(p.id).await, Ok(None));
+
+    // Unpairing forgets the history, so a later pairing starts clean.
+    store
+        .put_pending_addresses(&PendingAddresses {
+            peer: p.id,
+            operator: String::new(),
+            addresses: Vec::new(),
+            suites: Vec::new(),
+            received_at: 500,
+        })
+        .await
+        .expect("put");
+    assert!(store.remove_peer(p.id).await.expect("remove"));
+    assert!(store.past_keys(p.id).await.expect("keys").is_empty());
+    assert_eq!(store.list_pending_addresses().await, Ok(Vec::new()));
+}
+
+#[tokio::test]
+async fn the_addresses_the_admin_chose_are_kept_per_peer_and_go_with_the_peer() {
+    use kemlock_federation::extra::FedAdminRepo;
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    assert!(
+        store
+            .trusted_addresses(p.id)
+            .await
+            .expect("read")
+            .is_empty()
+    );
+    let lan = "http://192.168.1.5:8080".to_owned();
+    let public = "https://s1.example.org".to_owned();
+    store
+        .trust_addresses(p.id, &[lan.clone(), public.clone()])
+        .await
+        .expect("trust");
+    // Again, and with a blank: no duplicates, nothing empty.
+    store
+        .trust_addresses(p.id, &[lan.clone(), String::new()])
+        .await
+        .expect("trust again");
+    assert_eq!(
+        store.trusted_addresses(p.id).await,
+        Ok(vec![lan.clone(), public.clone()]),
+        "sorted, once each"
+    );
+    assert!(
+        store
+            .trusted_addresses(ServerId::random())
+            .await
+            .expect("read")
+            .is_empty()
+    );
+    assert!(store.remove_peer(p.id).await.expect("remove"));
+    assert!(
+        store
+            .trusted_addresses(p.id)
+            .await
+            .expect("read")
+            .is_empty()
+    );
+}
+
+fn signature_of(writer: kemlock_domain::UserId, fill: u8) -> kemlock_domain::WriteSignature {
+    kemlock_domain::WriteSignature {
+        writer,
+        key_version: 1,
+        signature: vec![fill; kemlock_domain::WriteSignature::SIGNATURE_LEN],
+    }
+}
+
+#[tokio::test]
+async fn a_writer_signature_travels_with_a_version_and_the_flag_is_set_only_by_the_owner() {
+    use kemlock_app::ports::ItemStore;
+    let a = memory().await;
+    let b = memory().await;
+    let writer = kemlock_domain::UserId::random();
+    let owner = Owner::User(writer);
+    let id = ItemId::random();
+    let mut signed = draft(id, owner, None, 1);
+    signed.signature = Some(signature_of(writer, 7));
+    put(&a, signed).await;
+    // A signature does not set the flag, here or at the peer.
+    assert!(
+        !ItemStore::signed_writes_required(&a, owner)
+            .await
+            .expect("flag")
+    );
+    assert!(
+        !ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
+
+    // The signature is in the record, and applying it keeps it and sets the flag at B.
+    let records = records_of(&a, owner).await;
+    assert_eq!(records[0].0.write, Some(signature_of(writer, 7)));
+    assert_eq!(apply_all(&b, &records).await, vec![ApplyOutcome::Applied]);
+    let held = ItemStore::get(&b, id).await.expect("get").expect("item");
+    assert_eq!(held.signature, Some(signature_of(writer, 7)));
+    assert!(
+        !ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
+    // The flag is the owner's to set, and a peer takes it from the home.
+    ReplicaStore::set_owner_signed_only(&b, owner, true)
+        .await
+        .expect("set");
+    assert!(
+        ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
+    ReplicaStore::set_owner_signed_only(&b, owner, false)
+        .await
+        .expect("cleared");
+    assert!(
+        !ReplicaStore::owner_signed_only(&b, owner)
+            .await
+            .expect("flag")
+    );
+
+    // A sibling keeps its signature too.
+    let mut edit_a = draft(id, owner, Some(1), 2);
+    edit_a.signature = Some(signature_of(writer, 8));
+    put(&a, edit_a).await;
+    let mut edit_b = draft(id, owner, Some(1), 2);
+    edit_b.signature = Some(signature_of(writer, 9));
+    edit_b.updated_at += Duration::seconds(5);
+    put(&b, edit_b).await;
+    let from_a = records_of(&a, owner).await;
+    assert!(
+        apply_all(&b, &from_a)
+            .await
+            .contains(&ApplyOutcome::Sibling)
+    );
+    let siblings = ReplicaStore::siblings(&b, owner, id)
+        .await
+        .expect("siblings");
+    assert_eq!(siblings.len(), 1);
+    assert_eq!(siblings[0].signature, Some(signature_of(writer, 8)));
+}
+
+#[tokio::test]
+async fn a_record_that_names_the_head_at_a_lower_revision_is_refused_and_leaves_no_trace() {
+    use kemlock_app::ports::ItemStore;
+    let a = memory().await;
+    let owner = user_owner();
+    let id = ItemId::random();
+    put(&a, draft(id, owner, None, 1)).await;
+    put(&a, draft(id, owner, Some(1), 2)).await;
+    let head = put(&a, draft(id, owner, Some(2), 3)).await;
+
+    let mut replay = ChangeRecord::from_item(&head, vec![ChangeKey::of(&head.change)]);
+    replay.change = ChangeId {
+        origin: ServerId::random(),
+        seq: 1,
+        hlc: Hlc(head.change.hlc.0 + 1_000_000),
+    };
+    replay.revision = Revision(2);
+    assert_eq!(
+        ReplicaStore::apply(&a, &replay, b"signature")
+            .await
+            .expect("apply"),
+        ApplyOutcome::Refused
+    );
+    let held = ItemStore::get(&a, id).await.expect("get").expect("item");
+    assert_eq!(held.change, head.change);
+    assert_eq!(held.revision, Revision(3));
+}
+
+#[tokio::test]
+async fn a_record_that_changes_an_items_format_or_kind_is_refused() {
+    use kemlock_app::ports::ItemStore;
+    let a = memory().await;
+    let owner = user_owner();
+    let id = ItemId::random();
+    put(&a, draft(id, owner, None, 1)).await;
+    let head = put(&a, draft(id, owner, Some(1), 2)).await;
+
+    // A later change that names the head and labels the item `bw` (so no writer check would look
+    // at it), or gives it another kind, is refused and leaves the item as it was.
+    let mut relabelled = ChangeRecord::from_item(&head, vec![ChangeKey::of(&head.change)]);
+    relabelled.change = ChangeId {
+        origin: ServerId::random(),
+        seq: 1,
+        hlc: Hlc(head.change.hlc.0 + 1_000_000),
+    };
+    relabelled.revision = Revision(3);
+    relabelled.format = kemlock_domain::ItemFormat::Bw;
+    assert_eq!(
+        ReplicaStore::apply(&a, &relabelled, b"signature")
+            .await
+            .expect("apply"),
+        ApplyOutcome::Refused
+    );
+    let mut other_kind = relabelled.clone();
+    other_kind.format = head.format;
+    other_kind.kind = kemlock_domain::ItemKind::try_from("note".to_owned()).expect("a kind");
+    other_kind.change.seq = 2;
+    assert_eq!(
+        ReplicaStore::apply(&a, &other_kind, b"signature")
+            .await
+            .expect("apply"),
+        ApplyOutcome::Refused
+    );
+    let held = ItemStore::get(&a, id).await.expect("get").expect("item");
+    assert_eq!(held.change, head.change);
+    assert_eq!(held.format, kemlock_domain::ItemFormat::Kem1);
+}
+
+#[tokio::test]
+async fn a_vault_pinned_to_revision_ranking_stays_pinned() {
+    let store = memory().await;
+    let vault = user_owner();
+    assert_eq!(store.revision_ranked(vault).await, Ok(false));
+    store.pin_revision_ranking(vault).await.expect("pinned");
+    // A second pin is not an error.
+    store
+        .pin_revision_ranking(vault)
+        .await
+        .expect("pinned again");
+    assert_eq!(store.revision_ranked(vault).await, Ok(true));
+    let other = Owner::User(kemlock_domain::UserId::random());
+    assert_eq!(store.revision_ranked(other).await, Ok(false));
+}
+
+#[tokio::test]
+async fn held_rotations_are_kept_once_for_each_key_up_to_a_few_and_go_with_the_peer() {
+    use kemlock_federation::keyrecs::{HeldRotation, KeyStore, MAX_HELD_ROTATIONS};
+    let store = memory().await;
+    let p = peer(1);
+    store.insert_peer(&p).await.expect("insert");
+    let held = |n: usize| HeldRotation {
+        server: p.id,
+        fingerprint: format!("{n:064x}"),
+        issued_at: 100,
+        received_at: 200 + n as u64,
+        envelope: vec![n as u8; 40],
+    };
+    assert_eq!(store.held_rotations().await, Ok(Vec::new()));
+
+    assert_eq!(store.put_held_rotation(&held(0)).await, Ok(true));
+    // The same key again is the same rotation.
+    assert_eq!(store.put_held_rotation(&held(0)).await, Ok(true));
+    assert_eq!(store.held_rotations().await, Ok(vec![held(0)]));
+    for n in 1..MAX_HELD_ROTATIONS {
+        assert_eq!(store.put_held_rotation(&held(n)).await, Ok(true));
+    }
+    // One more than the limit is refused, and the ones held stay.
+    assert_eq!(
+        store.put_held_rotation(&held(MAX_HELD_ROTATIONS)).await,
+        Ok(false)
+    );
+    assert_eq!(
+        store.held_rotations().await.expect("list").len(),
+        MAX_HELD_ROTATIONS
+    );
+
+    store.drop_held_rotations(p.id).await.expect("dropped");
+    assert_eq!(store.held_rotations().await, Ok(Vec::new()));
+    // Removing the peer takes what was held for it.
+    store.put_held_rotation(&held(1)).await.expect("held");
+    assert!(store.remove_peer(p.id).await.expect("removed"));
+    assert_eq!(store.held_rotations().await, Ok(Vec::new()));
 }

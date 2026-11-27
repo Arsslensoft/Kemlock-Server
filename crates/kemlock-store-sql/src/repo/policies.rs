@@ -11,7 +11,7 @@ use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies};
 use kemlock_domain::spaces::{MemberState, SpaceRole};
 use kemlock_domain::{SpaceId, UserId};
 use sea_orm::sea_query::OnConflict;
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -34,42 +34,7 @@ impl PolicyRepo for SqlStore {
         by: UserId,
         at: OffsetDateTime,
     ) -> Result<(), StoreError> {
-        let conflict = OnConflict::column(policies::Column::SpaceId)
-            .update_columns([
-                policies::Column::RequireSso,
-                policies::Column::TwoStep,
-                policies::Column::SingleSpace,
-                policies::Column::DisableExport,
-                policies::Column::DisableSend,
-                policies::Column::AlwaysShowEmail,
-                policies::Column::NoPinUnlock,
-                policies::Column::CentralOwnership,
-                policies::Column::NoCardItems,
-                policies::Column::MpOn,
-                policies::Column::MpMinLength,
-                policies::Column::MpMinComplexity,
-                policies::Column::MpRequireUpper,
-                policies::Column::MpRequireLower,
-                policies::Column::MpRequireNumbers,
-                policies::Column::MpRequireSpecial,
-                policies::Column::MpEnforceOnLogin,
-                policies::Column::TimeoutMinutes,
-                policies::Column::TimeoutAction,
-                policies::Column::UpdatedAt,
-                policies::Column::UpdatedBy,
-            ])
-            .to_owned();
-        let written = policies::Entity::insert(policies::active(space.0, value, by, at))
-            .on_conflict(conflict)
-            .exec(self.writer())
-            .await;
-        match written {
-            Ok(_) => Ok(()),
-            // MySQL counts a replaced row with identical values as zero rows affected.
-            Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
-            Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
-            Err(err) => Err(map_db(err)),
-        }
+        upsert_policies(self.writer(), space, value, by, at).await
     }
 
     async fn policies_of_spaces(&self, spaces: &[SpaceId]) -> Result<PoliciesBySpace, StoreError> {
@@ -87,6 +52,53 @@ impl PolicyRepo for SqlStore {
             out.insert(SpaceId(row.space_id), row.policies()?);
         }
         Ok(out)
+    }
+}
+
+/// Writes a space's policy settings on `db`, a connection or a transaction: the one write of
+/// `space_policy_settings`, for `PolicyRepo::put_space_policies` and a chain append alike.
+pub(super) async fn upsert_policies<C: ConnectionTrait>(
+    db: &C,
+    space: SpaceId,
+    value: &SpacePolicies,
+    by: UserId,
+    at: OffsetDateTime,
+) -> Result<(), StoreError> {
+    let conflict = OnConflict::column(policies::Column::SpaceId)
+        .update_columns([
+            policies::Column::RequireSso,
+            policies::Column::TwoStep,
+            policies::Column::SingleSpace,
+            policies::Column::DisableExport,
+            policies::Column::DisableSend,
+            policies::Column::AlwaysShowEmail,
+            policies::Column::NoPinUnlock,
+            policies::Column::CentralOwnership,
+            policies::Column::NoCardItems,
+            policies::Column::MpOn,
+            policies::Column::MpMinLength,
+            policies::Column::MpMinComplexity,
+            policies::Column::MpRequireUpper,
+            policies::Column::MpRequireLower,
+            policies::Column::MpRequireNumbers,
+            policies::Column::MpRequireSpecial,
+            policies::Column::MpEnforceOnLogin,
+            policies::Column::TimeoutMinutes,
+            policies::Column::TimeoutAction,
+            policies::Column::UpdatedAt,
+            policies::Column::UpdatedBy,
+        ])
+        .to_owned();
+    let written = policies::Entity::insert(policies::active(space.0, value, by, at))
+        .on_conflict(conflict)
+        .exec(db)
+        .await;
+    match written {
+        Ok(_) => Ok(()),
+        // MySQL counts a replaced row with identical values as zero rows affected.
+        Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+        Err(err) if is_unique_violation(&err) => Err(StoreError::Duplicate),
+        Err(err) => Err(map_db(err)),
     }
 }
 
@@ -120,6 +132,17 @@ impl SqlStore {
         space: SpaceId,
         on: bool,
     ) -> Result<(), StoreError> {
+        upsert_require_sso_in(self.writer(), space, on).await
+    }
+}
+
+/// [`SqlStore::upsert_require_sso`] on a connection or a transaction the caller holds.
+pub(crate) async fn upsert_require_sso_in<C: ConnectionTrait>(
+    db: &C,
+    space: SpaceId,
+    on: bool,
+) -> Result<(), StoreError> {
+    {
         let fresh = SpacePolicies {
             require_sso: on,
             ..SpacePolicies::default()
@@ -130,7 +153,7 @@ impl SqlStore {
             .to_owned();
         match policies::Entity::insert(row)
             .on_conflict(conflict)
-            .exec(self.writer())
+            .exec(db)
             .await
         {
             // MySQL counts a replaced row with identical values as zero rows affected.
@@ -140,23 +163,29 @@ impl SqlStore {
     }
 }
 
-/// The Require SSO check reads, for an account, each space it has accepted or been confirmed in,
-/// the role it holds there and whether the space requires SSO. An invitation or a revoked
-/// membership is not being in a space.
+/// The Require SSO check reads, for an account, each space it has been confirmed in, the role it
+/// holds there and whether the space requires SSO. An invitation, an acceptance no admin has
+/// confirmed and a revoked membership are not being in a space: whoever sent the invitation could
+/// otherwise close the invitee's password sign-in.
 impl MembershipFacts for SqlStore {
     async fn spaces_of(&self, user: UserId) -> Result<Vec<SpaceMembership>, StoreError> {
         let rows = members::Entity::find()
             .filter(members::Column::UserId.eq(user.0))
-            .filter(members::Column::State.is_in([
-                MemberState::Accepted.as_str(),
-                MemberState::Confirmed.as_str(),
-            ]))
+            .filter(members::Column::State.eq(MemberState::Confirmed.as_str()))
             .all(self.reader())
             .await
             .store()?;
         if rows.is_empty() {
             return Ok(Vec::new());
         }
+        let ids: Vec<SpaceId> = rows.iter().map(|m| SpaceId(m.space_id)).collect();
+        // A space another server is the home of binds nobody here: it is not this server's identity
+        // provider that its Require SSO would name.
+        let binding = kemlock_app::spaces::SpaceRepo::spaces_binding_here(self, &ids).await?;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|m| binding.contains(&SpaceId(m.space_id)))
+            .collect();
         let ids: Vec<SpaceId> = rows.iter().map(|m| SpaceId(m.space_id)).collect();
         let required = self.spaces_requiring_sso(&ids).await?;
         let mut out = Vec::with_capacity(rows.len());

@@ -1,18 +1,50 @@
+import { useState } from 'react';
 import type { PasskeyDto } from '@/api/passkeys';
+import type { Proof } from '@/api/twoStep';
 import { useT } from '@/i18n';
 import { Button } from '@/ui/Button';
+import { type KeyProof, ProofInput, proofBlank, proofValue } from './ProofInput';
 
 export interface PasskeysCardProps {
   /** undefined while loading */
   passkeys: PasskeyDto[] | undefined;
   busy: boolean;
-  onAdd: () => void;
+  /**
+   * Whether a second step is on: a passkey signs in without the password or the second step, so
+   * adding one then takes a fresh proof, as adding a security key does.
+   */
+  proofNeeded?: boolean;
+  /** Answers the proof with a security key or passkey; undefined when the account has none. */
+  keyProof?: KeyProof | undefined;
+  /**
+   * Whether a mailed code can be the proof, because a second step other than the authenticator app is
+   * on. With the app alone the proof is a current code of it, or the recovery code, and nothing is mailed.
+   */
+  mailsCode?: boolean;
+  /** Mails the one-time code the proof can be. */
+  onAskProof?: () => void;
+  /** The proof panel was closed without adding the passkey. */
+  onCancel?: () => void;
+  /** Answers true when the passkey was added, so the proof panel can close. */
+  onAdd: (proof?: Proof) => Promise<boolean> | void;
   onRemove: (id: string) => void;
 }
 
 /** The passkeys of the account, as rows of the two-step card: what is there, add one, remove one. */
-export function PasskeysCard({ passkeys, busy, onAdd, onRemove }: PasskeysCardProps) {
+export function PasskeysCard({
+  passkeys,
+  busy,
+  proofNeeded = false,
+  keyProof,
+  mailsCode = true,
+  onAskProof,
+  onCancel,
+  onAdd,
+  onRemove,
+}: PasskeysCardProps) {
   const t = useT();
+  const [asking, setAsking] = useState(false);
+  const [proof, setProof] = useState<Proof>('');
   return (
     <>
       <div className="row">
@@ -25,10 +57,62 @@ export function PasskeysCard({ passkeys, busy, onAdd, onRemove }: PasskeysCardPr
             {passkeys.length > 0 ? t('security.on') : t('security.off')}
           </span>
         )}
-        <Button size="small" isDisabled={busy || passkeys === undefined} onPress={onAdd}>
-          {t('security.passkeys.add')}
-        </Button>
+        {asking ? null : (
+          <Button
+            size="small"
+            isDisabled={busy || passkeys === undefined}
+            onPress={() => {
+              if (!proofNeeded) {
+                void onAdd();
+                return;
+              }
+              setProof('');
+              setAsking(true);
+              if (mailsCode) onAskProof?.();
+            }}
+          >
+            {t('security.passkeys.add')}
+          </Button>
+        )}
       </div>
+      {asking ? (
+        <form
+          className="panel-body"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const given = proofValue(proof);
+            void Promise.resolve(onAdd(proofBlank(given) ? undefined : given)).then((done) => {
+              if (done) {
+                setAsking(false);
+                setProof('');
+              }
+            });
+          }}
+        >
+          <p className="hint">
+            {t(mailsCode ? 'security.proofAdd.sent' : 'security.passkeys.proofApp')}
+          </p>
+          <ProofInput value={proof} onChange={setProof} keyProof={keyProof} busy={busy} required={false} />
+          <div className="actions">
+            <Button type="submit" variant="primary" isDisabled={busy || proofBlank(proof)}>
+              {t('security.passkeys.add')}
+            </Button>
+            {mailsCode ? (
+              <Button isDisabled={busy} onPress={() => onAskProof?.()}>
+                {t('security.proof.again')}
+              </Button>
+            ) : null}
+            <Button
+              onPress={() => {
+                setAsking(false);
+                onCancel?.();
+              }}
+            >
+              {t('action.cancel')}
+            </Button>
+          </div>
+        </form>
+      ) : null}
       {passkeys?.map((passkey) => (
         <div className="row" key={passkey.id} data-testid="passkey">
           <div className="grow">{passkey.name}</div>

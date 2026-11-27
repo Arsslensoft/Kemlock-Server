@@ -120,3 +120,85 @@ async fn the_dry_run_writes_nothing_and_apply_moves_in_once_and_twice() {
     assert_eq!(count(data.path(), "SELECT COUNT(*) FROM users").await, 2);
     assert_eq!(count(data.path(), "SELECT COUNT(*) FROM items").await, 6);
 }
+
+async fn execute_sql(data: &Path, sql: &'static str) {
+    let mut conn = SqliteConnectOptions::new()
+        .filename(data.join("kemlock.db"))
+        .connect()
+        .await
+        .expect("opens the database");
+    sqlx::query(sql)
+        .execute(&mut conn)
+        .await
+        .expect("runs the statement");
+}
+
+#[tokio::test]
+async fn accounts_no_import_made_are_left_alone_unless_the_operator_adopts_them() {
+    let vw = tempfile::tempdir().expect("a temp folder");
+    vwfix::create_sample_folder(vw.path()).await;
+    let data = tempfile::tempdir().expect("a temp folder");
+
+    let out = run(vw.path(), data.path(), &["--apply"], "");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM vw_import_ids WHERE kind = 'user'"
+        )
+        .await,
+        2,
+        "the import recorded the accounts it made"
+    );
+
+    // A server whose accounts came from an earlier move that left no record.
+    execute_sql(data.path(), "DELETE FROM vw_import_ids").await;
+    let out = run(vw.path(), data.path(), &["--apply"], "");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(said.contains("left alone"), "{said}");
+    assert!(said.contains("--adopt-existing"), "{said}");
+    assert!(!said.contains("WARNING"), "{said}");
+    assert_eq!(
+        count(data.path(), "SELECT COUNT(*) FROM vw_import_ids").await,
+        0,
+        "nothing was taken over"
+    );
+
+    // On purpose, with a warning: the accounts are the import's from then on.
+    let out = run(vw.path(), data.path(), &["--apply", "--adopt-existing"], "");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{said}");
+    assert!(said.contains("WARNING"), "{said}");
+    assert!(!said.contains("left alone"), "{said}");
+    assert_eq!(
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM vw_import_ids WHERE kind = 'user'"
+        )
+        .await,
+        2
+    );
+    // Each pass is in the admin event log: one entry for the pass, and one for each setting it
+    // carried (the sample config.json carries two: signups_allowed and smtp_host).
+    assert_eq!(
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM events WHERE action = 'admin.migration.cli'"
+        )
+        .await,
+        3 * (1 + 2)
+    );
+    assert_eq!(
+        count(
+            data.path(),
+            "SELECT COUNT(*) FROM events WHERE action = 'admin.migration.cli' AND target LIKE '%: setting %'"
+        )
+        .await,
+        3 * 2
+    );
+}

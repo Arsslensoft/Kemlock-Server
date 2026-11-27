@@ -126,13 +126,19 @@ where
     }
 
     /// Ends every session of the account: its security stamp changes, so no access token or
-    /// refresh token it holds works again, and its refresh tokens are revoked.
+    /// refresh token it holds works again, and its refresh tokens are revoked. Each device's DPoP
+    /// key is cleared too: a device that kept it could sign straight back in with the key alone
+    /// (the device-key sign-in of a replica), undoing the sign-out. Its trusted-device copy stays,
+    /// so a password sign-in on the device registers a key again and unlocks as before.
     async fn end_sessions(&self, mut user: User) -> Result<(), AdminError> {
         user.security_stamp = random_uuid(&self.env);
         user.updated_at = self.env.now();
         self.store.update(&user).await?;
-        for device in DeviceRepo::list(&self.store, user.id).await? {
+        for mut device in DeviceRepo::list(&self.store, user.id).await? {
             TokenRepo::revoke_device(&self.store, device.id).await?;
+            if device.dpop_jkt.take().is_some() {
+                DeviceRepo::upsert(&self.store, &device).await?;
+            }
         }
         Ok(())
     }

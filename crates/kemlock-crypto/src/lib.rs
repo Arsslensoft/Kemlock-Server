@@ -81,7 +81,9 @@ pub mod ed25519;
 #[cfg(feature = "fips")]
 pub mod fips;
 pub mod hash;
+pub mod item_write;
 pub mod kem1;
+pub mod key_box;
 pub mod keys;
 pub mod kma1;
 pub mod kx1;
@@ -95,6 +97,7 @@ pub mod prf_wrap;
 pub mod private_keys;
 pub mod rand;
 pub mod recovery_kit;
+pub mod rotation;
 pub mod seal;
 pub mod sealed_box;
 pub mod send;

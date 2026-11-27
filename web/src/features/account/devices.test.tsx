@@ -193,6 +193,25 @@ describe('the devices client', () => {
     });
   });
 
+  it('ends only this session from the sign-out button, and removes a device by id elsewhere', async () => {
+    const send = vi.fn(async () => undefined);
+    const api = createDevicesApi({ request: vi.fn(), send } as never);
+    await api.endSession();
+    expect(send).toHaveBeenLastCalledWith({ method: 'POST', path: '/kem/v1/auth/sign-out' });
+    await api.endOtherSessions();
+    expect(send).toHaveBeenLastCalledWith({
+      method: 'POST',
+      path: '/kem/v1/auth/sign-out',
+      body: { others: true },
+    });
+    await api.signOut('d1');
+    expect(send).toHaveBeenLastCalledWith({
+      method: 'POST',
+      path: '/kem/v1/devices/sign-out',
+      body: { deviceId: 'd1' },
+    });
+  });
+
   it('reads when a device made its key copy', async () => {
     const entry = {
       id: 'd1',
@@ -311,6 +330,36 @@ describe('DevicesView', () => {
     expect(props.onApprove).toHaveBeenCalledWith(ROW);
     await user.click(screen.getByRole('button', { name: 'Deny Firefox on Linux' }));
     expect(props.onDeny).toHaveBeenCalledWith('req-1');
+  });
+
+  it("shows the account's own key fingerprint on the page, with or without a request", () => {
+    const fingerprint = '12345 67890 11111 22222 33333 44444 55555 66666 77777 88888 99999 00000';
+    view({ approvals: [], ownFingerprint: fingerprint });
+    expect(screen.getByRole('heading', { name: "Your account's key fingerprint" })).toBeInTheDocument();
+    expect(screen.getByText(fingerprint)).toBeInTheDocument();
+  });
+
+  it("keeps the fingerprint on the page while a request is pending, once and only once", () => {
+    const fingerprint = '11111 22222 33333 44444 55555 66666 77777 88888 99999 00000 12345 67890';
+    view({ approvals: [ROW], ownFingerprint: fingerprint });
+    expect(screen.getAllByText(fingerprint)).toHaveLength(1);
+    expect(screen.getByText(/compare it with the one at the top of this page/)).toBeInTheDocument();
+  });
+
+  it("says so when this browser can not show the fingerprint", () => {
+    view({ ownFingerprint: null });
+    expect(screen.getByText(/can't show your account's key fingerprint/)).toBeInTheDocument();
+  });
+
+  it("will not approve when this browser can not show its fingerprint to be compared", () => {
+    view({ approvals: [ROW], ownFingerprint: null });
+    expect(screen.getByRole('button', { name: 'Approve Firefox on Linux' })).toBeDisabled();
+  });
+
+  it("shows nothing about the fingerprint while it is still being worked out", () => {
+    view({ ownFingerprint: undefined });
+    expect(screen.queryByText(/can't show your account's key fingerprint/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: "Your account's key fingerprint" })).not.toBeInTheDocument();
   });
 
   it('will not approve a request whose key the server did not send', () => {

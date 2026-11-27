@@ -124,27 +124,55 @@ pub struct AnchorPerson {
     pub fingerprint: [u8; FINGERPRINT_LEN],
 }
 
-/// The anchor person for account `me`: the inviter of an invitee, or the confirmer of a confirmed
-/// member's new device. `None` when `me` made the chain, when their own current key signed a
-/// record after their confirmation (their key vouches), or when the person is no longer a
-/// confirmed member and the human must pick a confirmed Owner instead.
-pub fn anchor_person(state: &State, me: &Id) -> Option<AnchorPerson> {
-    let member = state.members.get(me)?;
+/// What a device does on first contact with a chain ("First contact").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FirstContact {
+    /// No one else's fingerprint is needed: this account made the chain, or its own key signed a
+    /// `rekey` after it was confirmed. A caller still checks that the bundle the chain records for
+    /// this account is the one it holds itself; a chain that records another one vouches for
+    /// nothing.
+    SelfVouched,
+    /// Compare the fingerprint of this person's bundle, as the chain records it at its head.
+    Compare(AnchorPerson),
+    /// The person to compare with isn't known or isn't a confirmed member any more (or this
+    /// account isn't in the chain): the human picks a confirmed Owner and compares with them.
+    /// **Not** "no comparison needed": a caller that skips first contact for this is wrong.
+    PickOwner,
+}
+
+/// What `me` does on first contact with `state`: compare with the inviter of an invitee, or with
+/// the confirmer of a confirmed member's new device; no one for the creator, or for a member whose
+/// own current key signed a `rekey`; and pick a confirmed Owner when the person isn't a confirmed
+/// member any more, or `me` isn't a member of the chain.
+pub fn anchor_person(state: &State, me: &Id) -> FirstContact {
+    let Some(member) = state.members.get(me) else {
+        return FirstContact::PickOwner;
+    };
     let person = match member.status {
-        Status::Removed => return None,
+        Status::Removed => return FirstContact::PickOwner,
         Status::Invited => member.invited_by,
         Status::Confirmed => {
             if member.rekey_seq.is_some() {
-                return None;
+                return FirstContact::SelfVouched;
             }
-            member.confirmation.as_ref()?.by
+            match member.confirmation.as_ref() {
+                Some(confirmation) => confirmation.by,
+                // Nobody confirmed them: only the creator, who made the chain, is that.
+                None if member.invited_by == *me => return FirstContact::SelfVouched,
+                None => return FirstContact::PickOwner,
+            }
         }
     };
     if person == *me {
-        return None;
+        return FirstContact::PickOwner;
     }
-    let bundle = state.confirmed(&person)?.bundle.as_ref()?;
-    Some(AnchorPerson {
+    let Some(bundle) = state
+        .confirmed(&person)
+        .and_then(|confirmed| confirmed.bundle.as_ref())
+    else {
+        return FirstContact::PickOwner;
+    };
+    FirstContact::Compare(AnchorPerson {
         person,
         fingerprint: bundle::fingerprint_in::<Active>(&bundle.to_bytes()),
     })

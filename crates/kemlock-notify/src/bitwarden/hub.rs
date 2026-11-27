@@ -8,9 +8,15 @@
 //!
 //! A socket speaks SignalR: the client's handshake picks MessagePack or JSON, then the server
 //! pushes updates and pings every 15 seconds, and a client silent for 30 seconds is dropped
-//! (this clears half-open connections). Any other frame is echoed back, as Vaultwarden does.
+//! (this clears half-open connections). A client may send only the handshake and SignalR
+//! keep-alives (a ping, or a close); any other frame, or one over a few KiB, closes the socket. (Vaultwarden
+//! echoes other frames back; echoing what an anonymous client sends is an amplifier, so this hub
+//! doesn't.) An account's socket checks its token again every minute and closes when it no longer
+//! holds.
 
-use super::message::{HANDSHAKE_RESPONSE, MSGPACK_PING, Message, Protocol, UpdateType};
+use super::message::{
+    HANDSHAKE_RESPONSE, MSGPACK_PING, Message, Protocol, RECORD_SEPARATOR, UpdateType, read_varint,
+};
 use crate::audience::Audience;
 use axum::Json;
 use axum::Router;
@@ -21,6 +27,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use kemlock_app::notices::BoxFuture;
+use kemlock_app::privacy::ClientAddr;
 use kemlock_domain::{DeviceId, Owner, UserId};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -36,6 +43,11 @@ use tokio::time::Instant;
 /// Anonymous sockets one address may hold.
 pub const MAX_ANONYMOUS_PER_IP: usize = 25;
 
+/// The most a client may send in one WebSocket message or frame. What a client says on this hub is
+/// a handshake and SignalR keep-alives, a few dozen bytes, so anything larger is refused before it
+/// is buffered (a message may otherwise be 64 MiB).
+pub const MAX_CLIENT_MESSAGE: usize = 4 * 1024;
+
 /// How long [`BwHub::cover`] holds: the fan-out answers in milliseconds, so a cover that is not
 /// used within this time was for a nudge that never came.
 pub const COVER_FOR: Duration = Duration::from_secs(5);
@@ -50,8 +62,32 @@ pub struct HubIdentity {
 /// Checks a Bitwarden access token for the hub. The server implements it over `kemlock-api-bw`'s
 /// token keys, so a token the API would refuse the hub refuses too (a changed security stamp, a
 /// signed-out device).
+/// What a second look at an open socket's token finds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recheck {
+    /// The token still holds for this account.
+    Valid,
+    /// The token was refused for certain (expired, a new security stamp, a disabled account, a
+    /// device that is gone).
+    Refused,
+    /// The store couldn't say (a transient failure): the socket stays as it is.
+    Unknown,
+}
+
 pub trait HubAuth: Send + Sync + 'static {
     fn authenticate(&self, token: &str) -> BoxFuture<'_, Option<HubIdentity>>;
+
+    /// Looks at the token again for a socket that is open. The default takes a refusal of
+    /// [`HubAuth::authenticate`] as definite; a server whose lookups can fail says `Unknown` then.
+    fn recheck(&self, token: &str, user: UserId) -> BoxFuture<'_, Recheck> {
+        let first = self.authenticate(token);
+        Box::pin(async move {
+            match first.await {
+                Some(identity) if identity.user == user => Recheck::Valid,
+                _ => Recheck::Refused,
+            }
+        })
+    }
 }
 
 /// Timings and the address header of the hub.
@@ -61,6 +97,9 @@ pub struct HubConfig {
     pub ping_every: Duration,
     /// How long a socket may say nothing before it is dropped.
     pub client_timeout: Duration,
+    /// How often an account's socket checks its token again: one that has expired, or whose
+    /// account changed its password or was disabled since, is closed.
+    pub recheck_every: Duration,
     /// The header that carries the client's address behind a proxy (`IP_HEADER`), if any.
     pub ip_header: Option<String>,
 }
@@ -70,6 +109,7 @@ impl Default for HubConfig {
         HubConfig {
             ping_every: Duration::from_secs(15),
             client_timeout: Duration::from_secs(30),
+            recheck_every: Duration::from_secs(60),
             ip_header: None,
         }
     }
@@ -322,28 +362,54 @@ struct Session {
 }
 
 impl Session {
-    /// Handles a frame from the client: the handshake, a close, or anything else (echoed).
+    /// Handles a frame from the client. Only the handshake (once, first) and SignalR's keep-alives
+    /// are expected; a SignalR close, or anything else, ends the socket.
     async fn on_frame(&mut self, socket: &mut WebSocket, frame: Frame) -> Next {
         match frame {
             Frame::Close(_) => Next::Stop,
             // The library answers a ping with a pong; both only show the client is alive.
             Frame::Ping(_) | Frame::Pong(_) => Next::Continue,
-            Frame::Text(text) => {
-                if self.protocol.is_none()
-                    && let Some(protocol) = Protocol::from_handshake(text.as_str())
-                {
+            Frame::Text(text) => match self.protocol {
+                None => {
+                    let Some(protocol) = Protocol::from_handshake(text.as_str()) else {
+                        return Next::Stop;
+                    };
                     self.protocol = Some(protocol);
                     let reply = match protocol {
                         Protocol::MessagePack => Frame::Binary(HANDSHAKE_RESPONSE.to_vec().into()),
                         Protocol::Json => Frame::Text("{}\u{1e}".into()),
                     };
-                    return send(socket, reply).await;
+                    send(socket, reply).await
                 }
-                send(socket, Frame::Text(text)).await
-            }
-            other @ Frame::Binary(_) => send(socket, other).await,
+                Some(Protocol::Json) => json_control(text.as_str()),
+                Some(Protocol::MessagePack) => Next::Stop,
+            },
+            Frame::Binary(bytes) => match self.protocol {
+                Some(Protocol::MessagePack) => msgpack_control(&bytes),
+                _ => Next::Stop,
+            },
         }
     }
+}
+
+/// What a JSON-protocol client may send after the handshake: a ping (`{"type":6}`), which only
+/// shows it is alive. Anything else, a close message included, ends the socket.
+fn json_control(text: &str) -> Next {
+    let text = text
+        .strip_suffix(char::from(RECORD_SEPARATOR))
+        .unwrap_or(text);
+    let ping = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .is_some_and(|value| value.get("type").and_then(serde_json::Value::as_i64) == Some(6));
+    if ping { Next::Continue } else { Next::Stop }
+}
+
+/// The same for a MessagePack client: exactly one length-prefixed message, `[6]`.
+fn msgpack_control(bytes: &[u8]) -> Next {
+    let ping = read_varint(bytes).is_some_and(|(length, used)| {
+        used.checked_add(length) == Some(bytes.len()) && bytes[used..] == [0x91, 0x06]
+    });
+    if ping { Next::Continue } else { Next::Stop }
 }
 
 async fn send(socket: &mut WebSocket, frame: Frame) -> Next {
@@ -355,7 +421,13 @@ async fn send(socket: &mut WebSocket, frame: Frame) -> Next {
 }
 
 /// Serves one account's socket until it closes or goes quiet.
-async fn serve_user(mut socket: WebSocket, hub: BwHub, identity: HubIdentity) {
+async fn serve_user(
+    mut socket: WebSocket,
+    hub: BwHub,
+    auth: Arc<dyn HubAuth>,
+    token: String,
+    identity: HubIdentity,
+) {
     let config = hub.inner.config.clone();
     // Subscribed before it counts as open, so an open socket has not missed an update.
     let mut events = hub.inner.events.subscribe();
@@ -363,11 +435,20 @@ async fn serve_user(mut socket: WebSocket, hub: BwHub, identity: HubIdentity) {
     let mut session = Session { protocol: None };
     let mut ping = tokio::time::interval_at(Instant::now() + config.ping_every, config.ping_every);
     let mut last_heard = Instant::now();
+    let mut rechecked = Instant::now();
     loop {
         tokio::select! {
             _ = ping.tick() => {
                 if last_heard.elapsed() > config.client_timeout {
                     break;
+                }
+                // The token is looked at again now and then: it may have expired, or the account
+                // may have changed its password or been disabled since the socket opened.
+                if rechecked.elapsed() >= config.recheck_every {
+                    rechecked = Instant::now();
+                    if auth.recheck(&token, identity.user).await == Recheck::Refused {
+                        break;
+                    }
                 }
                 if socket.send(ws_ping()).await.is_err() {
                     break;
@@ -471,13 +552,19 @@ struct HubState {
     auth: Arc<dyn HubAuth>,
 }
 
-/// The connecting address: the configured proxy header, else the socket's peer.
+/// The connecting address: the one the server's request layer settled (the peer, or the address a
+/// trusted proxy forwarded), else the configured proxy header, else the socket's peer. The header
+/// is read only when no layer settled an address, because on its own it is whatever the client
+/// wrote: only the layer knows which peers are trusted proxies.
 struct ClientIp(IpAddr);
 
 impl FromRequestParts<HubState> for ClientIp {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, state: &HubState) -> Result<Self, Infallible> {
+        if let Some(settled) = parts.extensions.get::<ClientAddr>() {
+            return Ok(ClientIp(settled.0));
+        }
         let from_header = state
             .hub
             .inner
@@ -542,7 +629,8 @@ async fn hub_socket(
         Err(rejection) => return rejection.into_response(),
     };
     let hub = state.hub.clone();
-    upgrade.on_upgrade(move |socket| serve_user(socket, hub, identity))
+    let auth = state.auth.clone();
+    limited(upgrade).on_upgrade(move |socket| serve_user(socket, hub, auth, token, identity))
 }
 
 async fn anonymous_socket(
@@ -560,7 +648,15 @@ async fn anonymous_socket(
         Err(rejection) => return rejection.into_response(),
     };
     let hub = state.hub.clone();
-    upgrade.on_upgrade(move |socket| serve_anonymous(socket, hub, query.token, slot))
+    limited(upgrade).on_upgrade(move |socket| serve_anonymous(socket, hub, query.token, slot))
+}
+
+/// A client says little on this hub, so a message or frame past [`MAX_CLIENT_MESSAGE`] is refused
+/// before it is buffered.
+fn limited(upgrade: WebSocketUpgrade) -> WebSocketUpgrade {
+    upgrade
+        .max_message_size(MAX_CLIENT_MESSAGE)
+        .max_frame_size(MAX_CLIENT_MESSAGE)
 }
 
 /// SignalR's negotiation. Only WebSockets are offered, in binary, as Vaultwarden does.

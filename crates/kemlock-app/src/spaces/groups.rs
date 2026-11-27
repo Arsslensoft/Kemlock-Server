@@ -7,8 +7,9 @@
 use super::authority;
 use super::collections::check_grantee_member;
 use super::error::SpacesError;
+use super::key_boxes::KeyBoxVerifier;
 use super::ports::{SpaceChanges, SpaceRepo};
-use super::support::{SealedCollectionKey, key_changes, load_open, record};
+use super::support::{SealedCollectionKey, key_changes, key_removals, load_open, record};
 use crate::authenticate::Actor;
 use crate::ports::{Clock, EventLog};
 use kemlock_domain::spaces::{Group, GroupId, SpaceError, check_sealed_name};
@@ -45,7 +46,8 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> CreateGroup<R, V, C> {
         let state = load_open(&self.spaces, space).await?;
         state.authorize_manage_groups(actor.user)?;
         state.ensure_keys_open()?;
-        if state.group(input.id).is_some() {
+        // Group ids are unique across spaces: another space's id is taken too.
+        if state.group(input.id).is_some() || self.spaces.group_space(input.id).await?.is_some() {
             return Err(SpacesError::Duplicate);
         }
         let members = check_members(&state, &input.members)?;
@@ -90,10 +92,11 @@ fn check_members(
 }
 
 #[derive(Debug)]
-pub struct EditGroup<R, V, C> {
+pub struct EditGroup<R, V, C, K> {
     pub spaces: R,
     pub events: V,
     pub clock: C,
+    pub boxes: K,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -107,7 +110,7 @@ pub struct EditGroupInput {
     pub keys: Vec<SealedCollectionKey>,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> EditGroup<R, V, C> {
+impl<R: SpaceRepo, V: EventLog, C: Clock, K: KeyBoxVerifier> EditGroup<R, V, C, K> {
     /// Renames a group or replaces its members. Members who gain access need sealed keys; members
     /// who lose it mark the collections they held for key replacement.
     pub async fn execute(
@@ -139,7 +142,8 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> EditGroup<R, V, C> {
             if !delta.needed.is_empty() {
                 state.ensure_keys_open()?;
             }
-            let keys = key_changes(&after, &delta, input.keys, now)?;
+            let keys =
+                key_changes(&after, &delta, input.keys, now, &self.boxes, actor.user).await?;
             changes.key_copies = keys.key_copies;
             changes.key_copies_removed = keys.key_copies_removed;
             changes.collections = keys.collections;
@@ -190,7 +194,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> DeleteGroup<R, V, C> {
         authority::check(&state, &after, actor.user, None)?;
         let holders = self.spaces.holders(space).await?;
         let delta = after.key_delta(&holders);
-        let keys = key_changes(&after, &delta, Vec::new(), now)?;
+        let keys = key_removals(&after, &delta, now)?;
         self.spaces
             .apply(SpaceChanges {
                 groups_removed: vec![group],

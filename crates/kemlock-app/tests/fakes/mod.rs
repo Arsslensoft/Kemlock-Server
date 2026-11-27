@@ -6,9 +6,9 @@
 #![allow(dead_code, unused_imports)]
 
 use kemlock_app::ports::{
-    AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, Event, EventLog, ItemStore, Notifier,
-    PasswordAuth, Random, RefreshToken, SecretSeal, ServerInfo, StoreError, TokenRepo, TokenSigner,
-    Totp, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
+    AccessClaims, ChangePage, Clock, CryptoError, DeviceRepo, EmailConfirmation, Event, EventLog,
+    ItemStore, Notifier, PasswordAuth, Random, RefreshToken, SecretSeal, ServerInfo, StoreError,
+    TokenRepo, TokenSigner, Totp, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing,
 };
 use kemlock_app::privacy::{NewSignIn, PrivacyLog};
 use kemlock_app::register::{
@@ -29,7 +29,7 @@ use kemlock_app::{
 use kemlock_crypto::opaque::OpaqueServer;
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_domain::privacy::{SignInEntry, StoredEvent, truncate_ip};
-use kemlock_domain::spaces::{CollectionId, KeyCopy, Member, Space, SpaceState};
+use kemlock_domain::spaces::{CollectionId, GroupId, KeyCopy, Member, Space, SpaceState};
 use kemlock_domain::{
     ChangeId, Device, DeviceId, DeviceKind, Hlc, Item, ItemDraft, ItemId, KdfParams, Owner,
     ServerId, SpaceId, User, UserId, VersionVector,
@@ -51,6 +51,7 @@ pub(crate) mod unlock;
 
 #[derive(Default)]
 struct StoreInner {
+    sso_sessions: Vec<kemlock_app::sso::SsoSession>,
     users: HashMap<UserId, User>,
     devices: HashMap<DeviceId, Device>,
     tokens: HashMap<[u8; 32], RefreshToken>,
@@ -62,6 +63,8 @@ struct StoreInner {
     /// The newest TOTP step accepted per user.
     totp_steps: HashMap<UserId, u64>,
     items: HashMap<ItemId, Item>,
+    /// The owners that accept signed writes only.
+    signed_owners: HashSet<Owner>,
     events: Vec<Event>,
     /// The address each event was written with, in step with `events`.
     event_ips: Vec<Option<IpAddr>>,
@@ -82,6 +85,12 @@ struct StoreInner {
     disabled: HashSet<UserId>,
     /// The accounts whose deletion is pending (the grace period), with when it is due.
     erasing: HashMap<UserId, OffsetDateTime>,
+    /// The second-step attempts each account has reserved.
+    second_step: HashMap<UserId, kemlock_app::second_step_guard::Attempts>,
+    step_up: HashMap<UserId, kemlock_app::second_step_guard::Attempts>,
+    /// The accounts held back until the link mailed to their address is opened: the SHA-256 of the
+    /// link's token, when it was made and when it runs out.
+    unconfirmed: HashMap<UserId, ([u8; 32], OffsetDateTime, OffsetDateTime)>,
     /// The `settings` table.
     settings: std::collections::BTreeMap<String, String>,
 }
@@ -108,6 +117,11 @@ impl FakeStore {
 
     fn lock(&self) -> MutexGuard<'_, StoreInner> {
         self.inner.lock().expect("the store lock isn't poisoned")
+    }
+
+    /// The devices an SSO sign-in started that a second step finished.
+    pub(crate) fn sso_sessions(&self) -> Vec<kemlock_app::sso::SsoSession> {
+        self.lock().sso_sessions.clone()
     }
 
     pub(crate) fn user(&self, id: UserId) -> Option<User> {
@@ -376,6 +390,52 @@ impl UserRepo for FakeStore {
     async fn erasure_pending(&self, id: UserId) -> Result<Option<OffsetDateTime>, StoreError> {
         Ok(self.lock().erasing.get(&id).copied())
     }
+
+    async fn email_unconfirmed(&self, id: UserId) -> Result<bool, StoreError> {
+        Ok(self.lock().unconfirmed.contains_key(&id))
+    }
+
+    async fn hold_unconfirmed(
+        &self,
+        id: UserId,
+        token_hash: [u8; 32],
+        requested_at: OffsetDateTime,
+        expires_at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.lock()
+            .unconfirmed
+            .insert(id, (token_hash, requested_at, expires_at));
+        Ok(())
+    }
+
+    async fn confirmation_of(&self, id: UserId) -> Result<Option<EmailConfirmation>, StoreError> {
+        Ok(self
+            .lock()
+            .unconfirmed
+            .get(&id)
+            .map(|(_, requested_at, expires_at)| EmailConfirmation {
+                user: id,
+                requested_at: *requested_at,
+                expires_at: *expires_at,
+            }))
+    }
+
+    async fn spend_confirmation(
+        &self,
+        token_hash: [u8; 32],
+        now: OffsetDateTime,
+    ) -> Result<Option<UserId>, StoreError> {
+        let mut g = self.lock();
+        let found = g
+            .unconfirmed
+            .iter()
+            .find(|(_, (hash, _, expires_at))| *hash == token_hash && *expires_at > now)
+            .map(|(id, _)| *id);
+        if let Some(id) = found {
+            g.unconfirmed.remove(&id);
+        }
+        Ok(found)
+    }
 }
 
 impl kemlock_app::FirstAdminRepo for FakeStore {
@@ -416,6 +476,21 @@ impl DeviceRepo for FakeStore {
         let mut g = self.lock();
         g.devices.remove(&id);
         g.tokens.retain(|_, t| t.device != id);
+        Ok(())
+    }
+
+    async fn record_sso_session(
+        &self,
+        session: &kemlock_app::sso::SsoSession,
+    ) -> Result<(), StoreError> {
+        let mut g = self.lock();
+        g.sso_sessions.retain(|s| s.device != session.device);
+        g.sso_sessions.push(session.clone());
+        Ok(())
+    }
+
+    async fn forget_sso_session(&self, id: DeviceId) -> Result<(), StoreError> {
+        self.lock().sso_sessions.retain(|s| s.device != id);
         Ok(())
     }
 }
@@ -463,6 +538,16 @@ impl TokenRepo for FakeStore {
         self.lock().tokens.retain(|_, t| t.device != device);
         Ok(())
     }
+
+    async fn device_tokens(&self, device: DeviceId) -> Result<Vec<RefreshToken>, StoreError> {
+        Ok(self
+            .lock()
+            .tokens
+            .values()
+            .filter(|t| t.device == device)
+            .cloned()
+            .collect())
+    }
 }
 
 impl TwoFactorRepo for FakeStore {
@@ -476,6 +561,21 @@ impl TwoFactorRepo for FakeStore {
             .retain(|t| !(t.user == two_factor.user && t.method == two_factor.method));
         g.two_factor.push(two_factor.clone());
         Ok(())
+    }
+
+    async fn replace_if_sealed(&self, from: &[u8], to: &TwoFactor) -> Result<bool, StoreError> {
+        let mut g = self.lock();
+        match g
+            .two_factor
+            .iter_mut()
+            .find(|t| t.user == to.user && t.method == to.method && t.sealed_secret == from)
+        {
+            Some(row) => {
+                *row = to.clone();
+                Ok(true)
+            }
+            None => Ok(false),
+        }
     }
 
     async fn remove(&self, user: UserId, method: TwoFactorMethod) -> Result<(), StoreError> {
@@ -609,6 +709,24 @@ impl ItemStore for FakeStore {
             }
         }
         Ok(horizon)
+    }
+
+    async fn signed_writes_required(&self, owner: Owner) -> Result<bool, StoreError> {
+        Ok(self.lock().signed_owners.contains(&owner))
+    }
+
+    async fn require_signed_writes(
+        &self,
+        owner: Owner,
+        _at: OffsetDateTime,
+    ) -> Result<(), StoreError> {
+        self.lock().signed_owners.insert(owner);
+        Ok(())
+    }
+
+    async fn clear_signed_writes(&self, owner: Owner) -> Result<(), StoreError> {
+        self.lock().signed_owners.remove(&owner);
+        Ok(())
     }
 
     async fn purge_tombstones(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
@@ -964,6 +1082,12 @@ impl World {
         self
     }
 
+    /// With "verify the email of a new account" on: a held account is refused.
+    pub(crate) fn with_email_verification(mut self) -> Self {
+        self.config.signups_verify = true;
+        self
+    }
+
     pub(crate) fn first_run(&self) -> FirstRun<FakeStore, FakeEnv> {
         FirstRun {
             users: self.store.clone(),
@@ -1060,25 +1184,32 @@ impl World {
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.env.clone(),
+            verify_email: self.config.signups_verify,
         }
     }
 
-    pub(crate) fn put_item(&self) -> PutItem<FakeStore, FakeStore, FakeNotifier, FakeEnv> {
+    pub(crate) fn put_item(
+        &self,
+    ) -> PutItem<FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeStore> {
         PutItem {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.notifier.clone(),
             clock: self.env.clone(),
+            users: self.store.clone(),
             config: self.config,
         }
     }
 
-    pub(crate) fn put_batch(&self) -> PutBatch<FakeStore, FakeStore, FakeNotifier, FakeEnv> {
+    pub(crate) fn put_batch(
+        &self,
+    ) -> PutBatch<FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeStore> {
         PutBatch {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.notifier.clone(),
             clock: self.env.clone(),
+            users: self.store.clone(),
             config: self.config,
         }
     }
@@ -1106,6 +1237,14 @@ impl SpaceRepo for NoSpaceStore {
 
     async fn spaces(&self, _: &[SpaceId]) -> Result<Vec<Space>, StoreError> {
         Ok(Vec::new())
+    }
+
+    async fn collection_space(&self, _: CollectionId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(None)
+    }
+
+    async fn group_space(&self, _: GroupId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(None)
     }
 
     async fn key_copies(&self, _: SpaceId, _: UserId) -> Result<Vec<KeyCopy>, StoreError> {
@@ -1165,13 +1304,51 @@ impl SpaceRepo for NoSpaceStore {
 /// The password input OPAQUE takes: a 32-byte master key (docs/crypto.md).
 pub(crate) const PASSWORD: [u8; 32] = [5u8; 32];
 
-/// A public-key bundle with docs/crypto.md's layout and filler keys.
+/// The `sig1` key behind every fake account's bundle.
+pub(crate) fn bundle_key() -> kemlock_crypto::sig1::SigningKey {
+    kemlock_crypto::sig1::SigningKey::from_bytes(&[0x5a; 64])
+}
+
+/// A public-key bundle for `user` with docs/crypto.md's layout, `signing`'s public key and a
+/// filler exchange key, and the signature `signing` makes of it (the server checks it).
+pub(crate) fn signed_bundle(
+    user: UserId,
+    signing: &kemlock_crypto::sig1::SigningKey,
+) -> (Vec<u8>, Vec<u8>) {
+    let bundle = kemlock_crypto::bundle::Bundle {
+        account_id: *user.as_bytes(),
+        key_version: FIRST_KEY_VERSION,
+        kx1_public: kemlock_crypto::kx1::PublicKey::from_bytes(&[0x42; 1600]).expect("a length"),
+        sig1_public: signing.public_key().expect("a public key"),
+    };
+    let signature = bundle.sign(signing).expect("the bundle signs");
+    (bundle.to_bytes(), signature)
+}
+
+/// A signed public-key bundle for `user`; see [`bundle_signature`] for its signature.
 pub(crate) fn bundle(user: UserId) -> Vec<u8> {
-    let mut bundle = BUNDLE_PREFIX.to_vec();
-    bundle.extend_from_slice(user.as_bytes());
-    bundle.extend_from_slice(&FIRST_KEY_VERSION.to_be_bytes());
-    bundle.resize(BUNDLE_LEN, 0x42);
-    bundle
+    signed_bundle(user, &bundle_key()).0
+}
+
+/// [`bundle`] and its signature, for a registration.
+pub(crate) fn bundle_and_signature(user: UserId) -> (Vec<u8>, Vec<u8>) {
+    (bundle(user), bundle_signature(user))
+}
+
+/// The signature of [`bundle`]`(user)`. ML-DSA signing may be hedged, so the first one made for a
+/// user is kept: a test that sends it and reads it back sees the same bytes.
+pub(crate) fn bundle_signature(user: UserId) -> Vec<u8> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static SIGNATURES: OnceLock<Mutex<HashMap<[u8; 16], Vec<u8>>>> = OnceLock::new();
+    let mut known = SIGNATURES
+        .get_or_init(Mutex::default)
+        .lock()
+        .expect("no test panics holding this");
+    known
+        .entry(*user.as_bytes())
+        .or_insert_with(|| signed_bundle(user, &bundle_key()).1)
+        .clone()
 }
 
 pub(crate) fn register_input(
@@ -1187,7 +1364,7 @@ pub(crate) fn register_input(
         upload,
         kdf: KdfParams::new_account([4u8; 16]),
         public_bundle: bundle(user),
-        bundle_signature: vec![0x11; BUNDLE_SIGNATURE_LEN],
+        bundle_signature: bundle_signature(user),
         sealed_private_keys: vec![0x22; 64],
         wrapped_root_key: vec![0x33; WRAPPED_ROOT_KEY_LEN],
         setup_grant,
@@ -1281,10 +1458,10 @@ pub(crate) fn totp_code(world: &World, user: UserId) -> String {
         .into_iter()
         .find(|t| t.method == TwoFactorMethod::Totp)
         .expect("the user has a TOTP enrolment");
-    let secret = world
-        .seal
-        .open("totp", &row.sealed_secret)
-        .expect("the secret opens");
+    // Sealed to the account, or the old way under the bare purpose, as a test may leave it.
+    let secret = kemlock_app::sealed::open_bound(&world.seal, "totp", user, &row.sealed_secret)
+        .expect("the secret opens")
+        .value;
     kemlock_crypto::totp::code_at(&secret, unix(world.env.now()))
 }
 
@@ -1328,6 +1505,7 @@ pub(crate) fn write(
             ciphertext: filler(64, 0xaa),
             item_key: filler(kemlock_domain::item::ITEM_KEY_LEN, 0xbb),
         }),
+        signature: None,
     }
 }
 
@@ -1417,6 +1595,46 @@ impl kemlock_app::admin::SettingsRepo for FakeStore {
 
     async fn delete_setting(&self, key: &str) -> Result<(), StoreError> {
         self.lock().settings.remove(key);
+        Ok(())
+    }
+}
+
+impl kemlock_app::second_step_guard::SecondStepGuard for FakeStore {
+    async fn reserve_second_step(
+        &self,
+        user: UserId,
+        now: i64,
+        limit: u32,
+        window_secs: i64,
+    ) -> Result<kemlock_app::second_step_guard::Reservation, StoreError> {
+        let mut g = self.lock();
+        let before = g.second_step.get(&user).copied().unwrap_or_default();
+        let (after, reservation) = before.reserve(now, limit, window_secs);
+        g.second_step.insert(user, after);
+        Ok(reservation)
+    }
+
+    async fn clear_second_step(&self, user: UserId) -> Result<(), StoreError> {
+        self.lock().second_step.remove(&user);
+        Ok(())
+    }
+
+    async fn reserve_step_up(
+        &self,
+        user: UserId,
+        now: i64,
+        limit: u32,
+        window_secs: i64,
+    ) -> Result<kemlock_app::second_step_guard::Reservation, StoreError> {
+        let mut g = self.lock();
+        let before = g.step_up.get(&user).copied().unwrap_or_default();
+        let (after, reservation) = before.reserve(now, limit, window_secs);
+        g.step_up.insert(user, after);
+        Ok(reservation)
+    }
+
+    async fn clear_step_up(&self, user: UserId) -> Result<(), StoreError> {
+        self.lock().step_up.remove(&user);
         Ok(())
     }
 }

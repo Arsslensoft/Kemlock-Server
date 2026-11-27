@@ -6,6 +6,7 @@
 
 use super::accounts::now_ms;
 use super::rows;
+use super::scope::{SPACE, USER};
 use super::{Ctx, Res, invalid};
 use crate::error::StoreResult;
 use crate::repo::items::write_in;
@@ -69,6 +70,7 @@ fn draft(
         ciphertext: body,
         item_key: None,
         updated_at,
+        signature: None,
     })
 }
 
@@ -105,6 +107,13 @@ pub(super) async fn put_folders(ctx: &mut Ctx, folders: &[MappedFolder]) -> Res<
     for folder in folders {
         let body = json!({ "name": folder.name }).to_string().into_bytes();
         let owner = Owner::User(folder.user);
+        if !ctx
+            .item_allowed(folder.id, owner, folder.updated_at)
+            .await?
+        {
+            ctx.refuse("folder", folder.id);
+            continue;
+        }
         let existing = find(ctx, folder.id).await?;
         if !unchanged(existing.as_ref(), owner, &kind, &body) {
             drafts.push(draft(
@@ -156,6 +165,13 @@ pub(super) async fn put_items(ctx: &mut Ctx, items: &[MappedItem]) -> Res<()> {
         let ids: Vec<Uuid> = chunk.iter().map(|item| item.id.0).collect();
         let attachments = attachment_lists(ctx, &ids).await?;
         for item in chunk {
+            if !ctx
+                .item_allowed(item.id.0, item.owner, item.updated_at)
+                .await?
+            {
+                ctx.refuse("item", item.id.0);
+                continue;
+            }
             let mut doc = item.json.clone();
             if let Some(list) = attachments.get(&item.id.0) {
                 doc["attachments"] = Value::Array(list.clone());
@@ -185,12 +201,17 @@ pub(super) async fn put_items(ctx: &mut Ctx, items: &[MappedItem]) -> Res<()> {
 /// organization's cipher is stored for all its members, so each member's own state goes beside it,
 /// in `vw_rows` as `cipher_states`, for the Bitwarden API to add when it serves the cipher.
 /// A user's own cipher already carries its state in its JSON.
-pub(super) async fn put_cipher_states(ctx: &Ctx, states: &[MappedCipherState]) -> Res<()> {
+pub(super) async fn put_cipher_states(ctx: &mut Ctx, states: &[MappedCipherState]) -> Res<()> {
     for state in states {
         let Some(row) = find(ctx, state.item.0).await? else {
             continue;
         };
         if row.owner_type != i16::from(Owner::TYPE_SPACE) {
+            continue;
+        }
+        // Only a user and a space the import owns.
+        if !ctx.owns(USER, state.user.0).await? || !ctx.owns(SPACE, row.owner_id).await? {
+            ctx.refuse("cipher-state", cipher_state_key(state.user.0, state.item.0));
             continue;
         }
         let key = cipher_state_key(state.user.0, state.item.0);
@@ -214,9 +235,19 @@ pub(super) fn cipher_state_key(user: Uuid, item: Uuid) -> String {
     format!("{user}/{item}")
 }
 
-pub(super) async fn put_attachments(ctx: &Ctx, attachments: &[MappedAttachment]) -> Res<()> {
+pub(super) async fn put_attachments(ctx: &mut Ctx, attachments: &[MappedAttachment]) -> Res<()> {
     let mut touched = BTreeSet::new();
     for attachment in attachments {
+        // The cipher is the import's, and the attachment id isn't another cipher's.
+        let taken = bw_attachments::Entity::find_by_id(attachment.id.clone())
+            .one(&ctx.txn)
+            .await
+            .store()?
+            .is_some_and(|row| row.item_id != attachment.item.0);
+        if taken || !ctx.item_owner_owned(attachment.item.0).await? {
+            ctx.refuse("attachment", &attachment.id);
+            continue;
+        }
         bw_attachments::Entity::delete_many()
             .filter(bw_attachments::Column::Id.eq(attachment.id.as_str()))
             .exec(&ctx.txn)

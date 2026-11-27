@@ -317,3 +317,50 @@ async fn a_member_the_chain_confirms_writes_and_reads_a_chained_space() {
         .await
         .expect("Ana reads");
 }
+
+#[tokio::test]
+async fn a_writer_cannot_freeze_the_counter_by_jumping_far_ahead() {
+    let c = Ctx::new().await;
+    let space = Owner::Space(c.space);
+    put(&c.w)
+        .execute(&actor(c.ana), input(space, 5))
+        .await
+        .expect("stores");
+    let invalid = |r: Result<SignedManifest, ManifestError>| {
+        matches!(r, Err(ManifestError::App(AppError::Invalid(_))))
+    };
+
+    // As far as the limit lets it go from 5, a step is taken; one past it isn't.
+    let far = 5 + SignedManifest::MAX_STEP;
+    assert!(invalid(
+        put(&c.w)
+            .execute(&actor(c.ana), input(space, far + 1))
+            .await
+    ));
+    assert!(invalid(
+        put(&c.w)
+            .execute(&actor(c.ana), input(space, SignedManifest::MAX_COUNTER))
+            .await
+    ));
+    // Nothing was stored, so the next ordinary write still works.
+    let next = put(&c.w)
+        .execute(&actor(c.sam), input(space, 6))
+        .await
+        .expect("the counter is where it was");
+    assert_eq!(next.counter, 6);
+    put(&c.w)
+        .execute(&actor(c.ana), input(space, 6 + SignedManifest::MAX_STEP))
+        .await
+        .expect("a step of exactly the limit");
+
+    // Nor can a first write start the counter near the limit.
+    let (fresh, _) = c.w.make_space(c.sam).await;
+    assert!(invalid(
+        put(&c.w)
+            .execute(
+                &actor(c.sam),
+                input(Owner::Space(fresh), SignedManifest::MAX_STEP + 1)
+            )
+            .await
+    ));
+}

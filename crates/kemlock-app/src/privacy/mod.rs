@@ -13,6 +13,11 @@ mod signin;
 
 use kemlock_domain::UserId;
 
+/// The message of the `StoreError::Backend` an [`AccountEraser`] answers when erasing the account
+/// would leave the server with no admin. The check is made inside the erasing transaction, where
+/// two admins erasing each other cannot both pass it; [`EraseAccount`] turns it into a refusal.
+pub const LAST_ADMIN: &str = "the last admin cannot be erased";
+
 pub use erase::{EraseAccount, Erasure, ErasureReport, OwnErasure, Reauthenticate};
 pub use export::{AccountExport, EXPORT_FORMAT, ExportAccount};
 pub use grace::ensure_not_pending;

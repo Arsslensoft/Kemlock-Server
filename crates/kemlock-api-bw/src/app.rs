@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, FromRequestParts};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use kemlock_app::api_use::ApiUseRepo;
-use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwOrgStore, BwUserKeyIdRepo};
+use kemlock_app::bitwarden::{BwAccount, BwAccountRepo, BwOrgStore, BwTryRepo, BwUserKeyIdRepo};
 use kemlock_app::bw_events::{BwDeviceRepo, BwEvents, BwRelay};
 use kemlock_app::emergency::EmergencyRepo;
 use kemlock_app::event_reader::EventReader;
@@ -23,7 +23,9 @@ use kemlock_app::ports::{
     DeviceRepo, EventLog, ItemStore, StoreError, TokenRepo, TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::{OwnErasure, PrivacyLog};
+use kemlock_app::second_step_guard::SecondStepGuard;
 use kemlock_app::spaces::SpaceRepo;
+use kemlock_app::sso::SsoSettingsRepo;
 use kemlock_app::two_step::RecoveryCodeRepo;
 use kemlock_crypto::hash;
 use kemlock_crypto::seal::ServerSeal;
@@ -45,11 +47,14 @@ pub trait BwStore:
     + ItemStore
     + BwAccountRepo
     + BwUserKeyIdRepo
+    + BwTryRepo
+    + SecondStepGuard
     + BwDeviceRepo
     + ApiUseRepo
     + ChallengeRepo
     + BwOrgStore
     + SpaceRepo
+    + SsoSettingsRepo
     + EmergencyRepo
     + RecoveryCodeRepo
     + EventLog
@@ -68,11 +73,14 @@ impl<T> BwStore for T where
         + ItemStore
         + BwAccountRepo
         + BwUserKeyIdRepo
+        + BwTryRepo
+        + SecondStepGuard
         + BwDeviceRepo
         + ApiUseRepo
         + ChallengeRepo
         + BwOrgStore
         + SpaceRepo
+        + SsoSettingsRepo
         + EmergencyRepo
         + RecoveryCodeRepo
         + EventLog
@@ -128,17 +136,29 @@ pub struct Inner<S> {
     pub(crate) login_limit: crate::ip_limit::IpLimit,
     /// Vaultwarden's limiter for the other routes with no sign-in (`check_limit_unauthenticated`).
     pub(crate) unauthenticated_limit: crate::ip_limit::IpLimit,
+    /// How often one address may ask for an account's KDF settings (`prelogin`): the burst of the
+    /// unauthenticated limit, then one every 10 seconds. A person asks once per sign-in.
+    pub(crate) prelogin_limit: crate::ip_limit::IpLimit,
+    /// How many verification mails (`send-verification-email`) an address may ask for: a burst of 5,
+    /// then one every 5 minutes.
+    pub(crate) verification_mail_limit: crate::ip_limit::IpLimit,
+    /// When each address was last mailed a verification link.
+    pub(crate) verification_mailed: crate::signup_hold::RecipientLimit,
     pub(crate) events: Arc<dyn BwEvents>,
     pub(crate) relay: Option<Arc<dyn BwRelay>>,
     pub(crate) notices: Notices,
     pub(crate) require_device_email: bool,
     pub(crate) erasure: Option<Arc<dyn OwnErasure>>,
-    /// Keys the KDF settings of unknown emails, derived from the token key like Vaultwarden's.
+    /// The server's own MAC key (a subkey of `server.key`): it picks the KDF settings of unknown
+    /// emails, salts the decoy hash, keys the hashing gate by account and makes refresh successors.
     pub(crate) prelogin_key: [u8; 32],
     /// Held from the check of a storage quota to the save of what it covers, so announces that
     /// arrive together can't each read the same sum and all pass. One server owns the data, so one
     /// lock is enough.
     pub(crate) quota_gate: tokio::sync::Mutex<()>,
+    /// The gate of the password hash checks (see
+    /// [`App::hashing`]).
+    pub(crate) hash_gate: crate::hash_gate::HashGate,
 }
 
 impl<S> std::fmt::Debug for Inner<S> {
@@ -171,7 +191,12 @@ impl<S> std::fmt::Debug for App<S> {
 
 impl<S: BwStore> App<S> {
     pub fn new(parts: AppParts<S>) -> Self {
-        let prelogin_key = hash::hmac_sha256(parts.keys.pem().as_bytes(), b"prelogin-kdf");
+        // Made from `server.key` (the secret only this server has), not from `rsa_key.pem`, which an
+        // old copy of a Vaultwarden server may share.
+        let prelogin_key = parts.seal.subkey("bitwarden-prelogin").map_or_else(
+            |_| hash::hmac_sha256(parts.keys.pem().as_bytes(), b"prelogin-kdf"),
+            |key| *key,
+        );
         let login_limit = crate::ip_limit::IpLimit::new(
             parts.settings.login_ratelimit_max_burst,
             parts.settings.login_ratelimit_seconds,
@@ -180,6 +205,13 @@ impl<S: BwStore> App<S> {
             parts.settings.unauthenticated_ratelimit_max_burst,
             parts.settings.unauthenticated_ratelimit_seconds,
         );
+        let hash_gate = crate::hash_gate::HashGate::new(
+            crate::hash_gate::HashGate::default_permits(),
+            parts.settings.hash_wait,
+            parts.settings.hash_interval,
+        );
+        let prelogin_limit =
+            crate::ip_limit::IpLimit::new(parts.settings.unauthenticated_ratelimit_max_burst, 10);
         App(Arc::new(Inner {
             store: parts.store,
             env: parts.env,
@@ -195,6 +227,9 @@ impl<S: BwStore> App<S> {
             send_limit: crate::send_limit::SendAccessLimit::default(),
             login_limit,
             unauthenticated_limit,
+            prelogin_limit,
+            verification_mail_limit: crate::ip_limit::IpLimit::new(5, 300),
+            verification_mailed: crate::signup_hold::RecipientLimit::default(),
             events: parts.live.events,
             relay: parts.live.relay,
             notices: parts.live.notices,
@@ -202,6 +237,7 @@ impl<S: BwStore> App<S> {
             erasure: parts.live.erasure,
             prelogin_key,
             quota_gate: tokio::sync::Mutex::new(()),
+            hash_gate,
         }))
     }
 
@@ -252,6 +288,16 @@ impl<S: BwStore> App<S> {
         if user.security_stamp.to_string() != claims.sstamp {
             return Err(BwError::Unauthorized);
         }
+        // A signed-in device's access token lives only while its sign-in does: once its refresh
+        // tokens are revoked (a KDF change, a sign-out, a reused refresh token) it ends at once, not
+        // up to two hours later. An API key's token has no refresh token to follow.
+        if claims.scope.iter().any(|s| s == "offline_access")
+            && TokenRepo::device_tokens(&self.store, device.id)
+                .await?
+                .is_empty()
+        {
+            return Err(BwError::Unauthorized);
+        }
         // The device used the Bitwarden API: the device list shows it beside the Kemlock API's use.
         self.record_use(device.id).await;
         Ok(Authed {
@@ -300,5 +346,26 @@ impl<S: BwStore> FromRequestParts<App<S>> for Authed {
             .get::<ConnectInfo<SocketAddr>>()
             .map_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED), |c| c.0.ip());
         app.session(&claims, ip).await
+    }
+}
+
+/// A request that may carry an access token: the accept routes of an invitation take either the
+/// invitee's session or, with none, their master password hash in the body (an account made through
+/// the Bitwarden API has no way into the web vault, and the Bitwarden apps have no accept screen).
+/// With an `Authorization` header it must be a good one, as for [`Authed`]; with none, there is no
+/// caller.
+#[derive(Debug)]
+pub(crate) struct MaybeAuthed(pub(crate) Option<Authed>);
+
+impl<S: BwStore> FromRequestParts<App<S>> for MaybeAuthed {
+    type Rejection = BwError;
+
+    async fn from_request_parts(parts: &mut Parts, app: &App<S>) -> Result<Self, BwError> {
+        if !parts.headers.contains_key(AUTHORIZATION) {
+            return Ok(MaybeAuthed(None));
+        }
+        Authed::from_request_parts(parts, app)
+            .await
+            .map(|authed| MaybeAuthed(Some(authed)))
     }
 }

@@ -9,9 +9,10 @@ use kemlock_app::dedup::{
     BackfillTags, DedupError, Dismiss, DuplicateReport, GetMatching, ListDuplicates,
     RotateDedupKey, SetMatching, StoreTags, Undismiss,
 };
-use kemlock_domain::spaces::{CollectionPermission, SpaceRole};
+use kemlock_app::spaces::CreateCollectionInput;
+use kemlock_domain::spaces::{CollectionId, CollectionPermission, SpaceRole};
 use kemlock_domain::{DedupTag, Item, ItemId, Owner, Revision, TagSet, UserId};
-use space_fakes::{SpaceWorld, Spaces};
+use space_fakes::{SpaceWorld, Spaces, key_for, name};
 use std::collections::HashMap;
 
 fn tag(n: u8) -> DedupTag {
@@ -37,8 +38,11 @@ impl Scene {
         self.w.world.store.clone()
     }
 
-    fn store_tags(&self) -> StoreTags<FakeStore> {
-        StoreTags { tags: self.store() }
+    fn store_tags(&self) -> StoreTags<FakeStore, Spaces> {
+        StoreTags {
+            tags: self.store(),
+            spaces: self.w.spaces.clone(),
+        }
     }
 
     fn backfill(&self) -> BackfillTags<FakeStore, FakeStore, Spaces> {
@@ -110,7 +114,7 @@ impl Scene {
         let item = self.put(user, ItemId::random(), 1).await;
         let outcome = self
             .store_tags()
-            .after_write(&item, set(version, tags))
+            .after_write(&actor(user), &item, set(version, tags))
             .await
             .expect("tags are stored");
         assert!(outcome.stored, "the tags were stored");
@@ -148,7 +152,7 @@ async fn matching_is_off_until_it_is_turned_on() {
 
     let outcome = s
         .store_tags()
-        .after_write(&item, set(1, &[1]))
+        .after_write(&actor(sam), &item, set(1, &[1]))
         .await
         .expect("a write's tags are ignored, not refused");
     assert!(!outcome.stored && outcome.matches.is_empty());
@@ -171,12 +175,15 @@ async fn equal_tags_make_a_group_and_the_second_item_is_told_its_match() {
     s.turn_on(sam).await;
 
     let a = s.put(sam, ItemId::random(), 1).await;
-    let first = s.store_tags().after_write(&a, set(1, &[1, 2])).await;
+    let first = s
+        .store_tags()
+        .after_write(&actor(sam), &a, set(1, &[1, 2]))
+        .await;
     assert_eq!(first.expect("stored").matches, Vec::<ItemId>::new());
     let b = s.put(sam, ItemId::random(), 1).await;
     let second = s
         .store_tags()
-        .after_write(&b, set(1, &[2, 3]))
+        .after_write(&actor(sam), &b, set(1, &[2, 3]))
         .await
         .expect("stored");
     assert!(second.stored);
@@ -276,7 +283,7 @@ async fn tags_of_another_key_version_are_ignored_with_a_write() {
     let item = s.put(sam, ItemId::random(), 1).await;
     let outcome = s
         .store_tags()
-        .after_write(&item, set(3, &[1]))
+        .after_write(&actor(sam), &item, set(3, &[1]))
         .await
         .expect("ignored");
     assert!(!outcome.stored);
@@ -296,7 +303,7 @@ async fn a_batch_stores_the_tags_of_the_items_that_carried_them() {
     tags.insert(c.id, set(1, &[4]));
     let outcomes = s
         .store_tags()
-        .after_batch(&[a.clone(), b.clone(), c.clone()], tags)
+        .after_batch(&actor(sam), &[a.clone(), b.clone(), c.clone()], tags)
         .await
         .expect("stored");
     assert_eq!(outcomes.len(), 2);
@@ -508,7 +515,7 @@ async fn space_scene() -> SpaceScene {
                 .expect("a space item");
         let outcome = s
             .store_tags()
-            .after_write(&item, set(1, &[1]))
+            .after_write(&actor(sam), &item, set(1, &[1]))
             .await
             .expect("tags");
         assert!(outcome.stored);
@@ -640,4 +647,179 @@ async fn an_answer_in_a_space_is_seen_by_every_member() {
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn a_viewer_cannot_take_back_an_answer_and_sees_only_their_own_waiting_items() {
+    let sc = space_scene().await;
+    let owner = Owner::Space(sc.space);
+    let ids: Vec<ItemId> = sc.items.iter().map(|i| i.id).collect();
+    let answer =
+        sc.s.dismiss()
+            .execute(&actor(sc.sam), owner, ids)
+            .await
+            .expect("the owner answers");
+    // Kim may only view the collection: the answer is not hers to take back.
+    assert!(matches!(
+        sc.s.undismiss().execute(&actor(sc.kim), answer.id).await,
+        Err(DedupError::Forbidden(_))
+    ));
+    sc.s.undismiss()
+        .execute(&actor(sc.sam), answer.id)
+        .await
+        .expect("the owner takes it back");
+
+    // An item with no tags waits for them. Kim holds the collection and counts it; Lee holds
+    // none and is told of none.
+    let everyone =
+        sc.s.w
+            .spaces
+            .item_collection(sc.items[0].id)
+            .expect("the item's collection");
+    sc.s.w
+        .put_space_item()
+        .execute(
+            &actor(sc.sam),
+            everyone,
+            sc.s.w.item_write(sc.space, ItemId::random(), None, 1, 1),
+        )
+        .await
+        .expect("an untagged space item");
+    let kim =
+        sc.s.list()
+            .execute(&actor(sc.kim), owner)
+            .await
+            .expect("kim");
+    let lee =
+        sc.s.list()
+            .execute(&actor(sc.lee), owner)
+            .await
+            .expect("lee");
+    assert_eq!(kim.waiting, 1);
+    assert_eq!(lee.waiting, 0);
+}
+
+#[tokio::test]
+async fn a_tag_write_names_only_the_matches_the_writer_may_see() {
+    let s = Scene::new();
+    let sam = s.user("sam@example.org").await;
+    let kim = s.user("kim@example.org").await;
+    let (space, everyone) = s.w.make_space(sam).await;
+    s.w.join(
+        space,
+        sam,
+        sam,
+        kim,
+        SpaceRole::Member,
+        vec![(everyone, CollectionPermission::Edit)],
+    )
+    .await;
+    // Finance holds an item only Sam may see.
+    let finance = CollectionId::random();
+    s.w.create_collection()
+        .execute(
+            &actor(sam),
+            space,
+            CreateCollectionInput {
+                id: finance,
+                parent: None,
+                name: name(8),
+                grants: Vec::new(),
+                keys: vec![key_for(finance, sam, 6)],
+            },
+        )
+        .await
+        .expect("a collection only Sam holds");
+    s.set_matching()
+        .execute(&actor(sam), Owner::Space(space), true)
+        .await
+        .expect("an owner turns it on");
+    let secret =
+        s.w.put_space_item()
+            .execute(
+                &actor(sam),
+                finance,
+                s.w.item_write(space, ItemId::random(), None, 1, 1),
+            )
+            .await
+            .expect("Sam's item");
+    let stored = s
+        .store_tags()
+        .after_write(&actor(sam), &secret, set(1, &[7]))
+        .await
+        .expect("tags");
+    assert!(stored.stored);
+
+    // Kim, with edit on Everyone alone, writes an item and guesses the tag: the answer doesn't
+    // say that Finance's item has it.
+    let mine =
+        s.w.put_space_item()
+            .execute(
+                &actor(kim),
+                everyone,
+                s.w.item_write(space, ItemId::random(), None, 1, 1),
+            )
+            .await
+            .expect("Kim's item");
+    let guessed = s
+        .store_tags()
+        .after_write(&actor(kim), &mine, set(1, &[7]))
+        .await
+        .expect("tags");
+    assert!(guessed.stored);
+    assert!(guessed.matches.is_empty(), "{:?}", guessed.matches);
+
+    // The same for a batch and for a backfill.
+    let mut tags = HashMap::new();
+    tags.insert(mine.id, set(1, &[7]));
+    let batch = s
+        .store_tags()
+        .after_batch(&actor(kim), std::slice::from_ref(&mine), tags)
+        .await
+        .expect("tags");
+    assert!(batch[0].1.matches.is_empty());
+    let backfilled = s
+        .backfill()
+        .execute(&actor(kim), mine.id, mine.revision, set(1, &[7]))
+        .await
+        .expect("backfilled");
+    assert!(backfilled.is_empty(), "{backfilled:?}");
+
+    // Sam holds both collections, so for him the tag does match Kim's item.
+    let seen = s
+        .backfill()
+        .execute(&actor(sam), secret.id, secret.revision, set(1, &[7]))
+        .await
+        .expect("backfilled");
+    assert_eq!(seen, vec![mine.id]);
+}
+
+#[tokio::test]
+async fn tags_are_not_stored_when_the_writer_cannot_be_checked_against_the_space() {
+    let s = Scene::new();
+    let sam = s.user("sam@example.org").await;
+    let zed = s.user("zed@example.org").await;
+    let (space, everyone) = s.w.make_space(sam).await;
+    s.set_matching()
+        .execute(&actor(sam), Owner::Space(space), true)
+        .await
+        .expect("an owner turns it on");
+    let item =
+        s.w.put_space_item()
+            .execute(
+                &actor(sam),
+                everyone,
+                s.w.item_write(space, ItemId::random(), None, 1, 1),
+            )
+            .await
+            .expect("Sam's item");
+
+    // Zed isn't in the space. The refusal comes before the tags are stored, so the answer can't
+    // say "not stored" about tags that were.
+    let refused = s
+        .store_tags()
+        .after_write(&actor(zed), &item, set(1, &[1]))
+        .await;
+    assert_eq!(refused.map(|_| ()), Err(DedupError::NotFound));
+    assert!(s.store().tags_of(item.id).is_empty());
 }

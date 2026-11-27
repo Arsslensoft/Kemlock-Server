@@ -35,7 +35,11 @@ use kemlock_crypto::{
 };
 use zeroize::Zeroizing;
 
-use crate::{error::Error, spaces::SpaceKeys};
+use crate::{
+    error::Error,
+    rotation::{Pending, Previous},
+    spaces::SpaceKeys,
+};
 
 /// The key version of a new account.
 pub(crate) const FIRST_KEY_VERSION: u32 = 1;
@@ -68,7 +72,7 @@ pub(crate) struct Unlocked {
     /// WebAssembly memory except inside such a box.
     pub(crate) root: RootKey,
     /// The user key's `"kemlock/v1/item-wrap"` child: wraps and unwraps item keys.
-    item_wrap: SecretKey,
+    pub(crate) item_wrap: SecretKey,
     /// The `kx1` and `sig1` private keys, when the caller handed over the sealed blob.
     pub(crate) private: Option<(kx1::PrivateKey, sig1::SigningKey)>,
     /// The space and collection keys opened or made in this unlock.
@@ -111,7 +115,11 @@ pub(crate) struct SealedItemRef<'a> {
 pub(crate) struct Session {
     next: u32,
     slots: HashMap<u32, Slot>,
-    unlocked: Option<Unlocked>,
+    pub(crate) unlocked: Option<Unlocked>,
+    /// A rotation of the root key that was started and not yet committed (`rotation.rs`).
+    pub(crate) pending: Option<Pending>,
+    /// The private keys before the last rotation (`rotation.rs`).
+    pub(crate) previous: Option<Previous>,
 }
 
 impl fmt::Debug for Session {
@@ -129,6 +137,8 @@ impl Session {
             next: 1,
             slots: HashMap::new(),
             unlocked: None,
+            pending: None,
+            previous: None,
         }
     }
 
@@ -147,14 +157,14 @@ impl Session {
         self.insert(Slot::Export(Zeroizing::new(key)))
     }
 
-    fn master(&self, handle: u32) -> Result<Zeroizing<[u8; 32]>, Error> {
+    pub(crate) fn master(&self, handle: u32) -> Result<Zeroizing<[u8; 32]>, Error> {
         match self.slots.get(&handle) {
             Some(Slot::Master(key)) => Ok(Zeroizing::new(**key)),
             _ => Err(Error::Invalid),
         }
     }
 
-    fn export(&self, handle: u32) -> Result<Zeroizing<[u8; 64]>, Error> {
+    pub(crate) fn export(&self, handle: u32) -> Result<Zeroizing<[u8; 64]>, Error> {
         match self.slots.get(&handle) {
             Some(Slot::Export(key)) => Ok(Zeroizing::new(**key)),
             _ => Err(Error::Invalid),
@@ -199,6 +209,8 @@ impl Session {
         // counter is not reset, so a handle from before the lock can never name a new secret.
         self.slots.clear();
         self.unlocked = None;
+        self.pending = None;
+        self.previous = None;
     }
 
     /// The master key: `Argon2id(password, salt, m, t, p, L = 32)`. The password is the UTF-8 of
@@ -472,12 +484,22 @@ impl Session {
     /// Opens the vault with a root key already in hand (an approved device's), exactly as
     /// `unlock` does with the one its password wrap opened. `root_handle` is a `Slot::Root` and is
     /// consumed on success.
+    ///
+    /// `expected_bundle` is the account's public bundle. A root key opened from an approving
+    /// device's box is authenticated by nothing the new device holds, so a server could seal a
+    /// root key of its own, with sealed private keys that open under it, to the one-time key.
+    /// When the bundle is given, the sealed private keys must be too, and the vault opens only if
+    /// the public halves of the `kx1` and `sig1` keys they hold are the bundle's, for this
+    /// account and key version. Otherwise nothing is unlocked and the handle is kept. (The bundle
+    /// is still the server's word until a person compares its fingerprint with the approving
+    /// device's; this check makes sure that fingerprint is the one of the keys now in use.)
     pub(crate) fn unlock_with_root(
         &mut self,
         account_id: &[u8; 16],
         root_handle: u32,
         key_version: u32,
         sealed_private_keys: Option<&[u8]>,
+        expected_bundle: Option<&[u8]>,
     ) -> Result<(), Error> {
         let slot = self.root_slot(root_handle)?;
         let root = RootKey::from_bytes(&slot);
@@ -492,6 +514,10 @@ impl Session {
             )?),
             None => None,
         };
+        if let Some(bundle) = expected_bundle {
+            let (kx_private, sig_private) = private.as_ref().ok_or(Error::Invalid)?;
+            keys_match_bundle(bundle, account_id, key_version, kx_private, sig_private)?;
+        }
         self.slots.remove(&root_handle);
         self.unlocked = Some(Unlocked {
             account_id: *account_id,
@@ -657,6 +683,27 @@ impl Session {
     }
 }
 
+/// Whether `bundle` is the public side of exactly these private keys: the same account and key
+/// version, and public keys that are the ones the private keys derive. Anything else, including a
+/// bundle that does not parse, is `Invalid`.
+pub(crate) fn keys_match_bundle(
+    bundle: &[u8],
+    account_id: &[u8; 16],
+    key_version: u32,
+    kx_private: &kx1::PrivateKey,
+    sig_private: &sig1::SigningKey,
+) -> Result<(), Error> {
+    let bundle = Bundle::from_bytes(bundle)?;
+    if bundle.account_id != *account_id
+        || bundle.key_version != key_version
+        || bundle.kx1_public != kx_private.public_key()?
+        || bundle.sig1_public != sig_private.public_key()?
+    {
+        return Err(Error::Invalid);
+    }
+    Ok(())
+}
+
 /// A bundle's fingerprint as 12 groups of 5 digits joined by spaces. Public data, so it needs no
 /// session.
 pub(crate) fn fingerprint(bundle: &[u8]) -> Result<String, Error> {
@@ -679,6 +726,50 @@ mod tests {
     // Native `cargo test --workspace` unifies kemlock-crypto's features with the server's, which
     // turns on aws-lc-rs, and that backend can't derive `kx1` keys. So everything that touches
     // `kx1` runs in WebAssembly (src/tests.rs); what is left here is backend-independent.
+
+    #[test]
+    fn the_bitwarden_argon_hash_is_one_hmac_of_the_master_key_over_the_password() {
+        // Small settings keep it quick; 8 MiB is the floor.
+        let hash = bitwarden_argon_hash("pässword".as_bytes(), b"sam@example.co", 8 * 1024, 2, 1)
+            .expect("hash");
+        let salt = kemlock_crypto::hash::sha256(b"sam@example.co");
+        let key = argon2id::master_key("pässword".as_bytes(), &salt, 8 * 1024, 2, 1).expect("key");
+        let mut data = "pässword".as_bytes().to_vec();
+        data.extend_from_slice(&[0, 0, 0, 1]);
+        assert_eq!(hash, kemlock_crypto::hash::hmac_sha256(&key, &data));
+        // The password and the address both matter.
+        assert_ne!(
+            hash,
+            bitwarden_argon_hash(b"password", b"sam@example.co", 8 * 1024, 2, 1).expect("hash")
+        );
+        assert_ne!(
+            hash,
+            bitwarden_argon_hash("pässword".as_bytes(), b"alex@example.co", 8 * 1024, 2, 1)
+                .expect("hash")
+        );
+    }
+
+    #[test]
+    fn the_bitwarden_argon_hash_refuses_settings_a_hostile_server_could_ask_for() {
+        for (m, t, p) in [
+            (1024, 2, 1),
+            (8 * 1024, 1, 1),
+            (8 * 1024, 11, 1),
+            (8 * 1024, 2, 0),
+            (8 * 1024, 2, 17),
+            (1024 * 1024 + 1, 2, 1),
+        ] {
+            assert_eq!(
+                bitwarden_argon_hash(b"pw", b"a@b.c", m, t, p),
+                Err(Error::Invalid),
+                "{m} {t} {p}"
+            );
+        }
+        assert_eq!(
+            bitwarden_argon_hash(b"pw", b"", 8 * 1024, 2, 1),
+            Err(Error::Invalid)
+        );
+    }
 
     #[test]
     fn weak_and_absurd_kdf_settings_are_refused() {
@@ -876,6 +967,43 @@ mod send_tests {
     }
 }
 
+/// The Argon2id settings a Bitwarden account may have, in KiB, passes and lanes: wider than a
+/// Kemlock account's (Bitwarden allows 15 MiB), and bounded so a hostile server's prelogin can't ask
+/// a browser for more than a gigabyte or an absurd run time.
+const BW_MEMORY_KIB: core::ops::RangeInclusive<u32> = 8 * 1024..=1024 * 1024;
+
+/// The Bitwarden master password hash of an account whose KDF is Argon2id, as the server checks it:
+/// the master key is `Argon2id(password, SHA-256(email), m, t, p)`, and the hash is the one PBKDF2
+/// round `PBKDF2-HMAC-SHA256(master key, password, 1)`, which for one 32-byte block is
+/// `HMAC-SHA256(master key, password ‖ 00000001)`. `email` is already trimmed and lower-cased. The
+/// password is never returned or kept; the master key is wiped.
+pub(crate) fn bitwarden_argon_hash(
+    password: &[u8],
+    email: &[u8],
+    memory_kib: u32,
+    iterations: u32,
+    parallelism: u32,
+) -> Result<[u8; 32], Error> {
+    if !BW_MEMORY_KIB.contains(&memory_kib)
+        || !ITERATIONS.contains(&iterations)
+        || !PARALLELISM.contains(&parallelism)
+        || email.is_empty()
+    {
+        return Err(Error::Invalid);
+    }
+    let salt = kemlock_crypto::hash::sha256(email);
+    let key = Zeroizing::new(argon2id::master_key(
+        password,
+        &salt,
+        memory_kib,
+        iterations,
+        parallelism,
+    )?);
+    let mut data = Zeroizing::new(Vec::with_capacity(password.len() + 4));
+    data.extend_from_slice(password);
+    data.extend_from_slice(&1u32.to_be_bytes());
+    Ok(kemlock_crypto::hash::hmac_sha256(key.as_slice(), &data))
+}
 #[cfg(test)]
 mod rewrap_tests {
     use super::*;

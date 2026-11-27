@@ -465,7 +465,9 @@ async fn the_prf_copy_of_the_root_key_is_stored_when_it_fits() {
             .finish_registration(answer(Some(stale)))
             .await
             .expect_err("refused"),
-        AppError::Invalid("the wrapped key is for another key version than the account's")
+        AppError::StaleKeyVersion {
+            current: wrap.key_version
+        }
     );
 
     let passkey = fx
@@ -500,9 +502,9 @@ async fn a_passkey_made_without_prf_gets_its_copy_later() {
                 }
             )
             .await,
-        Err(AppError::Invalid(
-            "the wrapped key is for another key version than the account's"
-        ))
+        Err(AppError::StaleKeyVersion {
+            current: wrap.key_version
+        })
     );
     fx.manage()
         .set_wrap(sam, passkey.id, wrap.clone())
@@ -877,7 +879,10 @@ async fn a_security_key_turns_the_method_on_with_a_sealed_list() {
     assert!(
         fx.world
             .seal
-            .open("webauthn", &rows[0].sealed_secret)
+            .open(
+                &kemlock_app::sealed::bound_purpose("webauthn", user),
+                &rows[0].sealed_secret
+            )
             .is_ok()
     );
     assert!(fx.world.seal.open("totp", &rows[0].sealed_secret).is_err());

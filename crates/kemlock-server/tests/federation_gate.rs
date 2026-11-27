@@ -24,7 +24,8 @@ use kemlock_app::dedup::TagStore;
 use kemlock_app::federation_view::BoxFut;
 use kemlock_app::policies::PolicyRepo;
 use kemlock_app::ports::{DeviceRepo, Event, EventLog, ItemStore, UserRepo};
-use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
+use kemlock_app::spaces::{SpaceChanges, SpaceFacts, SpaceRepo};
+use kemlock_app::sso::MembershipFacts;
 use kemlock_crypto::sig1;
 use kemlock_domain::policies::SpacePolicies;
 use kemlock_domain::spaces::{
@@ -650,8 +651,8 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         kdf: KdfParams::new_account([1; 16]),
         opaque_record: Some(vec![7; 96]),
         wrapped_root_key: vec![1; 80],
-        public_bundle: vec![2; 200],
-        bundle_signature: vec![3; 100],
+        public_bundle: signed_bundle().0,
+        bundle_signature: signed_bundle().1,
         sealed_private_keys: vec![4; 120],
         key_version: 1,
         security_stamp: Uuid::new_v4(),
@@ -863,12 +864,20 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("the vault");
     assert_eq!((after.home, after.epoch), (b.id, 2));
     assert_eq!(after.replicas, vec![c.id, a.id], "the old home goes last");
-    // C takes the promotion when B visits it.
+    // C holds the promotion for its own admin, as every replica does by default (an admin can
+    // set `federation_promotion` to `auto`); it applies it when the admin accepts.
     b.visit(&c).await;
     let at_c = VaultRepo::get_vault(c.store(), owner)
         .await
         .expect("a read")
         .expect("the vault");
+    assert_eq!((at_c.home, at_c.epoch), (a.id, 1), "C waits for its admin");
+    assert!(!at_c.held_demotion.is_empty(), "C holds the promotion");
+    let at_c = c
+        .facade
+        .accept_demotion(owner)
+        .await
+        .expect("C's admin accepts");
     assert_eq!((at_c.home, at_c.epoch), (b.id, 2));
 
     // The old home, cut off and unaware, makes a home-only write under epoch 1.
@@ -901,7 +910,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .expect("a read")
         .expect("the vault");
     assert_eq!((at_a.home, at_a.epoch), (a.id, 1), "A waits for its admin");
-    assert!(at_a.held_demotion.is_some(), "A holds the promotion");
+    assert!(!at_a.held_demotion.is_empty(), "A holds the promotion");
     // A's admin accepts it (the HTTP route asks for a fresh check).
     let at_a = a
         .facade
@@ -909,7 +918,7 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
         .await
         .expect("A's admin accepts");
     assert_eq!((at_a.home, at_a.epoch), (b.id, 2), "A took the promotion");
-    assert!(at_a.held_demotion.is_none());
+    assert!(at_a.held_demotion.is_empty());
     assert_eq!(at_a.replicas, vec![c.id, a.id]);
     // Second visit: B pulls what A wrote while it was cut off. The home-only write is of an older
     // epoch, so it is kept for the admins and applied nowhere.
@@ -968,6 +977,22 @@ async fn three_servers_pair_replicate_fail_over_promote_and_fence() {
 
 // ---- a space: roles, keys and policies are home-only ----
 
+/// A public-key bundle and its signature by its own key: a federated copy of an account is kept
+/// only when the bundle verifies.
+fn signed_bundle() -> (Vec<u8>, Vec<u8>) {
+    use kemlock_crypto::bundle::Bundle;
+    use kemlock_crypto::{kx1, sig1};
+    let key = sig1::SigningKey::from_bytes(&[5; 64]);
+    let bundle = Bundle {
+        account_id: [1; 16],
+        key_version: 1,
+        kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+        sig1_public: key.public_key().expect("a public key"),
+    };
+    let signature = bundle.sign(&key).expect("a signature");
+    (bundle.to_bytes(), signature)
+}
+
 fn new_user(email: &str) -> User {
     User {
         id: UserId::random(),
@@ -978,8 +1003,8 @@ fn new_user(email: &str) -> User {
         kdf: KdfParams::new_account([1; 16]),
         opaque_record: Some(vec![7; 96]),
         wrapped_root_key: vec![1; 80],
-        public_bundle: vec![2; 200],
-        bundle_signature: vec![3; 100],
+        public_bundle: signed_bundle().0,
+        bundle_signature: signed_bundle().1,
         sealed_private_keys: vec![4; 120],
         key_version: 1,
         security_stamp: Uuid::new_v4(),
@@ -1041,6 +1066,7 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
                 invited_at: now,
                 accepted_at: Some(now),
                 sealed_space_key: Some(vec![5; 64]),
+                sealed_by: None,
                 key_version: Some(1),
                 confirmation: None,
                 revoked_at: None,
@@ -1056,6 +1082,7 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
                 user: owner_account.id,
                 key_version: 1,
                 sealed: vec![9; 80],
+                sealed_by: None,
             }],
             ..SpaceChanges::new(space)
         },
@@ -1221,6 +1248,329 @@ async fn a_space_follows_its_home_in_roles_keys_and_policies_and_stale_writes_ar
         .await;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.json());
     assert_eq!(refused.json()["home"]["address"], b.domain.as_str());
+}
+
+// ---- a space homed at another server binds nobody here ----
+
+/// A space at `home` with `members` (the first an owner) and one collection, as the tests below
+/// build it.
+async fn make_space(home: &Node, members: &[&User], require_sso: bool) -> (SpaceId, CollectionId) {
+    let space = SpaceId::random();
+    let now = OffsetDateTime::now_utc();
+    let collection = Collection {
+        id: CollectionId::random(),
+        space,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: now,
+    };
+    let rows: Vec<Member> = members
+        .iter()
+        .enumerate()
+        .map(|(n, user)| Member {
+            space,
+            user: user.id,
+            role: if n == 0 {
+                SpaceRole::Owner
+            } else {
+                SpaceRole::Member
+            },
+            custom: CustomPermissions::NONE,
+            state: MemberState::Confirmed,
+            invited_by: members[0].id,
+            invited_at: now,
+            accepted_at: Some(now),
+            sealed_space_key: Some(vec![5; 64]),
+            sealed_by: None,
+            key_version: Some(1),
+            confirmation: None,
+            revoked_at: None,
+        })
+        .collect();
+    SpaceRepo::create(
+        home.store(),
+        SpaceChanges {
+            space: Some(Space {
+                id: space,
+                name: vec![1; 40],
+                key_version: 1,
+                keys_pending_since: None,
+                created_at: now,
+                updated_at: now,
+            }),
+            members: rows,
+            collections: vec![collection.clone()],
+            grants: members
+                .iter()
+                .map(|user| CollectionGrant {
+                    collection: collection.id,
+                    grantee: Grantee::Member(user.id),
+                    permission: CollectionPermission::Manage,
+                })
+                .collect(),
+            key_copies: members
+                .iter()
+                .map(|user| KeyCopy {
+                    collection: collection.id,
+                    user: user.id,
+                    key_version: 1,
+                    sealed: vec![9; 80],
+                    sealed_by: None,
+                })
+                .collect(),
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a space");
+    if require_sso {
+        PolicyRepo::put_space_policies(
+            home.store(),
+            space,
+            &SpacePolicies {
+                require_sso: true,
+                single_space: true,
+                ..SpacePolicies::default()
+            },
+            members[0].id,
+            now,
+        )
+        .await
+        .expect("policies");
+    }
+    (space, collection.id)
+}
+
+/// Federates `space` from `home` to `replica` and brings it across.
+async fn replicate_space(home: &Node, replica: &Node, space: SpaceId) {
+    let vault = Owner::Space(space);
+    home.facade
+        .set_policy(vault, Policy::Federated, vec![replica.id])
+        .await
+        .expect("the home federates the space");
+    home.visit(replica).await;
+    replica
+        .facade
+        .accept_offer(vault)
+        .await
+        .expect("the replica accepts");
+    home.visit(replica).await;
+    replica.visit(home).await;
+    replica.visit(home).await;
+}
+
+#[tokio::test]
+async fn a_space_planted_with_require_sso_does_not_bind_an_account_that_lives_here() {
+    let fabric = Arc::new(Fabric::default());
+    let a = Node::new("n3-a", &fabric).await;
+    let b = Node::new("n3-b", &fabric).await;
+    pair(&a, &b).await;
+
+    // The victim's account is at B. A never had it, but names the same id (read from a space they
+    // share) in a space of its own that requires SSO and allows one space.
+    let victim = new_user("victim@example.org");
+    UserRepo::insert(b.store(), &victim).await.expect("a user");
+    let mut shadow = new_user("shadow@example.org");
+    shadow.id = victim.id;
+    UserRepo::insert(a.store(), &shadow).await.expect("a user");
+    let owner = new_user("grace@example.org");
+    UserRepo::insert(a.store(), &owner)
+        .await
+        .expect("an account");
+    let (space, _) = make_space(&a, &[&owner, &shadow], true).await;
+    replicate_space(&a, &b, space).await;
+
+    // The membership row is applied at B, as any home's record is...
+    let held = SpaceRepo::memberships(b.store(), victim.id)
+        .await
+        .expect("memberships");
+    assert_eq!(
+        held.len(),
+        1,
+        "the home's record about the member is applied"
+    );
+    // ...and binds nothing: not Require SSO at sign-in, not the single-space rule.
+    assert!(
+        MembershipFacts::spaces_of(b.store(), victim.id)
+            .await
+            .expect("facts")
+            .is_empty(),
+        "a foreign home's space is not a space of this server's account"
+    );
+    assert!(
+        SpaceFacts {
+            spaces: b.store().clone()
+        }
+        .spaces_of(victim.id)
+        .await
+        .expect("facts")
+        .is_empty()
+    );
+    assert!(
+        SpaceRepo::spaces_binding_here(b.store(), &[space])
+            .await
+            .expect("binding")
+            .is_empty()
+    );
+    // At the home it is its own space, and it does bind its members.
+    assert_eq!(
+        SpaceRepo::spaces_binding_here(a.store(), &[space])
+            .await
+            .expect("binding"),
+        vec![space]
+    );
+    let on_b = UserRepo::by_id(b.store(), victim.id)
+        .await
+        .expect("a read")
+        .expect("the victim's account");
+    assert_eq!(
+        on_b.email, victim.email,
+        "the victim's own account is as it was"
+    );
+}
+
+#[tokio::test]
+async fn an_account_of_one_server_is_a_member_of_a_space_at_another_and_its_space_syncs() {
+    let fabric = Arc::new(Fabric::default());
+    let a = Node::new("xm-a", &fabric).await;
+    let b = Node::new("xm-b", &fabric).await;
+    pair(&a, &b).await;
+
+    // X lives on B and its vault federates to A; X is confirmed in a space S homed at A, and B
+    // holds S as a replica.
+    let x = new_user("x@example.org");
+    UserRepo::insert(b.store(), &x).await.expect("X at B");
+    let owner = new_user("owner@example.org");
+    UserRepo::insert(a.store(), &owner).await.expect("an owner");
+    b.facade
+        .set_policy(Owner::User(x.id), Policy::Federated, vec![a.id])
+        .await
+        .expect("X's vault federates to A");
+    b.visit(&a).await;
+    a.facade
+        .accept_offer(Owner::User(x.id))
+        .await
+        .expect("A accepts X's vault");
+    b.visit(&a).await;
+    a.visit(&b).await;
+    // A now holds a copy of X; X can be a member of a space there.
+    let x_at_a = UserRepo::by_id(a.store(), x.id)
+        .await
+        .expect("a read")
+        .expect("a copy of X at A");
+    let (space, collection) = make_space(&a, &[&owner, &x_at_a], false).await;
+    replicate_space(&a, &b, space).await;
+
+    // The row applies at B, where X's account lives, with its grant and its key copy.
+    let held = SpaceRepo::load(b.store(), space)
+        .await
+        .expect("a read")
+        .expect("the space was copied");
+    assert!(held.members.iter().any(|m| m.user == x.id));
+    assert_eq!(
+        SpaceRepo::key_copies(b.store(), space, x.id)
+            .await
+            .expect("keys")
+            .len(),
+        1
+    );
+
+    // An item written into the space at A reaches B, where X is a member.
+    let item = ItemId::random();
+    SpaceRepo::put_items(
+        a.store(),
+        vec![(
+            draft(item, Owner::Space(space), None, 1, 1_000),
+            Some(collection),
+        )],
+    )
+    .await
+    .expect("a write into the space");
+    a.visit(&b).await;
+    b.visit(&a).await;
+    assert!(
+        b.items(Owner::Space(space))
+            .await
+            .iter()
+            .any(|i| i.id == item),
+        "the write applied at B"
+    );
+}
+
+#[tokio::test]
+async fn after_a_failover_the_old_homes_own_members_keep_their_space() {
+    let fabric = Arc::new(Fabric::default());
+    let a = Node::new("fo-a", &fabric).await;
+    let b = Node::new("fo-b", &fabric).await;
+    pair(&a, &b).await;
+
+    // S is homed at A, with two members who live there.
+    let owner = new_user("owner@example.org");
+    let member = new_user("member@example.org");
+    UserRepo::insert(a.store(), &owner).await.expect("an owner");
+    UserRepo::insert(a.store(), &member)
+        .await
+        .expect("a member");
+    let (space, collection) = make_space(&a, &[&owner, &member], false).await;
+    let vault = Owner::Space(space);
+    replicate_space(&a, &b, space).await;
+
+    // B is promoted, A takes it, and B (now the home) replaces the space key.
+    b.facade.promote(vault, unix_now()).await.expect("promoted");
+    b.visit(&a).await;
+    a.facade
+        .accept_demotion(vault)
+        .await
+        .expect("A's admin accepts");
+    let mut state = SpaceRepo::load(b.store(), space)
+        .await
+        .expect("a read")
+        .expect("the space at B");
+    state.space.key_version = 2;
+    state.space.updated_at = OffsetDateTime::now_utc();
+    SpaceRepo::apply(
+        b.store(),
+        SpaceChanges {
+            space: Some(state.space.clone()),
+            key_copies: vec![KeyCopy {
+                collection,
+                user: owner.id,
+                key_version: 2,
+                sealed: vec![7; 80],
+                sealed_by: None,
+            }],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a key replacement at the new home");
+    b.visit(&a).await;
+    a.visit(&b).await;
+    b.visit(&a).await;
+
+    // A's own users still belong to the space, and A holds the new key version.
+    let at_a = SpaceRepo::load(a.store(), space)
+        .await
+        .expect("a read")
+        .expect("the space at A");
+    for user in [&owner, &member] {
+        assert!(
+            at_a.members
+                .iter()
+                .any(|m| m.user == user.id && m.state == MemberState::Confirmed),
+            "{} kept their membership at A after the failover",
+            user.email.as_str()
+        );
+    }
+    assert_eq!(at_a.space.key_version, 2);
+    assert!(
+        !SpaceRepo::key_copies(a.store(), space, owner.id)
+            .await
+            .expect("keys")
+            .is_empty()
+    );
 }
 
 // ---- the event logs: only when the sender's Send and the receiver's Pull are both on ----
@@ -1464,7 +1814,23 @@ async fn a_new_identity_key_is_accepted_through_a_rotation_and_a_revocation_stop
             .is_some()
     );
 
-    // A's next visit delivers the record before it opens the session, so B pins the new key.
+    // A's next visit delivers the record before it opens the session. B holds it for its admin:
+    // the old key is still the one pinned, and the session under the new key can't open yet.
+    let _ = a.runner.run_peer(b.id, unix_now()).await;
+    let held = b.facade.held_rotations().await.expect("held rotations");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].server, a.id);
+    let waiting = PeerRepo::get_peer(b.store(), a.id)
+        .await
+        .expect("a read")
+        .expect("the peer");
+    assert_eq!(waiting.identity_key, old.public.as_bytes().to_vec());
+
+    // B's admin confirms the new key is A's own, so B pins it and the sessions open again.
+    b.facade
+        .accept_held_rotation(a.id, None, unix_now())
+        .await
+        .expect("confirmed");
     assert!(matches!(a.visit(&b).await, RunOutcome::Done(_)));
     let pinned = PeerRepo::get_peer(b.store(), a.id)
         .await
@@ -1681,5 +2047,142 @@ async fn duplicate_tags_follow_their_revision_where_matching_is_on() {
             .await
             .expect("groups")
             .is_empty()
+    );
+}
+
+// ---- signed item writes: a replica can't delete or roll back what an account signed ----
+
+/// An account whose bundle names its own id and the key `key`, as a registered account's does.
+fn account_with_keys(email: &str, key: &sig1::SigningKey) -> User {
+    use kemlock_crypto::bundle::Bundle;
+    use kemlock_crypto::kx1;
+    let mut user = new_user(email);
+    let bundle = Bundle {
+        account_id: *user.id.as_bytes(),
+        key_version: 1,
+        kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("a key"),
+        sig1_public: key.public_key().expect("a public key"),
+    };
+    user.bundle_signature = bundle.sign(key).expect("a signature");
+    user.public_bundle = bundle.to_bytes();
+    user
+}
+
+/// `draft` signed by `writer` with `key`, as a device would have signed the write.
+fn signed(
+    mut draft: kemlock_domain::ItemDraft,
+    writer: UserId,
+    key: &sig1::SigningKey,
+) -> kemlock_domain::ItemDraft {
+    use kemlock_crypto::{item_write, owner::Owner as CryptoOwner};
+    let signature = {
+        let sealed = match (&draft.ciphertext, &draft.item_key) {
+            (Some(c), Some(k)) => Some((c.as_slice(), k.as_slice())),
+            _ => None,
+        };
+        item_write::Statement {
+            owner: CryptoOwner::from_bytes(&draft.owner.to_bytes()).expect("an owner"),
+            item_id: *draft.id.as_bytes(),
+            kind: draft.kind.as_str(),
+            revision: draft.revision.0,
+            deleted: draft.deleted_at.is_some(),
+            envelope: item_write::envelope_hash(draft.key_version, sealed).expect("a hash"),
+            writer: *writer.as_bytes(),
+            writer_key_version: 1,
+            collection: None,
+        }
+        .sign(key)
+        .expect("a signature")
+    };
+    draft.signature = Some(kemlock_domain::WriteSignature {
+        writer,
+        key_version: 1,
+        signature,
+    });
+    draft
+}
+
+#[tokio::test]
+async fn a_replica_cannot_delete_or_replay_what_the_account_signed() {
+    let fabric = Arc::new(Fabric::default());
+    let a = Node::new("signed-a", &fabric).await;
+    let b = Node::new("signed-b", &fabric).await;
+    pair(&a, &b).await;
+
+    let key = sig1::SigningKey::from_bytes(&[5; 64]);
+    let member = account_with_keys("sigrid@example.org", &key);
+    UserRepo::insert(a.store(), &member)
+        .await
+        .expect("an account");
+    let owner = Owner::User(member.id);
+    // The owner asked for signed writes only, so an unsigned change is never taken in for it.
+    ItemStore::require_signed_writes(a.store(), owner, OffsetDateTime::now_utc())
+        .await
+        .expect("signed writes only");
+    let (one, two) = (ItemId::random(), ItemId::random());
+    for (n, id) in [one, two].into_iter().enumerate() {
+        ItemStore::put(
+            a.store(),
+            signed(draft(id, owner, None, 1, 1_000 + n as u64), member.id, &key),
+        )
+        .await
+        .expect("a signed item");
+    }
+    a.facade
+        .set_policy(owner, Policy::Federated, vec![b.id])
+        .await
+        .expect("the home federates the vault");
+    a.visit(&b).await;
+    b.facade.accept_offer(owner).await.expect("B accepts");
+    a.visit(&b).await;
+    // The first visit may reach the items before the account's keys: those changes are left out,
+    // and the comparison that follows the home records fetches them. A second visit settles it.
+    b.visit(&a).await;
+    b.visit(&a).await;
+    assert_eq!(b.items(owner).await.len(), 2);
+
+    // B's server turns hostile. It signs, as a server, a tombstone for an item no device deleted.
+    let now = OffsetDateTime::now_utc();
+    ItemStore::put(
+        b.store(),
+        kemlock_domain::ItemDraft {
+            ciphertext: None,
+            item_key: None,
+            deleted_at: Some(now),
+            ..draft(one, owner, Some(1), 2, 5_000)
+        },
+    )
+    .await
+    .expect("a hostile tombstone");
+    let RunOutcome::Done(statuses) = a.visit(&b).await else {
+        panic!("a run");
+    };
+    assert_eq!(statuses[0].pulled.applied, 0, "{:?}", statuses[0]);
+    assert!(statuses[0].pulled.refused >= 1, "{:?}", statuses[0]);
+    let held = ItemStore::get(a.store(), one)
+        .await
+        .expect("a read")
+        .expect("the item");
+    assert!(
+        !held.is_tombstone(),
+        "the replica could not delete the item"
+    );
+    assert_eq!(held.revision, Revision(1));
+
+    // It replays an old signed ciphertext as a new change: not applied either.
+    ItemStore::put(b.store(), draft_with(two, owner, Some(1), 2, 6_000, 0x77))
+        .await
+        .expect("a hostile revision");
+    let RunOutcome::Done(statuses) = a.visit(&b).await else {
+        panic!("a run");
+    };
+    assert_eq!(statuses[0].pulled.applied, 0, "{:?}", statuses[0]);
+    assert_eq!(
+        ItemStore::get(a.store(), two)
+            .await
+            .expect("a read")
+            .expect("the item")
+            .revision,
+        Revision(1)
     );
 }

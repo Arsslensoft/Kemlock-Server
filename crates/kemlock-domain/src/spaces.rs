@@ -312,6 +312,9 @@ pub struct Member {
     pub accepted_at: Option<OffsetDateTime>,
     /// The space key, sealed to this member's `kx1` key. Present only while confirmed.
     pub sealed_space_key: Option<Vec<u8>>,
+    /// Who sealed `sealed_space_key` and their signature over it (docs/crypto.md, "Signed key
+    /// boxes"). `None` for a copy made before keys were signed, and for a space with a chain.
+    pub sealed_by: Option<KeyBoxSignature>,
     /// The version of `sealed_space_key`.
     pub key_version: Option<u32>,
     pub confirmation: Option<Confirmation>,
@@ -342,6 +345,7 @@ impl Member {
             invited_at: now,
             accepted_at: None,
             sealed_space_key: None,
+            sealed_by: None,
             key_version: None,
             confirmation: None,
             revoked_at: None,
@@ -418,6 +422,18 @@ pub struct CollectionGrant {
     pub permission: CollectionPermission,
 }
 
+/// The signature of the member who sealed a key copy (docs/crypto.md, "Signed key boxes"). The
+/// server checked it when the copy was stored and keeps it for the recipient's client to verify.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyBoxSignature {
+    /// The sealer.
+    pub by: UserId,
+    /// The key version of the sealer's bundle whose key signed.
+    pub key_version: u32,
+    /// The `sig1` signature over the statement, context `"key-box"`.
+    pub signature: Vec<u8>,
+}
+
 /// A collection key sealed to one member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyCopy {
@@ -426,6 +442,8 @@ pub struct KeyCopy {
     /// The collection key version that was sealed.
     pub key_version: u32,
     pub sealed: Vec<u8>,
+    /// Who sealed it and their signature over it, as for a member's space key copy.
+    pub sealed_by: Option<KeyBoxSignature>,
 }
 
 /// Why a space rule refused something.
@@ -543,6 +561,17 @@ pub fn check_sealed_name(value: &[u8]) -> Result<(), SpaceError> {
     } else {
         Err(SpaceError::Invalid(
             "an encrypted name must be a sealed value of at most 4 KiB",
+        ))
+    }
+}
+
+/// A key box signature must be a 3,373-byte `sig1` signature.
+pub fn check_key_box_signature(signature: &[u8]) -> Result<(), SpaceError> {
+    if signature.len() == CONFIRMATION_SIGNATURE_LEN {
+        Ok(())
+    } else {
+        Err(SpaceError::Invalid(
+            "a key box signature must be a 3,373-byte sig1 signature",
         ))
     }
 }
@@ -687,7 +716,10 @@ impl SpaceState {
         Ok(t)
     }
 
-    /// Whether `actor` may confirm `target`, who must have accepted. `submitted` is the
+    /// Whether `actor` may confirm `target`, who must have accepted, or be confirmed already: a
+    /// confirmed member may be confirmed again, which replaces their confirmation (the confirmer
+    /// left or lost their role, nobody confirmed them, or their keys changed). Who may do it is
+    /// judged as of now. `submitted` is the
     /// fingerprint the confirmer says they compared and `actual` the one of the member's bundle.
     /// Confirming waits while the space's keys await replacement, because a key sealed now would
     /// be sealed under one that is about to be replaced.
@@ -705,7 +737,7 @@ impl SpaceState {
         if actor == target {
             return Err(SpaceError::Forbidden("you can't confirm yourself"));
         }
-        if t.state != MemberState::Accepted {
+        if !matches!(t.state, MemberState::Accepted | MemberState::Confirmed) {
             return Err(SpaceError::State(
                 "only a member who accepted the invitation can be confirmed",
             ));
@@ -1362,9 +1394,28 @@ mod tests {
     fn confirming_is_for_accepted_members_by_someone_who_manages_them() {
         let f = Fixture::new();
         let fp = [5u8; FINGERPRINT_LEN];
-        // A member who is already confirmed isn't confirmed again; a member can't confirm.
+        // A member who is already confirmed may be confirmed again, by someone who manages them
+        // as of now; a member who is only invited or revoked can't be, and a member can't confirm.
+        assert!(
+            f.state
+                .authorize_confirm(f.owner, f.member, &fp, &fp)
+                .is_ok()
+        );
         assert!(matches!(
-            f.state.authorize_confirm(f.owner, f.member, &fp, &fp).err(),
+            f.state.authorize_confirm(f.member, f.admin, &fp, &fp).err(),
+            Some(SpaceError::Forbidden(_))
+        ));
+        assert!(matches!(
+            f.state.authorize_confirm(f.admin, f.owner, &fp, &fp).err(),
+            Some(SpaceError::Forbidden(_))
+        ));
+        let mut revoked = Fixture::new();
+        revoked.set_state(revoked.member, MemberState::Revoked);
+        assert!(matches!(
+            revoked
+                .state
+                .authorize_confirm(revoked.owner, revoked.member, &fp, &fp)
+                .err(),
             Some(SpaceError::State(_))
         ));
         assert!(matches!(
@@ -1833,6 +1884,7 @@ mod tests {
                 ciphertext: vec![7; 64],
                 item_key: vec![1; ITEM_KEY_LEN],
             }),
+            signature: None,
         }
     }
 
@@ -1853,6 +1905,7 @@ mod tests {
                 seq: 1,
                 hlc: Hlc::default(),
             },
+            signature: None,
         }
     }
 

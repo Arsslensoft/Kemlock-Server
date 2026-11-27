@@ -24,6 +24,10 @@ pub enum BackupError {
     /// The archive's contents don't match its manifest.
     #[error("check failed: {0}")]
     Verify(String),
+    /// The archive can't be shown to come from the server whose key was given: its
+    /// authentication code is missing or wrong.
+    #[error("not authenticated: {0}")]
+    Unauthenticated(String),
     /// The destination (a folder or a bucket) refused or failed.
     #[error("destination: {0}")]
     Destination(String),

@@ -12,10 +12,13 @@ use kemlock_app::policies::{PolicyRepo, StoredPolicies};
 use kemlock_app::ports::{Clock, UserRepo};
 use kemlock_app::spaces::{
     AcceptInvitation, CreateSpace, CreateSpaceInput, InviteInput, InviteMember, NewCollection,
+    SpaceChanges, SpaceRepo,
 };
 use kemlock_app::sso::{MembershipFacts, SpaceMembership, SpaceRole as SsoRole};
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
-use kemlock_domain::spaces::{CollectionId, CustomPermissions, SEALED_KEY_LEN, SpaceRole};
+use kemlock_domain::spaces::{
+    CollectionId, CustomPermissions, MemberState, SEALED_KEY_LEN, SpaceRole,
+};
 use kemlock_domain::{DeviceId, SpaceId, UserId};
 use kemlock_store_sql::SqlStore;
 use time::OffsetDateTime;
@@ -74,6 +77,20 @@ fn actor(user: UserId) -> Actor {
     }
 }
 
+/// Any key box signature of the right length: these tests are of the store, not of `sig1`.
+#[derive(Clone, Copy)]
+struct AnySignature;
+
+impl kemlock_app::spaces::KeyBoxVerifier for AnySignature {
+    async fn verify(
+        &self,
+        _facts: &kemlock_app::spaces::KeyBoxFacts<'_>,
+        _signature: &[u8],
+    ) -> Result<u32, kemlock_app::spaces::SpacesError> {
+        Ok(1)
+    }
+}
+
 fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
     key[0] = 1;
@@ -86,6 +103,7 @@ async fn make_space(store: &SqlStore, owner: UserId) -> SpaceId {
         spaces: store.clone(),
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor(owner),
@@ -93,10 +111,12 @@ async fn make_space(store: &SqlStore, owner: UserId) -> SpaceId {
             id: space,
             name: vec![1; 40],
             sealed_space_key: sealed_key(2),
+            space_key_signature: vec![0x55; 3373],
             collection: NewCollection {
                 id: CollectionId::random(),
                 name: vec![3; 40],
                 sealed_key: sealed_key(4),
+                key_signature: vec![0x55; 3373],
             },
         },
     )
@@ -236,7 +256,7 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
     expected.sort_by_key(|m| m.space);
     assert_eq!(owners, expected);
 
-    // An invitation is not membership; accepting it is.
+    // An invitation is not membership; a confirmation is.
     InviteMember {
         spaces: store.clone(),
         users: store.clone(),
@@ -267,6 +287,28 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
     .execute(&actor(member), strict)
     .await
     .expect("accepted");
+    // An acceptance no admin has confirmed is no membership either.
+    assert_eq!(
+        MembershipFacts::spaces_of(store, member).await,
+        Ok(Vec::new())
+    );
+    let mut confirmed = SpaceRepo::load(store, strict)
+        .await
+        .expect("loads")
+        .expect("the space")
+        .member(member)
+        .cloned()
+        .expect("the member");
+    confirmed.state = MemberState::Confirmed;
+    SpaceRepo::apply(
+        store,
+        SpaceChanges {
+            members: vec![confirmed],
+            ..SpaceChanges::new(strict)
+        },
+    )
+    .await
+    .expect("confirmed");
     assert_eq!(
         MembershipFacts::spaces_of(store, member).await,
         Ok(vec![SpaceMembership {
@@ -285,8 +327,6 @@ async fn membership_facts_come_from_members_and_policies(store: &SqlStore) {
 
 /// `SpaceRepo`'s Require SSO calls and `PolicyRepo` are two ways at the one table.
 async fn the_narrow_require_sso_calls_use_the_general_policies(store: &SqlStore) {
-    use kemlock_app::spaces::SpaceRepo;
-
     let (admin, _) = account(store, "narrow-admin").await;
     let space = SpaceId::random();
     let two_step = SpacePolicies {
@@ -443,4 +483,69 @@ async fn the_merge_migration_copies_the_old_policies_and_drops_their_table() {
     .expect("a query");
     assert!(left.is_empty(), "the old table is dropped");
     db.close().await.expect("closed");
+}
+
+/// The migration that makes `space_policy_settings` the one place Require SSO lives: an
+/// organization whose Bitwarden policy document (type 4) says enabled gets it turned on in the table,
+/// a space that has a row keeps its other policies, and one whose document says off is left alone.
+#[tokio::test]
+async fn the_require_sso_migration_copies_enabled_bitwarden_policies_into_the_table() {
+    use kemlock_app::bitwarden::BwOrgStore;
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let url = common::file_url(&dir.path().join("db.sqlite3"));
+    let store = SqlStore::connect(&url).await.expect("a new database");
+    let (admin, _) = account(&store, "sso-migration-admin").await;
+    let (fresh, has_row, off, other_kind) = (
+        SpaceId::random(),
+        SpaceId::random(),
+        SpaceId::random(),
+        SpaceId::random(),
+    );
+    let two_step = SpacePolicies {
+        two_step: true,
+        ..SpacePolicies::default()
+    };
+    PolicyRepo::put_space_policies(&store, has_row, &two_step, admin, SET_AT)
+        .await
+        .expect("stored");
+    for (space, kind, key, enabled) in [
+        (fresh, "policy", "4", true),
+        (has_row, "policy", "4", true),
+        (off, "policy", "4", false),
+        // Another policy type, and another kind of document, are not Require SSO.
+        (other_kind, "policy", "3", true),
+    ] {
+        let body = format!("{{\"id\":\"x\",\"enabled\":{enabled},\"data\":\"null\"}}");
+        store
+            .doc_put(space.0, kind, key, &body)
+            .await
+            .expect("a document");
+    }
+    store.close().await.expect("closed");
+
+    let db = sea_orm::Database::connect(&url)
+        .await
+        .expect("a raw connection");
+    sea_orm::ConnectionTrait::execute_unprepared(
+        &db,
+        "DELETE FROM seaql_migrations WHERE version = 'm20261204_010003_require_sso_one_table'",
+    )
+    .await
+    .expect("the migration is forgotten");
+    db.close().await.expect("closed");
+
+    let store = SqlStore::connect(&url).await.expect("the migration runs");
+    let read = |space| PolicyRepo::space_policies(&store, space);
+    assert_eq!(
+        read(fresh).await.expect("read").policies,
+        SpacePolicies {
+            require_sso: true,
+            ..SpacePolicies::default()
+        }
+    );
+    let kept = read(has_row).await.expect("read").policies;
+    assert!(kept.require_sso && kept.two_step, "its other policies stay");
+    assert!(!read(off).await.expect("read").policies.require_sso);
+    assert!(!read(other_kind).await.expect("read").policies.require_sso);
+    store.close().await.expect("closed");
 }

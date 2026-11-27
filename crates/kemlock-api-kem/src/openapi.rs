@@ -7,13 +7,14 @@
 //! `tests/openapi.rs` checks that every routed path is in the merged document.
 
 use crate::dto::{
-    ConfigResponse, EmailRequest, ItemDto, ItemWriteAnswerDto, ItemWriteDto, KdfDto,
-    MethodsResponse, OpaqueFinishRequest, OpaqueStartRequest, OpaqueStartResponse,
-    PreloginResponse, RecoveryCodeRequest, RecoveryCodeResponse, RefreshRequest,
-    RegisterFinishRequest, RegisterFinishResponse, RegisterStartRequest, RegisterStartResponse,
-    ServerBasicsDto, SetupFinishRequest, SetupVerifyRequest, SetupVerifyResponse, SignInResponse,
-    SsoOffer, SyncBody, SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse,
-    TaggedBatchWriteDto, TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
+    BundleAtDto, ClearSignedWritesRequest, ConfigResponse, EmailRequest, ItemDto,
+    ItemWriteAnswerDto, ItemWriteDto, KdfDto, MethodsResponse, OpaqueFinishRequest,
+    OpaqueStartRequest, OpaqueStartResponse, PreloginResponse, RecoveryCodeRequest,
+    RecoveryCodeResponse, RefreshRequest, RegisterFinishRequest, RegisterFinishResponse,
+    RegisterStartRequest, RegisterStartResponse, ServerBasicsDto, SetupFinishRequest,
+    SetupVerifyRequest, SetupVerifyResponse, SignInResponse, SignedWritesDto, SsoOffer, SyncBody,
+    SyncResponse, TagOutcomeDto, TaggedBatchRequest, TaggedBatchResponse, TaggedBatchWriteDto,
+    TokenResponse, TotpConfirmRequest, TotpEnrolResponse, TwoFactorRequest,
 };
 use serde::Serialize;
 use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
@@ -259,12 +260,47 @@ fn doc_register_start() {}
     post, path = "/kem/v1/accounts/register/finish", tag = "accounts",
     request_body = RegisterFinishRequest,
     responses(
-        (status = 201, description = "The account exists", body = RegisterFinishResponse),
+        (status = 201, description = "The account exists. When the server verifies the address of a new account, `emailConfirmationRequired` is true: the account can't sign in until the link mailed to it is opened", body = RegisterFinishResponse),
         (status = 409, description = "The email is taken", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
 fn doc_register_finish() {}
+
+#[utoipa::path(
+    get, path = "/kem/v1/accounts/confirm-email", tag = "accounts",
+    params(("token" = String, Query, description = "The token in the link of the mail, base64url")),
+    responses(
+        (status = 200, description = "A small HTML page with a Confirm button that posts the token back. Nothing changes until it is pressed, so a mail scanner that opens the link spends nothing", body = String, content_type = "text/html"),
+        (status = 400, description = "A small HTML page: the link isn't valid", body = String, content_type = "text/html"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_confirm_email_page() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/accounts/confirm-email", tag = "accounts",
+    request_body(content = String, content_type = "application/x-www-form-urlencoded", description = "`token=` and the token of the link"),
+    responses(
+        (status = 200, description = "A small HTML page: the address is confirmed and the account can sign in", body = String, content_type = "text/html"),
+        (status = 400, description = "A small HTML page: the link is unknown, opened already or out of time", body = String, content_type = "text/html"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_confirm_email() {}
+
+#[utoipa::path(
+    post, path = "/kem/v1/accounts/confirm-email/resend", tag = "accounts",
+    request_body = EmailRequest,
+    responses(
+        (status = 202, description = "Asked for, whatever the address: a new link is mailed only to an address whose account is held back and has had none for five minutes"),
+        (status = 429, description = "Too many tries", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_resend_confirm_email() {}
 
 #[utoipa::path(
     post, path = "/kem/v1/auth/opaque/start", tag = "auth",
@@ -362,6 +398,7 @@ fn doc_recovery_code() {}
         (status = 403, description = "A space item the caller may not write: no edit on its collection", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such space, or the caller isn't in it", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "Stale write: the current revision is in `currentRevision`; or a space item sealed under a replaced collection key", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 422, description = "`invalid-signature`: the write's signature is not the signed-in account's, or `signature-required`: the owner accepts signed writes only, or `key-version-stale`: the account replaced its keys after the device unlocked (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 423, description = "The space waits for its keys to be replaced", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 428, description = "No If-Match or If-None-Match", body = ProblemDoc, content_type = "application/problem+json"),
     )
@@ -375,6 +412,7 @@ fn doc_put_item() {}
     request_body = TaggedBatchRequest,
     responses(
         (status = 200, description = "Every write was stored; `tags` says what became of the tags of the writes that carried some", body = TaggedBatchResponse),
+        (status = 422, description = "`invalid-signature`: a write's signature is not the signed-in account's, or `signature-required`: an owner accepts signed writes only; nothing was stored", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "A space item the caller may not write; nothing was stored", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 423, description = "A space waits for its keys to be replaced; nothing was stored", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 409, description = "A write was stale; nothing was stored. `itemId` names it", body = ProblemDoc, content_type = "application/problem+json"),
@@ -382,6 +420,63 @@ fn doc_put_item() {}
 )]
 #[allow(dead_code)]
 fn doc_batch() {}
+
+#[utoipa::path(
+    get, path = "/kem/v1/accounts/{id}/bundles/{version}", tag = "items",
+    security(("dpop" = [])),
+    params(
+        ("id" = String, Path, description = "The account's id, a UUID"),
+        ("version" = u32, Path, description = "The key version of the bundle"),
+    ),
+    responses(
+        (status = 200, description = "The bundle the account had at that key version (docs/crypto.md, \"Signed item writes\"): for the account itself and a confirmed member of a space it is a confirmed member of", body = BundleAtDto),
+        (status = 404, description = "No such account or version, or the caller may not read it: the same answer", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_bundle_at() {}
+
+#[utoipa::path(
+    get, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
+    security(("dpop" = [])),
+    params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
+    responses(
+        (status = 200, description = "Whether the owner takes signed writes only (docs/crypto.md, \"The signed-only flag\")", body = SignedWritesDto),
+        (status = 403, description = "Another account's vault, or a space the caller is neither owner nor admin of", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "A space the caller is not a member of", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_read_signed_writes() {}
+
+#[utoipa::path(
+    put, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
+    security(("dpop" = [])),
+    params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
+    responses(
+        (status = 204, description = "The owner accepts signed writes only from now on (docs/crypto.md, \"The signed-only flag\"). Idempotent. Servers it replicates to learn it from the home server"),
+        (status = 403, description = "Another account's vault, or a space the caller is neither owner nor admin of", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 404, description = "A space the caller is not a member of", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_signed_writes() {}
+
+#[utoipa::path(
+    delete, path = "/kem/v1/owners/{owner}/signed-writes", tag = "items",
+    security(("dpop" = [])),
+    params(("owner" = String, Path, description = "The account's own vault `user:<uuid>`, or a space `space:<uuid>` the caller owns or administers")),
+    request_body = ClearSignedWritesRequest,
+    responses(
+        (status = 204, description = "Unsigned writes are accepted again (docs/crypto.md, \"The signed-only flag\"). Idempotent. Needs the password, and a fresh proof when a second step is on"),
+        (status = 400, description = "The login state was used before, or isn't well formed; or a second step is on and the proof is missing, wrong or spent", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 403, description = "Another account's vault, or a space the caller is neither owner nor admin of", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 429, description = "Too many wrong passwords", body = ProblemDoc, content_type = "application/problem+json"),
+    )
+)]
+#[allow(dead_code)]
+fn doc_clear_signed_writes() {}
 
 #[utoipa::path(
     get, path = "/kem/v1/sync", tag = "sync",
@@ -436,9 +531,9 @@ fn doc_live() {}
     ),
     paths(
         doc_config, doc_openapi, doc_webauthn_page, doc_webauthn_script, doc_setup_verify, doc_setup_finish, doc_prelogin, doc_methods,
-        doc_register_start, doc_register_finish, doc_opaque_start, doc_opaque_finish,
+        doc_register_start, doc_register_finish, doc_confirm_email_page, doc_confirm_email, doc_resend_confirm_email, doc_opaque_start, doc_opaque_finish,
         doc_two_factor, doc_token, doc_totp_enrol, doc_totp_confirm, doc_recovery_code,
-        doc_put_item, doc_batch, doc_sync, doc_sync_post, doc_live
+        doc_put_item, doc_batch, doc_read_signed_writes, doc_signed_writes, doc_clear_signed_writes, doc_bundle_at, doc_sync, doc_sync_post, doc_live
     ),
     components(schemas(
         ProblemDoc, ConfigResponse, SetupVerifyRequest, SetupVerifyResponse, SetupFinishRequest,
@@ -448,7 +543,7 @@ fn doc_live() {}
         OpaqueFinishRequest, SignInResponse, TokenResponse, TwoFactorRequest, RefreshRequest,
         TotpEnrolResponse, TotpConfirmRequest, RecoveryCodeRequest, RecoveryCodeResponse, ItemDto,
         ItemWriteDto, ItemWriteAnswerDto, TaggedBatchWriteDto, TaggedBatchRequest, TagOutcomeDto,
-        TaggedBatchResponse, SyncBody, SyncResponse
+        TaggedBatchResponse, SyncBody, SyncResponse, BundleAtDto, ClearSignedWritesRequest, SignedWritesDto
     )),
     modifiers(&SecurityAddon)
 )]

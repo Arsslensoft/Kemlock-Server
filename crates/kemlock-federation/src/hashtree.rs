@@ -10,6 +10,7 @@
 use crate::crypto;
 use crate::wire::ChangeKey;
 use kemlock_domain::{ItemId, Revision};
+use std::collections::HashMap;
 
 /// How many buckets the tree has.
 pub const BUCKETS: usize = 256;
@@ -103,21 +104,25 @@ pub struct Diff {
 /// Compares our leaves with the remote's, for the buckets that differ. Which side is newer isn't
 /// known from a digest; each side fetches what differs and the merge decides.
 pub fn diff(local: &[Leaf], remote: &[Leaf]) -> Diff {
+    // By item id, so the comparison is linear in the leaves and not their product: a peer may send
+    // thousands.
+    let ours: HashMap<ItemId, [u8; 32]> = local.iter().map(|l| (l.item, l.digest)).collect();
+    let theirs: HashMap<ItemId, [u8; 32]> = remote.iter().map(|r| (r.item, r.digest)).collect();
     let mut out = Diff::default();
     for r in remote {
-        match local.iter().find(|l| l.item == r.item) {
-            Some(l) if l.digest == r.digest => {}
-            _ => out.fetch.push(r.item),
+        if ours.get(&r.item) != Some(&r.digest) {
+            out.fetch.push(r.item);
         }
     }
     for l in local {
-        match remote.iter().find(|r| r.item == l.item) {
-            Some(r) if r.digest == l.digest => {}
-            _ => out.push.push(l.item),
+        if theirs.get(&l.item) != Some(&l.digest) {
+            out.push.push(l.item);
         }
     }
     out.fetch.sort();
+    out.fetch.dedup();
     out.push.sort();
+    out.push.dedup();
     out
 }
 

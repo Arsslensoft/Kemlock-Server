@@ -131,6 +131,9 @@ impl<U: UserRepo, R: ProfileRepo, P: PasswordAuth, S: SecretSeal, E: Platform>
             opaque_record: checked.opaque_record,
             kdf: checked.kdf,
             wrapped_root_key: checked.wrapped_root_key,
+            // The wrap is of the root key as it is now; a rotation before the link is opened
+            // replaces that key, and the change is then refused.
+            key_version: account.key_version,
             requested_at: now,
             expires_at: now + EmailChange::LIFETIME,
         };
@@ -227,6 +230,13 @@ impl<U: UserRepo, R: ProfileRepo, D: DeviceRepo, T: TokenRepo, E: Platform>
         if let Err(refused) = self.changeable(&account).await {
             self.repo.remove_email_change(account.id).await?;
             return Err(refused);
+        }
+        // The wrap was made for the root key of one key version. A rotation since replaced that
+        // key, and putting the wrap back would bring back a wrap of the retired root and leave the
+        // new one unopenable by the password: the ask is dropped, as it can't be applied.
+        if change.key_version != account.key_version {
+            self.repo.remove_email_change(account.id).await?;
+            return Err(ProfileError::EmailChangeInvalid);
         }
         // Someone may have taken the address since: the ask is dropped, as it can't be applied.
         if is_taken(&self.users, &account, &change.email).await? {

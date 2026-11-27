@@ -1,10 +1,11 @@
 //! Enrol TOTP: makes an authenticator-app secret for the signed-in account and stores it sealed
-//! (purpose `"totp"`), not yet enabled. `confirm_totp` enables it once a code from the app checks.
+//! (purpose `"totp"`, bound to the account's id), not yet enabled. `confirm_totp` enables it once a
+//! code from the app checks.
 
 use crate::error::AppError;
 use crate::platform::Platform;
 use crate::ports::{SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo, Zeroizing};
-use crate::sealed::PURPOSE_TOTP;
+use crate::sealed::{PURPOSE_TOTP, seal_bound};
 use kemlock_domain::UserId;
 
 /// The secret as RFC 6238 apps take it.
@@ -56,7 +57,7 @@ impl<U: UserRepo, F: TwoFactorRepo, S: SecretSeal, E: Platform> EnrolTotp<U, F, 
             .put(&TwoFactor {
                 user,
                 method: TwoFactorMethod::Totp,
-                sealed_secret: self.seal.seal(PURPOSE_TOTP, &secret[..]),
+                sealed_secret: seal_bound(&self.seal, PURPOSE_TOTP, user, &secret[..]),
                 enabled: false,
                 created_at: self.env.now(),
             })

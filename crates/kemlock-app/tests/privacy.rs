@@ -397,6 +397,36 @@ async fn a_grace_period_schedules_the_erasure_and_ends_the_sessions() {
     assert_eq!(privacy.lock().erased, vec![user.id]);
 }
 
+#[tokio::test]
+async fn a_due_erasure_is_held_while_a_space_would_be_left_with_no_owner() {
+    let world = World::new();
+    let user = account("ada@example.org");
+    world.store.put_user(user.clone());
+    let privacy = FakePrivacy::new(&world.store);
+    privacy.lock().retention.deleted_account_grace_days = 14;
+    let eraser = erase(&world, &privacy, &FakeSends::default());
+    eraser
+        .execute(user.id, Requester::Account)
+        .await
+        .expect("scheduled");
+
+    // The other owner steps down during the grace period.
+    world.env.clock.advance(Duration::days(15));
+    privacy.lock().blocking = vec![SpaceId::random()];
+    assert!(matches!(
+        eraser.erase_due(user.id).await,
+        Err(AppError::Invalid(_))
+    ));
+    assert!(privacy.lock().erased.is_empty(), "nothing was erased");
+
+    // Once the space has an owner again, the next run erases.
+    privacy.lock().blocking = Vec::new();
+    assert!(matches!(
+        eraser.erase_due(user.id).await,
+        Ok(Erasure::Erased(_))
+    ));
+}
+
 // ---------------------------------------------------------------------------------------------
 // Re-authentication.
 
@@ -500,6 +530,7 @@ async fn the_retention_job_cuts_each_kind_at_its_default() {
     assert_eq!(report.sign_ins, 2);
     assert_eq!(report.full_ips_dropped, 1);
     assert_eq!(report.email_log, 5);
+    assert_eq!(report.held_signups, 2);
     let calls = privacy.calls();
     let cutoff = |name: &str| {
         calls
@@ -512,6 +543,8 @@ async fn the_retention_job_cuts_each_kind_at_its_default() {
     assert_eq!(cutoff("sign_ins"), now - Duration::days(90));
     assert_eq!(cutoff("trash"), now - Duration::days(30));
     assert_eq!(cutoff("email_log"), now - Duration::days(30));
+    // A signup is held for the life of its link, which a day-old hold has used up by `now`.
+    assert_eq!(cutoff("held_signups"), now);
     // Full addresses are off: any left from before go now.
     assert_eq!(cutoff("full_ips"), now);
 }
@@ -949,4 +982,23 @@ async fn a_sign_in_row_has_the_account_the_method_and_the_address_cut_on_write()
         "a failure names the account the request named, and no device"
     );
     assert_eq!(rows[1].ip.as_deref(), Some("2001:db8:1::/48"));
+}
+
+#[tokio::test]
+async fn the_store_refusing_the_last_admin_is_a_plain_refusal_and_nothing_is_reported_erased() {
+    let world = World::new().with_signups();
+    let user = make_user(&world, "root@example.org").await;
+    let privacy = FakePrivacy::new(&world.store);
+    privacy.lock().last_admin = true;
+    let sends = FakeSends::default();
+    let refused = erase(&world, &privacy, &sends)
+        .execute_now(user, kemlock_app::privacy::Requester::Account)
+        .await;
+    assert_eq!(
+        refused,
+        Err(kemlock_app::AppError::Invalid(
+            "the last admin can't be deleted"
+        ))
+    );
+    assert!(privacy.lock().erased.is_empty());
 }

@@ -13,10 +13,10 @@
 //! | Kind | Entity (key 1) | Other fields |
 //! | --- | --- | --- |
 //! | `space` | the space id | 2 name, 3 key version, 4 keys pending since, 5 created, 6 updated |
-//! | `space-member` | the user id | 2 role, 3 custom permission bits, 4 state, 5 invited by, 6 invited at, 7 accepted at, 8 sealed space key, 9 its key version, 10 confirmation `{0 by, 1 at, 2 fingerprint, 3 member key version, 4 statement, 5 signature}`, 11 revoked at |
+//! | `space-member` | the user id | 2 role, 3 custom permission bits, 4 state, 5 invited by, 6 invited at, 7 accepted at, 8 sealed space key, 9 its key version, 10 confirmation `{0 by, 1 at, 2 fingerprint, 3 member key version, 4 statement, 5 signature}`, 11 revoked at, 12 who sealed the space key `{0 account, 1 key version, 2 signature}`, left out when none |
 //! | `space-group` | the group id | 2 name, 3 member user ids, 4 created |
 //! | `space-collection` | the collection id | 2 parent, 3 name, 4 key version, 5 stale since, 6 created, 7 grants `[[0 member / 1 group, id, permission]]` |
-//! | `space-keys` | the user id | 2 key copies `[[collection id, key version, sealed key]]` |
+//! | `space-keys` | the user id | 2 key copies `[[collection id, key version, sealed key]]`, each with a fourth part `{0 account, 1 key version, 2 signature}` when someone signed it |
 //! | `space-policies` | the space id | 2 updated by, 3 updated at, 4 to 12 the switches, 13 master password rules, 14 timeout minutes, 16 timeout action |
 //! | `space-held` | the space id | 2 the ids of the live items a key replacement left held (docs/crypto.md, I3), sorted |
 //!
@@ -37,8 +37,8 @@ use kemlock_app::ports::StoreError;
 use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
-    CustomPermissions, Grantee, Group, GroupId, KeyCopy, Member, MemberState, Space, SpaceRole,
-    SpaceState,
+    CustomPermissions, Grantee, Group, GroupId, KeyBoxSignature, KeyCopy, Member, MemberState,
+    Space, SpaceRole, SpaceState,
 };
 use kemlock_domain::{ItemId, Owner, SpaceId, UserId};
 use std::collections::BTreeSet;
@@ -149,6 +149,18 @@ pub trait SpaceMirror: Send + Sync {
         ready(Ok(()))
     }
 
+    /// Whether any of these collections or groups already exists in a space other than `space`.
+    /// A replica asks before it applies a record, because the home of one space may only change
+    /// its own entities: an id that is new, or already this space's, is fine.
+    fn ids_held_elsewhere(
+        &self,
+        _space: SpaceId,
+        _collections: &[CollectionId],
+        _groups: &[GroupId],
+    ) -> impl Future<Output = R<bool>> + Send {
+        ready(Ok(false))
+    }
+
     /// Applies one record a replica took from the home: an upsert, or a removal.
     fn apply_space_record(
         &self,
@@ -199,6 +211,25 @@ pub fn encode_space(space: &Space) -> Vec<u8> {
     Value::map(e).encode()
 }
 
+/// Who sealed a key copy, as a map: `{0 account, 1 key version, 2 signature}`.
+fn sealed_by_value(by: &KeyBoxSignature) -> Value {
+    Value::map(vec![
+        (0, uuid_value(&by.by.0)),
+        (1, Value::Uint(u64::from(by.key_version))),
+        (2, Value::bytes(&by.signature)),
+    ])
+}
+
+fn decode_sealed_by(v: &Value) -> Result<KeyBoxSignature> {
+    let f = v.as_fields()?;
+    f.only(&[0, 1, 2])?;
+    Ok(KeyBoxSignature {
+        by: UserId(uuid_at(&f, 0)?),
+        key_version: small(f.uint(1)?)?,
+        signature: f.bytes(2)?.to_vec(),
+    })
+}
+
 pub fn encode_member(member: &Member) -> Vec<u8> {
     let mut e = head(&member.user.0);
     e.push((2, Value::text(member.role.as_str())));
@@ -227,6 +258,9 @@ pub fn encode_member(member: &Member) -> Vec<u8> {
         ));
     }
     push_time(&mut e, 11, member.revoked_at);
+    if let Some(by) = &member.sealed_by {
+        e.push((12, sealed_by_value(by)));
+    }
     Value::map(e).encode()
 }
 
@@ -292,11 +326,15 @@ pub fn encode_keys(user: UserId, copies: &[KeyCopy]) -> Vec<u8> {
             sorted
                 .into_iter()
                 .map(|c| {
-                    Value::Array(vec![
+                    let mut parts = vec![
                         uuid_value(&c.collection.0),
                         Value::Uint(u64::from(c.key_version)),
                         Value::bytes(&c.sealed),
-                    ])
+                    ];
+                    if let Some(by) = &c.sealed_by {
+                        parts.push(sealed_by_value(by));
+                    }
+                    Value::Array(parts)
                 })
                 .collect(),
         ),
@@ -409,7 +447,7 @@ fn list<'a>(f: &Fields<'a>, key: u64) -> Result<&'a [Value]> {
 }
 
 fn decode_member(space: SpaceId, f: &Fields<'_>) -> Result<Member> {
-    f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])?;
+    f.only(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])?;
     let confirmation = match f.get(10) {
         None => None,
         Some(v) => {
@@ -442,6 +480,7 @@ fn decode_member(space: SpaceId, f: &Fields<'_>) -> Result<Member> {
             .get(8)
             .map(|v| v.as_bytes().map(<[u8]>::to_vec))
             .transpose()?,
+        sealed_by: f.get(12).map(decode_sealed_by).transpose()?,
         key_version: opt_u32_at(f, 9)?,
         confirmation,
         revoked_at: opt_time_at(f, 11)?,
@@ -510,8 +549,10 @@ fn decode_keys(f: &Fields<'_>) -> Result<SpaceRecord> {
     f.only(&[0, 1, 2])?;
     let mut copies = Vec::new();
     for v in list(f, 2)? {
-        let [collection, version, sealed] = v.as_array()? else {
-            return Err(FedError::Malformed("a key copy has three parts"));
+        let (collection, version, sealed, by) = match v.as_array()? {
+            [collection, version, sealed] => (collection, version, sealed, None),
+            [collection, version, sealed, by] => (collection, version, sealed, Some(by)),
+            _ => return Err(FedError::Malformed("a key copy has three or four parts")),
         };
         let b: [u8; 16] = collection
             .as_bytes()?
@@ -522,6 +563,7 @@ fn decode_keys(f: &Fields<'_>) -> Result<SpaceRecord> {
             user: UserId(uuid_at(f, 1)?),
             key_version: small(version.as_uint()?)?,
             sealed: sealed.as_bytes()?.to_vec(),
+            sealed_by: by.map(decode_sealed_by).transpose()?,
         });
     }
     Ok(SpaceRecord::Keys {
@@ -662,6 +704,36 @@ impl SpaceRecord {
         }
     }
 
+    /// The collections this record names (its own, a parent, the ones a key copy is for).
+    fn collection_ids(&self) -> Vec<CollectionId> {
+        match self {
+            SpaceRecord::Collection { collection, .. } => {
+                let mut ids = vec![collection.id];
+                ids.extend(collection.parent);
+                ids
+            }
+            SpaceRecord::CollectionGone(c) => vec![*c],
+            SpaceRecord::Keys { copies, .. } => copies.iter().map(|c| c.collection).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The groups this record names (its own, or the ones a grant is to).
+    fn group_ids(&self) -> Vec<GroupId> {
+        match self {
+            SpaceRecord::Group(g) => vec![g.id],
+            SpaceRecord::GroupGone(g) => vec![*g],
+            SpaceRecord::Collection { grants, .. } => grants
+                .iter()
+                .filter_map(|g| match g.grantee {
+                    Grantee::Group(id) => Some(id),
+                    Grantee::Member(_) => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The kind of home record that carries it.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -771,6 +843,25 @@ impl<S: FedStore> Replica<S> {
         Ok(publisher.made + chained)
     }
 
+    /// Applies the latest `member-account` home record stored for `user` in `vault` again.
+    async fn reapply_member_account(&self, vault: Owner, user: UserId) {
+        let Ok(records) = self.store.home_records(vault, 0, u32::MAX).await else {
+            return;
+        };
+        let key = user.0.as_bytes().to_vec();
+        let latest = records
+            .into_iter()
+            .filter(|r| r.status == crate::ports::HomeStatus::Applied)
+            .filter(|r| r.record.kind == crate::members::KIND)
+            .filter(|r| {
+                crate::publish::entity_key(&r.record.payload).as_deref() == Some(key.as_slice())
+            })
+            .max_by_key(|r| r.record.index);
+        if let Some(stored) = latest {
+            self.apply_member_record(&stored.record).await;
+        }
+    }
+
     /// Applies a space home record this server stored as applied. A payload that doesn't parse is
     /// logged and left.
     pub(crate) async fn apply_space_home_record(&self, vault: Owner, kind: &str, payload: &[u8]) {
@@ -779,8 +870,31 @@ impl<S: FedStore> Replica<S> {
         };
         match SpaceRecord::from_record(space, kind, payload) {
             Ok(Some(record)) => {
+                // The home of this space may only change this space's collections and groups: a
+                // record that names one of another space's is refused, and only that record.
+                match self
+                    .store
+                    .ids_held_elsewhere(space, &record.collection_ids(), &record.group_ids())
+                    .await
+                {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        tracing::warn!(%kind, %space, "a space record names a collection or group of another space: refused");
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, %kind, "a space record could not be checked: not applied");
+                        return;
+                    }
+                }
                 if let Err(e) = self.store.apply_space_record(space, &record).await {
                     tracing::warn!(error = %e, %kind, "a space record could not be applied");
+                } else if let SpaceRecord::Member(member) = &record
+                    && member.state == MemberState::Confirmed
+                {
+                    // The member's account may have come first and been refused for want of this
+                    // record: take the latest one the home made again, now it can be placed.
+                    self.reapply_member_account(vault, member.user).await;
                 }
             }
             Ok(None) => {}
@@ -1116,5 +1230,85 @@ mod tests {
         assert_eq!((sync.applied, sync.quarantined), (0, 8));
         assert!(b.store.applied_space_records().is_empty());
         assert_eq!(b.store.quarantined(vault).await.expect("held").len(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_record_naming_another_spaces_collection_or_group_applies_nothing() {
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let b = Replica::new(MemoryStore::new(ib.server), Arc::new(ib));
+        let space = SpaceId::random();
+        let vault = Owner::Space(space);
+        // B holds another space, with a collection and a group.
+        let other = space_snapshot(SpaceId::random());
+        b.store.set_space_snapshot(other.clone());
+        let theirs = other.state.collections[0].clone();
+        let their_group = other.state.groups[0].clone();
+        let mine = Collection {
+            space,
+            ..theirs.clone()
+        };
+        let apply = |kind: &'static str, payload: Vec<u8>| {
+            let b = &b;
+            async move { b.apply_space_home_record(vault, kind, &payload).await }
+        };
+
+        // This space's home re-states the other space's collection and group as its own, grants
+        // to the other space's group, key copies for its collection, and says they are gone.
+        apply(KIND_COLLECTION, encode_collection(&mine, &[])).await;
+        apply(
+            KIND_GROUP,
+            encode_group(&Group {
+                space,
+                ..their_group.clone()
+            }),
+        )
+        .await;
+        let grant = CollectionGrant {
+            collection: CollectionId::random(),
+            grantee: Grantee::Group(their_group.id),
+            permission: CollectionPermission::Edit,
+        };
+        let own_collection = Collection {
+            id: grant.collection,
+            parent: None,
+            ..mine.clone()
+        };
+        apply(
+            KIND_COLLECTION,
+            encode_collection(&own_collection, &[grant]),
+        )
+        .await;
+        let under_parent = Collection {
+            id: CollectionId::random(),
+            parent: Some(theirs.id),
+            ..mine.clone()
+        };
+        apply(KIND_COLLECTION, encode_collection(&under_parent, &[])).await;
+        let user = UserId::random();
+        apply(
+            KIND_KEYS,
+            encode_keys(
+                user,
+                &[KeyCopy {
+                    collection: theirs.id,
+                    user,
+                    key_version: 1,
+                    sealed: vec![1; 40],
+                    sealed_by: None,
+                }],
+            ),
+        )
+        .await;
+        apply(KIND_COLLECTION, gone_payload(theirs.id.0.as_bytes())).await;
+        apply(KIND_GROUP, gone_payload(their_group.id.0.as_bytes())).await;
+        assert!(b.store.applied_space_records().is_empty());
+
+        // Ids that are new, or this space's own, still apply.
+        let fresh = Collection {
+            id: CollectionId::random(),
+            ..mine
+        };
+        apply(KIND_COLLECTION, encode_collection(&fresh, &[])).await;
+        assert_eq!(b.store.applied_space_records().len(), 1);
     }
 }

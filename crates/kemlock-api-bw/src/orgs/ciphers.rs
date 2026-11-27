@@ -205,6 +205,7 @@ impl<S: BwStore> App<S> {
             ciphertext: body,
             item_key: None,
             updated_at: now,
+            signature: None,
         })
     }
 
@@ -464,7 +465,12 @@ async fn update_with<S: BwStore>(
     shared: bool,
 ) -> BwResult<Value> {
     let user = authed.user.id;
-    if !l.restrict.is_some_and(|r| r.writable()) {
+    // A share changes which collections the cipher is in, which a member who may not see its
+    // passwords has no right to (`update_collections` asks the same).
+    let allowed = l
+        .restrict
+        .is_some_and(|r| if shared { r.editable() } else { r.writable() });
+    if !allowed {
         return Err(BwError::msg("Cipher is not write accessible"));
     }
     if data.organization_id.as_deref() != Some(org_id_text(&l).as_str()) {
@@ -785,7 +791,7 @@ pub(crate) async fn share_one<S: BwStore>(
 
     // An organization cipher stays where it is and gains the collections.
     if let Some(mut l) = org_cipher(app, user, id).await? {
-        if !l.restrict.is_some_and(|r| r.writable()) {
+        if !l.restrict.is_some_and(|r| r.editable()) {
             return Err(BwError::msg("Cipher is not write accessible"));
         }
         if target != org_id_text(&l) {
@@ -915,6 +921,7 @@ impl<S: BwStore> App<S> {
             ciphertext: None,
             item_key: None,
             updated_at: now,
+            signature: None,
         })
     }
 }
@@ -1103,7 +1110,7 @@ pub(crate) async fn bulk_collections<S: BwStore>(
         let Some(mut l) = org_cipher(app, user, id).await? else {
             continue;
         };
-        if l.org.id != org.id || !l.restrict.is_some_and(|r| r.writable()) {
+        if l.org.id != org.id || !l.restrict.is_some_and(|r| r.editable()) {
             continue;
         }
         for c in &targets {

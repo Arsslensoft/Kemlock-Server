@@ -7,12 +7,13 @@
 
 mod common;
 
-use common::{device, external, file, memory, unique_email, user};
+use common::{device, external, file, file_url, memory, unique_email, user};
 use kemlock_app::FirstAdminRepo;
 use kemlock_app::ports::{
-    DeviceRepo, Event, EventLog, RefreshToken, ServerInfo, StoreError, TokenRepo, TwoFactor,
-    TwoFactorMethod, TwoFactorRepo, UserRepo,
+    DeviceRepo, Event, EventLog, RefreshToken, ServerInfo, StoreError, TokenApi, TokenRepo,
+    TwoFactor, TwoFactorMethod, TwoFactorRepo, UserRepo,
 };
+use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
 use kemlock_domain::{DeviceId, DeviceKind, Role, UserId};
 use kemlock_store_sql::SqlStore;
 use time::macros::datetime;
@@ -129,6 +130,22 @@ async fn devices(store: &SqlStore) {
     DeviceRepo::upsert(store, &newer).await.expect("upsert");
     DeviceRepo::upsert(store, &older).await.expect("upsert");
 
+    // Another account can't take a device id over, whatever its use case read first: nothing of
+    // the device changes.
+    let thief = user(&unique_email("device-thief"));
+    UserRepo::insert(store, &thief).await.expect("insert thief");
+    let mut taken = older.clone();
+    taken.user = thief.id;
+    taken.name = "Taken".to_owned();
+    assert_eq!(
+        DeviceRepo::upsert(store, &taken).await,
+        Err(StoreError::Duplicate)
+    );
+    assert_eq!(
+        DeviceRepo::get(store, older.id).await.expect("get"),
+        Some(older.clone())
+    );
+
     assert_eq!(
         DeviceRepo::get(store, older.id).await.expect("get"),
         Some(older.clone())
@@ -166,6 +183,52 @@ async fn devices(store: &SqlStore) {
         DeviceRepo::list(store, owner.id).await.expect("list").len(),
         2
     );
+
+    // Seen is written only while the device still has the key the caller read it with: a cleared
+    // key is not put back.
+    assert_eq!(
+        DeviceRepo::touch_seen(store, older.id, "jkt-x", datetime!(2026-06-06 06:06:06 UTC)).await,
+        Ok(false),
+        "the device has no key now"
+    );
+    let mut keyed = seen.clone();
+    keyed.dpop_jkt = Some("jkt-x".to_owned());
+    DeviceRepo::upsert(store, &keyed).await.expect("upsert");
+    assert_eq!(
+        DeviceRepo::touch_seen(
+            store,
+            older.id,
+            "jkt-other",
+            datetime!(2026-06-06 06:06:06 UTC)
+        )
+        .await,
+        Ok(false),
+        "another key"
+    );
+    assert_eq!(
+        DeviceRepo::touch_seen(store, older.id, "jkt-x", datetime!(2026-06-06 06:06:06 UTC)).await,
+        Ok(true)
+    );
+    let touched = DeviceRepo::get(store, older.id)
+        .await
+        .expect("get")
+        .expect("there");
+    assert_eq!(touched.last_seen_at, datetime!(2026-06-06 06:06:06 UTC));
+    assert_eq!(touched.dpop_jkt.as_deref(), Some("jkt-x"));
+    assert_eq!(touched.name, "Pixel 9");
+    assert_eq!(
+        DeviceRepo::touch_seen(
+            store,
+            DeviceId::random(),
+            "jkt-x",
+            datetime!(2026-06-06 06:06:06 UTC)
+        )
+        .await,
+        Ok(false),
+        "no such device"
+    );
+    // Put back as the rest of the scenario expects.
+    DeviceRepo::upsert(store, &seen).await.expect("upsert");
 
     // A device needs an account.
     let orphan = device(
@@ -214,6 +277,7 @@ fn refresh_token(user: &UserId, device: &DeviceId, n: u8) -> RefreshToken {
         created_at: datetime!(2026-01-02 03:04:05 UTC),
         expires_at: datetime!(2026-02-02 03:04:05 UTC),
         used_at: None,
+        api: TokenApi::Kemlock,
     }
 }
 
@@ -453,6 +517,97 @@ async fn two_step_version_moves_when_a_method_is_turned_on_or_off(store: &SqlSto
     );
 }
 
+async fn second_step_attempts_are_reserved_atomically_and_kept(store: &SqlStore) {
+    let owner = user(&unique_email("2fa-attempts"));
+    UserRepo::insert(store, &owner).await.expect("insert user");
+    let reserve = |now: i64| SecondStepGuard::reserve_second_step(store, owner.id, now, 3, 900);
+
+    // Parallel attempts: exactly three of ten pass, whichever order they land in.
+    let tasks: Vec<_> = (0..10)
+        .map(|_| {
+            let (store, user) = (store.clone(), owner.id);
+            tokio::spawn(async move {
+                SecondStepGuard::reserve_second_step(&store, user, 1000, 3, 900).await
+            })
+        })
+        .collect();
+    let mut answers = Vec::new();
+    for task in tasks {
+        answers.push(task.await.expect("the task ran"));
+    }
+    let granted = answers
+        .iter()
+        .filter(|a| matches!(a, Ok(Reservation::Granted)))
+        .count();
+    assert_eq!(granted, 3, "{answers:?}");
+    assert!(
+        answers
+            .iter()
+            .all(|a| matches!(a, Ok(Reservation::Granted | Reservation::Wait(_)))),
+        "{answers:?}"
+    );
+
+    // A wait counts nothing, and doubles for the attempt after it.
+    assert!(matches!(reserve(1000).await, Ok(Reservation::Wait(_))));
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+    assert_eq!(reserve(1001).await, Ok(Reservation::Wait(2)));
+
+    // A right code clears it.
+    SecondStepGuard::clear_second_step(store, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+
+    // It is the account's own.
+    let other = user(&unique_email("2fa-attempts-other"));
+    UserRepo::insert(store, &other).await.expect("insert user");
+    for _ in 0..3 {
+        SecondStepGuard::reserve_second_step(store, other.id, 1001, 3, 900)
+            .await
+            .expect("reserve");
+    }
+    assert_eq!(reserve(1001).await, Ok(Reservation::Granted));
+}
+
+async fn step_up_attempts_are_counted_apart_from_the_sign_in_second_step(store: &SqlStore) {
+    let owner = user(&unique_email("step-up-attempts"));
+    UserRepo::insert(store, &owner).await.expect("insert user");
+    // The sign-in second step reaches its limit and waits.
+    for _ in 0..3 {
+        assert_eq!(
+            SecondStepGuard::reserve_second_step(store, owner.id, 1000, 3, 900).await,
+            Ok(Reservation::Granted)
+        );
+    }
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(store, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // The step-up has a count of its own, with the same rule.
+    for _ in 0..3 {
+        assert_eq!(
+            SecondStepGuard::reserve_step_up(store, owner.id, 1000, 3, 900).await,
+            Ok(Reservation::Granted)
+        );
+    }
+    assert!(matches!(
+        SecondStepGuard::reserve_step_up(store, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // Clearing one leaves the other.
+    SecondStepGuard::clear_step_up(store, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(
+        SecondStepGuard::reserve_step_up(store, owner.id, 1001, 3, 900).await,
+        Ok(Reservation::Granted)
+    );
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(store, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+}
+
 async fn events(store: &SqlStore) {
     let owner = user(&unique_email("events"));
     UserRepo::insert(store, &owner).await.expect("insert user");
@@ -603,6 +758,8 @@ async fn run_all(store: &SqlStore) {
     tokens(store).await;
     two_factor(store).await;
     two_step_version_moves_when_a_method_is_turned_on_or_off(store).await;
+    second_step_attempts_are_reserved_atomically_and_kept(store).await;
+    step_up_attempts_are_counted_apart_from_the_sign_in_second_step(store).await;
     events(store).await;
 }
 
@@ -629,4 +786,35 @@ async fn mysql_when_configured() {
     if let Some(store) = external("KEMLOCK_TEST_MYSQL_URL").await {
         run_all(&store).await;
     }
+}
+
+#[tokio::test]
+async fn second_step_attempts_are_seen_by_another_server_on_the_same_database() {
+    // Two servers (a restart, or two replicas) on one database file: what one reserved the other
+    // sees, so the limit holds across them.
+    let (first, dir) = file().await;
+    let owner = user(&unique_email("2fa-attempts-shared"));
+    UserRepo::insert(&first, &owner).await.expect("insert user");
+    for _ in 0..3 {
+        assert_eq!(
+            SecondStepGuard::reserve_second_step(&first, owner.id, 1000, 3, 900).await,
+            Ok(Reservation::Granted)
+        );
+    }
+    let second = SqlStore::connect(&file_url(&dir.path().join("kemlock.db")))
+        .await
+        .expect("a second store opens the same file");
+    assert_eq!(
+        SecondStepGuard::reserve_second_step(&second, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Wait(1)),
+        "the other server's attempts count here"
+    );
+    // A right code on the second server clears it for the first.
+    SecondStepGuard::clear_second_step(&second, owner.id)
+        .await
+        .expect("clear");
+    assert_eq!(
+        SecondStepGuard::reserve_second_step(&first, owner.id, 1000, 3, 900).await,
+        Ok(Reservation::Granted)
+    );
 }

@@ -10,12 +10,15 @@ use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::store::SqlStore;
 use crate::tables::attachments;
 use crate::tables::changes;
+use crate::tables::email_confirmations;
 use crate::tables::events;
 use crate::tables::federation::{
     change_meta, home_records, item_siblings, peer_cursors, vault_federation,
 };
 use crate::tables::federation_logs::peer_events;
-use crate::tables::federation_wiring::{federation_erasures, replicated_accounts, vault_offers};
+use crate::tables::federation_wiring::{
+    federation_erasures, peer_blob_cursors, replicated_accounts, vault_offers, vault_rank_pins,
+};
 use crate::tables::items;
 use crate::tables::items::owner_parts;
 use crate::tables::pending_erasures;
@@ -32,13 +35,16 @@ use crate::tables::{
     auth_requests, bw_accounts, bw_user_key_ids, device_key_copies, devices, emergency_access,
 };
 use crate::tables::{dedup_owners, item_tags};
-use crate::tables::{refresh_tokens, two_factor, two_factor_recovery, two_step_versions, users};
+use crate::tables::{
+    refresh_tokens, second_step_attempts, step_up_attempts, two_factor, two_factor_recovery,
+    two_step_versions, users,
+};
 use kemlock_app::ports::{DeviceRepo, Event, ItemStore, StoreError, TwoFactorRepo};
 use kemlock_app::privacy::{
     AccountData, AccountEraser, ErasedRows, NewSignIn, PrivacyLog, PrivacySettings, PurgedTrash,
     RetentionStore, TwoFactorInfo,
 };
-use kemlock_app::spaces::SpaceRepo;
+use kemlock_app::spaces::{OWNER_REQUIRED, SpaceRepo};
 use kemlock_domain::privacy::{Retention, SignInEntry, StoredEvent, stored_ip};
 use kemlock_domain::spaces::Member;
 use kemlock_domain::{
@@ -49,12 +55,15 @@ use kemlock_federation::home::Policy;
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
-    ColumnTrait, Condition, DatabaseTransaction, EntityTrait, QueryFilter, QueryOrder, QuerySelect,
-    TransactionTrait,
+    ColumnTrait, Condition, ConnectionTrait, DatabaseTransaction, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, TransactionTrait,
 };
 use std::collections::HashMap;
 use std::net::IpAddr;
 use time::OffsetDateTime;
+
+/// How long past its link's expiry a held signup is kept before the retention job erases it.
+const HELD_SIGNUP_GRACE: time::Duration = time::Duration::days(7);
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
@@ -388,6 +397,12 @@ async fn delete_owner_data(
         .exec(txn)
         .await
         .store()?;
+    crate::tables::signed_writes::Entity::delete_many()
+        .filter(crate::tables::signed_writes::Column::OwnerType.eq(owner_type))
+        .filter(crate::tables::signed_writes::Column::OwnerId.eq(owner_id))
+        .exec(txn)
+        .await
+        .store()?;
     // A vault this server is the home of: its replicas hold copies that must go too. The erasure
     // is queued here, in this transaction, because the settings that name the replicas are
     // deleted just below; the replication job tells each peer in its next session.
@@ -528,10 +543,15 @@ pub(super) async fn delete_space(
     Ok(())
 }
 
-/// Spaces `user` owns alone while others (not revoked) are still in them.
+/// Spaces `user` owns alone while others (not revoked) are still in them. With `lock`, in a
+/// transaction, each space row is locked first (`FOR UPDATE`, on PostgreSQL and MySQL; SQLite has
+/// the one writer), as `write_changes_keeping_owner` does before it counts owners: an owner who
+/// steps down at the same moment waits for this transaction, or this one waits for theirs, so the two
+/// can't each see the other as the owner that stays.
 async fn blocking<C: sea_orm::ConnectionTrait>(
     db: &C,
     user: Uuid,
+    lock: bool,
 ) -> Result<Vec<SpaceId>, StoreError> {
     let owned = members::Entity::find()
         .filter(members::Column::UserId.eq(user))
@@ -542,6 +562,13 @@ async fn blocking<C: sea_orm::ConnectionTrait>(
         .store()?;
     let mut out = Vec::new();
     for mine in owned {
+        if lock && db.get_database_backend() != sea_orm::DbBackend::Sqlite {
+            spaces::Entity::find_by_id(mine.space_id)
+                .lock_exclusive()
+                .one(db)
+                .await
+                .store()?;
+        }
         let others = members::Entity::find()
             .filter(members::Column::SpaceId.eq(mine.space_id))
             .filter(members::Column::UserId.ne(user))
@@ -573,6 +600,29 @@ async fn erase_in(
         .is_none()
     {
         return Err(StoreError::NotFound);
+    }
+    // The last admin can't go. Counted here, in the erasing transaction, with the admins' rows
+    // locked (PostgreSQL and MySQL; SQLite has one writer), so two admins erasing each other at
+    // the same moment can't both see the other still standing and leave none.
+    if user.is_admin() {
+        let mut admins = users::Entity::find()
+            .filter(users::Column::Role.eq(users::ROLE_ADMIN))
+            .order_by_asc(users::Column::Id);
+        if txn.get_database_backend() != sea_orm::DbBackend::Sqlite {
+            admins = admins.lock_exclusive();
+        }
+        let others = admins
+            .all(txn)
+            .await
+            .store()?
+            .into_iter()
+            .filter(|row| row.id != uid)
+            .count();
+        if others == 0 {
+            return Err(StoreError::Backend(
+                kemlock_app::privacy::LAST_ADMIN.to_owned(),
+            ));
+        }
     }
     let mut out = ErasedRows::default();
 
@@ -696,6 +746,16 @@ async fn erase_in(
         .exec(txn)
         .await
         .store()?;
+    second_step_attempts::Entity::delete_many()
+        .filter(second_step_attempts::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
+    step_up_attempts::Entity::delete_many()
+        .filter(step_up_attempts::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
     bw_user_key_ids::Entity::delete_many()
         .filter(bw_user_key_ids::Column::UserId.eq(uid))
         .exec(txn)
@@ -783,6 +843,11 @@ async fn erase_in(
         .store()?;
     out.events_scrubbed += dropped.rows_affected;
 
+    crate::tables::account_bundles::Entity::delete_many()
+        .filter(crate::tables::account_bundles::Column::UserId.eq(uid))
+        .exec(txn)
+        .await
+        .store()?;
     users::Entity::delete_by_id(uid).exec(txn).await.store()?;
     Ok(out)
 }
@@ -806,6 +871,13 @@ pub(crate) async fn erase_replica_vault(
             .is_some(),
         Owner::Space(_) => false,
     };
+    // A personal vault whose account is not a copy is this server's own: its items are the
+    // account's, and a new home (an admin here accepted its promotion) must not wipe them.
+    if matches!(vault, Owner::User(_)) && !copied {
+        // `Duplicate` is how the store says "this account is yours": the replica answers a refusal
+        // the home takes as final (`kemlock_federation::erasure::ERASE_LOCAL_ACCOUNT`).
+        return Err(StoreError::Duplicate);
+    }
     let mut rows = ErasedRows::default();
     let mut accounts = 0;
     let account = if copied {
@@ -850,6 +922,16 @@ pub(crate) async fn erase_replica_vault(
         .exec(txn)
         .await
         .store()?;
+    vault_rank_pins::Entity::delete_by_id((owner_type, owner_id))
+        .exec(txn)
+        .await
+        .store()?;
+    peer_blob_cursors::Entity::delete_many()
+        .filter(peer_blob_cursors::Column::OwnerType.eq(owner_type))
+        .filter(peer_blob_cursors::Column::OwnerId.eq(owner_id))
+        .exec(txn)
+        .await
+        .store()?;
     events::Entity::insert(events::active_with_ip(
         Event {
             actor: None,
@@ -870,14 +952,29 @@ pub(crate) async fn erase_replica_vault(
     })
 }
 
-impl AccountEraser for SqlStore {
-    async fn blocking_spaces(&self, user: UserId) -> Result<Vec<SpaceId>, StoreError> {
-        blocking(self.reader(), user.0).await
-    }
-
-    async fn erase_user(&self, user: &User) -> Result<ErasedRows, StoreError> {
+impl SqlStore {
+    /// Erases an account in one transaction. With `check_owners` it refuses (`OWNER_REQUIRED`) while
+    /// the account is the only owner of a space that has other members: the retention job and the
+    /// account's own erasure. Forgetting a peer's account copies (federation) passes `false`: the
+    /// peer's spaces go with the peer, and a copy that was the owner of a space with local members
+    /// is the peer's to lose.
+    pub(super) async fn erase_account(
+        &self,
+        user: &User,
+        check_owners: bool,
+    ) -> Result<ErasedRows, StoreError> {
         let txn = self.writer().begin().await.store()?;
-        match erase_in(&txn, user, self.origin()).await {
+        let checked = if check_owners {
+            let lock = self.writer().get_database_backend() != sea_orm::DbBackend::Sqlite;
+            match blocking(&txn, user.id.0, lock).await {
+                Ok(blocked) if blocked.is_empty() => erase_in(&txn, user, self.origin()).await,
+                Ok(_) => Err(StoreError::Backend(OWNER_REQUIRED.to_owned())),
+                Err(err) => Err(err),
+            }
+        } else {
+            erase_in(&txn, user, self.origin()).await
+        };
+        match checked {
             Ok(rows) => {
                 txn.commit().await.store()?;
                 Ok(rows)
@@ -889,6 +986,18 @@ impl AccountEraser for SqlStore {
                 Err(err)
             }
         }
+    }
+}
+
+impl AccountEraser for SqlStore {
+    async fn blocking_spaces(&self, user: UserId) -> Result<Vec<SpaceId>, StoreError> {
+        blocking(self.reader(), user.0, false).await
+    }
+
+    /// The owners are checked again in the erasure's own transaction, under the spaces' row locks:
+    /// the use case read them before, and a scheduled erasure runs long after it was asked for.
+    async fn erase_user(&self, user: &User) -> Result<ErasedRows, StoreError> {
+        self.erase_account(user, true).await
     }
 
     async fn schedule_erasure(
@@ -992,6 +1101,84 @@ impl RetentionStore for SqlStore {
         Ok(from_events + from_sign_ins)
     }
 
+    async fn purge_held_signups(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
+        // A week past the link's expiry, so a mail that came late, or verification turned back on,
+        // doesn't cost anyone their account.
+        let before = before - HELD_SIGNUP_GRACE;
+        let expired = email_confirmations::Entity::find()
+            .filter(email_confirmations::Column::ExpiresAt.lt(utc(before)))
+            .all(self.writer())
+            .await
+            .store()?;
+        let mut purged = 0u64;
+        for hold in expired {
+            let txn = self.writer().begin().await.store()?;
+            let outcome = async {
+                // Looked at again under the row's lock: the link may have been opened (the hold
+                // is gone) or replaced (it runs again) since the list was read, and an account
+                // that is confirmed now must never be erased here.
+                let mut check = email_confirmations::Entity::find_by_id(hold.user_id)
+                    .filter(email_confirmations::Column::ExpiresAt.lt(utc(before)));
+                // SQLite has one writer and no row locks.
+                if sea_orm::ConnectionTrait::get_database_backend(&txn)
+                    != sea_orm::DbBackend::Sqlite
+                {
+                    check = check.lock_exclusive();
+                }
+                let still = check.one(&txn).await.store()?;
+                if still.is_none() {
+                    return Ok::<bool, StoreError>(false);
+                }
+                let Some(row) = users::Entity::find_by_id(hold.user_id)
+                    .one(&txn)
+                    .await
+                    .store()?
+                else {
+                    return Ok(false);
+                };
+                let user = row.into_domain()?;
+                // An account that holds anything has been used: verification was off, or it was
+                // confirmed another way. It is never erased as a held signup.
+                let (owner_type, owner_id) = owner_parts(kemlock_domain::Owner::User(user.id));
+                let used = items::Entity::find()
+                    .filter(items::Column::OwnerType.eq(owner_type))
+                    .filter(items::Column::OwnerId.eq(owner_id))
+                    .one(&txn)
+                    .await
+                    .store()?
+                    .is_some();
+                if used {
+                    return Ok(false);
+                }
+                let rows = erase_in(&txn, &user, self.origin()).await?;
+                if !rows.blobs.is_empty() || !rows.cipher_files.is_empty() {
+                    // A held account can't have used its vault, so this should not happen.
+                    tracing::warn!(
+                        user = %user.id,
+                        "a held signup had files; their rows went with it"
+                    );
+                }
+                Ok(true)
+            }
+            .await;
+            match outcome {
+                Ok(erased) => {
+                    txn.commit().await.store()?;
+                    if erased {
+                        purged += 1;
+                    }
+                }
+                Err(err) => {
+                    if let Err(rollback) = txn.rollback().await {
+                        tracing::warn!(%rollback, "rollback after purging a held signup failed");
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Ok(purged)
+    }
+
     async fn purge_trash(
         &self,
         before: OffsetDateTime,
@@ -1049,6 +1236,7 @@ impl RetentionStore for SqlStore {
                     item_key: None,
                     deleted_at: Some(now),
                     updated_at: now,
+                    signature: None,
                 };
                 match ItemStore::put(self, tombstone).await {
                     Ok(_) => {}

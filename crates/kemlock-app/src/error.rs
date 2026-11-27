@@ -27,6 +27,11 @@ pub enum AppError {
     /// cancels the deletion or the account is erased. Said only to whoever proved the credentials.
     #[error("the account is being deleted")]
     AccountBeingDeleted,
+    /// The account was made while "verify the email of a new account" was on and its address isn't
+    /// confirmed yet: no session and no use until the link mailed to it is opened. Said only to
+    /// whoever proved the credentials.
+    #[error("the account's email address isn't confirmed")]
+    EmailNotConfirmed,
     /// A space the account is an ordinary member of requires single sign-on, so this way in is
     /// closed to it.
     #[error("space {space} requires single sign-on")]
@@ -39,6 +44,10 @@ pub enum AppError {
         item: ItemId,
         current: Option<Revision>,
     },
+    /// A wrap of the root key was written for a key version the account no longer has: it replaced
+    /// its keys after the device unlocked. The device unlocks again and redoes the write.
+    #[error("the account's key version is {current}")]
+    StaleKeyVersion { current: u32 },
     #[error("already exists")]
     Duplicate,
     /// The cursor is older than the tombstone horizon: start again without one.
@@ -63,6 +72,7 @@ impl From<StoreError> for AppError {
             StoreError::Conflict { item, current } => AppError::Conflict { item, current },
             StoreError::Duplicate => AppError::Duplicate,
             StoreError::NotFound => AppError::NotFound,
+            StoreError::StaleKeyVersion { current } => AppError::StaleKeyVersion { current },
             StoreError::Backend(message) => AppError::Store(message),
         }
     }

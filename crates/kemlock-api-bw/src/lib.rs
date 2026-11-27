@@ -42,8 +42,10 @@ mod events;
 mod fed_view;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
+mod hash_gate;
 mod identity;
 pub mod imported;
+mod invite_links;
 mod ip_limit;
 mod kdf_change;
 mod live;
@@ -56,6 +58,7 @@ mod routes;
 mod send_limit;
 pub mod sends;
 pub mod settings;
+mod signup_hold;
 pub mod tokens;
 mod two_step;
 mod vault;
@@ -65,6 +68,7 @@ pub use app::{App, AppParts, Authed, BwStore};
 pub use blob::{BlobError, BlobStore, BoxFuture, MemoryBlobStore};
 pub use env::{Env, SystemEnv};
 pub use error::{BwError, BwResult};
+pub use invite_links::invite_links;
 pub use live::BwLive;
 pub use orgs::OrgMembership;
 pub use routes::{CLAIMED_SERVER_VERSION, router};
@@ -75,6 +79,7 @@ pub use two_step::TwoStepParts;
 
 use axum::Router;
 use kemlock_app::admin::Live;
+use kemlock_app::bitwarden::SharedInviteLinks;
 use kemlock_app::passkeys::WebAuthn;
 use kemlock_crypto::seal::ServerSeal;
 use std::path::Path;
@@ -175,10 +180,43 @@ pub fn mount_live<S: BwStore>(
     sends: Option<Arc<dyn SendStore>>,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<Router, String> {
+    mount_live_linked(
+        store,
+        server_key,
+        domain,
+        data_folder,
+        blobs,
+        live,
+        webauthn,
+        two_step,
+        channels,
+        sends,
+        env,
+    )
+    .map(|(router, _)| router)
+}
+
+/// [`mount_live`] that also gives the invitation links of the API it mounts, for the Kemlock API
+/// and the admin API to hand to their callers (see [`invite_links`]). With the Bitwarden API off
+/// there are none.
+#[allow(clippy::too_many_arguments)]
+pub fn mount_live_linked<S: BwStore>(
+    store: S,
+    server_key: &[u8; 32],
+    domain: &str,
+    data_folder: &Path,
+    blobs: Arc<dyn BlobStore>,
+    live: Live,
+    webauthn: Option<Arc<dyn WebAuthn>>,
+    two_step: TwoStepParts,
+    channels: BwLive,
+    sends: Option<Arc<dyn SendStore>>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(Router, Option<SharedInviteLinks>), String> {
     let settings = BwSettings::new(domain, live.signups_allowed())
         .env_from(env)
         .with_live(live);
-    mount_settings(
+    mount_settings_linked(
         settings,
         store,
         server_key,
@@ -203,9 +241,35 @@ fn mount_settings<S: BwStore>(
     live: BwLive,
     sends: Option<Arc<dyn SendStore>>,
 ) -> Result<Router, String> {
+    mount_settings_linked(
+        settings,
+        store,
+        server_key,
+        data_folder,
+        blobs,
+        webauthn,
+        two_step,
+        live,
+        sends,
+    )
+    .map(|(router, _)| router)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mount_settings_linked<S: BwStore>(
+    settings: BwSettings,
+    store: S,
+    server_key: &[u8; 32],
+    data_folder: &Path,
+    blobs: Arc<dyn BlobStore>,
+    webauthn: Option<Arc<dyn WebAuthn>>,
+    two_step: TwoStepParts,
+    live: BwLive,
+    sends: Option<Arc<dyn SendStore>>,
+) -> Result<(Router, Option<SharedInviteLinks>), String> {
     if !settings.compat {
         tracing::info!("the Bitwarden API is off (KEMLOCK_BITWARDEN_COMPAT)");
-        return Ok(Router::new());
+        return Ok((Router::new(), None));
     }
     let keys = TokenKeys::load_or_create(data_folder).map_err(|e| e.to_string())?;
     let app = App::new(AppParts {
@@ -220,5 +284,6 @@ fn mount_settings<S: BwStore>(
         sends,
         live,
     });
-    Ok(router(app))
+    let links = invite_links(&app);
+    Ok((router(app), Some(links)))
 }

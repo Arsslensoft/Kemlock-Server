@@ -641,7 +641,7 @@ fn bucket() -> S3Config {
 }
 
 #[tokio::test]
-async fn a_bucket_with_presigning_answers_start_with_its_own_url() {
+async fn a_bucket_answers_start_with_the_servers_own_route_even_with_presigning_on() {
     let blobs =
         ObjectBlobStore::s3(&bucket(), Some(Duration::from_secs(300))).expect("a bucket store");
     let s = setup_with(FilesConfig::default(), blobs).await;
@@ -650,13 +650,15 @@ async fn a_bucket_with_presigning_answers_start_with_its_own_url() {
     let reply = start(&s.client, &s.session, &item, 100).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
     let json = reply.json();
-    assert_eq!(json["presigned"], true);
-    assert_eq!(json["expiresIn"], 300);
-    let url = json["uploadUrl"].as_str().expect("an upload URL");
-    assert!(url.starts_with("http://localhost:9000/kemlock/"), "{url}");
-    assert!(url.contains("X-Amz-Signature="), "{url}");
+    // A pre-signed `PUT` can't be held to the announced length: the upload goes through the
+    // server, which enforces the size and the quota.
+    assert_eq!(json["presigned"], false);
+    assert!(json["expiresIn"].is_null(), "{json}");
     let file = json["fileId"].as_str().expect("fileId");
-    // The server's own route is still named, for clients that can't use the bucket.
+    assert_eq!(
+        json["uploadUrl"].as_str(),
+        Some(format!("{DOMAIN}{}", file_uri(&item, file)).as_str())
+    );
     assert_eq!(
         reply.header("location"),
         Some(format!("{DOMAIN}{}", file_uri(&item, file)).as_str())

@@ -51,6 +51,34 @@ mod m20261129_030001_replicated_sends;
 mod m20261129_040001_withheld_changes;
 mod m20261130_010001_email_changes;
 mod m20261130_020001_custom_fields;
+mod m20261201_010001_second_step_attempts;
+mod m20261201_020001_vw_import_ids;
+mod m20261201_030001_email_confirmations;
+mod m20261201_040001_sso_identity_confirmed;
+mod m20261201_050001_bw_tries;
+mod m20261201_060001_forget_email_new_tokens;
+mod m20261201_070001_bw_api_key_width;
+mod m20261201_080001_imported_manager_collections;
+mod m20261201_090001_vault_home_history;
+mod m20261201_100001_peer_key_history;
+mod m20261201_110001_peer_trusted_addresses;
+mod m20261202_010001_root_rotation;
+mod m20261202_010001_signed_writes;
+mod m20261202_020001_account_bundles;
+mod m20261203_010001_key_box_signatures;
+mod m20261203_020001_rotation_staged_signatures;
+mod m20261204_010001_refresh_token_api;
+mod m20261204_010003_require_sso_one_table;
+mod m20261204_020001_step_up_attempts;
+mod m20261204_030001_chain_signer_index;
+mod m20261204_050001_vault_rank_pins;
+mod m20261204_050002_held_rotations;
+mod m20261204_050003_peer_events_received;
+mod m20261204_050004_peer_blob_cursors;
+mod m20261204_060001_email_change_key_version;
+mod m20261204_060002_sso_sessions;
+mod m20261204_060003_sso_identity_unconfirm;
+mod m20261204_060004_exact_text_columns;
 
 use sea_orm_migration::prelude::*;
 
@@ -107,6 +135,34 @@ impl MigratorTrait for Migrator {
             Box::new(m20261129_040001_withheld_changes::Migration),
             Box::new(m20261130_010001_email_changes::Migration),
             Box::new(m20261130_020001_custom_fields::Migration),
+            Box::new(m20261201_010001_second_step_attempts::Migration),
+            Box::new(m20261201_020001_vw_import_ids::Migration),
+            Box::new(m20261201_030001_email_confirmations::Migration),
+            Box::new(m20261201_040001_sso_identity_confirmed::Migration),
+            Box::new(m20261201_050001_bw_tries::Migration),
+            Box::new(m20261201_060001_forget_email_new_tokens::Migration),
+            Box::new(m20261201_070001_bw_api_key_width::Migration),
+            Box::new(m20261201_080001_imported_manager_collections::Migration),
+            Box::new(m20261201_090001_vault_home_history::Migration),
+            Box::new(m20261201_100001_peer_key_history::Migration),
+            Box::new(m20261201_110001_peer_trusted_addresses::Migration),
+            Box::new(m20261202_010001_root_rotation::Migration),
+            Box::new(m20261202_010001_signed_writes::Migration),
+            Box::new(m20261202_020001_account_bundles::Migration),
+            Box::new(m20261203_010001_key_box_signatures::Migration),
+            Box::new(m20261203_020001_rotation_staged_signatures::Migration),
+            Box::new(m20261204_010001_refresh_token_api::Migration),
+            Box::new(m20261204_010003_require_sso_one_table::Migration),
+            Box::new(m20261204_020001_step_up_attempts::Migration),
+            Box::new(m20261204_030001_chain_signer_index::Migration),
+            Box::new(m20261204_050001_vault_rank_pins::Migration),
+            Box::new(m20261204_050002_held_rotations::Migration),
+            Box::new(m20261204_050003_peer_events_received::Migration),
+            Box::new(m20261204_050004_peer_blob_cursors::Migration),
+            Box::new(m20261204_060001_email_change_key_version::Migration),
+            Box::new(m20261204_060002_sso_sessions::Migration),
+            Box::new(m20261204_060003_sso_identity_unconfirm::Migration),
+            Box::new(m20261204_060004_exact_text_columns::Migration),
         ]
     }
 }

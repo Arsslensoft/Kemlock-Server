@@ -10,6 +10,7 @@
 use super::chain::{StoredName, StoredSeal};
 use super::ports::SpaceChanges;
 use kemlock_crypto::space_chain as sc;
+use kemlock_domain::policies::{MasterPasswordPolicy, SpacePolicies, TimeoutAction};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, Confirmation,
     CustomPermissions, Grantee, Group, GroupId, KeyCopy, Member, MemberState, Space, SpaceRole,
@@ -69,6 +70,51 @@ fn grantee_of(grantee: &sc::Grantee) -> Grantee {
     match grantee {
         sc::Grantee::User(id) => Grantee::Member(user_of(id)),
         sc::Grantee::Group(id) => Grantee::Group(group_of(id)),
+    }
+}
+
+/// The server's policy settings the chain's `policies` record sets (docs/crypto.md, "Space chain",
+/// `policies`): one to one, with `0` and `false` everywhere in `masterPassword` for no rules, a
+/// `minLength` or `minComplexity` of `0` for none, and `minutes: 0` for no timeout. The chain's
+/// account recovery and duplicate matching switches have no setting here.
+pub fn policies_of(policies: &sc::Policies) -> SpacePolicies {
+    let mp = &policies.master_password;
+    let master_password =
+        (*mp != sc::MasterPasswordPolicy::default()).then(|| MasterPasswordPolicy {
+            min_length: (mp.min_length > 0).then_some(u32::from(mp.min_length)),
+            min_complexity: (mp.min_complexity > 0).then_some(mp.min_complexity),
+            require_upper: mp.require_upper,
+            require_lower: mp.require_lower,
+            require_numbers: mp.require_numbers,
+            require_special: mp.require_special,
+            enforce_on_login: mp.enforce_on_login,
+        });
+    let timeout = &policies.session_timeout;
+    let (minutes, action) = if timeout.minutes == 0 {
+        (None, None)
+    } else {
+        (
+            Some(timeout.minutes),
+            match timeout.action {
+                sc::TimeoutAction::None => None,
+                sc::TimeoutAction::Lock => Some(TimeoutAction::Lock),
+                sc::TimeoutAction::LogOut => Some(TimeoutAction::LogOut),
+            },
+        )
+    };
+    SpacePolicies {
+        require_sso: policies.require_sso,
+        two_step: policies.two_step,
+        master_password,
+        single_space: policies.single_space,
+        disable_export: policies.disable_export,
+        disable_send: policies.disable_send,
+        always_show_email: policies.always_show_email,
+        session_timeout_minutes: minutes,
+        session_timeout_action: action,
+        no_pin_unlock: policies.no_pin_unlock,
+        central_ownership: policies.central_ownership,
+        no_card_items: policies.no_card_items,
     }
 }
 
@@ -144,6 +190,8 @@ pub fn project(
         .flat_map(|s| s.members.iter())
         .map(|m| (m.user, m))
         .collect();
+    // The members whose row is confirmed once these changes land: only they are sealed keys.
+    let mut confirmed_rows: BTreeSet<UserId> = BTreeSet::new();
     for (id, member) in &after.members {
         let user = user_of(id);
         if member.status == sc::Status::Removed {
@@ -153,7 +201,11 @@ pub fn project(
             continue;
         }
         let old = old_members.get(&user).copied();
-        let confirmed = member.status == sc::Status::Confirmed;
+        // The invitee's own step, "accepted", is the server's and isn't in the chain: a member the
+        // chain holds as confirmed but whose row is still `invited` hasn't consented, so they
+        // stay invited. No policy binds them and no key is sealed to them until they accept.
+        let consented = old.is_none_or(|o| o.state != MemberState::Invited);
+        let confirmed = member.status == sc::Status::Confirmed && consented;
         let state = match (confirmed, old.map(|o| o.state)) {
             (true, _) => MemberState::Confirmed,
             (false, Some(MemberState::Accepted)) => MemberState::Accepted,
@@ -164,13 +216,18 @@ pub fn project(
         } else {
             None
         };
-        let (sealed_space_key, key_version) = match (new_box, old) {
-            (Some(sealed), _) => (Some(sealed), Some(after.space.key_version)),
-            (None, Some(o)) if confirmed => (o.sealed_space_key.clone(), o.key_version),
-            _ => (None, None),
+        // A box the chain commits is authenticated by the chain and carries no key box signature.
+        let (sealed_space_key, sealed_by, key_version) = match (new_box, old) {
+            (Some(sealed), _) => (Some(sealed), None, Some(after.space.key_version)),
+            (None, Some(o)) if confirmed => (
+                o.sealed_space_key.clone(),
+                o.sealed_by.clone(),
+                o.key_version,
+            ),
+            _ => (None, None, None),
         };
         let confirmation = match (&member.confirmation, &member.bundle) {
-            (Some(c), Some(bundle)) => Some(Confirmation {
+            (Some(c), Some(bundle)) if confirmed => Some(Confirmation {
                 by: user_of(&c.by),
                 at: old
                     .and_then(|o| o.confirmation.as_ref())
@@ -185,6 +242,9 @@ pub fn project(
                 .and_then(|o| o.confirmation.clone())
                 .filter(|_| confirmed),
         };
+        if state == MemberState::Confirmed {
+            confirmed_rows.insert(user);
+        }
         let row = Member {
             space,
             user,
@@ -199,6 +259,7 @@ pub fn project(
                 old.and_then(|o| o.accepted_at).or(Some(now))
             },
             sealed_space_key,
+            sealed_by,
             key_version,
             confirmation,
             revoked_at: None,
@@ -310,7 +371,8 @@ pub fn project(
         let present = after
             .members
             .get(member)
-            .is_some_and(|m| m.status != sc::Status::Removed);
+            .is_some_and(|m| m.status != sc::Status::Removed)
+            && confirmed_rows.contains(&user_of(member));
         if current && present {
             desired.insert((collection_of(id), user_of(member)));
         }
@@ -333,6 +395,7 @@ pub fn project(
                     user: pair.1,
                     key_version: seal.version,
                     sealed: seal.sealed.clone(),
+                    sealed_by: None,
                 },
             );
         }
@@ -368,6 +431,43 @@ mod tests {
         assert!(bits.contains(CustomPermissions::CREATE_COLLECTIONS));
         assert!(!bits.contains(CustomPermissions::MANAGE_GROUPS));
         assert_eq!(custom_of(&BTreeSet::new()), CustomPermissions::NONE);
+    }
+
+    #[test]
+    fn the_chains_policies_map_to_the_servers_settings() {
+        let none = policies_of(&sc::Policies::default());
+        assert_eq!(none, SpacePolicies::default());
+
+        let set = sc::Policies {
+            require_sso: true,
+            two_step: true,
+            single_space: true,
+            master_password: sc::MasterPasswordPolicy {
+                min_length: 14,
+                require_numbers: true,
+                ..sc::MasterPasswordPolicy::default()
+            },
+            session_timeout: sc::SessionTimeoutPolicy {
+                action: sc::TimeoutAction::LogOut,
+                minutes: 30,
+            },
+            ..sc::Policies::default()
+        };
+        let mapped = policies_of(&set);
+        assert!(mapped.require_sso && mapped.two_step && mapped.single_space);
+        assert!(!mapped.disable_send);
+        assert_eq!(
+            mapped.master_password,
+            Some(MasterPasswordPolicy {
+                min_length: Some(14),
+                min_complexity: None,
+                require_numbers: true,
+                ..MasterPasswordPolicy::default()
+            })
+        );
+        assert_eq!(mapped.session_timeout_minutes, Some(30));
+        assert_eq!(mapped.session_timeout_action, Some(TimeoutAction::LogOut));
+        assert!(mapped.validate().is_ok());
     }
 
     #[test]

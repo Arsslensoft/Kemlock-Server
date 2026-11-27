@@ -12,14 +12,15 @@ use kemlock_app::spaces::{
     ChangeRole, ConfirmInput, ConfirmMember, ConfirmationFacts, CreateCollection,
     CreateCollectionInput, CreateGroup, CreateGroupInput, CreateSpace, CreateSpaceInput,
     DeleteCollection, DeleteGroup, EditCollection, EditGroup, GetSpace, GrantAccess, InviteInput,
-    InviteMember, KeyReplacement, ListMembers, ListSpaces, NewCollection, Offboard,
-    PendingExternal, PutSpaceBatch, PutSpaceItem, RecoveryBox, ReplaceKeys, RevokeGrant,
-    SealedCollectionKey, SpaceChainRepo, SpaceChanges, SpaceFacts, SpaceItemInfo,
-    SpaceRecoveryRepo, SpaceRepo, StoredRecord, StoredSeal, SyncOwners,
+    InviteMember, KeyBoxFacts, KeyBoxVerifier, KeyReplacement, ListMembers, ListSpaces,
+    NewCollection, Offboard, PendingExternal, PutSpaceBatch, PutSpaceItem, RecoveryBox,
+    ReplaceKeys, ResealKeys, RevokeGrant, SealedCollectionKey, SealedSpaceKey, SpaceChainRepo,
+    SpaceChanges, SpaceFacts, SpaceItemInfo, SpaceRecoveryRepo, SpaceRepo, SpacesError,
+    StoredRecord, StoredSeal, SyncOwners,
 };
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, CollectionPermission, CustomPermissions, Grantee,
-    Group, GroupId, KeyCopy, Member, SEALED_KEY_LEN, Space, SpaceRole, SpaceState,
+    Group, GroupId, KeyCopy, Member, SEALED_KEY_LEN, Space, SpaceError, SpaceRole, SpaceState,
 };
 use kemlock_domain::{
     Item, ItemDraft, ItemFormat, ItemId, ItemKind, ItemWrite, Owner, Revision, Sealed, SpaceId,
@@ -44,6 +45,9 @@ struct Inner {
     done: BTreeSet<uuid::Uuid>,
     held: BTreeSet<ItemId>,
     recovery: BTreeMap<(SpaceId, UserId), RecoveryBox>,
+    policies: BTreeMap<SpaceId, kemlock_domain::policies::SpacePolicies>,
+    /// What `chain_usage` answers, when a test sets it, in place of counting the chain.
+    usage: Option<kemlock_app::spaces::ChainUsage>,
 }
 
 /// `SpaceRepo` over maps. Items live in `I`, the item store of the test's world, so a space item
@@ -51,6 +55,9 @@ struct Inner {
 pub(crate) struct FakeSpaces<I> {
     inner: Arc<Mutex<Inner>>,
     items: I,
+    /// The key version of the accounts, which a wrap made for another is refused under; `None`
+    /// checks nothing.
+    key_version: Arc<Mutex<Option<u32>>>,
 }
 
 impl<I: Clone> Clone for FakeSpaces<I> {
@@ -58,6 +65,7 @@ impl<I: Clone> Clone for FakeSpaces<I> {
         FakeSpaces {
             inner: Arc::clone(&self.inner),
             items: self.items.clone(),
+            key_version: Arc::clone(&self.key_version),
         }
     }
 }
@@ -118,6 +126,39 @@ fn apply_in(g: &mut Inner, c: SpaceChanges) {
     for copy in c.key_copies {
         g.copies.insert((copy.collection, copy.user), copy);
     }
+    if let Some((policies, _by)) = c.policies {
+        g.policies.insert(space, policies);
+    }
+}
+
+/// Whether `c` names a collection or group of another space, or a row that says it is another
+/// space's: the SQL store refuses these (`Duplicate`) instead of taking the row over.
+fn foreign(g: &Inner, c: &SpaceChanges) -> bool {
+    let space = c.space_id;
+    let other_collection =
+        |id: &CollectionId| g.collections.get(id).is_some_and(|x| x.space != space);
+    let other_group = |id: &GroupId| g.groups.get(id).is_some_and(|x| x.space != space);
+    let other_grantee =
+        |grantee: &Grantee| matches!(grantee, Grantee::Group(group) if other_group(group));
+    c.collections
+        .iter()
+        .any(|x| x.space != space || other_collection(&x.id))
+        || c.collections_removed.iter().any(other_collection)
+        || c.groups
+            .iter()
+            .any(|x| x.space != space || other_group(&x.id))
+        || c.groups_removed.iter().any(other_group)
+        || c.members.iter().any(|m| m.space != space)
+        || c.grants
+            .iter()
+            .any(|x| other_collection(&x.collection) || other_grantee(&x.grantee))
+        || c.grants_removed
+            .iter()
+            .any(|(col, grantee)| other_collection(col) || other_grantee(grantee))
+        || c.key_copies.iter().any(|k| other_collection(&k.collection))
+        || c.key_copies_removed
+            .iter()
+            .any(|(col, _)| other_collection(col))
 }
 
 /// What the SQL store does with a held item that a space item write has replaced (I4): a
@@ -136,11 +177,39 @@ impl<I> FakeSpaces<I> {
         FakeSpaces {
             inner: Arc::new(Mutex::new(Inner::default())),
             items,
+            key_version: Arc::new(Mutex::new(None)),
         }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("the spaces lock isn't poisoned")
+    }
+
+    /// Says which key version the accounts are at, as the real store reads from the account row.
+    pub(crate) fn set_account_key_version(&self, version: u32) {
+        *self.key_version.lock().expect("the lock isn't poisoned") = Some(version);
+    }
+
+    /// Makes `chain_usage` answer `usage`, whoever asks: a chain too long to build in a test.
+    pub(crate) fn set_usage(&self, usage: kemlock_app::spaces::ChainUsage) {
+        self.lock().usage = Some(usage);
+    }
+
+    /// Sets the policies the join check of the use cases reads for `space`.
+    pub(crate) fn set_policies(
+        &self,
+        space: SpaceId,
+        policies: kemlock_domain::policies::SpacePolicies,
+    ) {
+        self.lock().policies.insert(space, policies);
+    }
+
+    /// The policies stored for `space`, as a chain append or `set_policies` left them.
+    pub(crate) fn policies_of(
+        &self,
+        space: SpaceId,
+    ) -> Option<kemlock_domain::policies::SpacePolicies> {
+        self.lock().policies.get(&space).cloned()
     }
 
     fn state_of(g: &Inner, id: SpaceId) -> Option<SpaceState> {
@@ -227,6 +296,14 @@ impl<I: ItemStore> SpaceRepo for FakeSpaces<I> {
             .collect())
     }
 
+    async fn collection_space(&self, id: CollectionId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(self.lock().collections.get(&id).map(|c| c.space))
+    }
+
+    async fn group_space(&self, id: GroupId) -> Result<Option<SpaceId>, StoreError> {
+        Ok(self.lock().groups.get(&id).map(|x| x.space))
+    }
+
     async fn key_copies(&self, space: SpaceId, user: UserId) -> Result<Vec<KeyCopy>, StoreError> {
         let g = self.lock();
         Ok(g.copies
@@ -286,12 +363,19 @@ impl<I: ItemStore> SpaceRepo for FakeSpaces<I> {
         if g.spaces.contains_key(&changes.space_id) {
             return Err(StoreError::Duplicate);
         }
+        if foreign(&g, &changes) {
+            return Err(StoreError::Duplicate);
+        }
         apply_in(&mut g, changes);
         Ok(())
     }
 
     async fn apply(&self, changes: SpaceChanges) -> Result<(), StoreError> {
-        apply_in(&mut self.lock(), changes);
+        let mut g = self.lock();
+        if foreign(&g, &changes) {
+            return Err(StoreError::Duplicate);
+        }
+        apply_in(&mut g, changes);
         Ok(())
     }
 
@@ -305,6 +389,17 @@ impl<I: ItemStore> SpaceRepo for FakeSpaces<I> {
         g.item_collections.insert(item.id, collection);
         release_written(&mut g, &item, Some(collection));
         Ok(item)
+    }
+
+    async fn join_policies_of(
+        &self,
+        spaces: &[SpaceId],
+    ) -> Result<kemlock_domain::policies::PoliciesBySpace, StoreError> {
+        let g = self.lock();
+        Ok(spaces
+            .iter()
+            .filter_map(|s| g.policies.get(s).map(|p| (*s, p.clone())))
+            .collect())
     }
 
     async fn require_sso_of(&self, spaces: &[SpaceId]) -> Result<Vec<SpaceId>, StoreError> {
@@ -424,6 +519,24 @@ impl BundleFingerprints for FakeFingerprints {
     }
 }
 
+/// The real check of a key box signature is `kemlock-crypto`'s, and runs in the API tests with real
+/// keys; here a box passes, as signed by key version 1, when it carries `signature()`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FakeKeyBoxes;
+
+impl KeyBoxVerifier for FakeKeyBoxes {
+    async fn verify(&self, _facts: &KeyBoxFacts<'_>, signature: &[u8]) -> Result<u32, SpacesError> {
+        if signature == self::signature().as_slice() {
+            Ok(1)
+        } else {
+            Err(
+                SpaceError::Invalid("the key's signature isn't the sealing member's over this box")
+                    .into(),
+            )
+        }
+    }
+}
+
 /// A sealed-looking collection or space key (the right length and version byte).
 pub(crate) fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
@@ -446,6 +559,16 @@ pub(crate) fn key_for(collection: CollectionId, user: UserId, fill: u8) -> Seale
         collection,
         user,
         sealed: sealed_key(fill),
+        signature: signature(),
+    }
+}
+
+/// The space key sealed to `user`, signed.
+pub(crate) fn space_key_for(user: UserId, fill: u8) -> SealedSpaceKey {
+    SealedSpaceKey {
+        user,
+        sealed: sealed_key(fill),
+        signature: signature(),
     }
 }
 
@@ -468,11 +591,12 @@ impl SpaceWorld {
         make_user(&self.world, email).await
     }
 
-    pub(crate) fn create_space(&self) -> CreateSpace<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn create_space(&self) -> CreateSpace<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         CreateSpace {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -495,13 +619,14 @@ impl SpaceWorld {
 
     pub(crate) fn confirm(
         &self,
-    ) -> ConfirmMember<Spaces, FakeStore, FakeFingerprints, FakeStore, FakeEnv> {
+    ) -> ConfirmMember<Spaces, FakeStore, FakeFingerprints, FakeStore, FakeEnv, FakeKeyBoxes> {
         ConfirmMember {
             spaces: self.spaces.clone(),
             users: self.world.store.clone(),
             fingerprints: FakeFingerprints,
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -548,11 +673,14 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn create_collection(&self) -> CreateCollection<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn create_collection(
+        &self,
+    ) -> CreateCollection<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         CreateCollection {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -580,11 +708,12 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn edit_group(&self) -> EditGroup<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn edit_group(&self) -> EditGroup<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         EditGroup {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -596,11 +725,12 @@ impl SpaceWorld {
         }
     }
 
-    pub(crate) fn grant(&self) -> GrantAccess<Spaces, FakeStore, FakeEnv> {
+    pub(crate) fn grant(&self) -> GrantAccess<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
         GrantAccess {
             spaces: self.spaces.clone(),
             events: self.world.store.clone(),
             clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -612,9 +742,19 @@ impl SpaceWorld {
         }
     }
 
+    pub(crate) fn reseal(&self) -> ResealKeys<Spaces, FakeStore, FakeEnv, FakeKeyBoxes> {
+        ResealKeys {
+            spaces: self.spaces.clone(),
+            events: self.world.store.clone(),
+            clock: self.world.env.clone(),
+            boxes: FakeKeyBoxes,
+        }
+    }
+
     pub(crate) fn replace_keys(
         &self,
-    ) -> ReplaceKeys<Spaces, FakeStore, FakeStore, FakeStore, FakeNotifier, FakeEnv> {
+    ) -> ReplaceKeys<Spaces, FakeStore, FakeStore, FakeStore, FakeNotifier, FakeEnv, FakeKeyBoxes>
+    {
         ReplaceKeys {
             spaces: self.spaces.clone(),
             items: self.world.store.clone(),
@@ -623,6 +763,7 @@ impl SpaceWorld {
             push: self.world.notifier.clone(),
             clock: self.world.env.clone(),
             config: self.world.config,
+            boxes: FakeKeyBoxes,
         }
     }
 
@@ -684,10 +825,12 @@ impl SpaceWorld {
                     id: space,
                     name: name(1),
                     sealed_space_key: sealed_key(2),
+                    space_key_signature: signature(),
                     collection: NewCollection {
                         id: collection,
                         name: name(3),
                         sealed_key: sealed_key(4),
+                        key_signature: signature(),
                     },
                 },
             )
@@ -716,6 +859,7 @@ impl SpaceWorld {
             statement: b"I compared the fingerprint".to_vec(),
             signature: signature(),
             sealed_space_key: sealed_key(9),
+            space_key_signature: signature(),
             collection_keys,
         }
     }
@@ -792,11 +936,37 @@ impl SpaceWorld {
                 ciphertext: vec![0xaa; 64],
                 item_key: vec![0xbb; kemlock_domain::item::ITEM_KEY_LEN],
             }),
+            signature: None,
         }
     }
 }
 
 impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
+    async fn chain_usage(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        since_hour: u64,
+        since_day: u64,
+    ) -> Result<kemlock_app::spaces::ChainUsage, StoreError> {
+        let g = self.lock();
+        if let Some(usage) = g.usage {
+            return Ok(usage);
+        }
+        let mut usage = kemlock_app::spaces::ChainUsage::default();
+        for r in g
+            .chains
+            .get(&space)
+            .into_iter()
+            .flatten()
+            .filter(|r| r.by == member)
+        {
+            usage.by_member_hour += u64::from(r.at >= since_hour);
+            usage.by_member_day += u64::from(r.at >= since_day);
+        }
+        Ok(usage)
+    }
+
     async fn chain_head(&self, space: SpaceId) -> Result<Option<ChainHead>, StoreError> {
         Ok(self
             .lock()
@@ -838,34 +1008,52 @@ impl<I: ItemStore> SpaceChainRepo for FakeSpaces<I> {
         space: SpaceId,
         append: ChainAppend,
     ) -> Result<AppendOutcome, StoreError> {
-        let mut g = self.lock();
-        let head = g
-            .chains
-            .get(&space)
-            .and_then(|c| c.last())
-            .map(|r| ChainHead {
+        // The lock is let go before the item store is awaited.
+        let (last, drafts, collections) = {
+            let mut g = self.lock();
+            let head = g
+                .chains
+                .get(&space)
+                .and_then(|c| c.last())
+                .map(|r| ChainHead {
+                    seq: r.seq,
+                    link: r.link,
+                    epoch: r.epoch,
+                });
+            if head != append.expected {
+                return Ok(AppendOutcome::Stale(head));
+            }
+            if foreign(&g, &append.changes) {
+                return Err(StoreError::Duplicate);
+            }
+            let last = append.records.last().map(|r| ChainHead {
                 seq: r.seq,
                 link: r.link,
                 epoch: r.epoch,
             });
-        if head != append.expected {
-            return Ok(AppendOutcome::Stale(head));
+            g.chains.entry(space).or_default().extend(append.records);
+            for seal in append.seals {
+                g.chain_seals.push((space, seal));
+            }
+            if let Some(id) = append.answers {
+                g.done.insert(id);
+                g.pending.retain(|p| p.id != id);
+            }
+            g.held.extend(append.held);
+            apply_in(&mut g, append.changes);
+            // The items a key replacement re-wrote, stored with the records.
+            let (drafts, collections): (Vec<ItemDraft>, Vec<CollectionId>) =
+                append.writes.into_iter().unzip();
+            (last, drafts, collections)
+        };
+        if !drafts.is_empty() {
+            let stored = self.items.put_batch(drafts).await?;
+            let mut g = self.lock();
+            for (item, collection) in stored.iter().zip(collections) {
+                g.item_collections.insert(item.id, collection);
+                release_written(&mut g, item, Some(collection));
+            }
         }
-        let last = append.records.last().map(|r| ChainHead {
-            seq: r.seq,
-            link: r.link,
-            epoch: r.epoch,
-        });
-        g.chains.entry(space).or_default().extend(append.records);
-        for seal in append.seals {
-            g.chain_seals.push((space, seal));
-        }
-        if let Some(id) = append.answers {
-            g.done.insert(id);
-            g.pending.retain(|p| p.id != id);
-        }
-        g.held.extend(append.held);
-        apply_in(&mut g, append.changes);
         Ok(AppendOutcome::Appended(
             last.expect("an append has records"),
         ))
@@ -916,6 +1104,21 @@ impl<I: Send + Sync> SpaceRecoveryRepo for FakeSpaces<I> {
             .recovery
             .insert((recovery.space, recovery.user), recovery);
         Ok(())
+    }
+
+    async fn put_recovery_box_at(
+        &self,
+        recovery: RecoveryBox,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
+        let current = *self.key_version.lock().expect("the lock isn't poisoned");
+        if let (Some(current), Some(asked)) = (current, key_version)
+            && current != 0
+            && current != asked
+        {
+            return Err(StoreError::StaleKeyVersion { current });
+        }
+        self.put_recovery_box(recovery).await
     }
 
     async fn delete_recovery_box(&self, space: SpaceId, user: UserId) -> Result<bool, StoreError> {

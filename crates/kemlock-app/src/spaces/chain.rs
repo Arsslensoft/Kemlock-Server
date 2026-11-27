@@ -15,7 +15,7 @@ use kemlock_domain::spaces::{
     CollectionId, CollectionPermission, CustomPermissions, Grantee, MemberState, SpaceError,
     SpaceRole, SpaceState,
 };
-use kemlock_domain::{ItemId, SpaceId, UserId};
+use kemlock_domain::{ItemDraft, ItemId, SpaceId, UserId};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
@@ -223,6 +223,9 @@ pub struct ChainAppend {
     pub creating: bool,
     /// Live items a `keys` record leaves held (I3): kept, but not served as live.
     pub held: Vec<ItemId>,
+    /// The items a `keys` record's request re-writes under the new collection key, each with its
+    /// collection: stored in the same transaction as the records, as a key replacement's are.
+    pub writes: Vec<(ItemDraft, CollectionId)>,
     /// The queued outside change these records answer: marked done in the same transaction.
     pub answers: Option<Uuid>,
     /// The verified state the records lead to, which is the state at the new head. A store may
@@ -238,6 +241,15 @@ pub enum AppendOutcome {
     Appended(ChainHead),
     /// The stored head isn't the one the records follow; nothing was stored.
     Stale(Option<ChainHead>),
+}
+
+/// How much of the chain one account signed lately (`SpaceChainRepo::chain_usage`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChainUsage {
+    /// Records the member signed in the last hour.
+    pub by_member_hour: u64,
+    /// Records the member signed in the last day.
+    pub by_member_day: u64,
 }
 
 /// What federation says about this server and a space, when the space is federated.
@@ -292,6 +304,33 @@ pub trait SpaceChainRepo: Send + Sync {
         space: SpaceId,
     ) -> impl Future<Output = Result<Option<(ChainHead, Arc<State>)>, StoreError>> + Send {
         replay_state(self, space)
+    }
+
+    /// How many records `member` signed in the chain at or after `since_hour` and `since_day`
+    /// (Unix seconds, by the record's `at`): what the quota of the append asks. The default reads
+    /// the whole chain; a store counts. The chain's own totals are not read here: the state at the
+    /// head carries them.
+    fn chain_usage(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        since_hour: u64,
+        since_day: u64,
+    ) -> impl Future<Output = Result<ChainUsage, StoreError>> + Send {
+        async move {
+            let mut usage = ChainUsage::default();
+            for row in self.chain_records(space, 0).await? {
+                if row.by == member {
+                    if row.at >= since_hour {
+                        usage.by_member_hour = usage.by_member_hour.saturating_add(1);
+                    }
+                    if row.at >= since_day {
+                        usage.by_member_day = usage.by_member_day.saturating_add(1);
+                    }
+                }
+            }
+            Ok(usage)
+        }
     }
 
     /// Federation's view of the space, or `None` for a space that isn't federated.

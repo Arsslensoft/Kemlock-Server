@@ -8,13 +8,20 @@ use std::collections::BTreeSet;
 
 use super::{
     Limits,
-    client::{ItemRefusal, KeyRefusal, anchor_person, check_item_revision, open_key_in},
-    model::{Body, CollectionPerm, Grantee, Id, KeyRef, Kind, Reason, Record, Role, SignedRecord},
+    client::{
+        AnchorPerson, FirstContact, ItemRefusal, KeyRefusal, anchor_person, check_item_revision,
+        open_key_in,
+    },
+    model::{
+        Body, CollectionPerm, Grantee, Id, KeyRef, Kind, Policies, Reason, Record, Role,
+        SignedRecord,
+    },
     scenarios::{Case, Expect, cases, oversized, valid_chain, verdict},
     seals::{link, seal_hash},
-    state::{CollectionInfo, Member, State, Status},
+    state::{CollectionInfo, Head, Member, State, Status},
     testkit::{
-        ADMIN, ANA, Account, Kit, LEE, NEWBIE, OWNER, finance, general, space_id, uid, world,
+        ADMIN, ANA, Account, Kit, LEE, NEWBIE, OWNER, OWNER2, finance, general, space_id, uid,
+        world,
     },
     verify::verify_chain_in,
 };
@@ -516,6 +523,7 @@ fn case_12_the_10001st_member_is_invalid() {
                 bundle_signature: Vec::new(),
                 confirmation: None,
                 rekey_seq: None,
+                reconfirmed_seq: None,
             },
         )
     };
@@ -584,7 +592,7 @@ fn case_13_a_server_made_chain_shows_another_fingerprint() {
     // The real chain: the owner invites Newbie.
     let mut real = world::<Gen>();
     real.invite::<Gen>(&owner, &newbie, Role::Member, &[], &[]);
-    let seen = anchor_person(&real.state, &newbie).expect("an anchor person");
+    let seen = compare(anchor_person(&real.state, &newbie));
     assert_eq!(seen.person, owner);
     let on_the_owners_screen = real.acc(&owner).bundle.fingerprint();
     assert_eq!(seen.fingerprint, on_the_owners_screen);
@@ -598,27 +606,65 @@ fn case_13_a_server_made_chain_shows_another_fingerprint() {
     // It verifies, which is why the comparison exists...
     verify_chain_in::<Gen>(&space_id(), &fake.records, None).expect("a consistent chain");
     // ...and the digits differ from the real owner's.
-    let shown = anchor_person(&fake.state, &newbie).expect("an anchor person");
+    let shown = compare(anchor_person(&fake.state, &newbie));
     assert_eq!(shown.person, owner);
     assert_ne!(shown.fingerprint, on_the_owners_screen);
 
     // A confirmed member's new device compares with their confirmer; the creator with no one.
-    let confirmed = anchor_person(&real.state, &uid(ANA)).expect("the confirmer");
+    let confirmed = compare(anchor_person(&real.state, &uid(ANA)));
     assert_eq!(confirmed.person, owner);
-    assert_eq!(anchor_person(&real.state, &owner), None);
+    assert_eq!(
+        anchor_person(&real.state, &owner),
+        FirstContact::SelfVouched
+    );
 }
 
 #[test]
 fn a_rekey_vouches_for_the_chain_on_a_members_own_device() {
     let owner = uid(OWNER);
     let mut k = world::<Gen>();
-    assert!(anchor_person(&k.state, &uid(ANA)).is_some());
+    assert!(matches!(
+        anchor_person(&k.state, &uid(ANA)),
+        FirstContact::Compare(_)
+    ));
     k.rekey::<Gen>(&uid(ANA));
-    assert_eq!(anchor_person(&k.state, &uid(ANA)), None);
-    // A removed member has no anchor.
+    assert_eq!(
+        anchor_person(&k.state, &uid(ANA)),
+        FirstContact::SelfVouched
+    );
+    // A removed member, and an account the chain doesn't have, are not "no comparison needed":
+    // the human picks an Owner.
     let remove = k.remove_body(&uid(LEE));
     k.ok::<Gen>(&owner, remove);
-    assert_eq!(anchor_person(&k.state, &uid(LEE)), None);
+    assert_eq!(anchor_person(&k.state, &uid(LEE)), FirstContact::PickOwner);
+    assert_eq!(
+        anchor_person(&k.state, &[0xee; 16]),
+        FirstContact::PickOwner
+    );
+}
+
+#[test]
+fn an_inviter_who_left_means_picking_an_owner() {
+    let owner = uid(OWNER);
+    let newbie = uid(NEWBIE);
+    let mut k = world::<Gen>();
+    k.invite::<Gen>(&uid(ADMIN), &newbie, Role::Member, &[], &[]);
+    assert!(matches!(
+        anchor_person(&k.state, &newbie),
+        FirstContact::Compare(_)
+    ));
+    // The admin is removed: the invitee can no longer compare with the one who invited them.
+    let remove = k.remove_body(&uid(ADMIN));
+    k.ok::<Gen>(&owner, remove);
+    assert_eq!(anchor_person(&k.state, &newbie), FirstContact::PickOwner);
+}
+
+/// The person of a `Compare`, which the case needs.
+fn compare(contact: FirstContact) -> AnchorPerson {
+    match contact {
+        FirstContact::Compare(person) => person,
+        other => panic!("expected a comparison, got {other:?}"),
+    }
 }
 
 // ---- the rest of the verifier ------------------------------------------------------------------
@@ -706,4 +752,203 @@ fn the_state_is_what_the_server_would_derive() {
     assert!(s.recovery_key.is_none() && s.recovery_key_seq.is_none());
     assert!(s.policies.require_sso && !s.policies.account_recovery);
     assert!(s.home.is_some());
+}
+
+#[test]
+fn the_end_of_a_chain_is_kept_for_owners_and_removals() {
+    let policy = Body::Policies {
+        policies: Policies {
+            two_step: true,
+            ..Policies::default()
+        },
+    };
+    let (owner, admin) = (uid(OWNER), uid(ADMIN));
+
+    // Just before the reserve: an Admin's record is taken as usual.
+    let mut kit = world::<Gen>();
+    kit.state.head = Some(Head {
+        seq: Limits::OPEN_RECORDS - 2,
+        link: [7; 32],
+    });
+    kit.attempt::<Gen>(&admin, policy.clone())
+        .1
+        .expect("an Admin's record before the reserve");
+
+    // In the reserve: an Admin may only remove (or replace keys); an Owner may do anything.
+    kit.state.head = Some(Head {
+        seq: Limits::OPEN_RECORDS - 1,
+        link: [7; 32],
+    });
+    let refused = kit
+        .attempt::<Gen>(&admin, policy.clone())
+        .1
+        .expect_err("an Admin's policies in the reserve");
+    assert_eq!(refused.reason, Reason::NotAllowed);
+    assert_eq!(refused.seq, Some(Limits::OPEN_RECORDS));
+    let remove = kit.remove_body(&uid(ANA));
+    kit.attempt::<Gen>(&admin, remove.clone())
+        .1
+        .expect("an Admin's removal in the reserve");
+    kit.attempt::<Gen>(&owner, policy)
+        .1
+        .expect("an Owner's record in the reserve");
+
+    // In the last records: Owners only.
+    kit.state.head = Some(Head {
+        seq: Limits::OWNER_ONLY_FROM - 1,
+        link: [7; 32],
+    });
+    let refused = kit
+        .attempt::<Gen>(&admin, remove.clone())
+        .1
+        .expect_err("an Admin's removal in the last records");
+    assert_eq!(refused.reason, Reason::NotAllowed);
+    kit.attempt::<Gen>(&owner, remove)
+        .1
+        .expect("an Owner's removal in the last records");
+}
+
+#[test]
+fn a_member_confirmed_again_under_a_bundle_they_did_not_sign_is_marked() {
+    let mut kit = world::<Gen>();
+    let (owner, ana) = (uid(OWNER), uid(ANA));
+    // The first confirmation leaves no mark.
+    assert_eq!(kit.state.members[&ana].reconfirmed_seq, None);
+
+    // The Owner confirms Ana again under a newer bundle; Ana signed nothing of it.
+    kit.add(Account::new::<Gen>(ANA, 2));
+    let applied = kit.confirm::<Gen>(&owner, &ana);
+    let seq = applied.state.head.map(|h| h.seq);
+    assert!(seq.is_some());
+    assert_eq!(kit.state.members[&ana].reconfirmed_seq, seq);
+    assert_eq!(kit.state.members[&ana].bundle_version(), 2);
+
+    // Her own rekey to a newer one clears it.
+    kit.rekey::<Gen>(&ana);
+    assert_eq!(kit.state.members[&ana].reconfirmed_seq, None);
+}
+
+#[test]
+fn the_chains_byte_limit_and_its_end_are_rules_of_the_state() {
+    use super::end_of_chain_allows;
+
+    let policy = Body::Policies {
+        policies: Policies {
+            two_step: true,
+            ..Policies::default()
+        },
+    };
+    let (owner, admin) = (uid(OWNER), uid(ADMIN));
+
+    // M16: a record that would take the chain past 64 MiB is too large, whoever signs it.
+    let mut kit = world::<Gen>();
+    kit.state.bytes = Limits::CHAIN_BYTES_U64;
+    let refused = kit
+        .attempt::<Gen>(&owner, policy.clone())
+        .1
+        .expect_err("past 64 MiB");
+    assert_eq!(refused.reason, Reason::TooLarge);
+
+    // The state counts the bytes of every record it applies.
+    let mut kit = world::<Gen>();
+    let before = kit.state.bytes;
+    let applied = kit.ok::<Gen>(&owner, policy.clone());
+    let record = u64::try_from(kit.records.last().expect("the record").entry.len()).expect("small");
+    assert!(before > 0);
+    assert_eq!(applied.state.bytes, before + record);
+
+    // The reserve by bytes: past 62 MiB an Admin may remove, not set policies. An Owner may.
+    kit.state.bytes = Limits::OPEN_BYTES;
+    let other = Body::Policies {
+        policies: Policies {
+            disable_send: true,
+            ..Policies::default()
+        },
+    };
+    let refused = kit
+        .attempt::<Gen>(&admin, other)
+        .1
+        .expect_err("an Admin's policies in the byte reserve");
+    assert_eq!(refused.reason, Reason::NotAllowed);
+    let remove = kit.remove_body(&uid(ANA));
+    kit.attempt::<Gen>(&admin, remove.clone())
+        .1
+        .expect("an Admin's removal in the byte reserve");
+    // `policy` is already the state's: a record that changes nothing is refused as invalid.
+    let reset = Body::Policies {
+        policies: Policies::default(),
+    };
+    kit.attempt::<Gen>(&owner, reset)
+        .1
+        .expect("an Owner's record in the byte reserve");
+
+    // The byte tail is the Owner's alone.
+    kit.state.bytes = Limits::OWNER_ONLY_BYTES;
+    let refused = kit
+        .attempt::<Gen>(&admin, remove.clone())
+        .1
+        .expect_err("an Admin's removal in the byte tail");
+    assert_eq!(refused.reason, Reason::NotAllowed);
+    kit.attempt::<Gen>(&owner, remove)
+        .1
+        .expect("an Owner's removal in the byte tail");
+
+    // A `keys` record in the reserve: for a key already marked, not for one that isn't.
+    assert!(end_of_chain_allows(
+        Limits::OPEN_RECORDS,
+        1,
+        Role::Admin,
+        Kind::Keys,
+        true
+    ));
+    assert!(!end_of_chain_allows(
+        Limits::OPEN_RECORDS,
+        1,
+        Role::Admin,
+        Kind::Keys,
+        false
+    ));
+    assert!(!end_of_chain_allows(
+        Limits::OPEN_RECORDS,
+        1,
+        Role::Custom,
+        Kind::Keys,
+        false
+    ));
+    assert!(!end_of_chain_allows(
+        Limits::OWNER_ONLY_FROM,
+        1,
+        Role::Admin,
+        Kind::Keys,
+        true
+    ));
+    let mut kit = world::<Gen>();
+    let marking = kit.remove_body(&uid(ANA));
+    kit.ok::<Gen>(&owner, marking);
+    assert!(kit.state.space.marked);
+    kit.state.head = Some(Head {
+        seq: Limits::OPEN_RECORDS - 1,
+        link: [7; 32],
+    });
+    let rotate = kit.rotate_body::<Gen>(&[KeyRef::Space, KeyRef::Collection(general())]);
+    kit.attempt::<Gen>(&admin, rotate)
+        .1
+        .expect("an Admin replaces the marked keys in the reserve");
+}
+
+#[test]
+fn a_fence_signed_with_an_owners_old_key_is_not_vouched_for() {
+    // The state keeps each confirmed Owner with the hash of their bundle.
+    let mut kit = world::<Gen>();
+    let owner2 = uid(OWNER2);
+    let before = kit.state.owners();
+    assert!(before.contains_key(&owner2) && before.contains_key(&uid(OWNER)));
+    assert!(!before.contains_key(&uid(ANA)), "only Owners");
+    kit.rekey::<Gen>(&owner2);
+    let after: State = kit.state.clone();
+    assert_ne!(after.owners()[&owner2], before[&owner2]);
+    // An Owner who is only invited or accepted is not in it.
+    let mut invited = after.clone();
+    invited.members.get_mut(&owner2).expect("a member").status = Status::Invited;
+    assert!(!invited.owners().contains_key(&owner2));
 }

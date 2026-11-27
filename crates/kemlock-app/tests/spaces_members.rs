@@ -10,7 +10,7 @@ use kemlock_domain::spaces::{
     MemberState, SEALED_KEY_LEN, SpaceError, SpaceRole,
 };
 use kemlock_domain::{ItemId, SpaceId, UserId};
-use space_fakes::{SpaceWorld, key_for, name, sealed_key};
+use space_fakes::{SpaceWorld, key_for, name, sealed_key, signature};
 
 async fn change(
     w: &SpaceWorld,
@@ -86,10 +86,12 @@ async fn a_space_id_is_taken_once_and_keys_must_look_sealed() {
                 id: space,
                 name: name(1),
                 sealed_space_key: sealed_key(2),
+                space_key_signature: signature(),
                 collection: NewCollection {
                     id: CollectionId::random(),
                     name: name(3),
                     sealed_key: sealed_key(4),
+                    key_signature: signature(),
                 },
             },
         )
@@ -104,10 +106,12 @@ async fn a_space_id_is_taken_once_and_keys_must_look_sealed() {
                 id: SpaceId::random(),
                 name: name(1),
                 sealed_space_key: vec![1; 10],
+                space_key_signature: signature(),
                 collection: NewCollection {
                     id: CollectionId::random(),
                     name: name(3),
                     sealed_key: sealed_key(4),
+                    key_signature: signature(),
                 },
             },
         )
@@ -585,6 +589,65 @@ async fn only_someone_who_manages_the_member_confirms_and_never_oneself() {
         .execute(&actor(sam), space, sam, w.confirm_input(sam, Vec::new()))
         .await;
     assert!(by_sam_for_sam.is_err());
+}
+
+#[tokio::test]
+async fn a_confirmed_member_is_confirmed_again_by_someone_who_manages_them_now() {
+    let w = SpaceWorld::new();
+    let sam = w.user("sam@example.org").await;
+    let mina = w.user("mina@example.org").await;
+    let ana = w.user("ana@example.org").await;
+    let (space, everyone) = w.make_space(sam).await;
+    w.join(
+        space,
+        sam,
+        sam,
+        ana,
+        SpaceRole::Member,
+        vec![(everyone, CollectionPermission::View)],
+    )
+    .await;
+    w.join(space, sam, sam, mina, SpaceRole::Member, Vec::new())
+        .await;
+    let before = w.spaces.copy(everyone, ana).expect("a copy");
+
+    // Ana is confirmed already; Sam confirms her again with keys sealed anew.
+    w.confirm()
+        .execute(
+            &actor(sam),
+            space,
+            ana,
+            w.confirm_input(ana, vec![key_for(everyone, ana, 0x77)]),
+        )
+        .await
+        .expect("confirmed again");
+    let member = w.spaces.member(space, ana).expect("still a member");
+    assert_eq!(member.state, MemberState::Confirmed);
+    assert_eq!(member.confirmation.expect("a confirmation").by, sam);
+    let after = w.spaces.copy(everyone, ana).expect("a copy");
+    assert_ne!(after.sealed, before.sealed, "the key is sealed anew");
+
+    // A member can't confirm anyone, again or not; the signature is still checked.
+    let by_member = w
+        .confirm()
+        .execute(
+            &actor(mina),
+            space,
+            ana,
+            w.confirm_input(ana, vec![key_for(everyone, ana, 5)]),
+        )
+        .await;
+    assert!(matches!(
+        by_member.err(),
+        Some(SpacesError::Rule(SpaceError::Forbidden(_)))
+    ));
+    let mut forged = w.confirm_input(ana, vec![key_for(everyone, ana, 5)]);
+    forged.signature = vec![0x66; kemlock_domain::spaces::CONFIRMATION_SIGNATURE_LEN];
+    let refused = w.confirm().execute(&actor(sam), space, ana, forged).await;
+    assert!(matches!(
+        refused.err(),
+        Some(SpacesError::Rule(SpaceError::Invalid(_)))
+    ));
 }
 
 #[tokio::test]

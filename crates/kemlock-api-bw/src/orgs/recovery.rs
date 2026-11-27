@@ -126,7 +126,7 @@ pub(crate) async fn enroll<S: BwStore>(
     app: &App<S>,
     ctx: &Ctx,
     reset_key: Option<String>,
-    proof: impl FnOnce() -> BwResult<()>,
+    proof: impl std::future::Future<Output = BwResult<()>>,
 ) -> BwResult<()> {
     policy_on(ctx)?;
     let key = reset_key.filter(|k| !k.is_empty());
@@ -137,7 +137,7 @@ pub(crate) async fn enroll<S: BwStore>(
     }
     // Giving a key away needs the account's password.
     if key.is_some() {
-        proof()?;
+        proof.await?;
     }
     let mut doc = ctx.doc.clone();
     let enrolled = key.is_some();
@@ -272,8 +272,16 @@ pub(crate) async fn recover<S: BwStore>(
     };
 
     if let Some((hash, key)) = new {
-        account.password_hash =
-            hash_password(hash.as_bytes(), &account.salt, account.password_iterations);
+        let (secret, salt, iterations) = (
+            hash.as_bytes().to_vec(),
+            account.salt.clone(),
+            account.password_iterations,
+        );
+        account.password_hash = app
+            .hashing(app.who_of(user, None), move || {
+                hash_password(&secret, &salt, iterations)
+            })
+            .await?;
         account.akey = key;
         BwAccountRepo::update(&app.store, &account).await?;
     }

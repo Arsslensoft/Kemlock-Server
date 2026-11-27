@@ -17,6 +17,10 @@ pub enum SpacesError {
     NotFound,
     #[error("already exists")]
     Duplicate,
+    /// A wrap of the account's root key was for a key version the account no longer has (not a
+    /// collection's key version: that is `Rule(SpaceError::StaleKeyVersion)`).
+    #[error("the account's key version is {current}")]
+    StaleAccountKeys { current: u32 },
     /// A write over a revision the writer hadn't seen.
     #[error("item {item} changed: stored revision is {current:?}")]
     StaleItem {
@@ -26,6 +30,10 @@ pub enum SpacesError {
     /// A rule of item writes (revision, size, owner) refused a write.
     #[error(transparent)]
     Item(ItemError),
+    /// The space's join policies (two-step login, one space per member), or those of a space the
+    /// account is in, refuse a restore or a role change. The API answers it as the join guard does.
+    #[error(transparent)]
+    Join(#[from] crate::policies::PoliciesError),
     /// The store failed; the message is for logs only.
     #[error("store failure: {0}")]
     Store(String),
@@ -37,6 +45,10 @@ impl From<StoreError> for SpacesError {
             StoreError::Conflict { item, current } => SpacesError::StaleItem { item, current },
             StoreError::Duplicate => SpacesError::Duplicate,
             StoreError::NotFound => SpacesError::NotFound,
+            StoreError::StaleKeyVersion { current } => SpacesError::StaleAccountKeys { current },
+            StoreError::Backend(message) if message == super::ports::OWNER_REQUIRED => {
+                SpacesError::Rule(SpaceError::LastOwner)
+            }
             StoreError::Backend(message) => SpacesError::Store(message),
         }
     }
@@ -74,9 +86,29 @@ impl From<SpacesError> for AppError {
                 AppError::Invalid("a space needs at least one confirmed owner")
             }
             SpacesError::Duplicate => AppError::Duplicate,
+            SpacesError::StaleAccountKeys { current } => AppError::StaleKeyVersion { current },
             SpacesError::StaleItem { item, current } => AppError::Conflict { item, current },
             SpacesError::Item(e) => AppError::Item(e),
+            SpacesError::Join(_) => AppError::Forbidden,
             SpacesError::Store(message) => AppError::Store(message),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_stores_refusal_to_leave_no_owner_is_the_last_owner_rule() {
+        let refused = StoreError::Backend(crate::spaces::OWNER_REQUIRED.to_owned());
+        assert_eq!(
+            SpacesError::from(refused),
+            SpacesError::Rule(SpaceError::LastOwner)
+        );
+        assert!(matches!(
+            SpacesError::from(StoreError::Backend("down".to_owned())),
+            SpacesError::Store(_)
+        ));
     }
 }

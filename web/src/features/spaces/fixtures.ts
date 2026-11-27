@@ -8,7 +8,8 @@ import type {
   SpaceViewDto,
   SpacesApi,
 } from '@/api/spaces';
-import { encodeB64, utf8 } from '@/lib/b64url';
+import { decodeB64, encodeB64, fromUtf8, utf8 } from '@/lib/b64url';
+import { fingerprintBytes, fingerprintText } from '@/sharing/bundle';
 import { makeBundleB64 } from '@/test/bundles';
 import { vi } from 'vitest';
 import type { SpaceDetail } from './model';
@@ -94,6 +95,36 @@ export function members(): MemberViewDto[] {
   ];
 }
 
+/**
+ * The member as someone else's confirmation would leave them: `by` signed (as the fake crypto
+ * signs) that they compared this member's bundle.
+ */
+export async function confirmedBy(by: string, view: MemberViewDto): Promise<MemberViewDto> {
+  const fingerprint = await fingerprintBytes(decodeB64(view.publicBundle));
+  const statement = utf8(JSON.stringify(['confirm', SPACE, view.user, view.userKeyVersion]));
+  return {
+    ...view,
+    confirmation: {
+      by,
+      at: 1_700_000_200,
+      fingerprint: encodeB64(fingerprint),
+      memberKeyVersion: view.userKeyVersion,
+      statement: encodeB64(statement),
+      signature: encodeB64(utf8(`sig>confirm>${fromUtf8(statement)}`)),
+    },
+  };
+}
+
+/** The fingerprint text of a member's listed bundle: what the fake crypto answers as my own. */
+export async function fingerprintTextOf(view: MemberViewDto): Promise<string> {
+  return fingerprintText(await fingerprintBytes(decodeB64(view.publicBundle)));
+}
+
+/** The members with Lee confirmed by me, so a key may be sealed to either. */
+export async function confirmedMembers(): Promise<MemberViewDto[]> {
+  return Promise.all(members().map((m) => (m.user === LEE ? confirmedBy(ME, m) : m)));
+}
+
 /** A loaded detail, names already open, for the view tests. */
 export function detail(over: Partial<SpaceDetail> = {}): SpaceDetail {
   const view = spaceView();
@@ -117,6 +148,18 @@ export function fakeSpacesApi() {
     list: vi.fn<SpacesApi['list']>(async () => [{ space, member: member(ME, { role: 'owner' }) }]),
     create: vi.fn<SpacesApi['create']>(async () => spaceView()),
     get: vi.fn<SpacesApi['get']>(async () => spaceView()),
+    // No chain by default: a space made before chains.
+    chain: vi.fn<SpacesApi['chain']>(async () => []),
+    chainSeals: vi.fn<SpacesApi['chainSeals']>(async () => []),
+    appendChain: vi.fn<SpacesApi['appendChain']>(async () => ({ link: 'bGluaw', seq: 0 })),
+    sync: vi.fn<SpacesApi['sync']>(async () => ({ items: [], cursor: 'c', more: false })),
+    putBatch: vi.fn<SpacesApi['putBatch']>(async () => ({ items: [] })),
+    lookup: vi.fn<SpacesApi['lookup']>(async (_space, email) => ({
+      account: THEO,
+      bundle: makeBundleB64(THEO),
+      bundleSignature: encodeB64(utf8(`sig:${email}`)),
+      keyVersion: 1,
+    })),
     members: vi.fn<SpacesApi['members']>(async () => members()),
     invite: vi.fn<SpacesApi['invite']>(async () => member(THEO, { state: 'invited' })),
     accept: vi.fn<SpacesApi['accept']>(async () => member(ME)),
@@ -139,5 +182,6 @@ export function fakeSpacesApi() {
       permission: 'view',
     })),
     revokeGrant: vi.fn<SpacesApi['revokeGrant']>(async () => undefined),
+    reseal: vi.fn<SpacesApi['reseal']>(async () => ({ resealed: 1 })),
   };
 }

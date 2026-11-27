@@ -80,6 +80,7 @@ pub(crate) fn draft(id: ItemId, owner: Owner, expected: Option<u64>, revision: u
         item_key: Some(vec![9; 60]),
         deleted_at: None,
         updated_at: MADE_AT,
+        signature: None,
     }
 }
 

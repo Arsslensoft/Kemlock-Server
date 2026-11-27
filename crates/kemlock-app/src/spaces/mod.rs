@@ -14,6 +14,8 @@
 //! - [`CreateCollection`], [`EditCollection`], [`DeleteCollection`], [`CreateGroup`],
 //!   [`EditGroup`], [`DeleteGroup`], [`GrantAccess`], [`RevokeGrant`] shape who sees what.
 //! - [`ReplaceKeys`] lands the key replacement that offboarding requires, as one transaction.
+//! - [`ResealKeys`] seals the keys of a space with no chain again, signed, so it has no boxes from
+//!   before keys were signed.
 //! - [`PutSpaceItem`] writes an item into a space, and [`SpaceAccess`] is its authorization step;
 //!   [`PutSpaceBatch`] stores a batch of vault and space items together.
 //! - [`SyncOwners`] lists the owners a device syncs: its user and every space it is confirmed in.
@@ -36,6 +38,7 @@ pub mod facts;
 pub mod grants;
 pub mod groups;
 pub mod invite;
+pub mod key_boxes;
 pub mod lookup;
 pub mod members;
 pub mod ports;
@@ -43,6 +46,7 @@ pub mod put_batch;
 pub mod put_item;
 pub mod recovery;
 pub mod replace_keys;
+pub mod reseal;
 pub mod sso_groups;
 pub mod support;
 pub mod sync_owners;
@@ -50,10 +54,10 @@ pub mod view;
 
 pub use access::SpaceAccess;
 pub use chain::{
-    AppendOutcome, CHAIN_REQUIRED, ChainAppend, ChainHead, ExternalChangeMode, ExternalSource,
-    HomeGate, PendingChange, PendingExternal, SpaceChainRepo, StoredName, StoredRecord, StoredSeal,
-    chain_confirmed, chain_required, confirmed_of, ensure_unchained, pending_from_changes,
-    replay_state,
+    AppendOutcome, CHAIN_REQUIRED, ChainAppend, ChainHead, ChainUsage, ExternalChangeMode,
+    ExternalSource, HomeGate, PendingChange, PendingExternal, SpaceChainRepo, StoredName,
+    StoredRecord, StoredSeal, chain_confirmed, chain_required, confirmed_of, ensure_unchained,
+    pending_from_changes, replay_state,
 };
 pub use chain_append::{AppendChain, AppendError, AppendRequest, NameIn, SealIn, invitees};
 pub use chain_read::{ChainReadError, GetChain, GetChainSeals, PendingChanges};
@@ -67,10 +71,12 @@ pub use facts::SpaceFacts;
 pub use grants::{GrantAccess, RevokeGrant};
 pub use groups::{CreateGroup, CreateGroupInput, DeleteGroup, EditGroup, EditGroupInput};
 pub use invite::{AcceptInvitation, InviteInput, InviteMember, ResendInvitation};
+pub use key_boxes::{KeyBoxFacts, KeyBoxKey, KeyBoxVerifier};
 pub use lookup::{AccountLookup, LookupAccount};
 pub use members::{ChangeRole, Exposure, Offboard, Offboarded};
 pub use ports::{
-    BundleFingerprints, ConfirmationFacts, KeyReplacement, SpaceChanges, SpaceItemInfo, SpaceRepo,
+    BundleFingerprints, ConfirmationFacts, KeyReplacement, OWNER_REQUIRED, SpaceChanges,
+    SpaceItemInfo, SpaceRepo,
 };
 pub use put_batch::PutSpaceBatch;
 pub use put_item::PutSpaceItem;
@@ -79,7 +85,8 @@ pub use recovery::{
     may_recover,
 };
 pub use replace_keys::{CollectionRekey, ReplaceKeys, ReplacementInput};
+pub use reseal::{ResealKeys, ResealMember};
 pub use sso_groups::ApplyGroupRules;
-pub use support::SealedCollectionKey;
+pub use support::{SealedCollectionKey, SealedSpaceKey};
 pub use sync_owners::SyncOwners;
 pub use view::{GetSpace, ListMembers, ListSpaces, MemberView, SpaceSummary, SpaceView};

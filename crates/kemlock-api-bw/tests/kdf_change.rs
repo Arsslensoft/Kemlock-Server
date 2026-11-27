@@ -37,9 +37,15 @@ async fn refresh(h: &Harness, token: &str) -> StatusCode {
     .0
 }
 
-#[tokio::test]
-async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_signed_in() {
-    let h = Harness::new().await;
+/// The CLI that changes the KDF and a phone signed in beside it, each with its tokens.
+struct Devices {
+    cli: String,
+    cli_refresh: String,
+    phone: String,
+    phone_refresh: String,
+}
+
+async fn two_devices(h: &Harness) -> Devices {
     let (cli, _) = h.signed_in(EMAIL).await;
     let cli_refresh = h.login(EMAIL, HASH).await["refresh_token"]
         .as_str()
@@ -50,22 +56,30 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_sig
     phone.push(("deviceIdentifier", "1f0e2d3c-4b5a-4968-8776-655443322110"));
     let (status, body) = h.token(&phone).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let phone_refresh = body["refresh_token"]
-        .as_str()
-        .expect("a refresh token")
-        .to_owned();
+    let text = |key: &str| body[key].as_str().expect(key).to_owned();
+    Devices {
+        cli,
+        cli_refresh,
+        phone: text("access_token"),
+        phone_refresh: text("refresh_token"),
+    }
+}
 
+/// Changes the KDF from the CLI to PBKDF2 at `rounds`, then checks what holds either way: the new
+/// settings, key and password hash, and the calling device's session and security stamp.
+async fn change_from_cli(h: &Harness, d: &Devices, rounds: i32) {
+    let (_, before) = h.json("GET", "/api/sync", Some(&d.cli), None).await;
+    h.events.take();
     let (status, body) = h
         .json(
             "POST",
             "/api/accounts/kdf",
-            Some(&cli),
-            Some(change(HASH, EMAIL, 600_000, 600_000)),
+            Some(&d.cli),
+            Some(change(HASH, EMAIL, rounds, rounds)),
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The new settings, key and password hash.
     let (_, prelogin) = h
         .json(
             "POST",
@@ -75,21 +89,61 @@ async fn the_kdf_moves_to_the_new_settings_and_only_the_calling_device_stays_sig
         )
         .await;
     assert_eq!(prelogin["kdf"], 0);
-    assert_eq!(prelogin["kdfIterations"], 600_000);
-    let (status, synced) = h.json("GET", "/api/sync", Some(&cli), None).await;
+    assert_eq!(prelogin["kdfIterations"], rounds);
+    // The calling app keeps its session, and the security stamp stays: a Bitwarden client signs
+    // itself out when the stamp of a sync is not the one it had.
+    let (status, synced) = h.json("GET", "/api/sync", Some(&d.cli), None).await;
     assert_eq!(status, StatusCode::OK, "the calling app keeps its session");
     assert_eq!(synced["profile"]["key"], NEW_KEY);
+    assert_eq!(
+        synced["profile"]["securityStamp"],
+        before["profile"]["securityStamp"]
+    );
     let (status, _) = h.token(&Harness::password_fields(EMAIL, HASH)).await;
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
         "the old hash no longer signs in"
     );
-    h.login(EMAIL, NEW_HASH).await;
+    assert_eq!(refresh(h, &d.cli_refresh).await, StatusCode::OK);
+}
 
-    // The calling device refreshes; every other one signs in again.
-    assert_eq!(refresh(&h, &cli_refresh).await, StatusCode::OK);
-    assert_eq!(refresh(&h, &phone_refresh).await, StatusCode::BAD_REQUEST);
+fn told_to_sign_out(h: &Harness) -> bool {
+    h.events
+        .take()
+        .iter()
+        .any(|e| matches!(e, kemlock_app::bw_events::BwEvent::LogOut { .. }))
+}
+
+#[tokio::test]
+async fn a_kdf_change_ends_every_other_devices_session_at_once() {
+    let h = Harness::new().await;
+    let d = two_devices(&h).await;
+    change_from_cli(&h, &d, 700_000).await;
+
+    // The phone's access token is refused at once, its live connections are told to sign out,
+    // and it can't refresh: it signs in again with the password.
+    assert!(told_to_sign_out(&h));
+    let (status, _) = h.json("GET", "/api/sync", Some(&d.phone), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(refresh(&h, &d.phone_refresh).await, StatusCode::BAD_REQUEST);
+    h.login(EMAIL, NEW_HASH).await;
+}
+
+#[tokio::test]
+async fn the_clients_migration_to_600k_rounds_ends_no_session() {
+    // The harness's account is PBKDF2 at 1,000 rounds: the CLI moves it to the minimum at sign-in.
+    let h = Harness::new().await;
+    let d = two_devices(&h).await;
+    change_from_cli(&h, &d, 600_000).await;
+
+    // A Kemlock app beside the CLI goes on working, and takes the new key at its next sync.
+    assert!(!told_to_sign_out(&h));
+    let (status, synced) = h.json("GET", "/api/sync", Some(&d.phone), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(synced["profile"]["key"], NEW_KEY);
+    assert_eq!(refresh(&h, &d.phone_refresh).await, StatusCode::OK);
+    h.login(EMAIL, NEW_HASH).await;
 }
 
 #[tokio::test]
@@ -149,4 +203,30 @@ async fn an_unlock_for_another_user_key_is_refused() {
             .contains("Invalid user key sent in master-password unlock data."),
         "{answer}"
     );
+}
+
+#[tokio::test]
+async fn a_kdf_change_leaves_the_account_and_its_stamp_as_they_were() {
+    use kemlock_app::ports::UserRepo;
+    let h = Harness::new().await;
+    let (cli, user) = h.signed_in(EMAIL).await;
+    let before = UserRepo::by_id(&h.store, user)
+        .await
+        .expect("reads")
+        .expect("the account");
+    let (status, body) = h
+        .json(
+            "POST",
+            "/api/accounts/kdf",
+            Some(&cli),
+            Some(change(HASH, EMAIL, 600_000, 600_000)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let after = UserRepo::by_id(&h.store, user)
+        .await
+        .expect("reads")
+        .expect("the account");
+    // The stamp stays: a Bitwarden client signs itself out when its sync shows a new one.
+    assert_eq!(after, before);
 }

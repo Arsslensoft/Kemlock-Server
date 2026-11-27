@@ -80,6 +80,7 @@ async fn append(
                 changes: SpaceChanges::new(space),
                 creating: false,
                 held: Vec::new(),
+                writes: Vec::new(),
                 answers: None,
                 state: keep.then(|| Arc::new(applied.state)),
             },

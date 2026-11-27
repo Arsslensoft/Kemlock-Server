@@ -7,6 +7,7 @@
 //! run end to end against `kemlock-crypto`'s server half (its RFC 9807 vectors are checked
 //! natively, where the random inputs can be fixed).
 
+use kemlock_crypto::space_chain::KeyRef;
 use kemlock_crypto::{
     argon2id,
     bundle::Bundle,
@@ -17,14 +18,16 @@ use kemlock_crypto::{
     owner::Owner,
     password_wrap, private_keys, sealed_box, sig1,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use wasm_bindgen_test::wasm_bindgen_test;
 
 use crate::{
+    b64, chain,
     error::Error,
+    ids,
     session::{self, FIRST_KEY_VERSION, SealedItemRef, Session},
     sharing,
-    spaces::NameKind,
+    spaces::{self, NameKind},
 };
 
 const ACCOUNT_KEYS: &str = include_str!("../../../test-vectors/account-keys.json");
@@ -630,6 +633,12 @@ const CONFIRM: &str = include_str!("../../../test-vectors/confirm.json");
 
 /// A session for a freshly made account, unlocked with its private keys, and its public bundle.
 fn open_account(account_id: [u8; 16]) -> (Session, Bundle) {
+    let (session, bundle, _) = open_account_signed(account_id);
+    (session, bundle)
+}
+
+/// As [`open_account`], with the bundle's own signature as the server would hold it.
+fn open_account_signed(account_id: [u8; 16]) -> (Session, Bundle, Vec<u8>) {
     let mut session = Session::new();
     let master = session.insert_master([1; 32]).expect("handle");
     let export = session.insert_export([2; 64]).expect("handle");
@@ -649,7 +658,7 @@ fn open_account(account_id: [u8; 16]) -> (Session, Bundle) {
         )
         .expect("unlock");
     let bundle = Bundle::from_bytes(&account.public_bundle).expect("bundle");
-    (session, bundle)
+    (session, bundle, account.bundle_signature)
 }
 
 /// A session unlocked with the given private keys, as the vectors have them.
@@ -743,41 +752,163 @@ fn the_root_key_is_sealed_to_a_device_for_one_request_only() {
 }
 
 #[wasm_bindgen_test]
-fn the_root_key_is_sealed_to_an_emergency_contact_by_their_id() {
+fn the_root_key_is_sealed_to_an_emergency_contact_only_from_their_signed_bundle() {
     let (grantor, _) = open_account([0x41; 16]);
-    let (_, contact) = open_account([0x42; 16]);
+    let (_, contact, signature) = open_account_signed([0x42; 16]);
+    let bundle = contact.to_bytes();
     let boxed = grantor
-        .seal_root_key(
-            contact.kx1_public.as_bytes(),
-            "emergency-access",
-            &contact.account_id,
-        )
+        .seal_emergency_key(&bundle, &signature, &contact.account_id)
         .expect("seal");
     assert_eq!(boxed.len(), sealed_box::OVERHEAD + 64);
-    // 16 bytes only: the request id of a device approval has no place here.
+
+    // The generic op no longer seals under this context, whatever key it is given.
     assert_eq!(
         grantor.seal_root_key(
             contact.kx1_public.as_bytes(),
             "emergency-access",
-            &[contact.account_id, [0; 16]].concat()
+            &contact.account_id
         ),
+        Err(Error::Invalid)
+    );
+    // A signature that is not the bundle's own, a bundle that was changed after it was signed and
+    // one that isn't a bundle all fail.
+    let mut flipped = signature.clone();
+    flipped[0] ^= 1;
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &flipped, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    let (_, other, other_signature) = open_account_signed([0x43; 16]);
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &other_signature, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    let mut changed = bundle.clone();
+    let last = changed.len() - 1;
+    changed[last] ^= 1;
+    assert!(
+        grantor
+            .seal_emergency_key(&changed, &signature, &contact.account_id)
+            .is_err()
+    );
+    assert!(
+        grantor
+            .seal_emergency_key(&bundle[1..], &signature, &contact.account_id)
+            .is_err()
+    );
+    // The bundle must be the grantee's: another person's signed bundle, a short id and the
+    // grantor's own account are refused.
+    assert_eq!(
+        grantor.seal_emergency_key(&other.to_bytes(), &other_signature, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &signature, &contact.account_id[..15]),
+        Err(Error::Invalid)
+    );
+    let (self_grantor, own, own_signature) = open_account_signed([0x44; 16]);
+    assert_eq!(
+        self_grantor.seal_emergency_key(&own.to_bytes(), &own_signature, &own.account_id),
         Err(Error::Invalid)
     );
     let locked = Session::new();
     assert_eq!(
-        locked.seal_root_key(
-            contact.kx1_public.as_bytes(),
-            "emergency-access",
-            &contact.account_id
-        ),
+        locked.seal_emergency_key(&bundle, &signature, &contact.account_id),
         Err(Error::Locked)
     );
 }
 
 #[wasm_bindgen_test]
+fn keys_opened_from_an_unsigned_box_are_read_only() {
+    let (mut maker, _) = open_account([0x71; 16]);
+    let (mut member, member_bundle) = open_account([0x72; 16]);
+    let (space, collection) = ([0x73; 16], [0x74; 16]);
+    let made = maker
+        .new_space(&space, &collection, "Family", "Everyone")
+        .expect("make the space");
+    let member_kx = member_bundle.kx1_public.as_bytes();
+    let member_id = member_bundle.account_id;
+    let for_space = maker
+        .seal_space_key_to(&space, member_kx, &member_id)
+        .expect("seal the space key");
+    let for_collection = maker
+        .seal_collection_key_to(&space, &collection, member_kx, &member_id)
+        .expect("seal the collection key");
+
+    // Keys from boxes that carry no signature open for reading ...
+    member
+        .open_space_unsigned(&space, 1, &for_space.sealed)
+        .expect("open the space key");
+    member
+        .open_collection_unsigned(&space, &collection, 1, &for_collection.sealed)
+        .expect("open the collection key");
+    assert_eq!(
+        member
+            .open_name(&space, 1, NameKind::Space, &space, &made.name)
+            .expect("the name opens"),
+        "Family"
+    );
+    // ... and nothing is sealed or written under them, space key and collection key alike.
+    assert_eq!(
+        member.seal_name(&space, 1, NameKind::Space, &space, "Mine"),
+        Err(Error::Invalid)
+    );
+    assert!(
+        member
+            .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
+            .is_err()
+    );
+    assert!(member.new_collection(&space, &[0x76; 16], "Other").is_err());
+    assert!(
+        member
+            .seal_space_key_to(&space, member_kx, &[0x77; 16])
+            .is_err()
+    );
+    assert!(
+        member
+            .seal_collection_key_to(&space, &collection, member_kx, &[0x77; 16])
+            .is_err()
+    );
+
+    // A signed box of the same keys, opened again, makes them writable.
+    member
+        .open_space(&space, 1, &for_space.sealed)
+        .expect("open the signed space key");
+    member
+        .seal_name(&space, 1, NameKind::Space, &space, "Mine")
+        .expect("a signed space key seals");
+    assert!(
+        member
+            .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
+            .is_err(),
+        "the collection key is still unsigned"
+    );
+    member
+        .open_collection(&space, &collection, 1, &for_collection.sealed)
+        .expect("open the signed collection key");
+    member
+        .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
+        .expect("a signed collection key writes");
+
+    // Keys opened from signed boxes never wait.
+    let (mut other, other_bundle) = open_account([0x78; 16]);
+    let signed = maker
+        .seal_space_key_to(
+            &space,
+            other_bundle.kx1_public.as_bytes(),
+            &other_bundle.account_id,
+        )
+        .expect("seal");
+    other.open_space(&space, 1, &signed.sealed).expect("open");
+    other
+        .seal_name(&space, 1, NameKind::Space, &space, "Mine")
+        .expect("seals");
+}
+
+#[wasm_bindgen_test]
 fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
     let (grantor, _) = open_account([0x51; 16]);
-    let (mut grantee, grantee_bundle) = open_account([0x52; 16]);
+    let (mut grantee, grantee_bundle, grantee_signature) = open_account_signed([0x52; 16]);
     let item_id = [0x53u8; 16];
     let owner = Owner::user([0x51; 16]);
     let sealed = grantor
@@ -794,9 +925,9 @@ fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
     };
 
     let released = grantor
-        .seal_root_key(
-            grantee_bundle.kx1_public.as_bytes(),
-            "emergency-access",
+        .seal_emergency_key(
+            &grantee_bundle.to_bytes(),
+            &grantee_signature,
             &grantee_bundle.account_id,
         )
         .expect("seal");
@@ -839,13 +970,9 @@ fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
             .is_err()
     );
     // A box sealed for another contact does not open.
-    let (_, other) = open_account([0x54; 16]);
+    let (_, other, other_signature) = open_account_signed([0x54; 16]);
     let not_mine = grantor
-        .seal_root_key(
-            other.kx1_public.as_bytes(),
-            "emergency-access",
-            &other.account_id,
-        )
+        .seal_emergency_key(&other.to_bytes(), &other_signature, &other.account_id)
         .expect("seal");
     assert!(grantee.open_emergency_key(&not_mine).is_err());
 
@@ -980,7 +1107,7 @@ fn a_session_without_private_keys_signs_nothing() {
 fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     let space = [0x81u8; 16];
     let collection = [0x82u8; 16];
-    let (mut maker, _) = open_account([0x83; 16]);
+    let (mut maker, maker_bundle) = open_account([0x83; 16]);
     let (mut member, member_bundle) = open_account([0x84; 16]);
     let member_kx = member_bundle.kx1_public.as_bytes();
 
@@ -991,6 +1118,68 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     assert_eq!(made.sealed_space_key.len(), 1 + 1600 + 12 + 32 + 16);
     assert_eq!(made.collection.sealed_key.len(), 1 + 1600 + 12 + 32 + 16);
     assert_eq!(made.sealed_space_key[0], 1);
+    // Both boxes are signed by the maker (docs/crypto.md, "Signed key boxes"), whose bundle verifies
+    // them, for this space, this version and this recipient only.
+    assert_eq!(made.sealed_space_key_signature.len(), 3373);
+    assert_eq!(made.collection.sealed_key_signature.len(), 3373);
+    let maker_bytes = maker_bundle.to_bytes();
+    let own = &maker_bundle.account_id;
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        own,
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        Some(&collection),
+        1,
+        own,
+        &made.collection.sealed_key,
+        &made.collection.sealed_key_signature
+    ));
+    // Not as the other kind of key, another version, another recipient or someone else's key.
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        own,
+        &made.collection.sealed_key,
+        &made.collection.sealed_key_signature
+    ));
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        2,
+        own,
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        &[0xEE; 16],
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
+    let (_, other_bundle) = open_account([0x85; 16]);
+    assert!(!spaces::verify_key_box(
+        &other_bundle.to_bytes(),
+        &space,
+        None,
+        1,
+        own,
+        &made.sealed_space_key,
+        &made.sealed_space_key_signature
+    ));
     assert_eq!(made.name.len(), 12 + "Family".len() + 16);
     assert_eq!(made.collection.name.len(), 12 + "Everyone".len() + 16);
 
@@ -1057,11 +1246,41 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     let for_member_collection = maker
         .seal_collection_key_to(&space, &collection, member_kx, &member_bundle.account_id)
         .expect("seal the collection key");
+    // The boxes the maker seals to the member are signed by the maker, for the member.
+    let member_id = &member_bundle.account_id;
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        None,
+        1,
+        member_id,
+        &for_member_space.sealed,
+        &for_member_space.signature
+    ));
+    assert!(spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        Some(&collection),
+        1,
+        member_id,
+        &for_member_collection.sealed,
+        &for_member_collection.signature
+    ));
+    // A server that made its own box for the member has no signature of the maker's to put on it.
+    assert!(!spaces::verify_key_box(
+        &maker_bytes,
+        &space,
+        Some(&collection),
+        1,
+        member_id,
+        &for_member_collection.sealed,
+        &for_member_space.signature
+    ));
     member
-        .open_space(&space, 1, &for_member_space)
+        .open_space(&space, 1, &for_member_space.sealed)
         .expect("open the space key");
     member
-        .open_collection(&space, &collection, 1, &for_member_collection)
+        .open_collection(&space, &collection, 1, &for_member_collection.sealed)
         .expect("open the collection key");
     assert_eq!(
         member
@@ -1072,21 +1291,25 @@ fn a_new_space_is_sealed_to_its_maker_and_opens_for_a_confirmed_member() {
     // Contexts keep the two kinds of key apart, and a box is for its recipient alone.
     assert!(
         member
-            .open_space(&space, 1, &for_member_collection)
+            .open_space(&space, 1, &for_member_collection.sealed)
             .is_err()
     );
     assert!(
         member
-            .open_collection(&space, &collection, 1, &for_member_space)
+            .open_collection(&space, &collection, 1, &for_member_space.sealed)
             .is_err()
     );
-    assert!(maker.open_space(&space, 1, &for_member_space).is_err());
+    assert!(
+        maker
+            .open_space(&space, 1, &for_member_space.sealed)
+            .is_err()
+    );
     // The recipient's id is the box's aad: a box sealed for one account id does not open for
     // another account with the same key.
     let misaddressed = maker
         .seal_space_key_to(&space, member_kx, &[0xEE; 16])
         .expect("seal");
-    assert!(member.open_space(&space, 1, &misaddressed).is_err());
+    assert!(member.open_space(&space, 1, &misaddressed.sealed).is_err());
 
     // A rename by the member is a fresh name that the maker reads.
     let renamed = member
@@ -1232,10 +1455,10 @@ fn a_key_box_opens_only_for_the_space_collection_and_version_it_was_sealed_for()
     let box_a = maker
         .seal_space_key_to(&space_a, kx, &bundle.account_id)
         .expect("seal A");
-    assert!(member.open_space(&space_b, 1, &box_a).is_err());
-    assert!(member.open_space(&space_a, 2, &box_a).is_err());
+    assert!(member.open_space(&space_b, 1, &box_a.sealed).is_err());
+    assert!(member.open_space(&space_a, 2, &box_a.sealed).is_err());
     member
-        .open_space(&space_a, 1, &box_a)
+        .open_space(&space_a, 1, &box_a.sealed)
         .expect("A opens as A");
 
     // The same for a collection: another collection, another space, another version.
@@ -1244,25 +1467,25 @@ fn a_key_box_opens_only_for_the_space_collection_and_version_it_was_sealed_for()
         .expect("seal X");
     assert!(
         member
-            .open_collection(&space_a, &coll_y, 1, &box_x)
+            .open_collection(&space_a, &coll_y, 1, &box_x.sealed)
             .is_err()
     );
     assert!(
         member
-            .open_collection(&space_b, &coll_x, 1, &box_x)
+            .open_collection(&space_b, &coll_x, 1, &box_x.sealed)
             .is_err()
     );
     assert!(
         member
-            .open_collection(&space_a, &coll_x, 2, &box_x)
+            .open_collection(&space_a, &coll_x, 2, &box_x.sealed)
             .is_err()
     );
     member
-        .open_collection(&space_a, &coll_x, 1, &box_x)
+        .open_collection(&space_a, &coll_x, 1, &box_x.sealed)
         .expect("X opens as X");
 
     // Not as the other kind of key, either.
-    assert!(member.open_space(&space_a, 1, &box_x).is_err());
+    assert!(member.open_space(&space_a, 1, &box_x.sealed).is_err());
 }
 
 #[wasm_bindgen_test]
@@ -1325,6 +1548,7 @@ fn a_new_device_opens_the_approved_root_key_for_its_own_request_only() {
             root,
             FIRST_KEY_VERSION,
             Some(&account.sealed_private_keys),
+            Some(&account.public_bundle),
         )
         .expect("unlock with the approved root key");
     assert!(device.is_unlocked());
@@ -1350,6 +1574,126 @@ fn a_new_device_opens_the_approved_root_key_for_its_own_request_only() {
     assert!(device.own_fingerprint().is_ok());
     // The root handle was consumed.
     assert!(device.root_slot(root).is_err());
+}
+
+#[wasm_bindgen_test]
+fn an_approved_root_key_opens_the_vault_only_with_the_accounts_own_keys() {
+    let account_id = [0x65u8; 16];
+    // Two accounts under one id: the real one, and the one a malicious server made up. Each has
+    // its own root key, sealed private keys and bundle.
+    let make = || {
+        let mut session = Session::new();
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        let account = session
+            .new_account(&account_id, master, export)
+            .expect("account");
+        let master = session.insert_master([1; 32]).expect("handle");
+        let export = session.insert_export([2; 64]).expect("handle");
+        session
+            .unlock(
+                &account_id,
+                &account.wrapped_root_key,
+                master,
+                export,
+                FIRST_KEY_VERSION,
+                Some(&account.sealed_private_keys),
+            )
+            .expect("unlock");
+        (session, account)
+    };
+    let (real_session, real) = make();
+    let (fake_session, fake) = make();
+    let real_root = real_session.export_root().expect("root");
+    let fake_root = fake_session.export_root().expect("root");
+
+    let mut device = Session::new();
+    let fake_handle = device.import_root(&fake_root[..]).expect("handle");
+    // The server's root key and sealed keys, against the real account's bundle: refused, nothing
+    // is unlocked, and the handle stays for the page to release.
+    assert!(
+        device
+            .unlock_with_root(
+                &account_id,
+                fake_handle,
+                FIRST_KEY_VERSION,
+                Some(&fake.sealed_private_keys),
+                Some(&real.public_bundle),
+            )
+            .is_err()
+    );
+    assert!(!device.is_unlocked());
+    assert!(device.root_slot(fake_handle).is_ok());
+
+    let real_handle = device.import_root(&real_root[..]).expect("handle");
+    // A bundle needs the private keys to be checked against it.
+    assert!(
+        device
+            .unlock_with_root(
+                &account_id,
+                real_handle,
+                FIRST_KEY_VERSION,
+                None,
+                Some(&real.public_bundle),
+            )
+            .is_err()
+    );
+    // A bundle with one half swapped for another account's keys, a bundle for another account,
+    // another key version, and bytes that are no bundle, are all refused.
+    let real_bundle = Bundle::from_bytes(&real.public_bundle).expect("bundle");
+    let fake_bundle = Bundle::from_bytes(&fake.public_bundle).expect("bundle");
+    let swapped_sig = Bundle {
+        sig1_public: fake_bundle.sig1_public.clone(),
+        ..real_bundle.clone()
+    };
+    let swapped_kx = Bundle {
+        kx1_public: fake_bundle.kx1_public.clone(),
+        ..real_bundle.clone()
+    };
+    let other_account = Bundle {
+        account_id: [0x66; 16],
+        ..real_bundle.clone()
+    };
+    let other_version = Bundle {
+        key_version: FIRST_KEY_VERSION + 1,
+        ..real_bundle.clone()
+    };
+    for bad in [
+        swapped_sig.to_bytes(),
+        swapped_kx.to_bytes(),
+        other_account.to_bytes(),
+        other_version.to_bytes(),
+        real.public_bundle[1..].to_vec(),
+    ] {
+        assert!(
+            device
+                .unlock_with_root(
+                    &account_id,
+                    real_handle,
+                    FIRST_KEY_VERSION,
+                    Some(&real.sealed_private_keys),
+                    Some(&bad),
+                )
+                .is_err()
+        );
+        assert!(!device.is_unlocked());
+    }
+
+    // The account's own keys and bundle open it.
+    device
+        .unlock_with_root(
+            &account_id,
+            real_handle,
+            FIRST_KEY_VERSION,
+            Some(&real.sealed_private_keys),
+            Some(&real.public_bundle),
+        )
+        .expect("the account's own bundle matches its keys");
+    assert!(device.is_unlocked());
+    assert_eq!(
+        device.own_fingerprint().expect("fingerprint"),
+        real.fingerprint
+    );
 }
 
 #[wasm_bindgen_test]
@@ -1513,6 +1857,7 @@ fn a_passkey_prf_wrap_opens_the_vault_on_another_device_and_only_for_its_own_inp
             root,
             key_version,
             Some(&account.sealed_private_keys),
+            None,
         )
         .expect("unlock with the PRF-opened root key");
     assert!(device.is_unlocked());
@@ -1546,6 +1891,7 @@ fn an_account_with_no_password_is_made_unlocked_and_opens_on_a_device_from_its_r
             handle,
             FIRST_KEY_VERSION,
             Some(&account.sealed_private_keys),
+            None,
         )
         .expect("unlock with the device's copy");
     let item = SealedItemRef {
@@ -1610,4 +1956,1780 @@ fn the_root_key_is_sealed_to_a_spaces_recovery_key_under_its_aad() {
             Err(Error::Locked)
         );
     }
+}
+
+use crate::manifests::verify_space_manifest;
+use kemlock_crypto::manifest::{Entry, Manifest};
+
+fn manifest_bytes(owner: Owner, counter: u64) -> Vec<u8> {
+    Manifest {
+        owner,
+        counter,
+        entries: vec![
+            Entry::live([1; 16], 2, b"cipher one"),
+            Entry::tombstone([2; 16], 4),
+        ],
+    }
+    .to_bytes()
+    .expect("a manifest encodes")
+}
+
+#[wasm_bindgen_test]
+fn an_accounts_own_manifest_is_signed_and_checked_with_its_own_key() {
+    let account_id = [0x81u8; 16];
+    let (session, _) = open_account(account_id);
+    let own = manifest_bytes(Owner::user(account_id), 3);
+    let signature = session
+        .sign_manifest(&own)
+        .expect("the account signs its manifest");
+    assert_eq!(signature.len(), 3373);
+    session
+        .verify_own_manifest(&own, &signature)
+        .expect("its own signature checks");
+
+    // One changed byte, a changed counter or another signature does not check.
+    let mut changed = own.clone();
+    changed[40] ^= 1;
+    assert!(session.verify_own_manifest(&changed, &signature).is_err());
+    let mut bad_signature = signature.clone();
+    bad_signature[10] ^= 1;
+    assert!(session.verify_own_manifest(&own, &bad_signature).is_err());
+
+    // Another person's signature does not check as this account's.
+    let (other, _) = open_account([0x82u8; 16]);
+    let theirs = other
+        .sign_manifest(&manifest_bytes(Owner::user(account_id), 3))
+        .expect_err("another account does not sign this account's manifest");
+    assert_eq!(theirs, Error::Invalid);
+    let (impostor, _) = open_account(account_id);
+    let forged = impostor
+        .sign_manifest(&own)
+        .expect("a copy of the account signs");
+    assert!(
+        session.verify_own_manifest(&own, &forged).is_err(),
+        "a signature by other keys of the same id is not the account's"
+    );
+
+    // Only a manifest is signed, and only the account's own or a space's.
+    assert_eq!(
+        session.sign_manifest(b"not a manifest"),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.sign_manifest(&manifest_bytes(Owner::user([0x83; 16]), 1)),
+        Err(Error::Invalid)
+    );
+    let space = manifest_bytes(Owner::space([0x84; 16]), 1);
+    let space_signature = session
+        .sign_manifest(&space)
+        .expect("a member signs a space's");
+    // A space's manifest is not the account's own.
+    assert!(
+        session
+            .verify_own_manifest(&space, &space_signature)
+            .is_err()
+    );
+
+    // A vault opened without the private keys has no key to check with: no verdict, not "false".
+    let account = RootKey::generate();
+    let keyless = unlocked_with(&account, &account_id, FIRST_KEY_VERSION);
+    assert_eq!(
+        keyless.verify_own_manifest(&own, &signature),
+        Err(Error::Locked)
+    );
+
+    // A locked session signs and checks nothing.
+    let locked = Session::new();
+    assert_eq!(locked.sign_manifest(&own), Err(Error::Locked));
+    assert_eq!(
+        locked.verify_own_manifest(&own, &signature),
+        Err(Error::Locked)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_spaces_manifest_is_checked_against_its_signers_bundle_only() {
+    let space = Owner::space([0x85; 16]);
+    let (signer, signer_bundle) = open_account([0x86u8; 16]);
+    let (_, other_bundle) = open_account([0x87u8; 16]);
+    let manifest = manifest_bytes(space, 7);
+    let signature = signer.sign_manifest(&manifest).expect("a member signs");
+
+    verify_space_manifest(&signer_bundle.to_bytes(), &manifest, &signature)
+        .expect("the signer's bundle checks it");
+    assert!(verify_space_manifest(&other_bundle.to_bytes(), &manifest, &signature).is_err());
+    let mut changed = manifest.clone();
+    changed[44] ^= 1;
+    assert!(verify_space_manifest(&signer_bundle.to_bytes(), &changed, &signature).is_err());
+    assert!(verify_space_manifest(b"no bundle", &manifest, &signature).is_err());
+
+    // A person's own manifest is never taken as a space's, even under its signer's own bundle.
+    let own = manifest_bytes(Owner::user([0x86; 16]), 7);
+    let own_signature = signer.sign_manifest(&own).expect("signs its own");
+    assert!(verify_space_manifest(&signer_bundle.to_bytes(), &own, &own_signature).is_err());
+}
+
+// ---- the space chain ---------------------------------------------------------------------------
+
+const SPACE_CHAIN: &str = include_str!("../../../test-vectors/space-chain.json");
+
+/// A chain of the vectors, as the server serves it.
+fn vector_chain(name: &str) -> ([u8; 16], Vec<chain::WireIn>) {
+    let doc: Value = serde_json::from_str(SPACE_CHAIN).expect("a vector file is JSON");
+    let case = doc["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no case named {name}"));
+    let wire = |record: &Value, field: &str| {
+        record[field]
+            .as_str()
+            .map(|hex_text| b64::encode(&hex::decode(hex_text).expect("hex")))
+    };
+    let records = case["records"]
+        .as_array()
+        .expect("records")
+        .iter()
+        .map(|record| chain::WireIn {
+            entry: wire(record, "entry").expect("entry"),
+            signature: wire(record, "signature").expect("signature"),
+            cosignature: wire(record, "cosignature"),
+        })
+        .collect();
+    (
+        ids::parse_uuid(text(case, "space")).expect("a uuid"),
+        records,
+    )
+}
+
+fn verdict_json(session: &mut Session, space: &[u8; 16], records: &[chain::WireIn]) -> Value {
+    let verdict = session
+        .verify_space_chain(space, records, None)
+        .expect("a verdict");
+    serde_json::to_value(&verdict).expect("json")
+}
+
+#[wasm_bindgen_test]
+fn a_chain_that_verifies_is_not_trusted_until_first_contact() {
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xD1; 16]);
+    let view = verdict_json(&mut session, &space, &records);
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["chained"], true);
+    assert_eq!(view["head"]["seq"], 49);
+    // The head's link is the vector's.
+    let doc: Value = serde_json::from_str(SPACE_CHAIN).expect("json");
+    let expected = doc["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "valid-every-kind")
+        .expect("case")["expect"]["head_link"]
+        .as_str()
+        .expect("link")
+        .to_owned();
+    assert_eq!(
+        view["head"]["link"],
+        b64::encode(&hex::decode(expected).expect("hex"))
+    );
+    // This account isn't in the chain: its person must pick an Owner, never "nothing to compare".
+    assert_eq!(view["trusted"], false);
+    assert_eq!(view["firstContact"]["kind"], "pick");
+    assert!(!view["members"].as_array().expect("members").is_empty());
+
+    // Before first contact no key opens, and the older operations don't reach the space.
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.new_space(&space, &[1; 16], "a", "b").map(|_| ()),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.open_space(&space, 1, &[0; 1661]),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session.seal_space_key_to(&space, &[0; 1600], &[1; 16]),
+        Err(Error::Invalid)
+    );
+
+    session.accept_first_contact(&space).expect("accepted");
+    let held = session
+        .space_chain_view(&space)
+        .expect("a view")
+        .expect("held");
+    let held: Value = serde_json::from_str(&held).expect("json");
+    assert_eq!(held["trusted"], true);
+    // A box the chain didn't commit to for this account opens no key even now.
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_chain_with_an_altered_record_is_refused() {
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    let (mut session, _) = open_account([0xD2; 16]);
+    let view = verdict_json(&mut session, &space, &records);
+    assert_eq!(view["ok"], false);
+    assert!(view["reason"].is_string());
+    // A refused chain keeps nothing: no state, so no key.
+    assert!(session.space_chain_view(&space).expect("view").is_none());
+    // But the space has a chain, so the older operations stay closed to it too.
+    assert_eq!(
+        session.new_space(&space, &[1; 16], "a", "b").map(|_| ()),
+        Err(Error::Invalid)
+    );
+    // A space the page never named works as before.
+    assert!(session.new_space(&[0xEE; 16], &[1; 16], "a", "b").is_ok());
+}
+
+#[wasm_bindgen_test]
+fn a_chain_that_ends_earlier_than_one_already_verified_is_rolled_back() {
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xD3; 16]);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    // The server serves a prefix, or nothing at all, to the same unlock.
+    for shorter in [&records[..10], &records[..0]] {
+        let view = verdict_json(&mut session, &space, shorter);
+        assert_eq!(view["ok"], false);
+        assert_eq!(view["reason"], "rolled back");
+    }
+    // The state held is still the longer chain.
+    let held = session
+        .space_chain_view(&space)
+        .expect("view")
+        .expect("held");
+    let held: Value = serde_json::from_str(&held).expect("json");
+    assert_eq!(held["head"]["seq"], 49);
+    // The kept view is the one the verdict gave, read again, not made again.
+    assert_eq!(held["ok"], true);
+}
+
+#[wasm_bindgen_test]
+fn the_page_s_anchor_makes_first_contact_done_and_refuses_a_fork() {
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut first, _) = open_account([0xD4; 16]);
+    let view = verdict_json(&mut first, &space, &records);
+    let anchor =
+        json!({"seq": view["head"]["seq"], "epoch": view["epoch"], "links": view["links"]});
+
+    // Another unlock, with the anchor the page stored after first contact: trusted at once.
+    let (mut again, _) = open_account([0xD5; 16]);
+    let known: chain::AnchorIn = serde_json::from_value(anchor.clone()).expect("anchor");
+    let verdict = again
+        .verify_space_chain(&space, &records, Some(&known))
+        .expect("verdict");
+    let view = serde_json::to_value(&verdict).expect("json");
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["trusted"], true);
+
+    // An anchor with another link at seq 3 is a fork, and refused.
+    let mut forked = anchor;
+    forked["links"][3] = json!(b64::encode(&[0x55; 32]));
+    let forked: chain::AnchorIn = serde_json::from_value(forked).expect("anchor");
+    let (mut third, _) = open_account([0xD6; 16]);
+    let verdict = third
+        .verify_space_chain(&space, &records, Some(&forked))
+        .expect("verdict");
+    let view = serde_json::to_value(&verdict).expect("json");
+    assert_eq!(view["ok"], false);
+    assert_eq!(view["reason"], "forked");
+    assert_eq!(view["seq"], 3);
+
+    // An anchor that is not made of 32-byte links is a malformed request, not a refusal.
+    let junk: chain::AnchorIn =
+        serde_json::from_value(json!({"seq": 0, "epoch": 1, "links": ["AAAA"]})).expect("anchor");
+    let (mut fourth, _) = open_account([0xD7; 16]);
+    assert_eq!(
+        fourth
+            .verify_space_chain(&space, &records, Some(&junk))
+            .map(|_| ()),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn keys_opened_outside_the_chain_do_not_outlive_a_chain_or_a_refusal() {
+    let held_for = |session: &Session, space: &[u8; 16]| {
+        let unlocked = session.unlocked().expect("unlocked");
+        unlocked.spaces.spaces.keys().any(|(s, _)| s == space)
+            || unlocked
+                .spaces
+                .collections
+                .keys()
+                .any(|(s, _, _)| s == space)
+    };
+
+    // Keys made for a space before the server serves a chain for it are dropped once it does.
+    let (space, records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF1; 16]);
+    session
+        .new_space(&space, &[3; 16], "Before", "Also before")
+        .expect("keys made outside the chain");
+    assert!(held_for(&session, &space));
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    assert!(!held_for(&session, &space));
+
+    // A chain that is refused drops them too, and nothing opens for the space after it.
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF2; 16]);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], true);
+    session.accept_first_contact(&space).expect("accepted");
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], false);
+    assert!(!held_for(&session, &space));
+    assert_eq!(
+        session.open_chain_key(&space, &KeyRef::Space, 1, &[0u8; 1661], None),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        session
+            .seal_space_item(&space, &[3; 16], &[7; 16], "login", 1, b"{}")
+            .map(|_| ()),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_local_value_opens_for_its_account_and_label_only() {
+    let (session, _) = open_account([0xF3; 16]);
+    let sealed = session
+        .seal_local("anchor/one", b"{\"seq\":3}")
+        .expect("sealed");
+    assert_eq!(
+        session.open_local("anchor/one", &sealed).expect("opens"),
+        b"{\"seq\":3}".to_vec()
+    );
+    // Not under another label, not with a byte changed, not by another account, not locked.
+    assert_eq!(
+        session.open_local("anchor/two", &sealed),
+        Err(Error::Invalid)
+    );
+    let mut altered = sealed.clone();
+    let last = altered.len() - 1;
+    altered[last] ^= 1;
+    assert_eq!(
+        session.open_local("anchor/one", &altered),
+        Err(Error::Invalid)
+    );
+    assert_eq!(session.open_local("anchor/one", &[]), Err(Error::Invalid));
+    let (other, _) = open_account([0xF4; 16]);
+    assert_eq!(other.open_local("anchor/one", &sealed), Err(Error::Invalid));
+    assert_eq!(
+        Session::new().seal_local("anchor/one", b"x"),
+        Err(Error::Locked)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_space_whose_chain_was_refused_is_never_served_as_having_none() {
+    let (space, mut records) = vector_chain("valid-every-kind");
+    let (mut session, _) = open_account([0xF5; 16]);
+    let mut entry = b64::decode(&records[5].entry).expect("entry");
+    let last = entry.len() - 3;
+    entry[last] ^= 1;
+    records[5].entry = b64::encode(&entry);
+    assert_eq!(verdict_json(&mut session, &space, &records)["ok"], false);
+    // The server now serves nothing: that is the chain taken back, not a space with none.
+    let nothing = verdict_json(&mut session, &space, &[]);
+    assert_eq!(nothing["ok"], false);
+    assert_eq!(nothing["reason"], "rolled back");
+    // A space the page never had a chain for is still one with none.
+    assert_eq!(
+        verdict_json(&mut session, &[0xAB; 16], &[])["chained"],
+        false
+    );
+}
+
+use crate::item_writes::{WriteFields, verify_item_write};
+
+fn write_fields(owner: &str, writer: Option<(&str, u32)>, deleted: bool) -> String {
+    let mut fields = json!({
+        "owner": owner,
+        "id": "11111111-2222-4333-8444-555555555555",
+        "kind": "login",
+        "revision": 4,
+        "deleted": deleted,
+        "keyVersion": 1,
+    });
+    if !deleted {
+        fields["ciphertext"] = json!(b64::encode(&[7u8; 40]));
+        fields["itemKey"] = json!(b64::encode(&[8u8; 60]));
+    }
+    // An item of a space is written into a collection, which the signature covers.
+    if owner.starts_with("space:") {
+        fields["collectionId"] = json!("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    }
+    if let Some((writer, version)) = writer {
+        fields["writer"] = json!(writer);
+        fields["writerKeyVersion"] = json!(version);
+    }
+    fields.to_string()
+}
+
+#[wasm_bindgen_test]
+fn a_write_is_signed_by_the_account_and_checked_with_its_own_key_or_its_bundle() {
+    let account_id = [0x91u8; 16];
+    let (session, bundle) = open_account(account_id);
+    let me = "91919191-9191-9191-9191-919191919191";
+    let owner = format!("user:{me}");
+
+    let signed = session
+        .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, false)).expect("fields"))
+        .expect("the account signs its write");
+    assert_eq!(signed.writer, me);
+    assert_eq!(signed.writer_key_version, FIRST_KEY_VERSION);
+    let signature = b64::decode(&signed.write_signature).expect("base64url");
+    assert_eq!(signature.len(), 3373);
+
+    // The same fields, naming the writer, verify with the account's own key and with its bundle.
+    let named = write_fields(&owner, Some((me, FIRST_KEY_VERSION)), false);
+    let fields = WriteFields::parse(&named).expect("fields");
+    session
+        .verify_own_item_write(&fields, &signature)
+        .expect("its own signature checks");
+    verify_item_write(&bundle.to_bytes(), &fields, &signature).expect("and its bundle's does");
+
+    // Another revision, another ciphertext or another signature does not check.
+    let other_revision = named.replace("\"revision\":4", "\"revision\":5");
+    assert!(
+        session
+            .verify_own_item_write(
+                &WriteFields::parse(&other_revision).expect("fields"),
+                &signature
+            )
+            .is_err()
+    );
+    let mut bad = signature.clone();
+    bad[10] ^= 1;
+    assert!(session.verify_own_item_write(&fields, &bad).is_err());
+    assert!(verify_item_write(&bundle.to_bytes(), &fields, &bad).is_err());
+
+    // A tombstone is signed too, and its signature is not a live write's.
+    let tombstone = session
+        .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, true)).expect("fields"))
+        .expect("the account signs a delete");
+    let tombstone_signature = b64::decode(&tombstone.write_signature).expect("base64url");
+    assert!(
+        session
+            .verify_own_item_write(&fields, &tombstone_signature)
+            .is_err()
+    );
+
+    // Another account's signature is not this account's, and the bundle of another account
+    // doesn't check this one's.
+    let (other, other_bundle) = open_account([0x92u8; 16]);
+    let theirs = other
+        .sign_item_write(&WriteFields::parse(&write_fields(&owner, None, false)).expect("fields"))
+        .expect_err("another account does not sign for this vault");
+    assert_eq!(theirs, Error::Invalid);
+    assert!(verify_item_write(&other_bundle.to_bytes(), &fields, &signature).is_err());
+
+    // A space's writes are signed by a member; the vault of another person is never signed.
+    let space = "space:aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    session
+        .sign_item_write(&WriteFields::parse(&write_fields(space, None, false)).expect("fields"))
+        .expect("a member signs for a space");
+    // The collection is part of what is signed: another one is another signature, and a space's
+    // write that names none (or a vault's that names one) is no statement at all.
+    let space_fields = write_fields(space, None, false);
+    let mut elsewhere: serde_json::Value = serde_json::from_str(&space_fields).expect("json");
+    let signed_here = session
+        .sign_item_write(&WriteFields::parse(&space_fields).expect("fields"))
+        .expect("signs");
+    elsewhere["collectionId"] = json!("dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+    let signed_there = session
+        .sign_item_write(&WriteFields::parse(&elsewhere.to_string()).expect("fields"))
+        .expect("signs");
+    assert_ne!(signed_here.write_signature, signed_there.write_signature);
+    elsewhere
+        .as_object_mut()
+        .expect("an object")
+        .remove("collectionId");
+    assert_eq!(
+        session
+            .sign_item_write(&WriteFields::parse(&elsewhere.to_string()).expect("fields"))
+            .err(),
+        Some(Error::Invalid)
+    );
+    let mut vault: serde_json::Value =
+        serde_json::from_str(&write_fields(&owner, None, false)).expect("json");
+    vault["collectionId"] = json!("cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    assert_eq!(
+        session
+            .sign_item_write(&WriteFields::parse(&vault.to_string()).expect("fields"))
+            .err(),
+        Some(Error::Invalid)
+    );
+    let someone_elses = write_fields("user:93939393-9393-9393-9393-939393939393", None, false);
+    assert_eq!(
+        session
+            .sign_item_write(&WriteFields::parse(&someone_elses).expect("fields"))
+            .err(),
+        Some(Error::Invalid)
+    );
+
+    // Anything that isn't a write's fields is refused, and a locked session signs nothing.
+    assert!(WriteFields::parse("{\"owner\":1}").is_err());
+    assert!(WriteFields::parse("not json").is_err());
+    let own_fields = write_fields(&owner, None, false);
+    assert_eq!(
+        Session::new()
+            .sign_item_write(&WriteFields::parse(&own_fields).expect("fields"))
+            .err(),
+        Some(Error::Locked)
+    );
+}
+
+// ---- the records of a space chain --------------------------------------------------------------
+
+use crate::chain_build::{Change, Replacement};
+use kemlock_crypto::space_chain::uuid_text;
+
+const AT: u64 = 1_700_000_000;
+
+/// A fresh account: its session, its bundle and the bundle's own signature.
+fn open_signed_account(account_id: [u8; 16]) -> (Session, Bundle, Vec<u8>) {
+    let mut session = Session::new();
+    let master = session.insert_master([1; 32]).expect("handle");
+    let export = session.insert_export([2; 64]).expect("handle");
+    let account = session
+        .new_account(&account_id, master, export)
+        .expect("account");
+    let master = session.insert_master([1; 32]).expect("handle");
+    let export = session.insert_export([2; 64]).expect("handle");
+    session
+        .unlock(
+            &account_id,
+            &account.wrapped_root_key,
+            master,
+            export,
+            FIRST_KEY_VERSION,
+            Some(&account.sealed_private_keys),
+        )
+        .expect("unlock");
+    let bundle = Bundle::from_bytes(&account.public_bundle).expect("bundle");
+    (session, bundle, account.bundle_signature)
+}
+
+/// What a builder answers, as the page reads it.
+fn built(session: &Session, space: &[u8; 16], change: Value) -> Value {
+    let change: Change = serde_json::from_value(change).expect("a change");
+    let answer = session
+        .build_chain_records(space, AT, &change)
+        .expect("a build");
+    serde_json::to_value(&answer).expect("json")
+}
+
+/// Appends the records of an answer to the chain the server would hold.
+fn append(chain: &mut Vec<chain::WireIn>, out: &Value) {
+    let text = |record: &Value, field: &str| record[field].as_str().expect(field).to_owned();
+    for record in out["records"].as_array().expect("records") {
+        chain.push(chain::WireIn {
+            entry: text(record, "entry"),
+            signature: text(record, "signature"),
+            cosignature: None,
+        });
+    }
+}
+
+/// Builds a change as `session`, appends it, and has `session` verify the longer chain.
+fn make(
+    session: &mut Session,
+    space: &[u8; 16],
+    chain: &mut Vec<chain::WireIn>,
+    change: Value,
+) -> Value {
+    let out = built(session, space, change);
+    assert_eq!(out["ok"], true, "{out}");
+    append(chain, &out);
+    let view = verdict_json(session, space, chain);
+    assert_eq!(view["ok"], true, "{view}");
+    out
+}
+
+/// Opens the keys an answer sealed to `me`, each committed to `me` alone.
+fn open_own(session: &mut Session, space: &[u8; 16], me: &[u8; 16], out: &Value) {
+    for seal in out["seals"].as_array().expect("seals") {
+        if seal["member"] != uuid_text(me) {
+            continue;
+        }
+        let key = KeyRef::parse(seal["key"].as_str().expect("key")).expect("a key");
+        let sealed = b64::decode(seal["box"].as_str().expect("box")).expect("b64");
+        let version = u32::try_from(seal["version"].as_u64().expect("version")).expect("u32");
+        session
+            .open_chain_key(space, &key, version, &sealed, None)
+            .expect("the key opens");
+    }
+}
+
+fn find<'a>(list: &'a Value, field: &str, value: &str) -> &'a Value {
+    list.as_array()
+        .expect("a list")
+        .iter()
+        .find(|entry| entry[field] == value)
+        .unwrap_or_else(|| panic!("no {field} {value}"))
+}
+
+/// The chain with one byte of one field of one record changed.
+fn tampered(chain: &[chain::WireIn], index: usize, field: &str) -> Vec<chain::WireIn> {
+    let mut copy: Vec<chain::WireIn> = chain
+        .iter()
+        .map(|r| chain::WireIn {
+            entry: r.entry.clone(),
+            signature: r.signature.clone(),
+            cosignature: None,
+        })
+        .collect();
+    let target = if field == "entry" {
+        &mut copy[index].entry
+    } else {
+        &mut copy[index].signature
+    };
+    let mut bytes = b64::decode(target).expect("b64");
+    let at = bytes.len() / 2;
+    bytes[at] ^= 1;
+    *target = b64::encode(&bytes);
+    copy
+}
+
+#[wasm_bindgen_test]
+fn a_new_chained_space_verifies_and_opens_through_its_chain() {
+    let (space, collection) = ([0xE1u8; 16], [0xE2u8; 16]);
+    let me = [0xE3u8; 16];
+    let (mut session, bundle, _) = open_signed_account(me);
+    let out = serde_json::to_value(
+        session
+            .create_chained_space(&space, &collection, "Family", "Everyone", AT)
+            .expect("a create record"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true);
+    assert_eq!(out["records"].as_array().expect("records").len(), 1);
+    assert_eq!(out["seals"].as_array().expect("seals").len(), 2);
+    assert_eq!(out["names"].as_array().expect("names").len(), 2);
+    for seal in out["seals"].as_array().expect("seals") {
+        assert_eq!(seal["seq"], 0);
+        assert_eq!(seal["version"], 1);
+        assert_eq!(
+            b64::decode(seal["box"].as_str().expect("box"))
+                .expect("b64")
+                .len(),
+            1661
+        );
+    }
+
+    // The chain verifies, it is this account's own, and both keys open through it.
+    let mut chain = Vec::new();
+    append(&mut chain, &out);
+    let view = verdict_json(&mut session, &space, &chain);
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["trusted"], true);
+    assert_eq!(view["members"][0]["role"], "owner");
+    assert_eq!(
+        view["members"][0]["bundle"],
+        b64::encode(&bundle.to_bytes())
+    );
+    open_own(&mut session, &space, &me, &out);
+    session
+        .seal_space_item(&space, &collection, &[7; 16], "login", 1, b"{}")
+        .expect("an item seals");
+
+    // The names are the ones the chain committed.
+    let name = |target: &str| {
+        b64::decode(
+            find(&out["names"], "target", target)["name"]
+                .as_str()
+                .expect("name"),
+        )
+        .expect("b64")
+    };
+    assert_eq!(
+        session.open_name(&space, 1, NameKind::Space, &space, &name("space")),
+        Ok("Family".to_owned())
+    );
+    let collection_target = format!("collection:{}", uuid_text(&collection));
+    assert_eq!(
+        session.open_name(
+            &space,
+            1,
+            NameKind::Collection,
+            &collection,
+            &name(&collection_target)
+        ),
+        Ok("Everyone".to_owned())
+    );
+
+    // A byte of the record or of its signature changed: the chain is refused.
+    let (mut other, _) = open_account([0xE4; 16]);
+    for field in ["entry", "signature"] {
+        let changed = tampered(&chain, 0, field);
+        assert_eq!(
+            verdict_json(&mut other, &space, &changed)["ok"],
+            false,
+            "{field}"
+        );
+    }
+
+    // A space this account holds a chain for isn't made again, and a locked session makes nothing.
+    assert_eq!(
+        session
+            .create_chained_space(&space, &collection, "Again", "Again", AT)
+            .map(|_| ()),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        Session::new()
+            .create_chained_space(&space, &collection, "a", "b", AT)
+            .map(|_| ()),
+        Err(Error::Locked)
+    );
+}
+
+#[wasm_bindgen_test]
+fn the_key_version_an_account_is_unlocked_at_is_known() {
+    let (session, _) = open_account([0x95u8; 16]);
+    assert_eq!(session.own_key_version(), Ok(FIRST_KEY_VERSION));
+    assert_eq!(Session::new().own_key_version(), Err(Error::Locked));
+}
+
+#[wasm_bindgen_test]
+fn every_kind_a_manager_needs_is_built_and_verifies_with_the_shared_verifier() {
+    let (space, general, finance, ops) = ([0xA1u8; 16], [0xA2u8; 16], [0xA3u8; 16], [0xA4u8; 16]);
+    let (me, theo) = ([0xA5u8; 16], [0xA6u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (mut member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (me_text, theo_text) = (uuid_text(&me), uuid_text(&theo));
+    let (general_text, finance_text) = (uuid_text(&general), uuid_text(&finance));
+
+    // The owner makes the space.
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Example Co", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+
+    // invite: Theo is in the space, with access to General, and holds nothing yet.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+
+    // A confirm needs the fingerprint of exactly the bundle: another one is refused outright.
+    let confirm = |fingerprint: Vec<u8>| {
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&fingerprint)})
+    };
+    let wrong: Change = serde_json::from_value(confirm(vec![7; 64])).expect("a change");
+    assert_eq!(
+        owner.build_chain_records(&space, AT, &wrong).map(|_| ()),
+        Err(Error::Invalid)
+    );
+    // A bundle with a signature that isn't its own is refused too.
+    let mut forged = confirm(theo_bundle.fingerprint().to_vec());
+    forged["bundleSignature"] = json!(b64::encode(&[0u8; 3373]));
+    let forged: Change = serde_json::from_value(forged).expect("a change");
+    assert_eq!(
+        owner.build_chain_records(&space, AT, &forged).map(|_| ()),
+        Err(Error::Invalid)
+    );
+
+    // confirm, then a seal of the keys the owner holds: both records, and a box of each key.
+    let confirmed = make(
+        &mut owner,
+        &space,
+        &mut chain,
+        confirm(theo_bundle.fingerprint().to_vec()),
+    );
+    assert_eq!(confirmed["records"].as_array().expect("records").len(), 2);
+    let seals = confirmed["seals"].as_array().expect("seals");
+    assert_eq!(seals.len(), 2);
+    assert!(
+        seals
+            .iter()
+            .all(|s| s["member"] == theo_text && s["seq"] == 3)
+    );
+    assert!(confirmed["names"].as_array().expect("names").is_empty());
+
+    // Theo verifies the chain, compares the inviter's fingerprint (first contact), and then opens
+    // the keys through it. Nothing is built for him before that.
+    let view = verdict_json(&mut member, &space, &chain);
+    assert_eq!(view["ok"], true);
+    assert_eq!(view["trusted"], false);
+    assert_eq!(view["firstContact"]["kind"], "compare");
+    let ask: Change = serde_json::from_value(json!({"action": "seal"})).expect("a change");
+    assert_eq!(
+        member.build_chain_records(&space, AT, &ask).map(|_| ()),
+        Err(Error::Invalid)
+    );
+    member.accept_first_contact(&space).expect("first contact");
+    open_own(&mut member, &space, &theo, &confirmed);
+    member
+        .seal_space_item(&space, &general, &[8; 16], "login", 1, b"{}")
+        .expect("Theo holds General's key");
+    let general_name = b64::decode(
+        find(
+            &created["names"],
+            "target",
+            &format!("collection:{general_text}"),
+        )["name"]
+            .as_str()
+            .expect("name"),
+    )
+    .expect("b64");
+    assert_eq!(
+        member.open_name(&space, 1, NameKind::Collection, &general, &general_name),
+        Ok("General".to_owned())
+    );
+
+    // Theo is a plain member: the chain's rules refuse his invitation of anyone.
+    let refused = built(
+        &member,
+        &space,
+        json!({"action": "invite", "member": uuid_text(&[0xA7; 16]), "role": "member",
+               "custom": [], "grants": []}),
+    );
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["reason"], "not allowed");
+
+    // role and grant: an Admin who may edit General. He holds the key already, so no seal follows.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "role", "member": theo_text, "role": "admin", "custom": []}),
+    );
+    let granted = make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "grant", "collection": general_text,
+               "grantee": format!("user:{theo_text}"), "permission": "edit"}),
+    );
+    assert_eq!(granted["records"].as_array().expect("records").len(), 1);
+
+    // collection: its key is sealed to both, so each box needs the server's hash list.
+    let made = make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "collection", "collection": finance_text, "name": "Finance",
+               "grants": [{"grantee": format!("user:{me_text}"), "permission": "manage"},
+                          {"grantee": format!("user:{theo_text}"), "permission": "view"}]}),
+    );
+    let key = KeyRef::Collection(finance);
+    let seals = made["seals"].as_array().expect("seals");
+    assert_eq!(seals.len(), 2);
+    let list: Vec<chain::SealListIn> = serde_json::from_value(Value::Array(
+        seals
+            .iter()
+            .map(|s| {
+                let sealed = b64::decode(s["box"].as_str().expect("box")).expect("b64");
+                json!({"bundleVersion": 1, "key": s["key"], "member": s["member"],
+                       "sealHash": b64::encode(&kemlock_crypto::hash::sha256(&sealed)),
+                       "version": 1})
+            })
+            .collect(),
+    ))
+    .expect("a list");
+    let entries = chain::seal_list(&list, &key, 1).expect("entries");
+    let mine = find(&made["seals"], "member", &me_text);
+    owner
+        .open_chain_key(
+            &space,
+            &key,
+            1,
+            &b64::decode(mine["box"].as_str().expect("box")).expect("b64"),
+            Some(&entries),
+        )
+        .expect("the new collection's key opens, with the list");
+
+    // rename: a new name under the space key, committed by its hash.
+    let renamed = make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "rename", "target": format!("collection:{finance_text}"),
+               "name": "Money"}),
+    );
+    let sealed_name =
+        b64::decode(renamed["names"][0]["name"].as_str().expect("name")).expect("b64");
+    assert_eq!(
+        owner.open_name(&space, 1, NameKind::Collection, &finance, &sealed_name),
+        Ok("Money".to_owned())
+    );
+    // The old name is no longer the committed one.
+    let old = b64::decode(made["names"][0]["name"].as_str().expect("name")).expect("b64");
+    assert_eq!(
+        owner.open_name(&space, 1, NameKind::Collection, &finance, &old),
+        Err(Error::Invalid)
+    );
+
+    // group, group-members and group-delete.
+    let group_text = uuid_text(&ops);
+    let grouped = make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "group", "group": group_text, "name": "Ops", "members": [theo_text]}),
+    );
+    assert_eq!(grouped["records"].as_array().expect("records").len(), 2);
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "group-members", "group": group_text, "add": [],
+               "remove": [theo_text]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "group-delete", "group": group_text}),
+    );
+
+    // ungrant: Theo holds Finance's key and loses access, so it must be replaced.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "ungrant", "collection": finance_text,
+               "grantee": format!("user:{theo_text}")}),
+    );
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(
+        find(&view["keys"], "key", &format!("collection:{finance_text}"))["marked"],
+        true
+    );
+
+    // remove: Theo leaves, and every key he held is marked.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(
+        find(&view["members"], "id", &theo_text)["status"],
+        "removed"
+    );
+    assert_eq!(view["space"]["marked"], true);
+
+    // While the space key is marked a new collection is refused with the verifier's reason.
+    let refused = built(
+        &owner,
+        &space,
+        json!({"action": "collection", "collection": uuid_text(&[0xA8; 16]), "name": "Late"}),
+    );
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["reason"], "invalid");
+}
+
+#[wasm_bindgen_test]
+fn a_collection_is_made_and_deleted_and_a_tampered_chain_is_refused() {
+    let (space, general, extra) = ([0xB1u8; 16], [0xB2u8; 16], [0xB3u8; 16]);
+    let me = [0xB4u8; 16];
+    let (mut owner, _, _) = open_signed_account(me);
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Space", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+    let extra_text = uuid_text(&extra);
+    let made = make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "collection", "collection": extra_text, "name": "Scratch",
+               "parent": uuid_text(&general)}),
+    );
+    // Only the maker reaches it: one box, to the maker.
+    assert_eq!(made["seals"].as_array().expect("seals").len(), 1);
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(
+        find(&view["collections"], "id", &extra_text)["parent"],
+        uuid_text(&general)
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "collection-delete", "collection": extra_text}),
+    );
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(
+        view["collections"].as_array().expect("collections").len(),
+        1
+    );
+
+    // One byte of any record, or of its signature, and a fresh verifier refuses the chain.
+    let (mut fresh, _) = open_account([0xB5; 16]);
+    for index in 0..chain.len() {
+        for field in ["entry", "signature"] {
+            let changed = tampered(&chain, index, field);
+            assert_eq!(
+                verdict_json(&mut fresh, &space, &changed)["ok"],
+                false,
+                "record {index}, {field}"
+            );
+        }
+    }
+}
+
+/// Asserts that `item`, an item a key replacement or a reseal writes again for `space`, is signed
+/// as any write of a space's item is: by `writer`, the account `session` is unlocked as, at its
+/// key version, over the statement that binds `collection`, and not over any other collection.
+fn assert_signed_rewrite(
+    session: &Session,
+    space: &[u8; 16],
+    item: &Value,
+    collection: &[u8; 16],
+    writer: &[u8; 16],
+) {
+    let fields = |collection: &[u8; 16]| {
+        WriteFields::parse(
+            &json!({
+                "owner": format!("space:{}", uuid_text(space)),
+                "id": item["id"],
+                "kind": item["kind"],
+                "revision": item["revision"],
+                "deleted": false,
+                "keyVersion": item["keyVersion"],
+                "ciphertext": item["ciphertext"],
+                "itemKey": item["itemKey"],
+                "collectionId": uuid_text(collection),
+                "writer": item["writer"],
+                "writerKeyVersion": item["writerKeyVersion"],
+            })
+            .to_string(),
+        )
+        .expect("fields")
+    };
+    assert_eq!(item["writer"], uuid_text(writer));
+    assert_eq!(item["writerKeyVersion"], FIRST_KEY_VERSION);
+    let signature =
+        b64::decode(item["writeSignature"].as_str().expect("a signature")).expect("base64url");
+    assert_eq!(signature.len(), 3373);
+    session
+        .verify_own_item_write(&fields(collection), &signature)
+        .expect("the re-written item carries its writer's signature, with its collection bound");
+    assert!(
+        session
+            .verify_own_item_write(&fields(&[0x77u8; 16]), &signature)
+            .is_err(),
+        "the signature is not one of another collection"
+    );
+}
+
+#[wasm_bindgen_test]
+fn marked_keys_are_replaced_with_their_names_and_items_sealed_again() {
+    let (space, general) = ([0xC1u8; 16], [0xC2u8; 16]);
+    let (me, theo) = ([0xC3u8; 16], [0xC4u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (_member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (theo_text, general_text) = (uuid_text(&theo), uuid_text(&general));
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Example Co", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+
+    // An item of General under version 1 (nothing is written while a key is marked).
+    let item = [0xC5u8; 16];
+    let sealed = owner
+        .seal_space_item(&space, &general, &item, "login", 1, br#"{"name":"vpn"}"#)
+        .expect("seals");
+
+    // Theo is let into General, and then removed: the space key and General's key are marked.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&theo_bundle.fingerprint())}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(view["space"]["marked"], true);
+
+    // While the keys are marked an item opens only when it is one this browser accepted before the
+    // mark (`accepted`): a revision that is not is held, not opened, because the member who was taken
+    // out still holds the key and could have made it.
+    {
+        let owner_ref = Owner::space(space);
+        let held = SealedItemRef {
+            id: &item,
+            owner: &owner_ref,
+            kind: "login",
+            revision: 1,
+            ciphertext: &sealed.ciphertext,
+            item_key: &sealed.item_key,
+            key_version: Some(sealed.key_version),
+        };
+        assert_eq!(
+            owner
+                .open_space_item_as(&space, &general, &held, true)
+                .expect("accepted before the mark: it opens")
+                .as_slice(),
+            br#"{"name":"vpn"}"#
+        );
+        assert_eq!(
+            owner.open_space_item_as(&space, &general, &held, false),
+            Err(Error::Invalid)
+        );
+        // The way the page reads what it already holds, and a key replacement reads items to seal
+        // again, is as accepted.
+        assert!(owner.open_space_item(&space, &general, &held).is_ok());
+    }
+
+    // An item that doesn't open, beside the one sealed above.
+    let junk = [0xC6u8; 16];
+    let served = |target: &str| {
+        find(&created["names"], "target", target)["name"]
+            .as_str()
+            .expect("name")
+            .to_owned()
+    };
+    let replacement: Replacement = serde_json::from_value(json!({
+        "items": [
+            {"id": uuid_text(&item), "collection": general_text, "kind": "login", "revision": 1,
+             "keyVersion": 1, "ciphertext": b64::encode(&sealed.ciphertext),
+             "itemKey": b64::encode(&sealed.item_key)},
+            {"id": uuid_text(&junk), "collection": general_text, "kind": "login", "revision": 1,
+             "keyVersion": 1, "ciphertext": b64::encode(&[9u8; 60]),
+             "itemKey": b64::encode(&[8u8; 60])},
+        ],
+        "names": [
+            {"target": "space", "sealed": served("space")},
+            {"target": format!("collection:{general_text}"),
+             "sealed": served(&format!("collection:{general_text}"))},
+        ],
+    }))
+    .expect("a replacement");
+
+    // A name the server serves in place of the committed one is no name to carry over.
+    let swapped = json!({"items": [], "names": [
+        {"target": "space", "sealed": served(&format!("collection:{general_text}"))},
+        {"target": format!("collection:{general_text}"),
+         "sealed": served(&format!("collection:{general_text}"))},
+    ]});
+    let swapped: Replacement = serde_json::from_value(swapped).expect("a replacement");
+    assert_eq!(
+        owner
+            .build_key_replacement(&space, AT, &swapped)
+            .map(|_| ()),
+        Err(Error::Invalid)
+    );
+
+    let out = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &replacement)
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["records"].as_array().expect("records").len(), 1);
+    assert_eq!(out["names"].as_array().expect("names").len(), 2);
+    assert_eq!(out["seals"].as_array().expect("seals").len(), 2);
+    assert_eq!(out["held"], json!([uuid_text(&junk)]));
+    assert_eq!(
+        out["rotated"],
+        json!([format!("collection:{general_text}"), "space"])
+    );
+    let writes = out["writes"].as_array().expect("writes");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["collection"], general_text);
+    assert_eq!(writes[0]["expectedRevision"], 1);
+    assert_eq!(writes[0]["item"]["revision"], 2);
+    assert_eq!(writes[0]["item"]["keyVersion"], 2);
+
+    // The chain with the keys record verifies, nothing is marked any more, and every key is at
+    // version 2.
+    append(&mut chain, &out);
+    let view = verdict_json(&mut owner, &space, &chain);
+    assert_eq!(view["ok"], true, "{view}");
+    assert_eq!(view["space"]["marked"], false);
+    assert_eq!(view["space"]["keyVersion"], 2);
+    assert_eq!(view["collections"][0]["keyVersion"], 2);
+    assert_eq!(view["collections"][0]["marked"], false);
+
+    // The new keys open through the chain, the names open as the chain committed them, and the
+    // item opens under its new version with what it held before.
+    open_own(&mut owner, &space, &me, &out);
+    let new_name = |target: &str| {
+        b64::decode(
+            find(&out["names"], "target", target)["name"]
+                .as_str()
+                .expect("name"),
+        )
+        .expect("b64")
+    };
+    assert_eq!(
+        owner.open_name(&space, 2, NameKind::Space, &space, &new_name("space")),
+        Ok("Example Co".to_owned())
+    );
+    assert_eq!(
+        owner.open_name(
+            &space,
+            2,
+            NameKind::Collection,
+            &general,
+            &new_name(&format!("collection:{general_text}"))
+        ),
+        Ok("General".to_owned())
+    );
+    let owner_ref = Owner::space(space);
+    let item_out = &writes[0]["item"];
+    let opened = owner
+        .open_space_item(
+            &space,
+            &general,
+            &SealedItemRef {
+                id: &item,
+                owner: &owner_ref,
+                kind: "login",
+                revision: 2,
+                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct"))
+                    .expect("b64"),
+                item_key: &b64::decode(item_out["itemKey"].as_str().expect("key")).expect("b64"),
+                key_version: Some(2),
+            },
+        )
+        .expect("the item opens under the new key");
+    assert_eq!(opened.as_slice(), br#"{"name":"vpn"}"#);
+
+    // The re-written item is a signed write of General, which a signed-only space takes.
+    assert_signed_rewrite(&owner, &space, item_out, &general, &me);
+
+    // Nothing is marked now: there is nothing to replace.
+    let again = serde_json::to_value(
+        owner
+            .build_key_replacement(
+                &space,
+                AT,
+                &serde_json::from_value(json!({"items": []})).expect("r"),
+            )
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(again["ok"], true);
+    assert!(again["records"].as_array().expect("records").is_empty());
+}
+
+#[wasm_bindgen_test]
+fn items_left_under_an_old_key_version_are_sealed_again_for_the_batch_route() {
+    let (space, general) = ([0xD1u8; 16], [0xD2u8; 16]);
+    let (me, theo) = ([0xD3u8; 16], [0xD4u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (_member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (theo_text, general_text) = (uuid_text(&theo), uuid_text(&general));
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Space", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+    let item = [0xD5u8; 16];
+    let sealed = owner
+        .seal_space_item(&space, &general, &item, "login", 1, br#"{"name":"vpn"}"#)
+        .expect("seals");
+
+    // Theo is let in and removed, and the keys are replaced with the item left out, as a
+    // replacement that stopped halfway would: it stays under version 1.
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&theo_bundle.fingerprint())}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+    let served = |target: &str| {
+        find(&created["names"], "target", target)["name"]
+            .as_str()
+            .expect("name")
+            .to_owned()
+    };
+    let replacement: Replacement = serde_json::from_value(json!({"items": [], "names": [
+        {"target": "space", "sealed": served("space")},
+        {"target": format!("collection:{general_text}"),
+         "sealed": served(&format!("collection:{general_text}"))},
+    ]}))
+    .expect("a replacement");
+    let out = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &replacement)
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true, "{out}");
+    append(&mut chain, &out);
+    assert_eq!(
+        verdict_json(&mut owner, &space, &chain)["collections"][0]["keyVersion"],
+        2
+    );
+    open_own(&mut owner, &space, &me, &out);
+
+    // The item still under version 1 and one that doesn't open: the first is sealed again as the
+    // next revision under version 2, the other is named, and one already current is left out.
+    let junk = [0xD6u8; 16];
+    let current = [0xD7u8; 16];
+    let served_item = |id: &[u8; 16], key_version: u32, ciphertext: &[u8], item_key: &[u8]| {
+        json!({"id": uuid_text(id), "collection": general_text, "kind": "login", "revision": 1,
+               "keyVersion": key_version, "ciphertext": b64::encode(ciphertext),
+               "itemKey": b64::encode(item_key)})
+    };
+    let reseal: crate::chain_build::Reseal = serde_json::from_value(json!({"items": [
+        served_item(&item, 1, &sealed.ciphertext, &sealed.item_key),
+        served_item(&junk, 1, &[9u8; 60], &[8u8; 60]),
+        served_item(&current, 2, &[9u8; 60], &[8u8; 60]),
+    ]}))
+    .expect("a reseal");
+    let again =
+        serde_json::to_value(owner.build_reseal(&space, &reseal).expect("a build")).expect("json");
+    assert_eq!(again["ok"], true, "{again}");
+    assert!(again["records"].as_array().expect("records").is_empty());
+    assert_eq!(again["held"], json!([uuid_text(&junk)]));
+    let writes = again["writes"].as_array().expect("writes");
+    assert_eq!(writes.len(), 1);
+    assert_eq!(writes[0]["expectedRevision"], 1);
+    assert_eq!(writes[0]["item"]["revision"], 2);
+    assert_eq!(writes[0]["item"]["keyVersion"], 2);
+    let owner_ref = Owner::space(space);
+    let item_out = &writes[0]["item"];
+    let opened = owner
+        .open_space_item(
+            &space,
+            &general,
+            &SealedItemRef {
+                id: &item,
+                owner: &owner_ref,
+                kind: "login",
+                revision: 2,
+                ciphertext: &b64::decode(item_out["ciphertext"].as_str().expect("ct"))
+                    .expect("b64"),
+                item_key: &b64::decode(item_out["itemKey"].as_str().expect("key")).expect("b64"),
+                key_version: Some(2),
+            },
+        )
+        .expect("the item opens under the current key");
+    assert_eq!(opened.as_slice(), br#"{"name":"vpn"}"#);
+    // A reseal signs its writes too, with the collection bound.
+    assert_signed_rewrite(&owner, &space, item_out, &general, &me);
+
+    // An account that holds no chain of the space builds nothing.
+    let (other, _, _) = open_signed_account([0xD8; 16]);
+    assert_eq!(
+        other.build_reseal(&space, &reseal).map(|_| ()),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn a_key_is_replaced_only_by_an_unlock_that_holds_it() {
+    let (space, general) = ([0xE5u8; 16], [0xE6u8; 16]);
+    let (me, theo) = ([0xE7u8; 16], [0xE8u8; 16]);
+    let (mut owner, _, _) = open_signed_account(me);
+    let (_member, theo_bundle, theo_signature) = open_signed_account(theo);
+    let (theo_text, general_text) = (uuid_text(&theo), uuid_text(&general));
+    let created = serde_json::to_value(
+        owner
+            .create_chained_space(&space, &general, "Space", "General", AT)
+            .expect("create"),
+    )
+    .expect("json");
+    let mut chain = Vec::new();
+    append(&mut chain, &created);
+    assert_eq!(verdict_json(&mut owner, &space, &chain)["ok"], true);
+    open_own(&mut owner, &space, &me, &created);
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "invite", "member": theo_text, "role": "member", "custom": [],
+               "grants": [{"collection": general_text, "permission": "view"}]}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "confirm", "member": theo_text,
+               "bundle": b64::encode(&theo_bundle.to_bytes()),
+               "bundleSignature": b64::encode(&theo_signature),
+               "fingerprint": b64::encode(&theo_bundle.fingerprint())}),
+    );
+    make(
+        &mut owner,
+        &space,
+        &mut chain,
+        json!({"action": "remove", "member": theo_text}),
+    );
+
+    // This unlock lost the keys (a reload opens them at the chain's version only, and only once
+    // they are opened): replacing them would leave every item under the old version unreadable.
+    owner
+        .unlocked_mut()
+        .expect("unlocked")
+        .spaces
+        .drop_keys(&space);
+    let nothing: Replacement = serde_json::from_value(json!({"items": []})).expect("a replacement");
+    let out = serde_json::to_value(
+        owner
+            .build_key_replacement(&space, AT, &nothing)
+            .expect("a build"),
+    )
+    .expect("json");
+    assert_eq!(out["ok"], true);
+    assert!(out["records"].as_array().expect("records").is_empty());
+}
+
+// ---- rotating the root key ---------------------------------------------------------------------
+
+#[wasm_bindgen_test]
+fn a_rotation_moves_an_item_and_the_account_to_the_new_keys() {
+    let account = [0xA7; 16];
+    let (mut session, old_bundle) = open_account(account);
+    let owner = Owner::user(account);
+    let id = [0x31; 16];
+    let sealed = session
+        .seal_item(&id, &owner, "login", 3, br#"{"name":"bank"}"#)
+        .expect("seal");
+
+    let started = session.rotation_start().expect("start");
+    assert_eq!(started.key_version, FIRST_KEY_VERSION + 1);
+    let new_bundle = Bundle::from_bytes(&started.public_bundle).expect("bundle");
+    assert_eq!(new_bundle.account_id, account);
+    assert_eq!(new_bundle.key_version, FIRST_KEY_VERSION + 1);
+    new_bundle
+        .verify_self_signature(&started.bundle_signature)
+        .expect("the new bundle is signed by its own key");
+    assert_ne!(
+        new_bundle.kx1_public.as_bytes(),
+        old_bundle.kx1_public.as_bytes()
+    );
+    assert_ne!(
+        new_bundle.sig1_public.as_bytes(),
+        old_bundle.sig1_public.as_bytes()
+    );
+
+    let moved = session
+        .rotation_reseal_item(&SealedItemRef {
+            id: &id,
+            owner: &owner,
+            kind: "login",
+            revision: 3,
+            ciphertext: &sealed.ciphertext,
+            item_key: &sealed.item_key,
+            key_version: Some(sealed.key_version),
+        })
+        .expect("reseal");
+    assert_eq!(moved.moved.revision, 4);
+    assert_eq!(moved.key_version, FIRST_KEY_VERSION + 1);
+
+    // The move is a write of the account, signed by the new keys at the new key version, so a vault
+    // that takes signed writes only installs it, and the old keys can't have made it.
+    assert_eq!(moved.signature.writer_key_version, FIRST_KEY_VERSION + 1);
+    let rotated_fields = json!({
+        "owner": "user:a7a7a7a7-a7a7-a7a7-a7a7-a7a7a7a7a7a7",
+        "id": "31313131-3131-3131-3131-313131313131",
+        "kind": "login",
+        "revision": 4,
+        "deleted": false,
+        "keyVersion": FIRST_KEY_VERSION + 1,
+        "ciphertext": b64::encode(&moved.moved.ciphertext),
+        "itemKey": b64::encode(&moved.moved.item_key),
+        "writer": moved.signature.writer,
+        "writerKeyVersion": moved.signature.writer_key_version,
+    })
+    .to_string();
+    let rotated_fields = WriteFields::parse(&rotated_fields).expect("fields");
+    let signature = b64::decode(&moved.signature.write_signature).expect("a signature");
+    crate::item_writes::verify_item_write(&started.public_bundle, &rotated_fields, &signature)
+        .expect("the new bundle verifies the rotated write");
+    assert!(
+        crate::item_writes::verify_item_write(&old_bundle.to_bytes(), &rotated_fields, &signature)
+            .is_err(),
+        "the old keys did not sign it"
+    );
+
+    // Until the commit the account still opens only the old item.
+    assert!(
+        session
+            .open_item(&SealedItemRef {
+                id: &id,
+                owner: &owner,
+                kind: "login",
+                revision: 4,
+                ciphertext: &moved.moved.ciphertext,
+                item_key: &moved.moved.item_key,
+                key_version: Some(moved.key_version),
+            })
+            .is_err()
+    );
+    let (version, fingerprint) = session.rotation_commit().expect("commit");
+    assert_eq!(version, FIRST_KEY_VERSION + 1);
+    assert_eq!(fingerprint, new_bundle.fingerprint_text());
+    assert_eq!(session.own_fingerprint().expect("fingerprint"), fingerprint);
+
+    let plain = session
+        .open_item(&SealedItemRef {
+            id: &id,
+            owner: &owner,
+            kind: "login",
+            revision: 4,
+            ciphertext: &moved.moved.ciphertext,
+            item_key: &moved.moved.item_key,
+            key_version: Some(moved.key_version),
+        })
+        .expect("the new item opens under the new keys");
+    assert_eq!(plain.as_slice(), br#"{"name":"bank"}"#.as_slice());
+    // The old envelope no longer opens: the account's keys are the new ones.
+    assert!(
+        session
+            .open_item(&SealedItemRef {
+                id: &id,
+                owner: &owner,
+                kind: "login",
+                revision: 3,
+                ciphertext: &sealed.ciphertext,
+                item_key: &sealed.item_key,
+                key_version: Some(sealed.key_version),
+            })
+            .is_err()
+    );
+    // A second commit has nothing pending.
+    assert_eq!(session.rotation_commit(), Err(Error::Invalid));
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_wraps_the_new_root_key_and_the_old_wraps_stay_old() {
+    let account = [0xA8; 16];
+    let (mut session, _) = open_account(account);
+    assert_eq!(session.rotation_kit_make().err(), Some(Error::Invalid));
+    let started = session.rotation_start().expect("start");
+
+    let master = session.insert_master([1; 32]).expect("handle");
+    let export = session.insert_export([2; 64]).expect("handle");
+    let wrapped = session
+        .rotation_wrap_password(master, export)
+        .expect("password wrap");
+    // The handles are spent.
+    assert!(session.master_bytes(master).is_err());
+    assert!(session.export_bytes(export).is_err());
+
+    let (prf, prf_version) = session
+        .rotation_prf_wrap(&[7; 32], b"credential")
+        .expect("prf wrap");
+    assert_eq!(prf_version, started.key_version);
+    let kit = session.rotation_kit_make().expect("kit");
+    assert_eq!(kit.key_version, started.key_version);
+
+    session.rotation_commit().expect("commit");
+    // The password wrap and the PRF wrap are for the new root key and the new version.
+    let root = password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, started.key_version)
+        .expect("opens at the new version");
+    assert_eq!(
+        &session.export_root().expect("root")[..],
+        root.as_bytes().as_slice()
+    );
+    assert!(
+        password_wrap::open(&[1; 32], &[2; 64], &wrapped, &account, FIRST_KEY_VERSION).is_err()
+    );
+    let from_prf = kemlock_crypto::prf_wrap::open(
+        &[7; 32],
+        b"credential",
+        &prf,
+        &account,
+        started.key_version,
+    )
+    .expect("the prf wrap opens");
+    assert_eq!(from_prf.as_bytes(), root.as_bytes());
+
+    // The new private keys open under the new user key; the old ones are kept sealed under it too.
+    let user = root.user_key().expect("user key");
+    private_keys::open(
+        &user,
+        &started.sealed_private_keys,
+        &account,
+        started.key_version,
+    )
+    .expect("new keys");
+    private_keys::open(
+        &user,
+        &started.sealed_previous_private_keys,
+        &account,
+        FIRST_KEY_VERSION,
+    )
+    .expect("previous keys");
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_seals_the_new_root_key_only_under_its_two_contexts() {
+    let account = [0xA9; 16];
+    let (mut session, bundle) = open_account(account);
+    session.rotation_start().expect("start");
+    let contact = [0x55; 16];
+    for context in ["device-approval", "space-key", "something-else"] {
+        assert!(
+            session
+                .rotation_seal_root_key(bundle.kx1_public.as_bytes(), context, &contact)
+                .is_err(),
+            "{context}"
+        );
+    }
+    assert!(
+        session
+            .rotation_seal_root_key(bundle.kx1_public.as_bytes(), "emergency-access", &[0; 15])
+            .is_err()
+    );
+    let boxed = session
+        .rotation_seal_root_key(bundle.kx1_public.as_bytes(), "emergency-access", &account)
+        .expect("a box to the account's own key, aad its own id");
+    session.rotation_commit().expect("commit");
+    let unlocked = session.unlocked().expect("unlocked");
+    let (kx_private, _) = unlocked.private.as_ref().expect("private keys");
+    // Sealed to the old key: the new private key doesn't open it.
+    assert!(sealed_box::open(kx_private, "emergency-access", &account, &boxed).is_err());
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_that_was_not_started_does_nothing() {
+    let (mut session, _) = open_account([0xAA; 16]);
+    assert_eq!(session.rotation_commit(), Err(Error::Invalid));
+    assert!(session.rotation_export_root().is_err());
+    session.rotation_start().expect("start");
+    session.rotation_abort();
+    assert_eq!(session.rotation_commit(), Err(Error::Invalid));
+    // A locked session starts nothing.
+    session.lock();
+    assert_eq!(session.rotation_start().err(), Some(Error::Locked));
+}
+
+#[wasm_bindgen_test]
+fn a_rotation_moves_what_the_browser_keeps_to_the_new_keys() {
+    let (mut session, _) = open_account([0xAB; 16]);
+    let anchor = session
+        .seal_local("anchor/one", b"{\"seq\":3}")
+        .expect("seals");
+    let pin = session
+        .seal_local("pin/one", b"11111 22222")
+        .expect("seals");
+    // Nothing moves before a rotation is started.
+    assert_eq!(
+        session.rotation_reseal_local("anchor/one", &anchor),
+        Err(Error::Invalid)
+    );
+    session.rotation_start().expect("start");
+
+    let moved = session
+        .rotation_reseal_local("anchor/one", &anchor)
+        .expect("moves");
+    assert_ne!(moved, anchor);
+    // A value that does not open now, or is moved under another label, is not moved.
+    assert_eq!(
+        session.rotation_reseal_local("anchor/two", &anchor),
+        Err(Error::Invalid)
+    );
+    let moved_pin = session
+        .rotation_reseal_local("pin/one", &pin)
+        .expect("moves");
+
+    session.rotation_commit().expect("commit");
+    // Under the new keys the moved values open, bound to their labels; the old ones do not.
+    assert_eq!(
+        session.open_local("anchor/one", &moved).expect("opens"),
+        b"{\"seq\":3}".to_vec()
+    );
+    assert_eq!(
+        session.open_local("pin/one", &moved_pin).expect("opens"),
+        b"11111 22222".to_vec()
+    );
+    assert_eq!(
+        session.open_local("pin/one", &moved),
+        Err(Error::Invalid),
+        "another label"
+    );
+    assert_eq!(
+        session.open_local("anchor/one", &anchor),
+        Err(Error::Invalid)
+    );
+}
+
+#[wasm_bindgen_test]
+fn committing_without_the_private_keys_takes_nothing() {
+    // Unlocked with the root key only: no private keys to rotate from or to.
+    let root = RootKey::from_bytes(&[0x61; 64]);
+    let mut session = unlocked_with(&root, &[0xAC; 16], 1);
+    assert_eq!(session.rotation_commit(), Err(Error::Locked));
+    assert_eq!(session.rotation_start().err(), Some(Error::Locked));
+    // And the root key it holds is still the one it was opened with.
+    assert_eq!(
+        &session.export_root().expect("root")[..],
+        root.as_bytes().as_slice()
+    );
 }

@@ -4,6 +4,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use kemlock_api_fed::{
     DESCRIPTOR_MEDIA_TYPE, Duplex, FedEvent, FedState, SessionEnd, router, serve,
+    serve_session_within,
 };
 use kemlock_domain::{ItemId, Owner, UserId};
 use kemlock_federation::memory::MemoryStore;
@@ -297,4 +298,24 @@ async fn a_known_server_with_another_identity_key_is_reported_as_a_key_mismatch(
         }
         other => panic!("expected a key mismatch, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_connection_that_never_sends_its_hello_is_let_go() {
+    let state = FedState::new(server(1));
+    let (mut server_end, client_end) = ends();
+    // The client end stays open and says nothing.
+    let ended = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        serve_session_within(
+            &state,
+            &mut server_end,
+            unix_now,
+            std::time::Duration::from_millis(50),
+        ),
+    )
+    .await
+    .expect("the session gave up on its own");
+    assert_eq!(ended, SessionEnd::Cut);
+    drop(client_end);
 }

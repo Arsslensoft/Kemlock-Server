@@ -10,7 +10,7 @@
 use super::invites::InviteGate;
 use kemlock_domain::Email;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 
 /// What a quota holds when there is none: no number of bytes is that many.
@@ -25,6 +25,11 @@ fn quota(value: &AtomicU64) -> Option<u64> {
 
 struct Shared {
     signups_allowed: AtomicBool,
+    /// `SIGNUPS_VERIFY`: an address is proven by a mailed link before its account is made.
+    signups_verify: AtomicBool,
+    /// `KEMLOCK_BW_INVITES_AUTO_ACCEPT`: an invitation of the Bitwarden API to an existing account with
+    /// a password counts as accepted at once, when the server doesn't mail.
+    bw_invites_auto_accept: AtomicBool,
     invitations_allowed: AtomicBool,
     /// Lower-case domains; empty means no whitelist.
     signup_domains: RwLock<Vec<String>>,
@@ -35,6 +40,10 @@ struct Shared {
     user_attachment_limit: AtomicU64,
     space_attachment_limit: AtomicU64,
     send_limit: AtomicU64,
+    /// Wrong second-step codes an account may try in a window (`rate_second_step_failures_per_15_minutes`).
+    second_step_limit: AtomicU32,
+    /// Wrong passwords an account may have in a window before it slows down (`rate_password_failures_per_15_minutes`).
+    password_limit: AtomicU32,
     invites: OnceLock<Arc<dyn InviteGate>>,
 }
 
@@ -66,12 +75,16 @@ impl Live {
     pub fn new(signups_allowed: bool) -> Live {
         Live(Arc::new(Shared {
             signups_allowed: AtomicBool::new(signups_allowed),
+            signups_verify: AtomicBool::new(false),
+            bw_invites_auto_accept: AtomicBool::new(false),
             invitations_allowed: AtomicBool::new(true),
             signup_domains: RwLock::new(Vec::new()),
             max_file_size: AtomicU64::new(0),
             user_attachment_limit: AtomicU64::new(NO_QUOTA),
             space_attachment_limit: AtomicU64::new(NO_QUOTA),
             send_limit: AtomicU64::new(NO_QUOTA),
+            second_step_limit: AtomicU32::new(5),
+            password_limit: AtomicU32::new(10),
             invites: OnceLock::new(),
         }))
     }
@@ -82,6 +95,44 @@ impl Live {
 
     pub fn set_signups_allowed(&self, allowed: bool) {
         self.0.signups_allowed.store(allowed, Ordering::Relaxed);
+    }
+
+    /// Whether a new account must confirm its email first. The server sets it only while it can
+    /// send mail.
+    pub fn signups_verify(&self) -> bool {
+        self.0.signups_verify.load(Ordering::Relaxed)
+    }
+
+    pub fn set_signups_verify(&self, verify: bool) {
+        self.0.signups_verify.store(verify, Ordering::Relaxed);
+    }
+
+    /// Whether a Bitwarden invitation to an existing account is taken as accepted at once, as
+    /// Vaultwarden does with its mailer off. Off by default: the invitee accepts for themselves.
+    pub fn bw_invites_auto_accept(&self) -> bool {
+        self.0.bw_invites_auto_accept.load(Ordering::Relaxed)
+    }
+
+    pub fn set_bw_invites_auto_accept(&self, on: bool) {
+        self.0.bw_invites_auto_accept.store(on, Ordering::Relaxed);
+    }
+
+    /// How many second-step codes an account may try in a window before it has to wait.
+    pub fn second_step_limit(&self) -> u32 {
+        self.0.second_step_limit.load(Ordering::Relaxed).max(1)
+    }
+
+    pub fn set_second_step_limit(&self, limit: u32) {
+        self.0.second_step_limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// How many wrong passwords an account may have in a window before sign-ins for it slow down.
+    pub fn password_limit(&self) -> u32 {
+        self.0.password_limit.load(Ordering::Relaxed).max(1)
+    }
+
+    pub fn set_password_limit(&self, limit: u32) {
+        self.0.password_limit.store(limit, Ordering::Relaxed);
     }
 
     pub fn invitations_allowed(&self) -> bool {
@@ -207,6 +258,26 @@ mod tests {
         assert!(other.signups_allowed());
         assert_eq!(live, other);
         assert_ne!(live, Live::new(true));
+    }
+
+    #[test]
+    fn bitwarden_invitations_are_not_auto_accepted_until_set() {
+        let live = Live::new(true);
+        let other = live.clone();
+        assert!(!other.bw_invites_auto_accept());
+        live.set_bw_invites_auto_accept(true);
+        assert!(other.bw_invites_auto_accept());
+    }
+
+    #[test]
+    fn verifying_sign_ups_is_off_until_set_and_every_clone_sees_it() {
+        let live = Live::new(true);
+        let other = live.clone();
+        assert!(!other.signups_verify());
+        live.set_signups_verify(true);
+        assert!(other.signups_verify());
+        live.set_signups_verify(false);
+        assert!(!other.signups_verify());
     }
 
     #[test]

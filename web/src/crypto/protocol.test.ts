@@ -2,6 +2,7 @@
 // The worker's protocol, with the WebAssembly module mocked: what the dispatcher passes to the
 // vault, how it shapes the answers, how it fails, and that requests are served one at a time.
 
+import { pbkdf2Sync } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Dpop } from './dpop';
@@ -11,10 +12,31 @@ import type { WasmVault } from './wasm';
 
 const KDF: KdfSettings = { memoryKib: 65536, iterations: 3, parallelism: 4, salt: 'c2FsdHNhbHRzYWx0c2FsdA' };
 const UUID = '00010203-0405-0607-0809-0a0b0c0d0e0f';
+/** An item a key replacement or a reseal writes again, as the worker answers it: signed, with its collection. */
+const REWRITE = {
+  collection: UUID,
+  expectedRevision: 1,
+  item: {
+    id: UUID,
+    owner: `space:${UUID}`,
+    kind: 'login',
+    format: 'kem1',
+    revision: 2,
+    keyVersion: 2,
+    ciphertext: 'Y3Q',
+    itemKey: 'a2V5',
+    deleted: false,
+    collectionId: UUID,
+    writer: UUID,
+    writerKeyVersion: 1,
+    writeSignature: 'c2ln',
+  },
+};
 
 function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
   return {
     masterKey: vi.fn(() => 7),
+    bitwardenArgonHash: vi.fn(() => 'YWJj'),
     release: vi.fn(),
     opaqueRegisterStart: vi.fn(() => JSON.stringify({ state: 8, request: 'cmVxdWVzdA' })),
     opaqueRegisterFinish: vi.fn(() => JSON.stringify({ upload: 'dXA', exportKey: 9 })),
@@ -36,6 +58,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sealItem: vi.fn(() => JSON.stringify({ ciphertext: 'Y3Q', itemKey: 'aw', keyVersion: 1 })),
     openItem: vi.fn(() => '{"name":"x"}'),
     ownFingerprint: vi.fn(() => '11111 22222'),
+    ownKeyVersion: vi.fn(() => 1),
     fingerprint: vi.fn(() => '33333 44444'),
     verifyBundle: vi.fn(() => true),
     totpEnrol: vi.fn(() => JSON.stringify({ secret: 'JBSWY3DPEHPK3PXP', uri: 'otpauth://totp/x' })),
@@ -49,6 +72,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sendSealFile: vi.fn((_key: string, plain: Uint8Array) => new Uint8Array([...plain, 1])),
     sendOpenFile: vi.fn((_key: string, file: Uint8Array) => file.slice(0, -1)),
     sealRootKey: vi.fn(() => 'cm9vdC1ib3g'),
+    sealEmergencyKey: vi.fn(() => 'ZW1lcmdlbmN5'),
     sealRootKeyForRecovery: vi.fn(() => 'cmVjb3Zlcnk'),
     confirmationStatement: vi.fn(() => 'c3RhdGVtZW50'),
     signStatement: vi.fn(() => 'c2ln'),
@@ -59,16 +83,20 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
       JSON.stringify({
         name: 'bmFtZQ',
         sealedSpaceKey: 'c3BhY2U',
-        collection: { name: 'Y29sbA', sealedKey: 'Y29sbC1rZXk' },
+        sealedSpaceKeySignature: 'c3BhY2Utc2ln',
+        collection: { name: 'Y29sbA', sealedKey: 'Y29sbC1rZXk', sealedKeySignature: 'Y29sbC1zaWc' },
       }),
     ),
     openSpace: vi.fn(),
     openCollection: vi.fn(),
     openName: vi.fn(() => 'Family'),
     sealName: vi.fn(() => 'c2VhbGVk'),
-    newCollection: vi.fn(() => JSON.stringify({ name: 'bmFtZQ', sealedKey: 'a2V5' })),
-    sealSpaceKeyTo: vi.fn(() => 'c3BhY2Uta2V5'),
-    sealCollectionKeyTo: vi.fn(() => 'Y29sbC1rZXk'),
+    newCollection: vi.fn(() =>
+      JSON.stringify({ name: 'bmFtZQ', sealedKey: 'a2V5', sealedKeySignature: 'a2V5c2ln' }),
+    ),
+    sealSpaceKeyTo: vi.fn(() => JSON.stringify({ sealed: 'c3BhY2Uta2V5', signature: 'c2ln' })),
+    sealCollectionKeyTo: vi.fn(() => JSON.stringify({ sealed: 'Y29sbC1rZXk', signature: 'c2lnMg' })),
+    verifyKeyBox: vi.fn(() => true),
     newDeviceKey: vi.fn(() => JSON.stringify({ handle: 31, publicKey: 'cHVi' })),
     openApprovedKey: vi.fn(() => 32),
     newSsoAccount: vi.fn(() =>
@@ -94,6 +122,66 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     unlockWithRoot: vi.fn(),
     sealSpaceItem: vi.fn(() => JSON.stringify({ ciphertext: 'c2k', itemKey: 'a2s', keyVersion: 2 })),
     openSpaceItem: vi.fn(() => '{"name":"vpn"}'),
+    manifestSign: vi.fn(() => 'c2lnbmF0dXJl'),
+    manifestVerifyOwn: vi.fn(() => true),
+    manifestVerify: vi.fn(() => true),
+    itemWriteSign: vi.fn(() => 'c2lnbmF0dXJl'),
+    itemWriteVerifyOwn: vi.fn(() => true),
+    itemWriteVerify: vi.fn(() => true),
+    newChainedSpace: vi.fn(() =>
+      JSON.stringify({
+        ok: true,
+        records: [{ entry: 'ZW50cnk', signature: 'c2ln' }],
+        seals: [{ box: 'Ym94', key: 'space', member: '00010203-0405-0607-0809-0a0b0c0d0e0f', seq: 0, version: 1 }],
+        names: [{ name: 'bmFtZQ', seq: 0, target: 'space' }],
+      }),
+    ),
+    buildChainRecords: vi.fn(() => JSON.stringify({ ok: true, records: [], seals: [], names: [] })),
+    buildKeyReplacement: vi.fn(() =>
+      JSON.stringify({ ok: true, records: [], seals: [], names: [], writes: [REWRITE] }),
+    ),
+    buildReseal: vi.fn(() =>
+      JSON.stringify({ ok: true, records: [], seals: [], names: [], held: ['x'], writes: [REWRITE] }),
+    ),
+    verifySpaceChain: vi.fn(() => JSON.stringify({ ok: false, reason: 'forked', seq: 3 })),
+    spaceChainView: vi.fn((): string | undefined => undefined),
+    sealLocal: vi.fn(() => 'c2VhbGVk'),
+    openLocal: vi.fn(() => '{"seq":1}'),
+    acceptFirstContact: vi.fn(),
+    openChainKey: vi.fn(),
+    rotationStart: vi.fn(() =>
+      JSON.stringify({
+        keyVersion: 4,
+        publicBundle: 'YnVuZGxl',
+        bundleSignature: 'c2ln',
+        sealedPrivateKeys: 'c2VhbGVk',
+        sealedPreviousPrivateKeys: 'cHJldg',
+        fingerprint: '12345 67890',
+      }),
+    ),
+    rotationResealItem: vi.fn(() =>
+      JSON.stringify({
+        ciphertext: 'bmV3',
+        itemKey: 'a2V5',
+        revision: 8,
+        keyVersion: 4,
+        writer: UUID,
+        writerKeyVersion: 4,
+        writeSignature: 'c2ln',
+      }),
+    ),
+    rotationResealSend: vi.fn(() => JSON.stringify({ sealedKey: 'c2s', meta: 'bWV0YQ' })),
+    rotationWrapPassword: vi.fn(() => 'bmV3d3JhcA'),
+    rotationPrfWrap: vi.fn(() => JSON.stringify({ wrappedKey: 'cHJm', keyVersion: 4 })),
+    rotationKitMake: vi.fn(() =>
+      JSON.stringify({ kitId: 'NEWKITID', pieces: ['n1', 'n2', 'n3'], wrappedKey: 'a2l0', keyVersion: 4 }),
+    ),
+    rotationExportRoot: vi.fn(() => 'bmV3cm9vdA'),
+    rotationSealRootKey: vi.fn(() => 'Ym94'),
+    rotationCommit: vi.fn(() => JSON.stringify({ keyVersion: 4, fingerprint: '12345 67890' })),
+    rotationResealLocal: vi.fn(() => 'bW92ZWQ'),
+    rotationAbort: vi.fn(),
+    rotationSign: vi.fn(() => 'c2lnbmVk'),
     lock: vi.fn(),
     free: vi.fn(),
     ...overrides,
@@ -144,6 +232,55 @@ describe('the dispatcher', () => {
     const handle = await dispatch('masterKey', ['café', KDF]);
     expect(handle).toBe(7);
     expect(vault.masterKey).toHaveBeenCalledWith('café', 65536, 3, 4, KDF.salt);
+  });
+
+  it('makes the Bitwarden hash of a PBKDF2 account as the server checks it, in the worker', async () => {
+    const { dispatch } = setup([mockVault()]);
+    // The master key is PBKDF2(password, lower-cased email, n); the hash is PBKDF2(master key, password, 1).
+    const master = pbkdf2Sync('pässword', 'sam@example.co', 5000, 32, 'sha256');
+    const expected = pbkdf2Sync(master, 'pässword', 1, 32, 'sha256').toString('base64');
+    const kdf = { type: 0 as const, iterations: 5000 };
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pässword', email: ' Sam@Example.CO ', kdf }])).toBe(
+      expected,
+    );
+    // The password is not NFC-normalised here: it is hashed as typed, as Bitwarden's clients do.
+    const decomposed = 'pau0308ssword';
+    const other = pbkdf2Sync(pbkdf2Sync(decomposed, 'sam@example.co', 5000, 32, 'sha256'), decomposed, 1, 32, 'sha256');
+    expect(await dispatch('bitwardenPasswordHash', [{ password: decomposed, email: 'sam@example.co', kdf }])).toBe(
+      other.toString('base64'),
+    );
+  });
+
+  it('passes an Argon2id account to the module in KiB with the address lower-cased, and answers standard base64', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    const kdf = { type: 1 as const, iterations: 3, memory: 64, parallelism: 4 };
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'Sam@Example.CO', kdf }])).toBe('YWJj');
+    expect(vault.bitwardenArgonHash).toHaveBeenCalledWith('pw', 'sam@example.co', 65536, 3, 4);
+    vault.bitwardenArgonHash = vi.fn(() => '-_-_');
+    expect(await dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'a@b.c', kdf }])).toBe('+/+/');
+  });
+
+  it('refuses a KDF a hostile prelogin could ask for, before any work is done', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    const bad = [
+      { type: 0 as const, iterations: 4999 },
+      { type: 0 as const, iterations: 2_000_001 },
+      { type: 0 as const, iterations: 1.5 },
+      { type: 2 as unknown as 0, iterations: 600000 },
+      { type: 1 as const, iterations: 3 },
+      { type: 1 as const, iterations: 3, memory: 64 },
+    ];
+    for (const kdf of bad) {
+      await expect(dispatch('bitwardenPasswordHash', [{ password: 'pw', email: 'a@b.c', kdf }])).rejects.toMatchObject({
+        code: 'invalid',
+      });
+    }
+    await expect(
+      dispatch('bitwardenPasswordHash', [{ password: 'pw', email: '  ', kdf: { type: 0, iterations: 600000 } }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(vault.bitwardenArgonHash).not.toHaveBeenCalled();
   });
 
   it('wipes a byte password after reading it', async () => {
@@ -262,6 +399,8 @@ describe('the dispatcher', () => {
     const { dispatch } = setup([vault]);
     expect(await dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk'])).toBe('cm9vdC1ib3g');
     expect(vault.sealRootKey).toHaveBeenCalledWith('a2V5', 'device-approval', 'YWFk');
+    expect(await dispatch('sealEmergencyKey', ['YnVu', 'c2ln', UUID])).toBe('ZW1lcmdlbmN5');
+    expect(vault.sealEmergencyKey).toHaveBeenCalledWith('YnVu', 'c2ln', UUID);
 
     const facts = { space: UUID, member: UUID, memberKeyVersion: 2, fingerprint: 'ZnA' };
     expect(await dispatch('confirmationStatement', [facts])).toBe('c3RhdGVtZW50');
@@ -336,12 +475,92 @@ describe('the dispatcher', () => {
     expect(await dispatch('newCollection', [{ spaceId: UUID, collectionId: UUID, name: 'Private' }])).toEqual({
       name: 'bmFtZQ',
       sealedKey: 'a2V5',
+      sealedKeySignature: 'a2V5c2ln',
     });
 
     await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s' }]);
-    expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s');
+    expect(vault.openSpace).toHaveBeenCalledWith(UUID, 1, 'c2s', undefined);
+    await dispatch('openSpace', [{ spaceId: UUID, keyVersion: 1, sealed: 'c2s', unsigned: true }]);
+    expect(vault.openSpace).toHaveBeenLastCalledWith(UUID, 1, 'c2s', true);
     await dispatch('openCollection', [{ spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s' }]);
-    expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s');
+    expect(vault.openCollection).toHaveBeenCalledWith(UUID, UUID, 2, 'Y2s', undefined);
+    await dispatch('openCollection', [
+      { spaceId: UUID, collectionId: UUID, keyVersion: 2, sealed: 'Y2s', unsigned: true },
+    ]);
+    expect(vault.openCollection).toHaveBeenLastCalledWith(UUID, UUID, 2, 'Y2s', true);
+
+    // A new chained space and one change to it: the request comes back parsed, and the time is checked.
+    const created = await dispatch('newChainedSpace', [
+      { spaceId: UUID, collectionId: UUID, spaceName: 'Family', collectionName: 'Everyone', at: 1_700_000_000 },
+    ]);
+    expect(created.records).toEqual([{ entry: 'ZW50cnk', signature: 'c2ln' }]);
+    expect(vault.newChainedSpace).toHaveBeenCalledWith(UUID, UUID, 'Family', 'Everyone', 1_700_000_000);
+    await expect(
+      dispatch('newChainedSpace', [
+        { spaceId: UUID, collectionId: UUID, spaceName: 'a', collectionName: 'b', at: -1 },
+      ]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    const change = { action: 'remove' as const, member: UUID };
+    expect(await dispatch('buildChainRecords', [{ spaceId: UUID, at: 5, change }])).toEqual({
+      ok: true,
+      records: [],
+      seals: [],
+      names: [],
+    });
+    expect(vault.buildChainRecords).toHaveBeenCalledWith(UUID, 5, JSON.stringify(change));
+    await expect(
+      dispatch('buildChainRecords', [{ spaceId: UUID, at: 1.5, change }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    const replacement = { items: [], names: [] };
+    // The items it re-writes come back signed, with the three members of a signed write.
+    expect(await dispatch('buildKeyReplacement', [{ spaceId: UUID, at: 5, replacement }])).toMatchObject({
+      ok: true,
+      writes: [REWRITE],
+    });
+    expect(vault.buildKeyReplacement).toHaveBeenCalledWith(UUID, 5, JSON.stringify(replacement));
+    await expect(
+      dispatch('buildKeyReplacement', [{ spaceId: UUID, at: -1, replacement }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
+    expect(await dispatch('buildReseal', [{ spaceId: UUID, items: [] }])).toMatchObject({
+      held: ['x'],
+      writes: [REWRITE],
+    });
+    expect(vault.buildReseal).toHaveBeenCalledWith(UUID, JSON.stringify({ items: [] }));
+
+    // The space chain: JSON goes in and comes out, and a key version is checked before the module.
+    const record = { entry: 'ZW50cnk', signature: 'c2ln' };
+    const anchor = { seq: 1, epoch: 1, links: ['bGluaw'] };
+    expect(await dispatch('verifySpaceChain', [{ spaceId: UUID, records: [record], anchor }])).toEqual({
+      ok: false,
+      reason: 'forked',
+      seq: 3,
+    });
+    expect(vault.verifySpaceChain).toHaveBeenCalledWith(
+      UUID,
+      JSON.stringify([record]),
+      JSON.stringify(anchor),
+    );
+    await dispatch('verifySpaceChain', [{ spaceId: UUID, records: [] }]);
+    expect(vault.verifySpaceChain).toHaveBeenLastCalledWith(UUID, '[]', undefined);
+    expect(await dispatch('spaceChainView', [UUID])).toBeNull();
+    vault.spaceChainView = vi.fn(() => JSON.stringify({ ok: true, chained: false }));
+    expect(await dispatch('spaceChainView', [UUID])).toEqual({ ok: true, chained: false });
+    expect(await dispatch('sealLocal', ['anchor/x', '{"seq":1}'])).toBe('c2VhbGVk');
+    expect(vault.sealLocal).toHaveBeenCalledWith('anchor/x', '{"seq":1}');
+    expect(await dispatch('openLocal', ['anchor/x', 'c2VhbGVk'])).toBe('{"seq":1}');
+    expect(vault.openLocal).toHaveBeenCalledWith('anchor/x', 'c2VhbGVk');
+    await dispatch('acceptFirstContact', [UUID]);
+    expect(vault.acceptFirstContact).toHaveBeenCalledWith(UUID);
+    await dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94' }]);
+    expect(vault.openChainKey).toHaveBeenCalledWith(UUID, 'space', 2, 'Ym94', undefined);
+    const list = [{ bundleVersion: 1, key: 'space', member: UUID, sealHash: 'aGFzaA', version: 2 }];
+    await dispatch('openChainKey', [
+      { spaceId: UUID, key: 'space', servedVersion: 2, sealed: 'Ym94', list },
+    ]);
+    expect(vault.openChainKey).toHaveBeenLastCalledWith(UUID, 'space', 2, 'Ym94', JSON.stringify(list));
+    await expect(
+      dispatch('openChainKey', [{ spaceId: UUID, key: 'space', servedVersion: -1, sealed: 'Ym94' }]),
+    ).rejects.toMatchObject({ code: 'invalid' });
 
     const address = { spaceId: UUID, keyVersion: 1, kind: 'space' as const, id: UUID };
     expect(await dispatch('openName', [{ ...address, ciphertext: 'Y3Q' }])).toBe('Family');
@@ -349,12 +568,42 @@ describe('the dispatcher', () => {
     expect(await dispatch('sealName', [{ ...address, name: 'Family' }])).toBe('c2VhbGVk');
     expect(vault.sealName).toHaveBeenCalledWith(UUID, 1, 'space', UUID, 'Family');
 
-    await dispatch('sealSpaceKeyTo', [{ spaceId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' }]);
+    // A key sealed to a member comes back with the signature of the account that sealed it.
+    expect(
+      await dispatch('sealSpaceKeyTo', [{ spaceId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' }]),
+    ).toEqual({ sealed: 'c3BhY2Uta2V5', signature: 'c2ln' });
     expect(vault.sealSpaceKeyTo).toHaveBeenCalledWith(UUID, 'a3g', 'aWQ');
-    await dispatch('sealCollectionKeyTo', [
-      { spaceId: UUID, collectionId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' },
-    ]);
+    expect(
+      await dispatch('sealCollectionKeyTo', [
+        { spaceId: UUID, collectionId: UUID, recipientKx1: 'a3g', recipientId: 'aWQ' },
+      ]),
+    ).toEqual({ sealed: 'Y29sbC1rZXk', signature: 'c2lnMg' });
     expect(vault.sealCollectionKeyTo).toHaveBeenCalledWith(UUID, UUID, 'a3g', 'aWQ');
+
+    // A key box signature is checked against the sealer's bundle; the collection is empty for a space key.
+    const check = {
+      sealerBundle: 'YnVuZGxl',
+      spaceId: UUID,
+      keyVersion: 3,
+      recipientId: 'aWQ',
+      sealed: 'Ym94',
+      signature: 'c2ln',
+    };
+    expect(await dispatch('verifyKeyBox', [check])).toBe(true);
+    expect(vault.verifyKeyBox).toHaveBeenLastCalledWith('YnVuZGxl', UUID, '', 3, 'aWQ', 'Ym94', 'c2ln');
+    await dispatch('verifyKeyBox', [{ ...check, collectionId: UUID }]);
+    expect(vault.verifyKeyBox).toHaveBeenLastCalledWith(
+      'YnVuZGxl',
+      UUID,
+      UUID,
+      3,
+      'aWQ',
+      'Ym94',
+      'c2ln',
+    );
+    await expect(dispatch('verifyKeyBox', [{ ...check, keyVersion: -1 }])).rejects.toMatchObject({
+      code: 'invalid',
+    });
   });
 
   it('answers a vault failure on a sharing operation with its code and nothing else', async () => {
@@ -367,10 +616,10 @@ describe('the dispatcher', () => {
       }),
     });
     const { dispatch } = setup([vault]);
-    await expect(dispatch('sealRootKey', ['a2V5', 'emergency-access', 'YWFk'])).rejects.toBeInstanceOf(Error);
+    await expect(dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk'])).rejects.toBeInstanceOf(Error);
     const codes: string[] = [];
     for (const call of [
-      () => dispatch('sealRootKey', ['a2V5', 'emergency-access', 'YWFk']),
+      () => dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk']),
       () =>
         dispatch('openName', [{ spaceId: UUID, keyVersion: 1, kind: 'space', id: UUID, ciphertext: 'Y3Q' }]),
     ]) {
@@ -408,6 +657,46 @@ describe('the dispatcher', () => {
     expect(wrap.reset).toHaveBeenCalled();
   });
 
+  it("seals a tab's root key and session under that tab's own wrap, and leaves the device key alone", async () => {
+    const vault = mockVault();
+    const device = {
+      seal: vi.fn(async () => new Uint8Array([1])),
+      open: vi.fn(async () => new Uint8Array([2])),
+      reset: vi.fn(async () => undefined),
+    };
+    const tab = {
+      seal: vi.fn(async () => new Uint8Array([1, 2, 3])),
+      open: vi.fn(async () => new Uint8Array([9, 9])),
+      reset: vi.fn(async () => undefined),
+    };
+    const tabWrap = vi.fn(() => tab);
+    const dispatch = createDispatcher({ loadWasm: async () => () => vault, dpop: dpopStub(), deviceWrap: device, tabWrap });
+    await dispatch('newSsoAccount', [UUID]);
+
+    expect(await dispatch('deviceCopySeal', [UUID, UUID, 1, 'tab-1'])).toBe('AQID');
+    expect(tabWrap).toHaveBeenLastCalledWith('tab-1', 'root');
+    expect(tab.seal).toHaveBeenCalledWith(expect.any(Uint8Array), UUID, UUID, 1);
+    expect(await dispatch('deviceCopyOpen', [UUID, UUID, 1, 'AQID', 'tab-1'])).toBe(34);
+    expect(tab.open).toHaveBeenCalled();
+    await dispatch('deviceCopyReset', ['tab-1']);
+    expect(tab.reset).toHaveBeenCalled();
+
+    // The session's tokens go under the same tab, as a separate purpose and with no vault needed.
+    expect(await dispatch('tabSeal', ['tab-1', UUID, UUID, 'dG9rZW5z'])).toBe('AQID');
+    expect(tabWrap).toHaveBeenLastCalledWith('tab-1', 'session');
+    expect(await dispatch('tabOpen', ['tab-1', UUID, UUID, 'AQID'])).toBe('CQk');
+
+    expect(device.seal).not.toHaveBeenCalled();
+    expect(device.open).not.toHaveBeenCalled();
+    expect(device.reset).not.toHaveBeenCalled();
+  });
+
+  it('has no tab copy without a tab key store', async () => {
+    const { dispatch } = setup();
+    await expect(dispatch('tabSeal', ['tab-1', UUID, UUID, 'AQID'])).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(dispatch('deviceCopyReset', ['tab-1'])).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
   it('has no device copy without a device key', async () => {
     const { dispatch } = setup();
     await expect(dispatch('deviceCopySeal', [UUID, UUID, 1])).rejects.toMatchObject({ code: 'unavailable' });
@@ -424,7 +713,68 @@ describe('the dispatcher', () => {
     expect(root).toBe(33);
     expect(vault.prfOpenRoot).toHaveBeenCalledWith('cHJm', 'Y3JlZA', UUID, 3, 'd3JhcA');
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 3 }]);
-    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined);
+    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 33, 3, undefined, undefined);
+  });
+
+  it('rotates the root key in the worker and hands the page only wraps and boxes', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('rotationStart', [])).toMatchObject({ keyVersion: 4, sealedPreviousPrivateKeys: 'cHJldg' });
+    const item = {
+      id: UUID,
+      owner: `user:${UUID}`,
+      kind: 'login',
+      revision: 7,
+      ciphertext: 'b2xk',
+      itemKey: 'b2xka2V5',
+      keyVersion: 3,
+    };
+    expect(await dispatch('rotationResealItem', [item])).toEqual({
+      ciphertext: 'bmV3',
+      itemKey: 'a2V5',
+      revision: 8,
+      keyVersion: 4,
+      writer: UUID,
+      writerKeyVersion: 4,
+      writeSignature: 'c2ln',
+    });
+    expect(vault.rotationResealItem).toHaveBeenCalledWith(
+      UUID,
+      `user:${UUID}`,
+      'login',
+      7n,
+      'b2xk',
+      'b2xka2V5',
+      3,
+    );
+    expect(await dispatch('rotationResealSend', [{ id: UUID, kind: 'text', sealedKey: 'a2V5', meta: 'bQ' }])).toEqual({
+      sealedKey: 'c2s',
+      meta: 'bWV0YQ',
+    });
+    expect(await dispatch('rotationWrapPassword', [7 as never, 9 as never])).toBe('bmV3d3JhcA');
+    expect(vault.rotationWrapPassword).toHaveBeenCalledWith(7, 9);
+    expect(await dispatch('rotationPrfWrap', ['cHJm', 'Y3JlZA'])).toEqual({ wrappedKey: 'cHJm', keyVersion: 4 });
+    expect(await dispatch('rotationKitMake', [])).toMatchObject({ kitId: 'NEWKITID', keyVersion: 4 });
+    expect(await dispatch('rotationSealRootKey', ['a3gx', 'emergency-access', 'YWFk'])).toBe('Ym94');
+    expect(vault.rotationSealRootKey).toHaveBeenCalledWith('a3gx', 'emergency-access', 'YWFk');
+    expect(await dispatch('rotationCommit', [])).toEqual({ keyVersion: 4, fingerprint: '12345 67890' });
+    expect(await dispatch('rotationResealLocal', ['anchor/one', 'b2xk'])).toBe('bW92ZWQ');
+    expect(vault.rotationResealLocal).toHaveBeenCalledWith('anchor/one', 'b2xk');
+    await dispatch('rotationAbort', []);
+    expect(vault.rotationAbort).toHaveBeenCalled();
+    expect(await dispatch('rotationSign', [true, 'space-chain', 'bXNn'])).toBe('c2lnbmVk');
+    expect(vault.rotationSign).toHaveBeenCalledWith(true, 'space-chain', 'bXNn');
+  });
+
+  it('seals this device\'s copy of the new root key at the new key version, never returning the root', async () => {
+    const vault = mockVault();
+    const seal = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const deviceWrap = { seal, open: vi.fn(), reset: vi.fn() } as never;
+    const loadWasm = vi.fn(async () => () => vault);
+    const dispatch = createDispatcher({ loadWasm, dpop: dpopStub(), deviceWrap });
+    expect(await dispatch('rotationDeviceCopySeal', [UUID, UUID, 4])).toBe('AQID');
+    expect(vault.rotationExportRoot).toHaveBeenCalled();
+    expect(seal).toHaveBeenCalledWith(expect.any(Uint8Array), UUID, UUID, 4);
   });
 
   it('makes a Recovery Kit in the worker and opens its wrap with pieces into a handle', async () => {
@@ -461,9 +811,16 @@ describe('the dispatcher', () => {
     expect(vault.openApprovedKey).toHaveBeenCalledWith(31, UUID, UUID, 'c2VhbGVk');
 
     await dispatch('unlockWithRoot', [UUID, root, { keyVersion: 4, sealedPrivateKeys: 'c2s' }]);
-    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 32, 4, 'c2s');
+    expect(vault.unlockWithRoot).toHaveBeenCalledWith(UUID, 32, 4, 'c2s', undefined);
     await dispatch('unlockWithRoot', [UUID, root]);
-    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 1, undefined);
+    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 1, undefined, undefined);
+    // The bundle the new device must check the opened keys against goes through as it is.
+    await dispatch('unlockWithRoot', [
+      UUID,
+      root,
+      { keyVersion: 4, sealedPrivateKeys: 'c2s', publicBundle: 'YnVuZGxl' },
+    ]);
+    expect(vault.unlockWithRoot).toHaveBeenLastCalledWith(UUID, 32, 4, 'c2s', 'YnVuZGxl');
   });
 
   it('answers a box that does not open with invalid and nothing else', async () => {
@@ -500,7 +857,33 @@ describe('the dispatcher', () => {
       },
     ]);
     expect(json).toBe('{"name":"vpn"}');
-    expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2);
+    expect(vault.openSpaceItem).toHaveBeenCalledWith(UUID, UUID, UUID, 'login', 3n, 'c2k', 'a2s', 2, undefined);
+    // A revision not known to be accepted is passed on as such, so a marked key holds it.
+    await dispatch('openSpaceItem', [
+      {
+        spaceId: UUID,
+        collectionId: UUID,
+        id: UUID,
+        kind: 'login',
+        revision: 4,
+        keyVersion: 2,
+        ciphertext: 'c2k',
+        itemKey: 'a2s',
+        accepted: false,
+      },
+    ]);
+    expect(vault.openSpaceItem).toHaveBeenLastCalledWith(UUID, UUID, UUID, 'login', 4n, 'c2k', 'a2s', 2, false);
+  });
+
+  it('signs and checks manifests in the module, with the manifest and signature as they are', async () => {
+    const vault = mockVault();
+    const { dispatch } = setup([vault]);
+    expect(await dispatch('manifestSign', ['bWFuaWZlc3Q'])).toBe('c2lnbmF0dXJl');
+    expect(vault.manifestSign).toHaveBeenCalledWith('bWFuaWZlc3Q');
+    expect(await dispatch('manifestVerifyOwn', ['bWFuaWZlc3Q', 'c2ln'])).toBe(true);
+    expect(vault.manifestVerifyOwn).toHaveBeenCalledWith('bWFuaWZlc3Q', 'c2ln');
+    expect(await dispatch('manifestVerify', ['YnVuZGxl', 'bWFuaWZlc3Q', 'c2ln'])).toBe(true);
+    expect(vault.manifestVerify).toHaveBeenCalledWith('YnVuZGxl', 'bWFuaWZlc3Q', 'c2ln');
   });
 
   it('refuses a revision or collection key version the module cannot take', async () => {

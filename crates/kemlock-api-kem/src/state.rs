@@ -3,8 +3,8 @@
 
 use crate::dpop::DpopVerifier;
 use crate::live::LiveHub;
-use crate::ratelimit::Limiter;
-use crate::replay::TimedSet;
+use crate::ratelimit::{Limiter, Proxy};
+use crate::replay::{Full, TimedSet};
 use kemlock_app::admin::{InviteGate, InviteTicket, Live};
 use kemlock_app::api_use::{ApiUseRepo, RecordApiUse, USE_GRANULARITY};
 use kemlock_app::dedup::TagStore;
@@ -13,6 +13,7 @@ use kemlock_app::ports::{
     Totp, TwoFactorRepo, UserRepo,
 };
 use kemlock_app::privacy::PrivacyLog;
+use kemlock_app::second_step_guard::SecondStepGuard;
 use kemlock_app::spaces::{PutSpaceBatch, PutSpaceItem};
 use kemlock_app::sso::{
     MembershipFacts, RequireSso, SignInMethods, SsoSettingsRepo, VerifiedDomainRepo,
@@ -48,6 +49,7 @@ pub trait Store:
     + SsoSettingsRepo
     + VerifiedDomainRepo
     + RecoveryCodeRepo
+    + SecondStepGuard
     + Clone
     + 'static
 {
@@ -69,6 +71,7 @@ impl<T> Store for T where
         + SsoSettingsRepo
         + VerifiedDomainRepo
         + RecoveryCodeRepo
+        + SecondStepGuard
         + Clone
         + 'static
 {
@@ -81,6 +84,12 @@ impl<T> Crypto for T where T: PasswordAuth + SecretSeal + Totp + Platform + Clon
 
 /// The most spent login states remembered at once, like the DPoP proof ids.
 const MAX_USED_STATES: usize = 100_000;
+/// The most spent login states remembered at once from unauthenticated finishes, which anyone can
+/// fill through opaque/start and passkey options: they have a set of their own, so filling it
+/// refuses new sign-ins and nothing else (see [`crate::dpop::MAX_OPEN_JTIS`]).
+const MAX_OPEN_USED_STATES: usize = 25_000;
+/// How many of them one client address may take, so a few addresses can't fill the set.
+const OPEN_USED_STATES_PER_SOURCE: usize = MAX_OPEN_USED_STATES / 100;
 /// How long after a resend of an invitation the same member's invitation can't be resent.
 pub(crate) const RESEND_WINDOW_SECS: i64 = 600;
 
@@ -99,8 +108,9 @@ pub struct ApiConfig {
     pub source_url: String,
     /// Token lifetimes, `SIGNUPS_ALLOWED` and item limits.
     pub auth: AuthConfig,
-    /// `KEMLOCK_TRUSTED_PROXIES`: peers whose forwarded header is believed.
-    pub trusted_proxies: Vec<IpAddr>,
+    /// `KEMLOCK_TRUSTED_PROXIES`: peers (addresses or blocks of them) whose forwarded header is
+    /// believed.
+    pub trusted_proxies: Vec<Proxy>,
     /// `IP_HEADER`: the header naming the client behind a trusted proxy.
     pub ip_header: Option<String>,
     /// `KEMLOCK_BROWSER_EXTENSION_IDS`: the ids of the Kemlock browser extensions that may take an
@@ -129,13 +139,35 @@ impl std::fmt::Debug for ApiSecrets {
 pub struct Limits {
     /// Password sign-in starts and two-step codes: 10 a minute per IP, then doubling delays.
     pub sign_in: Limiter,
-    /// Failed password finishes per account: 10 in 15 minutes, then doubling delays. Only
-    /// failures count, so asking for a login (which anyone can do for any email) never slows an
-    /// account down.
+    /// Wrong passwords per account and source address: 10 in 15 minutes, then doubling delays,
+    /// reserved before the password is looked at. Per source, because the account's name comes
+    /// from the request: counted per account alone, anyone could lock the owner out. Asking for
+    /// a login (which anyone can do for any email) never counts.
     pub account: Limiter,
-    /// Failed second-step codes per account: 5 in 15 minutes, then doubling delays, whichever
-    /// address or challenge they come from.
+    /// What every source's wrong passwords add up to for one account: 10 in 15 minutes, then
+    /// doubling slowdowns of at most a few seconds. It never refuses a right password; the hard
+    /// limit is `account`, per account and source.
+    pub account_slow: Limiter,
+    /// What every source's password checks add up to for one account: 100 an hour, then doubling
+    /// waits. Past it every password check for the account is held back a few seconds (at most),
+    /// right ones too, but none is refused: many addresses must not be able to keep the owner
+    /// out. Right passwords are given back, so only wrong ones add up. In memory, per replica.
+    pub account_cap: Limiter,
+    /// One password check at a time for an account, a second apart, from all sources together: the
+    /// others wait their turn and a right password is only later, never refused (see
+    /// `finish_gate`). In memory, per replica.
+    pub finish_gate: crate::finish_gate::PasswordGate,
+    /// Second-step attempts per account, 5 in 15 minutes, then doubling delays, whichever address
+    /// or challenge they come from. The limit and window the Kemlock API's second steps count
+    /// under in the store (`SecondStepGuard`); the counts in this limiter's own memory are the
+    /// admin console's step-up and mailed setup codes.
     pub second_step: Limiter,
+    /// Step-up proofs per account (a code or a security key's answer that proves the owner before
+    /// a sensitive change, and the admin console's step-up): the limit and window of `second_step`
+    /// (the console sets both), counted in the store apart from it, so someone holding a session
+    /// who guesses at proofs spends nothing of the owner's sign-in second step, and the owner's own
+    /// sign-in spends nothing of the proofs.
+    pub step_up: Limiter,
     /// DPoP proofs checked before anyone is authenticated, per IP: 120 a minute, then doubling
     /// delays. Honest devices make a handful; the limit only stops a flood.
     pub proof: Limiter,
@@ -143,12 +175,20 @@ pub struct Limits {
     pub setup: Limiter,
     /// Registration: 10 an hour.
     pub register: Limiter,
+    /// Second-step challenges made per account: 10 in 5 minutes (as long as a challenge lives),
+    /// so someone who holds the password can't pile up open challenges to guess codes on.
+    pub challenges: Limiter,
+    /// Authenticated requests per device: 240 a minute, then doubling delays. Anyone who can
+    /// register an account holds a token, and each request with one puts a proof in the replay
+    /// set of authenticated proofs, so this bounds what one registration can put there.
+    pub device_proof: Limiter,
     /// Asking to change the sign-in address: 3 an hour per account, whether or not the address is
     /// free. Each ask mails someone, and trying addresses is how an account would be probed.
     pub email_change: Limiter,
-    /// Account lookups by email before an invitation, per caller: 30 in 10 minutes, then
-    /// doubling delays. Only a space's admins may look, so this stops one of them harvesting
-    /// which emails have accounts.
+    /// Account lookups by email before an invitation, per caller: 10 in 10 minutes, then
+    /// doubling delays. Whoever manages users in some space may look (anyone can make a space), so
+    /// this slows one account harvesting which emails have accounts; inviting by email makes the
+    /// answer part of the product (see `lookup_account`). An invitation takes a lookup or two.
     pub lookup: Limiter,
 }
 
@@ -157,12 +197,18 @@ impl Default for Limits {
         Limits {
             sign_in: Limiter::new(10, 60),
             account: Limiter::new(10, 900),
+            account_slow: Limiter::new(10, 900),
+            account_cap: Limiter::new(100, 3600),
+            finish_gate: crate::finish_gate::PasswordGate::default(),
             second_step: Limiter::new(5, 900),
+            step_up: Limiter::new(5, 900),
             proof: Limiter::new(120, 60),
             setup: Limiter::new(5, 60),
             register: Limiter::new(10, 3600),
+            challenges: Limiter::new(10, 300),
+            device_proof: Limiter::new(240, 60),
             email_change: Limiter::new(3, 3600),
-            lookup: Limiter::new(30, 600),
+            lookup: Limiter::new(10, 600),
         }
     }
 }
@@ -198,8 +244,13 @@ pub struct Inner<S, P, K> {
     /// The settings the console changes while the server runs: sign-ups, the invitation gate and
     /// the largest file. The server's settings watcher writes to it.
     pub live: Live,
-    /// OPAQUE login states that were finished (rightly or wrongly): each is good once.
+    /// OPAQUE login states that were finished (rightly or wrongly) by a signed-in caller (the
+    /// password check before an erase or a change, the admin console's step-up): each is good
+    /// once.
     pub used_states: TimedSet,
+    /// The same for the finishes nobody is signed in for (the password sign-in, a passkey sign-in),
+    /// which anyone can start: a set of their own, so a flood of them can't refuse the other.
+    pub used_states_open: TimedSet,
     /// Devices whose use of this API was recorded in the last minute, so an authenticated request
     /// costs the store a write at most once a minute per device.
     pub(crate) recorded_use: TimedSet,
@@ -234,6 +285,23 @@ impl<S, P, K> Api<S, P, K> {
 
     pub(crate) fn upgrade(weak: &std::sync::Weak<Inner<S, P, K>>) -> Option<Self> {
         weak.upgrade().map(Api)
+    }
+
+    /// Remembers a login state or passkey challenge finished by someone nobody is signed in for,
+    /// on behalf of `ip`, which may take only its share of the set. `Ok(false)` for a state
+    /// already spent, `Err(Full)` when the set or the address's share is full.
+    pub(crate) fn spend_open_state(
+        &self,
+        ip: IpAddr,
+        state: &[u8],
+        now: i64,
+    ) -> Result<bool, Full> {
+        self.used_states_open.insert_from(
+            crate::ratelimit::ip_key(ip).as_bytes(),
+            OPEN_USED_STATES_PER_SOURCE,
+            state,
+            now,
+        )
     }
 }
 
@@ -270,6 +338,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             limits: Limits::default(),
             live,
             used_states: TimedSet::new(states_ttl, MAX_USED_STATES),
+            used_states_open: TimedSet::new(states_ttl, MAX_OPEN_USED_STATES),
             recorded_use: TimedSet::new(USE_GRANULARITY.whole_seconds(), MAX_USED_STATES),
             resent_invitations: TimedSet::new(RESEND_WINDOW_SECS, MAX_USED_STATES),
             proofs: std::sync::OnceLock::new(),
@@ -286,6 +355,7 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
     pub(crate) fn auth_config(&self) -> AuthConfig {
         AuthConfig {
             signups_allowed: self.live.signups_allowed(),
+            signups_verify: self.live.signups_verify(),
             ..self.config.auth
         }
     }
@@ -430,25 +500,28 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             two_factor: self.store.clone(),
             signer: self.signer.clone(),
             clock: self.crypto.clone(),
+            verify_email: self.live.signups_verify(),
         }
     }
 
-    pub(crate) fn put_item(&self) -> PutItem<S, S, LiveHub, P> {
+    pub(crate) fn put_item(&self) -> PutItem<S, S, LiveHub, P, S> {
         PutItem {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.hub.clone(),
             clock: self.crypto.clone(),
+            users: self.store.clone(),
             config: self.auth_config(),
         }
     }
 
-    pub(crate) fn put_batch(&self) -> PutBatch<S, S, LiveHub, P> {
+    pub(crate) fn put_batch(&self) -> PutBatch<S, S, LiveHub, P, S> {
         PutBatch {
             items: self.store.clone(),
             events: self.store.clone(),
             push: self.hub.clone(),
             clock: self.crypto.clone(),
+            users: self.store.clone(),
             config: self.auth_config(),
         }
     }

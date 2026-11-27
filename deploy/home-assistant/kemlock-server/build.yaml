@@ -1,4 +1,9 @@
+# Base images by digest, so a moved or replaced tag cannot change what the add-on is built on. The
+# amd64 digest is the one in the Dockerfile's default BUILD_FROM. To move one, look its digest up
+# with
+#   docker buildx imagetools inspect ghcr.io/home-assistant/aarch64-base:3.22 --format '{{.Manifest.Digest}}'
+# and replace the @sha256:<digest> on its line.
 build_from:
-  aarch64: ghcr.io/home-assistant/aarch64-base:3.22
-  amd64: ghcr.io/home-assistant/amd64-base:3.22
-  armv7: ghcr.io/home-assistant/armv7-base:3.22
+  aarch64: ghcr.io/home-assistant/aarch64-base:3.22@sha256:fa61dd8ebfe19acdb24e719ce8e053363616d54121b750028c8974c7c786722b
+  amd64: ghcr.io/home-assistant/amd64-base:3.22@sha256:1967b25b597a43fa46ce3eef5267b525e946d559d0b397c60af717dde15a2696
+  armv7: ghcr.io/home-assistant/armv7-base:3.22@sha256:ae2b8be31fee7bd01078d5ca51e7c48aa323ccbaca8085420a416e354b101246

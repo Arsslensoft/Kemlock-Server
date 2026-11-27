@@ -195,9 +195,15 @@ pub(crate) struct ChangePasswordRequest {
     /// authenticator app, the recovery code, or a security key's or passkey's answer. Works once.
     proof: Option<FreshProof>,
     /// End the sessions of every other device at once, and get new tokens for this one in the
-    /// answer. Defaults to false.
-    #[serde(default)]
+    /// answer. Defaults to true: a password changed because the old one leaked must end the
+    /// sessions that leak opened. Send false to keep the other devices signed in.
+    #[serde(default = "sign_out_others_by_default")]
     sign_out_others: bool,
+}
+
+/// What `signOutOthers` is when the request leaves it out.
+fn sign_out_others_by_default() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -306,7 +312,7 @@ where
     }
 }
 
-fn other_devices<S, P, K>(api: &Api<S, P, K>) -> OtherDevices<S, S, S, K, P, S, S>
+pub(super) fn other_devices<S, P, K>(api: &Api<S, P, K>) -> OtherDevices<S, S, S, K, P, S, S>
 where
     S: Store + KeyCopyRepo,
     P: Crypto,
@@ -356,7 +362,7 @@ fn new_credentials(
 
 /// Writes an event; what it describes has happened, so a failure is logged and not raised. Events
 /// carry no address and no name: only what changed.
-async fn record<S, P, K>(
+pub(super) async fn record<S, P, K>(
     api: &Api<S, P, K>,
     actor: UserId,
     device: Option<DeviceId>,
@@ -380,7 +386,7 @@ async fn record<S, P, K>(
 }
 
 /// The account that asks.
-async fn account_of<S, P, K>(
+pub(super) async fn account_of<S, P, K>(
     api: &Api<S, P, K>,
     authed: &Authed,
 ) -> Result<kemlock_domain::User, Problem>
@@ -413,7 +419,7 @@ where
 /// second step on, the request must carry one (said before the password is spent, so a refusal that
 /// can be known costs the person nothing) and `Some` gives it back to be checked once the password
 /// has been; with none on, whatever was sent is not needed and nothing is asked.
-async fn proof_needed<'a, S, P, K>(
+pub(super) async fn proof_needed<'a, S, P, K>(
     api: &Api<S, P, K>,
     user: UserId,
     given: Option<&'a FreshProof>,
@@ -758,7 +764,7 @@ fn doc_credentials_start() {}
     security(("dpop" = [])),
     request_body = ChangePasswordRequest,
     responses(
-        (status = 200, description = "The password's records are replaced; the root key and its version stay. With `signOutOthers` the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null", body = ChangedPasswordDto),
+        (status = 200, description = "The password's records are replaced; the root key and its version stay. With `signOutOthers` (the default) the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null", body = ChangedPasswordDto),
         (status = 400, description = "The login state was used before, or isn't well formed; the ticket is missing, unreadable, run out, or for another account, key or address; a second step is on and the proof is missing, wrong or spent; the settings, the wrap or the upload are malformed", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 401, description = "Wrong password, or not signed in", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 403, description = "`compatible-account` or `no-password`", body = ProblemDoc, content_type = "application/problem+json"),

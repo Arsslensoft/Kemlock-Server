@@ -31,6 +31,8 @@ pub(crate) struct Inner {
     pub(crate) erased: Vec<UserId>,
     pub(crate) scheduled: HashMap<UserId, OffsetDateTime>,
     pub(crate) canned: ErasedRows,
+    /// The store refuses the erasure because the account is the last admin.
+    pub(crate) last_admin: bool,
     pub(crate) deleted_blobs: Vec<BlobId>,
     pub(crate) deleted_cipher_files: Vec<String>,
     pub(crate) fail_files: bool,
@@ -195,6 +197,11 @@ impl AccountEraser for FakePrivacy {
 
     async fn erase_user(&self, user: &User) -> Result<ErasedRows, StoreError> {
         let mut g = self.lock();
+        if g.last_admin {
+            return Err(StoreError::Backend(
+                kemlock_app::privacy::LAST_ADMIN.to_owned(),
+            ));
+        }
         g.erased.push(user.id);
         Ok(g.canned.clone())
     }
@@ -278,6 +285,11 @@ impl RetentionStore for FakePrivacy {
     async fn purge_email_log(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
         self.lock().calls.push(("email_log", before));
         Ok(5)
+    }
+
+    async fn purge_held_signups(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
+        self.lock().calls.push(("held_signups", before));
+        Ok(2)
     }
 }
 

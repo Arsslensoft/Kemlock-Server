@@ -16,6 +16,7 @@
 //!   log later.
 
 mod backup;
+mod bind_secrets;
 mod connect;
 mod convert;
 mod error;
@@ -23,15 +24,19 @@ mod fanout;
 mod lease;
 mod migrate;
 mod migration;
+mod owner_lock;
 mod repo;
 mod request_ip;
 mod store;
 mod tables;
 
 pub use backup::{Snapshot, SnapshotTable, snapshot_database};
+pub use bind_secrets::BindReport;
 pub use connect::{SqliteSync, StoreOptions};
 pub use fanout::{Dialect, NUDGE_CHANNEL, NudgeListener};
 pub use migrate::{pending_migrations, pre_migration_path};
+#[doc(hidden)]
+pub use owner_lock::AccountHold;
 pub use request_ip::{request_ip, with_request_ip};
 pub use store::SqlStore;
 

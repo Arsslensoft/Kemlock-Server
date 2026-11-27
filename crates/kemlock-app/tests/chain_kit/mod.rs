@@ -24,11 +24,21 @@ pub(crate) struct Person {
 
 impl Person {
     pub(crate) fn new(id: Id, seed: u8) -> Person {
+        Person::at_version(id, seed, 1)
+    }
+
+    /// The same account with a new key pair made from `seed`, at `key_version`: the account after
+    /// a root-key rotation, whose `rekey` replaces `self`'s bundle with this one.
+    pub(crate) fn rotated(&self, seed: u8, key_version: u32) -> Person {
+        Person::at_version(self.id, seed, key_version)
+    }
+
+    pub(crate) fn at_version(id: Id, seed: u8, key_version: u32) -> Person {
         let sig = sig1::SigningKey::from_bytes(&[seed; 64]);
         let kx = kx1::PrivateKey::from_bytes(&[seed ^ 0x5a; 96]);
         let bundle = Bundle {
             account_id: id,
-            key_version: 1,
+            key_version,
             kx1_public: kx.public_key().expect("a kx1 public key"),
             sig1_public: sig.public_key().expect("a sig1 public key"),
         };
@@ -259,6 +269,23 @@ impl Chain {
         }
     }
 
+    /// A `seal` of `collection`'s key (version 1) to `to`, by someone who holds it.
+    pub(crate) fn seal_collection_key(&mut self, by: &Person, collection: Id, to: &Person) -> Step {
+        let seq = self.head.map_or(0, |(s, _)| s + 1);
+        let (commitment, seals) = self.commit(KeyRef::Collection(collection), 1, &[to], false, seq);
+        let (_, record) = self.push(
+            by,
+            Body::Seal {
+                seals: vec![commitment],
+            },
+        );
+        Step {
+            record,
+            seals,
+            names: Vec::new(),
+        }
+    }
+
     /// A `keys` record that replaces `collection`'s key with `version`, sealed to `to`, who are
     /// the members entitled to it.
     pub(crate) fn rotate_collection(
@@ -314,6 +341,27 @@ impl Chain {
     /// Any record of `by`, with no boxes or names.
     pub(crate) fn record(&mut self, by: &Person, body: Body) -> Step {
         let (_, record) = self.push(by, body);
+        Step {
+            record,
+            seals: Vec::new(),
+            names: Vec::new(),
+        }
+    }
+
+    /// A `rekey` record: `old` (a member the chain records with its old bundle) replaces its bundle
+    /// with `new`'s. The record is signed by the old key, as every record is, and cosigned by the
+    /// new one over the same bytes, which is what makes the new key's holder agree to it. It
+    /// carries no boxes: a member seals the keys it holds to its new bundle in later records.
+    pub(crate) fn rekey(&mut self, old: &Person, new: &Person) -> Step {
+        assert_eq!(old.id, new.id, "a rekey replaces a member's own bundle");
+        let (_, mut record) = self.push(
+            old,
+            Body::Rekey {
+                bundle: new.bytes(),
+                bundle_signature: new.self_signature(),
+            },
+        );
+        record.cosignature = Some(sign_record(&new.sig, &record.entry).expect("a cosignature"));
         Step {
             record,
             seals: Vec::new(),
@@ -414,6 +462,7 @@ pub(crate) fn invited_chain(
         changes: SpaceChanges::new(space),
         creating: false,
         held: Vec::new(),
+        writes: Vec::new(),
         answers: None,
         state: None,
     }
@@ -456,6 +505,7 @@ pub(crate) fn append_of(
         changes: SpaceChanges::new(space),
         creating: false,
         held: Vec::new(),
+        writes: Vec::new(),
         answers: None,
         state: None,
     }

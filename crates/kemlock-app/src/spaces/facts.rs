@@ -32,13 +32,22 @@ fn policy_role(role: SpaceRole) -> SsoRole {
 
 impl<R: SpaceRepo> MembershipFacts for SpaceFacts<R> {
     async fn spaces_of(&self, user: UserId) -> Result<Vec<SpaceMembership>, StoreError> {
-        let confirmed: Vec<_> = self
+        let mut confirmed: Vec<_> = self
             .spaces
             .memberships(user)
             .await?
             .into_iter()
             .filter(|m| m.state == MemberState::Confirmed)
             .collect();
+        // A space another server is the home of binds nobody here (Require SSO means this
+        // server's identity provider, and only this server's).
+        let binding: BTreeSet<_> = self
+            .spaces
+            .spaces_binding_here(&confirmed.iter().map(|m| m.space).collect::<Vec<_>>())
+            .await?
+            .into_iter()
+            .collect();
+        confirmed.retain(|m| binding.contains(&m.space));
         if confirmed.is_empty() {
             return Ok(Vec::new());
         }

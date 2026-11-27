@@ -17,6 +17,9 @@ pub(crate) mod generate;
 mod check;
 
 #[cfg(any(feature = "vectors", test))]
+pub(crate) mod sig1_edge;
+
+#[cfg(any(feature = "vectors", test))]
 pub(crate) mod space_chain;
 
 #[cfg(any(feature = "vectors", test))]
@@ -30,6 +33,7 @@ pub const FILES: &[&str] = &[
     "kx1",
     "sealed-box",
     "sig1",
+    "sig1-edge",
     "bundle",
     "kem1",
     "manifest",
@@ -42,9 +46,12 @@ pub const FILES: &[&str] = &[
     "private-keys",
     "prf-wrap",
     "confirm",
+    "item-write",
+    "key-box",
     "send",
     "space-names",
     "space-chain",
+    "rotation",
 ];
 
 /// The version every file carries; bumping a format means a new label, not a new number here.

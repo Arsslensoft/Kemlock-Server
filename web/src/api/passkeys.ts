@@ -3,6 +3,7 @@
 // of the root key (`prf` at registration, or `PUT .../{id}/prf` later), which opens the vault at
 // sign-in. Signing in with one is `createPasskeySignInApi`.
 import type { Api } from './client';
+import type { Proof } from './twoStep';
 import type { DeviceDto, TokenResponse } from './types';
 
 /** The root key wrapped under a passkey's PRF output, as the server stores it. */
@@ -34,11 +35,12 @@ export function createPasskeysApi(http: Http) {
       http
         .request<{ options: Record<string, unknown> }>({ method: 'POST', path: `${base}/options` })
         .then((r) => r.options),
-    register: (name: string, credential: Record<string, unknown>, prf?: PrfWrapDto) =>
+    /** With a second step on, `proof` is the fresh proof that adding a passkey takes. */
+    register: (name: string, credential: Record<string, unknown>, prf?: PrfWrapDto, proof?: Proof) =>
       http.request<PasskeyDto>({
         method: 'POST',
         path: base,
-        body: { name, credential, ...(prf ? { prf } : {}) },
+        body: { name, credential, ...(prf ? { prf } : {}), ...(proof === undefined ? {} : { proof }) },
       }),
     /** Stores the PRF wrap for a passkey made without one. */
     putPrf: (id: string, prf: PrfWrapDto) =>

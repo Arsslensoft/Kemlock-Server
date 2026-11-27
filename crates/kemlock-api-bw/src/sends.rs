@@ -432,10 +432,32 @@ fn hashed<S: BwStore>(app: &App<S>, password: Option<&str>) -> Option<SendPasswo
     })
 }
 
-fn password_matches(send: &SendRecord, password: &str) -> bool {
-    send.password
-        .as_ref()
-        .is_some_and(|p| verify_password(password.as_bytes(), &p.salt, &p.hash, p.iterations))
+/// Whether `password` is the Send's, checked behind the hashing gate (keyed by the Send, as its
+/// attempts are counted, since nothing here names an account).
+async fn password_matches<S: BwStore>(
+    app: &App<S>,
+    send: &SendRecord,
+    password: &str,
+) -> BwResult<bool> {
+    let Some(p) = send.password.as_ref() else {
+        return Ok(false);
+    };
+    let (secret, salt, hash, iterations) = (
+        password.as_bytes().to_vec(),
+        p.salt.clone(),
+        p.hash.clone(),
+        p.iterations,
+    );
+    let mut input = b"s".to_vec();
+    input.extend_from_slice(send.id.as_bytes());
+    let who = crate::hash_gate::Who {
+        account: Some(kemlock_crypto::hash::hmac_sha256(&app.prelogin_key, &input)),
+        prefix: None,
+    };
+    app.hashing(who, move || {
+        verify_password(&secret, &salt, &hash, iterations)
+    })
+    .await
 }
 
 const TOO_FAR: &str = "You cannot have a Send with a deletion date that far into the future. Adjust the Deletion Date to a value less than 31 days from now and try again.";
@@ -1059,8 +1081,10 @@ pub(crate) async fn send_access_token<S: BwStore>(
                     )
                         .into_response();
                 }
-                if !password_matches(&send, p) {
-                    return invalid("password_hash_b64_invalid");
+                match password_matches(app, &send, p).await {
+                    Ok(true) => {}
+                    Ok(false) => return invalid("password_hash_b64_invalid"),
+                    Err(error) => return error.into_response(),
                 }
             }
             None => {

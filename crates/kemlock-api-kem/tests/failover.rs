@@ -308,6 +308,7 @@ fn sibling_item(id: ItemId, owner: Owner, revision: u64, fill: u8) -> Item {
             seq: 1,
             hlc: Hlc(1),
         },
+        signature: None,
     }
 }
 

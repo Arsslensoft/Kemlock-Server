@@ -10,7 +10,9 @@ use super::error::SpacesError;
 use super::ports::{SpaceChanges, SpaceRepo};
 use super::support::{load_open, record};
 use crate::authenticate::Actor;
-use crate::ports::{Clock, EventLog};
+use crate::policies::{check_join, refusal_in_spaces};
+use crate::ports::{Clock, EventLog, TwoFactorRepo};
+use kemlock_domain::policies::is_exempt;
 use kemlock_domain::spaces::{
     Collection, CollectionId, CustomPermissions, Grantee, Member, MemberState, SpaceRole,
     SpaceState,
@@ -25,7 +27,7 @@ pub struct ChangeRole<R, V, C> {
     pub clock: C,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> ChangeRole<R, V, C> {
+impl<R: SpaceRepo, V: EventLog + TwoFactorRepo, C: Clock> ChangeRole<R, V, C> {
     /// Gives `target` a role. Only an owner makes an owner, and the new owner must be confirmed:
     /// the server can't hand out the space key. The last confirmed owner can't be demoted.
     pub async fn execute(
@@ -41,6 +43,13 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> ChangeRole<R, V, C> {
             .authorize_role_change(actor.user, target, role, custom)?
             .clone();
         authority::ensure_manage(&state, actor.user, target)?;
+        // Someone who stops being an owner or admin is a member now, and the space's join policies
+        // (two-step login, one space per member) bind members.
+        if is_exempt(member.role) && !is_exempt(role) {
+            check_join(&self.spaces, &self.events, target, space, role)
+                .await
+                .map_err(refusal_in_spaces)?;
+        }
         member.role = role;
         member.custom = custom;
         let mut after = state.clone();
@@ -88,7 +97,7 @@ pub struct Offboard<R, V, C> {
     pub clock: C,
 }
 
-impl<R: SpaceRepo, V: EventLog, C: Clock> Offboard<R, V, C> {
+impl<R: SpaceRepo, V: EventLog + TwoFactorRepo, C: Clock> Offboard<R, V, C> {
     /// Revokes a confirmed member: they keep their row (so they can be restored and confirmed
     /// again) but lose their keys, and the keys they held must be replaced.
     pub async fn revoke(
@@ -103,6 +112,7 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> Offboard<R, V, C> {
         revoked.state = MemberState::Revoked;
         revoked.revoked_at = Some(now);
         revoked.sealed_space_key = None;
+        revoked.sealed_by = None;
         revoked.key_version = None;
         revoked.confirmation = None;
 
@@ -138,6 +148,10 @@ impl<R: SpaceRepo, V: EventLog, C: Clock> Offboard<R, V, C> {
         member.state = MemberState::Accepted;
         member.revoked_at = None;
         authority::ensure_manage(&state, actor.user, target)?;
+        // A restored member is in the space again: the join policies are checked as for a join.
+        check_join(&self.spaces, &self.events, target, space, member.role)
+            .await
+            .map_err(refusal_in_spaces)?;
         let mut after = state.clone();
         replace_member(&mut after, &member);
         authority::check(&state, &after, actor.user, None)?;

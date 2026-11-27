@@ -40,7 +40,16 @@ impl BwError {
 
 impl From<StoreError> for BwError {
     fn from(e: StoreError) -> Self {
-        BwError::Server(e.to_string())
+        match e {
+            // A collection or group id another space holds (docs/crypto.md, S4): the client's
+            // to change, a 400 as Vaultwarden answers a refused request.
+            StoreError::Duplicate => BwError::msg("That id is already in use"),
+            // A space change that would leave members and no owner.
+            StoreError::Backend(message) if message == kemlock_app::spaces::OWNER_REQUIRED => {
+                BwError::msg(message)
+            }
+            other => BwError::Server(other.to_string()),
+        }
     }
 }
 
@@ -70,6 +79,23 @@ pub fn not_found_body() -> Value {
     })
 }
 
+impl BwError {
+    /// What a bulk route puts in the line of one member whose action failed: the message of a
+    /// refusal, which is meant for the client, and for anything else a bare "Error" (the detail is
+    /// logged), so a failure of the store or a file never reaches the client as a line of text.
+    pub fn bulk_line_text(self) -> String {
+        match self {
+            BwError::Msg(text) | BwError::Status(_, text) => text,
+            BwError::Unauthorized | BwError::NotFound => "Error".to_owned(),
+            BwError::Json(_) => "Error".to_owned(),
+            BwError::Server(detail) => {
+                tracing::error!(%detail, "a bulk member action failed");
+                "Error".to_owned()
+            }
+        }
+    }
+}
+
 impl IntoResponse for BwError {
     fn into_response(self) -> Response {
         match self {
@@ -95,6 +121,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_bulk_line_keeps_a_refusal_and_hides_a_failure() {
+        assert_eq!(
+            BwError::msg("User in invalid state").bulk_line_text(),
+            "User in invalid state"
+        );
+        assert_eq!(
+            BwError::status(StatusCode::TOO_MANY_REQUESTS, "Too many requests").bulk_line_text(),
+            "Too many requests"
+        );
+        let leak = BwError::Server("database error: connection refused to db:5432".to_owned());
+        assert_eq!(leak.bulk_line_text(), "Error");
+        assert_eq!(BwError::Unauthorized.bulk_line_text(), "Error");
+    }
+
+    #[test]
     fn an_err_has_vaultwardens_shape() {
         let body = api_error("Invalid folder");
         assert_eq!(body["message"], "Invalid folder");
@@ -106,6 +147,22 @@ mod tests {
         assert!(body["exceptionMessage"].is_null());
         assert_eq!(body["object"], "error");
         assert_eq!(body.as_object().map(|o| o.len()), Some(9));
+    }
+
+    #[test]
+    fn a_refused_space_change_is_the_clients_400_not_a_server_failure() {
+        for refused in [
+            StoreError::Duplicate,
+            StoreError::Backend(kemlock_app::spaces::OWNER_REQUIRED.to_owned()),
+        ] {
+            let error = BwError::from(refused);
+            assert!(matches!(error, BwError::Msg(_)), "{error:?}");
+            assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);
+        }
+        assert!(matches!(
+            BwError::from(StoreError::Backend("down".to_owned())),
+            BwError::Server(_)
+        ));
     }
 
     #[test]

@@ -486,6 +486,8 @@ impl Kit {
                 .iter()
                 .map(|r| super::seals::link(&r.entry))
                 .collect(),
+            owners: Some(self.state.owners()),
+            promotions: Vec::new(),
         }
     }
 }

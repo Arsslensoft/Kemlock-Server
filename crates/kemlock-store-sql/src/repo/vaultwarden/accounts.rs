@@ -1,6 +1,7 @@
 //! Accounts, devices and two-step setups.
 
 use super::rows::{self, row_time, row_uuid};
+use super::scope::USER;
 use super::{Ctx, Res, invalid};
 use crate::convert::{unix_millis, utc};
 use crate::error::StoreResult;
@@ -8,7 +9,7 @@ use crate::tables::{bw_account_extras, bw_accounts, devices, refresh_tokens, two
 use kemlock_app::b64url;
 use kemlock_app::bitwarden::BwAccount;
 use kemlock_app::passkeys::{ImportedKey, PURPOSE_WEBAUTHN, encode_key_list};
-use kemlock_app::ports::{RefreshToken, TwoFactorMethod};
+use kemlock_app::ports::{RefreshToken, TokenApi, TwoFactorMethod};
 use kemlock_app::two_step::{PURPOSE_DUO, PURPOSE_EMAIL, PURPOSE_YUBIKEY};
 use kemlock_domain::{
     AccountMode, Device, DeviceId, DeviceKind, Email, KdfParams, Role, User, UserId,
@@ -38,6 +39,15 @@ const TYPE_YUBIKEY: i64 = 3;
 const TYPE_U2F: i64 = 4;
 const TYPE_WEBAUTHN: i64 = 7;
 
+/// What is kept of a pending change of email address's token: its SHA-256, so a copy of the
+/// database can't finish the change. Nothing here reads it back; the server's own email change
+/// keeps the hash of its token in `email_changes`.
+fn kept_email_token(token: &str) -> String {
+    let digest = kemlock_crypto::hash::sha256(token.as_bytes());
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256:{hex}")
+}
+
 /// The UUID of a security stamp: Vaultwarden makes them UUIDs, and `users.security_stamp` is one.
 /// A stamp that isn't gets a stable UUID made of its SHA-256.
 pub(super) fn stamp_uuid(stamp: &str) -> Uuid {
@@ -64,10 +74,35 @@ pub(super) fn now_ms(ctx: &Ctx) -> i64 {
 
 pub(super) async fn put_accounts(ctx: &mut Ctx, accounts: &[MappedAccount]) -> Res<()> {
     for account in accounts {
+        // An address that another account of this server holds can't be given to this one: the
+        // account is left out and listed, rather than the whole pass failing on a duplicate.
+        if email_taken(ctx, account).await? {
+            ctx.refuse(USER, account.id.0);
+            continue;
+        }
+        // An account that exists and wasn't made by an import is not Vaultwarden's to rewrite.
+        if !ctx.claim(USER, account.id.0).await? {
+            ctx.refuse(USER, account.id.0);
+            continue;
+        }
         put_account(ctx, account).await?;
         ctx.touched.insert(account.id.0);
     }
     Ok(())
+}
+
+/// Whether the account's address belongs to a user of another id. An address that isn't one
+/// Kemlock accepts is left for `put_account` to report.
+async fn email_taken(ctx: &Ctx, a: &MappedAccount) -> Res<bool> {
+    let Ok(email) = Email::parse(&a.email) else {
+        return Ok(false);
+    };
+    let holder = users::Entity::find()
+        .filter(users::Column::Email.eq(email.as_str()))
+        .one(&ctx.txn)
+        .await
+        .store()?;
+    Ok(holder.is_some_and(|user| user.id != a.id.0))
 }
 
 async fn put_account(ctx: &Ctx, a: &MappedAccount) -> Res<()> {
@@ -137,6 +172,8 @@ async fn put_account(ctx: &Ctx, a: &MappedAccount) -> Res<()> {
             .exec(txn)
             .await
             .store()?;
+        // Now that the account exists, it is the import's from here on.
+        ctx.remember(USER, id).await?;
     }
 
     let account = BwAccount {
@@ -200,7 +237,7 @@ async fn put_account(ctx: &Ctx, a: &MappedAccount) -> Res<()> {
         last_verifying_at: Set(b.last_verifying_at.map(utc)),
         login_verify_count: Set(b.login_verify_count),
         email_new: Set(b.email_new.clone()),
-        email_new_token: Set(b.email_new_token.clone()),
+        email_new_token: Set(b.email_new_token.as_deref().map(kept_email_token)),
         stamp_exception: Set(b.stamp_exception.clone()),
         equivalent_domains: Set(b.equivalent_domains.clone()),
         excluded_globals: Set(b.excluded_globals.clone()),
@@ -284,6 +321,7 @@ pub(super) async fn put_devices(ctx: &Ctx, table: &Table) -> Res<()> {
                 created_at: created,
                 expires_at: ctx.opts.now + time::Duration::days(REFRESH_DAYS),
                 used_at: None,
+                api: TokenApi::Bitwarden,
             };
             refresh_tokens::Entity::insert(refresh_tokens::active(&token))
                 .exec(txn)
@@ -488,7 +526,12 @@ async fn insert(
     two_factor::Entity::insert(two_factor::ActiveModel {
         user_id: Set(user),
         method: Set(two_factor::method_str(method).to_owned()),
-        sealed_secret: Set(ctx.seal.seal(purpose, plain)),
+        // Bound to the account, as the server seals every per-account secret
+        // (kemlock_app::sealed::bound_purpose).
+        sealed_secret: Set(ctx.seal.seal(
+            &kemlock_app::sealed::bound_purpose(purpose, kemlock_domain::UserId(user)),
+            plain,
+        )),
         enabled: Set(enabled),
         last_used_step: Set(last_used_step),
         created_at: Set(ctx.opts.now),
@@ -536,5 +579,15 @@ mod tests {
         );
         assert_eq!(refresh_bytes(&b64url::encode(&[7u8; 20])), None);
         assert_eq!(refresh_bytes("not a token"), None);
+    }
+
+    #[test]
+    fn a_pending_email_change_keeps_the_hash_of_its_token_and_not_the_token() {
+        let kept = kept_email_token("secret-token");
+        assert!(kept.starts_with("sha256:"));
+        assert_eq!(kept.len(), "sha256:".len() + 64);
+        assert!(!kept.contains("secret-token"));
+        assert_eq!(kept, kept_email_token("secret-token"));
+        assert_ne!(kept, kept_email_token("another-token"));
     }
 }

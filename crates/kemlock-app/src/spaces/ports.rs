@@ -4,6 +4,7 @@
 
 use super::chain::{ExternalChangeMode, PendingExternal};
 use crate::ports::StoreError;
+use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies};
 use kemlock_domain::spaces::{
     Collection, CollectionGrant, CollectionId, Grantee, Group, GroupId, KeyCopy, Member, Space,
     SpaceState,
@@ -21,6 +22,8 @@ use std::future::Future;
 ///   its members and the grants made to it.
 /// - `collections` are inserted or replaced; `collections_removed` delete the collection, its
 ///   grants, its key copies and the item-to-collection rows that point at it.
+/// - Collection and group ids are unique across spaces: a store refuses (`Duplicate`) changes that
+///   name a collection or group of another space, in any field, rather than take it over.
 /// - `grants` and `key_copies` are inserted or replaced by their keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpaceChanges {
@@ -37,6 +40,9 @@ pub struct SpaceChanges {
     pub grants_removed: Vec<(CollectionId, Grantee)>,
     pub key_copies: Vec<KeyCopy>,
     pub key_copies_removed: Vec<(CollectionId, UserId)>,
+    /// The space's policy settings and the account that set them: written in the same transaction,
+    /// by a chain append whose records set the space's policies (`kemlock_app::spaces::chain_project`).
+    pub policies: Option<(SpacePolicies, UserId)>,
 }
 
 impl SpaceChanges {
@@ -55,9 +61,16 @@ impl SpaceChanges {
             grants_removed: Vec::new(),
             key_copies: Vec::new(),
             key_copies_removed: Vec::new(),
+            policies: None,
         }
     }
 }
+
+/// What a store says (as `StoreError::Backend`) when it refuses `SpaceRepo::apply` because it would
+/// leave a space that had a confirmed owner without one. Two owners removing each other at once
+/// each pass the use case's check against the state they read; the store checks the state it
+/// writes. [`SpacesError`](super::SpacesError) turns it into `SpaceError::LastOwner`.
+pub const OWNER_REQUIRED: &str = "a space needs at least one confirmed owner";
 
 /// What the server knows about one item of a space without opening it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +101,21 @@ pub trait SpaceRepo: Send + Sync {
         id: SpaceId,
     ) -> impl Future<Output = Result<Option<SpaceState>, StoreError>> + Send;
 
+    /// Which of these spaces have a say over the accounts of this server. A space another server
+    /// is the home of (it is federated here as a replica) decides nothing about who signs in here:
+    /// its policies (Require SSO, single space, two-step to join, no Sends, ...) bind its own
+    /// server's accounts, and a home could otherwise list any local account as a member and lock it
+    /// out. Every check of a policy asks this first.
+    ///
+    /// The default is all of them, for a store that keeps no federation.
+    fn spaces_binding_here(
+        &self,
+        ids: &[SpaceId],
+    ) -> impl Future<Output = Result<Vec<SpaceId>, StoreError>> + Send {
+        let all = ids.to_vec();
+        async move { Ok(all) }
+    }
+
     /// The account's rows in every space, in any state.
     fn memberships(
         &self,
@@ -99,6 +127,20 @@ pub trait SpaceRepo: Send + Sync {
         &self,
         ids: &[SpaceId],
     ) -> impl Future<Output = Result<Vec<Space>, StoreError>> + Send;
+
+    /// The space that holds the collection with this id, if any does. Collection ids are chosen by
+    /// clients and are unique across spaces, so creating one checks every space, not only the
+    /// caller's.
+    fn collection_space(
+        &self,
+        id: CollectionId,
+    ) -> impl Future<Output = Result<Option<SpaceId>, StoreError>> + Send;
+
+    /// The space that holds the group with this id, if any does; see `collection_space`.
+    fn group_space(
+        &self,
+        id: GroupId,
+    ) -> impl Future<Output = Result<Option<SpaceId>, StoreError>> + Send;
 
     /// The collection keys sealed to one member.
     fn key_copies(
@@ -169,6 +211,16 @@ pub trait SpaceRepo: Send + Sync {
         &self,
         replacement: KeyReplacement,
     ) -> impl Future<Output = Result<Vec<Item>, StoreError>> + Send;
+
+    /// The policy settings of these spaces, from `space_policy_settings`, for the join check of a
+    /// use case that holds no policy store. A space with none set is not in the map, which reads as
+    /// everything off. A store without policies keeps this default.
+    fn join_policies_of(
+        &self,
+        _spaces: &[SpaceId],
+    ) -> impl Future<Output = Result<PoliciesBySpace, StoreError>> + Send {
+        async { Ok(PoliciesBySpace::new()) }
+    }
 
     /// Whether the space has a chain: its members, roles, keys and policies then change only by
     /// signed records (docs/crypto.md, "Space chain"). A store without chains keeps this default.

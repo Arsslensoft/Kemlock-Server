@@ -1172,3 +1172,35 @@ async fn a_quota_lowered_after_the_send_was_made_is_held_to_when_the_bytes_arriv
         .expect("the file fits what is left");
     assert!(opened.file.is_some_and(|f| f.ready));
 }
+
+#[tokio::test]
+async fn the_sends_of_a_disabled_or_an_erasing_account_are_closed_until_it_is_open_again() {
+    let s = Sends::new();
+    let sam = s.user("sam@example.org").await;
+    let send = s.make(&sam, s.note()).await;
+    let id = access_id(send.id);
+    assert!(s.access().execute(&id, None).await.is_ok());
+    assert_eq!(s.access().needs_password(&id).await, Ok(false));
+
+    // An admin disables the account: its Sends answer as if they weren't there.
+    s.world.store.set_account_disabled(sam.user, true);
+    assert_eq!(
+        s.access().execute(&id, None).await.err(),
+        Some(SendsError::NotFound)
+    );
+    assert_eq!(
+        s.access().needs_password(&id).await,
+        Err(SendsError::NotFound)
+    );
+    s.world.store.set_account_disabled(sam.user, false);
+    assert!(s.access().execute(&id, None).await.is_ok());
+
+    // The same while its erasure waits out the grace period.
+    s.world.store.set_erasure_pending(sam.user, true);
+    assert_eq!(
+        s.access().execute(&id, None).await.err(),
+        Some(SendsError::NotFound)
+    );
+    s.world.store.set_erasure_pending(sam.user, false);
+    assert!(s.access().execute(&id, None).await.is_ok());
+}

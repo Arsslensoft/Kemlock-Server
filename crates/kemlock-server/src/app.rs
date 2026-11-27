@@ -8,10 +8,12 @@ use crate::files::{self, Files};
 use crate::health::{self, HealthState};
 use crate::jobs;
 use crate::keys::{self, KeyError};
+use crate::listener::{ServeLimits, serve};
 use crate::live::{self, Layered, SettingsWatch, SwitchMailer};
 use crate::migration::VaultwardenMove;
 use crate::notify;
 use crate::passkeys;
+use crate::security_headers;
 use crate::sends::{self, SendJobs};
 use crate::source;
 use crate::sso;
@@ -29,14 +31,54 @@ use kemlock_crypto::hash;
 use kemlock_crypto::seal::ServerSeal;
 use kemlock_federation::{Connector, PairingLink, Replica};
 use kemlock_store_sql::SqlStore;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tower_http::timeout::TimeoutLayer;
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{MakeSpan, TraceLayer};
+
+/// The span of a request: the method and the path, never the query. Several routes carry a secret
+/// in the query (`/notifications/hub?access_token=<JWT>`, `?token=` on attachments and invites,
+/// `?t=` on Sends), and tower-http's default span records the whole URI at DEBUG.
+#[derive(Debug, Clone, Copy, Default)]
+struct PathOnlySpan;
+
+impl<B> MakeSpan<B> for PathOnlySpan {
+    fn make_span(&mut self, request: &axum::http::Request<B>) -> tracing::Span {
+        tracing::debug_span!(
+            "request",
+            method = %request.method(),
+            path = %request.uri().path(),
+            version = ?request.version(),
+        )
+    }
+}
 
 /// How long a request may take before it is answered 408. WebSockets are upgraded long before.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long a POST to the space chain may take. A key replacement is one request of up to 32 MiB,
+/// which the route reads at 256 KiB a second or faster (two and a half minutes at most, after a 30 second start),
+/// so the two chain POST routes have a timeout of their own and enforce the rate themselves. The
+/// other chain routes keep [`REQUEST_TIMEOUT`].
+const CHAIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// The timeout of the chain routes: [`CHAIN_TIMEOUT`] for a POST (an append, or the answer to a
+/// queued change), [`REQUEST_TIMEOUT`] for the reads and the dismissal.
+async fn chain_timeout(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let limit = if request.method() == axum::http::Method::POST {
+        CHAIN_TIMEOUT
+    } else {
+        REQUEST_TIMEOUT
+    };
+    match tokio::time::timeout(limit, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -133,7 +175,7 @@ where
     // A FIPS build serves nothing until the module says it is in FIPS mode.
     #[cfg(feature = "fips")]
     refuse_unless_fips(kemlock_crypto::fips::verify())?;
-    std::fs::create_dir_all(&config.data_folder).map_err(|source| RunError::DataFolder {
+    keys::create_data_folder(&config.data_folder).map_err(|source| RunError::DataFolder {
         path: config.data_folder.display().to_string(),
         source,
     })?;
@@ -154,7 +196,53 @@ where
     let store = SqlStore::connect(&config.database_url)
         .await
         .map_err(|e| RunError::Store(e.to_string()))?;
+    // The personal API keys of Bitwarden accounts are kept sealed under `server.key`.
+    store.set_secret_seal(ServerSeal::new(&server_key));
+    match store.seal_stored_secrets().await {
+        Ok(0) => {}
+        Ok(sealed) => tracing::info!(sealed, "API keys stored in clear are sealed now"),
+        Err(e) => tracing::warn!(error = %e, "couldn't seal the API keys stored in clear"),
+    }
     let crypto = ServerCrypto::new(seal, opaque);
+    // Secrets stored before they were sealed to their accounts are sealed again, bound, and the
+    // old form then stops opening: it would let someone who can write the database keep a copy of
+    // a secret sealed the old way and paste it into any row. The pass runs once and records it, so
+    // it never seals a bare blob that turns up later; a restore of a database from before the pass
+    // brings no record, and the pass runs for it. A failure leaves the old form readable and says
+    // so.
+    match store.bind_secrets(&crypto).await {
+        Ok(report) => {
+            kemlock_app::sealed::allow_bare_secrets(false);
+            if report.sealed_again > 0 || report.unreadable > 0 {
+                tracing::info!(
+                    sealed_again = report.sealed_again,
+                    unreadable = report.unreadable,
+                    "stored second-step secrets are sealed to their accounts"
+                );
+            }
+        }
+        Err(e) => tracing::warn!(
+            error = %e,
+            "couldn't seal the stored secrets to their accounts; the old form stays readable"
+        ),
+    }
+    // A space chained before the chain's policies were enforced keeps the settings its route had
+    // set: once, the policies each chain signs are written to the table the server enforces.
+    match store.project_chain_policies().await {
+        Ok(0) => {}
+        Ok(spaces) => tracing::info!(spaces, "the policies of chained spaces follow their chains"),
+        Err(e) => tracing::warn!(error = %e, "couldn't project the policies of chained spaces"),
+    }
+    // Archives made before the Bitwarden token key was left out of them hold the live key. Once, at
+    // the first start after that change, the key is replaced (the Bitwarden API makes a new one
+    // below), so a copy of an old archive signs nothing on this server.
+    match keys::rotate_token_key_once(&store, &config.data_folder).await {
+        Ok(true) => tracing::warn!(
+            "the Bitwarden token key was replaced once: \n             \"remember this device\", invitation and verification tokens made before end, \n             second steps are asked once more, and pending invitation links must be sent again"
+        ),
+        Ok(false) => {}
+        Err(e) => tracing::warn!(error = %e, "couldn't replace the Bitwarden token key"),
+    }
     // SSO settings from `SSO_*` fill an empty table; a bad value turns SSO off and says why.
     match sso::seed_from_env(&store, &crypto, &|name| std::env::var(name).ok()).await {
         Ok(true) => tracing::info!("single sign-on is set up from the SSO_* settings"),
@@ -212,6 +300,8 @@ where
     );
     notifications.push_follower.follow(&settings.current());
     settings.overlay_retention(&store);
+    // The settings the store reads itself follow the config file too.
+    settings.overlay_store_settings(&store);
     // An invited address registers with its token while sign-ups are closed.
     api.live.set_invites(Arc::new(AcceptInvite {
         repo: store.clone(),
@@ -270,11 +360,33 @@ where
     )?;
     let (files_router, files) =
         files::wire(&api, &store, blobs, &blob_settings, federated.fetcher())?;
+    // The Bitwarden API, and the invitation links it gives the Kemlock API and the admin console
+    // (a space page and the console copy the link of an invitation a server can't mail).
+    let (bitwarden_router, invite_links) = kemlock_api_bw::mount_live_linked(
+        store.clone(),
+        &server_key,
+        &config.domain,
+        &config.data_folder,
+        files.bitwarden_blobs(),
+        api.live.clone(),
+        Some(relying_party.clone() as Arc<dyn WebAuthn>),
+        two_step.bitwarden(),
+        // The Bitwarden API's account deletion is the web vault's: the same erasure.
+        kemlock_api_bw::BwLive {
+            erasure: Some(Arc::new(own_erasure)),
+            ..notifications.bw_live.clone()
+        },
+        // Bitwarden Sends live in the database, not in memory.
+        Some(Arc::new(crate::bw_sends::SqlSends::new(store.clone())) as Arc<dyn SendStore>),
+        // Read through the server's own lookup, as the settings are (see Config).
+        &|name| config.bitwarden_env.get(name).cloned(),
+    )
+    .map_err(RunError::Config)?;
     let router = Router::new()
-        .merge(health::router(HealthState {
-            store: store.clone(),
-            data_folder: config.data_folder.clone(),
-        }))
+        .merge(health::router(HealthState::new(
+            store.clone(),
+            config.data_folder.clone(),
+        )))
         // /LICENSE.txt, /NOTICE.txt and /THIRD-PARTY-NOTICES.txt, ahead of the web vault.
         .merge(source::router(source::third_party_paths()))
         .merge(kemlock_api_kem::router(api.clone(), store.clone()))
@@ -284,28 +396,7 @@ where
             store.clone(),
         ))
         .merge(notifications.bitwarden)
-        .merge(
-            kemlock_api_bw::mount_live(
-                store.clone(),
-                &server_key,
-                &config.domain,
-                &config.data_folder,
-                files.bitwarden_blobs(),
-                api.live.clone(),
-                Some(relying_party.clone() as Arc<dyn WebAuthn>),
-                two_step.bitwarden(),
-                // The Bitwarden API's account deletion is the web vault's: the same erasure.
-                kemlock_api_bw::BwLive {
-                    erasure: Some(Arc::new(own_erasure)),
-                    ..notifications.bw_live.clone()
-                },
-                // Bitwarden Sends live in the database, not in memory.
-                Some(Arc::new(crate::bw_sends::SqlSends::new(store.clone())) as Arc<dyn SendStore>),
-                // Read through the server's own lookup, as the settings are (see Config).
-                &|name| config.bitwarden_env.get(name).cloned(),
-            )
-            .map_err(RunError::Config)?,
-        );
+        .merge(bitwarden_router);
     // The web vault takes the GET addresses the API and the health routes don't.
     #[cfg(feature = "web")]
     let router = router.merge(crate::web::router());
@@ -316,14 +407,12 @@ where
             store.clone(),
         ))
         .merge(spaces_router)
-        .merge(kemlock_api_kem::space_chain_router(
-            api.clone(),
-            store.clone(),
-        ))
         .merge(kemlock_api_kem::space_recovery_router(
             api.clone(),
             store.clone(),
         ))
+        // The invitation link of a Bitwarden organization, for its owners and admins.
+        .merge(kemlock_api_kem::invite_link_router(api.clone()))
         .merge(kemlock_api_kem::sso_router(api.clone(), sso_runtime))
         .merge(kemlock_api_kem::passkeys_router(
             api.clone(),
@@ -341,6 +430,7 @@ where
         .merge(account_routes)
         // The profile: name, master password and sign-in address.
         .merge(kemlock_api_kem::profile_router(api.clone(), store.clone()))
+        .merge(kemlock_api_kem::rotation_router(api.clone(), store.clone()))
         // /.well-known/security.txt, from the admin settings.
         .merge(crate::security_txt::router(
             kemlock_app::admin::Settings {
@@ -382,21 +472,44 @@ where
             kemlock_api_fed::home_gate::<SqlStore>,
         ))
         // What the Kemlock API reads of federation: a vault's servers, siblings, copied accounts.
-        .layer(axum::Extension(federated.view))
+        .layer(axum::Extension(federated.view.clone()))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             REQUEST_TIMEOUT,
         ))
-        // After the timeout above: the file routes have a longer one of their own.
+        // After the timeout above: the two chain POST routes have a longer one of their own, under
+        // the same layers as the routes above.
+        .merge(
+            kemlock_api_kem::space_chain_router(api.clone(), store.clone())
+                .layer(axum::middleware::from_fn_with_state(
+                    federated.home_gate.clone(),
+                    kemlock_api_fed::home_gate::<SqlStore>,
+                ))
+                .layer(axum::Extension(federated.view))
+                .layer(axum::middleware::from_fn(chain_timeout)),
+        )
+        // And the file routes.
         .merge(files_router)
         .merge(sends_router)
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(PathOnlySpan))
         // Outermost, so every route (both APIs, the admin console, federation) has its client
         // address settled and every event a request writes carries it.
         .layer(axum::middleware::from_fn_with_state(
             client_addr::ClientAddrSettings::from_config(config),
             client_addr::settle_client_address,
+        ))
+        // Outside everything, so even a refusal from a layer below carries them.
+        .layer(axum::middleware::from_fn_with_state(
+            security_headers::SecurityHeaders::for_domain(&config.domain),
+            security_headers::add_security_headers,
         ));
+    // What the Kemlock API and the admin console read of the Bitwarden API: the link that accepts
+    // an invitation. A server with the Bitwarden API off has none, and they answer as for a space
+    // that isn't an organization.
+    let router = match invite_links {
+        Some(links) => router.layer(axum::Extension(links)),
+        None => router,
+    };
     Ok(Built {
         api,
         store,
@@ -458,8 +571,53 @@ async fn bind(config: &Config) -> Result<tokio::net::TcpListener, RunError> {
     }
 }
 
+/// Whether `domain` is a plain `http://` address that isn't on this machine. Kemlock serves plain
+/// HTTP only, so a public address needs a TLS proxy or tunnel in front; `localhost` and loopback
+/// addresses are the development setup and don't count.
+fn is_remote_plain_http(domain: &str) -> bool {
+    let domain = domain.trim();
+    let Some(prefix) = domain.get(.."http://".len()) else {
+        return false;
+    };
+    if !prefix.eq_ignore_ascii_case("http://") {
+        return false;
+    }
+    let rest = &domain["http://".len()..];
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit('@').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => !ip.is_loopback(),
+        Err(_) => true,
+    }
+}
+
 /// Runs the server until it is asked to stop.
 pub async fn run(config: Config) -> Result<(), RunError> {
+    if is_remote_plain_http(&config.domain) {
+        tracing::warn!(
+            domain = %config.domain,
+            "DOMAIN is a plain http:// address. Kemlock Server has no TLS of its own: put a TLS \
+             proxy or a tunnel in front of it, or sign-ins and vault data cross the network in \
+             the clear"
+        );
+    }
+    if let Some(header) = &config.ip_header_ignored {
+        tracing::warn!(
+            header = %header,
+            "IP_HEADER is set but KEMLOCK_TRUSTED_PROXIES is empty, so the header is IGNORED: \
+             every client counts as the proxy and shares one rate-limit budget, so a few failed \
+             sign-ins can lock everyone out. Set KEMLOCK_TRUSTED_PROXIES to the address of your \
+             reverse proxy"
+        );
+    }
     if !config.ignored.is_empty() {
         tracing::warn!(
             settings = %config.ignored.join(", "),
@@ -531,11 +689,12 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     crate::backups::settings(&config).map_err(RunError::Config)?;
     let layout = crate::backups::layout(&config).map_err(RunError::Config)?;
     let backups = crate::backups::spawn_backups(store.clone(), settings.clone(), layout);
-    let served = axum::serve(
+    serve(
         listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
+        router,
+        ServeLimits::from_config(&config),
+        shutdown_signal(),
     )
-    .with_graceful_shutdown(shutdown_signal())
     .await;
     background.abort();
     retention.abort();
@@ -549,12 +708,79 @@ pub async fn run(config: Config) -> Result<(), RunError> {
     if let Err(e) = store.close().await {
         tracing::warn!(error = %e, "couldn't close the database cleanly");
     }
-    served.map_err(RunError::Serve)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("buffer").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_plain_http_domain_off_this_machine_is_flagged() {
+        for remote in [
+            "http://vault.example.com",
+            "http://vault.example.com:8080/",
+            "HTTP://192.168.1.20:8080",
+            "http://[2001:db8::1]:8080",
+            "http://user@vault.example.com",
+        ] {
+            assert!(is_remote_plain_http(remote), "{remote}");
+        }
+        for fine in [
+            "https://vault.example.com",
+            "http://localhost:8080",
+            "http://app.localhost",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+            "",
+        ] {
+            assert!(!is_remote_plain_http(fine), "{fine}");
+        }
+    }
+
+    #[test]
+    fn the_request_span_has_the_path_and_never_the_query() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::NEW)
+            .with_writer({
+                let captured = captured.clone();
+                move || captured.clone()
+            })
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let request = axum::http::Request::builder()
+                .uri("/notifications/hub?access_token=eyJsecret.jwt.value&token=abc&t=xyz")
+                .body(())
+                .expect("request");
+            let _span = PathOnlySpan.make_span(&request);
+        });
+        let log = String::from_utf8(captured.0.lock().expect("buffer").clone()).expect("utf-8");
+        assert!(
+            log.contains("/notifications/hub"),
+            "the path is logged: {log}"
+        );
+        assert!(!log.contains("secret"), "the access token leaked: {log}");
+        assert!(!log.contains("token"), "the query leaked: {log}");
+        assert!(!log.contains("xyz"), "the query leaked: {log}");
+    }
 
     #[test]
     fn a_failed_fips_check_stops_the_server_and_says_why() {

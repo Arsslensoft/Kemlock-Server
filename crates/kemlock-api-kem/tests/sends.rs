@@ -236,6 +236,58 @@ async fn the_owners_routes_need_a_signed_in_device() {
 }
 
 #[tokio::test]
+async fn a_send_sealed_for_another_key_version_is_a_409_with_the_current_one() {
+    let rig = Rig::signed_in().await;
+    // The store says the account is at key version 2.
+    rig.sends.set_account_key_version(2);
+    let sealed = |version: u32| {
+        let mut key = version.to_be_bytes().to_vec();
+        key.extend([2u8; 60]);
+        b64(&key)
+    };
+
+    // A new Send names its key version in the first four bytes of its sealed key.
+    let stale = rig
+        .call(
+            "POST",
+            "/kem/v1/sends",
+            Some(rig.note_body(json!({"sealedKey": sealed(1)}))),
+        )
+        .await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    assert_eq!(stale.json()["currentKeyVersion"], 2);
+    assert_eq!(rig.sends.count(), 0);
+    let made = rig
+        .make(rig.note_body(json!({"sealedKey": sealed(2)})))
+        .await;
+    let id = made["id"].as_str().expect("an id").to_owned();
+
+    // An edit says which version it was sealed for.
+    let edit = |key_version: Option<u32>| {
+        let mut body = json!({
+            "meta": b64(&[9; 40]),
+            "hideEmail": false,
+            "disabled": false,
+            "deletionAt": rig.deletion(),
+        });
+        if let Some(version) = key_version {
+            body["keyVersion"] = json!(version);
+        }
+        let uri = format!("/kem/v1/sends/{id}");
+        let rig = &rig;
+        async move { rig.call("PUT", &uri, Some(body)).await }
+    };
+    let stale = edit(Some(1)).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    assert_eq!(stale.json()["currentKeyVersion"], 2);
+    assert_eq!(edit(Some(2)).await.status, StatusCode::OK);
+    // An old client sends none, and is accepted.
+    assert_eq!(edit(None).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn a_note_is_made_listed_read_changed_and_deleted() {
     let rig = Rig::signed_in().await;
     let made = rig.make(rig.note_body(json!({"maxAccess": 5}))).await;
@@ -692,6 +744,40 @@ async fn wrong_passwords_are_limited_per_send() {
         open(&recipient, access, None).await.status,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn made_up_access_ids_do_not_reset_a_sends_count_and_an_address_has_its_own_limit() {
+    let rig = Rig::signed_in().await;
+    let guarded = rig
+        .make(rig.note_body(json!({"password": b64(&PROOF)})))
+        .await;
+    let access = guarded["accessId"].as_str().expect("an access id");
+    let recipient = rig.recipient();
+
+    for n in 0..10 {
+        let wrong = open(&recipient, access, Some(b"guess")).await;
+        assert_eq!(wrong.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Ids that parse but name nothing are not counted against any Send, so no number of them
+    // can push the guarded Send's count out of the limiter.
+    for n in 0..15u8 {
+        let junk = open(&recipient, &b64(&[n; 16]), Some(b"guess")).await;
+        assert_eq!(junk.status, StatusCode::NOT_FOUND, "junk {n}");
+    }
+    let still_limited = open(&recipient, access, Some(&PROOF)).await;
+    assert_eq!(still_limited.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // And one address takes only so many proofs a minute, whatever the ids.
+    let mut limited = false;
+    for n in 0..40u8 {
+        let junk = open(&recipient, &b64(&[100 + n; 16]), Some(b"guess")).await;
+        if junk.status == StatusCode::TOO_MANY_REQUESTS {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "the address was never limited");
 }
 
 // ---- file Sends ----

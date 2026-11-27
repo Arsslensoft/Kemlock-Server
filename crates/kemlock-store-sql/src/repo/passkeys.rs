@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::{StoreResult, is_unique_violation, map_db};
+use crate::owner_lock::begin_locked_at;
 use crate::store::SqlStore;
 use crate::tables::{passkeys, webauthn_challenges};
 use kemlock_app::passkeys::{ChallengeKind, ChallengeRepo, PasskeyRepo};
@@ -54,10 +55,18 @@ impl PasskeyRepo for SqlStore {
     }
 
     async fn insert_passkey(&self, passkey: &Passkey) -> Result<(), StoreError> {
+        // It may carry a wrap of the root key, so it is written under the account's lock.
+        let txn = begin_locked_at(
+            self,
+            passkey.user,
+            passkey.prf_wrap.as_ref().map(|wrap| wrap.key_version),
+        )
+        .await?;
         passkeys::Entity::insert(passkeys::active(passkey))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
+        txn.commit().await.store()?;
         Ok(())
     }
 
@@ -132,17 +141,28 @@ impl PasskeyRepo for SqlStore {
     ) -> Result<(), StoreError> {
         let wrapped_key: Option<Vec<u8>> = wrap.map(|w| w.wrapped_key.clone());
         let key_version: Option<i64> = wrap.map(|w| i64::from(w.key_version));
+        let txn = begin_locked_at(self, user, wrap.map(|w| w.key_version)).await?;
         let result = passkeys::Entity::update_many()
             .col_expr(passkeys::Column::PrfWrappedKey, Expr::value(wrapped_key))
             .col_expr(passkeys::Column::PrfKeyVersion, Expr::value(key_version))
             .filter(passkeys::Column::UserId.eq(user.0))
             .filter(passkeys::Column::Id.eq(id.0))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
-        if result.rows_affected == 0 && !self.has_passkey(user, id).await? {
-            return Err(StoreError::NotFound);
+        if result.rows_affected == 0 {
+            // MySQL counts only changed rows: tell "same value" from "no such row".
+            let held = passkeys::Entity::find()
+                .filter(passkeys::Column::UserId.eq(user.0))
+                .filter(passkeys::Column::Id.eq(id.0))
+                .count(&txn)
+                .await
+                .store()?;
+            if held == 0 {
+                return Err(StoreError::NotFound);
+            }
         }
+        txn.commit().await.store()?;
         Ok(())
     }
 }

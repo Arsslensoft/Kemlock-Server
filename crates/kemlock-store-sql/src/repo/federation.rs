@@ -15,14 +15,18 @@ use crate::tables::federation::{
     change_meta, home_records, item_siblings, peer_cursors, peer_log_switches, peers,
     vault_federation,
 };
-use crate::tables::federation_wiring::federation_erasures;
+use crate::tables::federation_keys::{
+    peer_held_rotations, peer_key_history, peer_pending_addresses, peer_trusted_addresses,
+};
+use crate::tables::federation_wiring::{federation_erasures, peer_blob_cursors, vault_rank_pins};
 use crate::tables::items::{self, owner_parts};
+use crate::tables::space_tables::item_collections;
 use crate::tables::{changes, server_meta};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::{Item, ItemId, Owner, Revision, ServerId, VersionVector};
 use kemlock_federation::FedError;
 use kemlock_federation::change::{ChangeRecord, MAX_LINEAGE};
-use kemlock_federation::conflict::{self, Version};
+use kemlock_federation::conflict::{self, Rank, Version};
 use kemlock_federation::hashtree::{Leaf, leaf_digest};
 use kemlock_federation::home::VaultFederation;
 use kemlock_federation::ports::{
@@ -230,6 +234,29 @@ async fn ensure_meta(
     Ok((lineage, None))
 }
 
+/// The collection each item of a space is in, for the versions about to be exported.
+async fn collections_of(
+    txn: &DatabaseTransaction,
+    items: &[ItemId],
+) -> Result<HashMap<Uuid, kemlock_domain::spaces::CollectionId>, StoreError> {
+    if items.is_empty() {
+        return Ok(HashMap::new());
+    }
+    Ok(item_collections::Entity::find()
+        .filter(item_collections::Column::ItemId.is_in(items.iter().map(|i| i.0)))
+        .all(txn)
+        .await
+        .store()?
+        .into_iter()
+        .map(|row| {
+            (
+                row.item_id,
+                kemlock_domain::spaces::CollectionId(row.collection_id),
+            )
+        })
+        .collect())
+}
+
 async fn export_in(
     txn: &DatabaseTransaction,
     server: ServerId,
@@ -276,12 +303,22 @@ async fn export_in(
     versions.truncate(page_len);
 
     let mut next = since.clone();
+    let collections = collections_of(
+        txn,
+        &versions
+            .iter()
+            .filter(|i| matches!(i.owner, Owner::Space(_)))
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     let mut entries = Vec::with_capacity(versions.len());
     for item in versions {
         next.observe(&item.change);
         let (_, siblings) = held_versions(txn, item.id).await?;
         let (lineage, signature) = ensure_meta(txn, server, &item, &keys_of(&siblings)).await?;
         entries.push(Exported {
+            collection: collections.get(&item.id.0).copied(),
             item,
             lineage,
             signature,
@@ -301,6 +338,11 @@ async fn export_items_in(
     ids: &[ItemId],
 ) -> Result<Vec<Exported>, StoreError> {
     lock_meta(txn).await?;
+    let collections = if matches!(owner, Owner::Space(_)) {
+        collections_of(txn, ids).await?
+    } else {
+        HashMap::new()
+    };
     let mut out = Vec::new();
     for id in ids {
         let (head, siblings) = held_versions(txn, *id).await?;
@@ -311,6 +353,7 @@ async fn export_items_in(
             }
             let (lineage, signature) = ensure_meta(txn, server, &item, &sibling_keys).await?;
             out.push(Exported {
+                collection: collections.get(&item.id.0).copied(),
                 item,
                 lineage,
                 signature,
@@ -366,6 +409,7 @@ async fn apply_in(
     server: ServerId,
     record: &ChangeRecord,
     signature: &[u8],
+    rank: Rank,
 ) -> Result<ApplyOutcome, StoreError> {
     lock_meta(txn).await?;
     let key = record.key();
@@ -386,6 +430,15 @@ async fn apply_in(
         // The id belongs to another owner here: say it is taken, and nothing about that item.
         return Err(StoreError::Duplicate);
     }
+    // An item keeps the format and the kind it was made with: a record that says otherwise (a `bw`
+    // label on a `kem1` item, to slip past the writer checks) is refused, whoever signed it.
+    if head
+        .iter()
+        .chain(siblings.iter())
+        .any(|held| held.format != incoming.format || held.kind != incoming.kind)
+    {
+        return Ok(ApplyOutcome::Refused);
+    }
     let sibling_keys = keys_of(&siblings);
     let mut held_items: Vec<Item> = head.iter().cloned().collect();
     held_items.extend(siblings);
@@ -401,7 +454,11 @@ async fn apply_in(
         });
     }
     let held_head = head.as_ref().map(|h| ChangeKey::of(&h.change));
-    let merge = conflict::merge(&held, held_head, &Version::of(record));
+    let merge = conflict::merge_ranked(&held, held_head, &Version::of(record), rank);
+    if merge.regressed {
+        // A version replaces the head only at a higher revision (docs/federation.md, "Rollback").
+        return Ok(ApplyOutcome::Refused);
+    }
     if !merge.kept {
         return Ok(ApplyOutcome::Duplicate);
     }
@@ -475,6 +532,20 @@ async fn apply_in(
             .exec(txn)
             .await
             .store()?;
+    }
+    // The item is in the collection its newest version names.
+    if merge.head == key
+        && let (Owner::Space(space), Some(collection)) = (record.owner, record.collection)
+    {
+        match super::spaces::link_item(txn, record.item, space, collection).await {
+            Ok(()) => {}
+            // The record names a collection of another space: the item keeps the link it had
+            // (if any) and the batch goes on.
+            Err(StoreError::Duplicate) => {
+                tracing::warn!(item = %record.item.0, "a federated record names another space's collection; not linked");
+            }
+            Err(other) => return Err(other),
+        }
     }
     Ok(if merge.head == key {
         ApplyOutcome::Applied
@@ -571,14 +642,87 @@ impl ReplicaStore for SqlStore {
         finish(txn, result).await
     }
 
-    async fn apply(
+    async fn apply_ranked(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
+        rank: Rank,
     ) -> Result<ApplyOutcome, StoreError> {
         let txn = self.writer().begin().await.store()?;
-        let result = apply_in(&txn, self.origin(), record, signature).await;
+        let result = apply_in(&txn, self.origin(), record, signature, rank).await;
         finish(txn, result).await
+    }
+
+    async fn holds_change(&self, key: ChangeKey) -> Result<bool, StoreError> {
+        Ok(
+            changes::Entity::find_by_id((key.origin.0, to_i64(key.seq, "sequence number")?))
+                .one(self.reader())
+                .await
+                .store()?
+                .is_some(),
+        )
+    }
+
+    async fn newest_change_of(
+        &self,
+        origin: ServerId,
+    ) -> Result<Option<(u64, kemlock_domain::Hlc)>, StoreError> {
+        changes::Entity::find()
+            .filter(changes::Column::Origin.eq(origin.0))
+            .order_by_desc(changes::Column::Seq)
+            .one(self.reader())
+            .await
+            .store()?
+            .map(|row| {
+                Ok((
+                    from_i64(row.seq, "sequence number")?,
+                    kemlock_domain::Hlc(from_i64(row.hlc, "hlc")?),
+                ))
+            })
+            .transpose()
+    }
+
+    async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
+        if required {
+            kemlock_app::ports::ItemStore::require_signed_writes(
+                self,
+                owner,
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+        } else {
+            kemlock_app::ports::ItemStore::clear_signed_writes(self, owner).await
+        }
+    }
+
+    async fn owner_signed_only(&self, owner: Owner) -> Result<bool, StoreError> {
+        kemlock_app::ports::ItemStore::signed_writes_required(self, owner).await
+    }
+
+    async fn revision_ranked(&self, owner: Owner) -> Result<bool, StoreError> {
+        let (owner_type, owner_id) = owner_parts(owner);
+        Ok(vault_rank_pins::Entity::find_by_id((owner_type, owner_id))
+            .one(self.writer())
+            .await
+            .store()?
+            .is_some())
+    }
+
+    async fn pin_revision_ranking(&self, owner: Owner) -> Result<(), StoreError> {
+        let (owner_type, owner_id) = owner_parts(owner);
+        let inserted = vault_rank_pins::Entity::insert(vault_rank_pins::ActiveModel {
+            owner_type: Set(owner_type),
+            owner_id: Set(owner_id),
+            pinned_at: Set(time::OffsetDateTime::now_utc().unix_timestamp()),
+        })
+        .exec(self.writer())
+        .await;
+        match inserted {
+            Ok(_) => Ok(()),
+            // Pinned already, or by another write between the read and this one.
+            Err(err) if crate::error::is_unique_violation(&err) => Ok(()),
+            Err(err) => Err(crate::error::map_db(err)),
+        }
     }
 
     async fn leaves(&self, owner: Owner) -> Result<Vec<Leaf>, StoreError> {
@@ -747,6 +891,31 @@ impl PeerRepo for SqlStore {
             .await
             .store()?;
         self.insight_forget(id).await?;
+        peer_key_history::Entity::delete_many()
+            .filter(peer_key_history::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_pending_addresses::Entity::delete_many()
+            .filter(peer_pending_addresses::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_trusted_addresses::Entity::delete_many()
+            .filter(peer_trusted_addresses::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_held_rotations::Entity::delete_many()
+            .filter(peer_held_rotations::Column::Server.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
+        peer_blob_cursors::Entity::delete_many()
+            .filter(peer_blob_cursors::Column::Peer.eq(id.0))
+            .exec(self.writer())
+            .await
+            .store()?;
         peer_log_switches::Entity::delete_by_id(id.0)
             .exec(self.writer())
             .await

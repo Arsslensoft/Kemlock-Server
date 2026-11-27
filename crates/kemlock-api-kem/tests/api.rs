@@ -85,6 +85,10 @@ async fn the_openapi_document_names_every_route() {
         ("/kem/v1/account/two-factor/recovery-code", "post"),
         ("/kem/v1/items/{id}", "put"),
         ("/kem/v1/items:batch", "post"),
+        ("/kem/v1/owners/{owner}/signed-writes", "get"),
+        ("/kem/v1/owners/{owner}/signed-writes", "put"),
+        ("/kem/v1/owners/{owner}/signed-writes", "delete"),
+        ("/kem/v1/accounts/{id}/bundles/{version}", "get"),
         ("/kem/v1/sync", "get"),
         ("/kem/v1/sync", "post"),
         ("/kem/v1/live", "get"),
@@ -177,6 +181,26 @@ async fn prelogin(client: &Client, email: &str) -> Reply {
         .await
 }
 
+#[tokio::test]
+async fn prelogin_is_limited_per_address_and_apart_from_the_sign_in_start() {
+    let app = App::new(false);
+    let client = app.client();
+    for n in 0..10 {
+        let reply = prelogin(&client, &format!("person{n}@example.org")).await;
+        assert_eq!(reply.status, StatusCode::OK, "{n}");
+    }
+    let limited = prelogin(&client, "person10@example.org").await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.problem(), "rate-limited");
+    // The sign-in start has a budget of its own.
+    let started = client
+        .post(
+            "/kem/v1/auth/opaque/start",
+            json!({"email": "a@example.org", "request": "AAAA"}),
+        )
+        .await;
+    assert_ne!(started.status, StatusCode::TOO_MANY_REQUESTS);
+}
 #[tokio::test]
 async fn prelogin_answers_for_unknown_emails_with_a_stable_fake() {
     let app = App::new(false);
@@ -545,36 +569,201 @@ async fn asking_for_logins_never_slows_an_account_down_from_other_addresses() {
 }
 
 #[tokio::test]
-async fn failed_finishes_slow_the_account_down_from_every_address() {
+async fn wrong_passwords_lock_out_only_the_address_that_sent_them() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account.set_limit(3);
+    let wrong = [9u8; 32];
+    // A stranger sends wrong passwords for sam's email: three, then they wait, even with the
+    // right password, because the count is theirs.
+    for n in 1..=3 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+        assert_eq!(reply.problem(), "unauthorized");
+    }
+    let waiting = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waiting.problem(), "rate-limited");
+    assert_eq!(waiting.header("retry-after"), Some("1"));
+    // Sam, from another address, signs in at once: the stranger's count is not sam's.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(2)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    // Another account is not affected either, and after the wait the stranger gets a try again.
+    register(&client, "alex@example.org", None).await;
+    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
+    app.clock.advance(Duration::seconds(1));
+    let again = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+    assert_eq!(again.status, StatusCode::UNAUTHORIZED);
+    let doubled = sign_in_from(&client, "sam@example.org", &wrong, peer(1)).await;
+    assert_eq!(doubled.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(doubled.header("retry-after"), Some("2"));
+}
+
+#[tokio::test]
+async fn wrong_passwords_from_many_addresses_only_slow_the_account_and_the_right_one_gets_in() {
     let app = App::new(true);
     let client = app.client();
     register_and_sign_in(&client, "sam@example.org").await;
     let wrong = [9u8; 32];
-    // Ten wrong passwords, each from another address, so no per-IP limit is involved.
+    // Ten wrong passwords, each from another address, so no hard limit is involved.
     for n in 1..=10u8 {
         let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
-        assert_eq!(reply.problem(), "unauthorized");
     }
-    // The account now waits, whoever asks, even with the right password.
-    let slowed = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
-    assert_eq!(slowed.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(slowed.problem(), "rate-limited");
-    assert_eq!(slowed.header("retry-after"), Some("1"));
-    // Another account is not affected.
-    register(&client, "alex@example.org", None).await;
-    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(51)).await;
-    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
-    // After the delay the right password signs sam in, and clears the count.
-    app.clock.advance(Duration::seconds(1));
-    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(52)).await;
+    // The account is slowed now, whoever asks: the right password still signs in, a moment late.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
-    let again = sign_in_from(&client, "sam@example.org", &wrong, peer(53)).await;
-    assert_eq!(
-        again.status,
-        StatusCode::UNAUTHORIZED,
-        "the count started again"
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "held back about a second: {:?}",
+        started.elapsed()
     );
+    // And a right password clears the slowdown.
+    let started = std::time::Instant::now();
+    let again = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(51)).await;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.json());
+    assert!(started.elapsed() < std::time::Duration::from_millis(500));
+}
+
+#[tokio::test]
+async fn wrong_passwords_spread_over_many_addresses_slow_the_account_but_never_lock_it() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account_cap.set_limit(5);
+    let wrong = [9u8; 32];
+    // Five wrong passwords, each from its own address, so no per-address limit is involved.
+    for n in 1..=5u8 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Past the cap the account's password checks are held back, a right password included, but
+    // not refused: many addresses must not be able to keep the owner out.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "held back about a second: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn one_password_finish_at_a_time_per_account_a_second_apart_and_none_refused() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    register(&client, "alex@example.org", None).await;
+    let gap = std::time::Duration::from_millis(400);
+    app.api.limits.finish_gate.set_interval(gap);
+    let wrong = [9u8; 32];
+
+    // Many wrong passwords from many addresses, past every count: each is told it is wrong, none
+    // is refused for how many came before.
+    app.api.limits.account_cap.set_limit(3);
+    for n in 1..=6u8 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // The right password from a new address still signs in: late, never refused.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert!(
+        started.elapsed() >= gap,
+        "held back: {:?}",
+        started.elapsed()
+    );
+
+    // Two finishes at once for one account run one after the other, a gap apart.
+    app.api.limits.account_cap.set_limit(100);
+    let both = std::time::Instant::now();
+    let (first, second) = tokio::join!(
+        sign_in_from(&client, "alex@example.org", &PASSWORD, peer(60)),
+        sign_in_from(&client, "alex@example.org", &PASSWORD, peer(61)),
+    );
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
+    assert_eq!(second.status, StatusCode::OK, "{:?}", second.json());
+    assert!(
+        both.elapsed() >= gap,
+        "a gap between the two: {:?}",
+        both.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn made_up_login_states_spend_no_one_s_attempts() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account.set_limit(3);
+    app.api.limits.account_cap.set_limit(3);
+    // Twenty finishes with login states nobody made, from one address: refused as bad requests
+    // before anything is counted.
+    for n in 0..20 {
+        let reply = client
+            .send(
+                "POST",
+                "/kem/v1/auth/opaque/finish",
+                Req {
+                    body: Some(json!({
+                        "email": "sam@example.org",
+                        "loginState": b64(&[n as u8; 64]),
+                        "finalization": b64(&[7u8; 64]),
+                        "device": test_device(),
+                    })),
+                    peer: Some(peer(1)),
+                    ..Req::default()
+                },
+            )
+            .await;
+        assert_eq!(reply.status, StatusCode::BAD_REQUEST, "try {n}");
+    }
+    // Neither that address nor the account is the worse for it.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn finishes_that_never_reach_the_password_spend_no_one_s_attempts() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    register(&client, "alex@example.org", None).await;
+    app.api.limits.account.set_limit(3);
+    // A genuine login state made for another account, sent with sam's email.
+    let mut wrong_account = finish_body(&client, "alex@example.org", &PASSWORD).await;
+    wrong_account["email"] = json!("sam@example.org");
+    // A genuine login state for sam with a device identifier that is empty.
+    let mut bad_device = finish_body(&client, "sam@example.org", &PASSWORD).await;
+    bad_device["device"] = json!({
+        "name": "Test device",
+        "kind": "kemlock-cli",
+        "bitwardenDeviceIdentifier": "",
+    });
+    for n in 0..20 {
+        for body in [&wrong_account, &bad_device] {
+            let reply = client
+                .send(
+                    "POST",
+                    "/kem/v1/auth/opaque/finish",
+                    Req {
+                        body: Some(body.clone()),
+                        peer: Some(peer(1)),
+                        ..Req::default()
+                    },
+                )
+                .await;
+            assert_eq!(reply.status, StatusCode::BAD_REQUEST, "try {n}");
+        }
+    }
+    // Neither that address nor the account is the worse for it.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
 }
 
 /// Registers `email` (signups on), enrols and confirms a TOTP method, and returns its secret.
@@ -675,6 +864,61 @@ async fn wrong_second_step_codes_slow_the_account_down_whatever_challenge_or_add
     let right = totp_now(&app, &secret);
     let ok = second_step_from(&client, &challenge, &right, peer(61)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn second_step_attempts_are_counted_in_the_store_so_every_replica_sees_them() {
+    let app = App::new(true);
+    let client = app.client();
+    let secret = two_step_account(&app, &client, "sam@example.org").await;
+    for n in 1..=5u8 {
+        let challenge = challenge_from(&client, "sam@example.org", peer(n)).await;
+        let wrong = wrong_code(&app, &secret);
+        let reply = second_step_from(&client, &challenge, &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Another replica of the same deployment has memory of its own and the same database: it
+    // turns the account away too, even with the right code.
+    let other = app.replica_client();
+    let challenge = challenge_from(&other, "sam@example.org", peer(70)).await;
+    let right = totp_now(&app, &secret);
+    let waiting = second_step_from(&other, &challenge, &right, peer(70)).await;
+    assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(waiting.problem(), "rate-limited");
+    assert_eq!(waiting.header("retry-after"), Some("1"));
+
+    // After the wait the right code works there, and clears the count for both.
+    app.clock.advance(Duration::seconds(1));
+    let challenge = challenge_from(&other, "sam@example.org", peer(71)).await;
+    let right = totp_now(&app, &secret);
+    let ok = second_step_from(&other, &challenge, &right, peer(71)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    let wrong = wrong_code(&app, &secret);
+    let challenge = challenge_from(&client, "sam@example.org", peer(72)).await;
+    let again = second_step_from(&client, &challenge, &wrong, peer(72)).await;
+    assert_eq!(
+        again.status,
+        StatusCode::UNAUTHORIZED,
+        "the count started again"
+    );
+}
+
+#[tokio::test]
+async fn an_account_is_given_only_so_many_second_step_challenges_in_a_while() {
+    let app = App::new(true);
+    let client = app.client();
+    two_step_account(&app, &client, "sam@example.org").await;
+    // Whoever holds the password can ask for challenges, each a place to guess codes on; each
+    // from its own address, so no per-address limit is involved.
+    for n in 1..=10u8 {
+        challenge_from(&client, "sam@example.org", peer(n)).await;
+    }
+    let eleventh = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(11)).await;
+    assert_eq!(eleventh.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(eleventh.problem(), "rate-limited");
+    // A challenge lives five minutes; some time on, the account is given another.
+    app.clock.advance(Duration::seconds(301));
+    challenge_from(&client, "sam@example.org", peer(12)).await;
 }
 
 #[tokio::test]
@@ -1006,7 +1250,7 @@ async fn registration_refuses_weak_kdf_settings() {
                 "userId": user.to_string(), "email": "sam@example.org", "upload": b64(&upload),
                 "kdf": {"memoryKib": 65536, "iterations": 1, "parallelism": 4, "salt": b64(&[4u8; 16])},
                 "publicBundle": b64(&fakes::bundle(user)),
-                "bundleSignature": b64(&vec![0x11u8; kemlock_app::register::BUNDLE_SIGNATURE_LEN]),
+                "bundleSignature": b64(&fakes::bundle_signature(user)),
                 "sealedPrivateKeys": b64(&[0x22u8; 64]),
                 "wrappedRootKey": b64(&[0x33u8; kemlock_app::register::WRAPPED_ROOT_KEY_LEN]),
             }),
@@ -1041,7 +1285,7 @@ async fn registration_refuses_a_salt_that_is_not_sixteen_bytes() {
                     "userId": user.to_string(), "email": "sam@example.org", "upload": b64(&upload),
                     "kdf": {"memoryKib": 65536, "iterations": 3, "parallelism": 4, "salt": b64(&salt)},
                     "publicBundle": b64(&fakes::bundle(user)),
-                    "bundleSignature": b64(&vec![0x11u8; kemlock_app::register::BUNDLE_SIGNATURE_LEN]),
+                    "bundleSignature": b64(&fakes::bundle_signature(user)),
                     "sealedPrivateKeys": b64(&[0x22u8; 64]),
                     "wrappedRootKey": b64(&[0x33u8; kemlock_app::register::WRAPPED_ROOT_KEY_LEN]),
                 }),
@@ -1149,20 +1393,20 @@ async fn a_proof_can_be_used_once() {
     let app = App::new(false);
     let client = app.client();
     // Learn the nonce.
-    client.post("/kem/v1/auth/token", token_request()).await;
-    let proof = client.proof_for("POST", "/kem/v1/auth/token", None);
+    client.post("/kem/v1/auth/opaque/start", json!({})).await;
+    let proof = client.proof_for("POST", "/kem/v1/auth/opaque/start", None);
     let req = Req {
-        body: Some(token_request()),
+        body: Some(json!({})),
         proof: Some(proof),
         ..Req::default()
     };
-    let first = client.once("POST", "/kem/v1/auth/token", &req).await;
+    let first = client.once("POST", "/kem/v1/auth/opaque/start", &req).await;
     assert_eq!(
         first.status,
         StatusCode::BAD_REQUEST,
         "the proof was accepted"
     );
-    let replay = client.once("POST", "/kem/v1/auth/token", &req).await;
+    let replay = client.once("POST", "/kem/v1/auth/opaque/start", &req).await;
     assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
     assert_eq!(replay.problem(), "invalid-dpop-proof");
 }
@@ -1222,6 +1466,36 @@ async fn a_made_up_access_token_never_takes_room_in_the_replay_set() {
         .await;
     assert_eq!(real.status, StatusCode::OK);
     assert_eq!(app.api.dpop.tracked(), before + 1);
+}
+
+#[tokio::test]
+async fn one_device_may_put_only_so_many_authenticated_proofs_in_the_replay_set() {
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let other_client = app.client();
+    let other = register_and_sign_in(&other_client, "alex@example.org").await;
+    app.api.limits.device_proof.set_limit(5);
+
+    let before = app.api.dpop.tracked();
+    for n in 0..5 {
+        let reply = client
+            .get_authed("/kem/v1/sync", &session.access_token)
+            .await;
+        assert_eq!(reply.status, StatusCode::OK, "request {n}");
+    }
+    // The sixth waits, before its proof is looked at: it takes no room.
+    let limited = client
+        .get_authed("/kem/v1/sync", &session.access_token)
+        .await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.problem(), "rate-limited");
+    assert_eq!(app.api.dpop.tracked(), before + 5);
+    // Another device is not held back by it.
+    let ok = other_client
+        .get_authed("/kem/v1/sync", &other.access_token)
+        .await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
 }
 
 #[tokio::test]
@@ -1377,6 +1651,40 @@ async fn a_changed_security_stamp_ends_the_session() {
 
 fn refresh_body(token: &str) -> serde_json::Value {
     json!({"grantType": "refresh_token", "refreshToken": token})
+}
+
+#[tokio::test]
+async fn a_refresh_proof_is_remembered_only_once_the_refresh_worked() {
+    let app = App::new(true);
+    let client = app.client();
+    let session = register_and_sign_in(&client, "sam@example.org").await;
+    let open_before = app.api.dpop.tracked_open();
+    let total_before = app.api.dpop.tracked();
+
+    // Refreshes that lead nowhere take no room in either replay set, so they can't fill them.
+    for _ in 0..5 {
+        let bad = client
+            .post("/kem/v1/auth/token", refresh_body("not-a-refresh-token"))
+            .await;
+        assert_eq!(bad.status, StatusCode::UNAUTHORIZED, "{:?}", bad.json());
+    }
+    assert_eq!(app.api.dpop.tracked(), total_before);
+
+    // One that works is remembered with the sessions' proofs, not in the open set, and is then
+    // a replay.
+    let proof = client.proof_for("POST", "/kem/v1/auth/token", None);
+    let req = Req {
+        body: Some(refresh_body(&session.refresh_token)),
+        proof: Some(proof),
+        ..Req::default()
+    };
+    let ok = client.once("POST", "/kem/v1/auth/token", &req).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert_eq!(app.api.dpop.tracked_open(), open_before);
+    assert_eq!(app.api.dpop.tracked(), total_before + 1);
+    let replay = client.once("POST", "/kem/v1/auth/token", &req).await;
+    assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(replay.problem(), "invalid-dpop-proof");
 }
 
 #[tokio::test]
@@ -2174,4 +2482,450 @@ async fn a_live_session_ends_with_a_stamp_change_a_removed_device_or_a_reuse() {
     changed.security_stamp = uuid::Uuid::from_u128(99);
     app.store.put_user(changed);
     assert!(!live(account.security_stamp, jkt).await);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Signed item writes (docs/crypto.md, "Signed item writes")
+
+/// `item` signed by the account `user` with `key`, as a device would, for the write of it.
+fn signed_with(
+    key: &kemlock_crypto::sig1::SigningKey,
+    user: &str,
+    mut item: serde_json::Value,
+) -> serde_json::Value {
+    use kemlock_crypto::{item_write, owner::Owner};
+    let writer = user.parse::<kemlock_domain::UserId>().expect("a user id");
+    let deleted = item["deleted"].as_bool().unwrap_or(false);
+    let ciphertext = item["ciphertext"].as_str().map(unb64);
+    let item_key = item["itemKey"].as_str().map(unb64);
+    let sealed = match (&ciphertext, &item_key) {
+        (Some(c), Some(k)) => Some((c.as_slice(), k.as_slice())),
+        _ => None,
+    };
+    let id = item["id"]
+        .as_str()
+        .and_then(|s| s.parse::<ItemId>().ok())
+        .expect("an item id");
+    let statement = item_write::Statement {
+        owner: Owner::user(*writer.as_bytes()),
+        item_id: *id.as_bytes(),
+        kind: "login",
+        revision: item["revision"].as_u64().expect("a revision"),
+        deleted,
+        envelope: item_write::envelope_hash(1, sealed).expect("the hash"),
+        writer: *writer.as_bytes(),
+        writer_key_version: 1,
+        collection: None,
+    };
+    item["writer"] = json!(user);
+    item["writerKeyVersion"] = json!(1);
+    item["writeSignature"] = json!(b64(&statement.sign(key).expect("signs")));
+    item
+}
+
+#[tokio::test]
+async fn a_signed_write_is_stored_and_served_back_and_only_the_owners_ask_makes_the_vault_signed_only()
+ {
+    let (_app, client, session) = signed_in().await;
+    let key = common::fakes::bundle_key();
+    let id = new_item_id();
+
+    let created = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+    let shown = created.json();
+    assert_eq!(shown["writer"], session.user_id);
+    assert_eq!(shown["writerKeyVersion"], 1);
+    assert!(shown["writeSignature"].is_string());
+
+    // Sync serves the signature back.
+    let synced = client
+        .send(
+            "GET",
+            "/kem/v1/sync",
+            Req {
+                access_token: Some(&session.access_token),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(synced.status, StatusCode::OK);
+    let items = synced.json()["items"].clone();
+    assert_eq!(items[0]["writeSignature"], shown["writeSignature"]);
+
+    // A signed write does not make the vault signed-only: an unsigned one is still accepted.
+    let unsigned = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "1"),
+        item_json(&session.user_id, &id, 2),
+    )
+    .await;
+    assert_eq!(unsigned.status, StatusCode::OK, "{:?}", unsigned.json());
+
+    // After the owner asks, it is refused, and a signed one is not.
+    let asked = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let unsigned = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "2"),
+        item_json(&session.user_id, &id, 3),
+    )
+    .await;
+    assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        unsigned.json()["type"],
+        "urn:kemlock:problem:signature-required"
+    );
+    let signed = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "2"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 3)),
+    )
+    .await;
+    assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+}
+
+#[tokio::test]
+async fn a_signature_by_another_key_or_over_another_item_is_refused_and_stores_nothing() {
+    let (_app, client, session) = signed_in().await;
+    let id = new_item_id();
+    let thief = kemlock_crypto::sig1::SigningKey::from_bytes(&[0x66; 64]);
+    let forged = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(
+            &thief,
+            &session.user_id,
+            item_json(&session.user_id, &id, 1),
+        ),
+    )
+    .await;
+    assert_eq!(forged.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        forged.json()["type"],
+        "urn:kemlock:problem:invalid-signature"
+    );
+
+    // A genuine signature of one write, sent with another's ciphertext.
+    let key = common::fakes::bundle_key();
+    let mut swapped = signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1));
+    swapped["ciphertext"] = json!(b64(&kemlock_crypto::rand::bytes::<64>()));
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), swapped).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A signature with no writer, or by another account, is refused too.
+    let mut partial = signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1));
+    partial.as_object_mut().expect("an object").remove("writer");
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), partial).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    let mut other = signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1));
+    other["writer"] = json!(uuid::Uuid::from_u128(5).to_string());
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), other).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Nothing was stored: the id is still free, and an unsigned write is still accepted.
+    let created = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        item_json(&session.user_id, &id, 1),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+}
+
+#[tokio::test]
+async fn a_signed_delete_is_accepted_and_an_unsigned_one_is_not_once_asked_for() {
+    let (_app, client, session) = signed_in().await;
+    let key = common::fakes::bundle_key();
+    let id = new_item_id();
+    put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    let asked = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let tombstone = |revision: u64| {
+        json!({
+            "id": id,
+            "owner": format!("user:{}", session.user_id),
+            "kind": "login",
+            "format": "kem1",
+            "revision": revision,
+            "keyVersion": 1,
+            "deleted": true,
+        })
+    };
+    let unsigned = put(&client, &session, &id, ("if-match", "1"), tombstone(2)).await;
+    assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let signed = put(
+        &client,
+        &session,
+        &id,
+        ("if-match", "1"),
+        signed_with(&key, &session.user_id, tombstone(2)),
+    )
+    .await;
+    assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+    assert_eq!(signed.json()["deleted"], true);
+    assert!(signed.json()["writeSignature"].is_string());
+}
+
+/// `method` on the signed-writes flag of `owner`.
+async fn signed_writes_of(
+    client: &Client,
+    session: &Session,
+    owner: &str,
+    method: &str,
+    body: Option<serde_json::Value>,
+) -> Reply {
+    client
+        .send(
+            method,
+            &format!("/kem/v1/owners/{owner}/signed-writes"),
+            Req {
+                access_token: Some(&session.access_token),
+                body,
+                ..Req::default()
+            },
+        )
+        .await
+}
+
+/// `method` on the flag of the caller's own vault.
+async fn signed_writes_call(
+    client: &Client,
+    session: &Session,
+    method: &str,
+    body: Option<serde_json::Value>,
+) -> Reply {
+    let owner = format!("user:{}", session.user_id);
+    signed_writes_of(client, session, &owner, method, body).await
+}
+
+/// The two OPAQUE messages of a fresh login of `sam@example.org`, as a re-authenticating request
+/// carries them.
+async fn reauth_body(client: &Client) -> serde_json::Value {
+    let (state, request) =
+        kemlock_crypto::opaque::client_login_start(&PASSWORD).expect("client login start");
+    let started = client
+        .post(
+            "/kem/v1/auth/opaque/start",
+            json!({"email": "sam@example.org", "request": b64(&request)}),
+        )
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.json());
+    let started = started.json();
+    let response = unb64(started["response"].as_str().expect("response"));
+    let (finalization, _, _) =
+        kemlock_crypto::opaque::client_login_finish(state, &PASSWORD, &response)
+            .expect("client login finish");
+    json!({
+        "loginState": started["loginState"],
+        "finalization": b64(&finalization),
+    })
+}
+
+#[tokio::test]
+async fn an_owner_may_ask_for_signed_writes_for_its_own_vault_only() {
+    let (_app, client, session) = signed_in().await;
+    let other = signed_writes_of(
+        &client,
+        &session,
+        &format!("user:{}", uuid::Uuid::from_u128(9)),
+        "PUT",
+        None,
+    )
+    .await;
+    assert_eq!(other.status, StatusCode::FORBIDDEN);
+    // A space the caller doesn't belong to doesn't show itself.
+    let space = signed_writes_of(
+        &client,
+        &session,
+        &format!("space:{}", uuid::Uuid::from_u128(9)),
+        "PUT",
+        None,
+    )
+    .await;
+    assert_eq!(space.status, StatusCode::NOT_FOUND);
+    let before = signed_writes_call(&client, &session, "GET", None).await;
+    assert_eq!(before.status, StatusCode::OK);
+    assert_eq!(before.json()["required"], false);
+    let own = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(own.status, StatusCode::NO_CONTENT);
+    let after = signed_writes_call(&client, &session, "GET", None).await;
+    assert_eq!(after.json()["required"], true);
+    let stranger = signed_writes_of(
+        &client,
+        &session,
+        &format!("user:{}", uuid::Uuid::from_u128(9)),
+        "GET",
+        None,
+    )
+    .await;
+    assert_eq!(stranger.status, StatusCode::FORBIDDEN);
+
+    let id = new_item_id();
+    let unsigned = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        item_json(&session.user_id, &id, 1),
+    )
+    .await;
+    assert_eq!(unsigned.status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn turning_signed_writes_off_asks_for_the_password_again() {
+    let (_app, client, session) = signed_in().await;
+    let asked = signed_writes_call(&client, &session, "PUT", None).await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT);
+    let id = new_item_id();
+    let write = |n: u64| item_json(&session.user_id, &id, n);
+
+    // A session alone, or with garbage for the password, turns nothing off.
+    let bare = signed_writes_call(&client, &session, "DELETE", Some(json!({}))).await;
+    assert_eq!(bare.status, StatusCode::BAD_REQUEST);
+    let wrong = signed_writes_call(
+        &client,
+        &session,
+        "DELETE",
+        Some(json!({"loginState": b64(&[3u8; 64]), "finalization": b64(&[7u8; 64])})),
+    )
+    .await;
+    assert!(
+        wrong.status == StatusCode::BAD_REQUEST || wrong.status == StatusCode::UNAUTHORIZED,
+        "{:?}",
+        wrong.json()
+    );
+    let refused = put(&client, &session, &id, ("if-none-match", "*"), write(1)).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // With the password it is off, and unsigned writes come back. Again is the same answer.
+    let body = reauth_body(&client).await;
+    let cleared = signed_writes_call(&client, &session, "DELETE", Some(body.clone())).await;
+    assert_eq!(
+        cleared.status,
+        StatusCode::NO_CONTENT,
+        "{:?}",
+        cleared.json()
+    );
+    let accepted = put(&client, &session, &id, ("if-none-match", "*"), write(1)).await;
+    assert_eq!(
+        accepted.status,
+        StatusCode::CREATED,
+        "{:?}",
+        accepted.json()
+    );
+    // The login state is good once.
+    let replayed = signed_writes_call(&client, &session, "DELETE", Some(body)).await;
+    assert_eq!(replayed.status, StatusCode::BAD_REQUEST);
+    let again = reauth_body(&client).await;
+    let again = signed_writes_call(&client, &session, "DELETE", Some(again)).await;
+    assert_eq!(again.status, StatusCode::NO_CONTENT);
+
+    // Another account's vault is refused before the password is spent.
+    let stranger = reauth_body(&client).await;
+    let other = signed_writes_of(
+        &client,
+        &session,
+        &format!("user:{}", uuid::Uuid::from_u128(9)),
+        "DELETE",
+        Some(stranger),
+    )
+    .await;
+    assert_eq!(other.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn an_account_reads_its_own_bundle_by_key_version_and_a_stranger_gets_a_404() {
+    let (_app, client, session) = signed_in().await;
+    let get = |account: String, version: u32| {
+        let client = &client;
+        let token = session.access_token.clone();
+        async move {
+            client
+                .send(
+                    "GET",
+                    &format!("/kem/v1/accounts/{account}/bundles/{version}"),
+                    Req {
+                        access_token: Some(&token),
+                        ..Req::default()
+                    },
+                )
+                .await
+        }
+    };
+    let own = get(session.user_id.clone(), 1).await;
+    assert_eq!(own.status, StatusCode::OK, "{:?}", own.json());
+    let json = own.json();
+    assert_eq!(json["keyVersion"], 1);
+    let bundle = unb64(json["publicBundle"].as_str().expect("a bundle"));
+    let account: kemlock_domain::UserId = session.user_id.parse().expect("a user id");
+    assert_eq!(&bundle[17..33], account.as_bytes().as_slice());
+    assert!(json["bundleSignature"].is_string());
+
+    // A version the account never had, an account that shares no space, and one that doesn't exist
+    // are the same answer.
+    assert_eq!(
+        get(session.user_id.clone(), 2).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(uuid::Uuid::from_u128(77).to_string(), 1).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get("not-a-uuid".to_owned(), 1).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn a_signature_under_an_old_key_version_asks_the_device_to_unlock_again() {
+    let (app, client, session) = signed_in().await;
+    let key = common::fakes::bundle_key();
+    // The account replaced its keys since this device unlocked: its row is at version 2.
+    let user = session
+        .user_id
+        .parse::<kemlock_domain::UserId>()
+        .expect("a user id");
+    let mut account = app.store.user(user).expect("the account");
+    account.key_version = 2;
+    app.store.put_user(account);
+
+    let id = new_item_id();
+    let stale = put(
+        &client,
+        &session,
+        &id,
+        ("if-none-match", "*"),
+        signed_with(&key, &session.user_id, item_json(&session.user_id, &id, 1)),
+    )
+    .await;
+    assert_eq!(stale.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let json = stale.json();
+    assert_eq!(json["type"], "urn:kemlock:problem:key-version-stale");
+    assert_eq!(json["currentKeyVersion"], 2);
 }

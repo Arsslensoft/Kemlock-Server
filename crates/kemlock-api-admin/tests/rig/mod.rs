@@ -16,6 +16,9 @@ use kemlock_app::admin::{
     AdminError, FnEnv, MigrationRecord, MigrationRequest, MigrationRunner, MigrationState,
     MigrationStatus, PasskeyStepUp, PushRelayControl,
 };
+use kemlock_app::bitwarden::{
+    Asker, BwInviteLinks, InviteLinkError, MemberInviteLink, SharedInviteLinks,
+};
 use kemlock_app::notices::BoxFuture;
 use kemlock_app::ports::{Clock, SecretSeal, TwoFactor, TwoFactorMethod, TwoFactorRepo};
 use kemlock_domain::{Role, SpaceId, UserId};
@@ -367,5 +370,90 @@ impl MigrationRunner for FakeMigration {
                 .push(request.clone());
             record.running(request.by, request.from).await
         })
+    }
+}
+
+/// Stands in for the Bitwarden API's invitation links: it records who asked about whom, and
+/// answers what a test set.
+#[derive(Clone)]
+pub(crate) struct FakeInviteLinks {
+    asked: Arc<Mutex<Vec<(SpaceId, UserId, Asker)>>>,
+    answer: Arc<Mutex<Result<MemberInviteLink, InviteLinkError>>>,
+    /// Who is invited with a Bitwarden invitation, in an organization; None outside one.
+    pending: Arc<Mutex<Option<Vec<UserId>>>>,
+}
+
+impl FakeInviteLinks {
+    pub(crate) fn answering(answer: Result<MemberInviteLink, InviteLinkError>) -> Self {
+        FakeInviteLinks {
+            asked: Arc::default(),
+            answer: Arc::new(Mutex::new(answer)),
+            pending: Arc::default(),
+        }
+    }
+
+    /// A link that works.
+    pub(crate) fn working() -> Self {
+        Self::answering(Ok(MemberInviteLink {
+            link: "https://vault.test/#/accept-organization/?token=secret".to_owned(),
+            expires_at: 1_800_000_000,
+        }))
+    }
+
+    /// Makes every space an organization where these members are invited (from now on, for a rig
+    /// that was already built on these links).
+    pub(crate) fn set_pending(&self, users: Vec<UserId>) {
+        *self.pending.lock().expect("the lock isn't poisoned") = Some(users);
+    }
+
+    pub(crate) fn asked(&self) -> Vec<(SpaceId, UserId, Asker)> {
+        self.asked.lock().expect("the lock isn't poisoned").clone()
+    }
+
+    pub(crate) fn shared(&self) -> SharedInviteLinks {
+        Arc::new(self.clone())
+    }
+}
+
+impl BwInviteLinks for FakeInviteLinks {
+    fn member_link(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        asker: Asker,
+    ) -> BoxFuture<'_, Result<MemberInviteLink, InviteLinkError>> {
+        Box::pin(async move {
+            self.asked
+                .lock()
+                .expect("the lock isn't poisoned")
+                .push((space, member, asker));
+            self.answer.lock().expect("the lock isn't poisoned").clone()
+        })
+    }
+
+    fn is_organization(&self, _space: SpaceId) -> BoxFuture<'_, bool> {
+        Box::pin(async move {
+            !matches!(
+                *self.answer.lock().expect("the lock isn't poisoned"),
+                Err(InviteLinkError::NotOrganization)
+            )
+        })
+    }
+
+    fn pending_invitations(&self, _space: SpaceId) -> BoxFuture<'_, Option<Vec<UserId>>> {
+        Box::pin(async move {
+            self.pending
+                .lock()
+                .expect("the lock isn't poisoned")
+                .clone()
+        })
+    }
+}
+
+impl Rig {
+    /// The same rig on a server whose Bitwarden API gives these invitation links.
+    pub(crate) fn with_invite_links(mut self, links: SharedInviteLinks) -> Rig {
+        self.router = self.router.layer(axum::Extension(links));
+        self
     }
 }

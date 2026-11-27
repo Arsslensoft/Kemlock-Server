@@ -1,8 +1,11 @@
 // Vault health (canvas: Health), worked out in this browser. The one network check is Pwned
-// Passwords by k-anonymity, and it is a switch the person owns.
+// Passwords by k-anonymity, and it is a switch the person owns: off until the first time they open
+// Health, when they are asked, and the answer is kept for the account (hibpChoice.ts).
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
 import { useMemo, useState } from 'react';
+import { session } from '@/app/services';
+import { useSessionState } from '@/app/session';
 import { type MessageId, useT } from '@/i18n';
 import { buttonClass, Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
@@ -12,25 +15,9 @@ import { useVault } from '@/features/vault/hooks';
 import { loginOf } from '@/features/vault/vault';
 import { type Analysis, type Issue, type IssueKind, analyse, countByKind } from './analyse';
 import { pwnedCounts } from './hibp';
+import { readHibpChoice, writeHibpChoice } from './hibpChoice';
 
-const SWITCH_KEY = 'kemlock.health.hibp';
 const dealtWith = createDismissedStore(browserStorage(), 'kemlock.health.dealtWith');
-
-function readSwitch(): boolean {
-  try {
-    return window.localStorage.getItem(SWITCH_KEY) !== 'off';
-  } catch {
-    return true;
-  }
-}
-
-function writeSwitch(on: boolean): void {
-  try {
-    window.localStorage.setItem(SWITCH_KEY, on ? 'on' : 'off');
-  } catch {
-    // The choice holds for this page only.
-  }
-}
 
 const TAGS: Record<IssueKind, { label: MessageId; bad: boolean }> = {
   exposed: { label: 'health.tag.exposed', bad: true },
@@ -60,6 +47,7 @@ export function HealthView({
   analysis,
   hibpOn,
   onHibp,
+  askHibp = false,
   checking,
   checkFailed,
   onDealtWith,
@@ -67,6 +55,8 @@ export function HealthView({
   analysis: Analysis;
   hibpOn: boolean;
   onHibp: (on: boolean) => void;
+  /** Nobody has answered yet: explain what the lookup sends, and to whom, and ask. */
+  askHibp?: boolean;
   checking?: boolean;
   checkFailed?: boolean;
   onDealtWith: (issue: Issue) => void;
@@ -88,6 +78,21 @@ export function HealthView({
           </div>
         ))}
       </div>
+
+      {askHibp ? (
+        <Notice>
+          <p>
+            <b>{t('health.hibp.ask.title')}</b>
+          </p>
+          <p>{t('health.hibp.ask.body')}</p>
+          <div className="actions">
+            <Button variant="primary" onPress={() => onHibp(true)}>
+              {t('health.hibp.ask.yes')}
+            </Button>
+            <Button onPress={() => onHibp(false)}>{t('health.hibp.ask.no')}</Button>
+          </div>
+        </Notice>
+      ) : null}
 
       {checkFailed ? (
         <Notice tone="warn" live>
@@ -184,7 +189,10 @@ export function HealthView({
 export default function Health() {
   const t = useT();
   const { active, isLoading } = useVault();
-  const [hibpOn, setHibpOn] = useState(readSwitch);
+  const account = useSessionState(session).userId ?? '';
+  // Undecided until this account has answered: nothing is sent to anyone before that.
+  const [choice, setChoice] = useState(() => readHibpChoice(account));
+  const hibpOn = choice === true;
   const [version, setVersion] = useState(0);
 
   const signature = useMemo(
@@ -226,11 +234,12 @@ export default function Health() {
     <HealthView
       analysis={analysis}
       hibpOn={hibpOn}
+      askHibp={choice === undefined}
       checking={hibpOn && lookup.isFetching}
       checkFailed={hibpOn && lookup.isError}
       onHibp={(on) => {
-        writeSwitch(on);
-        setHibpOn(on);
+        writeHibpChoice(account, on);
+        setChoice(on);
       }}
       onDealtWith={(issue) => {
         dealtWith.add(issue.id);

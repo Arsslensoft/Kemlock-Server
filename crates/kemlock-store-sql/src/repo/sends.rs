@@ -2,6 +2,7 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::{begin_locked, begin_locked_at};
 use crate::store::SqlStore;
 use crate::tables::sends::{self, untouched};
 use kemlock_app::ports::StoreError;
@@ -10,9 +11,7 @@ use kemlock_app::sends::{SendRepo, file_send_bytes};
 use kemlock_domain::UserId;
 use kemlock_domain::sends::{SendId, SendRecord};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{
-    ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect, TransactionTrait,
-};
+use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
 use time::OffsetDateTime;
 
 /// How many times a view count retries when another opener changed it between the read and the
@@ -21,21 +20,34 @@ const VIEW_RETRIES: u32 = 8;
 
 impl SendRepo for SqlStore {
     async fn add_send(&self, send: &SendRecord) -> Result<(), StoreError> {
+        // A Send's sealed key is a wrap of the owner's root key: written under the owner's lock.
+        let txn = begin_locked(self, send.owner).await?;
         sends::Entity::insert(sends::active(send)?)
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
+        txn.commit().await.store()?;
         Ok(())
     }
 
-    /// The sum and the insert in one transaction, under the store's quota gate.
     async fn add_send_within_quota(
         &self,
         send: &SendRecord,
         quota: Option<u64>,
     ) -> Result<Result<(), QuotaRefusal>, StoreError> {
+        self.add_send_within_quota_at(send, quota, None).await
+    }
+
+    /// The sum and the insert in one transaction, under the store's quota gate, and the check of
+    /// the key version the Send's sealed key is for, under the owner's lock.
+    async fn add_send_within_quota_at(
+        &self,
+        send: &SendRecord,
+        quota: Option<u64>,
+        key_version: Option<u32>,
+    ) -> Result<Result<(), QuotaRefusal>, StoreError> {
         let _gate = self.quota_gate().await;
-        let txn = self.writer().begin().await.store()?;
+        let txn = begin_locked_at(self, send.owner, key_version).await?;
         let outcome = async {
             if let (Some(_), Some(file)) = (quota, send.file) {
                 let owned = sends::Entity::find()
@@ -96,6 +108,18 @@ impl SendRepo for SqlStore {
     }
 
     async fn update_send(&self, send: &SendRecord) -> Result<(), StoreError> {
+        self.update_send_at(send, None).await
+    }
+
+    async fn update_send_at(
+        &self,
+        send: &SendRecord,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
+        // An edit writes the Send's `meta`, which is sealed under the key a rotation's install
+        // replaces. Under the owner's lock like `add_send`, it either commits before the install
+        // reads (and is re-sealed by it) or waits for the install and then writes the new meta.
+        let txn = begin_locked_at(self, send.owner, key_version).await?;
         let row = sends::ActiveModel {
             meta: Set(send.meta.clone()),
             payload: Set(send.payload.clone()),
@@ -112,12 +136,14 @@ impl SendRepo for SqlStore {
         let result = sends::Entity::update_many()
             .set(row)
             .filter(sends::Column::Id.eq(send.id.0))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
         if result.rows_affected == 0 {
+            // The transaction is dropped, which rolls it back.
             return Err(StoreError::NotFound);
         }
+        txn.commit().await.store()?;
         Ok(())
     }
 

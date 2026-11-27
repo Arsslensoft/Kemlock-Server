@@ -3775,6 +3775,8 @@ version = "0.1.4"
 dependencies = [
  "age",
  "axum",
+ "hyper",
+ "hyper-util",
  "kemlock-api-admin",
  "kemlock-api-bw",
  "kemlock-api-fed",

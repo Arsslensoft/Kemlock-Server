@@ -37,6 +37,7 @@ pub use email_change::EmailChange;
 pub use ids::{CustomFieldId, DeviceId, ItemId, ServerId, SpaceId, UserId};
 pub use item::{
     Item, ItemDraft, ItemError, ItemFormat, ItemKind, ItemLimits, ItemWrite, Revision, Sealed,
+    WriteSignature,
 };
 pub use owner::Owner;
 pub use passkeys::{Passkey, PasskeyId, PrfWrap};

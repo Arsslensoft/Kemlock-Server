@@ -73,6 +73,7 @@ impl TokenRepo for SqlStore {
             expires_at: NotSet,
             security_stamp: NotSet,
             used_at: Set(Some(utc(now))),
+            api: NotSet,
         };
         let result = refresh_tokens::Entity::update_many()
             .set(mark)
@@ -126,12 +127,23 @@ impl TokenRepo for SqlStore {
             .store()?;
         Ok(())
     }
+
+    async fn device_tokens(&self, device: DeviceId) -> Result<Vec<RefreshToken>, StoreError> {
+        refresh_tokens::Entity::find()
+            .filter(refresh_tokens::Column::DeviceId.eq(device.0))
+            .all(self.writer())
+            .await
+            .store()?
+            .into_iter()
+            .map(refresh_tokens::Model::into_domain)
+            .collect()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kemlock_app::ports::{DeviceRepo, UserRepo};
+    use kemlock_app::ports::{DeviceRepo, TokenApi, UserRepo};
     use kemlock_domain::{AccountMode, Device, DeviceKind, Email, KdfParams, Role, User, UserId};
     use time::macros::datetime;
 
@@ -187,6 +199,7 @@ mod tests {
             created_at: datetime!(2026-01-02 03:04:05 UTC),
             expires_at: datetime!(2026-02-02 03:04:05 UTC),
             used_at: None,
+            api: TokenApi::Kemlock,
         };
         TokenRepo::revoke_family(&store, family)
             .await

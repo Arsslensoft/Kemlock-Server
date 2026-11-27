@@ -1,17 +1,19 @@
 //! The words of every mail. Each notice becomes a subject, a plain-text body and an HTML body.
 //!
 //! A mail says enough for the account's owner to recognise their own activity and nothing that
-//! could open the vault: no keys, no item names, no links that carry a secret. The one link that
-//! does is the one that confirms a new sign-in address: its token proves the mailbox is the
+//! could open the vault: no keys, no item names, no links that carry a secret. The links that
+//! do are the one that confirms a new sign-in address and the one that verifies an address before
+//! its account is made: each token proves the mailbox is the
 //! person's, opens nothing by itself, and works once. Text from outside (a device name) is
 //! escaped in the HTML and kept out of subjects.
 
 use kemlock_app::devices::NewDeviceNotice;
 use kemlock_app::emergency::{EmergencyEvent, EmergencyNotice};
 use kemlock_app::notices::{
-    EmailChangeNotice, EmailChangeRequestedNotice, EmailChangedNotice, EmailTakenNotice,
-    InvitationNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, TwoStepChangedNotice,
-    TwoStepCodeNotice, TwoStepRecoveredNotice,
+    BwEmergencyInviteNotice, BwOrgInviteNotice, EmailChangeNotice, EmailChangeRequestedNotice,
+    EmailChangedNotice, EmailTakenNotice, EmergencyContactRekeyedNotice, InvitationNotice,
+    KeysRotatedNotice, Notice, PasswordChangedNotice, ProtectedActionNotice, RegisterVerifyNotice,
+    SignupVerifyNotice, TwoStepChangedNotice, TwoStepCodeNotice, TwoStepRecoveredNotice,
 };
 use kemlock_domain::DeviceKind;
 use kemlock_domain::unlock::EmergencyKind;
@@ -327,26 +329,46 @@ fn two_step_changed(notice: &TwoStepChangedNotice, brand: &Branding) -> Rendered
         "email" => "emailed codes",
         "yubikey" => "a YubiKey",
         "duo" => "Duo",
+        "totp" => "an authenticator app",
         _ => "a security key",
     };
+    // A passkey signs in on its own, so it is a way into the account, not a second step.
+    let passkey = notice.method == "passkey";
     let verb = if notice.on { "turned on" } else { "turned off" };
-    let lead = format!(
-        "On {}, {what} was {verb} as a second step of your account.",
-        when(notice.at)
-    );
+    let (lead, subject) = if passkey {
+        let (done, to_from) = if notice.on {
+            ("added", "to")
+        } else {
+            ("removed", "from")
+        };
+        (
+            format!(
+                "On {}, a passkey was {done} {to_from} your account. It can sign in without your \
+                 password.",
+                when(notice.at)
+            ),
+            format!(
+                "A passkey was {done} {to_from} your {} account",
+                brand.app_name
+            ),
+        )
+    } else {
+        (
+            format!(
+                "On {}, {what} was {verb} as a second step of your account.",
+                when(notice.at)
+            ),
+            format!(
+                "A second step was {verb} on your {} account",
+                brand.app_name
+            ),
+        )
+    };
     let body = Body::new(&[
         &lead,
         "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
     ]);
-    finish(
-        notice.to.as_str(),
-        format!(
-            "A second step was {verb} on your {} account",
-            brand.app_name
-        ),
-        &body,
-        brand,
-    )
+    finish(notice.to.as_str(), subject, &body, brand)
 }
 
 fn protected_action(notice: &ProtectedActionNotice, brand: &Branding) -> Rendered {
@@ -380,6 +402,26 @@ fn email_change(notice: &EmailChangeNotice, brand: &Branding) -> Rendered {
     finish(
         notice.to.as_str(),
         format!("Confirm your new {} sign-in address", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+fn signup_verify(notice: &SignupVerifyNotice, brand: &Branding) -> Rendered {
+    // The token is base64url, so it needs no escaping in an address.
+    let link = format!(
+        "{}/kem/v1/accounts/confirm-email?token={}",
+        brand.domain.trim_end_matches('/'),
+        notice.token
+    );
+    let body = Body::new(&[
+        "Open this link to confirm that this is your address and finish making your account:",
+        &link,
+        "It works once and runs out in 24 hours. Until you open it the account can't be used. If you didn't make an account, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("Confirm your {} account", brand.app_name),
         &body,
         brand,
     )
@@ -471,6 +513,121 @@ fn password_changed(notice: &PasswordChangedNotice, brand: &Branding) -> Rendere
     )
 }
 
+fn keys_rotated(notice: &KeysRotatedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, the keys of your account were rotated: a new root key now protects your vault, and every copy of the old one that this server held was deleted.",
+        when(notice.at)
+    );
+    let body = Body::new(&[
+        &lead,
+        "Your other devices were signed out and ask you to sign in again. A Recovery Kit made before this stopped working; if you made a new one, it is the one to keep.",
+        "If this was you, there is nothing to do. If it wasn't, someone is signed in to your account: sign in, change your password and check your devices.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("The keys of your {} account were rotated", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+/// Tells a grantor that their emergency contact rotated their keys, so the contact has to be
+/// confirmed again. It carries no key and no link.
+fn emergency_contact_rekeyed(notice: &EmergencyContactRekeyedNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "On {}, your emergency contact {} replaced the keys of their account.",
+        when(notice.at),
+        plain(notice.contact.as_str())
+    );
+    let body = Body::new(&[
+        &lead,
+        "The copy of your vault key that you sealed for them opens no more, and it was deleted. They have no emergency access to your vault until you confirm them again: open Emergency access, check their new key fingerprint with them, and confirm.",
+        "If you don't know why their keys changed, don't confirm them until you have asked them.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!(
+            "Your emergency contact replaced their keys on {}",
+            brand.app_name
+        ),
+        &body,
+        brand,
+    )
+}
+
+/// The mail of a registration that has to prove its address first. The link is the Bitwarden web
+/// vault's `finish-signup`; its token proves the mailbox is the person's, and works for 30 minutes.
+fn register_verify(notice: &RegisterVerifyNotice, brand: &Branding) -> Rendered {
+    let email: String =
+        url::form_urlencoded::byte_serialize(notice.to.as_str().as_bytes()).collect();
+    let link = format!(
+        "{}/#/finish-signup/?token={}&email={}",
+        brand.domain.trim_end_matches('/'),
+        notice.token,
+        email
+    );
+    let body = Body::new(&[
+        "Open this link to verify this address and finish creating your account:",
+        &link,
+        "It runs out in 30 minutes. If you didn't ask for an account, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("Verify your email for {}", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+/// The invitation of the Bitwarden API to an organization. The link carries the signed token of the
+/// invitation, which accepts nothing by itself: the person signs in to accept. It runs out in five days.
+fn bw_org_invite(notice: &BwOrgInviteNotice, brand: &Branding) -> Rendered {
+    let who = notice
+        .inviter
+        .as_deref()
+        .map(plain)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Someone".to_owned());
+    let lead = format!(
+        "{who} invited you to join the organization \"{}\" on {}.",
+        plain(&notice.organization),
+        brand.app_name
+    );
+    let body = Body::new(&[
+        &lead,
+        "Open this link and sign in to accept the invitation:",
+        &notice.link,
+        "It runs out in five days. An administrator then confirms you before you can see anything in it. If you don't know who this is from, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("You were invited to an organization on {}", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
+/// The invitation of the Bitwarden API to be an emergency contact.
+fn bw_emergency_invite(notice: &BwEmergencyInviteNotice, brand: &Branding) -> Rendered {
+    let lead = format!(
+        "{} named you as an emergency contact on {}.",
+        plain(&notice.grantor),
+        brand.app_name
+    );
+    let body = Body::new(&[
+        &lead,
+        "Open this link and sign in to accept:",
+        &notice.link,
+        "It runs out in five days. Accepting gives you nothing yet: they confirm you, and you may later ask for access, which they can refuse during the wait they chose. If you don't know who this is from, ignore this mail.",
+    ]);
+    finish(
+        notice.to.as_str(),
+        format!("You were named an emergency contact on {}", brand.app_name),
+        &body,
+        brand,
+    )
+}
+
 /// Writes a notice out as a mail.
 pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
     match notice {
@@ -487,6 +644,12 @@ pub fn render(notice: &Notice, brand: &Branding) -> Rendered {
         Notice::EmailTaken(n) => email_taken(n, brand),
         Notice::EmailChanged(n) => email_changed(n, brand),
         Notice::PasswordChanged(n) => password_changed(n, brand),
+        Notice::KeysRotated(n) => keys_rotated(n, brand),
+        Notice::EmergencyContactRekeyed(n) => emergency_contact_rekeyed(n, brand),
+        Notice::SignupVerify(n) => signup_verify(n, brand),
+        Notice::RegisterVerify(n) => register_verify(n, brand),
+        Notice::BwOrgInvite(n) => bw_org_invite(n, brand),
+        Notice::BwEmergencyInvite(n) => bw_emergency_invite(n, brand),
     }
 }
 
@@ -735,6 +898,45 @@ mod tests {
     }
 
     #[test]
+    fn a_turned_on_authenticator_app_and_a_new_passkey_are_named() {
+        let render_for = |method, on| {
+            render(
+                &Notice::TwoStepChanged(TwoStepChangedNotice {
+                    to: email(),
+                    at: datetime!(2026-11-26 10:05 +01:00),
+                    method,
+                    on,
+                }),
+                &brand(),
+            )
+        };
+        let totp = render_for("totp", true);
+        assert_eq!(
+            totp.subject,
+            "A second step was turned on on your Kemlock account"
+        );
+        assert!(
+            totp.text.contains("an authenticator app was turned on"),
+            "{}",
+            totp.text
+        );
+        let passkey = render_for("passkey", true);
+        assert_eq!(
+            passkey.subject,
+            "A passkey was added to your Kemlock account"
+        );
+        assert!(
+            passkey.text.contains("a passkey was added to your account"),
+            "{}",
+            passkey.text
+        );
+        assert!(
+            render_for("passkey", false)
+                .text
+                .contains("a passkey was removed from your account")
+        );
+    }
+    #[test]
     fn the_mail_to_a_new_address_carries_the_link_and_nothing_else_that_opens_anything() {
         let r = render(
             &Notice::EmailChange(EmailChangeNotice {
@@ -750,6 +952,74 @@ mod tests {
         assert!(r.html.contains(link), "{}", r.html);
         assert!(!r.subject.contains("tok_en"));
         assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_mail_to_a_new_account_carries_the_link_and_the_token_nowhere_else() {
+        let r = render(
+            &Notice::SignupVerify(SignupVerifyNotice {
+                to: email(),
+                token: "tok_en-456".to_owned(),
+            }),
+            &Branding::new("https://vault.example.com/"),
+        );
+        assert_eq!(r.to, "ada@example.com");
+        assert_eq!(r.subject, "Confirm your Kemlock account");
+        let link = "https://vault.example.com/kem/v1/accounts/confirm-email?token=tok_en-456";
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.html.contains(link), "{}", r.html);
+        assert!(!r.subject.contains("tok_en"));
+        assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_verification_mail_carries_the_link_with_the_address_encoded() {
+        let r = render(
+            &Notice::RegisterVerify(RegisterVerifyNotice {
+                to: Email::parse("new.tag@example.com").expect("email"),
+                token: "tok_en-123.sig".to_owned(),
+            }),
+            &Branding::new("https://vault.example.com/"),
+        );
+        assert_eq!(r.to, "new.tag@example.com");
+        assert_eq!(r.subject, "Verify your email for Kemlock");
+        let link = "https://vault.example.com/#/finish-signup/?token=tok_en-123.sig&email=new.tag%40example.com";
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(!r.subject.contains("tok_en"));
+        assert!(!format!("{r:?}").contains("tok_en"));
+    }
+
+    #[test]
+    fn the_bitwarden_invitations_carry_their_links() {
+        let link = "https://vault.example.com/#/accept-organization/?organizationId=o&token=tok.en";
+        let r = render(
+            &Notice::BwOrgInvite(BwOrgInviteNotice {
+                to: email(),
+                organization: "Family".to_owned(),
+                inviter: Some("sam@example.com".to_owned()),
+                link: link.to_owned(),
+            }),
+            &brand(),
+        );
+        assert_eq!(r.to, "ada@example.com");
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.text.contains("sam@example.com invited you"), "{}", r.text);
+        assert!(r.text.contains("\"Family\""));
+        assert!(!r.subject.contains("tok.en"));
+        assert!(!format!("{r:?}").contains("tok.en"));
+
+        let link = "https://vault.example.com/#/accept-emergency/?id=g&token=tok.en";
+        let r = render(
+            &Notice::BwEmergencyInvite(BwEmergencyInviteNotice {
+                to: email(),
+                grantor: "Sam".to_owned(),
+                link: link.to_owned(),
+            }),
+            &brand(),
+        );
+        assert!(r.text.contains(link), "{}", r.text);
+        assert!(r.text.contains("Sam named you as an emergency contact"));
+        assert!(!r.subject.contains("tok.en"));
     }
 
     #[test]
@@ -809,6 +1079,54 @@ mod tests {
         assert!(r.text.contains("new@example.com"), "{}", r.text);
         assert!(r.text.contains("2026-11-26 09:05 UTC"));
         assert!(!r.text.contains("confirm-email"));
+    }
+
+    #[test]
+    fn the_mail_about_rotated_keys_says_what_happened_and_holds_no_secret() {
+        let rendered = render(
+            &Notice::KeysRotated(KeysRotatedNotice {
+                to: email(),
+                at: datetime!(2026-12-02 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(rendered.to, "ada@example.com");
+        assert_eq!(
+            rendered.subject,
+            "The keys of your Kemlock account were rotated"
+        );
+        assert!(
+            rendered.text.contains("2026-12-02 09:05 UTC"),
+            "{}",
+            rendered.text
+        );
+        assert!(rendered.text.contains("other devices were signed out"));
+        assert!(rendered.text.contains("If it wasn't"));
+    }
+
+    #[test]
+    fn the_mail_to_a_grantor_whose_contact_rotated_says_to_confirm_the_contact_again() {
+        let rendered = render(
+            &Notice::EmergencyContactRekeyed(EmergencyContactRekeyedNotice {
+                to: email(),
+                contact: Email::parse("sam@example.org").expect("email"),
+                at: datetime!(2026-12-02 10:05 +01:00),
+            }),
+            &brand(),
+        );
+        assert_eq!(rendered.to, "ada@example.com");
+        assert_eq!(
+            rendered.subject,
+            "Your emergency contact replaced their keys on Kemlock"
+        );
+        assert!(
+            rendered.text.contains("sam@example.org"),
+            "{}",
+            rendered.text
+        );
+        assert!(rendered.text.contains("2026-12-02 09:05 UTC"));
+        assert!(rendered.text.contains("Emergency access"));
+        assert!(rendered.text.contains("confirm them again"));
     }
 
     #[test]

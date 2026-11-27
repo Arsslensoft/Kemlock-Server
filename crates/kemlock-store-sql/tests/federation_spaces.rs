@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::memory;
+use common::{draft, memory, put};
 use kemlock_app::policies::PolicyRepo;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_domain::policies::SpacePolicies;
@@ -30,6 +30,7 @@ fn member(space: SpaceId, user: UserId, role: SpaceRole, state: MemberState) -> 
         invited_at: AT,
         accepted_at: Some(AT),
         sealed_space_key: confirmed.then(|| vec![5; 64]),
+        sealed_by: None,
         key_version: confirmed.then_some(1),
         confirmation: None,
         revoked_at: None,
@@ -128,6 +129,7 @@ async fn a_space_travels_between_two_stores_as_records() {
                 user: owner,
                 key_version: 1,
                 sealed: vec![9; 80],
+                sealed_by: None,
             }],
             ..SpaceChanges::new(space)
         },
@@ -287,6 +289,17 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
     .expect("a space");
     let mut items = [ItemId::random(), ItemId::random(), ItemId::random()];
     items.sort();
+    // The home and the replica both hold the space's items (the replica pulls them before the
+    // home records); only a space's own items can be held.
+    for item in items {
+        for store in [&home, &replica] {
+            put(
+                store,
+                draft(item, kemlock_domain::Owner::Space(space), None, 1),
+            )
+            .await;
+        }
+    }
 
     // The home's snapshot says which items its key replacement left held.
     let none = SpaceMirror::space_snapshot(&home, space)
@@ -336,4 +349,276 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
         .await
         .expect("applied");
     assert!(replica.held_items(space).await.expect("held").is_empty());
+}
+
+#[tokio::test]
+async fn a_collection_or_group_of_another_space_is_reported_before_a_record_names_it() {
+    let store = memory().await;
+    let mine = SpaceId::random();
+    let theirs = SpaceId::random();
+    let owner = UserId::random();
+    let space = |id: SpaceId| Space {
+        id,
+        name: vec![1; 40],
+        key_version: 1,
+        keys_pending_since: None,
+        created_at: AT,
+        updated_at: AT,
+    };
+    let collection = Collection {
+        id: CollectionId::random(),
+        space: theirs,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: AT,
+    };
+    let group = Group {
+        id: GroupId::random(),
+        space: theirs,
+        name: vec![3; 40],
+        members: [owner].into_iter().collect(),
+        created_at: AT,
+    };
+    for (id, collections, groups) in [
+        (mine, Vec::new(), Vec::new()),
+        (theirs, vec![collection.clone()], vec![group.clone()]),
+    ] {
+        SpaceRepo::create(
+            &store,
+            SpaceChanges {
+                space: Some(space(id)),
+                members: vec![member(id, owner, SpaceRole::Owner, MemberState::Confirmed)],
+                groups,
+                collections,
+                ..SpaceChanges::new(id)
+            },
+        )
+        .await
+        .expect("a space");
+    }
+
+    // The other space's ids are taken, whichever kind a record names them as.
+    assert_eq!(
+        store.ids_held_elsewhere(mine, &[collection.id], &[]).await,
+        Ok(true)
+    );
+    assert_eq!(
+        store.ids_held_elsewhere(mine, &[], &[group.id]).await,
+        Ok(true)
+    );
+    // Its own ids and ids nobody has are fine.
+    assert_eq!(
+        store
+            .ids_held_elsewhere(theirs, &[collection.id], &[group.id])
+            .await,
+        Ok(false)
+    );
+    assert_eq!(
+        store
+            .ids_held_elsewhere(mine, &[CollectionId::random()], &[GroupId::random()])
+            .await,
+        Ok(false)
+    );
+}
+
+#[tokio::test]
+async fn a_held_record_only_touches_the_items_of_its_own_space() {
+    let replica = memory().await;
+    let (mine, theirs) = (SpaceId::random(), SpaceId::random());
+    let (own_item, their_item) = (ItemId::random(), ItemId::random());
+    put(
+        &replica,
+        draft(own_item, kemlock_domain::Owner::Space(mine), None, 1),
+    )
+    .await;
+    put(
+        &replica,
+        draft(their_item, kemlock_domain::Owner::Space(theirs), None, 1),
+    )
+    .await;
+    // The other space's home holds its item.
+    SpaceMirror::apply_space_record(&replica, theirs, &SpaceRecord::Held(vec![their_item]))
+        .await
+        .expect("held");
+
+    // This space's home names both, and an id nobody has: only its own item is held, and the
+    // other space's hold stays.
+    SpaceMirror::apply_space_record(
+        &replica,
+        mine,
+        &SpaceRecord::Held(vec![own_item, their_item, ItemId::random()]),
+    )
+    .await
+    .expect("applied");
+    assert_eq!(
+        replica.held_items(mine).await.expect("held"),
+        vec![own_item]
+    );
+    assert_eq!(
+        replica.held_items(theirs).await.expect("held"),
+        vec![their_item]
+    );
+    // And an empty set from this space doesn't release the other's item.
+    SpaceMirror::apply_space_record(&replica, mine, &SpaceRecord::Held(Vec::new()))
+        .await
+        .expect("applied");
+    assert_eq!(
+        replica.held_items(theirs).await.expect("held"),
+        vec![their_item]
+    );
+}
+
+#[tokio::test]
+async fn a_member_taken_out_signs_only_where_they_could_edit_and_only_before_they_left() {
+    use kemlock_domain::Owner;
+    use kemlock_federation::extra::{MemberStore, WRITE_SKEW_SECS};
+    let store = memory().await;
+    let space = SpaceId::random();
+    let owner = UserId::random();
+    let gone = UserId::random();
+    let collection = |id: CollectionId| Collection {
+        id,
+        space,
+        parent: None,
+        name: vec![2; 40],
+        key_version: 1,
+        stale_since: None,
+        created_at: AT,
+    };
+    let (editable, read_only, unshared) = (
+        CollectionId::random(),
+        CollectionId::random(),
+        CollectionId::random(),
+    );
+    let mut revoked = member(space, gone, SpaceRole::Member, MemberState::Revoked);
+    revoked.revoked_at = Some(AT);
+    let grant = |collection, user, permission| CollectionGrant {
+        collection,
+        grantee: Grantee::Member(user),
+        permission,
+    };
+    SpaceRepo::create(
+        &store,
+        SpaceChanges {
+            space: Some(Space {
+                id: space,
+                name: vec![1; 40],
+                key_version: 1,
+                keys_pending_since: None,
+                created_at: AT,
+                updated_at: AT,
+            }),
+            members: vec![
+                member(space, owner, SpaceRole::Owner, MemberState::Confirmed),
+                revoked,
+            ],
+            collections: vec![
+                collection(editable),
+                collection(read_only),
+                collection(unshared),
+            ],
+            grants: vec![
+                grant(editable, owner, CollectionPermission::Manage),
+                grant(editable, gone, CollectionPermission::Edit),
+                grant(read_only, owner, CollectionPermission::Manage),
+                grant(read_only, gone, CollectionPermission::View),
+                grant(unshared, owner, CollectionPermission::Manage),
+            ],
+            ..SpaceChanges::new(space)
+        },
+    )
+    .await
+    .expect("a space");
+    let vault = Owner::Space(space);
+    let left = u64::try_from(AT.unix_timestamp()).expect("a time");
+    let may = |user, collection, made| {
+        let store = &store;
+        async move {
+            store
+                .writer_may_edit(vault, user, collection, made)
+                .await
+                .expect("a read")
+        }
+    };
+
+    // Before they left, where they held edit.
+    assert_eq!(may(gone, editable, left - 1_000).await, Some(true));
+    assert_eq!(
+        may(gone, editable, left + WRITE_SKEW_SECS).await,
+        Some(true)
+    );
+    // After they left, not.
+    assert_eq!(
+        may(gone, editable, left + WRITE_SKEW_SECS + 1).await,
+        Some(false)
+    );
+    // Never where they could only read, or had no grant.
+    assert_eq!(may(gone, read_only, left - 1_000).await, Some(false));
+    assert_eq!(may(gone, unshared, left - 1_000).await, Some(false));
+    // A confirmed member is judged by their grants alone.
+    assert_eq!(may(owner, unshared, left + 1_000_000).await, Some(true));
+    // A collection the server doesn't hold is a reason to wait.
+    assert_eq!(may(gone, CollectionId::random(), left).await, None);
+}
+
+#[tokio::test]
+async fn a_collection_is_this_spaces_another_spaces_or_not_known_yet() {
+    use kemlock_domain::Owner;
+    use kemlock_federation::extra::MemberStore;
+    let store = memory().await;
+    let owner = UserId::random();
+    let make = |space: SpaceId, collection: CollectionId| SpaceChanges {
+        space: Some(Space {
+            id: space,
+            name: vec![1; 40],
+            key_version: 1,
+            keys_pending_since: None,
+            created_at: AT,
+            updated_at: AT,
+        }),
+        members: vec![member(
+            space,
+            owner,
+            SpaceRole::Owner,
+            MemberState::Confirmed,
+        )],
+        collections: vec![Collection {
+            id: collection,
+            space,
+            parent: None,
+            name: vec![2; 40],
+            key_version: 1,
+            stale_since: None,
+            created_at: AT,
+        }],
+        ..SpaceChanges::new(space)
+    };
+    let (mine, theirs) = (SpaceId::random(), SpaceId::random());
+    let (my_collection, their_collection) = (CollectionId::random(), CollectionId::random());
+    SpaceRepo::create(&store, make(mine, my_collection))
+        .await
+        .expect("a space");
+    SpaceRepo::create(&store, make(theirs, their_collection))
+        .await
+        .expect("another space");
+
+    let ask = |collection| store.space_has_collection(Owner::Space(mine), collection);
+    assert_eq!(ask(my_collection).await, Ok(Some(true)));
+    assert_eq!(ask(their_collection).await, Ok(Some(false)));
+    assert_eq!(ask(CollectionId::random()).await, Ok(None));
+    // A space this server doesn't hold knows nothing yet; a personal vault has no collections.
+    assert_eq!(
+        store
+            .space_has_collection(Owner::Space(SpaceId::random()), my_collection)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(
+        store
+            .space_has_collection(Owner::User(owner), my_collection)
+            .await,
+        Ok(Some(false))
+    );
 }

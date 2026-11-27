@@ -4,6 +4,7 @@ use crate::ports::StoreError;
 use kemlock_domain::unlock::{EmergencyGrant, EmergencyKind, EmergencyState, GrantId};
 use kemlock_domain::{Email, UserId};
 use std::future::Future;
+use time::OffsetDateTime;
 
 /// Emergency-access grants (`emergency_access`).
 pub trait EmergencyRepo: Send + Sync {
@@ -37,6 +38,26 @@ pub trait EmergencyRepo: Send + Sync {
         &self,
         grant: &EmergencyGrant,
         from: EmergencyState,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send;
+
+    /// [`save_grant`](EmergencyRepo::save_grant) with two more checks, each skipped when `None`.
+    ///
+    /// `version`: the grant must be as it was read, its `updated_at` (which every step moves)
+    /// still `version`. Checking the state alone lets a request that was refused and asked for
+    /// again, so that it is running again with a new wait, be approved by a timer that read the
+    /// earlier one (the state went round and came back).
+    ///
+    /// `key_version`: for a grant that carries a box of the grantor's root key made for that
+    /// version: a store that can read the grantor's account refuses (`StaleKeyVersion`) a box
+    /// for a version that is no longer the account's. Every store implements the check.
+    ///
+    /// Says whether it wrote.
+    fn save_grant_at(
+        &self,
+        grant: &EmergencyGrant,
+        from: EmergencyState,
+        version: Option<OffsetDateTime>,
+        key_version: Option<u32>,
     ) -> impl Future<Output = Result<bool, StoreError>> + Send;
 
     /// Every grant whose request is running. The timer picks the ones whose wait has ended.

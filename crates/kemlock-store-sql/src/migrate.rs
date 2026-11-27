@@ -1,14 +1,18 @@
 //! Running the migrations under a lock, and loading or making this server's identity.
 
-use crate::convert::utc;
+use crate::convert::{unix_millis, utc};
 use crate::error::{StoreResult, is_unique_violation, map_db};
 use crate::lease;
 use crate::migration::{Migrator, job_leases_table};
 use crate::tables::server_meta;
 use kemlock_app::ports::StoreError;
-use kemlock_domain::ServerId;
+use kemlock_domain::{Hlc, ServerId};
 use sea_orm::ActiveValue::Set;
-use sea_orm::{ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, Statement};
+use sea_orm::sea_query::Expr;
+use sea_orm::{
+    ColumnTrait, ConnectionTrait, DatabaseConnection, DbBackend, EntityTrait, QueryFilter,
+    Statement,
+};
 use sea_orm_migration::{MigratorTrait, SchemaManager};
 use std::path::Path;
 use std::time::{Duration as StdDuration, Instant};
@@ -50,6 +54,9 @@ pub(crate) async fn run(db: &DatabaseConnection) -> Result<(), StoreError> {
         Ok(()) => Migrator::up(db, None).await.store(),
         Err(e) => Err(e),
     };
+    if migrated.is_ok() {
+        prune_after_migration(db).await;
+    }
     if let Err(err) = lease::release(db, LOCK_NAME, &holder).await {
         tracing::warn!(%err, "could not release the migration lock; it expires on its own");
     }
@@ -113,6 +120,49 @@ pub(crate) async fn load_or_create_server_id(
         .ok_or_else(|| StoreError::Backend("server_meta has no row after creating it".to_owned()))
 }
 
+/// How far ahead of the wall clock a stored HLC time may be before start-up treats it as damage:
+/// a day, far more than clock skew between servers or a client's wrong clock explains.
+const CLOCK_REPAIR_AHEAD_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// Puts `server_meta.last_hlc` back to the wall clock when it is far in the future (or out of
+/// range), which is what a peer's change record with a huge HLC time used to leave behind: every
+/// later write took a time above what the column holds and failed. Returns whether it changed.
+/// Items that already carry the large time keep it; only what this server writes next is affected.
+pub(crate) async fn repair_future_clock(
+    db: &DatabaseConnection,
+    now: OffsetDateTime,
+) -> Result<bool, StoreError> {
+    let Some(meta) = server_meta::Entity::find_by_id(server_meta::ROW_ID)
+        .one(db)
+        .await
+        .store()?
+    else {
+        return Ok(false);
+    };
+    let now_ms = unix_millis(now);
+    let limit = Hlc::from_parts(now_ms.saturating_add(CLOCK_REPAIR_AHEAD_MS), 0);
+    let damaged = !u64::try_from(meta.last_hlc).is_ok_and(|stored| stored <= limit.0);
+    if !damaged {
+        return Ok(false);
+    }
+    let repaired = Hlc::from_parts(now_ms, 0);
+    server_meta::Entity::update_many()
+        .col_expr(
+            server_meta::Column::LastHlc,
+            Expr::value(i64::try_from(repaired.0).unwrap_or(i64::MAX)),
+        )
+        .filter(server_meta::Column::Id.eq(server_meta::ROW_ID))
+        .exec(db)
+        .await
+        .store()?;
+    tracing::warn!(
+        was = meta.last_hlc,
+        now = repaired.0,
+        "the stored change clock was far in the future (a peer's record, most likely): set back to the wall clock"
+    );
+    Ok(true)
+}
+
 /// The file a SQLite database is copied to before migrations change it, inside the database's own
 /// folder: `<data>/backups/pre-<version>.sqlite3`, where `kemlock-cli restore --pre-migration`
 /// looks for it.
@@ -122,6 +172,94 @@ pub fn pre_migration_path(database_file: &Path) -> std::path::PathBuf {
         .unwrap_or_else(|| Path::new("."))
         .join("backups")
         .join(format!("pre-{}.sqlite3", env!("CARGO_PKG_VERSION")))
+}
+
+/// How many pre-migration copies are always kept, newest first, whatever their age: the one just
+/// made and the ones of the upgrades before it, so a rollback of the last three upgrades is
+/// possible.
+pub(crate) const KEEP_PRE_MIGRATION_COPIES: usize = 3;
+/// How long a copy beyond those, or a database a rollback moved aside, is kept.
+const OLD_COPY_MAX_AGE: StdDuration = StdDuration::from_secs(30 * 24 * 60 * 60);
+
+/// Removes the pre-migration copies nothing needs any more from `folder` (`<data>/backups`): each
+/// is the whole database in plain, so they are not kept for ever. The newest
+/// [`KEEP_PRE_MIGRATION_COPIES`] stay; of the others, and of the `replaced-*` databases a
+/// `restore --pre-migration` moved aside, those last written more than [`OLD_COPY_MAX_AGE`] before
+/// `now` go, with their `-wal` and `-shm` files. Returns how many files went. A file that can't
+/// be read or removed is left and logged.
+pub(crate) fn prune_old_copies(folder: &Path, now: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return 0;
+    };
+    let mut pre: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    let mut replaced: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        if name.starts_with("pre-") && name.ends_with(".sqlite3") {
+            pre.push((modified, entry.path()));
+        } else if name.starts_with("replaced-") && name.ends_with(".sqlite3") {
+            replaced.push((modified, entry.path()));
+        }
+    }
+    pre.sort_by_key(|b| std::cmp::Reverse(b.0));
+    let doomed = pre
+        .into_iter()
+        .skip(KEEP_PRE_MIGRATION_COPIES)
+        .chain(replaced)
+        .filter(|(modified, _)| {
+            now.duration_since(*modified)
+                .is_ok_and(|age| age > OLD_COPY_MAX_AGE)
+        });
+    let mut removed = 0;
+    for (_, path) in doomed {
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = path.clone().into_os_string();
+            name.push(suffix);
+            let file = std::path::PathBuf::from(name);
+            if !file.exists() {
+                continue;
+            }
+            match std::fs::remove_file(&file) {
+                Ok(()) => removed += 1,
+                Err(e) => {
+                    tracing::warn!(copy = %file.display(), error = %e, "couldn't remove an old database copy");
+                }
+            }
+        }
+    }
+    removed
+}
+
+/// After a migration that worked, prunes the old copies beside a SQLite database.
+async fn prune_after_migration(db: &DatabaseConnection) {
+    if db.get_database_backend() != DbBackend::Sqlite {
+        return;
+    }
+    let Ok(Some(row)) = db
+        .query_one_raw(Statement::from_string(
+            DbBackend::Sqlite,
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+        ))
+        .await
+    else {
+        return;
+    };
+    let Ok(file) = row.try_get_by_index::<String>(0) else {
+        return;
+    };
+    if file.is_empty() {
+        return;
+    }
+    let target = pre_migration_path(Path::new(&file));
+    if let Some(folder) = target.parent() {
+        let removed = prune_old_copies(folder, std::time::SystemTime::now());
+        if removed > 0 {
+            tracing::info!(removed, "removed old copies of the database");
+        }
+    }
 }
 
 /// On SQLite, before pending migrations change an existing database, copies it to
@@ -168,6 +306,10 @@ async fn pre_migration_copy(db: &DatabaseConnection) -> Result<(), StoreError> {
     db.execute_unprepared(&format!("VACUUM INTO '{literal}'"))
         .await
         .store()?;
+    // A copy of the whole database: private like the database itself.
+    if let Err(e) = crate::connect::restrict_to_owner(&target) {
+        tracing::warn!(copy = %target.display(), error = %e, "couldn't make the copy readable by its owner only");
+    }
     tracing::info!(copy = %target.display(), pending = pending.len(), "copied the database before migrating");
     Ok(())
 }
@@ -183,5 +325,112 @@ mod tests {
             .join("backups")
             .join(format!("pre-{}.sqlite3", env!("CARGO_PKG_VERSION")));
         assert_eq!(path, expected);
+    }
+
+    fn touch_old(path: &Path, days: u64) {
+        std::fs::write(path, b"x").expect("a file");
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .expect("open")
+            .set_modified(when)
+            .expect("set the time");
+    }
+
+    #[test]
+    fn old_copies_go_and_the_newest_three_and_the_recent_stay() {
+        let folder = tempfile::tempdir().expect("a folder");
+        let at = |name: &str| folder.path().join(name);
+        touch_old(&at("pre-1.0.sqlite3"), 200);
+        touch_old(&at("pre-1.1.sqlite3"), 120);
+        touch_old(&at("pre-1.2.sqlite3"), 90);
+        touch_old(&at("pre-1.3.sqlite3"), 60);
+        touch_old(&at("pre-1.4.sqlite3"), 50);
+        // A rollback moved a database aside long ago, with its journal; another only last week.
+        touch_old(&at("replaced-1.sqlite3"), 45);
+        touch_old(&at("replaced-1.sqlite3-wal"), 45);
+        touch_old(&at("replaced-2.sqlite3"), 7);
+        touch_old(&at("keep-me.txt"), 400);
+
+        let removed = prune_old_copies(folder.path(), std::time::SystemTime::now());
+
+        // The three newest copies stay even though they are old; the two before them are over 30
+        // days old and go. The old replaced database goes with its journal; the recent one stays.
+        assert_eq!(removed, 4);
+        for gone in [
+            "pre-1.0.sqlite3",
+            "pre-1.1.sqlite3",
+            "replaced-1.sqlite3",
+            "replaced-1.sqlite3-wal",
+        ] {
+            assert!(!at(gone).exists(), "{gone}");
+        }
+        for kept in [
+            "pre-1.2.sqlite3",
+            "pre-1.3.sqlite3",
+            "pre-1.4.sqlite3",
+            "replaced-2.sqlite3",
+            "keep-me.txt",
+        ] {
+            assert!(at(kept).exists(), "{kept}");
+        }
+    }
+
+    #[test]
+    fn a_missing_folder_prunes_nothing() {
+        assert_eq!(
+            prune_old_copies(
+                Path::new("no-such-folder-for-prune"),
+                std::time::SystemTime::now()
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn only_the_newest_three_old_copies_are_kept_and_nothing_else_is_touched() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let now = std::time::SystemTime::now();
+        // All older than the 30 days a copy beyond the newest three is kept for.
+        for (age_days, name) in [
+            (45, "pre-0.1.1.sqlite3"),
+            (44, "pre-0.1.2.sqlite3"),
+            (43, "pre-0.1.3.sqlite3"),
+            (42, "pre-0.1.4.sqlite3"),
+            (41, "pre-0.1.5.sqlite3"),
+        ] {
+            let path = dir.path().join(name);
+            let file = std::fs::File::create(&path).expect("a copy");
+            file.set_modified(now - std::time::Duration::from_secs(age_days * 86_400))
+                .expect("an age");
+        }
+        std::fs::write(
+            dir.path().join("kemlock-premigration-0.1.4.tar.zst.age"),
+            b"x",
+        )
+        .expect("an archive");
+        std::fs::write(dir.path().join("notes.txt"), b"x").expect("a file");
+
+        assert_eq!(prune_old_copies(dir.path(), now), 2);
+
+        let mut left: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("a folder")
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                "kemlock-premigration-0.1.4.tar.zst.age",
+                "notes.txt",
+                "pre-0.1.3.sqlite3",
+                "pre-0.1.4.sqlite3",
+                "pre-0.1.5.sqlite3",
+            ]
+        );
+        // Nothing more to remove now: the three that are left are the ones always kept.
+        assert_eq!(prune_old_copies(dir.path(), now), 0);
     }
 }

@@ -202,3 +202,80 @@ async fn an_admin_without_two_step_login_gets_no_admin_token_either() {
     .expect("verifies");
     assert!(!claims.admin);
 }
+
+#[tokio::test]
+async fn an_access_token_dies_with_a_refresh_token_used_twice() {
+    let (world, _user, first) = signed_in().await;
+    let second = world
+        .refresh()
+        .execute(&first.refresh_token, JKT)
+        .await
+        .expect("the first use works");
+    world
+        .authenticate()
+        .execute(&second.access_token, JKT)
+        .await
+        .expect("the rotated token's access token works");
+
+    // A copy of the first refresh token comes back: the family is revoked and the device's key no
+    // longer vouches for it, so the access token the device holds stops at once as well.
+    let reuse = world.refresh().execute(&first.refresh_token, JKT).await;
+    assert_eq!(reuse, Err(AppError::SessionEnded("refresh-token-reuse")));
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&second.access_token, JKT)
+            .await,
+        Err(AppError::SessionEnded("signed-out"))
+    );
+}
+
+#[tokio::test]
+async fn a_token_of_an_account_held_for_its_email_is_refused_until_it_is_confirmed() {
+    use kemlock_app::ports::{Clock, UserRepo};
+    let (world, user, tokens) = signed_in().await;
+    let world = world.with_email_verification();
+    let now = Clock::now(&world.env);
+    UserRepo::hold_unconfirmed(&world.store, user, [1; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+    assert_eq!(
+        world
+            .authenticate()
+            .execute(&tokens.access_token, JKT)
+            .await,
+        Err(AppError::EmailNotConfirmed)
+    );
+
+    // Opening the link releases it: the same token works again.
+    assert_eq!(
+        UserRepo::spend_confirmation(&world.store, [1; 32], now).await,
+        Ok(Some(user))
+    );
+    world
+        .authenticate()
+        .execute(&tokens.access_token, JKT)
+        .await
+        .expect("authenticates");
+}
+
+#[tokio::test]
+async fn a_hold_does_nothing_while_the_setting_is_off() {
+    use kemlock_app::ports::{Clock, UserRepo};
+    let (world, user, tokens) = signed_in().await;
+    let now = Clock::now(&world.env);
+    UserRepo::hold_unconfirmed(&world.store, user, [1; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+    // Verification is off (the admin turned it off, or mail is gone): the account is released.
+    world
+        .authenticate()
+        .execute(&tokens.access_token, JKT)
+        .await
+        .expect("authenticates");
+    let on = world.with_email_verification();
+    assert_eq!(
+        on.authenticate().execute(&tokens.access_token, JKT).await,
+        Err(AppError::EmailNotConfirmed)
+    );
+}

@@ -11,20 +11,27 @@
 //! tables from the chain in the same transaction (S2).
 
 use super::chain::{
-    AppendOutcome, ChainAppend, ChainHead, HomeGate, PendingChange, PendingExternal,
+    AppendOutcome, ChainAppend, ChainHead, ChainUsage, HomeGate, PendingChange, PendingExternal,
     SpaceChainRepo, StoredName, StoredRecord, StoredSeal,
 };
-use super::chain_project::{Batch, custom_of, id_of, permission_of, project, role_of, user_of};
+use super::chain_project::{
+    Batch, custom_of, id_of, permission_of, policies_of, project, role_of, user_of,
+};
 use super::error::SpacesError;
-use super::ports::SpaceRepo;
+use super::ports::{SpaceItemInfo, SpaceRepo};
 use super::support::record;
 use crate::authenticate::Actor;
-use crate::ports::{Clock, EventLog, StoreError, UserRepo};
+use crate::dedup::TagStore;
+use crate::policies::{PoliciesError, check_join};
+use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, TwoFactorRepo, UserRepo};
 use kemlock_crypto::space_chain::{
     self as sc, Body, ChainError, KeyRef, Limits, NameTarget, Reason, Record, SignedRecord,
 };
-use kemlock_domain::spaces::{CollectionId, MemberState, SpaceRole};
-use kemlock_domain::{ItemId, SpaceId, UserId};
+use kemlock_domain::policies::is_exempt;
+use kemlock_domain::spaces::{CollectionId, MemberState, SpaceRole, apply_space_write};
+use kemlock_domain::{
+    ItemDraft, ItemFormat, ItemId, ItemLimits, ItemWrite, Owner, SpaceId, UserId,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -57,6 +64,12 @@ pub struct AppendRequest {
     /// Live items a `keys` record in this request leaves **held**: kept, but not served as live,
     /// and counted as covered by the key replacement (I3).
     pub held: Vec<ItemId>,
+    /// Live items re-written under the new key version of a collection a `keys` record of this
+    /// request replaces, each with its collection and written as the next revision, so a key
+    /// replacement is one transaction with its items (docs/crypto.md, "Accepting records": "the
+    /// route that replaces keys carries its `keys` record the same way, beside its re-written
+    /// items"). Only a member with edit on the collection makes them.
+    pub writes: Vec<(CollectionId, ItemWrite)>,
 }
 
 /// Why records weren't appended.
@@ -72,11 +85,19 @@ pub enum AppendError {
     },
     /// The request itself is wrong (`400`).
     Invalid(&'static str),
+    /// The member has signed as many records lately as one member may (`429`).
+    Quota(&'static str),
+    /// A `confirm` would bring in a member the space's policies (or those of a space they are in)
+    /// refuse: two-step login, one space per member (`403`).
+    JoinRefused(PoliciesError),
     /// The records are fine but aren't the queued change they were sent to answer (`422`).
     Mismatch(&'static str),
     /// The request holds an item that isn't in a collection whose key one of its `keys` records
     /// replaces (`422`).
     HeldNotRotated(&'static str),
+    /// The space takes signed writes only and a re-written `kem1` item carries no signature
+    /// (`422` `signature-required`; docs/crypto.md, "Signed item writes").
+    SignatureRequired,
     /// The space isn't there for this caller.
     NotFound,
     Store(String),
@@ -107,21 +128,40 @@ fn refuse(seq: Option<u64>, reason: Reason, detail: &'static str) -> AppendError
 /// How far a record's `at` may be from the server's clock (A6), in seconds.
 const CLOCK_SLACK: u64 = 600;
 
+/// The most records one account signs in a space in an hour (not asked of the space's Owners and
+/// Admins, who do the bulk work: invites, confirms, seals), and in a day (asked of everyone). One
+/// member must not be able to fill a chain (a chain holds `Limits::CHAIN_RECORDS`) before its
+/// Owners notice. Only the server applies these (docs/crypto.md, A14).
+const MEMBER_RECORDS_PER_HOUR: u64 = 1_024;
+const MEMBER_RECORDS_PER_DAY: u64 = 4_096;
+const HOUR: u64 = 3_600;
+const DAY: u64 = 86_400;
+
 /// Appends records to a space's chain.
 #[derive(Debug)]
-pub struct AppendChain<R, U, V, C> {
+pub struct AppendChain<R, U, V, C, I, T, N> {
     pub spaces: R,
     pub users: U,
     pub events: V,
     pub clock: C,
+    /// The items a key replacement re-writes.
+    pub items: I,
+    /// The duplicate cleaner's tags, which move to a new version with the space key.
+    pub tags: T,
+    pub limits: ItemLimits,
+    /// Tells devices that a replacement wrote items.
+    pub push: N,
 }
 
-impl<R, U, V, C> AppendChain<R, U, V, C>
+impl<R, U, V, C, I, T, N> AppendChain<R, U, V, C, I, T, N>
 where
     R: SpaceRepo + SpaceChainRepo,
-    U: UserRepo,
+    U: UserRepo + TwoFactorRepo,
     V: EventLog,
     C: Clock,
+    I: ItemStore,
+    T: TagStore,
+    N: Notifier,
 {
     /// Appends `request`'s records, all or none, and returns the new head. A request is 1 to 16
     /// records, in order, all signed and sent by `actor`.
@@ -193,6 +233,19 @@ where
             None => (None, sc::State::empty()),
         };
 
+        // G3: a space that exists is for its members; an outsider is told nothing of it, not even
+        // its head.
+        let existing = self.spaces.load(space).await?;
+        if head.is_some() || existing.is_some() {
+            let is_member = existing
+                .as_ref()
+                .and_then(|s| s.member(actor.user))
+                .is_some_and(|m| m.state != MemberState::Revoked);
+            if !is_member {
+                return Err(AppendError::NotFound);
+            }
+        }
+
         // A3: the first record must follow the head. This is a conflict, not a refusal: the
         // caller learns the head and tries again.
         let first =
@@ -212,10 +265,38 @@ where
         let now = self.clock.now();
         let now_secs = u64::try_from(now.unix_timestamp()).unwrap_or(0);
         let gate = self.spaces.chain_home_gate(space).await?;
-        let existing = self.spaces.load(space).await?;
         let me = id_of(actor.user);
 
+        // N5: one account's share of the chain. The chain's own limits (records, bytes and the end
+        // of the chain kept for Owners) are rules of the verifier, which the state at the head
+        // carries the totals for. The append is atomic against the head, so what is read here is
+        // what these records are added to.
+        let usage = if head.is_some() {
+            self.spaces
+                .chain_usage(
+                    space,
+                    actor.user,
+                    now_secs.saturating_sub(HOUR),
+                    now_secs.saturating_sub(DAY),
+                )
+                .await?
+        } else {
+            ChainUsage::default()
+        };
+        let requested = u64::try_from(request.records.len()).unwrap_or(u64::MAX);
+        let exempt_hourly = state
+            .members
+            .get(&me)
+            .is_some_and(|m| matches!(m.role, sc::Role::Owner | sc::Role::Admin));
+        if head.is_some() && over_quota(&usage, requested, exempt_hourly) {
+            return Err(AppendError::Quota(
+                "this account has signed as many records of this space lately as one member may: wait, or ask an owner",
+            ));
+        }
+
         let mut accepted: Vec<(Record, sc::Applied, &SignedRecord)> = Vec::new();
+        // The members this request invites: they accept again before a confirm.
+        let mut invited_here: BTreeSet<sc::Id> = BTreeSet::new();
         for signed in &request.records {
             let rec = Record::parse(&signed.entry).map_err(|reason| AppendError::Refused {
                 error: ChainError {
@@ -270,6 +351,52 @@ where
                         error,
                         detail: None,
                     })?;
+            // A12: the invitee consents, by the server's own accept step, before a confirm.
+            match &rec.body {
+                Body::Invite { member, .. } => {
+                    invited_here.insert(*member);
+                }
+                Body::Confirm { member, .. } => {
+                    let accepted_row = existing
+                        .as_ref()
+                        .and_then(|s| s.member(user_of(member)))
+                        .is_some_and(|m| {
+                            matches!(m.state, MemberState::Accepted | MemberState::Confirmed)
+                        });
+                    if invited_here.contains(member) || !accepted_row {
+                        return Err(refuse(
+                            at,
+                            Reason::NotAllowed,
+                            "a member is confirmed only after they accepted the invitation",
+                        ));
+                    }
+                    // The join policies, which the route's guard can't see in a record: a member
+                    // the chain brings in (not a new key version of a confirmed one) is checked
+                    // as the confirm route checks one.
+                    if state.confirmed(member).is_none() {
+                        let role = applied
+                            .state
+                            .members
+                            .get(member)
+                            .map_or(SpaceRole::Member, |m| role_of(m.role));
+                        check_join(&self.spaces, &self.users, user_of(member), space, role)
+                            .await
+                            .map_err(AppendError::JoinRefused)?;
+                    }
+                }
+                // A role that stops being an owner's or admin's makes a member of someone the join
+                // policies didn't bind.
+                Body::Role { member, role, .. } => {
+                    let was = state.members.get(member).map(|m| role_of(m.role));
+                    let now = role_of(*role);
+                    if was.is_some_and(is_exempt) && !is_exempt(now) {
+                        check_join(&self.spaces, &self.users, user_of(member), space, now)
+                            .await
+                            .map_err(AppendError::JoinRefused)?;
+                    }
+                }
+                _ => {}
+            }
             state = applied.state.clone();
             accepted.push((rec, applied, signed));
         }
@@ -285,9 +412,14 @@ where
         // A11: exactly the boxes and names the commitments cover.
         let (seals, names) = self.cover(&space_bytes, &accepted, &request)?;
         let held = self.held(space, &accepted, &request).await?;
+        let writes = self
+            .writes(space, &accepted, &request, &state, actor.user, now)
+            .await?;
+        // The items are written in order, so the last carries the newest change.
+        let newest = writes.last().map(|(draft, _)| draft.id);
 
         let holders = self.spaces.holders(space).await?;
-        let changes = project(
+        let mut changes = project(
             space,
             existing.as_ref(),
             &holders,
@@ -298,6 +430,15 @@ where
             },
             now,
         );
+        // A `create` or a `policies` record sets the space's policy settings: what the server
+        // enforces (Require SSO, two-step login, one space per member, the Send rules) is what the
+        // chain says, and nothing else sets it on a chained space (M14).
+        if accepted
+            .iter()
+            .any(|(rec, _, _)| matches!(rec.body, Body::Create { .. } | Body::Policies { .. }))
+        {
+            changes.policies = Some((policies_of(&state.policies), actor.user));
+        }
         let creating = matches!(accepted[0].0.body, Body::Create { .. });
         let state_after = Arc::new(state.clone());
         let records: Vec<StoredRecord> = accepted
@@ -317,6 +458,18 @@ where
             .iter()
             .map(|(rec, _, _)| rec.kind().as_str())
             .collect();
+        // Replacing the space key moves the dedup key version, as `ReplaceKeys` does: before the
+        // records land, so a failure costs a needless re-tag, never tags of two keys under one
+        // version.
+        let rotates_space_key = accepted.iter().any(|(rec, _, _)| {
+            matches!(&rec.body, Body::Keys { rotate, .. } if rotate.iter().any(|c| c.key == KeyRef::Space))
+        });
+        if rotates_space_key {
+            self.tags
+                .bump_version(Owner::Space(space), now)
+                .await
+                .map_err(AppendError::from)?;
+        }
         let outcome = self
             .spaces
             .chain_append(
@@ -329,11 +482,19 @@ where
                     changes,
                     creating,
                     held,
+                    writes,
                     answers: answering.map(|p| p.id),
                     state: Some(state_after),
                 },
             )
-            .await?;
+            .await
+            .map_err(|e| match e {
+                // The tables are shared by every space: a collection or group id of another space.
+                StoreError::Duplicate => AppendError::Invalid(
+                    "a collection or group id is already used by another space",
+                ),
+                other => other.into(),
+            })?;
         match outcome {
             AppendOutcome::Appended(new_head) => {
                 record(
@@ -344,6 +505,11 @@ where
                     now,
                 )
                 .await;
+                if let Some(id) = newest
+                    && let Ok(Some(item)) = self.items.get(id).await
+                {
+                    self.push.sync_now(Owner::Space(space), item.change).await;
+                }
                 Ok(new_head)
             }
             AppendOutcome::Stale(current) => Err(AppendError::Conflict(current)),
@@ -469,6 +635,110 @@ where
             ));
         }
         Ok((seals, names))
+    }
+
+    /// The items a `keys` record's request re-writes (I3, I4): live items of collections whose key
+    /// a `keys` record of the request replaces, each under that collection's new key version, each
+    /// once, by a member with edit on the collection in the state the records lead to; none is also
+    /// held. Each is checked as any item write is (`apply_space_write`), against the revision the
+    /// request names.
+    async fn writes(
+        &self,
+        space: SpaceId,
+        accepted: &[(Record, sc::Applied, &SignedRecord)],
+        request: &AppendRequest,
+        state: &sc::State,
+        actor: UserId,
+        now: time::OffsetDateTime,
+    ) -> Result<Vec<(ItemDraft, CollectionId)>, AppendError> {
+        if request.writes.is_empty() {
+            return Ok(Vec::new());
+        }
+        if state.space.marked {
+            // I1: while the space key is marked, no item is written.
+            return Err(AppendError::Invalid(
+                "the space key waits to be replaced: no item is written until a keys record does",
+            ));
+        }
+        let mut new_versions: BTreeMap<CollectionId, u32> = BTreeMap::new();
+        for (rec, _, _) in accepted {
+            if let Body::Keys { rotate, .. } = &rec.body {
+                for commitment in rotate {
+                    if let KeyRef::Collection(id) = commitment.key {
+                        new_versions.insert(CollectionId(Uuid::from_bytes(id)), commitment.version);
+                    }
+                }
+            }
+        }
+        if new_versions.is_empty() {
+            return Err(AppendError::Invalid(
+                "only a keys record that replaces a collection key is followed by re-written items",
+            ));
+        }
+        let infos = self.spaces.space_items(space).await?;
+        let by_id: BTreeMap<ItemId, &SpaceItemInfo> = infos.iter().map(|i| (i.id, i)).collect();
+        let held: BTreeSet<ItemId> = request.held.iter().copied().collect();
+        let me = id_of(actor);
+        // Whether the space takes signed writes only, asked once for all the re-writes.
+        let signed_only = self
+            .items
+            .signed_writes_required(Owner::Space(space))
+            .await?;
+        let mut written: BTreeSet<ItemId> = BTreeSet::new();
+        let mut drafts = Vec::with_capacity(request.writes.len());
+        for (collection, write) in &request.writes {
+            let id = write.id;
+            if write.owner != Owner::Space(space) || !written.insert(id) || held.contains(&id) {
+                return Err(AppendError::Invalid(
+                    "re-write items of this space, each once, and not the ones held",
+                ));
+            }
+            let info = by_id.get(&id).ok_or(AppendError::Invalid(
+                "a replacement re-writes existing items only",
+            ))?;
+            if info.collection != Some(*collection) || info.deleted || write.sealed.is_none() {
+                return Err(AppendError::Invalid(
+                    "a replacement re-writes live items, each in the collection it is in",
+                ));
+            }
+            let Some(version) = new_versions.get(collection) else {
+                return Err(AppendError::HeldNotRotated(
+                    "re-write only items of a collection whose key a keys record of the request replaces",
+                ));
+            };
+            if write.format == ItemFormat::Kem1 && write.key_version != *version {
+                return Err(AppendError::Invalid(
+                    "re-write kem1 items under the collection's new key version",
+                ));
+            }
+            let may_edit = state
+                .access(&me, collection.0.as_bytes())
+                .is_some_and(|rights| rights.edit);
+            if !may_edit {
+                return Err(refuse(
+                    None,
+                    Reason::NotAllowed,
+                    "only a member with edit on a collection re-writes its items",
+                ));
+            }
+            let stored = self.items.get(id).await?.ok_or(AppendError::Invalid(
+                "a replacement re-writes existing items only",
+            ))?;
+            let draft = apply_space_write(write.clone(), Some(&stored), actor, self.limits, now)
+                .map_err(|_| {
+                    AppendError::Invalid(
+                        "an item can't be re-written as asked: its revision or its sealed parts are wrong",
+                    )
+                })?;
+            // The re-write is a write like any other: a space that takes signed writes only
+            // refuses a `kem1` one that carries no signature. Asked after the access and revision
+            // checks, so a caller who may not re-write the item learns nothing of the flag.
+            if signed_only && draft.format == ItemFormat::Kem1 && draft.signature.is_none() {
+                return Err(AppendError::SignatureRequired);
+            }
+            drafts.push((draft, *collection));
+        }
+        Ok(drafts)
     }
 
     /// I3: items a `keys` record leaves held are live items of collections whose key a `keys`
@@ -612,6 +882,13 @@ fn matches_pending<'a>(
         ) => *c == id_of_collection(*collection) && *grantee == sc::Grantee::User(account),
         _ => false,
     }
+}
+
+/// Whether `requested` more records would pass what one account may sign in an hour or a day. The
+/// hour is not asked of a space's Owners and Admins (`exempt_hourly`); the day is asked of all.
+fn over_quota(usage: &ChainUsage, requested: u64, exempt_hourly: bool) -> bool {
+    (!exempt_hourly && usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR)
+        || usage.by_member_day.saturating_add(requested) > MEMBER_RECORDS_PER_DAY
 }
 
 fn id_of_collection(id: kemlock_domain::spaces::CollectionId) -> sc::Id {
@@ -772,5 +1049,25 @@ mod tests {
             reason(check_home(Some(&GATE), &fresh, &first)),
             Some(Reason::BadEpoch)
         );
+    }
+
+    #[test]
+    fn a_member_signs_so_many_records_an_hour_and_a_day() {
+        let usage = ChainUsage {
+            by_member_hour: MEMBER_RECORDS_PER_HOUR - 16,
+            by_member_day: 10,
+        };
+        assert!(!over_quota(&usage, 16, false));
+        assert!(over_quota(&usage, 17, false));
+        // An Owner or Admin is not asked for the hour.
+        assert!(!over_quota(&usage, 17, true));
+        let day = ChainUsage {
+            by_member_hour: 0,
+            by_member_day: MEMBER_RECORDS_PER_DAY,
+        };
+        assert!(!over_quota(&day, 0, false));
+        assert!(over_quota(&day, 1, false));
+        // But everyone is asked for the day.
+        assert!(over_quota(&day, 1, true));
     }
 }

@@ -46,7 +46,7 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Definition {
     pub key: &'static str,
-    /// The console's section: `smtp`, `signups`, `files`, `trash`, `retention`, `rate-limits`, `security`.
+    /// The console's section: `smtp`, `signups`, `files`, `trash`, `retention`, `rate-limits`, `security`, `federation`.
     pub group: &'static str,
     pub kind: Kind,
     /// The value when nothing sets one; empty for "unset".
@@ -125,6 +125,13 @@ pub const DEFINITIONS: &[Definition] = &[
         kind: Kind::Bool,
         default: "false",
         env: "SIGNUPS_VERIFY",
+    },
+    Definition {
+        key: "bw_invites_auto_accept",
+        group: "signups",
+        kind: Kind::Bool,
+        default: "false",
+        env: "KEMLOCK_BW_INVITES_AUTO_ACCEPT",
     },
     Definition {
         key: "signups_domains_whitelist",
@@ -222,28 +229,35 @@ pub const DEFINITIONS: &[Definition] = &[
     Definition {
         key: "rate_sign_in_per_minute",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 100 },
         default: "10",
         env: "KEMLOCK_RATE_SIGN_IN_PER_MINUTE",
     },
     Definition {
         key: "rate_password_failures_per_15_minutes",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 30 },
         default: "10",
         env: "KEMLOCK_RATE_PASSWORD_FAILURES",
     },
     Definition {
         key: "rate_second_step_failures_per_15_minutes",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 20 },
         default: "5",
         env: "KEMLOCK_RATE_SECOND_STEP_FAILURES",
     },
     Definition {
+        key: "rate_second_step_challenges_per_5_minutes",
+        group: "rate-limits",
+        kind: Kind::Int { min: 1, max: 30 },
+        default: "10",
+        env: "KEMLOCK_RATE_SECOND_STEP_CHALLENGES",
+    },
+    Definition {
         key: "rate_register_per_hour",
         group: "rate-limits",
-        kind: Kind::Int { min: 1, max: 1000 },
+        kind: Kind::Int { min: 1, max: 50 },
         default: "10",
         env: "KEMLOCK_RATE_REGISTER_PER_HOUR",
     },
@@ -361,6 +375,17 @@ pub const DEFINITIONS: &[Definition] = &[
         kind: Kind::Choice(&["queue", "refuse", "unchained"]),
         default: "queue",
         env: "KEMLOCK_SPACE_CHAIN_EXTERNAL_CHANGES",
+    },
+    // What this server does with a promotion a replica signed for itself and announces unasked
+    // (docs/federation.md, "Home epochs, promotion and the fence"): keep it for this server's admin
+    // to accept or refuse (the default), or apply it at once. The home of a vault always holds a
+    // promotion that would take the vault from it.
+    Definition {
+        key: "federation_promotion",
+        group: "federation",
+        kind: Kind::Choice(&["hold", "auto"]),
+        default: "hold",
+        env: "KEMLOCK_FEDERATION_PROMOTION",
     },
 ];
 
@@ -486,10 +511,78 @@ fn clean_domains(raw: &str) -> Result<String, AdminError> {
     Ok(seen.join(","))
 }
 
-/// Whether `value` is an address the push relays may be reached at: https, or plain http on the
-/// loopback address (the installation key travels with every request).
-fn is_relay_url(value: &str) -> bool {
-    crate::push::is_relay_url(value)
+/// Whether `value` is an address the server may reach out to from the console's settings: `https`,
+/// no user name or password, and a host that is a name or a public IP address. An IP literal in a
+/// private, loopback, link-local or other special range, `localhost` and the names a network
+/// keeps for itself (`.local`, `.internal`, `.localhost`, `.lan`, `.home.arpa`) are refused, so a
+/// saved setting can't point the server at its own network. (A name that resolves to a private
+/// address is not caught here; the code that dials it is the second guard.) What the environment
+/// sets is the operator's own and is not held to this.
+fn is_public_https_url(value: &str) -> bool {
+    use url::Host;
+    let Ok(url) = url::Url::parse(value.trim()) else {
+        return false;
+    };
+    if url.scheme() != "https" || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    match url.host() {
+        Some(Host::Domain(name)) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            const PRIVATE_SUFFIXES: [&str; 6] = [
+                ".localhost",
+                ".local",
+                ".internal",
+                ".lan",
+                ".home.arpa",
+                ".localdomain",
+            ];
+            !(name == "localhost"
+                || name.is_empty()
+                || !name.contains('.')
+                || PRIVATE_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)))
+        }
+        Some(Host::Ipv4(ip)) => public_ip(std::net::IpAddr::V4(ip)),
+        Some(Host::Ipv6(ip)) => public_ip(std::net::IpAddr::V6(ip)),
+        None => false,
+    }
+}
+
+/// Whether `ip` is on the public internet: not private, loopback, link-local, shared (carrier-grade
+/// NAT), documentation, multicast, unspecified or reserved, and, for IPv6, not carrying such an
+/// IPv4 address.
+fn public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_unspecified()
+                || v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || a == 0
+                || (a == 100 && (64..=127).contains(&b))
+                || (a == 192 && b == 0 && c == 0)
+                || (a == 198 && (b == 18 || b == 19))
+                || a >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(IpAddr::V4(v4));
+            }
+            let first = v6.segments()[0];
+            !(v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                // fc00::/7 unique local, fe80::/10 link-local, 2001:db8::/32 documentation.
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first == 0x2001 && v6.segments()[1] == 0x0db8))
+        }
+    }
 }
 
 /// What the store keeps in the data folder, by the start of the name: a backup folder saved in the
@@ -507,6 +600,7 @@ pub const RESERVED_DATA_NAMES: &[&str] = &[
     "kemlock",
     "config",
     "rsa_key",
+    "import",
 ];
 
 /// A folder inside the data folder: relative, with no `..` and no drive or `s3://` prefix.
@@ -530,9 +624,9 @@ fn is_folder_inside(value: &str) -> bool {
 fn check_text(key: &str, value: &str) -> Result<(), &'static str> {
     match key {
         "push_relay_uri" | "push_identity_uri" | "kemlock_push_relay_url"
-            if !value.is_empty() && !is_relay_url(value) =>
+            if !value.is_empty() && !is_public_https_url(value) =>
         {
-            Err("must be an https address")
+            Err("must be an https address of a public host (not localhost or a private network)")
         }
         "backup_destination" if !is_folder_inside(value) => {
             Err("must be a folder inside the data folder, such as backups")
@@ -727,11 +821,58 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
         Ok(Some(plain))
     }
 
+    /// What `key` will be once `changes` are saved, as text: empty when unset.
+    async fn after(
+        &self,
+        changes: &BTreeMap<String, Change>,
+        key: &str,
+    ) -> Result<String, AdminError> {
+        Ok(match changes.get(key) {
+            Some(Change::Set(value)) => value.trim().to_owned(),
+            Some(Change::Reset) => String::new(),
+            None => self.get(key).await?.unwrap_or_default().trim().to_owned(),
+        })
+    }
+
+    /// Refuses unless the SMTP settings, as they will be, make a mail server: the same rules
+    /// `SmtpConfig` applies at the server (a host, a sender, and a user name with its password or
+    /// neither).
+    async fn check_mail_is_set_up(
+        &self,
+        changes: &BTreeMap<String, Change>,
+    ) -> Result<(), AdminError> {
+        let refuse = |why: &str| {
+            Err(AdminError::Invalid(format!(
+                "verifying new accounts needs mail: {why}"
+            )))
+        };
+        if self.after(changes, "smtp_host").await?.is_empty() {
+            return refuse("set the SMTP host first");
+        }
+        if self.after(changes, "smtp_from").await?.is_empty() {
+            return refuse("set the SMTP sender address (smtp_from) too");
+        }
+        let user = !self.after(changes, "smtp_username").await?.is_empty();
+        let password = match changes.get("smtp_password") {
+            Some(Change::Set(value)) => !value.is_empty(),
+            Some(Change::Reset) => false,
+            None => self
+                .secret("smtp_password")
+                .await?
+                .is_some_and(|value| !value.is_empty()),
+        };
+        if user != password {
+            return refuse("the SMTP user name and password go together");
+        }
+        Ok(())
+    }
+
     /// Applies `changes`, all or none: every change is checked before any is stored. A setting
     /// the environment sets is refused with [`AdminError::ReadOnly`], an unknown name with
     /// [`AdminError::Invalid`].
     pub async fn apply(&self, changes: &BTreeMap<String, Change>) -> Result<(), AdminError> {
         let mut writes: Vec<(&'static str, Option<String>)> = Vec::with_capacity(changes.len());
+        let mut verifies = false;
         for (key, change) in changes {
             let d = definition(key)
                 .ok_or_else(|| AdminError::Invalid(format!("{key} isn't a setting")))?;
@@ -742,6 +883,9 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                 Change::Reset => writes.push((d.key, None)),
                 Change::Set(value) => {
                     let value = validate(d, value)?;
+                    if d.key == "signups_verify" && value == "true" {
+                        verifies = true;
+                    }
                     let stored = if d.kind == Kind::Secret {
                         b64url::encode(&self.seal.seal(&purpose(d.key), value.as_bytes()))
                     } else {
@@ -750,6 +894,37 @@ impl<R: SettingsRepo, S: SecretSeal, E: EnvSettings> Settings<R, S, E> {
                     writes.push((d.key, Some(stored)));
                 }
             }
+        }
+        // A password kept across a new mail host would be sent to whoever answers there, and an
+        // admin could point the host at a server of their own to read it: a new host takes a new
+        // password (or none) in the same save.
+        if let Some(change) = changes.get("smtp_host") {
+            let new_host = match change {
+                Change::Set(value) => value.trim().to_ascii_lowercase(),
+                Change::Reset => String::new(),
+            };
+            let old_host = self
+                .get("smtp_host")
+                .await?
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            let kept = !changes.contains_key("smtp_password")
+                && self.saved().await?.contains_key("smtp_password");
+            if new_host != old_host && kept {
+                return Err(AdminError::Invalid(
+                    "smtp_host changed: enter the SMTP password again, or clear it \
+                     (smtp_password), in the same save"
+                        .to_owned(),
+                ));
+            }
+        }
+        // A link can't be mailed without a mail server, and an account held back for one that never
+        // comes can't be used: turning the setting on needs the SMTP settings the server needs to
+        // make a mail server, saved with it or already set (a host and a sender, and a user name
+        // with its password or neither).
+        if verifies {
+            self.check_mail_is_set_up(changes).await?;
         }
         for (key, value) in writes {
             let stored_key = format!("{KEY_PREFIX}{key}");
@@ -778,6 +953,14 @@ mod tests {
             }
             assert!(validate(d, d.default).is_ok(), "{}", d.key);
         }
+    }
+
+    #[test]
+    fn bitwarden_invitations_are_not_taken_for_accepted_unless_the_operator_says_so() {
+        let d = def("bw_invites_auto_accept");
+        assert_eq!(d.kind, Kind::Bool);
+        assert_eq!(d.default, "false");
+        assert_eq!(d.env, "KEMLOCK_BW_INVITES_AUTO_ACCEPT");
     }
 
     #[test]
@@ -851,6 +1034,16 @@ mod tests {
     }
 
     #[test]
+    fn a_promotion_is_held_for_the_admin_unless_the_setting_says_auto() {
+        let d = def("federation_promotion");
+        assert_eq!((d.default, d.env), ("hold", "KEMLOCK_FEDERATION_PROMOTION"));
+        assert_eq!(d.group, "federation");
+        assert_eq!(validate(d, " Auto "), Ok("auto".into()));
+        assert_eq!(validate(d, "hold"), Ok("hold".into()));
+        assert!(validate(d, "yes").is_err());
+    }
+
+    #[test]
     fn push_settings_are_in_their_group_and_the_id_and_key_are_secrets() {
         for key in ["push_installation_id", "push_installation_key"] {
             assert_eq!(def(key).kind, Kind::Secret);
@@ -870,7 +1063,28 @@ mod tests {
         ] {
             let d = def(key);
             assert!(validate(d, "https://push.example.org").is_ok(), "{key}");
-            assert!(validate(d, "http://127.0.0.1:9000").is_ok(), "{key}");
+            assert!(validate(d, "http://127.0.0.1:9000").is_err(), "{key}");
+            for private in [
+                "https://localhost",
+                "https://127.0.0.1",
+                "https://10.0.0.5/relay",
+                "https://192.168.1.2",
+                "https://169.254.169.254/latest",
+                "https://[::1]/",
+                "https://[fd00::1]/",
+                "https://[::ffff:10.0.0.1]/",
+                "https://nas.local",
+                "https://relay.internal",
+                "https://intranet",
+                "https://user:pw@push.example.org",
+            ] {
+                assert!(validate(d, private).is_err(), "{key}: {private}");
+            }
+            assert!(
+                validate(d, "https://203.0.113.9").is_err(),
+                "documentation range"
+            );
+            assert!(validate(d, "https://93.184.216.34/relay").is_ok(), "{key}");
             assert!(validate(d, "http://push.example.org").is_err(), "{key}");
         }
         assert!(validate(def("kemlock_push_relay_url"), "").is_ok());
@@ -899,6 +1113,8 @@ mod tests {
             "Attachments/x",
             "sends",
             "server.key",
+            "import",
+            "Import/old",
             "backups/../db",
         ] {
             assert!(validate(dest, bad).is_err(), "{bad}");

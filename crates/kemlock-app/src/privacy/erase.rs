@@ -15,12 +15,16 @@ use super::ports::{
 use crate::error::AppError;
 use crate::notices::BoxFuture;
 use crate::platform::{Platform, random_uuid};
-use crate::ports::{Clock, Event, PasswordAuth, SecretSeal, UserRepo};
+use crate::ports::{Clock, Event, PasswordAuth, SecretSeal, StoreError, UserRepo};
 use crate::sealed::{LoginState, PURPOSE_LOGIN};
 use crate::sign_in::credential_id;
+use crate::spaces::OWNER_REQUIRED;
 use kemlock_domain::{User, UserId};
 use subtle::ConstantTimeEq;
 use time::{Duration, OffsetDateTime};
+
+/// What an erasure that would leave a space with members and no owner is refused with.
+const ONLY_OWNER: &str = "the account is the only owner of a space with other members: hand it over or delete the space first";
 
 /// Checks that the person asking still knows the password: the last message of an OPAQUE login
 /// whose first message the same device's key started. The session already passed the second step,
@@ -127,9 +131,7 @@ where
     ) -> Result<Erasure, AppError> {
         let account = self.users.by_id(user).await?.ok_or(AppError::NotFound)?;
         if !self.eraser.blocking_spaces(user).await?.is_empty() {
-            return Err(AppError::Invalid(
-                "the account is the only owner of a space with other members: hand it over or delete the space first",
-            ));
+            return Err(AppError::Invalid(ONLY_OWNER));
         }
         let grace = match requested_by {
             Requester::Account => self.settings.retention().await?.deleted_account_grace_days,
@@ -167,23 +169,36 @@ where
     ) -> Result<Erasure, AppError> {
         let account = self.users.by_id(user).await?.ok_or(AppError::NotFound)?;
         if !self.eraser.blocking_spaces(user).await?.is_empty() {
-            return Err(AppError::Invalid(
-                "the account is the only owner of a space with other members: hand it over or delete the space first",
-            ));
+            return Err(AppError::Invalid(ONLY_OWNER));
         }
         self.erase_now(account, requested_by).await
     }
 
     /// Erases an account that is due, or that an admin asked to erase. The retention job calls
-    /// this for each account `due_erasures` names.
+    /// this for each account `due_erasures` names. The grace period can end after another owner
+    /// stepped down, so the check of `execute` runs again: an erasure that would leave a space with
+    /// members and no owner is held (refused now, tried again at the next run).
     pub async fn erase_due(&self, user: UserId) -> Result<Erasure, AppError> {
         let account = self.users.by_id(user).await?.ok_or(AppError::NotFound)?;
+        if !self.eraser.blocking_spaces(user).await?.is_empty() {
+            return Err(AppError::Invalid(ONLY_OWNER));
+        }
         self.erase_now(account, Requester::Retention).await
     }
 
     async fn erase_now(&self, account: User, requested_by: Requester) -> Result<Erasure, AppError> {
         let sends = self.sends.erase_sends(account.id).await?;
-        let rows = self.eraser.erase_user(&account).await?;
+        // The store checks the owners again in the erasure's own transaction: an owner may have
+        // stepped down since `blocking_spaces` was read. It also refuses the last admin.
+        let rows = match self.eraser.erase_user(&account).await {
+            Err(StoreError::Backend(why)) if why == OWNER_REQUIRED => {
+                return Err(AppError::Invalid(ONLY_OWNER));
+            }
+            Err(StoreError::Backend(why)) if why == super::LAST_ADMIN => {
+                return Err(AppError::Invalid("the last admin can't be deleted"));
+            }
+            other => other?,
+        };
 
         let mut files_deleted = 0u64;
         let mut files_failed = 0u64;

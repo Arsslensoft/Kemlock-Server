@@ -8,6 +8,11 @@ pub struct AuthConfig {
     /// `SIGNUPS_ALLOWED`: whether anyone may register. The first admin registers with a setup
     /// grant whatever this says.
     pub signups_allowed: bool,
+    /// "Verify the email of a new account" (`SIGNUPS_VERIFY`) while the server can send mail: an
+    /// account held for its address can't sign in or be used, and single sign-on doesn't link to
+    /// it. With it off a hold does nothing, so turning the setting off (or losing SMTP) releases
+    /// held accounts, as in Vaultwarden.
+    pub signups_verify: bool,
     /// Access tokens live 10 minutes (design, "API and sync").
     pub access_ttl: Duration,
     /// Refresh tokens live 30 days and rotate at every use.
@@ -23,6 +28,7 @@ impl Default for AuthConfig {
     fn default() -> Self {
         AuthConfig {
             signups_allowed: false,
+            signups_verify: false,
             access_ttl: Duration::minutes(10),
             refresh_ttl: Duration::days(30),
             challenge_ttl: Duration::minutes(5),

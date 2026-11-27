@@ -105,6 +105,7 @@ async fn chained(store: &SqlStore) -> (SpaceId, UserId, ChainHead) {
                 changes,
                 creating: true,
                 held: Vec::new(),
+                writes: Vec::new(),
                 answers: None,
                 state: None,
             },
@@ -124,6 +125,7 @@ fn append(expected: Option<ChainHead>, records: Vec<StoredRecord>) -> ChainAppen
         changes: SpaceChanges::new(SpaceId(Uuid::nil())),
         creating: false,
         held: Vec::new(),
+        writes: Vec::new(),
         answers: None,
         state: None,
     }
@@ -405,6 +407,10 @@ async fn held_items_are_kept_per_space() {
         kemlock_domain::ItemId(Uuid::new_v4()),
         kemlock_domain::ItemId(Uuid::new_v4()),
     ];
+    // Only a space's own items can be held.
+    for item in items {
+        put(&store, draft(item, Owner::Space(space), None, 1)).await;
+    }
     store.hold_items(space, &items).await.expect("held");
     store
         .hold_items(space, &items[..1])
@@ -633,6 +639,7 @@ impl Real {
                     changes,
                     creating: self.head.is_none(),
                     held: Vec::new(),
+                    writes: Vec::new(),
                     answers: None,
                     state: Some(Arc::new(self.state.clone())),
                 },
@@ -1025,4 +1032,85 @@ async fn held_items_follow_the_page_limit_and_the_cursor_with_the_live_ones() {
     assert_eq!(ids(&second.items), vec![w.held.id]);
     assert!(second.held.contains(&w.held.id));
     assert!(!second.more);
+}
+
+// ---- how much of the chain one account signed lately, on every backend ----
+
+async fn chain_usage_counts_what_one_account_signed_lately(store: &SqlStore) {
+    let (space, sam, first) = chained(store).await;
+    let lee = UserId(Uuid::new_v4());
+    let mut records = Vec::new();
+    for (seq, by, at) in [
+        (1u64, lee, 1_780_000_100u64),
+        (2, lee, 1_780_003_000),
+        (3, sam, 1_780_003_100),
+        (4, lee, 1_780_090_000),
+    ] {
+        let mut r = record(seq, u8::try_from(seq).expect("small") + 1, by);
+        r.at = at;
+        r.cosignature = None;
+        records.push(r);
+    }
+    let last = head(records.last().expect("records"));
+    assert_eq!(
+        store
+            .chain_append(space, append(Some(first), records))
+            .await
+            .expect("the append"),
+        AppendOutcome::Appended(last)
+    );
+
+    // Lee signed three (at 100, 3000 and 90000 after the start), two of them from 3000 on.
+    let usage = store
+        .chain_usage(space, lee, 1_780_003_000, 1_780_000_050)
+        .await
+        .expect("usage");
+    assert_eq!((usage.by_member_hour, usage.by_member_day), (2, 3));
+    // Sam signed the first record and the third.
+    let usage = store
+        .chain_usage(space, sam, 1_780_003_050, 1_779_999_999)
+        .await
+        .expect("usage");
+    assert_eq!((usage.by_member_hour, usage.by_member_day), (1, 2));
+    // Nothing for an account that signed none, or in a space that is not there.
+    let stranger = UserId(Uuid::new_v4());
+    let usage = store
+        .chain_usage(space, stranger, 0, 0)
+        .await
+        .expect("usage");
+    assert_eq!((usage.by_member_hour, usage.by_member_day), (0, 0));
+    let usage = store
+        .chain_usage(SpaceId(Uuid::new_v4()), lee, 0, 0)
+        .await
+        .expect("usage");
+    assert_eq!((usage.by_member_hour, usage.by_member_day), (0, 0));
+}
+
+async fn all(store: &SqlStore) {
+    chain_usage_counts_what_one_account_signed_lately(store).await;
+}
+
+#[tokio::test]
+async fn usage_sqlite_in_memory() {
+    all(&memory().await).await;
+}
+
+#[tokio::test]
+async fn usage_sqlite_in_a_file() {
+    let (store, _dir) = common::file().await;
+    all(&store).await;
+}
+
+#[tokio::test]
+async fn usage_postgres_when_configured() {
+    if let Some(store) = common::external("KEMLOCK_TEST_POSTGRES_URL").await {
+        all(&store).await;
+    }
+}
+
+#[tokio::test]
+async fn usage_mysql_when_configured() {
+    if let Some(store) = common::external("KEMLOCK_TEST_MYSQL_URL").await {
+        all(&store).await;
+    }
 }

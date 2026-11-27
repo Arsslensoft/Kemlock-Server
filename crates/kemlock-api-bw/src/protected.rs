@@ -11,7 +11,6 @@
 //!   used again; the calls that act (the API key, deleting an organization, showing the recovery
 //!   code) use it up.
 
-use crate::account::check_valid_password;
 use crate::app::{App, Authed, BwStore};
 use crate::error::{BwError, BwResult};
 use crate::routes::{EmptyResult, empty, parse};
@@ -52,7 +51,10 @@ pub(crate) async fn validate<S: BwStore>(
 ) -> BwResult<()> {
     match (master_password_hash, otp) {
         (Some(hash), None) => {
-            if check_valid_password(&authed.account, hash) {
+            if app
+                .password_matches(&authed.account, hash, Some(authed.ip))
+                .await?
+            {
                 Ok(())
             } else {
                 Err(BwError::msg("Invalid password"))

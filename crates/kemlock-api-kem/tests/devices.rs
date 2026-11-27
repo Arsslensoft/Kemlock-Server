@@ -238,17 +238,62 @@ async fn an_unknown_email_gets_the_same_answer_and_shows_nowhere() {
     assert_eq!(listed["approvals"], json!([]));
 }
 
+/// A new device that asks from its own address.
+fn from(app: &App, n: u8) -> Client {
+    let mut client = app.client();
+    client.peer = Some(std::net::SocketAddr::from(([198, 51, n, 1], 40_000)));
+    client
+}
+
 #[tokio::test]
-async fn an_account_takes_ten_requests_an_hour() {
+async fn one_address_asks_three_times_an_hour_for_one_email_whether_or_not_it_has_an_account() {
     let (app, _open, _session) = open_device().await;
-    let new_device = app.client();
-    for _ in 0..10 {
-        assert_eq!(ask(&new_device, EMAIL).await.status, StatusCode::CREATED);
+    let new_device = from(&app, 1);
+    for email in [EMAIL, "nobody@example.org"] {
+        for _ in 0..3 {
+            assert_eq!(ask(&new_device, email).await.status, StatusCode::CREATED);
+        }
+        let refused = ask(&new_device, email).await;
+        assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS, "{email}");
+        assert_eq!(refused.problem(), "rate-limited", "{email}");
+        assert!(refused.header("retry-after").is_some());
     }
-    let refused = ask(&new_device, EMAIL).await;
-    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(refused.problem(), "rate-limited");
-    assert!(refused.header("retry-after").is_some());
+    // Another address is not held back by it.
+    assert_eq!(ask(&from(&app, 2), EMAIL).await.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn an_account_takes_thirty_requests_an_hour_and_past_them_the_new_device_is_told() {
+    let (app, open, session) = open_device().await;
+    // Thirty requests from ten addresses (each in a network of its own), so no address is over
+    // its own limit of three.
+    for n in 0..30u8 {
+        let asked = ask(&from(&app, 1 + n / 3), EMAIL).await;
+        assert_eq!(asked.status, StatusCode::CREATED, "{n}: {:?}", asked.json());
+        assert!(asked.json().get("heldBack").is_none(), "{n}");
+    }
+    // The next, from an address that has asked nothing, is not refused: it is stored and shown
+    // on the account's open devices like the rest, and its device is told it was held back
+    // among many. An email with no account is answered without that.
+    let held = ask(&from(&app, 99), EMAIL).await;
+    assert_eq!(held.status, StatusCode::CREATED, "{:?}", held.json());
+    assert_eq!(held.json()["heldBack"], json!(true));
+    let stranger = ask(&from(&app, 99), "nobody@example.org").await;
+    assert_eq!(stranger.status, StatusCode::CREATED);
+    assert!(stranger.json().get("heldBack").is_none());
+
+    let listed = open
+        .get_authed("/kem/v1/devices/approvals", &session.access_token)
+        .await
+        .json();
+    let approvals = listed["approvals"].as_array().expect("approvals");
+    assert_eq!(approvals.len(), 31);
+    assert!(
+        approvals
+            .iter()
+            .any(|a| a["id"] == held.json()["requestId"]),
+        "the held back request is listed"
+    );
 }
 
 #[tokio::test]
@@ -363,6 +408,41 @@ async fn approvals_need_a_signed_in_device_of_the_same_account() {
     .await;
     assert_eq!(reply.status, StatusCode::NOT_FOUND);
     assert_eq!(poll(&new_device, &id).await["status"], "pending");
+}
+
+#[tokio::test]
+async fn a_copy_made_for_another_key_version_is_a_409_with_the_current_one() {
+    let (_app, open, session) = open_device().await;
+    let token = &session.access_token;
+    let put = |key_version: u32| {
+        open.send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "web-crypto",
+                    "keyVersion": key_version,
+                })),
+                ..Req::default()
+            },
+        )
+    };
+    let stale = put(99).await;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    let current = stale.json()["currentKeyVersion"]
+        .as_u64()
+        .expect("the current version");
+    assert!(
+        open.get_authed("/kem/v1/devices/key-copy", token)
+            .await
+            .status
+            == StatusCode::NOT_FOUND
+    );
+    let kept = put(u32::try_from(current).expect("a version")).await;
+    assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.json());
 }
 
 #[tokio::test]
@@ -494,6 +574,142 @@ async fn signing_a_device_out_deletes_its_tokens_and_its_copy() {
         )
         .await;
     assert_eq!(again.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn signing_out_of_this_session_keeps_the_device_and_its_key_copy() {
+    let (app, open, session) = open_device().await;
+    let other = app.client();
+    let other_session = {
+        let signed = sign_in_reply(&other, EMAIL, test_device()).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    let put = other
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(&other_session.access_token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "keystore",
+                })),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+    let other_id: DeviceId = other_session.device_id.parse().expect("a device id");
+
+    let out = other
+        .post_authed(
+            "/kem/v1/auth/sign-out",
+            &other_session.access_token,
+            json!({}),
+        )
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
+
+    // The way back in for an account with no password stays: the device and its copy are there.
+    assert!(app.store.key_copy_of(other_id).is_some());
+    // The session is over: the refresh token and the access token both stop working.
+    let refreshed = other
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": other_session.refresh_token}),
+        )
+        .await;
+    assert_eq!(refreshed.status, StatusCode::UNAUTHORIZED);
+    let used = other
+        .get_authed("/kem/v1/devices/key-copy", &other_session.access_token)
+        .await;
+    assert_eq!(used.status, StatusCode::UNAUTHORIZED, "{:?}", used.json());
+    // Another device of the account is untouched.
+    let mine = open
+        .get_authed("/kem/v1/devices/key-copy", &session.access_token)
+        .await;
+    assert_ne!(mine.status, StatusCode::UNAUTHORIZED);
+    // And a call with no session is refused.
+    let bare = app.client().post("/kem/v1/auth/sign-out", json!({})).await;
+    assert_eq!(bare.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn ending_the_other_sessions_of_a_device_keeps_this_one_and_the_key_copy() {
+    let (app, _open, _session) = open_device().await;
+    let browser = app.client();
+    let first = {
+        let signed = sign_in_reply(&browser, EMAIL, test_device()).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    let put = browser
+        .send(
+            "PUT",
+            "/kem/v1/devices/key-copy",
+            Req {
+                access_token: Some(&first.access_token),
+                body: Some(json!({
+                    "wrappedKey": b64(&[0xc3u8; 92]),
+                    "protection": "keystore",
+                })),
+                ..Req::default()
+            },
+        )
+        .await;
+    assert_eq!(put.status, StatusCode::OK, "{:?}", put.json());
+    // The same browser signs in again later, as the device it already is: a second session.
+    app.clock.advance(time::Duration::seconds(5));
+    let second = {
+        let device = json!({"id": first.device_id, "name": "Test device", "kind": "kemlock-cli"});
+        let signed = sign_in_reply(&browser, EMAIL, device).await;
+        assert_eq!(signed.status, StatusCode::OK, "{:?}", signed.json());
+        Session::from_tokens(&signed.json()["tokens"])
+    };
+    assert_eq!(second.device_id, first.device_id);
+
+    let out = browser
+        .post_authed(
+            "/kem/v1/auth/sign-out",
+            &second.access_token,
+            json!({"others": true}),
+        )
+        .await;
+    assert_eq!(out.status, StatusCode::NO_CONTENT, "{:?}", out.body);
+
+    // The earlier session's refresh token, as an old closed tab holds it, is dead.
+    let old = browser
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": first.refresh_token}),
+        )
+        .await;
+    assert_eq!(old.status, StatusCode::UNAUTHORIZED);
+    // This session, its device and its key copy are not.
+    let mine = browser
+        .get_authed("/kem/v1/devices/key-copy", &second.access_token)
+        .await;
+    assert_eq!(mine.status, StatusCode::OK, "{:?}", mine.json());
+    let kept = browser
+        .post(
+            "/kem/v1/auth/token",
+            json!({"grantType": "refresh_token", "refreshToken": second.refresh_token}),
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::OK, "{:?}", kept.json());
+    let device_id: DeviceId = second.device_id.parse().expect("a device id");
+    assert!(app.store.key_copy_of(device_id).is_some());
+
+    // A body that isn't the request is refused.
+    let bad = browser
+        .post_authed(
+            "/kem/v1/auth/sign-out",
+            &second.access_token,
+            json!({"others": "yes"}),
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -664,6 +880,7 @@ async fn the_openapi_document_names_the_new_routes() {
         ("/kem/v1/devices/key-copy", "put"),
         ("/kem/v1/devices/key-copy", "delete"),
         ("/kem/v1/devices/{id}/key-copy", "delete"),
+        ("/kem/v1/auth/sign-out", "post"),
         ("/kem/v1/devices/sign-out", "post"),
         ("/kem/v1/emergency", "get"),
         ("/kem/v1/emergency/grants", "post"),

@@ -70,6 +70,14 @@ fn path_of(blob: BlobId) -> Path {
     Path::from(format!("{}/{name}", &name[..2]))
 }
 
+/// Where a pre-signed upload lands: `staging/<blob id>`, never the blob's own path. The signed URL
+/// names this and nothing the server serves, so a `PUT` to it after the upload was checked (the URL
+/// stays valid for its whole lifetime) can't change the file. `BlobStore::verify` checks
+/// what is here and moves it to the blob's own path.
+fn staging_path_of(blob: BlobId) -> Path {
+    Path::from(format!("staging/{blob}"))
+}
+
 /// Where a raw file is kept: its key, a few `/`-separated parts of `[A-Za-z0-9_-]`, such as
 /// Vaultwarden's `<cipher id>/<attachment id>`. A key that could leave the folder (`..`, an absolute
 /// path, a dot or backslash) is refused. A first part of two hex digits is a folder of blob ids, so
@@ -230,17 +238,78 @@ impl ObjectBlobStore {
         self
     }
 
-    /// A pre-signed URL for `method`, when the store signs and the setting is on.
+    /// Moves what a pre-signed upload put under `blob`'s staging name to the blob's own path, when
+    /// there is something there. The signed URL can't be made to name a length or to stop working
+    /// once the upload is settled, so the server doesn't trust what is under it: the object must
+    /// be `expected` bytes, and its bytes are read and written again under the blob's own name
+    /// through the same `KMA1` checks and size cap as an upload through the server. The staging
+    /// object goes afterwards. A later `PUT` to the URL makes a new staging object and nothing
+    /// else.
+    ///
+    /// `Ok` also when there is nothing staged (a local folder, or an upload settled already).
+    /// `WrongSize` and `NotKma1` leave the staging object for the caller's `delete`.
+    async fn adopt_staged(&self, blob: BlobId, expected: u64) -> Result<(), BlobError> {
+        let staging = staging_path_of(blob);
+        let found = match self.store.get_opts(&staging, GetOptions::new()).await {
+            Ok(found) => found,
+            Err(object_store::Error::NotFound { .. }) => return Ok(()),
+            Err(e) => return Err(backend(e)),
+        };
+        let size = found.meta.size;
+        if size != expected {
+            return Err(BlobError::WrongSize);
+        }
+        let body = match found.payload {
+            GetResultPayload::File(file, _) => file_stream(file, size),
+            GetResultPayload::Stream(stream) => stream.map_err(backend).boxed(),
+        };
+        let total = self.write_blob(blob, expected, body).await?;
+        if total != expected {
+            // Fewer bytes arrived than the object's size said: it changed under the read.
+            self.delete_path(path_of(blob)).await?;
+            return Err(BlobError::WrongSize);
+        }
+        self.delete_path(staging).await
+    }
+
+    /// Writes `body` as the blob `blob` through the `KMA1` checks, at most `max_size` bytes, and
+    /// returns how many. A body that fails half way (the read of the staging object broke) or
+    /// breaks a rule gives up the parts already stored, as an upload through the server does.
+    async fn write_blob(
+        &self,
+        blob: BlobId,
+        max_size: u64,
+        mut body: ByteStream,
+    ) -> Result<u64, BlobError> {
+        let mut upload = self.upload(blob, max_size, Some(StreamCheck::new()));
+        loop {
+            let chunk = match body.try_next().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(e) => {
+                    upload.abort().await;
+                    return Err(e);
+                }
+            };
+            if let Err(e) = upload.write(chunk).await {
+                upload.abort().await;
+                return Err(e);
+            }
+        }
+        upload.finish().await
+    }
+
+    /// A pre-signed URL for `method` on `path`, when the store signs and the setting is on.
     async fn presigned(
         &self,
         method: Method,
-        blob: BlobId,
+        path: &Path,
     ) -> Result<Option<PresignedUrl>, BlobError> {
         let (Some(signer), Some(expires_in)) = (&self.signer, self.presign_ttl) else {
             return Ok(None);
         };
         let url = signer
-            .signed_url(method, &path_of(blob), expires_in)
+            .signed_url(method, path, expires_in)
             .await
             .map_err(backend)?;
         Ok(Some(PresignedUrl {
@@ -413,6 +482,9 @@ impl BlobStore for ObjectBlobStore {
     }
 
     async fn verify(&self, blob: BlobId, expected: u64) -> Result<(), BlobError> {
+        // A pre-signed upload arrives under the staging name. Move it to the blob's own, checked
+        // as it goes, before looking at the blob: from here on the signed URL can't reach it.
+        self.adopt_staged(blob, expected).await?;
         let path = path_of(blob);
         let meta = self
             .store
@@ -438,16 +510,44 @@ impl BlobStore for ObjectBlobStore {
         kma1::Header::parse(&head).map(|_| ()).map_err(not_kma1)
     }
 
+    /// Deletes the blob and whatever a pre-signed upload left under its staging name.
     async fn delete(&self, blob: BlobId) -> Result<(), BlobError> {
-        self.delete_path(path_of(blob)).await
+        self.delete_path(path_of(blob)).await?;
+        self.delete_path(staging_path_of(blob)).await
     }
 
-    async fn presigned_upload(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
-        self.presigned(Method::PUT, blob).await
+    /// Never a URL: a pre-signed `PUT` can't be bound to the length the upload announced (the
+    /// signer refuses to sign `Content-Length`, and a checksum is the uploader's own choice), so it
+    /// would take up to 5 GB. Uploads go through the server's streamed path, which holds the size
+    /// and the quota. A later POST policy with `content-length-range` could bring this back.
+    async fn presigned_upload(&self, _blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
+        Ok(None)
+    }
+
+    /// Deletes the objects under `staging/` last written `older_than` ago or longer.
+    async fn purge_staging(&self, older_than: Duration) -> Result<u64, BlobError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+        let cutoff = now.saturating_sub(i64::try_from(older_than.as_secs()).unwrap_or(i64::MAX));
+        let prefix = Path::from("staging");
+        let mut stale = Vec::new();
+        let mut listing = self.store.list(Some(&prefix));
+        while let Some(meta) = listing.try_next().await.map_err(backend)? {
+            if meta.last_modified.timestamp() <= cutoff {
+                stale.push(meta.location);
+            }
+        }
+        let mut gone = 0u64;
+        for path in stale {
+            self.delete_path(path).await?;
+            gone += 1;
+        }
+        Ok(gone)
     }
 
     async fn presigned_download(&self, blob: BlobId) -> Result<Option<PresignedUrl>, BlobError> {
-        self.presigned(Method::GET, blob).await
+        self.presigned(Method::GET, &path_of(blob)).await
     }
 }
 
@@ -456,5 +556,46 @@ impl SendBlobs for ObjectBlobStore {
     /// same random blob ids as any file, held to the size cap alone.
     async fn begin_raw(&self, blob: BlobId, max_size: u64) -> Result<ObjectUpload, BlobError> {
         Ok(self.upload(blob, max_size, None))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_read_that_breaks_half_way_stores_nothing() {
+        // Parts of 8 bytes, so the first chunk starts a multipart upload.
+        let store = ObjectBlobStore::memory().with_part_size(8);
+        let blob = BlobId::random();
+        let body: ByteStream = futures_util::stream::iter(vec![
+            Ok(Bytes::from_static(b"KMA1 some bytes here")),
+            Err(BlobError::Backend("the connection dropped".to_owned())),
+        ])
+        .boxed();
+
+        let outcome = store.write_blob(blob, 1 << 20, body).await;
+
+        assert_eq!(
+            outcome,
+            Err(BlobError::Backend("the connection dropped".to_owned()))
+        );
+        assert_eq!(store.get_blob_raw(blob).await, Ok(None));
+    }
+
+    #[tokio::test]
+    async fn a_body_over_its_size_is_refused_and_stores_nothing() {
+        let store = ObjectBlobStore::memory().with_part_size(8);
+        let blob = BlobId::random();
+        let body: ByteStream = futures_util::stream::iter(vec![
+            Ok(Bytes::from_static(b"KMA1 some bytes here")),
+            Ok(Bytes::from_static(b"and some more")),
+        ])
+        .boxed();
+
+        let outcome = store.write_blob(blob, 10, body).await;
+
+        assert_eq!(outcome, Err(BlobError::TooLarge));
+        assert_eq!(store.get_blob_raw(blob).await, Ok(None));
     }
 }

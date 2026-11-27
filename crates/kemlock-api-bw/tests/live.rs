@@ -431,6 +431,7 @@ async fn an_organization_cipher_in_a_collection_is_told_to_the_members_who_can_s
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org_id, grace).await;
     let (status, body) = h
         .json(
             "POST",

@@ -12,9 +12,9 @@ use crate::platform::{Hasher, Platform, random_uuid};
 use crate::ports::{Event, EventLog, UserRepo};
 use crate::session::DeviceInfo;
 use kemlock_domain::unlock::{
-    ApprovalError, ApprovalId, ApprovalState, AuthRequest, HOURLY_REQUEST_LIMIT,
-    KX1_PUBLIC_KEY_LEN, REQUEST_TTL, phrase_from_digest, phrase_input, sealed_key_len_ok,
-    truncate_ip,
+    ApprovalError, ApprovalId, ApprovalState, AuthRequest, HARD_HOURLY_REQUEST_LIMIT,
+    HOURLY_REQUEST_LIMIT, KX1_PUBLIC_KEY_LEN, REQUEST_TTL, SOURCE_HOURLY_REQUEST_LIMIT,
+    phrase_from_digest, phrase_input, sealed_key_len_ok, truncate_ip,
 };
 use kemlock_domain::{Device, DeviceKind, Email, UserId};
 use std::net::IpAddr;
@@ -39,6 +39,9 @@ fn answer_error(e: ApprovalError) -> AppError {
     }
 }
 
+/// How many of an account's requests in an hour the owner is mailed about.
+pub const NOTICES_PER_HOUR: usize = 3;
+
 /// What a new device says when it asks.
 #[derive(Clone, Debug)]
 pub struct ApprovalRequestInput {
@@ -58,6 +61,10 @@ pub struct Requested {
     /// The phrase to show beside the one the open device shows.
     pub phrase: String,
     pub expires_at: OffsetDateTime,
+    /// Whether the account was getting so many requests (30 an hour) that this one was held
+    /// back among them: it is stored and shows on the account's open devices like the rest, but
+    /// the owner may take a while to find it, so the new device says so.
+    pub held_back: bool,
 }
 
 /// A new device asks for approval.
@@ -72,7 +79,13 @@ pub struct RequestApproval<U, A, N, E> {
 impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApproval<U, A, N, E> {
     /// Stores the request and tells the account's owner. The answer for an email with no account
     /// looks the same as for one with an account, so this can't be used to find accounts; the
-    /// request just never appears anywhere. An account takes 10 requests an hour.
+    /// request just never appears anywhere. An address takes 3 requests an hour for an account and
+    /// all addresses together 30, and the owner is mailed about the first 3 of them: past a limit
+    /// the answer is still the same one, so no limit shows anything about the account. A request
+    /// from an address that has asked before and been answered is not held back by the
+    /// all-addresses limit, and the first one that is held back mails the owner once to say
+    /// approvals are being throttled. (A route may answer a source that asks too often with a
+    /// 429, but it must do so for any email alike.)
     pub async fn execute(&self, input: ApprovalRequestInput) -> Result<Requested, AppError> {
         if input.public_key.len() != KX1_PUBLIC_KEY_LEN {
             return Err(AppError::Invalid(
@@ -93,6 +106,7 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
                 id: ApprovalId(random_uuid(&self.env)),
                 phrase,
                 expires_at,
+                held_back: false,
             });
         };
 
@@ -100,14 +114,25 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             .approvals
             .requests_since(user.id, now - Duration::hours(1))
             .await?;
-        if recent.len() >= HOURLY_REQUEST_LIMIT {
-            // The next slot opens when the request that fills the last one ages out.
-            let blocking = recent[recent.len() - HOURLY_REQUEST_LIMIT];
-            let wait = (blocking + Duration::hours(1) - now).whole_seconds().max(1);
-            return Err(AppError::SlowDown {
-                retry_after_secs: u64::try_from(wait).unwrap_or(1),
+        let source = truncate_ip(input.ip);
+        // One address takes only a few an hour for one account, so a few addresses can't use up
+        // the account's whole hour. A refusal would tell anyone who asks which emails have
+        // accounts: answer as for an email with no account.
+        let from_source = recent.iter().filter(|r| r.ip == source).count();
+        if from_source >= SOURCE_HOURLY_REQUEST_LIMIT {
+            return Ok(Requested {
+                id: ApprovalId(random_uuid(&self.env)),
+                phrase,
+                expires_at,
+                held_back: false,
             });
         }
+        // All addresses together take only so many "normal" ones too. An address one of whose
+        // requests was answered in the last hour is the owner's own: its request is not held back.
+        let known = recent.iter().any(|r| {
+            r.ip == source && matches!(r.state, ApprovalState::Approved | ApprovalState::Consumed)
+        });
+        let held_back = recent.len() >= HOURLY_REQUEST_LIMIT && !known;
 
         let device_name = Device::clean_name(&input.device.name);
         let request = AuthRequest {
@@ -118,27 +143,80 @@ impl<U: UserRepo, A: ApprovalRepo, N: DeviceNotices, E: Platform> RequestApprova
             device_kind: input.device.kind,
             public_key: input.public_key,
             jkt: input.jkt,
-            ip: truncate_ip(input.ip),
+            ip: source,
+            // A request held back is stored like any other and shown on the account's own open
+            // devices: storing it as answered would hide the owner's own request behind a
+            // flood of look-alikes. Only the new device is told, and the owner is mailed once.
             state: ApprovalState::Pending,
             sealed_key: None,
             answered_at: None,
             created_at: now,
             expires_at,
         };
-        self.approvals.insert_request(&request).await?;
-        self.notices
-            .new_device(NewDeviceNotice {
-                to: user.email,
-                device_name,
-                device_kind: request.device_kind,
-                ip: request.ip.clone(),
-                at: now,
-            })
-            .await;
+        // The count and the insert are one step, so racing requests can't pass the limit
+        // together. The owner's own address is not held to the hard limit.
+        let max_recent = if known {
+            usize::MAX
+        } else {
+            HARD_HOURLY_REQUEST_LIMIT
+        };
+        let stored = self
+            .approvals
+            .insert_request_within(&request, now - Duration::hours(1), max_recent)
+            .await?;
+        if !stored {
+            // Past the hard limit nothing was stored, so there is nothing to list: answered like
+            // a dropped request, not as held back, so the client doesn't say it is shown on the
+            // account's open devices. Nobody is mailed either.
+            return Ok(Requested {
+                id: ApprovalId(random_uuid(&self.env)),
+                phrase,
+                expires_at,
+                held_back: false,
+            });
+        }
+        if held_back {
+            // The first one held back in an hour tells the owner approvals are being
+            // throttled, so a real request that was held back with the rest isn't a silence.
+            if recent.len() == HOURLY_REQUEST_LIMIT {
+                self.notices
+                    .new_device(NewDeviceNotice {
+                        to: user.email,
+                        device_name: format!(
+                            "{device_name} (approval requests are being held back: this \
+                             account is getting a lot of them)"
+                        ),
+                        device_kind: request.device_kind,
+                        ip: request.ip.clone(),
+                        at: now,
+                    })
+                    .await;
+            }
+            return Ok(Requested {
+                id: request.id,
+                phrase,
+                expires_at,
+                held_back: true,
+            });
+        }
+        // Only the first few requests of an hour are mailed: the rest are still shown on the
+        // account's open devices, but cost its owner no more mail.
+        if recent.len() < NOTICES_PER_HOUR {
+            self.notices
+                .new_device(NewDeviceNotice {
+                    to: user.email,
+                    device_name,
+                    device_kind: request.device_kind,
+                    ip: request.ip.clone(),
+                    at: now,
+                })
+                .await;
+        }
         Ok(Requested {
             id: request.id,
             phrase,
             expires_at,
+            held_back: false,
         })
     }
 }

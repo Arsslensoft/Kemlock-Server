@@ -7,7 +7,8 @@ use common::{MADE_AT, device, draft, file, file_url, memory, put, tombstone, uni
 use kemlock_app::Actor;
 use kemlock_app::files::AttachmentRepo;
 use kemlock_app::ports::{
-    Clock, DeviceRepo, Event, EventLog, ItemStore, RefreshToken, StoreError, TokenRepo, UserRepo,
+    Clock, DeviceRepo, Event, EventLog, ItemStore, RefreshToken, StoreError, TokenApi, TokenRepo,
+    UserRepo,
 };
 use kemlock_app::privacy::{
     AccountData, AccountEraser, NewSignIn, PrivacyLog, PrivacySettings, RetentionStore,
@@ -426,6 +427,20 @@ impl BundleFingerprints for FirstBytes {
     }
 }
 
+/// Any key box signature of the right length: these tests are of the store, not of `sig1`.
+#[derive(Clone, Copy)]
+struct AnySignature;
+
+impl kemlock_app::spaces::KeyBoxVerifier for AnySignature {
+    async fn verify(
+        &self,
+        _facts: &kemlock_app::spaces::KeyBoxFacts<'_>,
+        _signature: &[u8],
+    ) -> Result<u32, kemlock_app::spaces::SpacesError> {
+        Ok(1)
+    }
+}
+
 fn sealed_key(fill: u8) -> Vec<u8> {
     let mut key = vec![fill; SEALED_KEY_LEN];
     key[0] = 1;
@@ -463,6 +478,7 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
         spaces: store.clone(),
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor_of(owner),
@@ -470,10 +486,12 @@ async fn make_space(store: &SqlStore, owner: UserId) -> (SpaceId, CollectionId) 
             id: space,
             name: vec![1; 40],
             sealed_space_key: sealed_key(2),
+            space_key_signature: vec![0x55; 3373],
             collection: NewCollection {
                 id: collection,
                 name: vec![3; 40],
                 sealed_key: sealed_key(4),
+                key_signature: vec![0x55; 3373],
             },
         },
     )
@@ -522,6 +540,7 @@ async fn join(
         fingerprints: FirstBytes,
         events: store.clone(),
         clock: FixedClock,
+        boxes: AnySignature,
     }
     .execute(
         &actor_of(owner.user.id),
@@ -532,10 +551,12 @@ async fn join(
             statement: b"compared".to_vec(),
             signature: vec![0x55; 3373],
             sealed_space_key: sealed_key(5),
+            space_key_signature: vec![0x55; 3373],
             collection_keys: vec![SealedCollectionKey {
                 collection,
                 user: member.user.id,
                 sealed: sealed_key(6),
+                signature: vec![0x55; 3373],
             }],
         },
     )
@@ -566,6 +587,7 @@ async fn erasing_an_account_removes_what_is_its_and_leaves_everyone_else() {
             created_at: MADE_AT,
             expires_at: MADE_AT + Duration::days(30),
             used_at: None,
+            api: TokenApi::Kemlock,
         },
     )
     .await
@@ -1112,5 +1134,42 @@ async fn a_pending_erasure_is_what_sign_in_asks_and_an_admin_can_cancel_it() {
     assert_eq!(
         AccountEraser::scheduled_erasure(&store, bob.user.id).await,
         Ok(None)
+    );
+}
+
+#[tokio::test]
+async fn the_last_admin_is_never_erased_and_one_of_two_admins_can_be() {
+    let store = memory().await;
+    let mut first = user(&unique_email("admin-one"));
+    first.role = kemlock_domain::Role::Admin;
+    let mut second = user(&unique_email("admin-two"));
+    second.role = kemlock_domain::Role::Admin;
+    let plain = user(&unique_email("plain"));
+    for account in [&first, &second, &plain] {
+        UserRepo::insert(&store, account).await.expect("insert");
+    }
+
+    // A person who is no admin goes whatever the admins are doing.
+    AccountEraser::erase_user(&store, &plain)
+        .await
+        .expect("an ordinary account can be erased");
+    // One of two admins goes...
+    AccountEraser::erase_user(&store, &first)
+        .await
+        .expect("one of two admins can be erased");
+    // ...and the one that is left is refused, inside the erasing transaction: nothing is erased.
+    let refused = AccountEraser::erase_user(&store, &second).await;
+    assert_eq!(
+        refused,
+        Err(StoreError::Backend(
+            kemlock_app::privacy::LAST_ADMIN.to_owned()
+        ))
+    );
+    assert!(
+        UserRepo::by_id(&store, second.id)
+            .await
+            .expect("lookup")
+            .is_some(),
+        "the last admin is still there"
     );
 }

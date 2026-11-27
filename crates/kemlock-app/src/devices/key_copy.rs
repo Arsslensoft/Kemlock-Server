@@ -30,6 +30,18 @@ impl<D: DeviceRepo, C: KeyCopyRepo, E: Clock> KeyCopies<D, C, E> {
         wrapped_key: Vec<u8>,
         protection: KeyProtection,
     ) -> Result<DeviceKeyCopy, AppError> {
+        self.put_at(actor, wrapped_key, protection, None).await
+    }
+
+    /// [`put`](KeyCopies::put) for a copy made for `key_version`: refused (`StaleKeyVersion`)
+    /// when the account has replaced its keys since. A client that doesn't say passes `None`.
+    pub async fn put_at(
+        &self,
+        actor: &Actor,
+        wrapped_key: Vec<u8>,
+        protection: KeyProtection,
+        key_version: Option<u32>,
+    ) -> Result<DeviceKeyCopy, AppError> {
         if wrapped_key.is_empty() || wrapped_key.len() > MAX_WRAPPED_KEY_LEN {
             return Err(AppError::Invalid("the wrapped key must be 1 to 1024 bytes"));
         }
@@ -53,7 +65,7 @@ impl<D: DeviceRepo, C: KeyCopyRepo, E: Clock> KeyCopies<D, C, E> {
             created_at,
             updated_at: now,
         };
-        self.copies.put_key_copy(&copy).await?;
+        self.copies.put_key_copy_at(&copy, key_version).await?;
         Ok(copy)
     }
 
@@ -155,5 +167,85 @@ impl<D: DeviceRepo, C: KeyCopyRepo, T: TokenRepo, E: Clock, V: EventLog>
             }
         }
         Ok(signed_out)
+    }
+}
+
+/// Ends this device's session and nothing else: its refresh tokens go and its DPoP key stops
+/// vouching for anything, so its access tokens stop too. The device row and its key copy stay.
+///
+/// That is the difference from [`SignOutDevice`]. For an account with no password (single sign-on),
+/// no passkey PRF wrap, no Recovery Kit and no other device, the trusted-device copy is the only
+/// way into the vault, so a person who merely signs out of the browser must not lose it. Removing a
+/// device and its copy is the explicit "remove this device" action.
+///
+/// [`EndSession::execute_others`] is the same for the device's other sessions: the ones an earlier
+/// sign-in on this device left behind (tokens a closed tab's storage may still hold), keeping the
+/// one the caller is in.
+#[derive(Debug)]
+pub struct EndSession<D, T, E, V> {
+    pub devices: D,
+    pub tokens: T,
+    pub clock: E,
+    pub events: V,
+}
+
+impl<D: DeviceRepo, T: TokenRepo, E: Clock, V: EventLog> EndSession<D, T, E, V> {
+    pub async fn execute(&self, actor: &Actor) -> Result<(), AppError> {
+        // Tokens first, so the device can't refresh while the key is cleared.
+        self.tokens.revoke_device(actor.device).await?;
+        if let Some(mut device) = self
+            .devices
+            .get(actor.device)
+            .await?
+            .filter(|d| d.user == actor.user)
+        {
+            // The next sign-in on this device binds its key again.
+            device.dpop_jkt = None;
+            self.devices.upsert(&device).await?;
+        }
+        let event = Event {
+            actor: Some(actor.user),
+            device: Some(actor.device),
+            action: "device.session_end",
+            target: Some(actor.device.to_string()),
+            at: self.clock.now(),
+        };
+        if let Err(e) = self.events.record(event).await {
+            tracing::warn!(error = %e, "couldn't record an event");
+        }
+        Ok(())
+    }
+
+    /// Ends every session of the calling device but the one it is in: the refresh-token families an
+    /// earlier sign-in on this device left. The device, its key copy, its DPoP key binding and the
+    /// caller's session stay. `signed_in_at` is the access token's `auth_time` in Unix seconds: all
+    /// the tokens of a family carry the time of the sign-in it began with, so the caller's family is
+    /// the one with that time. Two sign-ins in the same second can't be told apart, and both are kept.
+    /// Returns how many sessions ended.
+    pub async fn execute_others(
+        &self,
+        actor: &Actor,
+        signed_in_at: i64,
+    ) -> Result<usize, AppError> {
+        let mut others = std::collections::BTreeSet::new();
+        for token in self.tokens.device_tokens(actor.device).await? {
+            if token.created_at.unix_timestamp() != signed_in_at {
+                others.insert(token.family);
+            }
+        }
+        for family in &others {
+            self.tokens.revoke_family(*family).await?;
+        }
+        let event = Event {
+            actor: Some(actor.user),
+            device: Some(actor.device),
+            action: "device.other_sessions_end",
+            target: Some(actor.device.to_string()),
+            at: self.clock.now(),
+        };
+        if let Err(e) = self.events.record(event).await {
+            tracing::warn!(error = %e, "couldn't record an event");
+        }
+        Ok(others.len())
     }
 }

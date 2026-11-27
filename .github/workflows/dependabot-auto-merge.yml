@@ -1,8 +1,14 @@
 name: dependabot auto-merge
 
 # Approves and queues a Dependabot pull request for squash merge when it is a patch or minor
-# update. GitHub then merges it once the required checks (ci-ok, DCO) pass; a major update waits
-# for a person.
+# update of a dependency that never reaches a release. GitHub then merges it once the required
+# checks (ci-ok, DCO) pass; a major update waits for a person.
+#
+# Everything on the release path waits for a person too: the cargo and web (npm) dependencies
+# built into the image, the GitHub Actions the release workflow runs with `packages: write` and
+# `id-token: write`, and the Docker base images. A compromised upstream there could ship a signed
+# image that auto-updating installs pull. Only the end-to-end test images (docker-compose) and the
+# contract-test and API-generator tooling (npm in bw-cli and gen-api) merge on their own.
 #
 # A plain pull_request trigger, as GitHub documents for Dependabot: a Dependabot pull request's
 # run gets the permissions below, so no pull_request_target (and its write token on untrusted
@@ -34,8 +40,12 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Approve and auto-merge a patch or minor update
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor'
+      - name: Approve and auto-merge a patch or minor update of test-only tooling
+        if: >-
+          (steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor')
+          && (steps.metadata.outputs.package-ecosystem == 'docker_compose'
+          || (steps.metadata.outputs.package-ecosystem == 'npm_and_yarn'
+          && (steps.metadata.outputs.directory == '/crates/kemlock-contract-tests/bw-cli' || steps.metadata.outputs.directory == '/web/tools/gen-api')))
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -43,6 +53,10 @@ jobs:
           set -euo pipefail
           gh pr review --approve "$PR_URL"
           gh pr merge --auto --squash "$PR_URL"
-      - name: A major update needs a person
-        if: steps.metadata.outputs.update-type == 'version-update:semver-major'
-        run: echo "::notice::Major update, left for a maintainer"
+      - name: A major update or a release-path dependency needs a person
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-major'
+          || !(steps.metadata.outputs.package-ecosystem == 'docker_compose'
+          || (steps.metadata.outputs.package-ecosystem == 'npm_and_yarn'
+          && (steps.metadata.outputs.directory == '/crates/kemlock-contract-tests/bw-cli' || steps.metadata.outputs.directory == '/web/tools/gen-api')))
+        run: echo "::notice::Major update or release-path dependency, left for a maintainer"

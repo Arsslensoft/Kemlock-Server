@@ -27,6 +27,7 @@ const GROUP_TITLES: Record<string, MessageId> = {
   retention: 'admin.settings.group.retention',
   'rate-limits': 'admin.settings.group.rateLimits',
   security: 'admin.settings.group.security',
+  federation: 'admin.settings.group.federation',
 };
 
 /** The words for each setting the server has today; one it adds later shows under its own key. */
@@ -53,6 +54,7 @@ const LABELS: Record<string, MessageId> = {
   signups_verify: 'admin.settings.key.signups_verify',
   signups_domains_whitelist: 'admin.settings.key.signups_domains_whitelist',
   invitations_allowed: 'admin.settings.key.invitations_allowed',
+  bw_invites_auto_accept: 'admin.settings.key.bw_invites_auto_accept',
   user_attachment_limit_kib: 'admin.settings.key.user_attachment_limit_kib',
   space_attachment_limit_kib: 'admin.settings.key.space_attachment_limit_kib',
   send_file_limit_kib: 'admin.settings.key.send_file_limit_kib',
@@ -66,9 +68,11 @@ const LABELS: Record<string, MessageId> = {
   rate_sign_in_per_minute: 'admin.settings.key.rate_sign_in_per_minute',
   rate_password_failures_per_15_minutes: 'admin.settings.key.rate_password_failures_per_15_minutes',
   rate_second_step_failures_per_15_minutes: 'admin.settings.key.rate_second_step_failures_per_15_minutes',
+  rate_second_step_challenges_per_5_minutes: 'admin.settings.key.rate_second_step_challenges_per_5_minutes',
   rate_register_per_hour: 'admin.settings.key.rate_register_per_hour',
   security_contact: 'admin.settings.key.security_contact',
   security_encryption: 'admin.settings.key.security_encryption',
+  federation_promotion: 'admin.settings.key.federation_promotion',
 };
 
 /** The gray line under each switch's label: what turning it on or off does. */
@@ -76,6 +80,7 @@ export const SWITCH_HINTS: Record<string, MessageId> = {
   signups_allowed: 'admin.settings.hint.signups_allowed',
   signups_verify: 'admin.settings.hint.signups_verify',
   invitations_allowed: 'admin.settings.hint.invitations_allowed',
+  bw_invites_auto_accept: 'admin.settings.hint.bw_invites_auto_accept',
   push_enabled: 'admin.settings.hint.push_enabled',
   kemlock_push_relay: 'admin.settings.hint.kemlock_push_relay',
 };

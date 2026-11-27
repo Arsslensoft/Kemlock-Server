@@ -13,7 +13,8 @@ use kemlock_domain::{
 };
 use kemlock_federation::eventsync::{EventSync, LogEntry};
 use kemlock_federation::extra::{
-    ErasureOutbox, FedAdminRepo, MemberApply, MemberStore, StoredOffer, VaultErasure,
+    AccountStanding, ErasureOutbox, FedAdminRepo, MemberApply, MemberStore, StoredOffer,
+    VaultErasure,
 };
 use kemlock_federation::home::VaultFederation;
 use kemlock_federation::members::{MemberAccount, MemberDevice};
@@ -190,6 +191,7 @@ async fn a_replica_deletes_its_copy_of_an_erased_vault_and_the_copied_account() 
         key_version: template.key_version,
         created_at: MADE_AT.unix_timestamp(),
         updated_at: MADE_AT.unix_timestamp(),
+        past_bundles: Vec::new(),
         devices: vec![MemberDevice {
             id: DeviceId::random(),
             name: "Pixel".to_owned(),
@@ -199,7 +201,7 @@ async fn a_replica_deletes_its_copy_of_an_erased_vault_and_the_copied_account() 
         }],
     };
     assert_eq!(
-        store.apply_member_account(home, &copy).await,
+        store.apply_member_account(vault, home, &copy).await,
         Ok(MemberApply::Applied)
     );
     let first = ItemId::random();
@@ -258,15 +260,21 @@ async fn a_replica_never_erases_an_account_that_lives_on_it() {
     let (ada, items) = account_with_items(&store, "ada", 2).await;
 
     // Asked to erase the vault of an account that is this server's own (no copy marker), it
-    // deletes the vault's rows but leaves the account: erasing an account is the home's act, and
-    // the home is this server.
-    let erased = VaultErasure::erase_vault(&store, Owner::User(ada.id))
-        .await
-        .expect("the vault rows go");
+    // refuses and deletes nothing: a peer that became the vault's home (an admin here accepted a
+    // promotion) can't wipe a local user's items with an Erase.
+    // The refusal is the one the replica turns into an answer the home takes as final.
+    let refused = VaultErasure::erase_vault(&store, Owner::User(ada.id)).await;
+    assert_eq!(refused, Err(kemlock_app::ports::StoreError::Duplicate));
 
-    assert_eq!(erased.accounts, 0);
-    assert_eq!(erased.items, 2);
-    assert_eq!(ItemStore::get(&store, items[0]).await, Ok(None));
+    for item in &items {
+        assert!(
+            ItemStore::get(&store, *item)
+                .await
+                .expect("a read")
+                .is_some(),
+            "the item stays"
+        );
+    }
     assert!(
         UserRepo::by_id(&store, ada.id)
             .await
@@ -314,12 +322,26 @@ async fn erasing_a_replica_vault_clears_its_event_log_tags_and_matching_switch()
     let (store, dir) = common::file().await;
     let url = common::file_url(&dir.path().join("kemlock.db"));
     let peer = ServerId::random();
-    let (ada, ada_items) = account_with_items(&store, "ada", 1).await;
+    // Ada lives here only as a copy of another home's account: a vault whose account lives here
+    // is never erased by a peer (8c22806).
+    let ada_id = UserId::random();
+    assert_eq!(
+        store
+            .apply_member_account(
+                Owner::User(ada_id),
+                peer,
+                &copy_of(ada_id, &unique_email("ada"))
+            )
+            .await,
+        Ok(MemberApply::Applied)
+    );
+    let ada_items = [ItemId::random()];
+    put(&store, draft(ada_items[0], Owner::User(ada_id), None, 1)).await;
     let (bob, bob_items) = account_with_items(&store, "bob", 1).await;
-    let (vault, other) = (Owner::User(ada.id), Owner::User(bob.id));
+    let (vault, other) = (Owner::User(ada_id), Owner::User(bob.id));
     let tags = TagSet::new(1, [DedupTag([7; 32])]).expect("a small set");
     for (owner, by, item, n) in [
-        (vault, ada.id, ada_items[0], 1),
+        (vault, ada_id, ada_items[0], 1),
         (other, bob.id, bob_items[0], 2),
     ] {
         EventSync::store_peer_events(&store, peer, owner, &[log_entry(n)])
@@ -364,5 +386,287 @@ async fn erasing_a_replica_vault_clears_its_event_log_tags_and_matching_switch()
             .expect("a read")
             .len(),
         1
+    );
+}
+
+fn copy_of(id: UserId, email: &str) -> MemberAccount {
+    let template = user(email);
+    MemberAccount {
+        id,
+        email: template.email.as_str().to_owned(),
+        name: template.name.clone(),
+        mode: template.mode,
+        kdf: template.kdf.clone(),
+        wrapped_root_key: template.wrapped_root_key.clone(),
+        public_bundle: template.public_bundle.clone(),
+        bundle_signature: template.bundle_signature.clone(),
+        sealed_private_keys: template.sealed_private_keys.clone(),
+        key_version: template.key_version,
+        created_at: MADE_AT.unix_timestamp(),
+        updated_at: MADE_AT.unix_timestamp(),
+        past_bundles: Vec::new(),
+        devices: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn a_copied_account_follows_the_home_it_came_from_and_no_other() {
+    let store = memory().await;
+    let first_home = ServerId::random();
+    let other_home = ServerId::random();
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let id = UserId::random();
+    let email = unique_email("ada");
+    let mut copy = copy_of(id, &email);
+    assert_eq!(
+        store.apply_member_account(space, first_home, &copy).await,
+        Ok(MemberApply::Applied)
+    );
+
+    // Another server's home record can't replace the copy: not its keys, not its devices.
+    let mut takeover = copy.clone();
+    takeover.wrapped_root_key = vec![0xEE; 100];
+    takeover.devices = vec![MemberDevice {
+        id: DeviceId::random(),
+        name: "Thief".to_owned(),
+        kind: DeviceKind::KemlockAndroid,
+        dpop_jkt: Some("thief-jkt".to_owned()),
+        created_at: MADE_AT.unix_timestamp(),
+    }];
+    assert_eq!(
+        store
+            .apply_member_account(space, other_home, &takeover)
+            .await,
+        Ok(MemberApply::Refused)
+    );
+    let kept = UserRepo::by_id(&store, id)
+        .await
+        .expect("a read")
+        .expect("the copy");
+    assert_eq!(kept.wrapped_root_key, copy.wrapped_root_key);
+    assert!(
+        DeviceRepo::list(&store, id)
+            .await
+            .expect("devices")
+            .is_empty()
+    );
+
+    // The home it came from still updates it.
+    copy.wrapped_root_key = vec![0x11; 100];
+    assert_eq!(
+        store.apply_member_account(space, first_home, &copy).await,
+        Ok(MemberApply::Applied)
+    );
+}
+
+#[tokio::test]
+async fn a_copied_account_cannot_take_a_device_of_another_account() {
+    let store = memory().await;
+    let home = ServerId::random();
+    // Bob lives on this server, with a device.
+    let (bob, _) = account_with_items(&store, "bob", 0).await;
+    let device = kemlock_domain::Device {
+        id: DeviceId::random(),
+        user: bob.id,
+        name: "Bob's phone".to_owned(),
+        kind: DeviceKind::KemlockAndroid,
+        dpop_jkt: Some("bob-jkt".to_owned()),
+        created_at: MADE_AT,
+        last_seen_at: MADE_AT,
+    };
+    DeviceRepo::upsert(&store, &device).await.expect("a device");
+
+    // A home publishes an account that lists Bob's device id with its own key.
+    let mut copy = copy_of(UserId::random(), &unique_email("eve"));
+    copy.devices = vec![MemberDevice {
+        id: device.id,
+        name: "Mine".to_owned(),
+        kind: DeviceKind::KemlockAndroid,
+        dpop_jkt: Some("eve-jkt".to_owned()),
+        created_at: MADE_AT.unix_timestamp(),
+    }];
+    store
+        .apply_member_account(Owner::Space(kemlock_domain::SpaceId::random()), home, &copy)
+        .await
+        .expect("the account itself is taken");
+
+    let held = DeviceRepo::get(&store, device.id)
+        .await
+        .expect("a read")
+        .expect("the device");
+    assert_eq!(held.user, bob.id, "the device stays Bob's");
+    assert_eq!(held.dpop_jkt.as_deref(), Some("bob-jkt"));
+    assert!(
+        DeviceRepo::list(&store, copy.id)
+            .await
+            .expect("devices")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn the_home_of_a_personal_vault_speaks_for_its_account_not_the_home_of_a_space() {
+    let store = memory().await;
+    let me = ServerInfo::server_id(&store);
+    let (space_home, personal_home) = (ServerId::random(), ServerId::random());
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let victim = UserId::random();
+    let personal = Owner::User(victim);
+    let email = unique_email("victim");
+
+    // Before this server federates the victim's vault, a space home may create the copy.
+    let mut forged = copy_of(victim, &email);
+    forged.public_bundle = vec![0xAA; 50];
+    assert_eq!(
+        store.apply_member_account(space, space_home, &forged).await,
+        Ok(MemberApply::Applied)
+    );
+
+    // Then the victim's own home offers the vault and this server accepts it. From now on the
+    // space home can't touch the copy, and the personal home replaces what the space home made.
+    store
+        .put_vault(&VaultFederation::federated(
+            personal,
+            personal_home,
+            vec![me],
+        ))
+        .await
+        .expect("settings");
+    let mut hostile = forged.clone();
+    hostile.wrapped_root_key = vec![0xEE; 90];
+    assert_eq!(
+        store
+            .apply_member_account(space, space_home, &hostile)
+            .await,
+        Ok(MemberApply::Refused)
+    );
+    let real = copy_of(victim, &email);
+    assert_eq!(
+        store
+            .apply_member_account(personal, personal_home, &real)
+            .await,
+        Ok(MemberApply::Applied)
+    );
+    let kept = UserRepo::by_id(&store, victim)
+        .await
+        .expect("a read")
+        .expect("the copy");
+    assert_eq!(kept.public_bundle, real.public_bundle);
+    // And it is the personal home's now: the space home is still refused.
+    assert_eq!(
+        store.apply_member_account(space, space_home, &forged).await,
+        Ok(MemberApply::Refused)
+    );
+
+    // A space home can't create a copy of an account whose personal vault is federated here.
+    let other = UserId::random();
+    store
+        .put_vault(&VaultFederation::federated(
+            Owner::User(other),
+            personal_home,
+            vec![me],
+        ))
+        .await
+        .expect("settings");
+    assert_eq!(
+        store
+            .apply_member_account(space, space_home, &copy_of(other, &unique_email("o")))
+            .await,
+        Ok(MemberApply::Refused)
+    );
+}
+
+#[tokio::test]
+async fn forgetting_a_peer_erases_a_space_it_homes_with_the_account_copy_that_owned_it() {
+    use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
+    use kemlock_domain::SpaceId;
+    use kemlock_domain::spaces::{CustomPermissions, Member, MemberState, Space, SpaceRole};
+    use kemlock_federation::forget::Forgetting;
+
+    let store = memory().await;
+    let me = ServerInfo::server_id(&store);
+    let peer = ServerId::random();
+    // The peer's account lives here as a copy, and is the one confirmed owner of a space the peer
+    // homes that has a local member too: the owner check of an account's own erasure would refuse
+    // to erase the copy, and the clean-up of an unpaired peer must finish all the same.
+    let copy_id = UserId::random();
+    assert_eq!(
+        store
+            .apply_member_account(
+                Owner::User(copy_id),
+                peer,
+                &copy_of(copy_id, &unique_email("ada"))
+            )
+            .await,
+        Ok(MemberApply::Applied)
+    );
+    let (local, _) = account_with_items(&store, "bob", 1).await;
+    let space = SpaceId::random();
+    let now = datetime!(2026-06-01 12:00 UTC);
+    let mut changes = SpaceChanges::new(space);
+    changes.space = Some(Space {
+        id: space,
+        name: vec![1; 40],
+        key_version: 1,
+        keys_pending_since: None,
+        created_at: now,
+        updated_at: now,
+    });
+    for (user, role) in [(copy_id, SpaceRole::Owner), (local.id, SpaceRole::Member)] {
+        let mut member = Member::invited(space, user, role, CustomPermissions::NONE, copy_id, now);
+        member.state = MemberState::Confirmed;
+        changes.members.push(member);
+    }
+    SpaceRepo::create(&store, changes).await.expect("a space");
+    store
+        .put_vault(&VaultFederation::federated(
+            Owner::Space(space),
+            peer,
+            vec![me],
+        ))
+        .await
+        .expect("settings");
+
+    let forgotten = store
+        .forget_peer(peer)
+        .await
+        .expect("the peer is forgotten");
+
+    assert_eq!(forgotten.vaults, 1);
+    assert_eq!(forgotten.accounts, 1, "the copy went too");
+    assert_eq!(SpaceRepo::load(&store, space).await, Ok(None));
+    assert_eq!(UserRepo::by_id(&store, copy_id).await, Ok(None));
+    // The local account is untouched.
+    assert!(
+        UserRepo::by_id(&store, local.id)
+            .await
+            .expect("read")
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn an_account_id_is_unknown_local_or_a_copy_from_one_server() {
+    let store = memory().await;
+    let home = ServerId::random();
+    let space = Owner::Space(kemlock_domain::SpaceId::random());
+    let (local, _) = account_with_items(&store, "local", 0).await;
+    let copied = UserId::random();
+    store
+        .apply_member_account(space, home, &copy_of(copied, &unique_email("copy")))
+        .await
+        .expect("the copy is taken");
+
+    assert_eq!(
+        store.account_standing(UserId::random()).await,
+        Ok(AccountStanding::Unknown)
+    );
+    assert_eq!(
+        store.account_standing(local.id).await,
+        Ok(AccountStanding::Local)
+    );
+    assert_eq!(
+        store.account_standing(copied).await,
+        Ok(AccountStanding::Copy(home))
     );
 }

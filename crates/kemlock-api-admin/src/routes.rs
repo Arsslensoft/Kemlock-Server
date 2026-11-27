@@ -19,14 +19,17 @@ use kemlock_api_kem::extract::{Body, DPOP_NONCE};
 use kemlock_api_kem::problem::rate_limited;
 use kemlock_api_kem::ratelimit::ip_key;
 use kemlock_api_kem::replay::Full;
-use kemlock_api_kem::{Api, Crypto, CustomFieldDto, CustomFieldsDto, Problem, Store};
+use kemlock_api_kem::{
+    Api, Crypto, CustomFieldDto, CustomFieldsDto, MaybeInviteLinks, Problem, Store, forget_step_up,
+    reserve_step_up,
+};
 use kemlock_app::admin::events::{cursor_text, filter as event_filter, parse_cursor};
 use kemlock_app::admin::{
     AdminError, AdminRepos, Change, FieldInput, Mailer, MigrationRequest, NewRequest,
     PushRelayControl, RequestKind, RequestStatus, RequestUpdate, SecretChange, SsoInput, UserQuery,
 };
 use kemlock_app::b64url;
-use kemlock_app::ports::TokenSigner;
+use kemlock_app::ports::{TokenSigner, UserRepo};
 use kemlock_app::spaces::SpaceRepo;
 use kemlock_app::sso::{SsoRepos, TxtLookup};
 use kemlock_domain::{CustomFieldId, FieldType, SpaceId, UserId};
@@ -42,6 +45,22 @@ const DEFAULT_PUSH_RELAY_URL: &str = "https://push.kemlock.app";
 
 // ---------------------------------------------------------------------------------------------
 // Small helpers
+
+/// Whether `key` names a setting that holds a secret: its value is never put in the audit trail.
+fn is_secret_setting(key: &str) -> bool {
+    kemlock_app::admin::settings::definition(key)
+        .is_some_and(|d| d.kind == kemlock_app::admin::settings::Kind::Secret)
+}
+
+/// `text` cut to at most `max` characters, with an ellipsis when it was cut.
+fn truncated(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(3)).collect();
+    cut.push_str("...");
+    cut
+}
 
 fn bad(why: impl Into<String>) -> ApiError {
     ApiError(Problem::bad_request(why))
@@ -181,10 +200,11 @@ where
         let request: StepUpFinishRequest = body.json()?;
         let now = env.now();
         let account = format!("stepup:{}", caller.actor.user);
+        // Reserved before the password is looked at, so parallel guesses can't all pass the limit.
         env.api
             .limits
             .account
-            .blocked(&account, now)
+            .reserve(&account, now)
             .map_err(rate_limited)?;
         let login_state = decode("loginState", &request.login_state)?;
         let finalization = decode("finalization", &request.finalization)?;
@@ -192,7 +212,6 @@ where
         // A state belongs to the admin who started it; another admin finishing it burns nothing.
         // A genuine, fresh state finishes once, right or wrong, and only then is it remembered.
         if step_up.login_state_user(&login_state)? != caller.actor.user {
-            env.api.limits.account.fail(&account, now);
             return Err(AdminError::StepUpFailed.into());
         }
         match env.api.used_states.insert(&login_state, now) {
@@ -203,10 +222,8 @@ where
         let finished = step_up
             .password_finish(&caller.actor, &login_state, &finalization)
             .await;
-        match &finished {
-            Err(AdminError::StepUpFailed) => env.api.limits.account.fail(&account, now),
-            Ok(_) => env.api.limits.account.clear(&account),
-            Err(_) => {}
+        if finished.is_ok() {
+            env.api.limits.account.clear(&account);
         }
         let issued = finished?;
         json_ok(StepUpResponse {
@@ -229,17 +246,13 @@ where
             .sign_in
             .check(&ip_key(caller.ip), now)
             .map_err(rate_limited)?;
-        let account = format!("2fa:{}", caller.actor.user);
-        env.api
-            .limits
-            .second_step
-            .blocked(&account, now)
-            .map_err(rate_limited)?;
+        // Reserved before the code is looked at, so parallel guesses can't all pass the limit,
+        // and in the store, on the step-up count the account's proofs share (not the sign-in
+        // second step's).
+        reserve_step_up(&env.api, caller.actor.user, now).await?;
         let finished = env.step_up().totp(&caller.actor, &request.code).await;
-        match &finished {
-            Err(AdminError::StepUpFailed) => env.api.limits.second_step.fail(&account, now),
-            Ok(_) => env.api.limits.second_step.clear(&account),
-            Err(_) => {}
+        if finished.is_ok() {
+            forget_step_up(&env.api, caller.actor.user).await;
         }
         let issued = finished?;
         json_ok(StepUpResponse {
@@ -281,34 +294,25 @@ where
             .sign_in
             .check(&ip_key(caller.ip), now)
             .map_err(rate_limited)?;
-        let account = format!("2fa:{}", caller.actor.user);
-        env.api
-            .limits
-            .second_step
-            .blocked(&account, now)
-            .map_err(rate_limited)?;
+        // Reserved before the answer is looked at, so parallel guesses can't all pass the limit,
+        // and in the store, on the step-up count the account's proofs share (not the sign-in
+        // second step's).
+        reserve_step_up(&env.api, caller.actor.user, now).await?;
         let stepper = env.passkey_stepper()?;
         let challenge = decode("challenge", &request.challenge)?;
         let response = serde_json::to_vec(&request.credential)
             .map_err(|_| bad("the credential can't be read"))?;
         // Only a genuine, fresh challenge for this admin and device is remembered as used, so
         // made-up ones take no room.
-        if let Err(e) = stepper.check_challenge(&caller.actor, &challenge) {
-            if e == AdminError::StepUpFailed {
-                env.api.limits.second_step.fail(&account, now);
-            }
-            return Err(e.into());
-        }
+        stepper.check_challenge(&caller.actor, &challenge)?;
         match env.api.used_states.insert(&challenge, now) {
             Ok(true) => {}
             Ok(false) => return Err(bad("the passkey challenge was already used")),
             Err(Full) => return Err(ApiError(Problem::overloaded())),
         }
         let finished = stepper.finish(&caller.actor, &challenge, &response).await;
-        match &finished {
-            Err(AdminError::StepUpFailed) => env.api.limits.second_step.fail(&account, now),
-            Ok(_) => env.api.limits.second_step.clear(&account),
-            Err(_) => {}
+        if finished.is_ok() {
+            forget_step_up(&env.api, caller.actor.user).await;
         }
         let issued = finished?;
         json_ok(StepUpResponse {
@@ -480,10 +484,38 @@ where
 
     // ---- spaces ----
 
+    /// A space as the console shows it: with, when the Bitwarden API is there and the space is
+    /// one of its organizations, that and the members whose invitation link can be copied.
+    async fn describe_space(
+        &self,
+        links: &MaybeInviteLinks,
+        row: &kemlock_app::admin::AdminSpaceRow,
+    ) -> AdminSpaceDto {
+        let mut dto = AdminSpaceDto::from(row);
+        let Some(links) = &links.0 else {
+            return dto;
+        };
+        let Some(pending) = links.pending_invitations(row.id).await else {
+            return dto;
+        };
+        dto.bitwarden_organization = true;
+        for user in pending {
+            // Someone whose account is gone has no link to copy either.
+            if let Ok(Some(account)) = UserRepo::by_id(&self.api.store, user).await {
+                dto.bitwarden_invitations.push(SpaceOwnerDto {
+                    user_id: user.0,
+                    email: account.email.as_str().to_owned(),
+                });
+            }
+        }
+        dto
+    }
+
     /// `GET /admin/v1/spaces?limit&offset`.
     async fn spaces_list(
         State(env): State<Self>,
         _caller: Caller,
+        links: MaybeInviteLinks,
         parsed: Result<Query<PageQuery>, QueryRejection>,
     ) -> Result<Json<SpacesPageDto>, ApiError> {
         let q = query(parsed)?;
@@ -491,8 +523,12 @@ where
             .spaces()
             .list(q.limit.unwrap_or(50), q.offset.unwrap_or(0))
             .await?;
+        let mut spaces = Vec::with_capacity(page.spaces.len());
+        for row in &page.spaces {
+            spaces.push(env.describe_space(&links, row).await);
+        }
         json_ok(SpacesPageDto {
-            spaces: page.spaces.iter().map(AdminSpaceDto::from).collect(),
+            spaces,
             total: page.total,
         })
     }
@@ -501,13 +537,16 @@ where
     async fn space_get(
         State(env): State<Self>,
         _caller: Caller,
+        links: MaybeInviteLinks,
         Path(id): Path<String>,
     ) -> Result<Json<AdminSpaceDto>, ApiError> {
         let row = env.spaces().get(SpaceId(uuid(&id)?)).await?;
-        json_ok(AdminSpaceDto::from(&row))
+        json_ok(env.describe_space(&links, &row).await)
     }
 
-    /// `PUT /admin/v1/spaces/{id}/owner`: the new owner must be a confirmed member.
+    /// `PUT /admin/v1/spaces/{id}/owner`: the new owner must be a confirmed member. On a space with
+    /// a chain the change is only queued for the space's admins to sign, and the answer says so
+    /// (`ownerChangeQueued`).
     async fn space_change_owner(
         State(env): State<Self>,
         writer: Writer,
@@ -515,7 +554,7 @@ where
         body: Body,
     ) -> Result<Json<AdminSpaceDto>, ApiError> {
         let request: ChangeOwnerRequest = body.json()?;
-        let row = env
+        let changed = env
             .spaces()
             .change_owner(
                 &writer.actor,
@@ -525,7 +564,41 @@ where
                 request.demote_previous,
             )
             .await?;
-        json_ok(AdminSpaceDto::from(&row))
+        let mut dto = AdminSpaceDto::from(&changed.row);
+        dto.owner_change_queued = changed.queued;
+        json_ok(dto)
+    }
+
+    /// `GET /admin/v1/spaces/{id}/members/{user}/invite-link`: the link that accepts a member's
+    /// invitation to a Bitwarden organization, for a server that can't mail it. The invitee still
+    /// signs in to accept, but it needs a fresh step-up like a write, is recorded in the
+    /// event log and is never cached.
+    async fn space_invite_link(
+        State(env): State<Self>,
+        writer: Writer,
+        links: MaybeInviteLinks,
+        Path((id, user)): Path<(String, String)>,
+    ) -> Result<([(header::HeaderName, &'static str); 1], Json<InviteLinkDto>), ApiError> {
+        let links = links.0.ok_or(AdminError::NotConfigured(
+            "the Bitwarden API isn't running on this server",
+        ))?;
+        let link = env
+            .spaces()
+            .invite_link(
+                &*links,
+                &writer.actor,
+                Some(writer.ip),
+                SpaceId(uuid(&id)?),
+                UserId(uuid(&user)?),
+            )
+            .await?;
+        Ok((
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(InviteLinkDto {
+                link: link.link,
+                expires_at: link.expires_at,
+            }),
+        ))
     }
 
     // ---- custom fields ----
@@ -664,6 +737,25 @@ where
         Ok(response)
     }
 
+    /// The settings as the console shows them. `SIGNUPS_VERIFY=true` in the environment does
+    /// nothing while no mail server is set up (the server logs it and holds nobody back), so it is
+    /// shown as off: the value in effect, not the one asked for.
+    fn setting_dtos(&self, views: &[kemlock_app::admin::SettingView]) -> Vec<SettingDto> {
+        views
+            .iter()
+            .map(|view| {
+                let mut dto = SettingDto::from(view);
+                if view.definition.key == "signups_verify"
+                    && dto.value.as_deref() == Some("true")
+                    && !self.rt.mail.configured()
+                {
+                    dto.value = Some("false".to_owned());
+                }
+                dto
+            })
+            .collect()
+    }
+
     // ---- settings ----
 
     /// `GET /admin/v1/settings`.
@@ -673,7 +765,7 @@ where
     ) -> Result<Json<SettingsResponse>, ApiError> {
         let views = env.settings().list().await?;
         json_ok(SettingsResponse {
-            settings: views.iter().map(SettingDto::from).collect(),
+            settings: env.setting_dtos(&views),
         })
     }
 
@@ -701,25 +793,49 @@ where
             })
             .collect();
         let settings = env.settings();
+        // What each setting was before, for the audit trail: a value may be a secret, so a secret
+        // is named and never shown; any other is recorded as it was and as it is.
+        let mut before: BTreeMap<String, String> = BTreeMap::new();
+        for key in changes.keys() {
+            if is_secret_setting(key) {
+                continue;
+            }
+            if let Ok(Some(value)) = settings.get(key).await {
+                before.insert(key.clone(), value);
+            }
+        }
         settings.apply(&changes).await?;
         // This replica re-reads at once; the others at their next poll.
         if let Some(saved) = &env.rt.settings_saved {
             saved();
         }
-        // The names only: a value may be a secret.
-        let names: Vec<&str> = changes.keys().map(String::as_str).collect();
+        let mut described: Vec<String> = Vec::with_capacity(changes.len());
+        for key in changes.keys() {
+            if is_secret_setting(key) {
+                described.push(key.clone());
+                continue;
+            }
+            let was = before.get(key).map_or("(unset)", String::as_str);
+            let now = settings.get(key).await.ok().flatten().unwrap_or_default();
+            let now = if now.is_empty() {
+                "(unset)"
+            } else {
+                now.as_str()
+            };
+            described.push(format!("{key}: {was} -> {now}"));
+        }
         env.audit()
             .record(
                 &writer.actor,
                 Some(writer.ip),
                 "admin.settings.update",
-                Some(names.join(",")),
+                Some(truncated(&described.join("; "), 1000)),
                 "changed the server settings",
             )
             .await;
         let views = settings.list().await?;
         json_ok(SettingsResponse {
-            settings: views.iter().map(SettingDto::from).collect(),
+            settings: env.setting_dtos(&views),
         })
     }
 
@@ -1167,6 +1283,10 @@ where
         .route("/admin/v1/spaces", get(h!(spaces_list)))
         .route("/admin/v1/spaces/{id}", get(h!(space_get)))
         .route("/admin/v1/spaces/{id}/owner", put(h!(space_change_owner)))
+        .route(
+            "/admin/v1/spaces/{id}/members/{user}/invite-link",
+            get(h!(space_invite_link)),
+        )
         .route(
             "/admin/v1/custom-fields",
             get(h!(custom_fields_list)).post(h!(custom_field_create)),

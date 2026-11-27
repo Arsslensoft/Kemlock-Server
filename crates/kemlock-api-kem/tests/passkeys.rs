@@ -153,6 +153,19 @@ impl Pk {
         name: &str,
         prf: Option<Value>,
     ) -> (String, SoftwareAuthenticator) {
+        self.new_passkey_with(client, session, name, prf, None)
+            .await
+    }
+
+    /// [`Pk::new_passkey`] with a fresh proof, which an account with a second step on needs.
+    async fn new_passkey_with(
+        &self,
+        client: &Client,
+        session: &Session,
+        name: &str,
+        prf: Option<Value>,
+        proof: Option<Value>,
+    ) -> (String, SoftwareAuthenticator) {
         let started = self
             .call(
                 client,
@@ -169,6 +182,9 @@ impl Pk {
         let mut body = json!({"name": name, "credential": credential});
         if let Some(prf) = prf {
             body["prf"] = prf;
+        }
+        if let Some(proof) = proof {
+            body["proof"] = proof;
         }
         let reply = self
             .call(
@@ -293,7 +309,9 @@ async fn a_passkey_without_prf_signs_in_but_opens_nothing_until_it_is_given_a_co
     let short = put(json!({"wrappedKey": b64(&WRAP[..91]), "keyVersion": FIRST_KEY_VERSION})).await;
     assert_eq!(short.status, StatusCode::BAD_REQUEST, "{:?}", short.json());
     let stale = put(json!({"wrappedKey": b64(&WRAP), "keyVersion": FIRST_KEY_VERSION + 1})).await;
-    assert_eq!(stale.status, StatusCode::BAD_REQUEST, "{:?}", stale.json());
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.json());
+    assert_eq!(stale.problem(), "key-version-stale");
+    assert_eq!(stale.json()["currentKeyVersion"], FIRST_KEY_VERSION);
     let stored = put(json!({"wrappedKey": b64(&WRAP), "keyVersion": FIRST_KEY_VERSION})).await;
     assert_eq!(stored.status, StatusCode::NO_CONTENT, "{:?}", stored.json());
 
@@ -755,6 +773,80 @@ async fn a_security_key_beside_an_authenticator_app_needs_a_proof() {
 }
 
 #[tokio::test]
+async fn a_passkey_beside_an_authenticator_app_needs_a_proof() {
+    let pk = pk();
+    let (d1, s1) = pk.signed_in("sam@example.org").await;
+    let token = Some(s1.access_token.as_str());
+    let enrol = pk
+        .call(&d1, "POST", "/kem/v1/account/two-factor/totp", token, None)
+        .await;
+    let secret = enrol.json()["secret"]
+        .as_str()
+        .expect("a secret")
+        .to_owned();
+    let confirmed = pk
+        .call(
+            &d1,
+            "POST",
+            "/kem/v1/account/two-factor/totp/confirm",
+            token,
+            Some(json!({"code": totp_now(&pk.app, &secret)})),
+        )
+        .await;
+    assert_eq!(
+        confirmed.status,
+        StatusCode::NO_CONTENT,
+        "{:?}",
+        confirmed.json()
+    );
+
+    // A stolen session alone can't add a passkey, which signs in without the password or the
+    // second step.
+    let started = pk
+        .call(&d1, "POST", "/kem/v1/account/passkeys/options", token, None)
+        .await;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.json());
+    let options = started.json()["options"].clone();
+    let credential = authenticator().create(&options);
+    let refused = pk
+        .call(
+            &d1,
+            "POST",
+            "/kem/v1/account/passkeys",
+            token,
+            Some(json!({"name": "Laptop", "credential": credential})),
+        )
+        .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        refused.json()
+    );
+    assert_eq!(pk.passkeys(&d1, &s1).await, json!([]));
+
+    // The refusal left the registration in progress: a current code finishes it.
+    let added = pk
+        .call(
+            &d1,
+            "POST",
+            "/kem/v1/account/passkeys",
+            token,
+            Some(json!({
+                "name": "Laptop",
+                "credential": credential,
+                "proof": totp_now(&pk.app, &secret),
+            })),
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.json());
+    assert_eq!(
+        pk.passkeys(&d1, &s1).await.as_array().map(Vec::len),
+        Some(1)
+    );
+}
+
+#[tokio::test]
 async fn a_security_key_that_isnt_ours_is_not_registered() {
     let pk = pk();
     let (d1, s1) = pk.signed_in("sam@example.org").await;
@@ -855,8 +947,9 @@ async fn a_security_key_answer_is_a_proof_that_works_once() {
 async fn a_passkey_answer_is_a_proof_and_needs_user_verification() {
     let pk = pk();
     let (d1, s1) = pk.signed_in("sam@example.org").await;
-    let _key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+    // The passkey first: with a second step on, adding one takes a fresh proof.
     let (_, mut passkey) = pk.new_passkey(&d1, &s1, "Laptop", None).await;
+    let _key = enrol_key(&pk, &d1, &s1, "Yubi").await;
 
     // Without user verification the passkey proves nothing, as at sign-in; the challenge is spent.
     passkey.set_user_verified(false);
@@ -1098,14 +1191,19 @@ async fn an_answer_with_another_users_handle_is_refused() {
 }
 
 #[tokio::test]
-async fn proof_options_require_verification_only_when_a_passkey_may_answer() {
+async fn proof_options_require_verification_for_a_security_key_too() {
     let pk = pk();
     let (d1, s1) = pk.signed_in("sam@example.org").await;
-    let _key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+    let mut key = enrol_key(&pk, &d1, &s1, "Yubi").await;
+    // A security key alone is asked to verify too: a touch of a key someone picked up proves nothing.
     let keys_only = pk.proof_options(&d1, &s1).await.json()["options"].clone();
-    assert_eq!(keys_only["userVerification"], "discouraged");
+    assert_eq!(keys_only["userVerification"], "required");
 
-    let _passkey = pk.new_passkey(&d1, &s1, "Laptop", None).await;
+    // The key answers the proof the new passkey needs, with a second step on.
+    let proof = json!({ "webauthn": key.get(&keys_only) });
+    let _passkey = pk
+        .new_passkey_with(&d1, &s1, "Laptop", None, Some(proof))
+        .await;
     let both = pk.proof_options(&d1, &s1).await.json()["options"].clone();
     assert_eq!(both["userVerification"], "required");
 }

@@ -330,7 +330,7 @@ where
             env: api.crypto.clone(),
             events: api.store.clone(),
             two_factor: api.store.clone(),
-            config: api.config.auth,
+            config: api.auth_config(),
         },
         config: config(&api),
     }

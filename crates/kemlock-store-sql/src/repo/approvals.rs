@@ -2,14 +2,15 @@
 
 use crate::convert::utc;
 use crate::error::StoreResult;
+use crate::owner_lock::begin_locked;
 use crate::store::SqlStore;
 use crate::tables::auth_requests::{self, state_str};
-use kemlock_app::devices::ApprovalRepo;
+use kemlock_app::devices::{ApprovalRepo, RecentRequest};
 use kemlock_app::ports::StoreError;
 use kemlock_domain::UserId;
 use kemlock_domain::unlock::{ApprovalId, ApprovalState, AuthRequest};
 use sea_orm::ActiveValue::{NotSet, Set};
-use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, QueryOrder};
+use sea_orm::{ColumnTrait, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder};
 use time::OffsetDateTime;
 
 impl ApprovalRepo for SqlStore {
@@ -19,6 +20,32 @@ impl ApprovalRepo for SqlStore {
             .await
             .store()?;
         Ok(())
+    }
+
+    /// Counts and inserts under the account's lock, in one transaction.
+    async fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> Result<bool, StoreError> {
+        let txn = begin_locked(self, request.user).await?;
+        let recent = auth_requests::Entity::find()
+            .filter(auth_requests::Column::UserId.eq(request.user.0))
+            .filter(auth_requests::Column::CreatedAt.gt(utc(since)))
+            .count(&txn)
+            .await
+            .store()?;
+        if usize::try_from(recent).unwrap_or(usize::MAX) >= max_recent {
+            txn.rollback().await.store()?;
+            return Ok(false);
+        }
+        auth_requests::Entity::insert(auth_requests::active(request))
+            .exec(&txn)
+            .await
+            .store()?;
+        txn.commit().await.store()?;
+        Ok(true)
     }
 
     async fn request(&self, id: ApprovalId) -> Result<Option<AuthRequest>, StoreError> {
@@ -71,13 +98,16 @@ impl ApprovalRepo for SqlStore {
             created_at: NotSet,
             expires_at: NotSet,
         };
+        // An approval holds the root key sealed to the new device: written under the lock.
+        let txn = begin_locked(self, request.user).await?;
         let result = auth_requests::Entity::update_many()
             .set(answer)
             .filter(auth_requests::Column::Id.eq(request.id.0))
             .filter(auth_requests::Column::State.eq(state_str(from)))
-            .exec(self.writer())
+            .exec(&txn)
             .await
             .store()?;
+        txn.commit().await.store()?;
         Ok(result.rows_affected == 1)
     }
 
@@ -85,8 +115,8 @@ impl ApprovalRepo for SqlStore {
         &self,
         user: UserId,
         since: OffsetDateTime,
-    ) -> Result<Vec<OffsetDateTime>, StoreError> {
-        Ok(auth_requests::Entity::find()
+    ) -> Result<Vec<RecentRequest>, StoreError> {
+        auth_requests::Entity::find()
             .filter(auth_requests::Column::UserId.eq(user.0))
             .filter(auth_requests::Column::CreatedAt.gt(utc(since)))
             .order_by_asc(auth_requests::Column::CreatedAt)
@@ -94,8 +124,14 @@ impl ApprovalRepo for SqlStore {
             .await
             .store()?
             .into_iter()
-            .map(|row| row.created_at)
-            .collect())
+            .map(|row| {
+                row.into_domain().map(|r| RecentRequest {
+                    created_at: r.created_at,
+                    ip: r.ip,
+                    state: r.state,
+                })
+            })
+            .collect()
     }
 
     async fn purge_requests(&self, before: OffsetDateTime) -> Result<u64, StoreError> {

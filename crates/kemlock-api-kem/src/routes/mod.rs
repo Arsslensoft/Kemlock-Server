@@ -3,6 +3,7 @@
 
 pub(crate) mod account;
 pub(crate) mod api_key;
+pub(crate) mod attempts;
 mod auth;
 pub(crate) mod connector;
 pub(crate) mod contract;
@@ -13,7 +14,9 @@ pub(crate) mod duplicates;
 pub(crate) mod emergency;
 pub(crate) mod failover;
 pub(crate) mod files;
+pub(crate) mod invite_link;
 pub(crate) mod items;
+pub(crate) mod large_bodies;
 pub(crate) mod manifests;
 pub(crate) mod new_device;
 pub(crate) mod passkeys;
@@ -23,14 +26,17 @@ pub(crate) mod profile;
 pub(crate) mod push;
 pub(crate) mod reauth;
 pub(crate) mod recovery_kit;
+pub(crate) mod rotation;
 pub(crate) mod sends;
 mod server;
+mod signup_verify;
 pub(crate) mod space_chain;
 pub(crate) mod space_recovery;
 pub(crate) mod spaces;
 pub(crate) mod sso;
 pub(crate) mod two_step;
 pub(crate) mod view;
+mod write_sig;
 
 use crate::problem::{Problem, rate_limited};
 use crate::ratelimit::Limiter;

@@ -126,6 +126,7 @@ async fn only_an_owner_has_the_key() {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, bob_id).await;
     let (status, body) = h
         .json(
             "POST",
@@ -213,7 +214,7 @@ async fn the_import_makes_members_and_groups_match_the_directory() {
         }
     };
 
-    // Bob has an account and joins accepted; Cleo has none and waits for her registration. Both
+    // Bob has an account and is invited, to accept for himself; Cleo has none and waits for her registration. Both
     // are in the group.
     let (status, body) = import(json!({
         "groups": [{"name": "Engineering", "externalId": "g1", "memberExternalIds": ["b1", "c1"]}],
@@ -228,7 +229,7 @@ async fn the_import_makes_members_and_groups_match_the_directory() {
     let rows = members(&h, &ada, &org).await;
     assert_eq!(rows.len(), 3);
     let bob = find(&rows, "bob@example.com").expect("bob is a member");
-    assert_eq!(bob["status"], 1);
+    assert_eq!(bob["status"], 0);
     assert_eq!(bob["type"], 2);
     assert_eq!(bob["externalId"], "b1");
     assert_eq!(bob["id"], bob_id.to_string());
@@ -315,7 +316,7 @@ async fn the_import_makes_members_and_groups_match_the_directory() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let rows = members(&h, &ada, &org).await;
-    assert_eq!(find(&rows, "bob@example.com").expect("bob")["status"], 1);
+    assert_eq!(find(&rows, "bob@example.com").expect("bob")["status"], 0);
 }
 
 #[tokio::test]
@@ -351,4 +352,45 @@ async fn the_public_api_takes_only_the_organizations_token() {
     h.env.advance(time::Duration::minutes(61));
     let (status, _) = h.json("POST", uri, Some(&token), Some(body)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn rotating_the_key_ends_the_tokens_made_with_the_old_one() {
+    let h = Harness::new().await;
+    let (ada, _) = h.signed_in("ada@example.com").await;
+    let org = organization(&h, &ada).await;
+    let old = api_key(&h, &ada, &org, "api-key").await["apiKey"]
+        .as_str()
+        .expect("a key")
+        .to_owned();
+    let (_, token) = connector_token(&h, &org, &old).await;
+    let token = token["access_token"].as_str().expect("a token").to_owned();
+    let public = |token: String| {
+        let h = &h;
+        async move {
+            h.json(
+                "POST",
+                "/api/public/organization/import",
+                Some(&token),
+                Some(json!({"groups": [], "members": [], "overwriteExisting": false})),
+            )
+            .await
+            .0
+        }
+    };
+    assert_eq!(public(token.clone()).await, StatusCode::OK);
+
+    let rotated = api_key(&h, &ada, &org, "rotate-api-key").await["apiKey"]
+        .as_str()
+        .expect("a key")
+        .to_owned();
+    // The old token is refused at once, though it had most of its hour left.
+    assert_eq!(public(token).await, StatusCode::UNAUTHORIZED);
+    // A new sign-in with the new key works.
+    let (status, fresh) = connector_token(&h, &org, &rotated).await;
+    assert_eq!(status, StatusCode::OK, "{fresh}");
+    assert_eq!(
+        public(fresh["access_token"].as_str().expect("a token").to_owned()).await,
+        StatusCode::OK
+    );
 }

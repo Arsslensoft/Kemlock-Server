@@ -21,7 +21,6 @@ use axum::extract::{FromRequestParts, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
 use axum::routing::post;
-use kemlock_app::bitwarden::BwAccountRepo;
 use kemlock_app::ports::UserRepo;
 use kemlock_app::spaces::{SpaceChanges, SpaceRepo};
 use kemlock_domain::spaces::{Group, GroupId};
@@ -141,8 +140,8 @@ async fn import_member<S: BwStore>(
         return Ok(());
     }
 
-    // Someone new: invited, or already accepted when their account has a password and no mail is
-    // there to wait for.
+    // Someone new: invited, and an account that exists accepts for itself. An address with no
+    // account waits for its registration.
     let Some(parsed) = parsed else {
         return Err(BwError::msg(format!(
             "{} is not a valid email address",
@@ -152,14 +151,18 @@ async fn import_member<S: BwStore>(
     let billing = org.doc.billing_email.clone();
     match account {
         Some(user) => {
-            let has_password = BwAccountRepo::get(&app.store, user.id)
-                .await?
-                .is_some_and(|a| !a.password_hash.is_empty());
-            let status = if has_password { ACCEPTED } else { INVITED };
+            // Invited, as every invitation is: the account accepts for itself.
+            let status = if crate::orgs::members::auto_accepts(app, user.id).await? {
+                ACCEPTED
+            } else {
+                INVITED
+            };
             let mut doc = MemberDoc::new(USER, false, status);
-            doc.invited_by_email = Some(billing);
+            doc.invited_by_email = Some(billing.clone());
             set_external(&mut doc.external_id, &data.external_id);
-            save_member(app, org, owner, user.id, doc).await
+            save_member(app, org, owner, user.id, doc).await?;
+            crate::orgs::members::mail_invitation(app, org, &user, &billing).await;
+            Ok(())
         }
         None => {
             if let Some(waiting) = org.pending.iter_mut().find(|p| p.email == parsed.as_str()) {

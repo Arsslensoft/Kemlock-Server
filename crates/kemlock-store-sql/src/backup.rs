@@ -20,6 +20,8 @@
 //! - **Sealed under `server.key`** (restoring needs the same key, which a backup never carries):
 //!   `two_factor.sealed_secret`, `two_factor_recovery.sealed_code`,
 //!   `sso_settings.sealed_client_secret`,
+//!   `bw_accounts.api_key` (`sealed:` and the sealed value; a plain one, from an older database,
+//!   is sealed at start-up, or when it is read before then),
 //!   `bw_account_extras.sealed_totp_secret` and `sealed_totp_recover`, and the `vw_rows` rows of the
 //!   Vaultwarden tables `twofactor` and `organization_api_key` (`data` starts with `sealed:`).
 //! - **Sealed to a key the server never holds** (the owner's, a device's, a contact's or a
@@ -27,8 +29,9 @@
 //!   `auth_requests.sealed_key`, `emergency_access.sealed_key`, `members.sealed_space_key`,
 //!   `collection_keys.sealed`, `space_recovery_boxes.sealed`, `sends.sealed_key` and
 //!   `passkeys.prf_wrapped_key`.
-//! - **Hashes**: `refresh_tokens`, `admin_invites.token_hash`, `email_changes.token_hash` and
-//!   `sends.password_hash`.
+//! - **Hashes**: `refresh_tokens`, `admin_invites.token_hash`, `email_changes.token_hash`,
+//!   `email_confirmations.token_hash`, `bw_account_extras.email_new_token` (`sha256:` and the hash)
+//!   and `sends.password_hash`.
 //! - **Plain**: `push_tokens.token`, `bw_devices.push_token` and `webauthn_challenges.state` (a
 //!   short-lived ceremony state)
 //!   are not sealed, so the archive's own encryption is all that protects them.
@@ -42,13 +45,15 @@ use crate::tables::space_recovery;
 use crate::tables::space_tables;
 use crate::tables::sso;
 use crate::tables::{
-    admin, attachments, auth_requests, bw_account_extras, bw_accounts, bw_attachments, bw_devices,
-    bw_docs, bw_user_key_ids, changes, custom_fields, dedup_owners, device_api_use,
-    device_key_copies, devices, duplicate_dismissals, email_changes, emergency_access, events,
-    federation, federation_insight, federation_keys, federation_logs, federation_wiring, item_tags,
-    items, passkeys, pending_erasures, policies, push_tokens, recovery_kits, refresh_tokens,
-    revoked_families, sends, server_meta, settings, sign_in_log, signed_manifests, sync_horizon,
-    two_factor, two_factor_recovery, two_step_versions, users, vw_rows, webauthn_challenges,
+    account_bundles, admin, attachments, auth_requests, bw_account_extras, bw_accounts,
+    bw_attachments, bw_devices, bw_docs, bw_tries, bw_user_key_ids, changes, custom_fields,
+    dedup_owners, device_api_use, device_key_copies, devices, duplicate_dismissals, email_changes,
+    email_confirmations, emergency_access, events, federation, federation_insight, federation_keys,
+    federation_logs, federation_wiring, item_tags, items, passkeys, pending_erasures, policies,
+    push_tokens, recovery_kits, refresh_tokens, revoked_families, rotation_previous_keys,
+    rotation_staged_items, second_step_attempts, sends, server_meta, settings, sign_in_log,
+    signed_manifests, signed_writes, step_up_attempts, sync_horizon, two_factor,
+    two_factor_recovery, two_step_versions, users, vw_import_ids, vw_rows, webauthn_challenges,
 };
 use kemlock_app::b64url;
 use kemlock_app::ports::StoreError;
@@ -184,17 +189,24 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         two_factor::Entity,
         two_factor_recovery::Entity,
         two_step_versions::Entity,
+        second_step_attempts::Entity,
+        step_up_attempts::Entity,
         passkeys::Entity,
         recovery_kits::Entity,
+        rotation_staged_items::Entity,
+        rotation_previous_keys::Entity,
         email_changes::Entity,
+        email_confirmations::Entity,
         webauthn_challenges::Entity,
         bw_accounts::Entity,
         bw_account_extras::Entity,
         bw_user_key_ids::Entity,
+        bw_tries::Entity,
         auth_requests::Entity,
         device_key_copies::Entity,
         emergency_access::Entity,
         sso::identities::Entity,
+        sso::sessions::Entity,
         sso::settings::Entity,
         sso::domains::Entity,
         server_meta::Entity,
@@ -216,8 +228,11 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         bw_attachments::Entity,
         bw_docs::Entity,
         vw_rows::Entity,
+        vw_import_ids::Entity,
         sends::Entity,
         signed_manifests::Entity,
+        signed_writes::Entity,
+        account_bundles::Entity,
         space_tables::spaces::Entity,
         space_tables::members::Entity,
         space_tables::groups::Entity,
@@ -240,9 +255,15 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         federation_wiring::federation_erasures::Entity,
         federation_wiring::federation_replicated_sends::Entity,
         federation_wiring::federation_withheld::Entity,
+        federation_wiring::vault_rank_pins::Entity,
+        federation_wiring::peer_blob_cursors::Entity,
         federation_logs::peer_events::Entity,
         federation_keys::key_records::Entity,
         federation_keys::learned_keys::Entity,
+        federation_keys::peer_key_history::Entity,
+        federation_keys::peer_pending_addresses::Entity,
+        federation_keys::peer_held_rotations::Entity,
+        federation_keys::peer_trusted_addresses::Entity,
         federation_insight::peer_security::Entity,
         federation_insight::peer_mismatches::Entity,
         space_chain::records::Entity,
@@ -644,6 +665,8 @@ impl SqlStore {
         }
         let txn = self.writer().begin().await.store()?;
         match restore_in(&txn, dir, tables, &registry).await {
+            // What came back may hold secrets sealed the old way: the server is stopped for a
+            // restore, and the start-up pass seals them to their accounts again before it serves.
             Ok(()) => txn.commit().await.store(),
             Err(err) => {
                 if let Err(rollback) = txn.rollback().await {
@@ -813,6 +836,7 @@ mod tests {
         assert!(at("devices") < at("device_key_copies"));
         assert!(at("users") < at("emergency_access"));
         assert!(at("users") < at("sso_identities"));
+        assert!(at("users") < at("sso_sessions"));
     }
 
     /// Applies the migrations one at a time to an empty SQLite database and holds the registry to

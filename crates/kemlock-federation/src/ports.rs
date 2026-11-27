@@ -5,13 +5,14 @@
 //! `async fn` and callers stay `Send` for axum, as in `kemlock_app::ports`.
 
 use crate::change::ChangeRecord;
+use crate::conflict::Rank;
 use crate::error::{FedError, Result};
 use crate::hashtree::Leaf;
 use crate::home::{HomeRecord, VaultFederation};
 use crate::wire::ChangeKey;
 use kemlock_app::ports::StoreError;
 use kemlock_crypto::sig1;
-use kemlock_domain::{Item, ItemId, Owner, ServerId, VersionVector};
+use kemlock_domain::{Hlc, Item, ItemId, Owner, ServerId, VersionVector};
 use std::future::Future;
 
 /// Whether a peer is trusted.
@@ -20,6 +21,10 @@ pub enum PeerState {
     Paired,
     /// The admin revoked it, or its identity key was reported stolen. No session is accepted.
     Revoked,
+    /// A key this server replaced for the peer says the peer's key was stolen (and rotated away
+    /// by a thief), which can't be told from an honest rotation by the old key. Nothing syncs
+    /// either way, nothing is deleted, and the admin settles it: pair again, or trust the peer.
+    Contested,
 }
 
 impl PeerState {
@@ -27,6 +32,7 @@ impl PeerState {
         match self {
             PeerState::Paired => "paired",
             PeerState::Revoked => "revoked",
+            PeerState::Contested => "contested",
         }
     }
 
@@ -34,6 +40,7 @@ impl PeerState {
         match s {
             "paired" => Some(PeerState::Paired),
             "revoked" => Some(PeerState::Revoked),
+            "contested" => Some(PeerState::Contested),
             _ => None,
         }
     }
@@ -213,6 +220,9 @@ pub struct Exported {
     /// The origin's signature, if one is stored. A change this server accepted has none until it
     /// is first sent.
     pub signature: Option<Vec<u8>>,
+    /// The collection of an item of a space, as this server holds it: what the writer's signature
+    /// covers. The same for every version of the item held, which is the item's current one.
+    pub collection: Option<kemlock_domain::spaces::CollectionId>,
 }
 
 /// A page of versions, in (origin, sequence) order.
@@ -233,6 +243,8 @@ pub enum ApplyOutcome {
     Sibling,
     /// The version was already held, or a held version replaced it.
     Duplicate,
+    /// The version would have replaced the head at no higher revision: a rollback, left out.
+    Refused,
 }
 
 pub trait ReplicaStore: Send + Sync {
@@ -265,12 +277,23 @@ pub trait ReplicaStore: Send + Sync {
     ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send;
 
     /// Applies a verified record from another server: merges it with the versions held, as
-    /// `conflict::merge` says, and keeps its signature for relaying. One transaction.
+    /// `conflict::merge_ranked` says with `rank`, and keeps its signature for relaying. One
+    /// transaction.
+    fn apply_ranked(
+        &self,
+        record: &ChangeRecord,
+        signature: &[u8],
+        rank: Rank,
+    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send;
+
+    /// [`apply_ranked`](Self::apply_ranked), choosing the head by clock alone.
     fn apply(
         &self,
         record: &ChangeRecord,
         signature: &[u8],
-    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send;
+    ) -> impl Future<Output = std::result::Result<ApplyOutcome, StoreError>> + Send {
+        self.apply_ranked(record, signature, Rank::Clock)
+    }
 
     /// A digest per item of `owner`, over the versions held.
     fn leaves(
@@ -284,6 +307,72 @@ pub trait ReplicaStore: Send + Sync {
         &self,
         owner: Owner,
     ) -> impl Future<Output = std::result::Result<VersionVector, StoreError>> + Send;
+
+    /// Whether the change `key` is already held here, applied or since replaced: what a record is
+    /// asked before anything is spent on it, since a change is applied once.
+    ///
+    /// The default holds none, for a store that can't say.
+    fn holds_change(
+        &self,
+        _key: ChangeKey,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// The newest change of `origin` this server holds, by sequence number: that number and the HLC
+    /// time the change carries. An origin's later changes are never older than its earlier ones, so
+    /// this is what a change that claims to be a past one is held against.
+    ///
+    /// The default holds none, for a store that can't say.
+    fn newest_change_of(
+        &self,
+        _origin: ServerId,
+    ) -> impl Future<Output = std::result::Result<Option<(u64, Hlc)>, StoreError>> + Send {
+        async { Ok(None) }
+    }
+
+    /// Sets or clears the flag of `owner` here, as the home's signed record says
+    /// (`docs/federation.md`, "Writer signatures"). Idempotent.
+    ///
+    /// The default keeps no flag.
+    fn set_owner_signed_only(
+        &self,
+        _owner: Owner,
+        _required: bool,
+    ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Whether `owner` accepts signed `kem1` writes only on this server (docs/crypto.md, "The
+    /// signed-only flag"): the owner asked for it, here or at the home server it replicates from.
+    ///
+    /// The default is false, for a store that keeps no such flag.
+    fn owner_signed_only(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Whether this server ranks `owner`'s versions by revision for good: once every server of the
+    /// vault's set said it does, the vault stays that way, whatever a descriptor says later.
+    ///
+    /// The default is false, for a store that keeps no such pin.
+    fn revision_ranked(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
+        async { Ok(false) }
+    }
+
+    /// Pins `owner` to ranking by revision. Idempotent, and never undone except by erasing the
+    /// vault.
+    fn pin_revision_ranking(
+        &self,
+        _owner: Owner,
+    ) -> impl Future<Output = std::result::Result<(), StoreError>> + Send {
+        async { Ok(()) }
+    }
 
     /// The siblings of an item: the versions held beside its head.
     fn siblings(
@@ -322,7 +411,7 @@ mod tests {
 
     #[test]
     fn states_round_trip() {
-        for s in [PeerState::Paired, PeerState::Revoked] {
+        for s in [PeerState::Paired, PeerState::Revoked, PeerState::Contested] {
             assert_eq!(PeerState::parse(s.as_str()), Some(s));
         }
         for s in [HomeStatus::Applied, HomeStatus::Quarantined] {

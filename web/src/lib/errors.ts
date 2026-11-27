@@ -1,5 +1,6 @@
 // Turns what went wrong into a message id, so every screen words its failures the same way.
 import { ApiError, NetworkError } from '@/api/errors';
+import { CryptoError } from '@/crypto/types';
 import type { MessageId, Values } from '@/i18n';
 
 /** The OPAQUE exchange failed on this side: the password is wrong (or the account is not there). */
@@ -18,6 +19,9 @@ export interface Described {
 export function describeError(error: unknown): Described {
   if (error instanceof NetworkError) return { id: 'error.network' };
   if (error instanceof CredentialsError) return { id: 'error.credentials' };
+  // The worker holds no signing keys: this browser opened the vault without them (a device copy,
+  // say), and a write is signed (docs/crypto.md, "Signed item writes").
+  if (error instanceof CryptoError && error.code === 'locked') return { id: 'error.needsFullUnlock' };
   if (error instanceof ApiError) {
     switch (error.slug) {
       case 'setup-code-wrong':
@@ -41,6 +45,16 @@ export function describeError(error: unknown): Described {
         return { id: 'error.stale' };
       case 'forbidden':
         return { id: 'error.forbidden' };
+      // Signed item writes: the account's keys changed since this browser unlocked, or the vault
+      // takes signed writes only.
+      case 'key-version-stale':
+        return { id: 'error.keyVersionStale' };
+      case 'signature-required':
+      case 'invalid-signature':
+        return { id: 'error.signatureRefused' };
+      // "Verify the email of a new account" is on and the link in the mail hasn't been opened.
+      case 'email-not-confirmed':
+        return { id: 'error.emailNotConfirmed' };
       // The attachment quota (crates/kemlock-api-kem/src/routes/files.rs).
       case 'storage-disabled':
         return { id: 'error.storageDisabled' };

@@ -162,6 +162,7 @@ describe('the crypto client', () => {
     const SPACE = '00010203-0405-0607-0809-0a0b0c0d0e0f';
     const vault = {
       sealRootKey: vi.fn(() => 'Ym94'),
+      sealEmergencyKey: vi.fn(() => 'ZW1l'),
       signStatement: vi.fn(() => 'c2ln'),
       newSpace: vi.fn(() =>
         JSON.stringify({ name: 'bg', sealedSpaceKey: 'c2s', collection: { name: 'Yw', sealedKey: 'Y2s' } }),
@@ -173,6 +174,7 @@ describe('the crypto client', () => {
     const client = createCryptoClient(() => port);
 
     expect(await client.sealRootKey('a3g', 'device-approval', 'YWFk')).toBe('Ym94');
+    expect(await client.sealEmergencyKey('YnVu', 'c2ln', SPACE)).toBe('ZW1l');
     expect(await client.signStatement('c3Rt', 'confirm')).toBe('c2ln');
     const made = await client.newSpace({
       spaceId: SPACE,
@@ -187,12 +189,14 @@ describe('the crypto client', () => {
     expect(await client.openEmergencyKey('c2VhbGVk')).toBe(5);
     expect(requests.map((r) => r.op)).toEqual([
       'sealRootKey',
+      'sealEmergencyKey',
       'signStatement',
       'newSpace',
       'openName',
       'openEmergencyKey',
     ]);
     expect(vault.sealRootKey).toHaveBeenCalledWith('a3g', 'device-approval', 'YWFk');
+    expect(vault.sealEmergencyKey).toHaveBeenCalledWith('YnVu', 'c2ln', SPACE);
   });
 
   it('answers a sealing request for a locked account as locked', async () => {
@@ -205,7 +209,7 @@ describe('the crypto client', () => {
       }),
     });
     const client = createCryptoClient(() => port);
-    await expect(client.sealRootKey('a3g', 'emergency-access', 'YWFk')).rejects.toMatchObject({
+    await expect(client.sealRootKey('a3g', 'device-approval', 'YWFk')).rejects.toMatchObject({
       code: 'locked',
     });
     await expect(

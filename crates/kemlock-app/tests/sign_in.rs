@@ -457,7 +457,10 @@ fn code_at(world: &World, user: UserId, unix: u64) -> String {
         .expect("the user has a TOTP enrolment");
     let secret = world
         .seal
-        .open("totp", &row.sealed_secret)
+        .open(
+            &kemlock_app::sealed::bound_purpose("totp", user),
+            &row.sealed_secret,
+        )
         .expect("the secret opens");
     kemlock_crypto::totp::code_at(&secret, unix)
 }
@@ -567,6 +570,31 @@ async fn check_login_state_accepts_only_genuine_fresh_states() {
     world.env.clock.advance(Duration::minutes(5));
     assert!(matches!(
         world.sign_in().check_login_state(&login_state),
+        Err(AppError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn check_login_state_for_wants_the_state_made_for_that_email() {
+    let (world, _user) = signed_in_world().await;
+    let (login_state, _) = login_messages(&world, EMAIL, &PASSWORD, "jkt-1")
+        .await
+        .expect("messages");
+    assert_eq!(
+        world.sign_in().check_login_state_for(&login_state, EMAIL),
+        Ok(())
+    );
+    // The email is compared as the sign-in name is: trimmed and lower-cased.
+    assert_eq!(
+        world
+            .sign_in()
+            .check_login_state_for(&login_state, " Sam@Example.org "),
+        Ok(())
+    );
+    assert!(matches!(
+        world
+            .sign_in()
+            .check_login_state_for(&login_state, "alex@example.org"),
         Err(AppError::Invalid(_))
     ));
 }
@@ -682,4 +710,153 @@ async fn a_deletion_scheduled_between_the_password_and_the_code_gets_no_session(
         .await;
     assert_eq!(result.map(|_| ()), Err(AppError::AccountBeingDeleted));
     assert!(world.store.devices_of(user).is_empty());
+}
+
+/// The account's TOTP row as the store has it.
+fn totp_row(world: &World, user: UserId) -> kemlock_app::ports::TwoFactor {
+    world
+        .store
+        .two_factor_of(user)
+        .into_iter()
+        .find(|t| t.method == TwoFactorMethod::Totp)
+        .expect("the user has a TOTP enrolment")
+}
+
+#[tokio::test]
+async fn a_secret_stored_before_binding_still_signs_in_and_is_sealed_to_its_account() {
+    use kemlock_app::ports::TwoFactorRepo;
+    use kemlock_app::sealed::bound_purpose;
+    let (world, user) = two_step_world().await;
+    // Put the secret back the way earlier versions (and an import from Vaultwarden) stored it:
+    // under the bare purpose.
+    let mut row = totp_row(&world, user);
+    let secret = world
+        .seal
+        .open(&bound_purpose("totp", user), &row.sealed_secret)
+        .expect("opens");
+    row.sealed_secret = world.seal.seal("totp", &secret);
+    TwoFactorRepo::put(&world.store, &row)
+        .await
+        .expect("stored");
+
+    let code = totp_code_of(&world, user, &secret);
+    second_step_with(&world, challenge_for(&world).await, code)
+        .await
+        .expect("a legacy secret still signs in");
+
+    let after = totp_row(&world, user);
+    assert!(
+        world
+            .seal
+            .open(&bound_purpose("totp", user), &after.sealed_secret)
+            .is_ok(),
+        "sealed to the account once it was used"
+    );
+    assert!(world.seal.open("totp", &after.sealed_secret).is_err());
+    assert!(after.enabled);
+}
+
+fn totp_code_of(world: &World, _user: UserId, secret: &[u8]) -> String {
+    kemlock_crypto::totp::code_at(secret, unix(world.env.now()))
+}
+
+#[tokio::test]
+async fn a_secret_copied_from_another_accounts_row_does_not_sign_in() {
+    use kemlock_app::ports::TwoFactorRepo;
+    let (world, user) = two_step_world().await;
+    // Another account with its own enrolled authenticator.
+    let other = make_user(&world, "kim@example.org").await;
+    world
+        .enrol_totp()
+        .execute(other)
+        .await
+        .expect("enrolment works");
+    let other_code = totp_code(&world, other);
+    world
+        .confirm_totp()
+        .execute(other, &other_code)
+        .await
+        .expect("confirmed");
+
+    // Someone who can write the database, not read `server.key`, copies their own sealed secret
+    // into the victim's row, and holds the code for it.
+    let mut victim = totp_row(&world, user);
+    victim.sealed_secret = totp_row(&world, other).sealed_secret;
+    TwoFactorRepo::put(&world.store, &victim)
+        .await
+        .expect("stored");
+    let code = totp_code(&world, other);
+
+    let result = second_step_with(&world, challenge_for(&world).await, code).await;
+    assert!(result.is_err(), "the copied secret does not open here");
+    assert_eq!(world.store.devices_of(user).len(), 0);
+}
+
+#[tokio::test]
+async fn an_account_held_for_its_email_is_refused_once_the_password_checks_out() {
+    use kemlock_app::ports::{Clock, UserRepo};
+    let (world, user) = signed_in_world().await;
+    let world = world.with_email_verification();
+    let now = Clock::now(&world.env);
+    UserRepo::hold_unconfirmed(&world.store, user, [2; 32], now, now + Duration::hours(1))
+        .await
+        .expect("held");
+
+    let result = sign_in_with(&world, EMAIL, &PASSWORD, device("Pixel"), "jkt-1").await;
+    assert_eq!(result.map(|_| ()), Err(AppError::EmailNotConfirmed));
+    assert!(world.store.devices_of(user).is_empty());
+    assert!(world.store.refresh_tokens().is_empty());
+
+    UserRepo::spend_confirmation(&world.store, [2; 32], now)
+        .await
+        .expect("opened");
+    sign_in_with(&world, EMAIL, &PASSWORD, device("Pixel"), "jkt-1")
+        .await
+        .expect("signs in once confirmed");
+}
+
+#[tokio::test]
+async fn every_second_step_finish_checks_the_policy_and_a_pending_erasure() {
+    use kemlock_app::sso::{SpaceMembership, SpaceRole};
+    use kemlock_domain::SpaceId;
+    let (world, user) = two_step_world().await;
+    let challenge = challenge_for(&world).await;
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Ok(())
+    );
+
+    // A space turns Require SSO on after the password step: the second step is refused for
+    // whatever method answers it, not only for the authenticator app.
+    let space = SpaceId::random();
+    world.store.set_memberships(
+        user,
+        vec![SpaceMembership {
+            space,
+            role: SpaceRole::Member,
+            require_sso: true,
+        }],
+    );
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Err(AppError::SsoRequired { space })
+    );
+    world.store.set_memberships(user, Vec::new());
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Ok(())
+    );
+
+    // A disabled account, and one waiting out its erasure, are refused too.
+    world.store.set_account_disabled(user, true);
+    assert_eq!(
+        world.sign_in().check_second_step_allowed(&challenge).await,
+        Err(AppError::AccountDisabled)
+    );
+    world.store.set_account_disabled(user, false);
+    // A challenge that is garbage is refused as one.
+    assert!(matches!(
+        world.sign_in().check_second_step_allowed(&[1, 2, 3]).await,
+        Err(AppError::Invalid(_))
+    ));
 }

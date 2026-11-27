@@ -89,8 +89,10 @@ impl Rig {
             DpopSigner::es256(),
         );
         let signing = kemlock_crypto::sig1::SigningKey::generate();
-        let session =
-            register_and_sign_in_with(&client, email, |user| real_bundle(user, &signing)).await;
+        let session = register_and_sign_in_with(&client, email, |user| {
+            common::fakes::signed_bundle(user, &signing)
+        })
+        .await;
         let id = UserId(session.user_id.parse().expect("a user id"));
         let bundle = real_bundle(id, &signing);
         Person {
@@ -136,6 +138,44 @@ fn sealed(fill: u8) -> String {
     b64(&sealed_key(fill))
 }
 
+/// `by`'s signature (base64url) over the box `sealed(fill)` of a space key (`collection` `None`) or
+/// a collection key (docs/crypto.md, "Signed key boxes"), sealed to `recipient` at key version 1.
+fn key_sig(
+    by: &Person,
+    space: Uuid,
+    collection: Option<Uuid>,
+    recipient: UserId,
+    fill: u8,
+) -> String {
+    use kemlock_crypto::key_box::{self, Kind};
+    let boxed = sealed_key(fill);
+    let (kind, aad) = match collection {
+        None => (
+            Kind::Space,
+            key_box::space_aad(space.as_bytes(), 1, recipient.as_bytes()),
+        ),
+        Some(collection) => (
+            Kind::Collection,
+            key_box::collection_aad(
+                space.as_bytes(),
+                collection.as_bytes(),
+                1,
+                recipient.as_bytes(),
+            ),
+        ),
+    };
+    let signature = key_box::Statement {
+        kind,
+        aad: &aad,
+        sealed_box: &boxed,
+        sealer: *by.id.as_bytes(),
+        sealer_key_version: 1,
+    }
+    .sign(&by.signing)
+    .expect("the box signs");
+    b64(&signature)
+}
+
 async fn make_space(owner: &Person) -> (Uuid, Uuid) {
     let space = Uuid::new_v4();
     let collection = Uuid::new_v4();
@@ -147,10 +187,12 @@ async fn make_space(owner: &Person) -> (Uuid, Uuid) {
                 "id": space.to_string(),
                 "name": b64(&name(1)),
                 "sealedSpaceKey": sealed(2),
+                "sealedSpaceKeySignature": key_sig(owner, space, None, owner.id, 2),
                 "collection": {
                     "id": collection.to_string(),
                     "name": b64(&name(3)),
                     "sealedKey": sealed(4),
+                    "sealedKeySignature": key_sig(owner, space, Some(collection), owner.id, 4),
                 },
             })),
         )
@@ -206,6 +248,7 @@ async fn confirm(owner: &Person, member: &Person, space: Uuid) -> Reply {
                 "statement": b64(&statement.to_bytes()),
                 "signature": b64(&signature),
                 "sealedSpaceKey": sealed(5),
+                "sealedSpaceKeySignature": key_sig(owner, space, None, member.id, 5),
                 "collectionKeys": [],
             })),
         )
@@ -294,6 +337,18 @@ async fn an_owner_sets_policies_and_a_member_reads_them() {
 
     // Require SSO is one of the policies (there is no narrower route for it): the owner turns it
     // on, a member reads it, and a member can't turn it off.
+    // It needs a provider: with none set up, turning it on is refused and nothing changes.
+    let unset = set_policies(&sam, space, json!({"requireSso": true})).await;
+    assert_eq!(unset.status, StatusCode::CONFLICT, "{:?}", unset.json());
+    let read = sam
+        .call("GET", &format!("/kem/v1/spaces/{space}/policies"), None)
+        .await;
+    assert_eq!(read.json()["policies"]["requireSso"], false);
+    rig.app.store.set_sso(kemlock_app::sso::SsoSettings::new(
+        "https://idp.test",
+        "kemlock",
+        datetime!(2026-11-26 10:00:00 UTC),
+    ));
     let sso = set_policies(&sam, space, json!({"requireSso": true})).await;
     assert_eq!(sso.status, StatusCode::OK, "{:?}", sso.json());
     assert_eq!(sso.json()["policies"]["requireSso"], true);

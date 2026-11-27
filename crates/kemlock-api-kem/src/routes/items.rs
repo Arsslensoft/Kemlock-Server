@@ -2,7 +2,8 @@
 
 use super::view::MaybeView;
 use crate::dto::{
-    BatchResponse, ItemDto, ResolveResponse, SiblingSetDto, SyncBody, SyncQuery, SyncResponse,
+    BatchResponse, ClearSignedWritesRequest, ItemDto, ResolveResponse, SiblingSetDto,
+    SignedWritesDto, SyncBody, SyncQuery, SyncResponse,
 };
 use crate::extract::{Authed, Body};
 use crate::problem::Problem;
@@ -17,7 +18,8 @@ use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use kemlock_app::ports::{ItemStore, StoreError, TokenSigner};
+use kemlock_app::ports::{ItemStore, StoreError, TokenSigner, TwoFactorRepo, UserRepo};
+use kemlock_app::signed_writes::SetSignedWrites;
 use kemlock_app::spaces::sync_owners::owners_of;
 use kemlock_app::spaces::{SpaceRepo, SpacesError};
 use kemlock_app::{AppError, SyncOutcome, b64url};
@@ -95,6 +97,7 @@ where
     let collection = dto.collection();
     let write = dto.into_write(expected)?;
     let actor = caller.actor();
+    super::write_sig::verify_writes(&env.api.store, actor.user, &[(&write, collection)]).await?;
     let item = match (write.owner, collection) {
         (Owner::User(_), None) => env.api.put_item().execute(&actor, write).await?,
         (Owner::User(_), Some(_)) => {
@@ -126,7 +129,10 @@ where
         )
             .into_response(),
         Some(tags) => {
-            let mut answer = env.api.answer_with_tags(&item, tags).await;
+            let mut answer = env
+                .api
+                .answer_with_tags(env.spaces.clone(), &actor, &item, tags)
+                .await;
             if let Some(c) = collection {
                 answer["collectionId"] = serde_json::json!(c);
             }
@@ -159,6 +165,15 @@ where
         writes.push((write, collection));
     }
     let actor = caller.actor();
+    super::write_sig::verify_writes(
+        &env.api.store,
+        actor.user,
+        &writes
+            .iter()
+            .map(|(write, collection)| (write, *collection))
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     // A batch of vault items alone is the plain batch; one that names a space or a collection
     // goes through the spaces' step, which stores vault and space items together.
     if writes
@@ -173,7 +188,11 @@ where
             })
             .into_response());
         }
-        return Ok(Json(env.api.answer_batch_with_tags(&stored, tags).await).into_response());
+        let answer = env
+            .api
+            .answer_batch_with_tags(env.spaces.clone(), &actor, &stored, tags)
+            .await;
+        return Ok(Json(answer).into_response());
     }
     let collections: BTreeMap<ItemId, CollectionId> = writes
         .iter()
@@ -185,7 +204,10 @@ where
         .execute(&actor, writes)
         .await?;
     if !tags.is_empty() {
-        let mut answer = env.api.answer_batch_with_tags(&stored, tags).await;
+        let mut answer = env
+            .api
+            .answer_batch_with_tags(env.spaces.clone(), &actor, &stored, tags)
+            .await;
         if let Some(items) = answer
             .get_mut("items")
             .and_then(serde_json::Value::as_array_mut)
@@ -205,6 +227,117 @@ where
             .collect(),
     })
     .into_response())
+}
+
+/// `GET /kem/v1/owners/{owner}/signed-writes`: whether the owner takes signed writes only. The
+/// same people may ask as may set it.
+async fn read_signed_writes<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(owner): Path<String>,
+) -> Result<Json<SignedWritesDto>, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let owner = super::contract::owner_param(&owner)?;
+    let required = set_signed_writes(&env)
+        .state(&caller.actor(), owner)
+        .await?;
+    Ok(Json(SignedWritesDto { required }))
+}
+
+/// `PUT /kem/v1/owners/{owner}/signed-writes`: asks that the owner accept signed writes only
+/// (docs/crypto.md, "The signed-only flag"). The account's own vault, or a space the caller owns or
+/// administers. A signed write does not set it. Idempotent. `204`; `403` for another account's vault
+/// or a space the caller only belongs to; `404` for a space the caller doesn't belong to.
+async fn require_signed_writes<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(owner): Path<String>,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let owner = super::contract::owner_param(&owner)?;
+    set_signed_writes(&env)
+        .execute(&caller.actor(), owner, true)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /kem/v1/owners/{owner}/signed-writes`: takes the owner off the list, so unsigned writes
+/// are accepted again. The same people may, and it asks for the password again (and a fresh proof
+/// beside it when a second step is on), as erasing the account does: turning the flag off lets a
+/// stolen session write what the account's keys never signed. `204`.
+async fn clear_signed_writes<S, P, K, R>(
+    State(env): State<Env<S, P, K, R>>,
+    caller: Caller,
+    Path(owner): Path<String>,
+    body: Body,
+) -> Result<StatusCode, Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    let owner = super::contract::owner_param(&owner)?;
+    let request: ClearSignedWritesRequest = body.json()?;
+    let api = &env.api;
+    let user = UserRepo::by_id(&api.store, caller.0.actor.user)
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| Problem::from(AppError::Unauthorized))?;
+    let second_step = TwoFactorRepo::list(&api.store, user.id)
+        .await
+        .map_err(AppError::from)?
+        .iter()
+        .any(|row| row.enabled);
+    let proof = request.proof.as_ref().filter(|p| !p.is_blank());
+    if second_step && proof.is_none() {
+        return Err(AppError::Invalid(
+            "a fresh proof is needed beside the password to turn signed-only writes off",
+        )
+        .into());
+    }
+    // Who may is checked before the password is spent, so a refusal costs no attempt.
+    let setter = set_signed_writes(&env);
+    setter.check(&caller.actor(), owner).await?;
+    super::reauth::reauthenticate(
+        api,
+        &caller.0,
+        &user,
+        &request.login_state,
+        &request.finalization,
+    )
+    .await?;
+    if let (true, Some(proof)) = (second_step, proof) {
+        super::two_step::require_proof_via_api(api, user.id, proof, true).await?;
+    }
+    setter.execute(&caller.actor(), owner, false).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The use case that sets or clears the flag.
+fn set_signed_writes<S, P, K, R>(env: &Env<S, P, K, R>) -> SetSignedWrites<S, R, S, P>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+    R: SpaceRepo + Clone + 'static,
+{
+    SetSignedWrites {
+        items: env.api.store.clone(),
+        spaces: env.spaces.clone(),
+        events: env.api.store.clone(),
+        clock: env.api.crypto.clone(),
+    }
 }
 
 /// The header that carries the sync cursor, for a cursor too long for a URL.
@@ -418,7 +551,8 @@ where
 
 /// `GET /kem/v1/live`: a WebSocket of "sync now" nudges for the account's vault and the spaces
 /// it is in when the socket opens. The upgrade is authenticated like any other request; a
-/// membership that changes later reaches the socket when it reconnects with a fresh token.
+/// membership that ends later stops that space's nudges at the socket's next session check (a
+/// minute), and one that starts is picked up when the client reconnects with a fresh token.
 async fn live<S, P, K, R>(
     State(env): State<Env<S, P, K, R>>,
     caller: Caller,
@@ -432,6 +566,7 @@ where
 {
     let api = env.api.clone();
     let hub = api.hub.clone();
+    let spaces = env.spaces.clone();
     let owners = owners_of(&env.spaces, caller.0.actor.user).await?;
     // The socket ends with the access token that opened it, and sooner if the session ends.
     let lifetime = crate::live::until_expiry(caller.0.expires_at, api.now());
@@ -441,15 +576,31 @@ where
         security_stamp,
         ..
     } = caller.0;
+    let user = actor.user;
+    // The client sends nothing but pings and a close, so a frame of more than a few KiB is
+    // refused before it is buffered, not after 64 MiB of it.
+    let upgrade = upgrade
+        .max_message_size(crate::live::MAX_CLIENT_MESSAGE_BYTES)
+        .max_frame_size(crate::live::MAX_CLIENT_MESSAGE_BYTES);
     Ok(upgrade.on_upgrade(move |socket| {
-        crate::live::serve_socket(socket, hub, owners, lifetime, move || {
-            let api = api.clone();
-            let jkt = jkt.clone();
-            async move {
-                api.session_is_live(actor.user, actor.device, &jkt, security_stamp)
-                    .await
-            }
-        })
+        crate::live::serve_socket(
+            socket,
+            hub,
+            owners,
+            lifetime,
+            move || {
+                let api = api.clone();
+                let jkt = jkt.clone();
+                async move {
+                    api.session_is_live(actor.user, actor.device, &jkt, security_stamp)
+                        .await
+                }
+            },
+            move || {
+                let spaces = spaces.clone();
+                async move { owners_of(&spaces, user).await.ok() }
+            },
+        )
     }))
 }
 
@@ -465,6 +616,16 @@ where
     Router::new()
         .route("/kem/v1/items/{id}", put(put_item::<S, P, K, R>))
         .route("/kem/v1/items:batch", post(put_batch::<S, P, K, R>))
+        .route(
+            "/kem/v1/owners/{owner}/signed-writes",
+            get(read_signed_writes::<S, P, K, R>)
+                .put(require_signed_writes::<S, P, K, R>)
+                .delete(clear_signed_writes::<S, P, K, R>),
+        )
+        .route(
+            "/kem/v1/accounts/{id}/bundles/{version}",
+            get(super::write_sig::get_bundle_at::<S, P, K, R>),
+        )
         .route(
             "/kem/v1/items/{id}/siblings/resolve",
             post(resolve_siblings::<S, P, K, R>),

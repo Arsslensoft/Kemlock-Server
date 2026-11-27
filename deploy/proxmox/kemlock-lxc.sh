@@ -8,8 +8,8 @@
 #   bash kemlock-lxc.sh --domain https://vault.example.com --ram 256 --disk 4
 #   bash kemlock-lxc.sh --update 105          # move container 105 to the latest release
 #
-# It downloads the release archive and its SHA256SUMS and refuses to install on a mismatch.
-# Verify the cosign signature yourself first if you want more: docs/self-hosting.md has the line.
+# It downloads the release archive, its SHA256SUMS and its cosign bundle, and refuses to install on
+# a SHA-256 mismatch or a signature that does not verify against this repository's release workflow.
 set -Eeuo pipefail
 
 REPO="arsslensoft/kemlock-server"
@@ -95,6 +95,54 @@ trap 'rm -rf "$tmp"' EXIT
 curl -fsSL -o "$tmp/$archive" "$base/$archive"
 curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 (cd "$tmp" && grep " $archive\$" SHA256SUMS | sha256sum -c -)
+# The cosign signature: SHA256SUMS sits in the same release as the archive, so the SHA-256 alone
+# says nothing about who built it. The archive must be signed by this repository's release workflow
+# at this tag (a short-lived Fulcio certificate, logged in Rekor), or the install stops. cosign is
+# in no Debian package: a pinned release is fetched from Sigstore, kept in /usr/local/lib/kemlock,
+# and its SHA-256 is checked against that release's cosign_checksums.txt on every use.
+cosign_version="v3.0.2"
+# The SHA-256 of cosign-linux-amd64, -arm64 and -arm for this version, from that release's
+# cosign_checksums.txt. They replace that checksum file, which sits beside the binary on the same
+# release page; move them with cosign_version (while the one for this machine is empty, the install warns).
+cosign_sha256_amd64="46dbdcb5467a3dfec2526923d0b3365e40c8d9dc00ec23d5aca3437449e8cbfd"
+cosign_sha256_arm64="17fd784737ca54d7d8a343c82da6c5d6dbdee971e66644d923d1b057fb97d7ed"
+cosign_sha256_arm="067df248315ee0c4af1cedb1cce65ad826f784be11ef88afd8d36e87c07162b6"
+# The repository's name in the signing certificate, in the case GitHub has it (the URLs here are
+# lower case, the identity is compared exactly).
+cert_repo="Arsslensoft/Kemlock-Server"
+case "$(dpkg --print-architecture)" in
+  amd64) cosign_arch=amd64 ;;
+  arm64) cosign_arch=arm64 ;;
+  armhf) cosign_arch=arm ;;
+esac
+cosign_asset="cosign-linux-${cosign_arch}"
+cosign="/usr/local/lib/kemlock/cosign-${cosign_version}"
+cosign_base="https://github.com/sigstore/cosign/releases/download/${cosign_version}"
+case "$cosign_arch" in
+  amd64) cosign_sha="$cosign_sha256_amd64" ;;
+  arm64) cosign_sha="$cosign_sha256_arm64" ;;
+  arm) cosign_sha="$cosign_sha256_arm" ;;
+esac
+if [ -z "$cosign_sha" ]; then
+  echo "WARNING: the SHA-256 of $cosign_asset $cosign_version is not pinned in this script; it is checked only against the checksum file of the same Sigstore release page" >&2
+  curl -fsSL -o "$tmp/cosign_checksums.txt" "$cosign_base/cosign_checksums.txt"
+  cosign_sha="$(awk -v a="$cosign_asset" '$2 == a || $2 == "*" a {print $1; exit}' "$tmp/cosign_checksums.txt")"
+fi
+[ -n "$cosign_sha" ] || { echo "no checksum for $cosign_asset $cosign_version" >&2; exit 1; }
+if [ ! -x "$cosign" ] || [ "$(sha256sum "$cosign" | awk '{print $1}')" != "$cosign_sha" ]; then
+  curl -fsSL -o "$tmp/$cosign_asset" "$cosign_base/$cosign_asset"
+  [ "$(sha256sum "$tmp/$cosign_asset" | awk '{print $1}')" = "$cosign_sha" ] \
+    || { echo "SHA-256 of $cosign_asset $cosign_version does not match its release's checksums" >&2; exit 1; }
+  install -d -m 0755 /usr/local/lib/kemlock
+  install -m 0755 "$tmp/$cosign_asset" "$cosign.new"
+  mv "$cosign.new" "$cosign"
+fi
+curl -fsSL -o "$tmp/$archive.sigstore.json" "$base/$archive.sigstore.json"
+"$cosign" verify-blob "$tmp/$archive" \
+  --bundle "$tmp/$archive.sigstore.json" \
+  --certificate-identity "https://github.com/${cert_repo}/.github/workflows/release.yml@refs/tags/${tag}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com >/dev/null \
+  || { echo "the cosign signature of $archive does not verify" >&2; exit 1; }
 tar -xzf "$tmp/$archive" -C "$tmp"
 install -m 0755 "$tmp"/kemlock-*/kemlock-server "$tmp"/kemlock-*/kemlock-cli /usr/local/bin/
 # The licence texts the archive carries (releases before they were added have none).
@@ -119,6 +167,13 @@ if [ -n "$UPDATE" ]; then
 fi
 
 resolve_version
+# The systemd unit at the release's own tag (not the moving main branch): it is what that release
+# ships. Fetched before anything is created, so a tag that has none stops here, not after the
+# container exists.
+unit="$(mktemp)"
+trap 'rm -f "$unit"' EXIT
+curl -fsSL "https://raw.githubusercontent.com/${REPO}/${VERSION}/deploy/systemd/kemlock.service" -o "$unit" \
+  || die "deploy/systemd/kemlock.service does not exist at tag $VERSION of $REPO; pick a release that has it with --version"
 [ -n "$CTID" ] || CTID="$(pvesh get /cluster/nextid)"
 if [ -z "$STORAGE" ]; then
   STORAGE="$(pvesm status -content rootdir | awk 'NR>1 {print $1; exit}')"
@@ -163,11 +218,8 @@ pct exec "$CTID" -- bash -c '
   mkdir -p /etc/kemlock
   chmod 0755 /etc/kemlock
 '
-unit="$(mktemp)"
 env_file="$(mktemp)"
 trap 'rm -f "$unit" "$env_file"' EXIT
-curl -fsSL "https://raw.githubusercontent.com/${REPO}/${VERSION}/deploy/systemd/kemlock.service" -o "$unit" \
-  || curl -fsSL "https://raw.githubusercontent.com/${REPO}/main/deploy/systemd/kemlock.service" -o "$unit"
 {
   echo "# Kemlock Server settings: Vaultwarden's names, such as DOMAIN, plus KEMLOCK_*."
   if [ -n "$DOMAIN" ]; then echo "DOMAIN=$DOMAIN"; else echo "#DOMAIN=https://vault.example.com"; fi

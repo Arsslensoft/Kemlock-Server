@@ -108,8 +108,35 @@ impl Notifier for LiveHub {
     }
 }
 
+/// Whether a socket that follows `owners` is told of a nudge for `nudged`.
+fn wants(owners: &[Owner], nudged: Owner) -> bool {
+    nudged == EVERYONE || owners.contains(&nudged)
+}
+
+/// Replaces the owners a socket follows with what `current_owners` gives now. A read that fails
+/// (`None`) keeps the list: the next check tries again.
+async fn refresh_owners<G, Own>(owners: &mut Vec<Owner>, current_owners: &mut G)
+where
+    G: FnMut() -> Own + Send,
+    Own: Future<Output = Option<Vec<Owner>>> + Send,
+{
+    if let Some(now) = current_owners().await {
+        *owners = now;
+    }
+}
+
 /// How often an open socket checks that its session is still good.
 pub const RECHECK_EVERY: Duration = Duration::from_secs(60);
+
+/// The most a frame or message from the client may hold, in bytes. The socket expects nothing
+/// from the client but pings and a close, so a few KiB is far more than it needs, and a frame
+/// larger than that is refused before it is buffered (the default is 64 MiB).
+pub const MAX_CLIENT_MESSAGE_BYTES: usize = 4 * 1024;
+
+/// Whether a frame is only a ping or a pong: all a client may send besides a close.
+fn is_control(message: &Message) -> bool {
+    matches!(message, Message::Ping(_) | Message::Pong(_))
+}
 
 /// How long a socket opened with a token that expires at `expires_at` (Unix seconds) may stay
 /// open at `now`; zero when the token is already past it.
@@ -118,24 +145,29 @@ pub fn until_expiry(expires_at: i64, now: i64) -> Duration {
 }
 
 /// Serves one socket until either side closes, the session ends or the token that opened it
-/// expires: forwards the nudges of any of `owners`, ignores what the client sends except for
-/// closing.
+/// expires: forwards the nudges of any of `owners`, ignores pings and pongs and ends on a close
+/// or on any other frame the client sends.
 ///
 /// A socket outlives the request that opened it, so the request's authentication has to be
 /// enforced for as long as it is open. It closes at `lifetime` (the access token's remaining
 /// time: a client reconnects with a fresh token), and every [`RECHECK_EVERY`] it asks
 /// `still_valid`, which says whether the session still stands (the security stamp, the device
 /// and its key), so a password change, a sign-out or a detected refresh-token reuse ends the
-/// stream within a minute instead of at the token's end.
-pub async fn serve_socket<F, Fut>(
+/// stream within a minute instead of at the token's end. At the same check `current_owners` gives
+/// the owners the account syncs now (`None` when it can't be read), so a member removed from a space
+/// stops getting that space's nudges within a minute too, not at the token's end.
+pub async fn serve_socket<F, Fut, G, Own>(
     mut socket: WebSocket,
     hub: LiveHub,
-    owners: Vec<Owner>,
+    mut owners: Vec<Owner>,
     lifetime: Duration,
     mut still_valid: F,
+    mut current_owners: G,
 ) where
     F: FnMut() -> Fut + Send,
     Fut: Future<Output = bool> + Send,
+    G: FnMut() -> Own + Send,
+    Own: Future<Output = Option<Vec<Owner>>> + Send,
 {
     let mut nudges = hub.subscribe();
     let expiry = tokio::time::sleep(lifetime);
@@ -148,10 +180,13 @@ pub async fn serve_socket<F, Fut>(
                 if !still_valid().await {
                     break;
                 }
+                // A member taken out of a space since the socket opened gets no more of its
+                // nudges.
+                refresh_owners(&mut owners, &mut current_owners).await;
             }
             nudge = nudges.recv() => {
                 let send = match nudge {
-                    Ok(o) if o == EVERYONE || owners.contains(&o) => true,
+                    Ok(o) if wants(&owners, o) => true,
                     Ok(_) => false,
                     // Missed some nudges: one more is the right answer to all of them.
                     Err(RecvError::Lagged(_)) => true,
@@ -164,7 +199,9 @@ pub async fn serve_socket<F, Fut>(
             incoming = socket.recv() => {
                 match incoming {
                     None | Some(Err(_) | Ok(Message::Close(_))) => break,
-                    Some(Ok(_)) => {}
+                    Some(Ok(message)) if is_control(&message) => {}
+                    // The socket only ever sends: a client that sends data is not one of ours.
+                    Some(Ok(_)) => break,
                 }
             }
         }
@@ -202,6 +239,40 @@ mod tests {
         // A token already past its end gets no time at all, never a wrapped huge one.
         assert_eq!(until_expiry(1_000, 5_000), Duration::ZERO);
         assert_eq!(until_expiry(i64::MIN, i64::MAX), Duration::ZERO);
+    }
+
+    #[test]
+    fn a_client_may_send_pings_and_pongs_and_nothing_else() {
+        assert!(is_control(&Message::Ping(Vec::<u8>::new().into())));
+        assert!(is_control(&Message::Pong(Vec::<u8>::new().into())));
+        assert!(!is_control(&Message::Text("x".into())));
+        assert!(!is_control(&Message::Binary(vec![1].into())));
+        assert!(!is_control(&Message::Close(None)));
+    }
+    #[tokio::test]
+    async fn a_removed_members_space_stops_nudging_their_socket_at_the_next_check() {
+        let user = Owner::User(UserId::random());
+        let space = Owner::Space(kemlock_domain::SpaceId::random());
+        let mut owners = vec![user, space];
+        assert!(wants(&owners, space) && wants(&owners, user));
+        assert!(
+            wants(&owners, EVERYONE),
+            "a nudge for everyone reaches every socket"
+        );
+
+        // The member is taken out of the space: what the account syncs now is its vault alone.
+        let mut now = move || async move { Some(vec![user]) };
+        refresh_owners(&mut owners, &mut now).await;
+        assert!(wants(&owners, user));
+        assert!(
+            !wants(&owners, space),
+            "the space no longer reaches the socket"
+        );
+
+        // A read that fails changes nothing.
+        let mut failing = || async { None };
+        refresh_owners(&mut owners, &mut failing).await;
+        assert_eq!(owners, vec![user]);
     }
 
     #[tokio::test]

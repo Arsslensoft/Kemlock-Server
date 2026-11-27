@@ -155,6 +155,7 @@ async fn shared_organization(h: &Harness) -> ((String, UserId), (String, UserId)
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    h.accept_in_space(&org, bob_id).await;
     let (status, body) = h
         .json(
             "POST",

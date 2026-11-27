@@ -6,7 +6,7 @@
 // The PRF output and the root key never leave the browser: only the wrap of the root key under the
 // PRF output goes to the server (docs/crypto.md, "The passkey PRF wrap of the root key").
 import type { PasskeyDto, PasskeysApi, SecurityKeyApi } from '@/api/passkeys';
-import type { WebauthnProof } from '@/api/twoStep';
+import type { Proof, WebauthnProof } from '@/api/twoStep';
 import type { CryptoPort } from '@/crypto-port';
 import { encodeB64, wipe } from './b64url';
 import {
@@ -34,24 +34,51 @@ export interface RegisterPasskeyDeps {
   create?: typeof createPasskey;
 }
 
+/** A passkey made in this browser and not yet stored: it can be stored again if the server refuses the proof. */
+export interface PreparedPasskey {
+  /** Stores it. With a second step on, `proof` is the fresh proof the server asks for. */
+  register: (name: string, proof?: Proof) => Promise<PasskeyDto>;
+}
+
+/**
+ * Asks the server for creation options and makes the credential, once. An authenticator that gives a
+ * PRF output also gives a wrap of the open account's root key, which opens the vault at sign-in; the
+ * output is wiped as soon as the wrap is made, so what is kept for a retry holds no secret. Storing it
+ * (`register`) can be repeated when the server refuses a wrong proof, without touching the
+ * authenticator again.
+ */
+export async function preparePasskey(deps: RegisterPasskeyDeps): Promise<PreparedPasskey> {
+  const options = await deps.passkeys.creationOptions();
+  const made = await (deps.create ?? createPasskey)(options);
+  let prf: { wrappedKey: string; keyVersion: number } | undefined;
+  try {
+    if (made.prfOutput) {
+      const wrap = await deps.crypto.prfWrapRoot(made.prfOutput, made.credentialId);
+      prf = { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
+    }
+  } finally {
+    wipe(made.prfOutput);
+  }
+  return {
+    register: (name, proof) =>
+      proof === undefined
+        ? deps.passkeys.register(name, made.credential, prf)
+        : deps.passkeys.register(name, made.credential, prf, proof),
+  };
+}
+
 /**
  * Asks the server for creation options, makes the credential, and stores it. An authenticator that
  * gives a PRF output also stores a wrap of the open account's root key, which opens the vault at
  * sign-in; one that does not stores a passkey that only proves who is asking.
  */
-export async function registerPasskey(deps: RegisterPasskeyDeps, name: string): Promise<PasskeyDto> {
-  const options = await deps.passkeys.creationOptions();
-  const made = await (deps.create ?? createPasskey)(options);
-  try {
-    let prf: { wrappedKey: string; keyVersion: number } | undefined;
-    if (made.prfOutput) {
-      const wrap = await deps.crypto.prfWrapRoot(made.prfOutput, made.credentialId);
-      prf = { wrappedKey: encodeB64(wrap.wrappedKey), keyVersion: wrap.keyVersion };
-    }
-    return await deps.passkeys.register(name, made.credential, prf);
-  } finally {
-    wipe(made.prfOutput);
-  }
+export async function registerPasskey(
+  deps: RegisterPasskeyDeps,
+  name: string,
+  /** The fresh proof an account with a second step on has to give. */
+  proof?: Proof,
+): Promise<PasskeyDto> {
+  return (await preparePasskey(deps)).register(name, proof);
 }
 
 /** Asks the person to touch a security key; no PRF, since a second step does not open the vault. */

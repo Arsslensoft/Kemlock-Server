@@ -9,8 +9,8 @@ use crate::devices::bitwarden_device_id;
 use crate::error::AppError;
 use crate::platform::{Platform, random_uuid};
 use crate::ports::{
-    AccessClaims, DeviceRepo, Event, EventLog, RefreshToken, StoreError, TokenRepo, TokenSigner,
-    TwoFactorRepo,
+    AccessClaims, DeviceRepo, Event, EventLog, RefreshToken, StoreError, TokenApi, TokenRepo,
+    TokenSigner, TwoFactorRepo,
 };
 use kemlock_domain::{Device, DeviceId, DeviceKind, User, UserId};
 use time::OffsetDateTime;
@@ -115,18 +115,52 @@ impl<D: DeviceRepo, T: TokenRepo, K: TokenSigner, E: Platform, V: EventLog, F: T
                     ..d
                 }
             }
-            None => Device {
-                id,
-                user,
-                name: Device::clean_name(&info.name),
-                kind: info.kind,
-                dpop_jkt: Some(jkt.to_owned()),
-                created_at: now,
-                last_seen_at: now,
-            },
+            None => {
+                // No cap on devices: one never expires, so private windows and cleared storage
+                // would lock an account out of new ones. What one account's devices take of the
+                // authenticated replay set is bounded by its own share of it (`dpop.rs`).
+                Device {
+                    id,
+                    user,
+                    name: Device::clean_name(&info.name),
+                    kind: info.kind,
+                    dpop_jkt: Some(jkt.to_owned()),
+                    created_at: now,
+                    last_seen_at: now,
+                }
+            }
         };
         self.devices.upsert(&device).await?;
+        // However this device was signed in before, this sign-in is a new one: it is an SSO session
+        // only when [`Sessions::start_sso_session`] says so after.
+        self.devices.forget_sso_session(id).await?;
         Ok(device)
+    }
+
+    /// Records that an SSO sign-in (named by the sealed challenge a second step finishes) started
+    /// `device`, so a back-channel logout for that identity or `sid` ends it. Nothing for a sign-in
+    /// that did not begin with SSO. A failed write fails the sign-in: a session no logout could end
+    /// is not one to hand out.
+    pub(crate) async fn start_sso_session(
+        &self,
+        origin: Option<&crate::sealed::SsoOrigin>,
+        user: UserId,
+        device: &Device,
+    ) -> Result<(), AppError> {
+        let Some(origin) = origin else {
+            return Ok(());
+        };
+        self.devices
+            .record_sso_session(&crate::sso::SsoSession {
+                device: device.id,
+                user,
+                issuer: origin.issuer.clone(),
+                subject: origin.subject.clone(),
+                session_id: origin.session_id.clone(),
+                started_at: self.env.now(),
+            })
+            .await?;
+        Ok(())
     }
 
     /// Issues an access token and a new refresh token for `device`. `continuing` carries a
@@ -165,6 +199,7 @@ impl<D: DeviceRepo, T: TokenRepo, K: TokenSigner, E: Platform, V: EventLog, F: T
                 created_at: signed_in_at,
                 expires_at: refresh_expires_at,
                 used_at: None,
+                api: TokenApi::Kemlock,
             })
             .await;
         match inserted {

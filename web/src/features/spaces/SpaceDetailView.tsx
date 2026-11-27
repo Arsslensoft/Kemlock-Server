@@ -12,29 +12,58 @@ import type { Fingerprint } from '@/sharing/bundle';
 import { Button } from '@/ui/Button';
 import { ConfirmDialog } from '@/ui/ConfirmDialog';
 import { Notice } from '@/ui/Notice';
+import { TypeLastGroup } from '@/ui/TypeLastGroup';
 import '@/styles/account.css';
 import { CheckList, SelectInput, TextInput } from '../account/controls';
 import type { Described } from '../account/errors';
-import { type SpaceDetail, type InviteInput, canManageUsers, memberLabel } from './model';
+import {
+  type InviteInput,
+  type ReplaceProgress,
+  type Replaced,
+  type Resealed,
+  type SpaceDetail,
+  canManageUsers,
+  canReplaceKeys,
+  keysAwaitReplacement,
+  memberLabel,
+} from './model';
 import { type Done, succeeded, useAsk } from './outcome';
+import { InviteLinkAction } from './InviteLinkAction';
 import { SpaceStructure, type StructureActions } from './SpaceStructure';
 
 export interface ConfirmState {
   member: MemberViewDto;
   /** undefined while it is being worked out, null when the bundle can't be read. */
   fingerprint: Fingerprint | null | undefined;
+  /** `pin`: only compare, so this browser trusts the confirmations they made; default `confirm`. */
+  mode?: 'confirm' | 'pin';
 }
 
 export interface SpaceActions extends StructureActions {
+  /** The person compared the fingerprint first contact asked for and it matched. */
+  acceptFirstContact?: () => void;
+  /** Replaces the keys that wait for it, for a space with a verified chain. */
+  replaceKeys?: () => void;
+  /** Seals again the items still under an old key version. */
+  resealItems?: () => void;
   invite: (input: InviteInput) => Done;
   accept: () => void;
   startConfirm: (member: MemberViewDto) => void;
+  /** Compares a member's fingerprint without confirming them, so their confirmations are trusted here. */
+  startPin?: (member: MemberViewDto) => void;
+  /** An owner or admin seals the space's keys again, signed, so no box is left that nobody signed. */
+  reseal?: () => Done;
   cancelConfirm: () => void;
   confirm: () => void;
   changeRole: (user: string, role: SpaceRole, custom: CustomPermission[]) => Done;
   revoke: (user: string) => Done;
   restore: (user: string) => void;
   remove: (user: string) => Done;
+  /**
+   * The link that accepts a Bitwarden organization's invitation, for a server that can't mail it.
+   * Left out where the page has no such route, and the action isn't offered.
+   */
+  inviteLink?: (user: string) => Promise<string>;
 }
 
 export interface SpaceDetailViewProps {
@@ -46,6 +75,14 @@ export interface SpaceDetailViewProps {
   error?: Described | undefined;
   /** What the last revoke or removal left exposed. */
   offboarded: { name: string; outcome: OffboardedDto } | null;
+  /** How far a key replacement is, while one runs. */
+  replacing?: ReplaceProgress | null;
+  /** What the last key replacement did. */
+  replaced?: Replaced | null;
+  /** How many items are still under an old key version of their collection. */
+  toReseal?: number;
+  /** What the last sealing again did. */
+  resealed?: Resealed | null;
   cryptoAvailable: boolean;
   actions: SpaceActions;
   onBack: () => void;
@@ -190,11 +227,14 @@ function ConfirmPanel({
   const t = useT();
   const name = state.member.name || state.member.email;
   const fp = state.fingerprint;
-  const ready = fp !== undefined && fp !== null && fp.consistent;
+  // Pressing "matches" is a deliberate act: it opens once the last group has been typed as the
+  // other person's app shows it.
+  const [typedRight, setTypedRight] = useState(false);
+  const ready = fp !== undefined && fp !== null && fp.consistent && typedRight;
   return (
     <section className="confirm-panel" aria-labelledby="h-confirm">
-      <h2 id="h-confirm">{t('space.confirm.title', { name })}</h2>
-      <p>{t('space.confirm.body', { name })}</p>
+      <h2 id="h-confirm">{t(state.mode === 'pin' ? 'space.pin.title' : 'space.confirm.title', { name })}</h2>
+      <p>{t(state.mode === 'pin' ? 'space.pin.body' : 'space.confirm.body', { name })}</p>
       {fp === undefined ? (
         <p role="status">{t('space.confirm.working')}</p>
       ) : fp === null ? (
@@ -210,7 +250,9 @@ function ConfirmPanel({
             <Notice tone="error" live>
               <p>{t('space.confirm.inconsistent')}</p>
             </Notice>
-          ) : null}
+          ) : (
+            <TypeLastGroup key={fp.text} fingerprint={fp.text} onMatch={setTypedRight} />
+          )}
         </>
       )}
       <p>{t('space.confirm.warning')}</p>
@@ -233,6 +275,148 @@ function ConfirmPanel({
   );
 }
 
+/** What a space that isn't checked says: why, and for a chain waiting for first contact, what to compare. */
+function ChainNotice({
+  detail,
+  busy,
+  onAccept,
+}: {
+  detail: SpaceDetail;
+  busy: boolean;
+  onAccept: (() => void) | undefined;
+}) {
+  const t = useT();
+  const [picked, setPicked] = useState('');
+  // Accepting an owner's keys is a deliberate act: it opens once the last group has been typed.
+  const [typedRight, setTypedRight] = useState(false);
+  const trust = detail.trust;
+  if (!trust || trust.kind === 'unchained' || trust.kind === 'verified') return null;
+  if (trust.kind === 'unverified') {
+    return (
+      <Notice tone="error" live>
+        <b>{t('space.chain.unchecked.title')}</b>
+        <p>
+          {trust.reason === 'unreachable'
+            ? t('space.chain.unreachable.body')
+            : t('space.chain.unchecked.body', { reason: trust.reason })}
+        </p>
+      </Notice>
+    );
+  }
+  const ask = trust.view.firstContact;
+  const owners = ask?.owners ?? [];
+  const chosen = ask?.kind === 'pick' ? owners.find((o) => o.id === picked) : undefined;
+  const person = ask?.kind === 'compare' ? ask.person : chosen?.id;
+  const digits = ask?.kind === 'compare' ? ask.fingerprint : chosen?.fingerprint;
+  const name = person ? memberLabel(detail.members, person) : '';
+  return (
+    <section className="confirm-panel" aria-labelledby="h-first-contact">
+      <h2 id="h-first-contact">{t('space.chain.contact.title')}</h2>
+      {ask?.kind === 'compare' ? (
+        <p>{t('space.chain.contact.compare', { name })}</p>
+      ) : owners.length > 0 ? (
+        <>
+          <p>{t('space.chain.contact.pick')}</p>
+          <SelectInput
+            label={t('space.chain.contact.owner')}
+            value={picked}
+            onChange={setPicked}
+            options={[
+              { value: '', label: '' },
+              ...owners.map((o) => ({ value: o.id, label: memberLabel(detail.members, o.id) })),
+            ]}
+          />
+        </>
+      ) : (
+        <Notice tone="warn">
+          <p>{t('space.chain.contact.none')}</p>
+        </Notice>
+      )}
+      {digits ? (
+        <>
+          <p className="fp" aria-label={t('space.chain.contact.label', { name })}>
+            {digits}
+          </p>
+          <TypeLastGroup key={digits} fingerprint={digits} onMatch={setTypedRight} />
+        </>
+      ) : null}
+      <p>{t('space.chain.contact.warning')}</p>
+      <div className="actions">
+        <Button
+          variant="primary"
+          isDisabled={busy || !digits || !typedRight || !onAccept}
+          onPress={() => onAccept?.()}
+        >
+          {t('space.chain.contact.matches')}
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** Whether an owner or admin of a space with no chain, whose keys are open here, may seal them again. */
+function canReseal(detail: SpaceDetail): boolean {
+  const unchained = !detail.trust || detail.trust.kind === 'unchained';
+  const role = detail.view.me.role;
+  return unchained && detail.readable && (role === 'owner' || role === 'admin');
+}
+
+/**
+ * What a space whose keys can't be opened because their sealer isn't traced here asks for: that a
+ * person compare that member's fingerprint with what their own app shows, so this browser trusts the
+ * confirmations they made, as it does for the first contact with a chain.
+ */
+function CompareNotice({
+  detail,
+  busy,
+  onCompare,
+}: {
+  detail: SpaceDetail;
+  busy: boolean;
+  onCompare: ((member: MemberViewDto) => void) | undefined;
+}) {
+  const t = useT();
+  const target = detail.members.find((m) => m.user === detail.compare);
+  if (!target) return null;
+  const name = memberLabel(detail.members, target.user);
+  return (
+    <Notice tone="warn">
+      <b>{t('space.keys.compare.title')}</b>
+      <p>{t('space.keys.compare.body', { name })}</p>
+      {onCompare ? (
+        <div className="actions">
+          <Button
+            variant="primary"
+            isDisabled={busy}
+            aria-label={t('space.members.compareFor', { name })}
+            onPress={() => onCompare(target)}
+          >
+            {t('space.members.compare')}
+          </Button>
+        </div>
+      ) : null}
+    </Notice>
+  );
+}
+
+/** How far a key replacement or a sealing again is. */
+function Progress({ progress }: { progress: ReplaceProgress | null }) {
+  const t = useT();
+  if (!progress) return null;
+  return (
+    <p role="status">
+      {progress.phase === 'reading'
+        ? t('space.keys.reading', { done: progress.done })
+        : progress.phase === 'sealing'
+          ? t('space.keys.sealing', { total: progress.total })
+          : t('space.keys.sending', { done: progress.done, total: progress.total })}
+      {progress.phase === 'sending' && progress.total > 0 ? (
+        <progress value={progress.done} max={progress.total} aria-label={t('space.keys.progress')} />
+      ) : null}
+    </p>
+  );
+}
+
 type Offboard = { kind: 'revoke' | 'remove'; member: MemberViewDto } | null;
 
 export function SpaceDetailView({
@@ -244,6 +428,10 @@ export function SpaceDetailView({
   error,
   offboarded,
   cryptoAvailable,
+  replacing = null,
+  replaced = null,
+  toReseal = 0,
+  resealed = null,
   actions,
   onBack,
 }: SpaceDetailViewProps) {
@@ -276,9 +464,15 @@ export function SpaceDetailView({
     );
   }
 
-  const { view, members } = detail;
+  const { view } = detail;
+  // While first contact is pending the roster is the server's word, so it isn't shown, and an
+  // invitation can't be accepted yet (docs/crypto.md, "First contact", "When").
+  const waiting = detail.trust?.kind === 'first-contact';
+  const members = waiting ? [] : detail.members;
   const me = view.me;
   const manage = canManageUsers(me);
+  // Only an owner or admin may hand an invitation link over (the server says 403 to anyone else).
+  const handsOver = me.role === 'owner' || me.role === 'admin';
   const pendingKeys =
     view.space.keysPendingSince !== null || view.collections.some((c) => c.staleSince !== null);
   const title = detail.name ?? t('space.detail.locked');
@@ -301,7 +495,7 @@ export function SpaceDetailView({
             })}
           </p>
         </div>
-        {manage ? (
+        {manage && !waiting ? (
           <Button variant="primary" onPress={() => setInviting((open) => !open)}>
             {t('space.invite.open')}
           </Button>
@@ -313,15 +507,73 @@ export function SpaceDetailView({
           <p>{t(error.id, error.values)}</p>
         </Notice>
       ) : null}
-      {!detail.readable ? (
+      <ChainNotice detail={detail} busy={busy} onAccept={actions.acceptFirstContact} />
+      {detail.compare ? (
+        <CompareNotice detail={detail} busy={busy} onCompare={actions.startPin} />
+      ) : null}
+      {actions.reseal && canReseal(detail) ? (
+        <div className="actions">
+          <Button isDisabled={busy} onPress={() => void actions.reseal?.()}>
+            {t('space.keys.reseal')}
+          </Button>
+        </div>
+      ) : null}
+      {detail.legacyKeys && detail.legacyKeys.length > 0 ? (
+        <Notice tone="warn">
+          <b>{t('space.keys.legacy.title')}</b>
+          <p>{t('space.keys.legacy.body')}</p>
+        </Notice>
+      ) : null}
+      {!detail.readable && (!detail.trust || detail.trust.kind === 'unchained') ? (
         <Notice tone="warn">
           <p>{me.state === 'confirmed' ? t('sharing.unavailable') : t('space.detail.notConfirmed')}</p>
         </Notice>
       ) : null}
-      {pendingKeys ? (
+      {keysAwaitReplacement(detail) ? (
+        <Notice tone="warn" live>
+          <b>{t('space.keysPending.title')}</b>
+          <p>{t('space.keysPending.chained')}</p>
+          <Progress progress={replacing} />
+          {actions.replaceKeys && canReplaceKeys(detail) ? (
+            <div className="actions">
+              <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.replaceKeys}>
+                {t('space.keys.replace')}
+              </Button>
+            </div>
+          ) : (
+            <p>{t('space.keysPending.elsewhere')}</p>
+          )}
+        </Notice>
+      ) : pendingKeys ? (
         <Notice tone="warn" live>
           <b>{t('space.keysPending.title')}</b>
           <p>{t('space.keysPending.body')}</p>
+        </Notice>
+      ) : null}
+      {toReseal > 0 && !keysAwaitReplacement(detail) ? (
+        <Notice tone="warn" live>
+          <b>{t('space.reseal.title', { count: toReseal })}</b>
+          <p>{t('space.reseal.body')}</p>
+          <Progress progress={replacing} />
+          {actions.resealItems ? (
+            <div className="actions">
+              <Button variant="primary" isDisabled={busy || replacing !== null} onPress={actions.resealItems}>
+                {t('space.reseal.run')}
+              </Button>
+            </div>
+          ) : null}
+        </Notice>
+      ) : null}
+      {resealed ? (
+        <Notice tone="info" live>
+          <b>{t('space.reseal.done', { rewritten: resealed.rewritten })}</b>
+          {resealed.stuck > 0 ? <p>{t('space.reseal.stuck', { stuck: resealed.stuck })}</p> : null}
+        </Notice>
+      ) : null}
+      {replaced ? (
+        <Notice tone="info" live>
+          <b>{t('space.keys.done', { rewritten: replaced.rewritten })}</b>
+          {replaced.held > 0 ? <p>{t('space.keys.held', { held: replaced.held })}</p> : null}
         </Notice>
       ) : null}
       {offboarded ? (
@@ -369,6 +621,12 @@ export function SpaceDetailView({
               {members.map((member) => {
                 const name = member.name || member.email;
                 const isMe = member.user === me.user;
+                const inviteLink = actions.inviteLink;
+                const unverified = detail.unverified?.find((u) => u.user === member.user);
+                const compareWith = unverified?.compare
+                  ? members.find((m) => m.user === unverified.compare)
+                  : undefined;
+                const compareName = compareWith ? compareWith.name || compareWith.email : '';
                 return (
                   <tr key={member.user}>
                     <td>
@@ -390,6 +648,7 @@ export function SpaceDetailView({
                       {member.needsReconfirmation ? (
                         <span className="tag warn">{t('space.members.reconfirm')}</span>
                       ) : null}
+                      {unverified ? <span className="tag warn">{t('space.members.untraced')}</span> : null}
                     </td>
                     <td>
                       <div className="actions">
@@ -398,7 +657,28 @@ export function SpaceDetailView({
                             {t('space.members.accept')}
                           </Button>
                         ) : null}
-                        {!isMe && manage && (member.state === 'accepted' || member.needsReconfirmation) ? (
+                        {!isMe && handsOver && member.state === 'invited' && member.bitwardenInvitation === true && inviteLink ? (
+                          <InviteLinkAction
+                            name={name}
+                            fetchLink={() => inviteLink(member.user)}
+                          />
+                        ) : null}
+                        {!isMe && manage && unverified ? (
+                          <>
+                            {compareWith && actions.startPin ? (
+                              <Button
+                                size="small"
+                                aria-label={t('space.members.compareFor', { name: compareName })}
+                                onPress={() => actions.startPin?.(compareWith)}
+                              >
+                                {t('space.members.compare')}
+                              </Button>
+                            ) : null}
+                          </>
+                        ) : null}
+                        {!isMe &&
+                        manage &&
+                        (member.state === 'accepted' || member.needsReconfirmation || unverified) ? (
                           <Button
                             size="small"
                             variant="primary"
@@ -472,7 +752,10 @@ export function SpaceDetailView({
               ) : null;
             })()
           : null}
-        {inviting && manage ? (
+        {detail.trust?.kind === 'verified' ? (
+          <p className="hint">{t('space.chain.unsupported')}</p>
+        ) : null}
+        {inviting && manage && !waiting ? (
           <InviteForm
             detail={detail}
             busy={busy}

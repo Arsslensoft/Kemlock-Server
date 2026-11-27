@@ -6,9 +6,9 @@
 
 use super::{FakeEnv, FakeSeal, FakeStore, FakeTokenSigner, World};
 use kemlock_app::devices::{
-    AnswerApproval, ApprovalRepo, DeviceNotices, DeviceSignIn, KeyCopies, KeyCopyRepo,
-    ListApprovals, NewDeviceNotice, PollApproval, PurgeApprovals, RequestApproval, SignOutDevice,
-    UntrustDevice,
+    AnswerApproval, ApprovalRepo, DeviceNotices, DeviceSignIn, EndSession, KeyCopies, KeyCopyRepo,
+    ListApprovals, NewDeviceNotice, PollApproval, PurgeApprovals, RecentRequest, RequestApproval,
+    SignOutDevice, UntrustDevice,
 };
 use kemlock_app::emergency::{
     ApproveDue, EmergencyAccess, EmergencyNotice, EmergencyNotices, EmergencyRepo,
@@ -73,6 +73,28 @@ impl ApprovalRepo for FakeStore {
         Ok(())
     }
 
+    async fn insert_request_within(
+        &self,
+        request: &AuthRequest,
+        since: OffsetDateTime,
+        max_recent: usize,
+    ) -> Result<bool, StoreError> {
+        let mut g = self.unlock.lock();
+        let recent = g
+            .requests
+            .values()
+            .filter(|r| r.user == request.user && r.created_at > since)
+            .count();
+        if recent >= max_recent {
+            return Ok(false);
+        }
+        if g.requests.contains_key(&request.id) {
+            return Err(StoreError::Duplicate);
+        }
+        g.requests.insert(request.id, request.clone());
+        Ok(true)
+    }
+
     async fn request(&self, id: ApprovalId) -> Result<Option<AuthRequest>, StoreError> {
         Ok(self.unlock.lock().requests.get(&id).cloned())
     }
@@ -113,17 +135,21 @@ impl ApprovalRepo for FakeStore {
         &self,
         user: UserId,
         since: OffsetDateTime,
-    ) -> Result<Vec<OffsetDateTime>, StoreError> {
-        let mut times: Vec<OffsetDateTime> = self
+    ) -> Result<Vec<RecentRequest>, StoreError> {
+        let mut recent: Vec<RecentRequest> = self
             .unlock
             .lock()
             .requests
             .values()
             .filter(|r| r.user == user && r.created_at > since)
-            .map(|r| r.created_at)
+            .map(|r| RecentRequest {
+                created_at: r.created_at,
+                ip: r.ip.clone(),
+                state: r.state,
+            })
             .collect();
-        times.sort();
-        Ok(times)
+        recent.sort_by_key(|r| r.created_at);
+        Ok(recent)
     }
 
     async fn purge_requests(&self, before: OffsetDateTime) -> Result<u64, StoreError> {
@@ -131,6 +157,24 @@ impl ApprovalRepo for FakeStore {
         let count = g.requests.len();
         g.requests.retain(|_, r| r.expires_at >= before);
         Ok((count - g.requests.len()) as u64)
+    }
+}
+
+impl FakeStore {
+    /// What the real stores do under the account's lock: refuse a wrap made for a key version the
+    /// account no longer has (an account at version 0 accepts any).
+    fn check_key_version(&self, user: UserId, key_version: Option<u32>) -> Result<(), StoreError> {
+        let Some(key_version) = key_version else {
+            return Ok(());
+        };
+        match self.lock().users.get(&user) {
+            Some(account) if account.key_version != 0 && account.key_version != key_version => {
+                Err(StoreError::StaleKeyVersion {
+                    current: account.key_version,
+                })
+            }
+            _ => Ok(()),
+        }
     }
 }
 
@@ -145,6 +189,22 @@ impl KeyCopyRepo for FakeStore {
         }
         self.unlock.lock().copies.insert(copy.device, copy.clone());
         Ok(())
+    }
+
+    async fn put_key_copy_at(
+        &self,
+        copy: &DeviceKeyCopy,
+        key_version: Option<u32>,
+    ) -> Result<(), StoreError> {
+        let owner = self
+            .lock()
+            .devices
+            .get(&copy.device)
+            .map(|device| device.user);
+        if let Some(owner) = owner {
+            self.check_key_version(owner, key_version)?;
+        }
+        self.put_key_copy(copy).await
     }
 
     async fn remove_key_copy(&self, device: DeviceId) -> Result<(), StoreError> {
@@ -205,6 +265,27 @@ impl EmergencyRepo for FakeStore {
         let mut g = self.unlock.lock();
         match g.grants.get_mut(&grant.id) {
             Some(stored) if stored.state == from => {
+                *stored = grant.clone();
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn save_grant_at(
+        &self,
+        grant: &EmergencyGrant,
+        from: EmergencyState,
+        version: Option<OffsetDateTime>,
+        key_version: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        self.check_key_version(grant.grantor, key_version)?;
+        let mut g = self.unlock.lock();
+        match g.grants.get_mut(&grant.id) {
+            Some(stored)
+                if stored.state == from
+                    && version.is_none_or(|version| stored.updated_at == version) =>
+            {
                 *stored = grant.clone();
                 Ok(true)
             }
@@ -353,6 +434,15 @@ pub(crate) fn sign_out_device(
     SignOutDevice {
         devices: world.store.clone(),
         copies: world.store.clone(),
+        tokens: world.store.clone(),
+        clock: world.env.clone(),
+        events: world.store.clone(),
+    }
+}
+
+pub(crate) fn end_session(world: &World) -> EndSession<FakeStore, FakeStore, FakeEnv, FakeStore> {
+    EndSession {
+        devices: world.store.clone(),
         tokens: world.store.clone(),
         clock: world.env.clone(),
         events: world.store.clone(),

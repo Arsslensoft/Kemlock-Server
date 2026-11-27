@@ -16,7 +16,8 @@ use kemlock_app::manifests::{
     PutManifestInput,
 };
 use kemlock_app::ports::{
-    Clock, CryptoError, DeviceRepo, RefreshToken, TokenRepo, TwoFactorMethod, TwoFactorRepo,
+    Clock, CryptoError, DeviceRepo, RefreshToken, TokenApi, TokenRepo, TwoFactorMethod,
+    TwoFactorRepo,
 };
 use kemlock_app::{Actor, AppError, DeviceInfo, SignedIn};
 use kemlock_domain::api_use::ApiKind;
@@ -517,6 +518,7 @@ async fn a_device_the_bitwarden_api_made_is_the_same_row_and_keeps_its_tokens() 
             created_at: now,
             expires_at: now + Duration::days(30),
             used_at: None,
+            api: TokenApi::Bitwarden,
         },
     )
     .await
@@ -640,7 +642,7 @@ fn finish_input(user: UserId, ticket: Vec<u8>, upload: Vec<u8>) -> EnrolFinishIn
         upload,
         kdf: KdfParams::new_account([4u8; 16]),
         public_bundle: bundle(user),
-        bundle_signature: vec![0x11; kemlock_app::register::BUNDLE_SIGNATURE_LEN],
+        bundle_signature: bundle_signature(user),
         sealed_private_keys: vec![0x22; 64],
         wrapped_root_key: vec![0x33; kemlock_app::register::WRAPPED_ROOT_KEY_LEN],
         two_factor_code: None,

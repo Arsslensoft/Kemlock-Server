@@ -11,6 +11,9 @@ use kemlock_crypto::bundle::Bundle;
 use kemlock_crypto::manifest::Manifest;
 use kemlock_domain::Owner;
 use std::num::NonZeroU32;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Checks a manifest with `kemlock_crypto::manifest` and `sig1`: both the ML-DSA-65 and the
 /// Ed25519 signature must verify under the signing key in the signer's bundle.
@@ -40,12 +43,37 @@ impl ManifestVerifier for Sig1Manifests {
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Pbkdf2Check;
 
+/// How many of these checks run at once, about the CPU count: each is 600,000 rounds of HMAC.
+fn gate() -> &'static Arc<Semaphore> {
+    static GATE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    GATE.get_or_init(|| {
+        Arc::new(Semaphore::new(
+            std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
+        ))
+    })
+}
+
+/// A place in the gate, or `None` when none came free within five seconds (the caller answers 429).
+pub(crate) async fn hash_permit() -> Option<OwnedSemaphorePermit> {
+    tokio::time::timeout(Duration::from_secs(5), Arc::clone(gate()).acquire_owned())
+        .await
+        .ok()?
+        .ok()
+}
+
 impl BwPasswordCheck for Pbkdf2Check {
     fn matches(&self, secret: &[u8], salt: &[u8], stored: &[u8], iterations: u32) -> bool {
         let Some(rounds) = NonZeroU32::new(iterations) else {
             return false;
         };
-        pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, rounds, salt, secret, stored).is_ok()
+        let check =
+            || pbkdf2::verify(pbkdf2::PBKDF2_HMAC_SHA256, rounds, salt, secret, stored).is_ok();
+        // The caller holds a place in the gate ([`hash_permit`]); on a multi-threaded runtime the
+        // worker hands its other tasks to another thread while it hashes.
+        match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(check),
+            _ => check(),
+        }
     }
 }
 

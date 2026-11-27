@@ -19,6 +19,7 @@
 //! state and a [`PasskeyRuntime`], and merged into the main router by the server: see
 //! [`passkeys_router`].
 
+use super::attempts;
 use super::guard;
 use super::new_device::announce;
 use super::two_step::{
@@ -27,7 +28,7 @@ use super::two_step::{
 use crate::dto::{DeviceDto, FreshProof, KeyAssertion, TokenResponse, decode};
 use crate::extract::{Authed, Body, DPOP_NONCE, Proof};
 use crate::openapi::ProblemDoc;
-use crate::problem::{Problem, rate_limited};
+use crate::problem::Problem;
 use crate::ratelimit::ip_key;
 use crate::replay::Full;
 use crate::signlog::token_ids;
@@ -192,6 +193,9 @@ pub(crate) struct RegisterPasskeyRequest {
     pub(crate) credential: Value,
     /// The PRF copy of the root key, when the client already has the PRF output.
     pub(crate) prf: Option<PrfBody>,
+    /// A fresh proof, as adding a second step takes: needed when the account has one on already,
+    /// since a passkey signs in without the password or the second step.
+    pub(crate) proof: Option<FreshProof>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -446,7 +450,7 @@ where
     let flow = passkey_sign_in(&api, &runtime);
     // Only a genuine, fresh challenge is remembered as used, so made-up ones take no room.
     flow.check_challenge(&challenge)?;
-    match api.used_states.insert(&challenge, now) {
+    match api.spend_open_state(proof.ip, &challenge, now) {
         Ok(true) => {}
         Ok(false) => {
             return Err(Problem::bad_request(
@@ -557,6 +561,17 @@ where
         }),
         None => None,
     };
+    // A passkey signs in without the password or the second step and outlives a password change,
+    // so with a second step on it is added on a fresh proof, as a security key or an
+    // authenticator is. The proof is spent here, last before the change.
+    require_proof_to_add(
+        &api,
+        &proof_steps(&api, runtime.repos.clone()),
+        authed.actor.user,
+        None,
+        request.proof.as_ref(),
+    )
+    .await?;
     let passkey = manage(&api, &runtime)
         .finish_registration(FinishRegistration {
             user: authed.actor.user,
@@ -565,6 +580,7 @@ where
             prf,
         })
         .await?;
+    announce_change(&api, &authed, "passkey", true).await;
     Ok((
         StatusCode::CREATED,
         Json(PasskeyDto::from_passkey(&passkey)),
@@ -612,6 +628,7 @@ where
     manage(&api, &runtime)
         .delete(authed.actor.user, passkey_id(&id)?)
         .await?;
+    announce_change(&api, &authed, "passkey", false).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -835,19 +852,13 @@ where
     let now = api.now();
     limit_second_step(&api, proof.ip, &challenge, now)?;
     let step = key_step(&api, &runtime);
-    // A genuine, fresh challenge names the account its failures count against.
+    // A genuine, fresh challenge names the account its failures count against; the attempt is
+    // reserved before the answer is looked at.
     let user = step.challenge_user(&challenge)?;
-    let account = format!("2fa:{user}");
-    api.limits
-        .second_step
-        .blocked(&account, now)
-        .map_err(rate_limited)?;
+    api.sign_in().check_second_step_allowed(&challenge).await?;
+    attempts::reserve_second_step(&api, user, now).await?;
     let finished = step.verify(&challenge, &response, &proof.jkt).await;
-    match &finished {
-        Err(AppError::Unauthorized) => api.limits.second_step.fail(&account, now),
-        Ok(_) => api.limits.second_step.clear(&account),
-        Err(_) => {}
-    }
+    attempts::settle_second_step(&api, user, &finished).await;
     api.log_attempt(api.attempt("two-factor", Some(user), &finished, proof.ip, token_ids))
         .await;
     let tokens = finished?;
@@ -1111,8 +1122,8 @@ fn doc_passkey_registration_options() {}
     request_body = RegisterPasskeyRequest,
     responses(
         (status = 201, description = "The passkey is registered", body = PasskeyDto),
-        (status = 400, description = "The answer wasn't accepted, no registration is in progress, or the PRF copy doesn't fit", body = ProblemDoc, content_type = "application/problem+json"),
-        (status = 409, description = "The credential is registered already", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "The answer wasn't accepted, no registration is in progress, the PRF copy doesn't fit, or a second step is on and the fresh `proof` (a mailed code, a current code of the authenticator app, the recovery code, or `{\"webauthn\": ...}`) is missing or wrong", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "The credential is registered already, or `key-version-stale`: the PRF copy is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]
 #[allow(dead_code)]
@@ -1150,7 +1161,8 @@ fn doc_passkey_delete() {}
     request_body = PrfBody,
     responses(
         (status = 204, description = "Stored"),
-        (status = 400, description = "Not 92 bytes, or for another key version than the account's", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 400, description = "Not 92 bytes", body = ProblemDoc, content_type = "application/problem+json"),
+        (status = 409, description = "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)", body = ProblemDoc, content_type = "application/problem+json"),
         (status = 404, description = "No such passkey on this account", body = ProblemDoc, content_type = "application/problem+json"),
     )
 )]

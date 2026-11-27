@@ -83,7 +83,7 @@ export interface WirePeer {
   name: string;
   operator: string;
   addresses: string[];
-  state: 'paired' | 'revoked';
+  state: 'paired' | 'revoked' | 'contested';
   /** The pinned `sig1` identity key, hex. */
   identityKey: string;
   pairedAt: number;
@@ -112,6 +112,8 @@ export interface WirePeer {
   lastChangeVault: string | null;
   /** This server holds event-log entries the peer sent. */
   theySendLogs: boolean;
+  signedWrites: boolean;
+  pastBundles: boolean;
 }
 
 export interface WireAwaiting {
@@ -149,6 +151,8 @@ export interface WireVault {
   waitingNote: string | null;
   /** A promotion another server signed to become this vault's home, waiting for this server's admin. */
   heldDemotion?: { newHome: string; epoch: number; issuedAt: number } | null;
+  /** Every promotion that waits, one for each server that would become the home. */
+  heldPromotions?: Array<{ newHome: string; epoch: number; issuedAt: number }>;
 }
 
 export interface WireOffer {
@@ -331,6 +335,7 @@ function serverView(
 
 function peerState(peer: WirePeer): PeerState {
   if (peer.state === 'revoked') return 'revoked';
+  if (peer.state === 'contested') return 'contested';
   const status = peer.status;
   if (peer.health === 'offline') return 'offline';
   if (status?.downSince !== null && status?.downSince !== undefined) return 'offline';
@@ -355,6 +360,8 @@ export function peerOf(peer: WirePeer, ownOperator: string): Peer {
     sendLogs: peer.switches.send,
     pullLogs: peer.switches.pull,
     theySendLogs: peer.theySendLogs,
+    signedWrites: peer.signedWrites,
+    pastBundles: peer.pastBundles,
     mismatch: (status?.keyMismatch !== null && status?.keyMismatch !== undefined) || peer.health === 'key-mismatch',
   };
 }
@@ -378,6 +385,7 @@ function vaultOf(vault: WireVault): FedVault {
     heldDemotion: vault.heldDemotion
       ? { newHomeId: vault.heldDemotion.newHome, epoch: vault.heldDemotion.epoch, at: vault.heldDemotion.issuedAt }
       : null,
+    heldPromotions: (vault.heldPromotions ?? []).map((p) => ({ newHomeId: p.newHome, epoch: p.epoch, at: p.issuedAt })),
   };
 }
 

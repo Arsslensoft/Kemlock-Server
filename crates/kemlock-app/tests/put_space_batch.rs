@@ -188,3 +188,38 @@ async fn an_item_appearing_twice_or_an_oversized_batch_is_refused() {
         Some(SpacesError::Rule(SpaceError::Invalid(_)))
     ));
 }
+
+#[tokio::test]
+async fn a_vault_item_of_a_mixed_batch_must_name_the_accounts_current_key_version() {
+    use kemlock_app::ports::UserRepo;
+
+    let w = SpaceWorld::new();
+    let sam = w.user("sam@example.org").await;
+    let (space, everyone) = w.make_space(sam).await;
+    // A rotation of the root key moved the account to key version 2.
+    let mut account = w.world.store.user(sam).expect("the account");
+    account.key_version = 2;
+    UserRepo::update(&w.world.store, &account)
+        .await
+        .expect("the account is updated");
+    let (own, shared) = (ItemId::random(), ItemId::random());
+
+    // The vault item is sealed under version 1, as a device that missed the rotation does it.
+    let refused = w
+        .put_space_batch()
+        .execute(
+            &actor(sam),
+            vec![
+                (write(sam, own, None, 1), None),
+                (w.item_write(space, shared, None, 1, 1), Some(everyone)),
+            ],
+        )
+        .await
+        .err();
+    assert!(matches!(
+        refused,
+        Some(SpacesError::Rule(SpaceError::Invalid(_)))
+    ));
+    assert!(w.world.store.item(own).is_none());
+    assert!(w.world.store.item(shared).is_none(), "nothing is stored");
+}

@@ -447,6 +447,63 @@ async fn a_logout_token_signed_by_someone_else_is_refused() {
 }
 
 #[tokio::test]
+async fn forged_logout_tokens_force_one_fetch_of_the_keys_not_one_each() {
+    let rp = rp().await;
+    // The keys are cached by one valid token: one discovery.
+    rp.oidc
+        .validate_logout_token(&rp.config, &rp.provider.logout_token(Some("a"), None))
+        .await
+        .expect("valid");
+    assert_eq!(rp.provider.discovery_requests(), 1);
+
+    // Many tokens that don't verify, from anyone who can reach the route: the first may check
+    // whether the provider rotated its key, the rest are refused from what is cached.
+    let claims = rp.provider.logout_claims(Some("sub-ada"), None);
+    for _ in 0..20 {
+        let forged = Es256Signer::new("key-1").sign(&claims);
+        assert!(matches!(
+            rp.oidc.validate_logout_token(&rp.config, &forged).await,
+            Err(SsoError::Token(_))
+        ));
+    }
+    assert_eq!(
+        rp.provider.discovery_requests(),
+        2,
+        "one forced fetch, not twenty"
+    );
+}
+
+#[tokio::test]
+async fn a_rotation_is_still_found_once_the_floor_has_passed() {
+    let rp = rp().await;
+    let oidc = OidcClient::new()
+        .expect("builds")
+        .with_refresh_floor(Duration::from_millis(50));
+    oidc.validate_logout_token(&rp.config, &rp.provider.logout_token(Some("a"), None))
+        .await
+        .expect("valid");
+    // A forged token uses up the forced fetch; the provider then rotates.
+    let forged = Es256Signer::new("key-1").sign(&rp.provider.logout_claims(Some("a"), None));
+    assert!(
+        oidc.validate_logout_token(&rp.config, &forged)
+            .await
+            .is_err()
+    );
+    rp.provider.rotate_key();
+    let token = rp.provider.logout_token(Some("a"), None);
+    assert!(
+        oidc.validate_logout_token(&rp.config, &token)
+            .await
+            .is_err(),
+        "inside the floor the cached keys are used"
+    );
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    oidc.validate_logout_token(&rp.config, &token)
+        .await
+        .expect("after the floor the keys are fetched again");
+}
+
+#[tokio::test]
 async fn a_logout_token_that_breaks_a_rule_is_refused() {
     let rp = rp().await;
     for (what, change) in [

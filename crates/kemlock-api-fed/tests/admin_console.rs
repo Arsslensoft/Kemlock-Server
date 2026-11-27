@@ -89,7 +89,11 @@ impl Served {
 }
 
 impl DescriptorSource for Served {
-    fn fetch<'a>(&'a self, address: &'a str) -> BoxFut<'a, Result<SignedDescriptor, FedError>> {
+    fn fetch<'a>(
+        &'a self,
+        address: &'a str,
+        _trust: kemlock_federation::addr::Trust,
+    ) -> BoxFut<'a, Result<SignedDescriptor, FedError>> {
         Box::pin(async move {
             self.0
                 .lock()
@@ -338,15 +342,20 @@ async fn every_new_write_asks_for_a_step_up_token() {
 }
 
 #[tokio::test]
-async fn a_step_up_token_is_the_fresh_check_identity_rotation_asks_for() {
+async fn identity_rotation_asks_for_a_step_up_token_not_a_recent_sign_in() {
     let e = env(1);
     let uri = format!("{BASE}/identity/rotate");
-    let (status, _, bytes) = send(&e.app, Method::POST, &uri, &[("x-admin", "1")], None).await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(
-        value(&bytes)["type"],
-        "urn:kemlock:problem:fresh-check-needed"
-    );
+    for headers in [
+        &[("x-admin", "1")][..],
+        &[("x-admin", "1"), ("x-fresh", "1")][..],
+    ] {
+        let (status, _, bytes) = send(&e.app, Method::POST, &uri, headers, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            value(&bytes)["type"],
+            "urn:kemlock:problem:step-up-required"
+        );
+    }
     let (status, body) = write(&e.app, Method::POST, &uri, None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["kind"], "rotation");
@@ -381,6 +390,10 @@ async fn the_overview_carries_keys_lag_sizes_and_the_server_profile() {
     assert!(peer_row["lagSeconds"].is_u64(), "{peer_row}");
     assert_eq!(peer_row["lastChangeAt"], Value::Null);
     assert_eq!(peer_row["theySendLogs"], false);
+    // The test peer lists no capabilities beyond its suites: it is one to upgrade before a vault
+    // it shares has signed writes.
+    assert_eq!(peer_row["signedWrites"], false);
+    assert_eq!(peer_row["pastBundles"], false);
 
     let vault_row = &overview["vaults"][0];
     assert_eq!(vault_row["sizeBytes"], 80, "two items of 40 bytes");
@@ -876,8 +889,8 @@ async fn the_document_names_routes_the_router_answers_and_every_write_names_the_
             }
         }
     }
-    assert_eq!(operations, 16, "every operation is documented once");
-    assert_eq!(writes, 8);
+    assert_eq!(operations, 22, "every operation is documented once");
+    assert_eq!(writes, 12);
     assert_eq!(
         doc["components"]["securitySchemes"]["dpop"]["type"],
         "apiKey"

@@ -148,7 +148,7 @@ describe.skipIf(!built)('the sharing and space operations of the real module', (
     const bundle = b64url((vectors('bundle')[0] as Vector).bundle);
     const kx1 = Buffer.from(bundle, 'base64url').subarray(37, 37 + 1600).toString('base64url');
     await expect(
-      rejectCode(dispatch('sealRootKey', [kx1, 'emergency-access', 'AAAAAAAAAAAAAAAAAAAAAA'])),
+      rejectCode(dispatch('sealRootKey', [kx1, 'device-approval', 'AAAAAAAAAAAAAAAAAAAAAA'])),
     ).resolves.toBe('locked');
     await expect(rejectCode(dispatch('signStatement', ['AAAA', 'confirm']))).resolves.toBe('locked');
     await expect(
