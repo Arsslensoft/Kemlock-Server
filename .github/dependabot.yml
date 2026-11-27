@@ -3,7 +3,9 @@
 # version updates only), so a fix for an advisory is one small pull request, opened at once.
 # A new release waits a week (cooldown) before a version update proposes it, which gives
 # a malicious or broken release time to be pulled; security updates ignore the cooldown.
-# Patch and minor pull requests merge by themselves once CI passes (dependabot-auto-merge.yml).
+# Patch and minor pull requests for test-only tooling (the docker-compose entry and the bw-cli and
+# gen-api npm entries) merge by themselves once CI passes (dependabot-auto-merge.yml). Cargo, web
+# npm, GitHub Actions and Docker base images are on the release path and wait for a maintainer.
 version: 2
 
 updates:
