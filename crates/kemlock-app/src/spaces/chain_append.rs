@@ -27,6 +27,7 @@ use crate::ports::{Clock, EventLog, ItemStore, Notifier, StoreError, TwoFactorRe
 use kemlock_crypto::space_chain::{
     self as sc, Body, ChainError, KeyRef, Limits, NameTarget, Reason, Record, SignedRecord,
 };
+use kemlock_domain::policies::is_exempt;
 use kemlock_domain::spaces::{CollectionId, MemberState, SpaceRole, apply_space_write};
 use kemlock_domain::{
     ItemDraft, ItemFormat, ItemId, ItemLimits, ItemWrite, Owner, SpaceId, UserId,
@@ -403,6 +404,17 @@ where
                             .get(member)
                             .map_or(SpaceRole::Member, |m| role_of(m.role));
                         check_join(&self.spaces, &self.users, user_of(member), space, role)
+                            .await
+                            .map_err(AppendError::JoinRefused)?;
+                    }
+                }
+                // A role that stops being an owner's or admin's makes a member of someone the join
+                // policies didn't bind.
+                Body::Role { member, role, .. } => {
+                    let was = state.members.get(member).map(|m| role_of(m.role));
+                    let now = role_of(*role);
+                    if was.is_some_and(is_exempt) && !is_exempt(now) {
+                        check_join(&self.spaces, &self.users, user_of(member), space, now)
                             .await
                             .map_err(AppendError::JoinRefused)?;
                     }
