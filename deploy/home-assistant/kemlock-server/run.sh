@@ -13,11 +13,12 @@ export LOG_LEVEL="$(bashio::config 'log_level')"
 export DATA_FOLDER=/data/kemlock
 export ROCKET_PORT=8080
 mkdir -p "${DATA_FOLDER}"
-# Hand the data folder to the unprivileged user (the Dockerfile makes it, uid 10001). Only a folder
-# that it does not own yet is changed in full (an earlier version ran the server as root).
-if [ "$(stat -c %u "${DATA_FOLDER}")" != "10001" ]; then
-  chown -R kemlock:kemlock "${DATA_FOLDER}"
-fi
+# Hand the data folder to the unprivileged user (the Dockerfile makes it, uid 10001) on every
+# start, not only the first: a file a backup restore, an earlier version that ran the server as
+# root, or the supervisor left owned by someone else would stop the server from writing it.
+# Everything the server writes must be inside /data/kemlock, so a database_url that is a file
+# path (SQLite) has to point there too, or the server cannot write it.
+find "${DATA_FOLDER}" ! -user 10001 -exec chown -h 10001:10001 {} +
 chmod 0700 "${DATA_FOLDER}"
 
 if bashio::config.has_value 'ip_header'; then
