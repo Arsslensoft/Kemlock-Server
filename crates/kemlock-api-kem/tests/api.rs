@@ -633,31 +633,40 @@ async fn wrong_passwords_spread_over_many_addresses_slow_the_account_but_never_l
 }
 
 #[tokio::test]
-async fn the_hard_backstop_on_an_account_refuses_checks_from_all_addresses() {
+async fn one_password_finish_at_a_time_per_account_a_second_apart_and_none_refused() {
     let app = App::new(true);
     let client = app.client();
     register_and_sign_in(&client, "sam@example.org").await;
-    app.api.limits.account_cap_hard.set_limit(5);
+    register(&client, "alex@example.org", None).await;
+    let gap = std::time::Duration::from_millis(400);
+    app.api.limits.finish_gate.set_interval(gap);
     let wrong = [9u8; 32];
-    for n in 1..=5u8 {
+
+    // Many wrong passwords from many addresses, past every count: each is told it is wrong, none
+    // is refused for how many came before.
+    app.api.limits.account_cap.set_limit(3);
+    for n in 1..=6u8 {
         let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
     }
-    // Past the backstop the account's password checks are refused for everyone, a right password
-    // included, until the wait is over.
-    let refused = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
-    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(refused.problem(), "rate-limited");
-    // Another account is not affected.
-    register(&client, "alex@example.org", None).await;
-    let other = sign_in_from(&client, "alex@example.org", &PASSWORD, peer(51)).await;
-    assert_eq!(other.status, StatusCode::OK, "{:?}", other.json());
-    app.clock.advance(Duration::seconds(1));
-    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(52)).await;
+    // The right password from a new address still signs in: late, never refused.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert!(started.elapsed() >= gap, "held back: {:?}", started.elapsed());
+
+    // Two finishes at once for one account run one after the other, a gap apart.
+    app.api.limits.account_cap.set_limit(100);
+    let both = std::time::Instant::now();
+    let (first, second) = tokio::join!(
+        sign_in_from(&client, "alex@example.org", &PASSWORD, peer(60)),
+        sign_in_from(&client, "alex@example.org", &PASSWORD, peer(61)),
+    );
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.json());
+    assert_eq!(second.status, StatusCode::OK, "{:?}", second.json());
+    assert!(both.elapsed() >= gap, "a gap between the two: {:?}", both.elapsed());
 }
 
-#[tokio::test]
 async fn made_up_login_states_spend_no_one_s_attempts() {
     let app = App::new(true);
     let client = app.client();
@@ -697,7 +706,6 @@ async fn finishes_that_never_reach_the_password_spend_no_one_s_attempts() {
     register_and_sign_in(&client, "sam@example.org").await;
     register(&client, "alex@example.org", None).await;
     app.api.limits.account.set_limit(3);
-    app.api.limits.account_cap_hard.set_limit(3);
     // A genuine login state made for another account, sent with sam's email.
     let mut wrong_account = finish_body(&client, "alex@example.org", &PASSWORD).await;
     wrong_account["email"] = json!("sam@example.org");

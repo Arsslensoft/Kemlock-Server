@@ -181,6 +181,8 @@ impl App {
             secrets,
         )
         .expect("the test domain is valid");
+        // Sign-ins by the dozen from one account must not each wait the gate's second.
+        api.limits.finish_gate.set_interval(std::time::Duration::ZERO);
         App {
             router: router(api.clone(), fakes::NoSpaceStore),
             api,
@@ -226,6 +228,8 @@ impl App {
             },
         )
         .expect("the test domain is valid");
+        // Sign-ins by the dozen from one account must not each wait the gate's second.
+        api.limits.finish_gate.set_interval(std::time::Duration::ZERO);
         Client::new(
             router(api, fakes::NoSpaceStore),
             self.clock.clone(),
