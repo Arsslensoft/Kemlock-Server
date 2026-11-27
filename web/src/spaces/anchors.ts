@@ -120,7 +120,11 @@ function isAnchor(value: unknown): value is ChainAnchor {
     Array.isArray(v.links) &&
     v.links.every((link) => typeof link === 'string') &&
     // Added later: an anchor kept without them is still an anchor, one that has them must be well formed.
-    (v.owners === undefined || (Array.isArray(v.owners) && v.owners.every((id) => typeof id === 'string'))) &&
+    (v.owners === undefined ||
+      (typeof v.owners === 'object' &&
+        v.owners !== null &&
+        !Array.isArray(v.owners) &&
+        Object.values(v.owners).every((hash) => typeof hash === 'string'))) &&
     (v.promotions === undefined ||
       (Array.isArray(v.promotions) &&
         v.promotions.every(

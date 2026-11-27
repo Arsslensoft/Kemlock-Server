@@ -147,29 +147,54 @@ describe('checking a space’s chain', () => {
   });
 
   it('keeps the owners of the verified chain with the anchor, and passes them back next time', async () => {
-    const owned = view({ owners: [ME, LEE] });
+    const owned = view({ owners: { [ME]: 'aA', [LEE]: 'bB' } });
     const { deps, anchors, crypto, api } = setup(owned);
     expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
-    expect(await anchors.load(ME, SPACE)).toEqual({ seq: 4, epoch: 1, links: owned.links, owners: [ME, LEE] });
+    expect(await anchors.load(ME, SPACE)).toEqual({ seq: 4, epoch: 1, links: owned.links, owners: { [ME]: 'aA', [LEE]: 'bB' } });
     // The next check, from a fresh unlock, hands the kept anchor to the worker as it was kept.
     const fresh = fakeSpaceCrypto();
     fresh.chain = owned;
     const spy = vi.spyOn(fresh, 'verifySpaceChain');
     await checkSpaceChain({ api, crypto: fresh, anchors }, SPACE, ME);
     expect(spy).toHaveBeenCalledWith(
-      expect.objectContaining({ anchor: expect.objectContaining({ owners: [ME, LEE] }) }),
+      expect.objectContaining({ anchor: expect.objectContaining({ owners: { [ME]: 'aA', [LEE]: 'bB' } }) }),
     );
     expect(crypto.calls).toContain(`verifySpaceChain:${SPACE}`);
   });
 
   it('keeps the promotions it was given when the chain view reports none, and takes new ones', async () => {
-    const { deps, anchors } = setup(view({ owners: [ME] }));
+    const { deps, anchors } = setup(view({ owners: { [ME]: 'aA' } }));
     await anchors.save(ME, SPACE, { seq: 3, epoch: 1, links: ['l0', 'l1', 'l2', 'l3'], promotions: [[LEE, 'aA']] });
     await checkSpaceChain(deps, SPACE, ME);
     expect((await anchors.load(ME, SPACE))?.promotions).toEqual([[LEE, 'aA']]);
-    const later = setup(view({ owners: [ME], promotions: [[THEO, 'Yg']] }));
+    const later = setup(view({ owners: { [ME]: 'aA' }, promotions: [[THEO, 'Yg']] }));
     await checkSpaceChain({ ...later.deps, anchors }, SPACE, ME);
     expect((await anchors.load(ME, SPACE))?.promotions).toEqual([[THEO, 'Yg']]);
+  });
+
+  it('writes an anchor kept before owners existed again, with the owners of the first verified chain', async () => {
+    const owned = view({ owners: { [ME]: 'aA', [LEE]: 'bB' }, promotions: [[LEE, 'cC']] });
+    const { deps, anchors } = setup(owned);
+    await anchors.save(ME, SPACE, { seq: 4, epoch: 1, links: owned.links });
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    expect(await anchors.load(ME, SPACE)).toEqual({
+      seq: 4,
+      epoch: 1,
+      links: owned.links,
+      owners: { [ME]: 'aA', [LEE]: 'bB' },
+      promotions: [[LEE, 'cC']],
+    });
+  });
+
+  it('writes it again too when this unlock already holds the chain and nothing came past its head', async () => {
+    const owned = view({ owners: { [ME]: 'aA' } });
+    const { deps, anchors } = setup(owned);
+    await checkSpaceChain(deps, SPACE, ME);
+    // The stored anchor is the old one again (a store from before the upgrade, say).
+    await anchors.save(ME, SPACE, { seq: 4, epoch: 1, links: owned.links }, true);
+    expect((await anchors.load(ME, SPACE))?.owners).toBeUndefined();
+    expect((await checkSpaceChain(deps, SPACE, ME)).kind).toBe('verified');
+    expect((await anchors.load(ME, SPACE))?.owners).toEqual({ [ME]: 'aA' });
   });
 
   it('still reads an anchor kept without owners', async () => {

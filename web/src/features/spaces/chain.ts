@@ -78,6 +78,26 @@ function anchorOf(view: ChainView, kept?: ChainAnchor): ChainAnchor | undefined 
 }
 
 /**
+ * An anchor kept before anchors carried the space's owners is written again, with the owners and
+ * promotions of the chain view the worker verified, as soon as that view is at the same head. It is
+ * the first chance after an upgrade, and it comes before any fence is met: the verifier moves a chain
+ * over a fence only for an anchor that has owners to compare the fence's signer with. Never throws:
+ * the next verified chain writes it too.
+ */
+async function upgradeAnchor(deps: ChainDeps, me: string, spaceId: string, view: ChainView): Promise<void> {
+  try {
+    if (!view.trusted || !view.owners || !view.head) return;
+    const store = storeOf(deps);
+    const kept = await store.load(me, spaceId);
+    if (!kept || kept.owners || kept.seq !== view.head.seq) return;
+    const next = anchorOf(view, kept);
+    if (next) await store.save(me, spaceId, next);
+  } catch {
+    // Not written now; a later verified chain does it.
+  }
+}
+
+/**
  * Reads a space's chain and verifies it. A chain this unlock already verified is kept in the
  * worker; only when the server has records past its head is the whole chain read and verified
  * again. Anything that goes wrong (the server can't be reached, the anchor can't be read, a record
@@ -92,7 +112,10 @@ export async function checkSpaceChain(
     const held = await deps.crypto.spaceChainView(spaceId);
     if (held?.chained && held.head) {
       const tail = await deps.api.chain(spaceId, held.head.seq + 1);
-      if (tail.length === 0) return classify(held);
+      if (tail.length === 0) {
+        await upgradeAnchor(deps, me, spaceId, held);
+        return classify(held);
+      }
     }
     const store = storeOf(deps);
     const [records, anchor, listed] = await Promise.all([
