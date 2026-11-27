@@ -3,7 +3,9 @@
 # version updates only), so a fix for an advisory is one small pull request, opened at once.
 # A new release waits a week (cooldown) before a version update proposes it, which gives
 # a malicious or broken release time to be pulled; security updates ignore the cooldown.
-# Patch and minor pull requests merge by themselves once CI passes (dependabot-auto-merge.yml).
+# Patch and minor pull requests for test-only tooling (the docker-compose entry and the bw-cli and
+# gen-api npm entries) merge by themselves once CI passes (dependabot-auto-merge.yml). Cargo, web
+# npm, GitHub Actions and Docker base images are on the release path and wait for a maintainer.
 version: 2
 
 updates:
@@ -42,10 +44,9 @@ updates:
       prefix: "chore(deps)"
     cooldown:
       default-days: 7
+  # The web vault is built into the release image: its updates wait for a maintainer.
   - package-ecosystem: npm
-    directories:
-      - /web
-      - /crates/kemlock-contract-tests/bw-cli
+    directory: /web
     schedule:
       interval: weekly
       day: monday
@@ -57,6 +58,23 @@ updates:
       default-days: 7
     groups:
       npm-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  # The Bitwarden CLI the contract tests run against: not shipped, so its patch and minor updates
+  # may auto-merge (dependabot-auto-merge.yml). Apart from /web so the two never share a pull request.
+  - package-ecosystem: npm
+    directory: /crates/kemlock-contract-tests/bw-cli
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      bw-cli-minor-patch:
         applies-to: version-updates
         update-types: [minor, patch]
 
@@ -77,7 +95,9 @@ updates:
         update-types: [minor, patch]
 
   # The base images are pinned by digest in docker/Dockerfile (and Dockerfile.fips): Dependabot
-  # moves the tag and the digest together.
+  # moves the tag and the digest together. Not so in /deploy/home-assistant/kemlock-server: its base
+  # image is an ARG default (BUILD_FROM) and a line of build.yaml, which Dependabot most likely does
+  # not read, so that digest is moved by hand (see its Dockerfile).
   - package-ecosystem: docker
     directories:
       - /docker

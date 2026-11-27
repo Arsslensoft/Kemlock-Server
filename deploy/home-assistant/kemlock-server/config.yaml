@@ -31,5 +31,6 @@ schema:
   # trusted from (comma-separated).
   ip_header: str?
   trusted_proxies: str?
-  # Empty uses SQLite in the add-on's data folder.
+  # Empty uses SQLite in the add-on's data folder. A SQLite file path must be inside /data/kemlock:
+  # the server runs as an unprivileged user that owns only that folder.
   database_url: password?
