@@ -681,6 +681,164 @@ async fn a_member_who_leaves_is_removed() {
     assert_eq!(owner.problem(), "last-owner");
 }
 
+/// The write `item` of a space, signed by `by` with their own key at key version 1, the statement
+/// binding `bound` as the collection (docs/crypto.md, "Signed item writes"). `bound` is not
+/// necessarily the collection the body names: that is what a replay changes.
+fn space_signed(by: &Person, space: Uuid, bound: Uuid, mut item: Value) -> Value {
+    use kemlock_crypto::{item_write, owner::Owner};
+    let ciphertext = item["ciphertext"].as_str().map(common::unb64);
+    let item_key = item["itemKey"].as_str().map(common::unb64);
+    let sealed = match (&ciphertext, &item_key) {
+        (Some(c), Some(k)) => Some((c.as_slice(), k.as_slice())),
+        _ => None,
+    };
+    let id: Uuid = item["id"]
+        .as_str()
+        .and_then(|s| s.parse().ok())
+        .expect("an item id");
+    let key_version = u32::try_from(item["keyVersion"].as_u64().expect("a key version"))
+        .expect("a key version fits");
+    let statement = item_write::Statement {
+        owner: Owner::space(*space.as_bytes()),
+        item_id: *id.as_bytes(),
+        kind: "login",
+        revision: item["revision"].as_u64().expect("a revision"),
+        deleted: item["deleted"].as_bool().unwrap_or(false),
+        envelope: item_write::envelope_hash(key_version, sealed).expect("the hash"),
+        writer: *by.id.as_bytes(),
+        writer_key_version: 1,
+        collection: Some(*bound.as_bytes()),
+    };
+    item["writer"] = json!(by.id.to_string());
+    item["writerKeyVersion"] = json!(1);
+    item["writeSignature"] = json!(b64(&statement.sign(&by.signing).expect("signs")));
+    item
+}
+
+#[tokio::test]
+async fn a_space_write_is_signed_over_its_collection_and_a_replay_into_another_is_refused() {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org").await;
+    let ana = rig.person("ana@example.org").await;
+    let lee = rig.person("lee@example.org").await;
+    let (space, c1) = make_space(&sam).await;
+    join(&sam, &ana, space, c1).await;
+
+    // A second collection, which Ana may edit too: the refusals below are the signature's, not
+    // a lack of access.
+    let c2 = Uuid::new_v4();
+    let made = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/collections"),
+            json!({"id": c2.to_string(), "name": b64(&name(10)),
+                   "keys": [signed_key(&sam, space, Some(c2), 1, sam.id, 11)]}),
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.json());
+    let granted = sam
+        .put(
+            &format!("/kem/v1/spaces/{space}/grants"),
+            json!({"collection": c2.to_string(), "grantee": format!("user:{}", ana.id),
+                   "permission": "edit",
+                   "keys": [signed_key(&sam, space, Some(c2), 1, ana.id, 12)]}),
+        )
+        .await;
+    assert_eq!(granted.status, StatusCode::OK, "{:?}", granted.json());
+
+    // Lee may only view C1.
+    let invited = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/members"),
+            json!({
+                "email": "lee@example.org",
+                "role": "member",
+                "grants": [{"collection": c1.to_string(), "permission": "view"}],
+            }),
+        )
+        .await;
+    assert_eq!(invited.status, StatusCode::CREATED, "{:?}", invited.json());
+    lee.post(
+        &format!("/kem/v1/spaces/{space}/members/me/accept"),
+        json!({}),
+    )
+    .await;
+    let confirmed = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/members/{}/confirm", lee.id),
+            confirm_body(&sam, &lee, space, c1, 7),
+        )
+        .await;
+    assert_eq!(confirmed.status, StatusCode::OK, "{:?}", confirmed.json());
+
+    let id = Uuid::new_v4();
+    let body = space_item(space, Some(c1), id, 1);
+    let in_c1 = space_signed(&ana, space, c1, body.clone());
+
+    // The signature of a write into C1, replayed with the item put in C2, is refused.
+    let mut replayed = in_c1.clone();
+    replayed["collectionId"] = json!(c2.to_string());
+    let refused = ana.put_new(id, replayed).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.problem(), "invalid-signature");
+
+    // A signature that binds C2, for an item put in C1, is refused too.
+    let binds_c2 = space_signed(&ana, space, c2, body);
+    let refused = ana.put_new(id, binds_c2).await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.problem(), "invalid-signature");
+
+    // Nothing was stored by either.
+    let synced = sam.get("/kem/v1/sync").await.json();
+    assert_eq!(synced["items"].as_array().map(Vec::len), Some(0));
+
+    // Signed with C1, a write into C1 is accepted, and its signature is stored and served back.
+    let created = ana.put_new(id, in_c1.clone()).await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+    assert_eq!(created.json()["collectionId"], c1.to_string());
+    assert_eq!(created.json()["writer"], ana.id.to_string());
+    assert_eq!(created.json()["writeSignature"], in_c1["writeSignature"]);
+    let synced = sam.get("/kem/v1/sync").await.json();
+    let items = synced["items"].as_array().expect("a list");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["writer"], ana.id.to_string());
+    assert_eq!(items[0]["writeSignature"], in_c1["writeSignature"]);
+
+    // Moving the item to C2 under a signature that binds C1 is refused; one that binds C2 is not.
+    let update = |bound: Uuid| {
+        space_signed(&ana, space, bound, space_item(space, Some(c2), id, 2))
+    };
+    let bound_to_c1 = ana
+        .write(
+            "PUT",
+            &format!("/kem/v1/items/{id}"),
+            ("if-match", "1"),
+            update(c1),
+        )
+        .await;
+    assert_eq!(bound_to_c1.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(bound_to_c1.problem(), "invalid-signature");
+    let moved = ana
+        .write(
+            "PUT",
+            &format!("/kem/v1/items/{id}"),
+            ("if-match", "1"),
+            update(c2),
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.json());
+    assert_eq!(moved.json()["collectionId"], c2.to_string());
+
+    // A member without edit on C1 is refused, whatever their signature says.
+    let other = Uuid::new_v4();
+    let viewer = lee
+        .put_new(
+            other,
+            space_signed(&lee, space, c1, space_item(space, Some(c1), other, 1)),
+        )
+        .await;
+    assert_eq!(viewer.status, StatusCode::FORBIDDEN, "{:?}", viewer.json());
+}
+
 #[tokio::test]
 async fn collections_groups_and_grants_are_shaped_over_http() {
     let rig = Rig::new();
