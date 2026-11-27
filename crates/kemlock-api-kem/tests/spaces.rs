@@ -840,6 +840,79 @@ async fn a_space_write_is_signed_over_its_collection_and_a_replay_into_another_i
 }
 
 #[tokio::test]
+async fn the_key_replacement_route_takes_an_unsigned_rewrite_in_a_signed_only_space_and_checks_a_signature()
+ {
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org").await;
+    let ana = rig.person("ana@example.org").await;
+    let (space, collection) = make_space(&sam).await;
+    join(&sam, &ana, space, collection).await;
+    let id = Uuid::new_v4();
+    let created = sam
+        .put_new(id, space_item(space, Some(collection), id, 1))
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.json());
+
+    // The space takes signed writes only, and then loses a member: its keys wait for replacement.
+    let asked = sam
+        .call(
+            "PUT",
+            &format!("/kem/v1/owners/space:{space}/signed-writes"),
+            None,
+        )
+        .await;
+    assert_eq!(asked.status, StatusCode::NO_CONTENT, "{:?}", asked.json());
+    let revoked = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/members/{}/revoke", ana.id),
+            json!({}),
+        )
+        .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{:?}", revoked.json());
+
+    let replacement = |write: Value| {
+        json!({
+            "spaceKeyVersion": 2,
+            "spaceName": b64(&name(40)),
+            "sealedSpaceKeys": [signed_key(&sam, space, None, 2, sam.id, 20)],
+            "collectionNames": [{"id": collection.to_string(), "name": b64(&name(41))}],
+            "groupNames": [],
+            "collections": [{
+                "collection": collection.to_string(),
+                "keyVersion": 2,
+                "keys": [signed_key(&sam, space, Some(collection), 2, sam.id, 21)],
+            }],
+            "writes": [{"collection": collection.to_string(), "expectedRevision": 1, "item": write}],
+        })
+    };
+    let mut rewrite = space_item(space, Some(collection), id, 2);
+    rewrite["keyVersion"] = json!(2);
+
+    // A signature that doesn't cover this write is refused, and nothing changes.
+    let bad = space_signed(&sam, space, Uuid::new_v4(), rewrite.clone());
+    let refused = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/key-replacement"),
+            replacement(bad),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(refused.problem(), "invalid-signature");
+    let still = sam.get(&format!("/kem/v1/spaces/{space}")).await.json();
+    assert_eq!(still["space"]["keyVersion"], 1);
+
+    // An owner's unsigned re-write is accepted: no client is left at 423 for want of one that signs.
+    let landed = sam
+        .post(
+            &format!("/kem/v1/spaces/{space}/key-replacement"),
+            replacement(rewrite),
+        )
+        .await;
+    assert_eq!(landed.status, StatusCode::OK, "{:?}", landed.json());
+    assert_eq!(landed.json()["items"][0]["revision"], 2);
+}
+
+#[tokio::test]
 async fn collections_groups_and_grants_are_shaped_over_http() {
     let rig = Rig::new();
     let sam = rig.person("sam@example.org").await;
