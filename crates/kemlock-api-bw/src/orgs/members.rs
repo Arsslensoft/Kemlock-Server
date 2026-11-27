@@ -19,6 +19,7 @@ use kemlock_domain::{Email, User, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use uuid::Uuid;
 
 /// The claims of an invitation link: what `accept` and the policies-by-token route read back.
@@ -464,32 +465,74 @@ pub(crate) async fn pending_link<S: BwStore>(
     }
 }
 
-/// `POST /api/organizations/{id}/users/{member}/accept`. The caller has signed in, and the token
-/// of the link must have been made for that account: the token alone accepts nothing, so a link
-/// that leaks, or that an administrator hands over, lets nobody accept for somebody else.
+/// What an accept request carries.
+pub(crate) struct AcceptRequest {
+    pub org_id: String,
+    pub member_id: String,
+    pub token: String,
+    /// The key for account recovery the client sent: kept only with a proof of the password.
+    pub reset_key: Option<String>,
+    /// The master password hash, which is the proof when no one is signed in.
+    pub password_hash: Option<String>,
+}
+
+/// `POST /api/organizations/{id}/users/{member}/accept`. The token of the link says which address
+/// was invited, and the caller proves they are that account: by a session, or, with none, by the
+/// master password hash in the body (checked as a sign-in is, counted per account and through the
+/// same gate), because an account made through the Bitwarden API can't sign in to the web vault
+/// and the apps have no accept screen. The token alone accepts nothing, so a link that leaks, or
+/// that an administrator hands over, lets nobody accept for somebody else. A key for account
+/// recovery is kept only with the password proof, so a session alone never stores one.
 pub(crate) async fn accept<S: BwStore>(
     app: &App<S>,
-    authed: &Authed,
-    org_id: &str,
-    member_id: &str,
-    token: &str,
-    reset_key: Option<String>,
+    authed: Option<&Authed>,
+    ip: IpAddr,
+    request: AcceptRequest,
 ) -> BwResult<()> {
     let claims: InviteClaims = app
         .keys
-        .decode(token, &app.settings.issuer("invite"), app.now_secs())
+        .decode(
+            &request.token,
+            &app.settings.issuer("invite"),
+            app.now_secs(),
+        )
         .map_err(|e| BwError::msg(e.to_string()))?;
-    // An invitation is for the account it was made for.
-    if claims.email != authed.user.email.as_str() {
-        return Err(BwError::msg("Invitation was issued to a different account"));
-    }
-    if claims.org_id != org_id
-        || claims.member_id != member_id
-        || claims.member_id != authed.user.id.to_string()
-    {
-        return Err(BwError::msg("Error accepting the invitation"));
-    }
-    accept_claims(app, &authed.user, &claims, reset_key).await
+    let hash = request.password_hash.as_deref().filter(|h| !h.is_empty());
+    let (account, proved) = match authed {
+        Some(authed) => {
+            // An invitation is for the account it was made for.
+            if claims.email != authed.user.email.as_str() {
+                return Err(BwError::msg("Invitation was issued to a different account"));
+            }
+            if claims.org_id != request.org_id || claims.member_id != request.member_id {
+                return Err(BwError::msg("Error accepting the invitation"));
+            }
+            let proved = match hash {
+                Some(hash) => {
+                    crate::identity::check_password(app, &authed.user, &authed.account, hash)
+                        .await?;
+                    true
+                }
+                None => false,
+            };
+            (authed.user.clone(), proved)
+        }
+        None => {
+            let Some(hash) = hash else {
+                return Err(BwError::Unauthorized);
+            };
+            // A token that is not for this member of this organization costs no hashing.
+            if claims.org_id != request.org_id || claims.member_id != request.member_id {
+                return Err(BwError::msg("Error accepting the invitation"));
+            }
+            (
+                crate::identity::prove_password_of(app, ip, &claims.email, hash).await?,
+                true,
+            )
+        }
+    };
+    let reset_key = request.reset_key.filter(|_| proved);
+    accept_claims(app, &account, &claims, reset_key).await
 }
 
 /// The acceptance an account makes in the registration request that made it, when the request

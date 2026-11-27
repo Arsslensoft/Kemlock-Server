@@ -899,7 +899,7 @@ const PASSWORD_KIND: &str = "password";
 /// the owner's own right password always gets through (a refusal here would let anyone lock a known
 /// address out). A right password clears the count. The hash itself is
 /// checked off the async workers, a few at a time (see [`App::hashing`]).
-async fn check_password<S: BwStore>(
+pub(crate) async fn check_password<S: BwStore>(
     app: &App<S>,
     user: &User,
     account: &BwAccount,
@@ -926,6 +926,36 @@ async fn check_password<S: BwStore>(
     }
     BwTryRepo::forget_tries(&app.store, user.id, PASSWORD_KIND).await?;
     Ok(())
+}
+
+/// Proves, with no session, that the caller is the account of `email` by its master password hash:
+/// the address limit, the same decoy hash for an address with no account, and the same count and
+/// slowdown per account as the password grant (a wrong hash is a wrong password, a 400). Returns
+/// the account. A disabled account is refused once the password is right, as at sign-in.
+pub(crate) async fn prove_password_of<S: BwStore>(
+    app: &App<S>,
+    ip: IpAddr,
+    email: &str,
+    hash: &str,
+) -> BwResult<User> {
+    check_login_limit(app, ip)?;
+    let user = match Email::parse(&email.trim().to_lowercase()) {
+        Ok(parsed) => UserRepo::by_email(&app.store, &parsed).await?,
+        Err(_) => None,
+    };
+    let account = match &user {
+        Some(user) => account_of(app, user).await?,
+        None => None,
+    };
+    let (Some(user), Some(account)) = (user, account) else {
+        app.password_decoy(hash).await?;
+        return Err(BwError::msg(BAD_LOGIN));
+    };
+    check_password(app, &user, &account, hash).await?;
+    if UserRepo::account_disabled(&app.store, user.id).await? {
+        return Err(BwError::msg(DISABLED));
+    }
+    Ok(user)
 }
 
 async fn password_login<S: BwStore>(

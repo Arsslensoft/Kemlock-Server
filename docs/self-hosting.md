@@ -149,14 +149,17 @@ policies) without being asked.
 How the person accepts:
 
 - **With mail**, they get a link of the shape Vaultwarden mails
-  (`/#/accept-organization/?organizationId=...&token=...`, `/#/accept-emergency/?id=...&token=...`).
-  Opening it takes them to sign in with their own account, and signing in as the invited account is
-  what accepts the invitation: the token alone accepts nothing. It works for five days. An account that can sign
+  The page the link opens asks for the account's **master password**, and the password is what
+  accepts the invitation: the token alone accepts nothing, and the password is checked as a sign-in
+  is (the same count of wrong passwords per account, the same slowdown) and issues no session. A
+  person who is signed in to a Bitwarden app can accept with that session instead. A key for
+  account recovery is kept only with the password. The link works for five days. An account that can
+  sign in to the web vault gets the usual space invitation instead, and accepts on its space page.
   in to the web vault gets the usual space invitation instead, and accepts on its space page.
 - **Without mail**, the administrator who invited (and the grantor, for an emergency contact) can
   read the same link from the Bitwarden API, `GET /api/organizations/{org}/users/{member}/invite-link`
-  or `GET /api/emergency-access/{id}/invite-link`, and hand it over. An organization link only leads
-  the invitee to sign in and accept; so does an emergency link: the contact signs in to accept, and the token alone accepts nothing.
+  or `GET /api/emergency-access/{id}/invite-link`, and hand it over. The link accepts nothing by
+  itself, for an organization or an emergency contact: the person proves who they are with the master password.
 
 Set `KEMLOCK_BW_INVITES_AUTO_ACCEPT=true` (or the "Accept Bitwarden invitations for the invitee"
 switch in the console, under sign-ups) to get Vaultwarden's behaviour back. It applies **only while

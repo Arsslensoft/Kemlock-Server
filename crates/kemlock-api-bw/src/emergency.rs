@@ -18,14 +18,14 @@
 //! - `/policies` lists the policies of the grantor's organizations.
 
 use crate::account::user_name;
-use crate::app::{App, Authed, BwStore};
+use crate::app::{App, Authed, BwStore, MaybeAuthed};
 use crate::cipher::{FOLDER_KIND, StoredCipher};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
 use crate::password::hash_password;
 use crate::routes::{
-    EmptyResult, JsonResult, SecretJsonResult, UNAUTHENTICATED_BODY_LIMIT, empty, ok, ok_no_store,
-    parse,
+    EmptyResult, JsonResult, Peer, SecretJsonResult, UNAUTHENTICATED_BODY_LIMIT, empty, ok,
+    ok_no_store, parse,
 };
 use axum::Router;
 use axum::body::Bytes;
@@ -564,8 +564,11 @@ async fn resend_invite<S: BwStore>(
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AcceptData {
     token: String,
+    /// The master password hash: the proof of who accepts when no one is signed in.
+    master_password_hash: Option<String>,
 }
 
 /// The claims of an emergency-access invitation link, as Vaultwarden's
@@ -578,12 +581,16 @@ struct InviteClaims {
     grantor_email: String,
 }
 
-/// `POST /api/emergency-access/{id}/accept`. The contact has signed in, and the token of the link
-/// must have been made for that account's address: the token alone accepts nothing, so a link that
-/// leaks, or that the grantor hands over, lets nobody accept for the contact.
+/// `POST /api/emergency-access/{id}/accept`. The token of the link says which address was named, and
+/// the caller proves they are that account: by a session or, with none, by the master password hash
+/// in the body (an account made through the Bitwarden API can't sign in to the web vault, and the
+/// apps have no accept screen). The hash is checked as a sign-in is: the same count per account,
+/// slowdown and hashing gate, the token first, and nothing is issued. The token alone accepts
+/// nothing, so a link that leaks, or that the grantor hands over, lets nobody accept for the contact.
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
-    authed: Authed,
+    Peer(ip): Peer,
+    MaybeAuthed(authed): MaybeAuthed,
     Path(id): Path<String>,
     body: Bytes,
 ) -> EmptyResult {
@@ -596,12 +603,33 @@ async fn accept_invite<S: BwStore>(
             app.now_secs(),
         )
         .map_err(|e| BwError::msg(e.to_string()))?;
-    let me = &authed.user;
-    if claims.email != me.email.as_str() {
-        return Err(BwError::msg(
-            "Claim email does not match current users email",
-        ));
-    }
+    let signed_in;
+    let me = match authed {
+        Some(authed) => {
+            if claims.email != authed.user.email.as_str() {
+                return Err(BwError::msg(
+                    "Claim email does not match current users email",
+                ));
+            }
+            signed_in = authed.user;
+            &signed_in
+        }
+        None => {
+            let Some(hash) = data
+                .master_password_hash
+                .as_deref()
+                .filter(|h| !h.is_empty())
+            else {
+                return Err(BwError::Unauthorized);
+            };
+            // A token that is not for this grant costs no hashing.
+            if !claims.emer_id.eq_ignore_ascii_case(id.trim()) {
+                return Err(BwError::msg("Emergency access invitation error."));
+            }
+            signed_in = crate::identity::prove_password_of(&app, ip, &claims.email, hash).await?;
+            &signed_in
+        }
+    };
     let id = parse_id(&id)?;
     let Some(mut grant) = EmergencyRepo::grant(&app.store, id).await? else {
         return Err(not_valid());

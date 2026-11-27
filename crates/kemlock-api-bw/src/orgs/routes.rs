@@ -21,12 +21,12 @@ use super::structure::{
     collections_plain, create_collection, delete_collection, delete_group, groups_list, put_policy,
     save_group, update_collection,
 };
-use crate::app::{App, Authed, BwStore};
+use crate::app::{App, Authed, BwStore, MaybeAuthed};
 use crate::cipher::{CipherData, lcase_keys};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
 use crate::routes::{
-    EmptyResult, JsonResult, SecretJsonResult, empty, ok, ok_no_store, parse, truthy,
+    EmptyResult, JsonResult, Peer, SecretJsonResult, empty, ok, ok_no_store, parse, truthy,
 };
 use axum::Router;
 use axum::body::Bytes;
@@ -519,6 +519,9 @@ struct BulkConfirmData {
 struct AcceptData {
     token: String,
     reset_password_key: Option<String>,
+    /// The master password hash: the proof of who accepts when no one is signed in, and what a key
+    /// for account recovery needs.
+    master_password_hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -660,13 +663,20 @@ async fn bulk_reinvite<S: BwStore>(
 
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
-    authed: Authed,
+    Peer(ip): Peer,
+    MaybeAuthed(authed): MaybeAuthed,
     Path((org_id, member_id)): Path<(String, String)>,
     body: Bytes,
 ) -> EmptyResult {
     let data: AcceptData = parse(&body)?;
-    let key = data.reset_password_key;
-    empty(members::accept(&app, &authed, &org_id, &member_id, &data.token, key).await)
+    let request = members::AcceptRequest {
+        org_id,
+        member_id,
+        token: data.token,
+        reset_key: data.reset_password_key,
+        password_hash: data.master_password_hash,
+    };
+    empty(members::accept(&app, authed.as_ref(), ip, request).await)
 }
 
 async fn invite_link_route<S: BwStore>(

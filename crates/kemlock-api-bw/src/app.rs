@@ -327,3 +327,24 @@ impl<S: BwStore> FromRequestParts<App<S>> for Authed {
         app.session(&claims, ip).await
     }
 }
+
+/// A request that may carry an access token: the accept routes of an invitation take either the
+/// invitee's session or, with none, their master password hash in the body (an account made through
+/// the Bitwarden API has no way into the web vault, and the Bitwarden apps have no accept screen).
+/// With an `Authorization` header it must be a good one, as for [`Authed`]; with none, there is no
+/// caller.
+#[derive(Debug)]
+pub(crate) struct MaybeAuthed(pub(crate) Option<Authed>);
+
+impl<S: BwStore> FromRequestParts<App<S>> for MaybeAuthed {
+    type Rejection = BwError;
+
+    async fn from_request_parts(parts: &mut Parts, app: &App<S>) -> Result<Self, BwError> {
+        if !parts.headers.contains_key(AUTHORIZATION) {
+            return Ok(MaybeAuthed(None));
+        }
+        Authed::from_request_parts(parts, app)
+            .await
+            .map(|authed| MaybeAuthed(Some(authed)))
+    }
+}
