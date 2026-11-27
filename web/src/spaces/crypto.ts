@@ -232,6 +232,7 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
 type SpaceWorker = Pick<
   CryptoApi,
   | 'sealRootKey'
+  | 'sealEmergencyKey'
   | 'signStatement'
   | 'newSpace'
   | 'openSpace'

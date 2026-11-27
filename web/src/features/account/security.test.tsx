@@ -8,7 +8,7 @@ import { renderWithIntl } from '@/test/render';
 import { makeBundleB64 } from '@/test/bundles';
 import { fakeSharingCrypto } from '@/test/fake-space-crypto';
 import type { EmergencyCardProps } from './EmergencyCard';
-import { confirmEmergencyContact, daysLeft, groupSecret } from './emergencyModel';
+import { bundleIsGranteesOwn, confirmEmergencyContact, daysLeft, groupSecret } from './emergencyModel';
 import { SecurityView, type SecurityViewProps } from './SecurityView';
 
 const GRANTOR = '70000000-0000-4000-8000-000000000001';
@@ -95,17 +95,39 @@ describe('emergency helpers', () => {
     expect(daysLeft(null, now)).toBeNull();
   });
 
-  it('seal the root key to the contact’s kx1 key only after a consistent fingerprint', async () => {
+  it('seal the root key to the contact’s signed bundle only after a consistent fingerprint', async () => {
     const crypto = fakeSharingCrypto();
     const api: Pick<EmergencyApi, 'confirm'> = { confirm: vi.fn(async () => grant({ state: 'confirmed' })) };
     const fp = { text: 'x', bytes: new Uint8Array(64), consistent: true };
     await confirmEmergencyContact({ api, crypto }, viewOf(), fp);
-    expect(crypto.calls).toEqual(['sealRootKey:emergency-access']);
+    expect(crypto.calls).toEqual(['sealEmergencyKey']);
     const sealed = vi.mocked(api.confirm).mock.calls[0]?.[1] ?? '';
-    expect(fromUtf8(decodeB64(sealed))).toBe('root>emergency-access>1600>16');
+    expect(fromUtf8(decodeB64(sealed))).toBe(`root>emergency-access>${CONTACT}>${decodeB64(makeBundleB64(CONTACT)).length}`);
     await expect(confirmEmergencyContact({ api, crypto }, viewOf(), { ...fp, consistent: false })).rejects.toThrow();
     await expect(confirmEmergencyContact({ api, crypto }, viewOf({}, false), fp)).rejects.toThrow();
     expect(api.confirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('seal nothing to a bundle that is another account’s, or to a grant with no account', async () => {
+    const crypto = fakeSharingCrypto();
+    const api: Pick<EmergencyApi, 'confirm'> = { confirm: vi.fn(async () => grant({ state: 'confirmed' })) };
+    const fp = { text: 'x', bytes: new Uint8Array(64), consistent: true };
+    const stranger = '70000000-0000-4000-8000-0000000000ff';
+    await expect(
+      confirmEmergencyContact({ api, crypto }, viewOf({ granteeId: stranger }), fp),
+    ).rejects.toThrow(/another account/);
+    await expect(confirmEmergencyContact({ api, crypto }, viewOf({ granteeId: null }), fp)).rejects.toThrow(
+      /no account/,
+    );
+    expect(crypto.calls).toEqual([]);
+    expect(api.confirm).not.toHaveBeenCalled();
+  });
+
+  it('know whether a contact’s bundle is the grantee’s own', () => {
+    expect(bundleIsGranteesOwn(viewOf())).toBe(true);
+    expect(bundleIsGranteesOwn(viewOf({ granteeId: GRANTOR }))).toBe(false);
+    expect(bundleIsGranteesOwn(viewOf({ granteeId: null }))).toBe(false);
+    expect(bundleIsGranteesOwn(viewOf({}, false))).toBe(false);
   });
 });
 

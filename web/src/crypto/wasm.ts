@@ -69,6 +69,7 @@ export interface WasmVault {
   sendOpenFile(linkKey: string, file: Uint8Array): Uint8Array;
   sealRootKey(recipientKx1: string, context: string, aad: string): string;
   sealRootKeyForRecovery(spaceId: string, recoveryKx1: string, keySeq: number): string;
+  sealEmergencyKey(publicBundle: string, bundleSignature: string, granteeId: string): string;
   confirmationStatement(
     spaceId: string,
     memberId: string,

@@ -18,8 +18,9 @@ export interface SharingCrypto {
   readonly canWrapForThisDevice?: boolean;
   /**
    * Seals the unlocked account's root key to a kx1 public key (1,600 bytes) as a sealed box
-   * (docs/crypto.md): context `device-approval` with `aad` the account id then the approval
-   * request id (32 bytes), or `emergency-access` with `aad` the contact's account id (16 bytes).
+   * (docs/crypto.md): context `device-approval`, with `aad` the account id then the approval
+   * request id (32 bytes). Nothing else is sealed here: an emergency contact's box is
+   * `sealEmergencyKey`.
    */
   sealRootKey(
     recipientKx1: Uint8Array,
@@ -37,6 +38,12 @@ export interface SharingCrypto {
     keyVersion: number;
   }): Promise<Uint8Array>;
   /**
+   * Seals the unlocked account's root key to an emergency contact, from the contact's public bundle
+   * and its own signature. The worker checks the signature and that the bundle is `granteeId`'s (a
+   * UUID, as text) before it seals, so the page can't have the key sealed to one it made up.
+   */
+  sealEmergencyKey(bundle: Uint8Array, bundleSignature: Uint8Array, granteeId: string): Promise<Uint8Array>;
+  /**
    * A sig1 signature (3,373 bytes) over a member-confirmation statement (docs/crypto.md), under
    * context `confirm`, with the account's key. The worker signs nothing else.
    */
@@ -48,6 +55,7 @@ export const unavailableSharingCrypto: SharingCrypto = {
   available: false,
   canWrapForThisDevice: false,
   sealRootKey: () => Promise.reject(new CryptoError('unavailable')),
+  sealEmergencyKey: () => Promise.reject(new CryptoError('unavailable')),
   signStatement: () => Promise.reject(new CryptoError('unavailable')),
   wrapForThisDevice: () => Promise.reject(new CryptoError('unavailable')),
 };
@@ -61,7 +69,7 @@ function uuidText(bytes: Uint8Array): string {
 }
 
 export function createSharingCrypto(
-  api: Pick<CryptoApi, 'sealRootKey' | 'signStatement'> & Partial<Pick<CryptoApi, 'deviceCopySeal'>>,
+  api: Pick<CryptoApi, 'sealRootKey' | 'sealEmergencyKey' | 'signStatement'> & Partial<Pick<CryptoApi, 'deviceCopySeal'>>,
 ): SharingCrypto {
   const deviceCopySeal = api.deviceCopySeal?.bind(api);
   return {
@@ -69,6 +77,9 @@ export function createSharingCrypto(
     canWrapForThisDevice: deviceCopySeal !== undefined,
     async sealRootKey(recipientKx1, context, aad) {
       return decodeB64(await api.sealRootKey(encodeB64(recipientKx1), context, encodeB64(aad)));
+    },
+    async sealEmergencyKey(bundle, bundleSignature, granteeId) {
+      return decodeB64(await api.sealEmergencyKey(encodeB64(bundle), encodeB64(bundleSignature), granteeId));
     },
     async wrapForThisDevice({ accountId, deviceId, keyVersion }) {
       if (!deviceCopySeal) throw new CryptoError('unavailable');

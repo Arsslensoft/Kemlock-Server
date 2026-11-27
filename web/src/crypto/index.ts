@@ -136,6 +136,8 @@ export function createCryptoClient(factory: () => WorkerPort): CryptoApi {
     release: (handle) => call('release', [handle]),
     dpopReset: () => call('dpopReset', []),
     sealRootKey: (recipientKx1, context, aad) => call('sealRootKey', [recipientKx1, context, aad]),
+    sealEmergencyKey: (publicBundle, bundleSignature, granteeId) =>
+      call('sealEmergencyKey', [publicBundle, bundleSignature, granteeId]),
     confirmationStatement: (facts) => call('confirmationStatement', [facts]),
     signStatement: (statement, context) => call('signStatement', [statement, context]),
     verifyConfirmation: (check) => call('verifyConfirmation', [check]),

@@ -674,9 +674,9 @@ impl Vault {
 
     /// Seals the unlocked account's root key to a `kx1` public key (base64url, 1,600 bytes) as a
     /// sealed box. `context` is `device-approval` (`aad`: the account id then the approval
-    /// request id, 32 bytes), `emergency-access` (`aad`: the contact's account id, 16 bytes) or
-    /// `account-recovery` (`aad`: space id, account id, `u64be(keySeq)`, 40 bytes; see
-    /// `sealRootKeyForRecovery`); no other context is sealed. Returns the box, base64url.
+    /// request id, 32 bytes) or `account-recovery` (`aad`: space id, account id,
+    /// `u64be(keySeq)`, 40 bytes; see `sealRootKeyForRecovery`); no other context is sealed, and
+    /// `emergency-access` only through `sealEmergencyKey`. Returns the box, base64url.
     #[wasm_bindgen(js_name = sealRootKey)]
     pub fn seal_root_key(
         &self,
@@ -689,6 +689,27 @@ impl Vault {
         let sealed = self
             .session
             .seal_root_key(&recipient, context, &aad)
+            .map_err(fail)?;
+        Ok(b64::encode(&sealed))
+    }
+
+    /// Seals the unlocked account's root key to an emergency contact under `emergency-access`, with
+    /// the contact's account id (`granteeId`, a UUID) as the aad. The key sealed to is the one in
+    /// `publicBundle` (base64url), which must carry a valid self-signature (`bundleSignature`,
+    /// base64url) and name `granteeId` as its account. Returns the box, base64url.
+    #[wasm_bindgen(js_name = sealEmergencyKey)]
+    pub fn seal_emergency_key(
+        &self,
+        public_bundle: &str,
+        bundle_signature: &str,
+        grantee_id: &str,
+    ) -> Result<String, JsError> {
+        let bundle = b64::decode(public_bundle).map_err(fail)?;
+        let signature = b64::decode(bundle_signature).map_err(fail)?;
+        let grantee = ids::parse_uuid(grantee_id).map_err(fail)?;
+        let sealed = self
+            .session
+            .seal_emergency_key(&bundle, &signature, &grantee)
             .map_err(fail)?;
         Ok(b64::encode(&sealed))
     }

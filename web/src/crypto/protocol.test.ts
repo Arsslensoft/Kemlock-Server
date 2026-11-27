@@ -50,6 +50,7 @@ function mockVault(overrides: Partial<WasmVault> = {}): WasmVault {
     sendSealFile: vi.fn((_key: string, plain: Uint8Array) => new Uint8Array([...plain, 1])),
     sendOpenFile: vi.fn((_key: string, file: Uint8Array) => file.slice(0, -1)),
     sealRootKey: vi.fn(() => 'cm9vdC1ib3g'),
+    sealEmergencyKey: vi.fn(() => 'ZW1lcmdlbmN5'),
     sealRootKeyForRecovery: vi.fn(() => 'cmVjb3Zlcnk'),
     confirmationStatement: vi.fn(() => 'c3RhdGVtZW50'),
     signStatement: vi.fn(() => 'c2ln'),
@@ -323,6 +324,8 @@ describe('the dispatcher', () => {
     const { dispatch } = setup([vault]);
     expect(await dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk'])).toBe('cm9vdC1ib3g');
     expect(vault.sealRootKey).toHaveBeenCalledWith('a2V5', 'device-approval', 'YWFk');
+    expect(await dispatch('sealEmergencyKey', ['YnVu', 'c2ln', UUID])).toBe('ZW1lcmdlbmN5');
+    expect(vault.sealEmergencyKey).toHaveBeenCalledWith('YnVu', 'c2ln', UUID);
 
     const facts = { space: UUID, member: UUID, memberKeyVersion: 2, fingerprint: 'ZnA' };
     expect(await dispatch('confirmationStatement', [facts])).toBe('c3RhdGVtZW50');
@@ -525,10 +528,10 @@ describe('the dispatcher', () => {
       }),
     });
     const { dispatch } = setup([vault]);
-    await expect(dispatch('sealRootKey', ['a2V5', 'emergency-access', 'YWFk'])).rejects.toBeInstanceOf(Error);
+    await expect(dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk'])).rejects.toBeInstanceOf(Error);
     const codes: string[] = [];
     for (const call of [
-      () => dispatch('sealRootKey', ['a2V5', 'emergency-access', 'YWFk']),
+      () => dispatch('sealRootKey', ['a2V5', 'device-approval', 'YWFk']),
       () =>
         dispatch('openName', [{ spaceId: UUID, keyVersion: 1, kind: 'space', id: UUID, ciphertext: 'Y3Q' }]),
     ]) {

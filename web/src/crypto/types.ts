@@ -180,7 +180,8 @@ export interface TotpOptions {
 }
 
 /** The sealed-box contexts under which the worker seals the root key (docs/crypto.md). */
-export type RootKeyContext = 'device-approval' | 'emergency-access';
+/** What `sealRootKey` seals under. An emergency contact's box is made by `sealEmergencyKey`, which checks the contact's bundle. */
+export type RootKeyContext = 'device-approval';
 
 /** What a space name names. */
 export type NameKind = 'space' | 'collection' | 'group';
@@ -728,11 +729,17 @@ export interface CryptoApi {
   // Sharing: the account's keys given to someone else. Binary values are base64url.
 
   /**
-   * Seals the unlocked account's root key to a kx1 public key as a sealed box. `device-approval`
-   * takes `aad` = account id ‖ approval request id (32 bytes), `emergency-access` the contact's
-   * account id (16 bytes); no other context is sealed.
+   * Seals the unlocked account's root key to a kx1 public key as a sealed box under
+   * `device-approval`, with `aad` = account id ‖ approval request id (32 bytes); no other context
+   * is sealed (an emergency contact's box is `sealEmergencyKey`).
    */
   sealRootKey(recipientKx1: string, context: RootKeyContext, aad: string): Promise<string>;
+  /**
+   * Seals the unlocked account's root key to an emergency contact (`emergency-access`, `aad` their
+   * account id) from their public bundle: the worker checks the bundle's own signature and that it
+   * names `granteeId` (a UUID) before it seals, so a key the page made up is never sealed to.
+   */
+  sealEmergencyKey(publicBundle: string, bundleSignature: string, granteeId: string): Promise<string>;
   /** The 134-byte confirmation statement, the unlocked account as the confirmer. */
   confirmationStatement(facts: ConfirmationFacts): Promise<string>;
   /** A sig1 signature over a confirmation statement of this account; context `confirm` only. */
@@ -1048,6 +1055,10 @@ export interface Ops {
   ownKeyVersion: { args: []; result: number };
   release: { args: [handle: number]; result: void };
   dpopReset: { args: []; result: void };
+  sealEmergencyKey: {
+    args: [publicBundle: string, bundleSignature: string, granteeId: string];
+    result: string;
+  };
   sealRootKey: {
     args: [recipientKx1: string, context: RootKeyContext, aad: string];
     result: string;

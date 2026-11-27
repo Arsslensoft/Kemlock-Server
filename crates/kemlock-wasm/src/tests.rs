@@ -633,6 +633,12 @@ const CONFIRM: &str = include_str!("../../../test-vectors/confirm.json");
 
 /// A session for a freshly made account, unlocked with its private keys, and its public bundle.
 fn open_account(account_id: [u8; 16]) -> (Session, Bundle) {
+    let (session, bundle, _) = open_account_signed(account_id);
+    (session, bundle)
+}
+
+/// As [`open_account`], with the bundle's own signature as the server would hold it.
+fn open_account_signed(account_id: [u8; 16]) -> (Session, Bundle, Vec<u8>) {
     let mut session = Session::new();
     let master = session.insert_master([1; 32]).expect("handle");
     let export = session.insert_export([2; 64]).expect("handle");
@@ -652,7 +658,7 @@ fn open_account(account_id: [u8; 16]) -> (Session, Bundle) {
         )
         .expect("unlock");
     let bundle = Bundle::from_bytes(&account.public_bundle).expect("bundle");
-    (session, bundle)
+    (session, bundle, account.bundle_signature)
 }
 
 /// A session unlocked with the given private keys, as the vectors have them.
@@ -746,33 +752,68 @@ fn the_root_key_is_sealed_to_a_device_for_one_request_only() {
 }
 
 #[wasm_bindgen_test]
-fn the_root_key_is_sealed_to_an_emergency_contact_by_their_id() {
+fn the_root_key_is_sealed_to_an_emergency_contact_only_from_their_signed_bundle() {
     let (grantor, _) = open_account([0x41; 16]);
-    let (_, contact) = open_account([0x42; 16]);
+    let (_, contact, signature) = open_account_signed([0x42; 16]);
+    let bundle = contact.to_bytes();
     let boxed = grantor
-        .seal_root_key(
-            contact.kx1_public.as_bytes(),
-            "emergency-access",
-            &contact.account_id,
-        )
+        .seal_emergency_key(&bundle, &signature, &contact.account_id)
         .expect("seal");
     assert_eq!(boxed.len(), sealed_box::OVERHEAD + 64);
-    // 16 bytes only: the request id of a device approval has no place here.
+
+    // The generic op no longer seals under this context, whatever key it is given.
     assert_eq!(
         grantor.seal_root_key(
             contact.kx1_public.as_bytes(),
             "emergency-access",
-            &[contact.account_id, [0; 16]].concat()
+            &contact.account_id
         ),
+        Err(Error::Invalid)
+    );
+    // A signature that is not the bundle's own, a bundle that was changed after it was signed and
+    // one that isn't a bundle all fail.
+    let mut flipped = signature.clone();
+    flipped[0] ^= 1;
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &flipped, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    let (_, other, other_signature) = open_account_signed([0x43; 16]);
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &other_signature, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    let mut changed = bundle.clone();
+    let last = changed.len() - 1;
+    changed[last] ^= 1;
+    assert!(
+        grantor
+            .seal_emergency_key(&changed, &signature, &contact.account_id)
+            .is_err()
+    );
+    assert!(
+        grantor
+            .seal_emergency_key(&bundle[1..], &signature, &contact.account_id)
+            .is_err()
+    );
+    // The bundle must be the grantee's: another person's signed bundle, a short id and the
+    // grantor's own account are refused.
+    assert_eq!(
+        grantor.seal_emergency_key(&other.to_bytes(), &other_signature, &contact.account_id),
+        Err(Error::Invalid)
+    );
+    assert_eq!(
+        grantor.seal_emergency_key(&bundle, &signature, &contact.account_id[..15]),
+        Err(Error::Invalid)
+    );
+    let (self_grantor, own, own_signature) = open_account_signed([0x44; 16]);
+    assert_eq!(
+        self_grantor.seal_emergency_key(&own.to_bytes(), &own_signature, &own.account_id),
         Err(Error::Invalid)
     );
     let locked = Session::new();
     assert_eq!(
-        locked.seal_root_key(
-            contact.kx1_public.as_bytes(),
-            "emergency-access",
-            &contact.account_id
-        ),
+        locked.seal_emergency_key(&bundle, &signature, &contact.account_id),
         Err(Error::Locked)
     );
 }
@@ -780,7 +821,7 @@ fn the_root_key_is_sealed_to_an_emergency_contact_by_their_id() {
 #[wasm_bindgen_test]
 fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
     let (grantor, _) = open_account([0x51; 16]);
-    let (mut grantee, grantee_bundle) = open_account([0x52; 16]);
+    let (mut grantee, grantee_bundle, grantee_signature) = open_account_signed([0x52; 16]);
     let item_id = [0x53u8; 16];
     let owner = Owner::user([0x51; 16]);
     let sealed = grantor
@@ -797,9 +838,9 @@ fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
     };
 
     let released = grantor
-        .seal_root_key(
-            grantee_bundle.kx1_public.as_bytes(),
-            "emergency-access",
+        .seal_emergency_key(
+            &grantee_bundle.to_bytes(),
+            &grantee_signature,
             &grantee_bundle.account_id,
         )
         .expect("seal");
@@ -842,13 +883,9 @@ fn a_released_emergency_key_opens_the_grantors_items_and_nothing_else() {
             .is_err()
     );
     // A box sealed for another contact does not open.
-    let (_, other) = open_account([0x54; 16]);
+    let (_, other, other_signature) = open_account_signed([0x54; 16]);
     let not_mine = grantor
-        .seal_root_key(
-            other.kx1_public.as_bytes(),
-            "emergency-access",
-            &other.account_id,
-        )
+        .seal_emergency_key(&other.to_bytes(), &other_signature, &other.account_id)
         .expect("seal");
     assert!(grantee.open_emergency_key(&not_mine).is_err());
 

@@ -298,6 +298,9 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     async sealRootKey(recipientKx1, context, aad) {
       return (await current()).sealRootKey(recipientKx1, context, aad);
     },
+    async sealEmergencyKey(publicBundle, bundleSignature, granteeId) {
+      return (await current()).sealEmergencyKey(publicBundle, bundleSignature, granteeId);
+    },
     async confirmationStatement({ space, member, memberKeyVersion, fingerprint }) {
       return (await current()).confirmationStatement(
         space,

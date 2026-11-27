@@ -20,6 +20,10 @@ export function fakeSharingCrypto(): FakeSharing {
       calls.push(`sealRootKey:${context}`);
       return utf8(`root>${context}>${recipientKx1.length}>${aad.length}`);
     },
+    async sealEmergencyKey(bundle, _signature, granteeId) {
+      calls.push('sealEmergencyKey');
+      return utf8(`root>emergency-access>${granteeId}>${bundle.length}`);
+    },
     async wrapForThisDevice({ keyVersion }) {
       calls.push('wrapForThisDevice');
       return utf8(`wrapped>${keyVersion}`);
