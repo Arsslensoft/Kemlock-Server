@@ -655,6 +655,25 @@ impl ReplicaStore for SqlStore {
         )
     }
 
+    async fn newest_change_of(
+        &self,
+        origin: ServerId,
+    ) -> Result<Option<(u64, kemlock_domain::Hlc)>, StoreError> {
+        changes::Entity::find()
+            .filter(changes::Column::Origin.eq(origin.0))
+            .order_by_desc(changes::Column::Seq)
+            .one(self.reader())
+            .await
+            .store()?
+            .map(|row| {
+                Ok((
+                    from_i64(row.seq, "sequence number")?,
+                    kemlock_domain::Hlc(from_i64(row.hlc, "hlc")?),
+                ))
+            })
+            .transpose()
+    }
+
     async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
         if required {
             kemlock_app::ports::ItemStore::require_signed_writes(

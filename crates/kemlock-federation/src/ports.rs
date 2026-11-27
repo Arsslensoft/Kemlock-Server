@@ -12,7 +12,7 @@ use crate::home::{HomeRecord, VaultFederation};
 use crate::wire::ChangeKey;
 use kemlock_app::ports::StoreError;
 use kemlock_crypto::sig1;
-use kemlock_domain::{Item, ItemId, Owner, ServerId, VersionVector};
+use kemlock_domain::{Hlc, Item, ItemId, Owner, ServerId, VersionVector};
 use std::future::Future;
 
 /// Whether a peer is trusted.
@@ -317,6 +317,18 @@ pub trait ReplicaStore: Send + Sync {
         _key: ChangeKey,
     ) -> impl Future<Output = std::result::Result<bool, StoreError>> + Send {
         async { Ok(false) }
+    }
+
+    /// The newest change of `origin` this server holds, by sequence number: that number and the HLC
+    /// time the change carries. An origin's later changes are never older than its earlier ones, so
+    /// this is what a change that claims to be a past one is held against.
+    ///
+    /// The default holds none, for a store that can't say.
+    fn newest_change_of(
+        &self,
+        _origin: ServerId,
+    ) -> impl Future<Output = std::result::Result<Option<(u64, Hlc)>, StoreError>> + Send {
+        async { Ok(None) }
     }
 
     /// Sets or clears the flag of `owner` here, as the home's signed record says

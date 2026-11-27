@@ -757,6 +757,16 @@ impl ReplicaStore for MemoryStore {
         Ok(self.lock().log.iter().any(|e| e.key == key))
     }
 
+    async fn newest_change_of(&self, origin: ServerId) -> Result<Option<(u64, Hlc)>, StoreError> {
+        Ok(self
+            .lock()
+            .log
+            .iter()
+            .filter(|e| e.key.origin == origin)
+            .max_by_key(|e| e.key.seq)
+            .map(|e| (e.key.seq, e.hlc)))
+    }
+
     async fn set_owner_signed_only(&self, owner: Owner, required: bool) -> Result<(), StoreError> {
         self.set_signed_only(owner, required);
         Ok(())

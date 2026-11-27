@@ -179,6 +179,8 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
     };
     // Keys the account has replaced signed nothing after it did (a stolen old key must not write
     // new changes): only a change made before then, by the clock of the server that accepted it.
+    // That clock is the origin's own word, so it is also held against the origin's other changes:
+    // a change with a later sequence number than one this server holds can't be dated before it.
     if let Some(retired) = store
         .writer_bundle_retired_at(write.writer, write.key_version)
         .await?
@@ -191,6 +193,15 @@ pub async fn judge<S: ReplicaStore + MemberStore>(
         {
             return Ok(Verdict::Refuse(
                 "a change signed with keys the account had replaced by then",
+            ));
+        }
+        if let Some((seq, hlc)) = store.newest_change_of(record.change.origin).await?
+            && record.change.seq > seq
+            && record.change.hlc.millis().saturating_add(RETIRED_KEY_SLACK_SECS * 1000)
+                < hlc.millis()
+        {
+            return Ok(Verdict::Refuse(
+                "a change signed with replaced keys that its origin dated before its own earlier change",
             ));
         }
     }
@@ -621,6 +632,59 @@ mod tests {
         // Made after the account replaced the keys: the old key is no longer the account.
         assert!(verdict_is_refusal(
             judge(&held(1_699_000_000), &record).await
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_change_with_replaced_keys_is_not_dated_before_an_earlier_change_of_its_origin() {
+        use crate::members::PastBundle;
+        let writer = UserId::random();
+        let old_key = sig1::SigningKey::from_bytes(&[5; 64]);
+        let new_key = sig1::SigningKey::from_bytes(&[6; 64]);
+        let bundle_of = |version: u32, key: &sig1::SigningKey| {
+            Bundle {
+                account_id: *writer.as_bytes(),
+                key_version: version,
+                kx1_public: kx1::PublicKey::from_bytes(&[1; 1600]).expect("length"),
+                sig1_public: key.public_key().expect("public key"),
+            }
+            .to_bytes()
+        };
+        // The account replaced its first keys at 1_700_000_100 s; the record below claims to be
+        // made at 1_700_000_000 s, before that.
+        let store = MemoryStore::new(ServerId::random());
+        let mut copy = account(writer, bundle_of(2, &new_key), 2);
+        copy.past_bundles = vec![PastBundle {
+            key_version: 1,
+            public_bundle: bundle_of(1, &old_key),
+            bundle_signature: vec![0; 8],
+            superseded_at: 1_700_000_100,
+        }];
+        store.set_member_account(copy);
+        let mut record = signed_record(Owner::User(writer), writer, &old_key);
+        // The origin is this store's own server, which already holds one of its changes, made at
+        // 1_800_000_000_000 ms.
+        record.change.origin = store.server_id();
+        sign(&mut record, writer, &old_key);
+        store
+            .put(crate::testing::draft(
+                ItemId::random(),
+                Owner::User(writer),
+                None,
+                1,
+                1_800_000_000_000,
+            ))
+            .expect("an earlier change");
+        // A change numbered before the one held can be older than it.
+        record.change.seq = 1;
+        sign(&mut record, writer, &old_key);
+        assert_eq!(judge(&store, &record).await, Ok(Verdict::Accept));
+        // One numbered after it can't: the origin dated it into the past to use the old keys.
+        record.change.seq = 2;
+        sign(&mut record, writer, &old_key);
+        assert!(matches!(
+            judge(&store, &record).await,
+            Ok(Verdict::Refuse(_))
         ));
     }
 }
