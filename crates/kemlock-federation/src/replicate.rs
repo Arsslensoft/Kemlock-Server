@@ -30,7 +30,7 @@ use crate::ports::{
     ApplyOutcome, Exported, HomeStatus, Peer, PeerRepo, PeerState, ReplicaStore, StoredHomeRecord,
     VaultRepo,
 };
-use crate::quota::{Admission, Meter, Quota};
+use crate::quota::{Admission, Meter, Quota, WorkLimits, WorkMeter};
 use crate::relay::OriginKeys;
 use crate::sendsync::SendSync;
 use crate::signed::Signed;
@@ -178,6 +178,8 @@ pub struct Replica<S> {
     pub(crate) files: Option<Arc<dyn BlobFiles>>,
     quota: Quota,
     meter: Meter,
+    pub(crate) work: WorkMeter,
+    pub(crate) work_limits: WorkLimits,
 }
 
 impl<S> std::fmt::Debug for Replica<S> {
@@ -223,6 +225,8 @@ impl<S: FedStore> Replica<S> {
             files: None,
             quota: Quota::default(),
             meter: Meter::default(),
+            work: WorkMeter::default(),
+            work_limits: WorkLimits::default(),
         }
     }
 
@@ -235,6 +239,12 @@ impl<S: FedStore> Replica<S> {
     /// Sets what one origin may write to this server (docs/federation.md, "Per-origin quotas").
     pub fn with_quota(mut self, quota: Quota) -> Replica<S> {
         self.quota = quota;
+        self
+    }
+
+    /// Sets what one peer may make this server read or scan (docs/federation.md, "Amplification").
+    pub fn with_work_limits(mut self, limits: WorkLimits) -> Replica<S> {
+        self.work_limits = limits;
         self
     }
 
@@ -449,6 +459,7 @@ impl<S: FedStore> Replica<S> {
             }
             Request::Summary { vault } => {
                 self.authorize(peer, *vault).await?;
+                self.admit_scan(peer, *vault, now)?;
                 let tree = Tree::build(&self.store.leaves(*vault).await?);
                 Ok(answer(Response::Summary {
                     vault: *vault,
@@ -458,6 +469,7 @@ impl<S: FedStore> Replica<S> {
             }
             Request::Leaves { vault, buckets } => {
                 self.authorize(peer, *vault).await?;
+                self.admit_scan(peer, *vault, now)?;
                 let leaves: Vec<_> = self
                     .store
                     .leaves(*vault)
@@ -476,6 +488,8 @@ impl<S: FedStore> Replica<S> {
             Request::Fetch { vault, items } => {
                 self.authorize(peer, *vault).await?;
                 let mut records = Vec::new();
+                let mut bytes = 0usize;
+                let mut cut = false;
                 let withheld = self.store.withheld(peer, *vault).await?;
                 for entry in self.store.export_items(*vault, items).await? {
                     if withheld
@@ -484,13 +498,21 @@ impl<S: FedStore> Replica<S> {
                     {
                         continue;
                     }
-                    records.push(self.signed_record(&entry).await?);
+                    let envelope = self.signed_record(&entry).await?;
+                    // A page stops growing at the same size a pull's does; what is left is asked
+                    // for again (the answer says there is more).
+                    if !records.is_empty() && bytes + envelope.len() > PAGE_BYTES {
+                        cut = true;
+                        break;
+                    }
+                    bytes += envelope.len();
+                    records.push(envelope);
                 }
                 Ok(answer(Response::Changes {
                     vault: *vault,
                     records,
                     next: VersionVector::new(),
-                    more: false,
+                    more: cut,
                 }))
             }
             Request::HomeRecords {
@@ -600,7 +622,8 @@ impl<S: FedStore> Replica<S> {
             } => {
                 self.authorize(peer, *vault).await?;
                 Ok(answer(
-                    self.serve_blob_chunk(*vault, *blob, *offset, *len).await?,
+                    self.serve_blob_chunk(peer, *vault, *blob, *offset, *len, now)
+                        .await?,
                 ))
             }
             Request::Erase { vault } => {
@@ -635,6 +658,16 @@ impl<S: FedStore> Replica<S> {
                     self.serve_sends(peer, *vault, *after, *limit).await?,
                 ))
             }
+        }
+    }
+
+    /// Counts one scan of `vault` for `peer`: a summary or a list of leaves reads every item of the
+    /// vault, so one peer may ask for only so many in a window.
+    fn admit_scan(&self, peer: ServerId, vault: Owner, now: u64) -> Result<()> {
+        if self.work.allow_scan(&self.work_limits, peer, vault, now) {
+            Ok(())
+        } else {
+            Err(FedError::Refused("too many comparisons of this vault: try later"))
         }
     }
 
@@ -933,8 +966,13 @@ impl<S: FedStore> Replica<S> {
                     items: chunk.to_vec(),
                 })
                 .await?;
-            let (records, _, _) = expect_changes(response, vault)?;
+            let (records, _, more) = expect_changes(response, vault)?;
             fetched.add(&self.apply_envelopes(peer, vault, &records).await?);
+            if more {
+                // The peer cut the answer short: what it left out is asked for at the next
+                // comparison, which comes soon.
+                fetched.retry += 1;
+            }
         }
         Ok(ReconcileReport {
             in_step: false,

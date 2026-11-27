@@ -1062,3 +1062,22 @@ estimate that falls to nothing once the peer has caught up.
 ## Not built yet
 
 Nothing is open.
+
+## Amplification limits
+
+A paired peer can ask for things that cost this server much more than they cost it. Each is bounded:
+
+- **Blob reads.** The store has no ranged read, so a chunk at offset N reads N plus the chunk from
+  the start of the file. A peer's `Blob` requests are counted at that cost over an hour (128 GiB by
+  default, which a 512 MiB file fetched whole uses half of), an offset of 512 MiB or more is refused,
+  and an offset past the end of the file is answered empty without reading it.
+- **Scans.** `Summary` and `Leaves` read every item of a vault: one peer may ask for 30 of either, for
+  one vault, in an hour (the hourly comparison needs two).
+- **Fetches.** An answer to `Fetch` stops at about 1.5 MB, like a pull page, and says `more`; the
+  requester then compares again soon.
+- **Hash-tree diff.** The two lists of leaves are compared by item id, in time linear in their size.
+- **CBOR.** A message decodes to at most 131,072 values (the existing limits on depth and on a count
+  being no larger than the bytes left stay), so a few MiB of one-byte integers can't take hundreds of
+  MiB to decode.
+- **Pages.** A pull, a file list and an event pull stop after 100 pages for a vault in one visit, and
+  one run for one peer after four minutes (the lease lasts five); the rest comes at the next visit.

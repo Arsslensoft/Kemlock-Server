@@ -71,6 +71,10 @@ async fn read_range(
     len: u32,
 ) -> std::result::Result<(u64, Vec<u8>), BlobError> {
     let size = read.size;
+    // Nothing is there past the end: say so without streaming the whole file to find out.
+    if offset >= size {
+        return Ok((size, Vec::new()));
+    }
     let mut body = read.body;
     let want = len as usize;
     let mut skipped = 0u64;
@@ -279,17 +283,34 @@ impl<S: FedStore> Replica<S> {
     }
 
     /// Serves a chunk of one file of `vault`.
+    ///
+    /// The store has no ranged read, so a chunk at `offset` makes it read `offset` plus the chunk
+    /// from the start of the file: what a peer asks for is counted at that cost
+    /// ([`WorkLimits`](crate::quota::WorkLimits)), and an offset no file this server fetches
+    /// reaches is refused.
     pub(crate) async fn serve_blob_chunk(
         &self,
+        peer: ServerId,
         vault: Owner,
         blob: BlobId,
         offset: u64,
         len: u32,
+        now: u64,
     ) -> Result<Response> {
         let files = self
             .files
             .as_ref()
             .ok_or(FedError::Refused("this server doesn't serve files"))?;
+        if offset >= MAX_FETCH {
+            return Err(FedError::Refused("an offset past any file this server serves"));
+        }
+        let cost = offset.saturating_add(u64::from(len.min(MAX_CHUNK)));
+        if !self
+            .work
+            .allow_blob_read(&self.work_limits, peer, cost, now)
+        {
+            return Err(FedError::Refused("too much of this server's storage was read for this peer: try later"));
+        }
         let held = match self
             .store
             .attachment_of_blob(blob)
@@ -517,6 +538,80 @@ mod tests {
         let (size, data) = read_range(read, 3, 5).await.expect("a range");
         assert_eq!(size, 10);
         assert_eq!(data, vec![3, 4, 5, 6, 7]);
+    }
+
+    #[tokio::test]
+    async fn a_peers_chunk_reads_are_counted_by_what_they_cost_the_store() {
+        use crate::memory::MemoryStore;
+        use crate::quota::WorkLimits;
+        use crate::suite::Suite;
+        use crate::testing::{draft, identity};
+        use kemlock_domain::{ItemId, UserId};
+
+        /// A store of one 3 MiB file that reads nothing.
+        struct OneFile;
+        impl BlobFiles for OneFile {
+            fn read_chunk(
+                &self,
+                _blob: BlobId,
+                offset: u64,
+                len: u32,
+            ) -> BoxFut<'_, std::result::Result<(u64, Vec<u8>), BlobError>> {
+                let size = 3 * 1024 * 1024u64;
+                let end = (offset + u64::from(len)).min(size);
+                let data = vec![0u8; usize::try_from(end.saturating_sub(offset)).unwrap_or(0)];
+                Box::pin(async move { Ok((size, data)) })
+            }
+            fn has(&self, _blob: BlobId) -> BoxFut<'_, std::result::Result<bool, BlobError>> {
+                Box::pin(async { Ok(true) })
+            }
+            fn store(
+                &self,
+                _blob: BlobId,
+                _data: Vec<u8>,
+            ) -> BoxFut<'_, std::result::Result<(), BlobError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        const NOW: u64 = 1_800_000_000;
+        let ia = identity(1, NOW, &Suite::IMPLEMENTED);
+        let ib = identity(2, NOW, &Suite::IMPLEMENTED);
+        let peer = ia.server;
+        let me = Replica::new(MemoryStore::new(ib.server), Arc::new(ib.clone()))
+            .with_blob_files(Arc::new(OneFile))
+            .with_work_limits(WorkLimits {
+                // Room for the chunks at offsets 0 and 2 MiB (they cost 2 MiB and 4 MiB) and no more.
+                blob_bytes_per_window: 6 * 1024 * 1024,
+                scans_per_window: 30,
+            });
+        me.pin_peer(&ia.descriptor, NOW).await.expect("pin");
+        let vault = Owner::User(UserId::random());
+        me.accept_vault(vault, peer, vec![ib.server])
+            .await
+            .expect("accept");
+        let item = ItemId::random();
+        me.store
+            .put(draft(item, vault, None, 1, 1_000))
+            .expect("an item");
+        let blob = BlobId::random();
+        me.store.put_attachment(Attachment {
+            id: AttachmentId(uuid::Uuid::new_v4()),
+            item,
+            owner: vault,
+            blob,
+            size: 3 * 1024 * 1024,
+            status: AttachmentStatus::Ready,
+            created_at: OffsetDateTime::now_utc(),
+        });
+
+        let chunk = |offset: u64| me.serve_blob_chunk(peer, vault, blob, offset, MAX_CHUNK, NOW);
+        assert!(chunk(0).await.is_ok());
+        assert!(chunk(2 * 1024 * 1024).await.is_ok());
+        // The window is used up: the next read, from far into the file, is refused, and so is an
+        // offset no file reaches, however much is left.
+        assert!(matches!(chunk(2 * 1024 * 1024).await, Err(FedError::Refused(_))));
+        assert!(matches!(chunk(MAX_FETCH).await, Err(FedError::Refused(_))));
     }
 
     #[tokio::test]
