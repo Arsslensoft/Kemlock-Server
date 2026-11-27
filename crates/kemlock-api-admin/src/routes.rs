@@ -548,8 +548,8 @@ where
     }
 
     /// `GET /admin/v1/spaces/{id}/members/{user}/invite-link`: the link that accepts a member's
-    /// invitation to a Bitwarden organization, for a server that can't mail it. Whoever opens it
-    /// accepts for that account, so it needs a fresh step-up like a write, is recorded in the
+    /// invitation to a Bitwarden organization, for a server that can't mail it. The invitee still
+    /// signs in to accept, but it needs a fresh step-up like a write, is recorded in the
     /// event log and is never cached.
     async fn space_invite_link(
         State(env): State<Self>,

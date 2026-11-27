@@ -135,7 +135,8 @@ const INVITE_DAYS: i64 = 5;
 
 /// The signed token of an invitation and the link that carries it, in the shape Vaultwarden's
 /// mail has (`/#/accept-organization/?organizationId=...&token=...`), which the web vault opens.
-/// The token alone accepts the invitation, so the link is a secret.
+/// The token alone accepts nothing: whoever follows the link signs in as the invitee and accepts
+/// for themselves (an address with no account yet registers with the token).
 #[derive(Clone)]
 pub(crate) struct InviteLink {
     pub token: String,
@@ -188,8 +189,9 @@ pub(crate) fn invite_link<S: BwStore>(
 /// Mails an account its invitation to an organization, when the server mails. An account that can
 /// sign in to the web vault is sent the Kemlock space invitation, which links to its space page; one
 /// that can't (an account made through the Bitwarden API has no OPAQUE record) is sent the link
-/// that carries the token, which accepts the invitation by itself. The mail is best effort; the
-/// invitation stands without it, and an administrator can copy the link to hand over.
+/// that carries the token, for its owner to follow to a Bitwarden client and sign in to accept. The
+/// mail is best effort; the invitation stands without it, and an administrator can copy the link to
+/// hand over.
 pub(crate) async fn mail_invitation<S: BwStore>(
     app: &App<S>,
     org: &Org,
@@ -414,14 +416,34 @@ pub(crate) async fn pending_link_of<S: BwStore>(
 }
 
 /// `GET /api/organizations/{id}/users/{member}/invite-link` (not Vaultwarden's): the link of a
-/// pending invitation of an existing account, for an administrator of a server that doesn't mail to
-/// hand over themselves. Whoever opens it accepts for that account, so it is the invitation's
-/// secret and goes only to the administrators who could remove the member.
+/// pending invitation, for an administrator of a server that doesn't mail to hand over themselves.
+/// The link is a pointer, not a key: the invitee has to sign in and accept for themselves, so it
+/// grants nothing to whoever else holds it. It still goes only to the administrators who could
+/// remove the member.
 pub(crate) async fn pending_link<S: BwStore>(
     app: &App<S>,
     ctx: &Ctx,
     member_id: &str,
 ) -> BwResult<Value> {
+    // An address with no account yet: the link leads to registering, and the new account accepts
+    // as it is made (see `accept_at_registration`).
+    if let Some(pending) = ctx.org.pending.iter().find(|p| p.id == member_id) {
+        if pending.atype != USER && ctx.doc.atype != OWNER {
+            return Err(BwError::msg(
+                "Only Owners can invite Managers, Admins or Owners",
+            ));
+        }
+        if let Some(id) = parse_member(&pending.id) {
+            let link = invite_link(
+                app,
+                &ctx.org,
+                id,
+                &pending.email,
+                pending.invited_by_email.as_deref(),
+            )?;
+            return Ok(json!({"object": "inviteLink", "link": link.link, "token": link.token}));
+        }
+    }
     let Some(user) = parse_member(member_id) else {
         return Err(BwError::msg(
             "The user hasn't been invited to the organization.",
@@ -441,11 +463,12 @@ pub(crate) async fn pending_link<S: BwStore>(
     }
 }
 
-/// `POST /api/organizations/{id}/users/{member}/accept`. The token of the link is the proof: a
-/// caller who signed in must be the account it was made for, and one who didn't is that account.
+/// `POST /api/organizations/{id}/users/{member}/accept`. The caller has signed in, and the token
+/// of the link must have been made for that account: the token alone accepts nothing, so a link
+/// that leaks, or that an administrator hands over, lets nobody accept for somebody else.
 pub(crate) async fn accept<S: BwStore>(
     app: &App<S>,
-    authed: Option<&Authed>,
+    authed: &Authed,
     org_id: &str,
     member_id: &str,
     token: &str,
@@ -455,23 +478,47 @@ pub(crate) async fn accept<S: BwStore>(
         .keys
         .decode(token, &app.settings.issuer("invite"), app.now_secs())
         .map_err(|e| BwError::msg(e.to_string()))?;
-    let account = match authed {
-        Some(authed) => authed.user.clone(),
-        None => {
-            let id = parse_member(&claims.member_id)
-                .ok_or_else(|| BwError::msg("Error accepting the invitation"))?;
-            UserRepo::by_id(&app.store, id)
-                .await?
-                .ok_or_else(|| BwError::msg("Error accepting the invitation"))?
-        }
-    };
     // An invitation is for the account it was made for.
-    if claims.email != account.email.as_str() {
+    if claims.email != authed.user.email.as_str() {
         return Err(BwError::msg("Invitation was issued to a different account"));
     }
-    if claims.org_id != org_id || claims.member_id != member_id {
+    if claims.org_id != org_id
+        || claims.member_id != member_id
+        || claims.member_id != authed.user.id.to_string()
+    {
         return Err(BwError::msg("Error accepting the invitation"));
     }
+    accept_claims(app, &authed.user, &claims, reset_key).await
+}
+
+/// The acceptance an account makes in the registration request that made it, when the request
+/// carries the token of an invitation to the address (Vaultwarden's `orgInviteToken`). The account
+/// did not exist before, so there is no session to ask for, and the registration proved the
+/// address. A token that isn't good for the account leaves the invitation waiting, as it was.
+pub(crate) async fn accept_at_registration<S: BwStore>(app: &App<S>, account: &User, token: &str) {
+    let claims: InviteClaims =
+        match app
+            .keys
+            .decode(token, &app.settings.issuer("invite"), app.now_secs())
+        {
+            Ok(claims) if claims.email == account.email.as_str() => claims,
+            _ => return,
+        };
+    // No key for account recovery is taken here: giving one needs the account's own session.
+    if let Err(error) = accept_claims(app, account, &claims, None).await {
+        tracing::info!(?error, "an invitation was not accepted at registration");
+    }
+}
+
+/// Accepts the invitation `claims` carry for `account`, which has proved it is that account.
+/// `reset_key` is the key the client sent for account recovery; callers pass it only when the
+/// account itself sent it, through a session.
+async fn accept_claims<S: BwStore>(
+    app: &App<S>,
+    account: &User,
+    claims: &InviteClaims,
+    reset_key: Option<String>,
+) -> BwResult<()> {
     let user = account.id;
     let org_space = super::guard::space_id(&claims.org_id)?;
     let Some(org) = app.load_org(org_space).await? else {
@@ -480,14 +527,13 @@ pub(crate) async fn accept<S: BwStore>(
     let Some(mut doc) = org.member(user).cloned() else {
         return Err(BwError::msg("Error accepting the invitation"));
     };
-    if claims.member_id != user.to_string() {
-        return Err(BwError::msg("Error accepting the invitation"));
-    }
     if doc.status != INVITED {
         return Err(BwError::msg("User already accepted the invitation"));
     }
     doc.status = ACCEPTED;
-    doc.invited_by_email = doc.invited_by_email.or(claims.invited_by_email);
+    doc.invited_by_email = doc
+        .invited_by_email
+        .or_else(|| claims.invited_by_email.clone());
     check_user_allowed(app, &org, user, &doc, "join").await?;
     // An organization whose account recovery policy enrols by itself takes the key the client sent
     // with the acceptance.

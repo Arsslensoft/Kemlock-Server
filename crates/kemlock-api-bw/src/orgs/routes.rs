@@ -22,7 +22,7 @@ use super::structure::{
     save_group, update_collection,
 };
 use crate::account::check_valid_password;
-use crate::app::{App, Authed, BwStore, MaybeAuthed};
+use crate::app::{App, Authed, BwStore};
 use crate::cipher::{CipherData, lcase_keys};
 use crate::error::{BwError, BwResult};
 use crate::events::kind;
@@ -658,13 +658,13 @@ async fn bulk_reinvite<S: BwStore>(
 
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
-    MaybeAuthed(authed): MaybeAuthed,
+    authed: Authed,
     Path((org_id, member_id)): Path<(String, String)>,
     body: Bytes,
 ) -> EmptyResult {
     let data: AcceptData = parse(&body)?;
     let key = data.reset_password_key;
-    empty(members::accept(&app, authed.as_ref(), &org_id, &member_id, &data.token, key).await)
+    empty(members::accept(&app, &authed, &org_id, &member_id, &data.token, key).await)
 }
 
 async fn invite_link_route<S: BwStore>(

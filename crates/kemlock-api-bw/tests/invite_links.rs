@@ -81,8 +81,9 @@ fn token_of(link: &str) -> String {
         .expect("a link with a token")
 }
 
-async fn accept_without_signing_in(
+async fn accept_signed_in(
     h: &Harness,
+    session: &str,
     org: &str,
     member: UserId,
     token: &str,
@@ -90,7 +91,7 @@ async fn accept_without_signing_in(
     h.json(
         "POST",
         &format!("/api/organizations/{org}/users/{member}/accept"),
-        None,
+        Some(session),
         Some(json!({"token": token})),
     )
     .await
@@ -100,7 +101,7 @@ async fn accept_without_signing_in(
 async fn an_owner_gets_the_link_of_an_invited_account_and_it_accepts() {
     let h = Harness::new().await;
     let (ada, ada_id) = h.signed_in("ada@example.com").await;
-    let (_bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
     let org = organization(&h, &ada).await;
     invite(&h, &ada, &org, "bob@example.com", 2).await;
 
@@ -120,7 +121,7 @@ async fn an_owner_gets_the_link_of_an_invited_account_and_it_accepts() {
         h.env.time().unix_timestamp() + 5 * 24 * 3600
     );
 
-    // The same link as the Bitwarden route's, and it accepts for the account.
+    // The same link as the Bitwarden route's, and the invitee accepts with it, signed in.
     let (status, body) = h
         .json(
             "GET",
@@ -131,7 +132,7 @@ async fn an_owner_gets_the_link_of_an_invited_account_and_it_accepts() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["link"], given.link);
-    let (status, body) = accept_without_signing_in(&h, &org, bob_id, &token_of(&given.link)).await;
+    let (status, body) = accept_signed_in(&h, &bob, &org, bob_id, &token_of(&given.link)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // Accepted, there is nothing to hand over.

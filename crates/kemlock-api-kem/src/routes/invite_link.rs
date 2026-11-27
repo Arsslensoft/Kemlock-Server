@@ -2,8 +2,9 @@
 //! `GET /kem/v1/spaces/{id}/members/{user}/invite-link`.
 //!
 //! A server that can't mail has no mail to carry the accept link of an invited account, so an
-//! owner or admin of the organization copies it from the space page and hands it over. Whoever
-//! opens the link accepts for that account, so the answer is a secret: it is never cached, and only
+//! owner or admin of the organization copies it from the space page and hands it over. The link only
+//! leads the invitee to sign in and accept for themselves, it accepts nothing by itself; the answer is
+//! still never cached, and only
 //! a confirmed owner or admin of an organization (an owner when the invitation is for a manager,
 //! admin or owner) may ask, and only while the member is still invited.
 //!

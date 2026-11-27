@@ -305,6 +305,9 @@ pub(crate) struct Registration {
     /// `inviteToken`: the token of a server invitation (Kemlock's own field; Bitwarden clients
     /// never send it).
     pub invite_token: Option<String>,
+    /// `orgInviteToken`: the token of an invitation to an organization, which the new account
+    /// accepts as it registers (Vaultwarden's field).
+    pub org_invite_token: Option<String>,
 }
 
 fn text(v: &Value, names: &[&str]) -> Option<String> {
@@ -403,6 +406,7 @@ pub(crate) fn parse_registration(body: &Value) -> BwResult<Registration> {
         hint: text(body, &["masterPasswordHint"]),
         verification_token: text(body, &["emailVerificationToken"]),
         invite_token: text(body, &["inviteToken"]),
+        org_invite_token: text(body, &["orgInviteToken"]),
     })
 }
 
@@ -608,6 +612,11 @@ pub(crate) async fn register<S: BwStore>(app: &App<S>, request: Registration) ->
     crate::signup_hold::hold(app, &user).await?;
     // Invitations to this address become memberships.
     app.adopt_invitations(&user).await?;
+    // The token of an invitation to an organization, sent with the registration, is accepted for
+    // the account the registration made (and only that: a session is needed for any other).
+    if let Some(token) = request.org_invite_token.as_deref() {
+        crate::orgs::members::accept_at_registration(app, &user, token).await;
+    }
     if let Admission::Invited(invitation) = admission {
         invitation.consume().await;
     }

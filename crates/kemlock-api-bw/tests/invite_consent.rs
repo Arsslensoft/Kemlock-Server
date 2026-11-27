@@ -289,8 +289,11 @@ fn token_of(link: &str) -> String {
         .expect("a link with a token")
 }
 
-async fn accept_without_signing_in(
+/// Posts the accept of `member`: with `bearer` signed in as that caller, or with none. The body
+/// carries a key for account recovery, as a client does when the organization asks for one.
+async fn accept_as(
     h: &Harness,
+    bearer: Option<&str>,
     org: &str,
     member: UserId,
     token: &str,
@@ -298,19 +301,50 @@ async fn accept_without_signing_in(
     h.json(
         "POST",
         &format!("/api/organizations/{org}/users/{member}/accept"),
-        None,
-        Some(json!({"token": token})),
+        bearer,
+        Some(json!({"token": token, "resetPasswordKey": "4.thekeyofwhoeversent"})),
     )
     .await
 }
 
+/// Turns the account recovery policy on, with enrolment by itself.
+async fn auto_enrol(h: &Harness, owner: &str, org: &str) {
+    let (status, body) = h
+        .json(
+            "PUT",
+            &format!("/api/organizations/{org}/policies/8"),
+            Some(owner),
+            Some(json!({"policy": {"enabled": true, "data": {"autoEnrollEnabled": true}}})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// The id the organization's member list gives `email`.
+async fn member_of(h: &Harness, owner: &str, org: &str, email: &str) -> String {
+    let (_, list) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users"),
+            Some(owner),
+            None,
+        )
+        .await;
+    list["data"]
+        .as_array()
+        .and_then(|all| all.iter().find(|m| m["email"] == email))
+        .and_then(|m| m["id"].as_str())
+        .expect("a member")
+        .to_owned()
+}
+
 #[tokio::test]
-async fn the_mailed_link_accepts_the_invitation_without_signing_in() {
+async fn the_mailed_link_accepts_for_the_account_that_signs_in_with_it() {
     let mailbox = Arc::new(Mailbox::default());
     let h = Harness::with_mail(mailbox.clone(), false).await;
     let (ada, _) = h.signed_in("ada@example.com").await;
-    let (_bob, bob_id) = h.signed_in("bob@example.com").await;
-    let (_cat, cat_id) = h.signed_in("cat@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let (cat, cat_id) = h.signed_in("cat@example.com").await;
     let org = organization(&h, &ada).await;
     invite(&h, &ada, &org, "bob@example.com").await;
     invite(&h, &ada, &org, "cat@example.com").await;
@@ -325,27 +359,44 @@ async fn the_mailed_link_accepts_the_invitation_without_signing_in() {
     assert_eq!(links.len(), 2);
     let (bob_token, cat_token) = (token_of(&links[0]), token_of(&links[1]));
 
+    // The token alone accepts nothing.
+    let (status, _) = accept_as(&h, None, &org, bob_id, &bob_token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(status_of(&h, &ada, &org, "bob@example.com").await, Some(0));
+    // Nor does another account's session, the inviter's included.
+    for other in [&ada, &cat] {
+        let (status, body) = accept_as(&h, Some(other), &org, bob_id, &bob_token).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Invitation was issued to a different account"
+        );
+    }
     // A token made for someone else does not accept this member.
-    let (status, body) = accept_without_signing_in(&h, &org, bob_id, &cat_token).await;
+    let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &cat_token).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["message"], "Error accepting the invitation");
+    assert_eq!(
+        body["message"],
+        "Invitation was issued to a different account"
+    );
     assert_eq!(status_of(&h, &ada, &org, "bob@example.com").await, Some(0));
     // Nor does something that isn't a token.
-    let (status, _) = accept_without_signing_in(&h, &org, bob_id, "junk").await;
+    let (status, _) = accept_as(&h, Some(&bob), &org, bob_id, "junk").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let (status, body) = accept_without_signing_in(&h, &org, bob_id, &bob_token).await;
+    let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &bob_token).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(status_of(&h, &ada, &org, "bob@example.com").await, Some(1));
-    let (status, body) = accept_without_signing_in(&h, &org, bob_id, &bob_token).await;
+    let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &bob_token).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["message"], "User already accepted the invitation");
     assert_eq!(status_of(&h, &ada, &org, "cat@example.com").await, Some(0));
-    let _ = cat_id;
 
     // A link runs out in five days.
     h.env.advance(time::Duration::days(6));
-    let (status, _) = accept_without_signing_in(&h, &org, cat_id, &cat_token).await;
+    let fresh = h.login("cat@example.com", HASH).await;
+    let fresh = fresh["access_token"].as_str().expect("a token").to_owned();
+    let (status, _) = accept_as(&h, Some(&fresh), &org, cat_id, &cat_token).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -371,9 +422,197 @@ async fn with_no_mail_the_inviting_administrator_can_copy_the_link_to_hand_over(
     );
     assert_eq!(body["token"], token_of(&link));
 
-    let (status, body) = accept_without_signing_in(&h, &org, bob_id, &token_of(&link)).await;
+    // The administrator who holds the link can't accept with it; the invitee signs in and does.
+    let (status, _) = accept_as(&h, None, &org, bob_id, &token_of(&link)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = accept_as(&h, Some(&ada), &org, bob_id, &token_of(&link)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &token_of(&link)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     // Once accepted there is no link to hand over.
     let (status, _) = h.json("GET", &uri, Some(&ada), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// The audit's N1: an organization owner turns on auto-enrolment, invites the victim, reads the
+/// invitation's link and tries to accept for them with no session, confirm them and reset their
+/// password. It fails at the accept, and nothing after it works.
+#[tokio::test]
+async fn an_owner_cannot_accept_for_the_invitee_and_reset_their_password() {
+    let h = Harness::new().await;
+    let (eve, _) = h.signed_in("eve@example.com").await;
+    let (_victim, victim_id) = h.signed_in("victim@example.com").await;
+    let org = organization(&h, &eve).await;
+    auto_enrol(&h, &eve, &org).await;
+    invite(&h, &eve, &org, "victim@example.com").await;
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users/{victim_id}/invite-link"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["token"].as_str().expect("a token").to_owned();
+
+    // No Authorization header: refused. With the owner's own session: refused.
+    let (status, _) = accept_as(&h, None, &org, victim_id, &token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, body) = accept_as(&h, Some(&eve), &org, victim_id, &token).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        status_of(&h, &eve, &org, "victim@example.com").await,
+        Some(0)
+    );
+
+    // So the victim can't be confirmed, and can't be reset, with a key the owner made up.
+    let (status, body) = confirm(&h, &eve, &org, victim_id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "User in invalid state");
+    let (status, body) = h
+        .json(
+            "PUT",
+            &format!("/api/organizations/{org}/users/{victim_id}/recover-account"),
+            Some(&eve),
+            Some(json!({"resetMasterPassword": true, "resetTwoFactor": true,
+                "newMasterPasswordHash": "ATTACKERHASH", "key": "2.attacker|key|mac"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["message"],
+        "Password reset not or not correctly enrolled"
+    );
+    // The victim's password still works.
+    let (status, body) = h
+        .token(&Harness::password_fields("victim@example.com", HASH))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// What the invitee sends at accept is theirs to send: with their session, an auto-enrolling
+/// organization stores the key, and recovery needs that enrolment.
+#[tokio::test]
+async fn the_invitee_who_signs_in_to_accept_is_enrolled_for_recovery() {
+    let h = Harness::new().await;
+    let (eve, _) = h.signed_in("eve@example.com").await;
+    let (bob, bob_id) = h.signed_in("bob@example.com").await;
+    let org = organization(&h, &eve).await;
+    auto_enrol(&h, &eve, &org).await;
+    invite(&h, &eve, &org, "bob@example.com").await;
+    let token = h.invite_token(&org, bob_id, "bob@example.com");
+    let (status, body) = accept_as(&h, Some(&bob), &org, bob_id, &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users/{bob_id}/reset-password-details"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["resetPasswordKey"], "4.thekeyofwhoeversent");
+}
+
+/// The verification token of a registration of `email`.
+async fn verification_of(h: &Harness, email: &str) -> String {
+    let (status, _, bytes) = h
+        .send(
+            "POST",
+            "/identity/accounts/register/send-verification-email",
+            &[
+                ("content-type", "application/json"),
+                ("accept", "application/json"),
+            ],
+            axum::body::Body::from(json!({"email": email}).to_string()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    serde_json::from_slice::<String>(&bytes).expect("a verification token")
+}
+
+async fn register_with(
+    h: &Harness,
+    email: &str,
+    org_invite_token: &str,
+) -> (StatusCode, Value) {
+    let verification = verification_of(h, email).await;
+    h.json(
+        "POST",
+        "/identity/accounts/register/finish",
+        None,
+        Some(json!({
+            "email": email,
+            "masterPasswordHash": HASH,
+            "kdf": 0, "kdfIterations": 600_000,
+            "userSymmetricKey": common::USER_KEY,
+            "emailVerificationToken": verification,
+            "orgInviteToken": org_invite_token
+        })),
+    )
+    .await
+}
+
+/// An address with no account yet registers with the token of its invitation and is accepted in
+/// the same request: the one acceptance that has no session.
+#[tokio::test]
+async fn an_address_that_registers_with_the_invitation_token_is_accepted_with_it() {
+    let h = Harness::new().await;
+    let (eve, _) = h.signed_in("eve@example.com").await;
+    let org = organization(&h, &eve).await;
+    auto_enrol(&h, &eve, &org).await;
+    invite(&h, &eve, &org, "new@example.com").await;
+    let pending = member_of(&h, &eve, &org, "new@example.com").await;
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users/{pending}/invite-link"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let token = body["token"].as_str().expect("a token").to_owned();
+
+    // The token of another address does nothing for an address that registers with it.
+    let (status, body) = register_with(&h, "other@example.com", &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, list) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert!(
+        !list["data"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|m| m["email"] == "other@example.com"),
+        "{list}"
+    );
+
+    let (status, body) = register_with(&h, "new@example.com", &token).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        status_of(&h, &eve, &org, "new@example.com").await,
+        Some(1),
+        "accepted by the registration that made the account"
+    );
+    // No recovery key was taken with no session.
+    let member = member_of(&h, &eve, &org, "new@example.com").await;
+    let (status, body) = h
+        .json(
+            "GET",
+            &format!("/api/organizations/{org}/users/{member}/reset-password-details"),
+            Some(&eve),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["resetPasswordKey"].is_null(), "{body}");
 }
