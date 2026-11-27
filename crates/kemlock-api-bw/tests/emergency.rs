@@ -608,7 +608,7 @@ async fn the_policies_of_a_takeover_are_a_list() {
 }
 
 #[tokio::test]
-async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
+async fn the_invitation_link_accepts_only_for_the_contact_who_signs_in() {
     let h = Harness::new().await;
     let (ada, _) = h.signed_in("ada@example.com").await;
     let (bob, _) = h.signed_in("bob@example.com").await;
@@ -631,7 +631,7 @@ async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
     );
     let token = body["token"].as_str().expect("a token").to_owned();
     assert!(link.ends_with(&format!("&token={token}")), "{link}");
-    // It is a secret that accepts for the contact: no cache keeps it.
+    // It is a secret all the same: no cache keeps it.
     let bearer = format!("Bearer {ada}");
     let (status, headers, _) = h
         .send(
@@ -647,24 +647,34 @@ async fn the_invitation_link_accepts_for_the_contact_without_signing_in() {
         Some("no-store")
     );
 
-    // The token alone accepts, for the address it names, once.
+    // The token alone accepts nothing: no Authorization is a 401, and neither the grantor's session
+    // nor another account's accepts for the contact.
+    let accept = format!("/api/emergency-access/{id}/accept");
+    let (status, _) = h
+        .json("POST", &accept, None, Some(json!({"token": token})))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (cat, _) = h.signed_in("cat@example.com").await;
+    for other in [&ada, &cat] {
+        let (status, body) = h
+            .json("POST", &accept, Some(other), Some(json!({"token": token})))
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(
+            body["message"],
+            "Claim email does not match current users email"
+        );
+    }
+    assert_eq!(first_contact(&h, &ada).await["status"], 0);
+
+    // The contact signs in and accepts with it, once.
     let (status, body) = h
-        .json(
-            "POST",
-            &format!("/api/emergency-access/{id}/accept"),
-            None,
-            Some(json!({"token": token})),
-        )
+        .json("POST", &accept, Some(&bob), Some(json!({"token": token})))
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(first_contact(&h, &ada).await["status"], 1);
     let (status, _) = h
-        .json(
-            "POST",
-            &format!("/api/emergency-access/{id}/accept"),
-            None,
-            Some(json!({"token": token})),
-        )
+        .json("POST", &accept, Some(&bob), Some(json!({"token": token})))
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     let (status, _) = h.json("GET", &uri, Some(&ada), None).await;

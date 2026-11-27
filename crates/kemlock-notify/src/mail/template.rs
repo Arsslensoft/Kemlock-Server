@@ -572,7 +572,7 @@ fn bw_emergency_invite(notice: &BwEmergencyInviteNotice, brand: &Branding) -> Re
     );
     let body = Body::new(&[
         &lead,
-        "Open this link to accept:",
+        "Open this link and sign in to accept:",
         &notice.link,
         "It runs out in five days. Accepting gives you nothing yet: they confirm you, and you may later ask for access, which they can refuse during the wait they chose. If you don't know who this is from, ignore this mail.",
     ]);

@@ -18,7 +18,7 @@
 //! - `/policies` lists the policies of the grantor's organizations.
 
 use crate::account::user_name;
-use crate::app::{App, Authed, BwStore, MaybeAuthed};
+use crate::app::{App, Authed, BwStore};
 use crate::cipher::{FOLDER_KIND, StoredCipher};
 use crate::env::random_uuid;
 use crate::error::{BwError, BwResult};
@@ -429,8 +429,8 @@ async fn invite_impl<S: BwStore>(app: &App<S>, authed: &Authed, data: InviteData
 }
 
 /// The signed token of an invitation to be an emergency contact and the link that carries it, in
-/// the shape Vaultwarden's mail has (`/#/accept-emergency/?id=...&token=...`). Accepting needs the
-/// token and nothing else, so the link is a secret.
+/// the shape Vaultwarden's mail has (`/#/accept-emergency/?id=...&token=...`). The token alone accepts
+/// nothing: the contact signs in and accepts, so the link only points them there.
 async fn invite_link<S: BwStore>(
     app: &App<S>,
     grant: &EmergencyGrant,
@@ -467,8 +467,8 @@ async fn invite_link<S: BwStore>(
 }
 
 /// Mails the contact that someone named them, when the server mails. A contact who can sign in to
-/// the web vault is sent the Kemlock notice; any other, the link that carries the token, which
-/// accepts by itself.
+/// the web vault is sent the Kemlock notice; any other, the link that carries the token, which the
+/// contact follows and signs in with to accept.
 async fn notify_contact<S: BwStore>(app: &App<S>, grant: &EmergencyGrant) {
     if !app.notices.mails() {
         return;
@@ -578,11 +578,12 @@ struct InviteClaims {
     grantor_email: String,
 }
 
-/// `POST /api/emergency-access/{id}/accept`. The token of the link is the proof: a caller who
-/// signed in must be the contact it was made for, and one who didn't is the account of that address.
+/// `POST /api/emergency-access/{id}/accept`. The contact has signed in, and the token of the link
+/// must have been made for that account's address: the token alone accepts nothing, so a link that
+/// leaks, or that the grantor hands over, lets nobody accept for the contact.
 async fn accept_invite<S: BwStore>(
     State(app): State<App<S>>,
-    MaybeAuthed(authed): MaybeAuthed,
+    authed: Authed,
     Path(id): Path<String>,
     body: Bytes,
 ) -> EmptyResult {
@@ -595,26 +596,7 @@ async fn accept_invite<S: BwStore>(
             app.now_secs(),
         )
         .map_err(|e| BwError::msg(e.to_string()))?;
-    let signed_in;
-    let me = match authed {
-        Some(authed) => {
-            signed_in = authed.user;
-            &signed_in
-        }
-        None => {
-            let by_address = match Email::parse(&claims.email) {
-                Ok(email) => UserRepo::by_email(&app.store, &email).await?,
-                Err(_) => None,
-            };
-            let Some(account) = by_address else {
-                return Err(BwError::msg(
-                    "Create an account with the address the invitation was sent to, then open the link again",
-                ));
-            };
-            signed_in = account;
-            &signed_in
-        }
-    };
+    let me = &authed.user;
     if claims.email != me.email.as_str() {
         return Err(BwError::msg(
             "Claim email does not match current users email",

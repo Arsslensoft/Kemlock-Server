@@ -156,7 +156,7 @@ How the person accepts:
 - **Without mail**, the administrator who invited (and the grantor, for an emergency contact) can
   read the same link from the Bitwarden API, `GET /api/organizations/{org}/users/{member}/invite-link`
   or `GET /api/emergency-access/{id}/invite-link`, and hand it over. An organization link only leads
-  the invitee to sign in and accept; an emergency link still accepts for whoever opens it, so treat that one as a secret.
+  the invitee to sign in and accept; so does an emergency link: the contact signs in to accept, and the token alone accepts nothing.
 
 Set `KEMLOCK_BW_INVITES_AUTO_ACCEPT=true` (or the "Accept Bitwarden invitations for the invitee"
 switch in the console, under sign-ups) to get Vaultwarden's behaviour back. It applies **only while
