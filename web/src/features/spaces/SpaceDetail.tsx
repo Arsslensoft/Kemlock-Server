@@ -12,7 +12,7 @@ import { type Fingerprint, checkedFingerprint } from '@/sharing/bundle';
 import { vaultCrypto } from '@/crypto-port';
 import { type Described, describeAccountError } from '../account/errors';
 import { useRun } from '../account/useRun';
-import { acceptProvisional, signedInAccount } from './boxes';
+import { signedInAccount } from './boxes';
 import { resealKeys } from './reseal';
 import { spaceDeps } from './deps';
 import { acceptFirstContact } from './chain';
@@ -190,12 +190,6 @@ export default function SpaceDetail() {
       onBack={() => void navigate({ to: '/spaces' })}
       actions={{
         invite: (input) => worked(() => inviteMember(spaceDeps, spaceId, input, detail)),
-        acceptProvisional: (typed) => {
-          if (!detail) return;
-          void change(() =>
-            acceptProvisional(spaceDeps, spaceId, signedInAccount(spaceDeps, detail.view.me.user), typed),
-          );
-        },
         acceptFirstContact: () => {
           if (!detail) return;
           void change(() => acceptFirstContact(spaceDeps, spaceId, signedInAccount(spaceDeps, detail.view.me.user)));

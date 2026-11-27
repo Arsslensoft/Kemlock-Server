@@ -23,7 +23,7 @@
 //
 // Where IndexedDB isn't available (private windows in some browsers) they last until the page
 // closes, and first contact and comparisons are asked again next time: safe, only more asking.
-import type { ChainAnchor } from '@/crypto/types';
+import type { ChainAnchor, ChainAnchorOwner, ChainAnchorPromotion } from '@/crypto/types';
 import { type Reseal, registerLocalStore } from '@/local/registry';
 
 /** What seals and opens a value for the unlocked account: the crypto worker. */
@@ -111,34 +111,73 @@ function further(kept: ChainAnchor | undefined, next: ChainAnchor): boolean {
   return kept !== undefined && kept.seq > next.seq;
 }
 
-function isAnchor(value: unknown): value is ChainAnchor {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return (
-    Number.isSafeInteger(v.seq) &&
-    Number.isSafeInteger(v.epoch) &&
-    Array.isArray(v.links) &&
-    v.links.every((link) => typeof link === 'string') &&
-    // Added later: an anchor kept without them is still an anchor, one that has them must be well formed.
-    (v.owners === undefined ||
-      (typeof v.owners === 'object' &&
-        v.owners !== null &&
-        !Array.isArray(v.owners) &&
-        Object.values(v.owners).every((hash) => typeof hash === 'string'))) &&
-    (v.promotions === undefined ||
-      (Array.isArray(v.promotions) &&
-        v.promotions.every(
-          (pair) =>
-            Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string',
-        )))
-  );
+const isText = (value: unknown): value is string => typeof value === 'string';
+
+/**
+ * Reads the owners of a kept anchor: the list the worker takes (`[{id, bundle}]`), or the record of
+ * owner id to bundle hash an earlier page kept; undefined when there are none.
+ */
+function ownersOf(value: unknown): ChainAnchorOwner[] | undefined {
+  if (value === undefined) return undefined;
+  if (Array.isArray(value)) {
+    const owners: ChainAnchorOwner[] = [];
+    for (const owner of value) {
+      if (typeof owner !== 'object' || owner === null) throw new Error('the kept anchor is damaged');
+      const { id, bundle } = owner as Record<string, unknown>;
+      if (!isText(id) || !isText(bundle)) throw new Error('the kept anchor is damaged');
+      owners.push({ id, bundle });
+    }
+    return owners;
+  }
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value);
+    if (!entries.every(([, bundle]) => isText(bundle))) throw new Error('the kept anchor is damaged');
+    return entries.map(([id, bundle]) => ({ id, bundle: bundle as string }));
+  }
+  throw new Error('the kept anchor is damaged');
 }
 
-/** Reads a kept anchor from its text; anything that isn't one is an error. */
+/** Reads the promotions of a kept anchor: `[{home, promotion}]`, or the pairs an earlier page kept. */
+function promotionsOf(value: unknown): ChainAnchorPromotion[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error('the kept anchor is damaged');
+  return value.map((promotion): ChainAnchorPromotion => {
+    if (Array.isArray(promotion) && promotion.length === 2 && isText(promotion[0]) && isText(promotion[1])) {
+      return { home: promotion[0], promotion: promotion[1] };
+    }
+    if (typeof promotion === 'object' && promotion !== null && !Array.isArray(promotion)) {
+      const { home, promotion: hash } = promotion as Record<string, unknown>;
+      if (isText(home) && isText(hash)) return { home, promotion: hash };
+    }
+    throw new Error('the kept anchor is damaged');
+  });
+}
+
+/**
+ * Reads a kept anchor from its text; anything that isn't one is an error. An anchor kept before it
+ * carried owners and promotions is still one, and so is one kept in an earlier shape of them.
+ */
 export function parseAnchor(text: string): ChainAnchor {
   const value: unknown = JSON.parse(text);
-  if (!isAnchor(value)) throw new Error('the kept anchor is damaged');
-  return value;
+  if (typeof value !== 'object' || value === null) throw new Error('the kept anchor is damaged');
+  const v = value as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(v.seq) ||
+    !Number.isSafeInteger(v.epoch) ||
+    !Array.isArray(v.links) ||
+    !v.links.every(isText)
+  ) {
+    throw new Error('the kept anchor is damaged');
+  }
+  const owners = ownersOf(v.owners);
+  const promotions = promotionsOf(v.promotions);
+  return {
+    seq: v.seq as number,
+    epoch: v.epoch as number,
+    links: v.links as string[],
+    ...(owners ? { owners } : {}),
+    ...(promotions ? { promotions } : {}),
+  };
 }
 
 /** The anchors and pins in memory: for tests, and the fallback when IndexedDB can't be used. */

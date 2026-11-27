@@ -9,7 +9,7 @@ import { isApiError } from '@/api/errors';
 import type { ItemDto } from '@/api/types';
 import type { CryptoPort, SealedItem } from '@/crypto-port';
 import type { SignedFloor } from '@/spaces/anchors';
-import type { Manifest } from '@/manifest/format';
+import { type Manifest, ciphertextHash } from '@/manifest/format';
 import type { WriteChecker, WriteVerdict } from '@/manifest/writes';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
 
@@ -333,9 +333,18 @@ async function apply(deps: VaultDeps, store: VaultStore, dto: ItemDto): Promise<
   // were a member. A revision above the floor and the manifest is not taken in, and raises nothing: a
   // server that holds a removed member's key could otherwise have it pass as signed, raise the floor
   // and replace items with stubs nobody can open.
+  // It must be the very revision this browser accepted, not any revision at or below it: the revision
+  // number alone is a number a removed member's key can still sign, so the revision must be the
+  // floor's, or the accepted manifest's entry with the ciphertext's hash.
+  const acceptedExactly = async (): Promise<boolean> => {
+    if (floorBefore === dto.revision) return true;
+    const entry = await manifestEntry(deps, store, dto.owner, dto.id);
+    if (!entry || entry.deleted || entry.revision !== dto.revision || !dto.ciphertext) return false;
+    return entry.hash === (await ciphertextHash(decodeB64(dto.ciphertext)));
+  };
   let former = false;
   if (verdict === 'former') {
-    if (!(await acceptedBefore())) {
+    if (!(await acceptedExactly())) {
       deps.served?.(dto, false, verdict);
       deps.rejected?.(dto, 'former');
       return;
@@ -593,7 +602,17 @@ const manifests = new WeakMap<VaultStore, Map<string, Promise<Manifest | null>>>
  * this browser accepted before (with the signed floor). A manifest that can't be read is none.
  */
 async function manifestRevision(deps: VaultDeps, store: VaultStore, owner: string, id: string): Promise<number> {
-  if (!deps.acceptedManifest) return 0;
+  return (await manifestEntry(deps, store, owner, id))?.revision ?? 0;
+}
+
+/** The accepted manifest's entry for an item, when there is one. */
+async function manifestEntry(
+  deps: VaultDeps,
+  store: VaultStore,
+  owner: string,
+  id: string,
+): Promise<Manifest['entries'][number] | undefined> {
+  if (!deps.acceptedManifest) return undefined;
   let byOwner = manifests.get(store);
   if (!byOwner) {
     byOwner = new Map();
@@ -604,5 +623,5 @@ async function manifestRevision(deps: VaultDeps, store: VaultStore, owner: strin
     asked = deps.acceptedManifest(owner).catch(() => null);
     byOwner.set(owner, asked);
   }
-  return (await asked)?.entries.find((entry) => entry.id === id)?.revision ?? 0;
+  return (await asked)?.entries.find((entry) => entry.id === id);
 }

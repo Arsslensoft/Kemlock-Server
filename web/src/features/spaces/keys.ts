@@ -21,6 +21,17 @@ const EDIT: CollectionPermission[] = ['edit', 'edit-hide-passwords', 'manage'];
  * opens nothing and throws.
  */
 export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<SpaceViewDto> {
+  return (await openSpaceKeysRead(deps, spaceId)).view;
+}
+
+/**
+ * As `openSpaceKeys`, and says which keys were opened from boxes with no signature (`space`, or
+ * `collection:<id>`): those are read-only, the worker seals and writes nothing under them.
+ */
+export async function openSpaceKeysRead(
+  deps: SpaceDeps,
+  spaceId: string,
+): Promise<{ view: SpaceViewDto; readOnly: string[] }> {
   const view = await deps.api.get(spaceId);
   const me = signedInAccount(deps, view.me.user);
   const trust = await checkSpaceChain(deps, spaceId, me);
@@ -30,18 +41,21 @@ export async function openSpaceKeys(deps: SpaceDeps, spaceId: string): Promise<S
   if (trust.kind === 'verified') {
     const opened = await openChainedKeys(deps, spaceId, trust.view, view);
     const chained = overlayChain(view, [], trust.view).view;
-    return { ...chained, collectionKeys: view.collectionKeys.filter((c) => opened.has(c.collection)) };
+    return {
+      view: { ...chained, collectionKeys: view.collectionKeys.filter((c) => opened.has(c.collection)) },
+      readOnly: [],
+    };
   }
   // Every key opens only after the member who sealed it is checked and has signed it (boxes.ts). The
   // roster is read from the server only when a box has to be checked.
-  await openUnchainedKeys(
+  const readOnly = await openUnchainedKeys(
     {
       ...lazyContext(deps, spaceId, me),
       access: async () => ({ grants: view.grants, groups: view.groups }),
     },
     { me: view.me, spaceKeyVersion: view.space.keyVersion, collectionKeys: view.collectionKeys },
   );
-  return view;
+  return { view, readOnly };
 }
 
 /**
@@ -102,10 +116,7 @@ export async function loadWritableCollections(deps: SpaceDeps): Promise<Writable
     if (summary.member.state !== 'confirmed' || !summary.member.sealedSpaceKey) continue;
     const spaceId = summary.space.id;
     try {
-      const view = await openSpaceKeys(deps, spaceId);
-      // Keys taken on the server's word (an unsigned box on first sight) are read, not written under,
-      // until a person compared them: no collection of such a space is offered for writing.
-      if (await deps.crypto.provisionalKeys(spaceId)) continue;
+      const { view, readOnly } = await openSpaceKeysRead(deps, spaceId);
       const held = new Set(view.collectionKeys.map((copy) => copy.collection));
       const name = (kind: 'space' | 'collection', id: string, sealed: string) =>
         deps.crypto.openName({
@@ -118,6 +129,8 @@ export async function loadWritableCollections(deps: SpaceDeps): Promise<Writable
       const spaceName = await name('space', spaceId, view.space.name);
       for (const collection of view.collections) {
         if (!held.has(collection.id) || !canEditCollection(view, view.groups, collection.id)) continue;
+        // A key opened from an unsigned box is read-only: nothing is offered for writing under it.
+        if (readOnly.includes(`collection:${collection.id}`)) continue;
         out.push({
           spaceId,
           spaceName,

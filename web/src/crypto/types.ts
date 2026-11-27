@@ -197,18 +197,8 @@ export interface TotpOptions {
   account?: string;
 }
 
-/** The sealed-box contexts under which the worker seals the root key (docs/crypto.md). */
 /** What `sealRootKey` seals under. An emergency contact's box is made by `sealEmergencyKey`, which checks the contact's bundle. */
 export type RootKeyContext = 'device-approval';
-
-/** One key of a space opened from an unsigned box, with the fingerprint a person compares. */
-export interface ProvisionalKey {
-  /** The collection's id; null for the space key. */
-  collection: string | null;
-  version: number;
-  /** 12 groups of 5 digits. */
-  fingerprint: string;
-}
 
 /** What a space name names. */
 export type NameKind = 'space' | 'collection' | 'group';
@@ -249,17 +239,26 @@ export interface ChainAnchor {
   /** base64url of each record's link, from seq 0. */
   links: string[];
   /**
-   * The space's owners at `seq`, as the verified chain gives them: each owner's id to the hash of the
-   * bundle the chain records for them. The verifier lets a fence move the chain only when it is
-   * signed by one of them. An anchor kept before this field has none, and is written again with
+   * The space's confirmed owners at `seq`, as the worker's chain view gives them (`anchorOwners`):
+   * each owner's id with the SHA-256 of their bundle. The verifier lets a fence move the chain only
+   * when one of them signed it. An anchor kept before this field has none, and is written again with
    * it from the first verified chain after the upgrade.
    */
-  owners?: Record<string, string>;
-  /**
-   * The promotions this browser has seen, as `[owner id, base64url of the record's hash]`. Kept as
-   * the verifier gave them and passed back; an anchor kept before this field has none.
-   */
-  promotions?: Array<[string, string]>;
+  owners?: ChainAnchorOwner[];
+  /** The promotions this browser holds: passed back to the verifier as it was told them. */
+  promotions?: ChainAnchorPromotion[];
+}
+
+/** An owner kept with an anchor: their id (uuid text) and the base64url SHA-256 of their bundle. */
+export interface ChainAnchorOwner {
+  id: string;
+  bundle: string;
+}
+
+/** A promotion record this browser holds: the new home's id and base64url SHA-256 of the record. */
+export interface ChainAnchorPromotion {
+  home: string;
+  promotion: string;
 }
 
 /** A chain the verifier refused: the spec's reason ("Verification") and the record's seq. */
@@ -317,10 +316,10 @@ export interface ChainView {
   /** Whether first contact is done, so keys open. */
   trusted: boolean;
   firstContact?: FirstContactAsk;
-  /** The space's owners at the head, owner id to bundle hash: kept in the anchor (`ChainAnchor.owners`). */
-  owners?: Record<string, string>;
-  /** The promotions the verifier tracks, when it reports them: kept in the anchor like `owners`. */
-  promotions?: Array<[string, string]>;
+  /** The space's confirmed owners at the head with the hash of their bundle: kept in the anchor (`ChainAnchor.owners`). */
+  anchorOwners?: ChainAnchorOwner[];
+  /** Promotions the worker reports, when it does: merged into the anchor's, never replacing them. */
+  promotions?: ChainAnchorPromotion[];
   /** The seq of the fence where the chain parted from the kept anchor. */
   divergence?: number;
   members: ChainMember[];
@@ -820,8 +819,8 @@ export interface CryptoApi {
   newSpace(input: NewSpaceInput): Promise<NewSpaceResult>;
   /**
    * Opens the space key sealed to me and keeps it for `spaceId` at `keyVersion`. `unsigned` is for a
-   * box that carried no signature and that this browser had not accepted before: the space is then
-   * held back from sealing and writing until `acceptProvisionalKeys`.
+   * box that carried no signature: the key then opens names and items only, and the worker seals and
+   * writes nothing under it (read-only).
    */
   openSpace(input: { spaceId: string; keyVersion: number; sealed: string; unsigned?: boolean }): Promise<void>;
   /** Opens a collection key sealed to me and keeps it; `unsigned` as for `openSpace`. */
@@ -1014,23 +1013,6 @@ export interface CryptoApi {
   spaceChainView(spaceId: string): Promise<ChainView | null>;
   /** The person compared the fingerprint first contact asked for and it matched. */
   acceptFirstContact(spaceId: string): Promise<void>;
-  /**
-   * Tells the worker the account's own signed record names a space as chained: until a chain is
-   * verified for it, its keys open only through one, and a chain served empty is refused as withheld.
-   * Call it before `verifySpaceChain` for each space the record lists.
-   */
-  expectChained(spaceId: string): Promise<void>;
-  /**
-   * The fingerprints of the keys of a space opened from unsigned boxes this browser had not accepted,
-   * for a person to compare with a member who holds them (the space key first), or null when the
-   * space has none waiting.
-   */
-  provisionalKeys(spaceId: string): Promise<ProvisionalKey[] | null>;
-  /**
-   * Says the person compared them and typed the last group of the space key's fingerprint: right,
-   * and the space's keys may be sealed and written under again; anything else is refused.
-   */
-  acceptProvisionalKeys(spaceId: string, typed: string): Promise<void>;
   /**
    * Opens the space key ("space") or a collection key ("collection:<uuid>") of a chained space at
    * the chain's current version. servedVersion and sealed are what the server served; list is the
@@ -1268,9 +1250,6 @@ export interface Ops {
   openLocal: { args: [label: string, sealed: string]; result: string };
   spaceChainView: { args: [spaceId: string]; result: ChainView | null };
   acceptFirstContact: { args: [spaceId: string]; result: void };
-  expectChained: { args: [spaceId: string]; result: void };
-  provisionalKeys: { args: [spaceId: string]; result: ProvisionalKey[] | null };
-  acceptProvisionalKeys: { args: [spaceId: string, typed: string]; result: void };
   openChainKey: {
     args: [
       input: {

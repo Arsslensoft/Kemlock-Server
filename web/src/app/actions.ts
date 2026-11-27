@@ -64,24 +64,26 @@ function worthRetrying(error: unknown): boolean {
 export function keepRevoking(
   attempt: () => Promise<unknown>,
   delays: readonly number[] = REVOKE_RETRY_MS,
+  /** Says the tries are no longer wanted (a new session began): none is made after it. */
   cancelled: () => boolean = () => false,
-  onEnd: () => void = () => undefined,
+  /** Called once when no more tries will be made, whatever the reason. */
+  finished: () => void = () => undefined,
 ): void {
   const [next, ...rest] = delays;
   if (next === undefined) {
-    onEnd();
+    finished();
     return;
   }
   setTimeout(() => {
     if (cancelled()) {
-      onEnd();
+      finished();
       return;
     }
     attempt().then(
-      () => onEnd(),
+      () => finished(),
       (error: unknown) => {
-        if (worthRetrying(error)) keepRevoking(attempt, rest, cancelled, onEnd);
-        else onEnd();
+        if (worthRetrying(error)) keepRevoking(attempt, rest, cancelled, finished);
+        else finished();
       },
     );
   }, next);
@@ -113,20 +115,20 @@ function revokeInBackground(held: Tokens | undefined): void {
     },
   });
   const devices = createDevicesApi(detached);
-  // This runs while the person is still signed in (the sign-out ends the session here right after),
-  // so a sign-in is a change away from 'signed-out' that comes after the sign-out was seen.
-  let seenOut = session.getState().status === 'signed-out';
-  let signedInAgain = false;
-  const unsubscribe = session.subscribe(() => {
-    if (session.getState().status === 'signed-out') seenOut = true;
-    else if (seenOut) signedInAgain = true;
+  // A new sign-in cancels the tries: the old tokens' revoke must not end the new session.
+  // This runs before the page's own session ends, so a sign-in counts only after it has been seen out.
+  let cancelled = false;
+  let out = session.getState().status === 'signed-out';
+  const stop = session.subscribe(() => {
+    if (session.getState().status === 'signed-out') out = true;
+    else if (out) cancelled = true;
   });
   // The server refused the refresh token, or the tokens were dropped: nothing is left to end.
   keepRevoking(
     () => (tokens ? devices.endSession() : Promise.resolve()),
     REVOKE_RETRY_MS,
-    () => signedInAgain,
-    unsubscribe,
+    () => cancelled,
+    stop,
   );
 }
 

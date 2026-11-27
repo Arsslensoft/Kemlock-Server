@@ -188,6 +188,24 @@ describe('a sign-out the server did not answer', () => {
     }
   });
 
+  it('makes no more tries once a new session began', async () => {
+    vi.useFakeTimers();
+    try {
+      const attempt = vi.fn<() => Promise<unknown>>().mockRejectedValue(new Error('offline'));
+      let cancelled = false;
+      const finished = vi.fn();
+      keepRevoking(attempt, [10, 10, 10], () => cancelled, finished);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(attempt).toHaveBeenCalledTimes(1);
+      cancelled = true;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(attempt).toHaveBeenCalledTimes(1);
+      expect(finished).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('gives up when the delays run out', async () => {
     vi.useFakeTimers();
     try {

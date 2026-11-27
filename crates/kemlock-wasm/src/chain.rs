@@ -744,11 +744,6 @@ impl Session {
             if unlocked.spaces.refused.contains(space) {
                 return Ok(Verdict::Refused(Refused::new("rolled back", None)));
             }
-            // The account's own signed record says the space has a chain: serving none is the
-            // server withholding it, not a space with no chain.
-            if unlocked.spaces.expected_chained.contains(space) {
-                return Ok(Verdict::Refused(Refused::new("chain withheld", None)));
-            }
             return Ok(Verdict::View(Box::new(unchained())));
         }
 

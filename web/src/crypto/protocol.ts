@@ -28,7 +28,6 @@ import {
   type KitProblem,
   type MadeKit,
   type PrfWrap,
-  type ProvisionalKey,
   type Ops,
   type ResealedItem,
   type ResealedSend,
@@ -477,16 +476,6 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
     async acceptFirstContact(spaceId) {
       (await current()).acceptFirstContact(spaceId);
-    },
-    async expectChained(spaceId) {
-      (await current()).expectChained(spaceId);
-    },
-    async provisionalKeys(spaceId) {
-      const keys = (await current()).provisionalKeys(spaceId);
-      return keys === undefined ? null : parse<ProvisionalKey[]>(keys);
-    },
-    async acceptProvisionalKeys(spaceId, typed) {
-      (await current()).acceptProvisionalKeys(spaceId, typed);
     },
     async openChainKey({ spaceId, key, servedVersion, sealed, list }) {
       (await current()).openChainKey(

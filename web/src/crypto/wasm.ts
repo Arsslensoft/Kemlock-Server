@@ -213,10 +213,6 @@ export interface WasmVault {
   sealLocal(label: string, text: string): string;
   openLocal(label: string, sealed: string): string;
   acceptFirstContact(spaceId: string): void;
-  expectChained(spaceId: string): void;
-  /** JSON `[{collection, version, fingerprint}]`, or `undefined` when no key waits for a person. */
-  provisionalKeys(spaceId: string): string | undefined;
-  acceptProvisionalKeys(spaceId: string, typed: string): void;
   openChainKey(
     spaceId: string,
     key: string,

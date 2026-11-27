@@ -16,7 +16,6 @@ import {
   type CryptoApi,
   CryptoError,
   type NameKind,
-  type ProvisionalKey,
   type SealHashEntry,
 } from '@/crypto/types';
 import { decodeB64, encodeB64 } from '@/lib/b64url';
@@ -86,8 +85,7 @@ export interface SpaceCrypto extends SharingCrypto {
   }): Promise<NewSpaceKeys>;
   /**
    * Opens the space key sealed to me and keeps it in the worker for `spaceId`. `unsigned` is for a
-   * box that carried no signature and that this browser had not accepted before: nothing is then
-   * sealed or written under the space's keys until `acceptProvisionalKeys`.
+   * box that carried no signature: the key is then read-only (nothing is sealed or written under it).
    */
   openSpace(input: { spaceId: string; keyVersion: number; sealed: Uint8Array; unsigned?: boolean }): Promise<void>;
   /** Opens a collection key sealed to me and keeps it for sealing to others. */
@@ -182,12 +180,6 @@ export interface SpaceCrypto extends SharingCrypto {
   spaceChainView(spaceId: string): Promise<ChainView | null>;
   /** The person compared the fingerprint first contact asked for and it matched. */
   acceptFirstContact(spaceId: string): Promise<void>;
-  /** Tells the worker the account's signed record names the space as chained (call before `verifySpaceChain`). */
-  expectChained(spaceId: string): Promise<void>;
-  /** The fingerprints of the keys of a space taken from unsigned boxes on first sight, or null when none waits. */
-  provisionalKeys(spaceId: string): Promise<ProvisionalKey[] | null>;
-  /** The person compared them and typed the last group of the space key's fingerprint. */
-  acceptProvisionalKeys(spaceId: string, typed: string): Promise<void>;
   /** Opens a key of a chained space ("space" or "collection:<uuid>") at the chain's current version. */
   openChainKey(input: {
     spaceId: string;
@@ -238,9 +230,6 @@ export const unavailableSpaceCrypto: SpaceCrypto = {
   sealLocal: () => unavailable(),
   openLocal: () => unavailable(),
   acceptFirstContact: () => unavailable(),
-  expectChained: () => unavailable(),
-  provisionalKeys: () => unavailable(),
-  acceptProvisionalKeys: () => unavailable(),
   openChainKey: () => unavailable(),
 };
 
@@ -271,9 +260,6 @@ type SpaceWorker = Pick<
   | 'sealLocal'
   | 'openLocal'
   | 'acceptFirstContact'
-  | 'expectChained'
-  | 'provisionalKeys'
-  | 'acceptProvisionalKeys'
   | 'openChainKey'
 >;
 
@@ -363,9 +349,6 @@ export function createSpaceCrypto(api: SpaceWorker): SpaceCrypto {
     sealLocal: (label, text) => api.sealLocal(label, text),
     openLocal: (label, sealed) => api.openLocal(label, sealed),
     acceptFirstContact: (spaceId) => api.acceptFirstContact(spaceId),
-    expectChained: (spaceId) => api.expectChained(spaceId),
-    provisionalKeys: (spaceId) => api.provisionalKeys(spaceId),
-    acceptProvisionalKeys: (spaceId, typed) => api.acceptProvisionalKeys(spaceId, typed),
     openChainKey: ({ sealed, ...rest }) => api.openChainKey({ ...rest, sealed: encodeB64(sealed) }),
     verifyBundle: (bundle, signature) => api.verifyBundle(encodeB64(bundle), encodeB64(signature)),
     ownFingerprint: () => api.ownFingerprint(),

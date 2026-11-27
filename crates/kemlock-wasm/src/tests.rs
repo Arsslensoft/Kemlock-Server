@@ -820,7 +820,7 @@ fn the_root_key_is_sealed_to_an_emergency_contact_only_from_their_signed_bundle(
 
 
 #[wasm_bindgen_test]
-fn keys_opened_from_an_unsigned_box_wait_for_a_person_before_anything_is_sealed_under_them() {
+fn keys_opened_from_an_unsigned_box_are_read_only() {
     let (mut maker, _) = open_account([0x71; 16]);
     let (mut member, member_bundle) = open_account([0x72; 16]);
     let (space, collection) = ([0x73; 16], [0x74; 16]);
@@ -836,7 +836,7 @@ fn keys_opened_from_an_unsigned_box_wait_for_a_person_before_anything_is_sealed_
         .seal_collection_key_to(&space, &collection, member_kx, &member_id)
         .expect("seal the collection key");
 
-    // Keys taken on first sight from boxes that carry no signature open for reading ...
+    // Keys from boxes that carry no signature open for reading ...
     member
         .open_space_unsigned(&space, 1, &for_space.sealed)
         .expect("open the space key");
@@ -849,7 +849,7 @@ fn keys_opened_from_an_unsigned_box_wait_for_a_person_before_anything_is_sealed_
             .expect("the name opens"),
         "Family"
     );
-    // ... and nothing is sealed or written under them.
+    // ... and nothing is sealed or written under them, space key and collection key alike.
     assert_eq!(
         member.seal_name(&space, 1, NameKind::Space, &space, "Mine"),
         Err(Error::Invalid)
@@ -871,47 +871,25 @@ fn keys_opened_from_an_unsigned_box_wait_for_a_person_before_anything_is_sealed_
             .is_err()
     );
 
-    // The person is shown the fingerprint of each key; a wrong last group changes nothing.
-    let shown = member
-        .provisional_fingerprints(&space)
-        .expect("fingerprints")
-        .expect("the space waits");
-    assert_eq!(shown.len(), 2);
-    assert!(shown[0].collection.is_none());
-    assert_eq!(shown[1].collection, Some(collection));
-    assert_ne!(shown[0].fingerprint, shown[1].fingerprint);
-    assert_eq!(shown[0].fingerprint.split(' ').count(), 12);
-    assert_eq!(
-        member.accept_provisional_keys(&space, "not the digits"),
-        Err(Error::Invalid)
-    );
-    assert!(
-        member
-            .seal_name(&space, 1, NameKind::Space, &space, "Mine")
-            .is_err()
-    );
-    // A space that waits for nobody has nothing to accept.
-    assert_eq!(
-        member.accept_provisional_keys(&[0x99; 16], "12345"),
-        Err(Error::Invalid)
-    );
-
-    let last = shown[0]
-        .fingerprint
-        .rsplit(' ')
-        .next()
-        .expect("a group")
-        .to_owned();
+    // A signed box of the same keys, opened again, makes them writable.
     member
-        .accept_provisional_keys(&space, &format!(" {last} "))
-        .expect("the right last group settles the space");
-    assert_eq!(member.provisional_fingerprints(&space), Ok(None));
+        .open_space(&space, 1, &for_space.sealed)
+        .expect("open the signed space key");
     member
         .seal_name(&space, 1, NameKind::Space, &space, "Mine")
-        .expect("settled keys seal");
+        .expect("a signed space key seals");
+    assert!(
+        member
+            .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
+            .is_err(),
+        "the collection key is still unsigned"
+    );
+    member
+        .open_collection(&space, &collection, 1, &for_collection.sealed)
+        .expect("open the signed collection key");
     member
         .seal_space_item(&space, &collection, &[0x75; 16], "login", 1, b"{}")
-        .expect("settled keys write");
+        .expect("a signed collection key writes");
 
     // Keys opened from signed boxes never wait.
     let (mut other, other_bundle) = open_account([0x78; 16]);
@@ -919,45 +897,9 @@ fn keys_opened_from_an_unsigned_box_wait_for_a_person_before_anything_is_sealed_
         .seal_space_key_to(&space, other_bundle.kx1_public.as_bytes(), &other_bundle.account_id)
         .expect("seal");
     other.open_space(&space, 1, &signed.sealed).expect("open");
-    assert_eq!(other.provisional_fingerprints(&space), Ok(None));
-}
-
-#[wasm_bindgen_test]
-fn a_space_the_account_knows_is_chained_is_not_taken_as_unchained_when_no_chain_is_served() {
-    let (mut maker, _) = open_account([0x61; 16]);
-    let (mut member, member_bundle) = open_account([0x62; 16]);
-    let (space, collection) = ([0x63; 16], [0x64; 16]);
-    maker
-        .new_space(&space, &collection, "Family", "Everyone")
-        .expect("make the space");
-    let boxed = maker
-        .seal_space_key_to(
-            &space,
-            member_bundle.kx1_public.as_bytes(),
-            &member_bundle.account_id,
-        )
-        .expect("seal");
-
-    // Not known to be chained: a server that serves no chain is a space with none.
-    let view = verdict_json(&mut member, &space, &[]);
-    assert_eq!(view["ok"], true);
-    assert_eq!(view["chained"], false);
-
-    member.expect_chained(&space).expect("expect");
-    // Known to be chained: serving none is the chain withheld, and the keys stay shut.
-    let refused = verdict_json(&mut member, &space, &[]);
-    assert_eq!(refused["ok"], false);
-    assert_eq!(refused["reason"], "chain withheld");
-    assert_eq!(
-        member.open_space(&space, 1, &boxed.sealed),
-        Err(Error::Invalid)
-    );
-    assert_eq!(
-        member.open_space_unsigned(&space, 1, &boxed.sealed),
-        Err(Error::Invalid)
-    );
-    let locked = Session::new();
-    assert!(locked.provisional_fingerprints(&space).is_err());
+    other
+        .seal_name(&space, 1, NameKind::Space, &space, "Mine")
+        .expect("seals");
 }
 
 #[wasm_bindgen_test]
