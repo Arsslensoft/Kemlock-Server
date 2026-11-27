@@ -65,6 +65,17 @@ pub(crate) async fn verify_writes<U: UserRepo>(
     check_writes(&account, actor, writes)
 }
 
+/// How many batches of signatures are checked at once: about one for each CPU, so a few large
+/// requests can't fill the blocking pool and starve everything else that uses it.
+fn verify_permits() -> &'static tokio::sync::Semaphore {
+    static PERMITS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    PERMITS.get_or_init(|| {
+        tokio::sync::Semaphore::new(
+            std::thread::available_parallelism().map_or(2, std::num::NonZeroUsize::get),
+        )
+    })
+}
+
 /// [`verify_writes`] for many writes into collections: the signatures are checked on a blocking
 /// thread, one after another, so a request of hundreds of them doesn't hold a runtime worker. The
 /// writes move into the task and come back, checked, so none is copied.
@@ -80,6 +91,10 @@ pub(crate) async fn verify_writes_blocking<U: UserRepo>(
     let Some(account) = account else {
         return Ok(writes);
     };
+    let _permit = verify_permits()
+        .acquire()
+        .await
+        .map_err(|_| Problem::from(AppError::Store("a signature check didn't start".to_owned())))?;
     tokio::task::spawn_blocking(move || {
         let checked = {
             let refs: Vec<(&ItemWrite, Option<CollectionId>)> =
