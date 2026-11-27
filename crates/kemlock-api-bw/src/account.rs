@@ -510,12 +510,21 @@ pub(crate) async fn verification_token<S: BwStore>(
     email: &str,
     name: Option<String>,
     invite_token: Option<&str>,
+    ip: std::net::IpAddr,
 ) -> BwResult<Option<String>> {
+    let mail = crate::signup_hold::verifies(app);
+    let now = app.now_secs();
+    // A mail goes to whatever address is asked for, so an address (a client's /56) may ask for only
+    // a few, and each recipient may be mailed once in a while: without them the route mails anyone
+    // as often as it is asked.
+    if mail {
+        app.verification_mail_limit
+            .check(ip, now)
+            .map_err(|_| BwError::status(StatusCode::TOO_MANY_REQUESTS, "Too many requests"))?;
+    }
     if matches!(admit(app, email, invite_token).await?, Admission::Refused) {
         return Err(BwError::msg(REGISTRATION_REFUSED));
     }
-    let mail = crate::signup_hold::verifies(app);
-    let now = app.now_secs();
     let claims = RegisterVerifyClaims {
         nbf: now,
         exp: now + 30 * 60,
@@ -531,7 +540,10 @@ pub(crate) async fn verification_token<S: BwStore>(
     if !mail {
         return Ok(Some(token));
     }
-    crate::signup_hold::mail_token(app, email, token).await;
+    // The same answer whether the mail went or the address was mailed a moment ago.
+    if app.verification_mailed.take(email, now) {
+        crate::signup_hold::mail_token(app, email, token).await;
+    }
     Ok(None)
 }
 

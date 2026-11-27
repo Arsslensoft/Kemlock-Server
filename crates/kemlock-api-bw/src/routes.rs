@@ -160,13 +160,19 @@ fn prefers_json(headers: &HeaderMap) -> bool {
 
 async fn register_send_verification<S: BwStore>(
     State(app): State<App<S>>,
+    Peer(ip): Peer,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, BwError> {
     let data: VerificationData = parse(&body)?;
-    let token =
-        account::verification_token(&app, &data.email, data.name, data.invite_token.as_deref())
-            .await?;
+    let token = account::verification_token(
+        &app,
+        &data.email,
+        data.name,
+        data.invite_token.as_deref(),
+        ip,
+    )
+    .await?;
     // Where the server verifies sign-ups the token went to the address, and the answer is empty.
     let Some(token) = token else {
         return Ok(StatusCode::NO_CONTENT.into_response());

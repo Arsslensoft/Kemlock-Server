@@ -136,6 +136,11 @@ pub struct Inner<S> {
     pub(crate) login_limit: crate::ip_limit::IpLimit,
     /// Vaultwarden's limiter for the other routes with no sign-in (`check_limit_unauthenticated`).
     pub(crate) unauthenticated_limit: crate::ip_limit::IpLimit,
+    /// How many verification mails (`send-verification-email`) an address may ask for: a burst of 5,
+    /// then one every 5 minutes.
+    pub(crate) verification_mail_limit: crate::ip_limit::IpLimit,
+    /// When each address was last mailed a verification link.
+    pub(crate) verification_mailed: crate::signup_hold::RecipientLimit,
     pub(crate) events: Arc<dyn BwEvents>,
     pub(crate) relay: Option<Arc<dyn BwRelay>>,
     pub(crate) notices: Notices,
@@ -206,6 +211,8 @@ impl<S: BwStore> App<S> {
             send_limit: crate::send_limit::SendAccessLimit::default(),
             login_limit,
             unauthenticated_limit,
+            verification_mail_limit: crate::ip_limit::IpLimit::new(5, 300),
+            verification_mailed: crate::signup_hold::RecipientLimit::default(),
             events: parts.live.events,
             relay: parts.live.relay,
             notices: parts.live.notices,

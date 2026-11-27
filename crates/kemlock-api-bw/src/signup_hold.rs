@@ -9,6 +9,8 @@ use crate::error::{BwError, BwResult};
 use kemlock_app::notices::{Notice, RegisterVerifyNotice};
 use kemlock_app::ports::UserRepo;
 use kemlock_domain::{Email, User};
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
 
 /// Whether registration has to prove the address with a mailed link first: the setting is on and
 /// the server can mail the link.
@@ -55,4 +57,37 @@ pub(crate) async fn refuse_if_held<S: BwStore>(app: &App<S>, user: &User) -> BwR
         ));
     }
     Ok(())
+}
+
+/// The most addresses whose last mail is remembered.
+const MAX_RECIPIENTS: usize = 10_000;
+
+/// When each address was last mailed a verification link, so one address can't be mailed again and
+/// again by whoever asks (the Kemlock side lets a held account have a new link every
+/// [`RESEND_AFTER`](kemlock_app::signup_verify::RESEND_AFTER), and this is the same rule for an
+/// address that has no account yet). Kept in memory; a restart forgets it.
+#[derive(Debug, Default)]
+pub(crate) struct RecipientLimit {
+    last: Mutex<HashMap<String, i64>>,
+}
+
+impl RecipientLimit {
+    /// Whether `to` may be mailed at `now` (Unix seconds); if so, it counts as mailed.
+    pub(crate) fn take(&self, to: &str, now: i64) -> bool {
+        let gap = kemlock_app::signup_verify::RESEND_AFTER.whole_seconds();
+        let key = to.trim().to_lowercase();
+        let mut last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        if last.get(&key).is_some_and(|at| now - at < gap) {
+            return false;
+        }
+        if last.len() >= MAX_RECIPIENTS {
+            last.retain(|_, at| now - *at < gap);
+        }
+        // A map still full of recent ones leaves this one out rather than refusing it: the address
+        // limit is what stops a flood, and an honest asker is not turned away for it.
+        if last.len() < MAX_RECIPIENTS {
+            last.insert(key, now);
+        }
+        true
+    }
 }
