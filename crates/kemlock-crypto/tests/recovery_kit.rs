@@ -180,3 +180,21 @@ fn a_pieces_share_is_held_in_wiped_memory_and_still_rebuilds_the_key() {
     let rebuilt = rebuild_key(&all[1..]).expect("two pieces");
     assert_eq!(*rebuilt, *key);
 }
+
+#[test]
+fn a_pieces_debug_output_never_shows_its_share() {
+    let (_, _, pieces) = make_kit(2, 3).expect("a kit");
+    let piece = parse_piece(&pieces[0]).expect("a piece");
+    let shown = format!("{piece:?}");
+    assert!(shown.contains("KitPiece") && shown.contains(&piece.kit_id), "{shown}");
+    // The share's bytes, in any of the ways a derived Debug would print them.
+    let bytes: &[u8] = &*piece.y;
+    let as_list = format!("{bytes:?}");
+    assert!(!shown.contains(&as_list), "{shown}");
+    assert!(!shown.contains("y:"), "{shown}");
+    assert!(!shown.to_lowercase().contains(&hex_of(bytes)), "{shown}");
+}
+
+fn hex_of(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
