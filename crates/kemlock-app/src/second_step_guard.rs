@@ -85,6 +85,21 @@ pub trait SecondStepGuard: Send + Sync {
         &self,
         user: UserId,
     ) -> impl Future<Output = Result<(), StoreError>> + Send;
+
+    /// [`SecondStepGuard::reserve_second_step`] on a count of its own for step-up proofs (a code or
+    /// a security key's answer that proves the owner before a sensitive change, the admin
+    /// console's step-up): someone holding a session who guesses at proofs spends none of the
+    /// owner's sign-in attempts, and the owner's sign-in spends none of the proofs.
+    fn reserve_step_up(
+        &self,
+        user: UserId,
+        now: i64,
+        limit: u32,
+        window_secs: i64,
+    ) -> impl Future<Output = Result<Reservation, StoreError>> + Send;
+
+    /// Forgets the account's step-up count, after a right proof.
+    fn clear_step_up(&self, user: UserId) -> impl Future<Output = Result<(), StoreError>> + Send;
 }
 
 #[cfg(test)]

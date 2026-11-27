@@ -72,6 +72,42 @@ where
     }
 }
 
+/// Reserves one step-up proof attempt for `user` (a code or a security key's answer that proves the
+/// owner before a sensitive change, or the admin console's step-up), under the same limit as the
+/// sign-in second step but on a count of its own. A 429 when the account waits; nothing is counted
+/// then.
+pub async fn reserve_step_up<S, P, K>(
+    api: &Api<S, P, K>,
+    user: UserId,
+    now: i64,
+) -> Result<(), Problem>
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    let limit = &api.limits.step_up;
+    match SecondStepGuard::reserve_step_up(&api.store, user, now, limit.limit(), limit.window_secs())
+        .await
+        .map_err(AppError::from)?
+    {
+        Reservation::Granted => Ok(()),
+        Reservation::Wait(wait) => Err(rate_limited(wait)),
+    }
+}
+
+/// Clears the account's step-up count after a right proof; a failure is logged, not returned.
+pub async fn forget_step_up<S, P, K>(api: &Api<S, P, K>, user: UserId)
+where
+    S: Store,
+    P: Crypto,
+    K: TokenSigner + Clone + 'static,
+{
+    if let Err(error) = SecondStepGuard::clear_step_up(&api.store, user).await {
+        tracing::warn!(%error, "couldn't clear an account's step-up attempts");
+    }
+}
+
 /// The longest a request is held back because its account has seen many wrong passwords, in
 /// seconds. The slowdown never refuses anything.
 const MAX_SLOWDOWN_SECS: u64 = 3;

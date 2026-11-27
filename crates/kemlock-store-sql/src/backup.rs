@@ -52,7 +52,7 @@ use crate::tables::{
     federation_logs, federation_wiring, item_tags, items, passkeys, pending_erasures, policies,
     push_tokens, recovery_kits, refresh_tokens, revoked_families, rotation_previous_keys,
     rotation_staged_items, second_step_attempts, sends, server_meta, settings, sign_in_log,
-    signed_manifests, signed_writes, sync_horizon, two_factor, two_factor_recovery,
+    signed_manifests, signed_writes, step_up_attempts, sync_horizon, two_factor, two_factor_recovery,
     two_step_versions, users, vw_import_ids, vw_rows, webauthn_challenges,
 };
 use kemlock_app::b64url;
@@ -190,6 +190,7 @@ fn registry() -> Result<Vec<TableSpec>, StoreError> {
         two_factor_recovery::Entity,
         two_step_versions::Entity,
         second_step_attempts::Entity,
+        step_up_attempts::Entity,
         passkeys::Entity,
         recovery_kits::Entity,
         rotation_staged_items::Entity,

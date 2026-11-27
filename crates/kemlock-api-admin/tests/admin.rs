@@ -365,19 +365,24 @@ async fn wrong_totp_codes_are_refused_and_then_slowed_down() {
 }
 
 #[tokio::test]
-async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in() {
+async fn step_up_codes_and_the_second_step_at_sign_in_keep_separate_counts() {
     use kemlock_app::second_step_guard::{Reservation, SecondStepGuard};
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;
-    // Four attempts at the second step of a sign-in, counted in the store as the Kemlock API
-    // counts them.
-    for _ in 0..4 {
+    // Five attempts at the second step of a sign-in, counted in the store as the Kemlock API
+    // counts them: the sign-in count is at its limit and waits.
+    for _ in 0..5 {
         let reserved =
             SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900)
                 .await;
         assert_eq!(reserved, Ok(Reservation::Granted));
     }
-    // One wrong step-up code is the fifth: it is looked at, and the next try waits.
+    assert!(matches!(
+        SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await,
+        Ok(Reservation::Wait(_))
+    ));
+    // The step-up has a count of its own: a wrong code is looked at and refused as wrong, not
+    // as too many tries.
     let wrong = root
         .send(
             "POST",
@@ -387,6 +392,18 @@ async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in
         )
         .await;
     assert_eq!(slug(&wrong), "step-up-failed");
+    // Four more wrong step-up codes reach its own limit, and the next waits...
+    for _ in 0..4 {
+        let again = root
+            .send(
+                "POST",
+                "/admin/v1/step-up/totp",
+                Some(json!({"code": "000000"})),
+                None,
+            )
+            .await;
+        assert_eq!(slug(&again), "step-up-failed");
+    }
     let waiting = root
         .send(
             "POST",
@@ -396,7 +413,7 @@ async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in
         )
         .await;
     assert_eq!(waiting.status, StatusCode::TOO_MANY_REQUESTS);
-    // After the wait the right code gets a step-up token, and clears the count for both.
+    // ...while the sign-in count is where it was: a right step-up clears only its own.
     rig.app.clock.advance(Duration::seconds(1));
     rig.next_step();
     let ok = root
@@ -408,12 +425,14 @@ async fn wrong_step_up_codes_spend_the_same_budget_as_the_second_step_at_sign_in
         )
         .await;
     assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
-    let after =
+    let step_up =
+        SecondStepGuard::reserve_step_up(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
+    assert_eq!(step_up, Ok(Reservation::Granted));
+    let sign_in =
         SecondStepGuard::reserve_second_step(&rig.app.store, root.id, rig.app.now(), 5, 900).await;
-    assert_eq!(after, Ok(Reservation::Granted));
+    assert!(matches!(sign_in, Ok(Reservation::Wait(_))), "{sign_in:?}");
 }
 
-#[tokio::test]
 async fn the_password_check_makes_a_step_up_token() {
     let rig = Rig::new();
     let root = rig.admin(ADMIN).await;

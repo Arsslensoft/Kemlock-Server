@@ -86,6 +86,7 @@ struct StoreInner {
     erasing: HashMap<UserId, OffsetDateTime>,
     /// The second-step attempts each account has reserved.
     second_step: HashMap<UserId, kemlock_app::second_step_guard::Attempts>,
+    step_up: HashMap<UserId, kemlock_app::second_step_guard::Attempts>,
     /// The accounts held back until the link mailed to their address is opened: the SHA-256 of the
     /// link's token, when it was made and when it runs out.
     unconfirmed: HashMap<UserId, ([u8; 32], OffsetDateTime, OffsetDateTime)>,
@@ -1603,6 +1604,25 @@ impl kemlock_app::second_step_guard::SecondStepGuard for FakeStore {
 
     async fn clear_second_step(&self, user: UserId) -> Result<(), StoreError> {
         self.lock().second_step.remove(&user);
+        Ok(())
+    }
+
+    async fn reserve_step_up(
+        &self,
+        user: UserId,
+        now: i64,
+        limit: u32,
+        window_secs: i64,
+    ) -> Result<kemlock_app::second_step_guard::Reservation, StoreError> {
+        let mut g = self.lock();
+        let before = g.step_up.get(&user).copied().unwrap_or_default();
+        let (after, reservation) = before.reserve(now, limit, window_secs);
+        g.step_up.insert(user, after);
+        Ok(reservation)
+    }
+
+    async fn clear_step_up(&self, user: UserId) -> Result<(), StoreError> {
+        self.lock().step_up.remove(&user);
         Ok(())
     }
 }

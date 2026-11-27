@@ -163,6 +163,12 @@ pub struct Limits {
     /// under in the store (`SecondStepGuard`); the counts in this limiter's own memory are the
     /// admin console's step-up and mailed setup codes.
     pub second_step: Limiter,
+    /// Step-up proofs per account (a code or a security key's answer that proves the owner before
+    /// a sensitive change, and the admin console's step-up): the limit and window of `second_step`
+    /// (the console sets both), counted in the store apart from it, so someone holding a session
+    /// who guesses at proofs spends nothing of the owner's sign-in second step, and the owner's own
+    /// sign-in spends nothing of the proofs.
+    pub step_up: Limiter,
     /// DPoP proofs checked before anyone is authenticated, per IP: 120 a minute, then doubling
     /// delays. Honest devices make a handful; the limit only stops a flood.
     pub proof: Limiter,
@@ -196,6 +202,7 @@ impl Default for Limits {
             account_cap: Limiter::new(100, 3600),
             account_cap_hard: Limiter::new(600, 3600),
             second_step: Limiter::new(5, 900),
+            step_up: Limiter::new(5, 900),
             proof: Limiter::new(120, 60),
             setup: Limiter::new(5, 60),
             register: Limiter::new(10, 3600),

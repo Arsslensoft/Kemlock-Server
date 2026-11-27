@@ -636,10 +636,10 @@ where
     let response = serde_json::to_vec(&assertion.webauthn)
         .map_err(|_| AppError::Invalid("the security key's answer isn't valid"))?;
     // Reserved before the answer is looked at; only a right answer gives the attempt back.
-    attempts::reserve_second_step(api, user, api.now()).await?;
+    attempts::reserve_step_up(api, user, api.now()).await?;
     match checker.verify(user, response).await {
         Ok(()) => {
-            attempts::forget_second_step(api, user).await;
+            attempts::forget_step_up(api, user).await;
             Ok(())
         }
         Err(kemlock_app::passkeys::SecurityKeyError::NoChallenge) => Err(AppError::Invalid(
@@ -709,9 +709,9 @@ where
         FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
     };
     // Reserved before the code is looked at; only a right code gives the attempt back.
-    attempts::reserve_second_step(api, user, api.now()).await?;
+    attempts::reserve_step_up(api, user, api.now()).await?;
     if second_step_proof(api, user, proof, recovery).await {
-        attempts::forget_second_step(api, user).await;
+        attempts::forget_step_up(api, user).await;
         return Ok(());
     }
     Err(AppError::Invalid("the code is wrong or has run out: ask for another").into())
@@ -906,17 +906,17 @@ where
         FreshProof::Assertion(assertion) => return check_assertion(api, user, assertion).await,
     };
     // Reserved before the code is looked at; only a right code gives the attempt back.
-    attempts::reserve_second_step(api, user, api.now()).await?;
+    attempts::reserve_step_up(api, user, api.now()).await?;
     // Without mail, a current code of the authenticator app or the account's recovery code proves
     // it just as well. A TOTP code is spent here (it works once); the recovery code is kept. Neither
     // needs the mail to work.
     if second_step_proof(api, user, code, recovery).await {
-        attempts::forget_second_step(api, user).await;
+        attempts::forget_step_up(api, user).await;
         return Ok(());
     }
     match steps.protected_validate(user, code, true).await {
         Ok(()) => {
-            attempts::forget_second_step(api, user).await;
+            attempts::forget_step_up(api, user).await;
             Ok(())
         }
         Err(error) => Err(proof_error(error)),
