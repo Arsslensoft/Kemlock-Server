@@ -230,6 +230,8 @@ impl From<SpacesError> for Problem {
                 Problem::from(AppError::Conflict { item, current })
             }
             SpacesError::Item(e) => Problem::from(AppError::Item(e)),
+            // The problem types of the join guard on the routes: policy-two-step-required and so on.
+            SpacesError::Join(e) => Problem::from(e),
             SpacesError::Store(message) => Problem::from(AppError::Store(message)),
         }
     }

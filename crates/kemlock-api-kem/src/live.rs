@@ -108,6 +108,23 @@ impl Notifier for LiveHub {
     }
 }
 
+/// Whether a socket that follows `owners` is told of a nudge for `nudged`.
+fn wants(owners: &[Owner], nudged: Owner) -> bool {
+    nudged == EVERYONE || owners.contains(&nudged)
+}
+
+/// Replaces the owners a socket follows with what `current_owners` gives now. A read that fails
+/// (`None`) keeps the list: the next check tries again.
+async fn refresh_owners<G, Own>(owners: &mut Vec<Owner>, current_owners: &mut G)
+where
+    G: FnMut() -> Own + Send,
+    Own: Future<Output = Option<Vec<Owner>>> + Send,
+{
+    if let Some(now) = current_owners().await {
+        *owners = now;
+    }
+}
+
 /// How often an open socket checks that its session is still good.
 pub const RECHECK_EVERY: Duration = Duration::from_secs(60);
 
@@ -154,14 +171,12 @@ pub async fn serve_socket<F, Fut, G, Own>(
                     break;
                 }
                 // A member taken out of a space since the socket opened gets no more of its
-                // nudges. A failed read keeps the list: the next check tries again.
-                if let Some(now) = current_owners().await {
-                    owners = now;
-                }
+                // nudges.
+                refresh_owners(&mut owners, &mut current_owners).await;
             }
             nudge = nudges.recv() => {
                 let send = match nudge {
-                    Ok(o) if o == EVERYONE || owners.contains(&o) => true,
+                    Ok(o) if wants(&owners, o) => true,
                     Ok(_) => false,
                     // Missed some nudges: one more is the right answer to all of them.
                     Err(RecvError::Lagged(_)) => true,
@@ -212,6 +227,26 @@ mod tests {
         // A token already past its end gets no time at all, never a wrapped huge one.
         assert_eq!(until_expiry(1_000, 5_000), Duration::ZERO);
         assert_eq!(until_expiry(i64::MIN, i64::MAX), Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn a_removed_members_space_stops_nudging_their_socket_at_the_next_check() {
+        let user = Owner::User(UserId::random());
+        let space = Owner::Space(kemlock_domain::SpaceId::random());
+        let mut owners = vec![user, space];
+        assert!(wants(&owners, space) && wants(&owners, user));
+        assert!(wants(&owners, EVERYONE), "a nudge for everyone reaches every socket");
+
+        // The member is taken out of the space: what the account syncs now is its vault alone.
+        let mut now = move || async move { Some(vec![user]) };
+        refresh_owners(&mut owners, &mut now).await;
+        assert!(wants(&owners, user));
+        assert!(!wants(&owners, space), "the space no longer reaches the socket");
+
+        // A read that fails changes nothing.
+        let mut failing = || async { None };
+        refresh_owners(&mut owners, &mut failing).await;
+        assert_eq!(owners, vec![user]);
     }
 
     #[tokio::test]

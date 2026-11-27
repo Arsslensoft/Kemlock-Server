@@ -1183,3 +1183,48 @@ async fn an_account_past_its_record_quota_is_told_to_wait() {
     let reply = sam.post(&uri(space), request(&[&invite])).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
 }
+
+#[tokio::test]
+async fn a_role_record_that_demotes_an_admin_meets_the_join_policies() {
+    use kemlock_crypto::space_chain::Body;
+    use kemlock_domain::policies::SpacePolicies;
+
+    let rig = Rig::new();
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 2).await;
+    let (space, _, mut chain, _) = make(&rig, &sam).await;
+    // Ana joins as an Admin, whom the join policies do not bind.
+    let invite = chain.invite(&sam.person, ana.person.id, Role::Admin);
+    let confirm = chain.confirm(&sam.person, &ana.person);
+    let seal = chain.seal_space_key(&sam.person, &ana.person);
+    let reply = sam.post(&uri(space), request(&[&invite])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    ana.accept(space).await;
+    let reply = sam.post(&uri(space), request(&[&confirm, &seal])).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // The space asks for two-step login, which Ana has not set up. A record that makes her a member
+    // is refused, with the problem type of the join guard on the routes; nothing is stored.
+    rig.spaces.set_policies(
+        space,
+        SpacePolicies {
+            two_step: true,
+            ..SpacePolicies::default()
+        },
+    );
+    let demote = chain.record(
+        &sam.person,
+        Body::Role {
+            custom: Vec::new(),
+            member: ana.person.id,
+            role: Role::Member,
+        },
+    );
+    let reply = sam.post(&uri(space), request(&[&demote])).await;
+    assert_eq!(reply.status, StatusCode::FORBIDDEN, "{:?}", reply.json());
+    assert!(problem_type(&reply).ends_with("policy-two-step-required"));
+    assert_eq!(
+        sam.get(&uri(space)).await.json().as_array().map(Vec::len),
+        Some(4)
+    );
+}

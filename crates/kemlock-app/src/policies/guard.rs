@@ -21,7 +21,7 @@ use super::ports::PolicyRepo;
 use crate::ports::TwoFactorRepo;
 use crate::spaces::{SpaceChainRepo, SpaceRepo, SpacesError};
 use kemlock_domain::policies::{PoliciesBySpace, SpacePolicies, is_exempt};
-use kemlock_domain::spaces::{Member, MemberState, SpaceError, SpaceRole};
+use kemlock_domain::spaces::{Member, MemberState, SpaceRole};
 use kemlock_domain::{SpaceId, UserId};
 
 #[derive(Debug)]
@@ -83,22 +83,14 @@ pub async fn check_join<R: SpaceRepo, F: TwoFactorRepo>(
     )
 }
 
-/// What a refusal of the join check says, as the spaces use cases return it.
+/// What a refusal of the join check is, as the spaces use cases return it: the policy's own error,
+/// so the API answers with the problem type of the join guard on the routes
+/// (`policy-two-step-required`, `policy-single-space`, `policy-other-space-single`).
 pub fn refusal_in_spaces(e: PoliciesError) -> SpacesError {
     match e {
-        PoliciesError::TwoStepRequired => SpacesError::Rule(SpaceError::Forbidden(
-            "this space requires two-step login, and the account has none",
-        )),
-        PoliciesError::SingleSpace => SpacesError::Rule(SpaceError::Forbidden(
-            "this space allows its members in no other space, and the account is in another",
-        )),
-        PoliciesError::OtherSpaceSingle => SpacesError::Rule(SpaceError::Forbidden(
-            "a space the account belongs to allows its members in no other space",
-        )),
         PoliciesError::NotFound => SpacesError::NotFound,
-        PoliciesError::Forbidden(why) => SpacesError::Rule(SpaceError::Forbidden(why)),
-        PoliciesError::Invalid(why) => SpacesError::Rule(SpaceError::Invalid(why)),
         PoliciesError::Store(message) => SpacesError::Store(message),
+        other => SpacesError::Join(other),
     }
 }
 

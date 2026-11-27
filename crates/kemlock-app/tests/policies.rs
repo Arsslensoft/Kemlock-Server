@@ -603,8 +603,8 @@ async fn a_chained_space_takes_its_policies_from_its_chain_only() {
 
 #[tokio::test]
 async fn a_restore_and_a_demotion_meet_the_join_policies_again() {
-    use kemlock_domain::spaces::{CustomPermissions, SpaceError};
     use kemlock_app::spaces::SpacesError;
+    use kemlock_domain::spaces::CustomPermissions;
 
     let p = Policies::new();
     let (space, sam) = p.space("sam@example.org").await;
@@ -626,8 +626,9 @@ async fn a_restore_and_a_demotion_meet_the_join_policies_again() {
         },
     );
     let refused = p.w.offboard().restore(&actor(sam), space, ana).await;
+    // The error is the policy's own, which the API answers with the join guard's problem type.
     assert!(
-        matches!(refused, Err(SpacesError::Rule(SpaceError::Forbidden(_)))),
+        matches!(refused, Err(SpacesError::Join(PoliciesError::TwoStepRequired))),
         "{refused:?}"
     );
     p.enrol_two_step(ana, true).await;
@@ -643,7 +644,7 @@ async fn a_restore_and_a_demotion_meet_the_join_policies_again() {
         .execute(&actor(sam), space, lee, SpaceRole::Member, CustomPermissions::NONE)
         .await;
     assert!(
-        matches!(demoted, Err(SpacesError::Rule(SpaceError::Forbidden(_)))),
+        matches!(demoted, Err(SpacesError::Join(PoliciesError::TwoStepRequired))),
         "{demoted:?}"
     );
     p.enrol_two_step(lee, true).await;
