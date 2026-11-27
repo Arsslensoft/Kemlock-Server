@@ -44,10 +44,9 @@ updates:
       prefix: "chore(deps)"
     cooldown:
       default-days: 7
+  # The web vault is built into the release image: its updates wait for a maintainer.
   - package-ecosystem: npm
-    directories:
-      - /web
-      - /crates/kemlock-contract-tests/bw-cli
+    directory: /web
     schedule:
       interval: weekly
       day: monday
@@ -59,6 +58,23 @@ updates:
       default-days: 7
     groups:
       npm-minor-patch:
+        applies-to: version-updates
+        update-types: [minor, patch]
+  # The Bitwarden CLI the contract tests run against: not shipped, so its patch and minor updates
+  # may auto-merge (dependabot-auto-merge.yml). Apart from /web so the two never share a pull request.
+  - package-ecosystem: npm
+    directory: /crates/kemlock-contract-tests/bw-cli
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: [dependencies, javascript]
+    commit-message:
+      prefix: "chore(deps)"
+    cooldown:
+      default-days: 7
+    groups:
+      bw-cli-minor-patch:
         applies-to: version-updates
         update-types: [minor, patch]
 

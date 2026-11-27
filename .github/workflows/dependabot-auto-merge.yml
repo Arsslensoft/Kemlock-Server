@@ -43,8 +43,8 @@ jobs:
       - name: Approve and auto-merge a patch or minor update of test-only tooling
         if: >-
           (steps.metadata.outputs.update-type == 'version-update:semver-patch' || steps.metadata.outputs.update-type == 'version-update:semver-minor')
-          && (steps.metadata.outputs.package-ecosystem == 'docker-compose'
-          || (steps.metadata.outputs.package-ecosystem == 'npm'
+          && (steps.metadata.outputs.package-ecosystem == 'docker_compose'
+          || (steps.metadata.outputs.package-ecosystem == 'npm_and_yarn'
           && (steps.metadata.outputs.directory == '/crates/kemlock-contract-tests/bw-cli' || steps.metadata.outputs.directory == '/web/tools/gen-api')))
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -56,7 +56,7 @@ jobs:
       - name: A major update or a release-path dependency needs a person
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-major'
-          || !(steps.metadata.outputs.package-ecosystem == 'docker-compose'
-          || (steps.metadata.outputs.package-ecosystem == 'npm'
+          || !(steps.metadata.outputs.package-ecosystem == 'docker_compose'
+          || (steps.metadata.outputs.package-ecosystem == 'npm_and_yarn'
           && (steps.metadata.outputs.directory == '/crates/kemlock-contract-tests/bw-cli' || steps.metadata.outputs.directory == '/web/tools/gen-api')))
         run: echo "::notice::Major update or release-path dependency, left for a maintainer"
