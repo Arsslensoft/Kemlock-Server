@@ -51,11 +51,11 @@ REPO="Arsslensoft/Kemlock-Server"
 # release workflow signs with (sigstore/cosign-installer in .github/workflows/release.yml).
 COSIGN_VERSION="v3.0.2"
 COSIGN_DIR="/usr/local/lib/kemlock"
-# TODO(owner): the SHA-256 of cosign-linux-amd64 and cosign-linux-arm64 for COSIGN_VERSION. Set
-# them and they replace the checksum file that sits beside the binary on the same release page;
-# while one is empty, the run warns. No network was available to read them when this was written.
-COSIGN_SHA256_AMD64=""
-COSIGN_SHA256_ARM64=""
+# The SHA-256 of cosign-linux-amd64 and cosign-linux-arm64 for COSIGN_VERSION, from that release's
+# cosign_checksums.txt. They replace that checksum file, which sits beside the binary on the same
+# release page; move them with COSIGN_VERSION (while one is empty, the run warns).
+COSIGN_SHA256_AMD64="46dbdcb5467a3dfec2526923d0b3365e40c8d9dc00ec23d5aca3437449e8cbfd"
+COSIGN_SHA256_ARM64="17fd784737ca54d7d8a343c82da6c5d6dbdee971e66644d923d1b057fb97d7ed"
 stage="${1:?usage: kemlock-fetch-release STAGE_DIR}"
 case "$(uname -m)" in
 x86_64 | amd64)

@@ -101,12 +101,12 @@ curl -fsSL -o "$tmp/SHA256SUMS" "$base/SHA256SUMS"
 # in no Debian package: a pinned release is fetched from Sigstore, kept in /usr/local/lib/kemlock,
 # and its SHA-256 is checked against that release's cosign_checksums.txt on every use.
 cosign_version="v3.0.2"
-# TODO(owner): the SHA-256 of cosign-linux-amd64, -arm64 and -arm for this version. Set them and they
-# replace the checksum file that sits beside the binary on the same release page; while the one for
-# this machine is empty, the install warns. No network was available to read them when this was written.
-cosign_sha256_amd64=""
-cosign_sha256_arm64=""
-cosign_sha256_arm=""
+# The SHA-256 of cosign-linux-amd64, -arm64 and -arm for this version, from that release's
+# cosign_checksums.txt. They replace that checksum file, which sits beside the binary on the same
+# release page; move them with cosign_version (while the one for this machine is empty, the install warns).
+cosign_sha256_amd64="46dbdcb5467a3dfec2526923d0b3365e40c8d9dc00ec23d5aca3437449e8cbfd"
+cosign_sha256_arm64="17fd784737ca54d7d8a343c82da6c5d6dbdee971e66644d923d1b057fb97d7ed"
+cosign_sha256_arm="067df248315ee0c4af1cedb1cce65ad826f784be11ef88afd8d36e87c07162b6"
 # The repository's name in the signing certificate, in the case GitHub has it (the URLs here are
 # lower case, the identity is compared exactly).
 cert_repo="Arsslensoft/Kemlock-Server"
