@@ -32,13 +32,16 @@ impl Ping for SqlStore {
 /// anyone who finds it, and each fresh check writes a file; one write in this time is enough.
 pub const DATA_FOLDER_CHECK_TTL: Duration = Duration::from_secs(30);
 
+/// When the data folder was last written to, and how that went.
+type FolderCheck = Option<(Instant, Result<(), String>)>;
+
 /// What `/health` shares between requests: the store, the folder, and the last folder check.
 #[derive(Clone, Debug)]
 pub struct HealthState<S> {
     pub store: S,
     pub data_folder: PathBuf,
     /// When the data folder was last written to, and how that went.
-    folder_check: Arc<Mutex<Option<(Instant, Result<(), String>)>>>,
+    folder_check: Arc<Mutex<FolderCheck>>,
 }
 
 impl<S> HealthState<S> {
