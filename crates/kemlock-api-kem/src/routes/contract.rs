@@ -371,6 +371,7 @@ where
             return Err(Problem::bad_request("the master password hash is too long"));
         }
         let now = api.now();
+        let opaque_request = decode("request", &request.request)?;
         guard(&api.limits.sign_in, &ip_key(proof.ip), now)?;
         // Wrong hashes count per account and source address, reserved before the hash is looked
         // at, as wrong passwords do.
@@ -386,7 +387,7 @@ where
             .start(EnrolStartInput {
                 email: request.email,
                 master_password_hash: request.master_password_hash,
-                request: decode("request", &request.request)?,
+                request: opaque_request,
                 jkt: proof.jkt,
             })
             .await;

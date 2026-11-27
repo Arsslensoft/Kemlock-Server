@@ -327,6 +327,19 @@ where
         self.open_login_state(sealed).map(|_| ())
     }
 
+    /// [`SignIn::check_login_state`], and the state must be the one started for `email`. The API
+    /// checks this before it counts a try against the account, so a state made for another
+    /// account (or for nobody) spends nobody's attempts.
+    pub fn check_login_state_for(&self, sealed: &[u8], email: &str) -> Result<(), AppError> {
+        let state = self.open_login_state(sealed)?;
+        if !constant_time_eq(&state.credential_id, &credential_id(email)) {
+            return Err(AppError::Invalid(
+                "the login state belongs to another email",
+            ));
+        }
+        Ok(())
+    }
+
     fn open_login_state(&self, sealed: &[u8]) -> Result<LoginState, AppError> {
         let plain = self
             .seal

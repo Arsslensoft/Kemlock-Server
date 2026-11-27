@@ -609,7 +609,7 @@ async fn wrong_passwords_from_many_addresses_only_slow_the_account_and_the_right
 }
 
 #[tokio::test]
-async fn wrong_passwords_spread_over_many_addresses_are_capped_for_the_account() {
+async fn wrong_passwords_spread_over_many_addresses_slow_the_account_but_never_lock_it() {
     let app = App::new(true);
     let client = app.client();
     register_and_sign_in(&client, "sam@example.org").await;
@@ -620,7 +620,30 @@ async fn wrong_passwords_spread_over_many_addresses_are_capped_for_the_account()
         let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
         assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
     }
-    // Past the cap the account's password checks are refused for everyone, a right password
+    // Past the cap the account's password checks are held back, a right password included, but
+    // not refused: many addresses must not be able to keep the owner out.
+    let started = std::time::Instant::now();
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(900),
+        "held back about a second: {:?}",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn the_hard_backstop_on_an_account_refuses_checks_from_all_addresses() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    app.api.limits.account_cap_hard.set_limit(5);
+    let wrong = [9u8; 32];
+    for n in 1..=5u8 {
+        let reply = sign_in_from(&client, "sam@example.org", &wrong, peer(n)).await;
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED, "try {n}");
+    }
+    // Past the backstop the account's password checks are refused for everyone, a right password
     // included, until the wait is over.
     let refused = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(50)).await;
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
@@ -661,6 +684,45 @@ async fn made_up_login_states_spend_no_one_s_attempts() {
             )
             .await;
         assert_eq!(reply.status, StatusCode::BAD_REQUEST, "try {n}");
+    }
+    // Neither that address nor the account is the worse for it.
+    let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;
+    assert_eq!(ok.status, StatusCode::OK, "{:?}", ok.json());
+}
+
+#[tokio::test]
+async fn finishes_that_never_reach_the_password_spend_no_one_s_attempts() {
+    let app = App::new(true);
+    let client = app.client();
+    register_and_sign_in(&client, "sam@example.org").await;
+    register(&client, "alex@example.org", None).await;
+    app.api.limits.account.set_limit(3);
+    app.api.limits.account_cap_hard.set_limit(3);
+    // A genuine login state made for another account, sent with sam's email.
+    let mut wrong_account = finish_body(&client, "alex@example.org", &PASSWORD).await;
+    wrong_account["email"] = json!("sam@example.org");
+    // A genuine login state for sam with a device identifier that is empty.
+    let mut bad_device = finish_body(&client, "sam@example.org", &PASSWORD).await;
+    bad_device["device"] = json!({
+        "name": "Test device",
+        "kind": "kemlock-cli",
+        "bitwardenDeviceIdentifier": "",
+    });
+    for n in 0..20 {
+        for body in [&wrong_account, &bad_device] {
+            let reply = client
+                .send(
+                    "POST",
+                    "/kem/v1/auth/opaque/finish",
+                    Req {
+                        body: Some(body.clone()),
+                        peer: Some(peer(1)),
+                        ..Req::default()
+                    },
+                )
+                .await;
+            assert_eq!(reply.status, StatusCode::BAD_REQUEST, "try {n}");
+        }
     }
     // Neither that address nor the account is the worse for it.
     let ok = sign_in_from(&client, "sam@example.org", &PASSWORD, peer(1)).await;

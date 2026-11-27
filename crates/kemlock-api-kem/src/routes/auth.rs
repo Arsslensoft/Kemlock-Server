@@ -228,10 +228,14 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
         let request: OpaqueFinishRequest = body.json()?;
         check_email_len(&request.email)?;
         let login_state = decode("loginState", &request.login_state)?;
+        let finalization = decode("finalization", &request.finalization)?;
+        let device = request.device.into_info()?;
         let address = Email::parse(&request.email).ok();
-        // Only a genuine, fresh login state gets as far as being counted or remembered, so
-        // made-up ones spend nobody's attempts and take no room.
-        api.sign_in().check_login_state(&login_state)?;
+        // Only a genuine, fresh login state for this very email gets as far as being counted or
+        // remembered, so made-up ones, and ones made for another account, spend nobody's
+        // attempts and take no room.
+        api.sign_in()
+            .check_login_state_for(&login_state, &request.email)?;
         // Wrong passwords count per account and source address, reserved before the password is
         // looked at: the name comes from the request, so a count on the name alone would let
         // anyone lock the owner out.
@@ -242,21 +246,24 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             proof.ip,
         )
         .await?;
-        let device = request.device.into_info()?;
         // A login state finishes once, whether the password was right or not.
         match api.spend_open_state(proof.ip, &login_state, api.now()) {
             Ok(true) => {}
             Ok(false) => {
+                attempts::abandon_password_attempt(&api, &attempt);
                 return Err(Problem::bad_request("the login state was already used"));
             }
-            Err(Full) => return Err(Problem::overloaded()),
+            Err(Full) => {
+                attempts::abandon_password_attempt(&api, &attempt);
+                return Err(Problem::overloaded());
+            }
         }
         let finished = api
             .sign_in()
             .finish(OpaqueFinishInput {
                 email: request.email,
                 login_state,
-                finalization: decode("finalization", &request.finalization)?,
+                finalization,
                 device,
                 jkt: proof.jkt,
             })

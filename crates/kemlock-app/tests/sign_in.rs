@@ -575,6 +575,31 @@ async fn check_login_state_accepts_only_genuine_fresh_states() {
 }
 
 #[tokio::test]
+async fn check_login_state_for_wants_the_state_made_for_that_email() {
+    let (world, _user) = signed_in_world().await;
+    let (login_state, _) = login_messages(&world, EMAIL, &PASSWORD, "jkt-1")
+        .await
+        .expect("messages");
+    assert_eq!(
+        world.sign_in().check_login_state_for(&login_state, EMAIL),
+        Ok(())
+    );
+    // The email is compared as the sign-in name is: trimmed and lower-cased.
+    assert_eq!(
+        world
+            .sign_in()
+            .check_login_state_for(&login_state, " Sam@Example.org "),
+        Ok(())
+    );
+    assert!(matches!(
+        world
+            .sign_in()
+            .check_login_state_for(&login_state, "alex@example.org"),
+        Err(AppError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
 async fn a_disabled_account_gets_no_session_with_the_right_password() {
     let (world, user) = signed_in_world().await;
     world.store.set_account_disabled(user, true);
