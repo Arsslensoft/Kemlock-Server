@@ -884,7 +884,7 @@ describe('replacing the keys of a space that has a chain', () => {
     const big = {
       collection: INFRA,
       expectedRevision: 1,
-      item: { ...served(ITEM, INFRA, { revision: 2, keyVersion: 2, ciphertext: 'A'.repeat(9 * 1024 * 1024) }) } as never,
+      item: { ...served(ITEM, INFRA, { revision: 2, keyVersion: 2, ciphertext: 'A'.repeat(33 * 1024 * 1024) }) } as never,
     };
     crypto.replaced = {
       ok: true,
