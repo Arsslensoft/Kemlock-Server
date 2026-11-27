@@ -381,10 +381,16 @@ impl<S: Store, P: Crypto, K: TokenSigner + Clone + 'static> Api<S, P, K> {
             .refresh()
             .execute(&request.refresh_token, &proof.jkt)
             .await;
-        if refreshed.is_ok() {
+        if let Ok(tokens) = &refreshed {
             // A proof raced to the same end is refused here, and the refresh token's rotation
-            // already decides which of two refreshes with one token wins.
-            let _ = api.dpop.record(&proof.pending, api.now());
+            // already decides which of two refreshes with one token wins. It counts against the
+            // refreshed account's share of the set, as a request's proof does (`extract.rs`), so
+            // no number of devices can fill it for everybody else.
+            let _ = api.dpop.record_for_account(
+                &proof.pending,
+                format!("user:{}", tokens.user).as_bytes(),
+                api.now(),
+            );
         }
         api.log_attempt(api.attempt("refresh", None, &refreshed, proof.ip, token_ids))
             .await;
