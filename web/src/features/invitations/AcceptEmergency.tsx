@@ -1,14 +1,14 @@
-import { bwInvitations } from '@/api/bwInvitations';
 import { useT } from '@/i18n';
 import { InvitationLanding } from './InvitationLanding';
 import { claimText, tokenClaims, useLinkParams } from './linkParams';
-import { useAcceptOnce } from './useAcceptOnce';
 
 /**
  * Where the link of an emergency-contact invitation lands (`/accept-emergency#id=…&token=…`, which
- * Bitwarden clients and mails write as `/#/accept-emergency/…`). The page shows who named the
- * person and accepts only when its button is pressed, as the organization page does, and takes the
- * token out of the address as it opens. The person who named the contact then confirms them.
+ * Bitwarden clients and mails write as `/#/accept-emergency/…`). As for an organization, the server
+ * accepts only for the invitee's own session, so this page accepts nothing and posts no token: it
+ * says who named the person and leads to the sign-in. Once signed in, the invitation shows in
+ * Emergency access, where the person accepts it themselves. The values are taken out of the address
+ * as the page opens.
  */
 export default function AcceptEmergency() {
   const t = useT();
@@ -17,12 +17,9 @@ export default function AcceptEmergency() {
   const unknown = t('invitation.unknown');
   const grantor = claimText(claims, 'grantor_name') ?? name;
   const grantorEmail = claimText(claims, 'grantor_email');
-  const { outcome, start } = useAcceptOnce(id && token ? () => bwInvitations.acceptEmergency(id, token) : undefined);
   return (
     <InvitationLanding
       title="invitation.emergency.title"
-      outcome={outcome}
-      done={t('invitation.emergency.done')}
       facts={[
         {
           label: 'invitation.fact.grantor',
@@ -30,8 +27,9 @@ export default function AcceptEmergency() {
         },
         { label: 'invitation.fact.invitee', value: email ?? claimText(claims, 'email') ?? unknown },
       ]}
-      acceptLabel="invitation.emergency.accept"
-      onAccept={start}
+      next="/security"
+      where="invitation.emergency.where"
+      incomplete={!(id && token)}
     />
   );
 }

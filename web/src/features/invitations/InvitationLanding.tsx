@@ -1,9 +1,8 @@
-import type { ReactNode } from 'react';
+import { Link } from '@tanstack/react-router';
 import { type MessageId, useT } from '@/i18n';
 import { AuthPage } from '@/ui/AuthPage';
-import { Button } from '@/ui/Button';
+import { buttonClass } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
-import type { Outcome } from './useAcceptOnce';
 
 /** One line of who an invitation is from and to: a label and what the link says. */
 export interface Fact {
@@ -12,23 +11,26 @@ export interface Fact {
 }
 
 /**
- * What an invitation link's page says: who it is from, a button to accept, then working, done, or why
- * not. `done` is the sentence for success. Nothing is accepted until the button is pressed.
+ * What an invitation link's page says: who it is from, and that the invitation waits for the person
+ * to accept it themselves once they have signed in. The link accepts nothing and carries no proof
+ * the server would take: acceptance is the invitee's own, from their own session. `next` is the page
+ * the sign-in leads on to, where the invitation is.
  */
 export function InvitationLanding({
   title,
-  done,
-  outcome,
   facts,
-  acceptLabel,
-  onAccept,
+  next,
+  where,
+  incomplete,
 }: {
   title: MessageId;
-  done: ReactNode;
-  outcome: Outcome;
   facts: Fact[];
-  acceptLabel: MessageId;
-  onAccept: () => void;
+  /** The path the invitation appears at once signed in: `/spaces`, or `/security` for emergency access. */
+  next: '/spaces' | '/security';
+  /** A sentence saying where the invitation shows. */
+  where: MessageId;
+  /** The link lacks what it needs: say so instead of offering a sign-in. */
+  incomplete: boolean;
 }) {
   const t = useT();
   return (
@@ -36,8 +38,15 @@ export function InvitationLanding({
       <div>
         <h1>{t(title)}</h1>
       </div>
-      {outcome.status === 'ready' || outcome.status === 'working' ? (
+      {incomplete ? (
+        <Notice tone="error" live>
+          <p>{t('invitation.incomplete')}</p>
+        </Notice>
+      ) : (
         <>
+          <Notice icon="check" live>
+            <p>{t('invitation.waiting')}</p>
+          </Notice>
           <dl>
             {facts.map((fact) => (
               <div key={fact.label}>
@@ -46,33 +55,14 @@ export function InvitationLanding({
               </div>
             ))}
           </dl>
+          <p>{t(where)}</p>
           <p className="muted">{t('invitation.unchecked')}</p>
-          <Button variant="primary" isDisabled={outcome.status === 'working'} onPress={onAccept}>
-            {t(acceptLabel)}
-          </Button>
+          <Link to="/sign-in" search={{ next }} className={buttonClass({ variant: 'primary' })}>
+            {t('invitation.signIn')}
+          </Link>
+          <p className="muted">{t('invitation.app')}</p>
         </>
-      ) : null}
-      {outcome.status === 'working' ? (
-        <p role="status" className="muted">
-          {t('invitation.working')}
-        </p>
-      ) : null}
-      {outcome.status === 'done' ? (
-        <Notice icon="check" live>
-          <p>{done}</p>
-        </Notice>
-      ) : null}
-      {outcome.status === 'incomplete' ? (
-        <Notice tone="error" live>
-          <p>{t('invitation.incomplete')}</p>
-        </Notice>
-      ) : null}
-      {outcome.status === 'refused' ? (
-        <Notice tone="error" live>
-          <p>{t('invitation.refused')}</p>
-          {outcome.message ? <p className="muted">{outcome.message}</p> : null}
-        </Notice>
-      ) : null}
+      )}
     </AuthPage>
   );
 }

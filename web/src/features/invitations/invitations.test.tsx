@@ -1,13 +1,25 @@
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { StrictMode, type ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { I18nProvider } from '@/i18n';
 
-const accept = vi.hoisted(() => ({ organization: vi.fn(), emergency: vi.fn() }));
-
-vi.mock('@/api/bwInvitations', () => ({
-  bwInvitations: { acceptOrganization: accept.organization, acceptEmergency: accept.emergency },
+vi.mock('@tanstack/react-router', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-router')>()),
+  Link: ({
+    children,
+    to,
+    search,
+    className,
+  }: {
+    children: ReactNode;
+    to: string;
+    search?: Record<string, string>;
+    className?: string;
+  }) => (
+    <a href={`${to}${search ? `?${new URLSearchParams(search).toString()}` : ''}`} className={className}>
+      {children}
+    </a>
+  ),
 }));
 vi.mock('@/ui/AuthPage', () => ({ AuthPage: ({ children }: { children: ReactNode }) => <main>{children}</main> }));
 
@@ -32,9 +44,11 @@ function open(page: ReactNode, path: string, values: Record<string, string>) {
   );
 }
 
+const fetched = vi.fn();
+
 beforeEach(() => {
-  accept.organization.mockReset();
-  accept.emergency.mockReset();
+  fetched.mockReset();
+  vi.stubGlobal('fetch', fetched);
   window.history.replaceState(null, '', '/');
 });
 
@@ -47,46 +61,33 @@ describe('the link of an invitation to an organization', () => {
     token: token({ invited_by_email: 'alice@acme.example', email: 'bob@example.org' }),
   };
 
-  it('shows the organization and the inviter and accepts nothing until the button is pressed', async () => {
+  it('shows the organization and the inviter, and says the person accepts it themselves once signed in', () => {
     open(<AcceptOrganization />, '/accept-organization', link);
     expect(screen.getByText('Acme Corp')).toBeInTheDocument();
     expect(screen.getByText('alice@acme.example')).toBeInTheDocument();
     expect(screen.getByText('bob@example.org')).toBeInTheDocument();
-    // A page that has only opened (a mail scanner running the script) has accepted nothing.
-    await Promise.resolve();
-    expect(accept.organization).not.toHaveBeenCalled();
+    expect(screen.getByText(/Nothing is accepted from this page/)).toBeInTheDocument();
+    expect(screen.getByText(/appears under Spaces as an invitation/)).toBeInTheDocument();
   });
 
-  it('accepts once on the button and says an administrator confirms next', async () => {
-    accept.organization.mockResolvedValue({ ok: true });
+  it('leads to the sign-in, which goes on to Spaces, and has no button that accepts', () => {
     open(<AcceptOrganization />, '/accept-organization', link);
-    const button = screen.getByRole('button', { name: 'Accept the invitation' });
-    await userEvent.click(button);
-    expect(await screen.findByText(/An administrator now confirms you/)).toBeInTheDocument();
-    expect(accept.organization).toHaveBeenCalledOnce();
-    expect(accept.organization).toHaveBeenCalledWith('org-1', 'user-1', link.token);
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in?next=%2Fspaces');
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('takes the token out of the address as the page opens', () => {
+  it('posts nothing, and takes the token out of the address', () => {
     open(<AcceptOrganization />, '/accept-organization', link);
+    expect(fetched).not.toHaveBeenCalled();
     expect(window.location.hash).toBe('');
     expect(window.location.search).toBe('');
     expect(window.location.href).not.toContain(link.token);
   });
 
-  it('says why when the server refuses', async () => {
-    accept.organization.mockResolvedValue({ ok: false, message: 'User already accepted the invitation' });
-    open(<AcceptOrganization />, '/accept-organization', link);
-    await userEvent.click(screen.getByRole('button', { name: 'Accept the invitation' }));
-    expect(await screen.findByText(/couldn't be accepted/)).toBeInTheDocument();
-    expect(screen.getByText('User already accepted the invitation')).toBeInTheDocument();
-  });
-
-  it('asks for nothing when the link has no token', () => {
+  it('offers no sign-in when the link has no token', () => {
     open(<AcceptOrganization />, '/accept-organization', { organizationId: 'org-1' });
     expect(screen.getByText(/link is incomplete/)).toBeInTheDocument();
-    expect(screen.queryByRole('button')).toBeNull();
-    expect(accept.organization).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Sign in' })).toBeNull();
   });
 
   it('does not read a token from the query string', () => {
@@ -101,17 +102,19 @@ describe('the link of an invitation to an organization', () => {
 });
 
 describe('the link of an emergency-contact invitation', () => {
-  it('shows who named the person and accepts on the button alone', async () => {
-    accept.emergency.mockResolvedValue({ ok: true });
+  it('shows who named the person and leads to the sign-in, which goes on to the Security page', () => {
     const tok = token({ grantor_name: 'Alice', grantor_email: 'alice@example.org' });
     open(<AcceptEmergency />, '/accept-emergency', { id: 'grant-1', token: tok });
     expect(screen.getByText('Alice (alice@example.org)')).toBeInTheDocument();
-    expect(accept.emergency).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: 'Accept and become their emergency contact' }));
-    expect(await screen.findByText(/The person who named you now confirms you/)).toBeInTheDocument();
-    expect(accept.emergency).toHaveBeenCalledOnce();
-    expect(accept.emergency).toHaveBeenCalledWith('grant-1', tok);
+    expect(screen.getByText(/appears under Emergency access/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/sign-in?next=%2Fsecurity');
+    expect(fetched).not.toHaveBeenCalled();
     expect(window.location.hash).toBe('');
+  });
+
+  it('is incomplete without an id or a token', () => {
+    open(<AcceptEmergency />, '/accept-emergency', { id: 'grant-1' });
+    expect(screen.getByText(/link is incomplete/)).toBeInTheDocument();
   });
 });
 
