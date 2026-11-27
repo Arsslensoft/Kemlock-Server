@@ -397,9 +397,46 @@ enum MemberRef {
     Me,
 }
 
+/// What a request is to the join guard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum JoinRoute {
+    /// Not a request that accepts an invitation or confirms a member.
+    Other,
+    /// Accepting or confirming `member` in `space`.
+    Join(SpaceId, MemberRef),
+    /// Accepting or confirming, but the space or the member in the address can't be read. The
+    /// router would read the same text its own way, so the request is refused, not passed.
+    Unreadable,
+}
+
+/// A path parameter as the router hands it to a handler: percent-decoded. `None` for a `%` that
+/// isn't followed by two hex digits, or for bytes that aren't UTF-8.
+fn decode_segment(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let pair = bytes.get(at + 1..at + 3)?;
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            let text = std::str::from_utf8(pair).ok()?;
+            out.push(u8::from_str_radix(text, 16).ok()?);
+            at += 3;
+        } else {
+            out.push(bytes[at]);
+            at += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 /// The space and the member of a request that accepts an invitation or confirms a member, from
-/// its path alone: `/kem/v1/spaces/{id}/members/{user}/accept` or `…/confirm`.
-fn join_target(path: &str) -> Option<(SpaceId, MemberRef)> {
+/// its path alone: `/kem/v1/spaces/{id}/members/{user}/accept` or `…/confirm`. The literal parts
+/// are matched as they came, as the router matches them; the two parameters are decoded, as the
+/// router decodes them for the handler (`%6De` is `me` to it).
+fn join_target(path: &str) -> JoinRoute {
     let segments: Vec<&str> = path.trim_matches('/').split('/').collect();
     match segments.as_slice() {
         [
@@ -411,15 +448,22 @@ fn join_target(path: &str) -> Option<(SpaceId, MemberRef)> {
             member,
             "accept" | "confirm",
         ] => {
-            let space = space.parse().ok()?;
-            let member = if *member == "me" {
-                MemberRef::Me
-            } else {
-                MemberRef::User(member.parse().ok()?)
-            };
-            Some((space, member))
+            let parsed = (|| {
+                let space: SpaceId = decode_segment(space)?.parse().ok()?;
+                let member = decode_segment(member)?;
+                let member = if member == "me" {
+                    MemberRef::Me
+                } else {
+                    MemberRef::User(member.parse().ok()?)
+                };
+                Some((space, member))
+            })();
+            match parsed {
+                Some((space, member)) => JoinRoute::Join(space, member),
+                None => JoinRoute::Unreadable,
+            }
         }
-        _ => None,
+        _ => JoinRoute::Other,
     }
 }
 
@@ -464,9 +508,12 @@ where
                 None => return Ok(()),
             },
         };
-        let Ok(rows) = self.spaces.memberships(user).await else {
-            return Ok(());
-        };
+        // A store that can't be read can't say whether the join is allowed: the request waits, it
+        // is not let through.
+        let rows = self.spaces.memberships(user).await.map_err(|error| {
+            tracing::warn!(%error, "the join check could not read the memberships");
+            Problem::overloaded()
+        })?;
         let Some(row) = rows.into_iter().find(|m| m.space == space) else {
             return Ok(());
         };
@@ -495,14 +542,23 @@ where
     Pol: PolicyRepo + Clone + 'static,
 {
     // Read before awaiting: the request's body isn't Sync, so a borrow of it can't cross an await.
-    let target = (request.method() == Method::POST)
-        .then(|| join_target(request.uri().path()))
-        .flatten();
+    let target = if request.method() == Method::POST {
+        join_target(request.uri().path())
+    } else {
+        JoinRoute::Other
+    };
     let caller = env.token_user(&request);
-    if let Some((space, member)) = target
-        && let Err(problem) = env.check_join(caller, space, member).await
-    {
-        return problem.into_response();
+    match target {
+        JoinRoute::Other => {}
+        JoinRoute::Unreadable => {
+            return Problem::bad_request("the space or the member in the address isn't an id")
+                .into_response();
+        }
+        JoinRoute::Join(space, member) => {
+            if let Err(problem) = env.check_join(caller, space, member).await {
+                return problem.into_response();
+            }
+        }
     }
     next.run(request).await
 }
@@ -645,22 +701,45 @@ mod tests {
         let user: UserId = USER.parse().expect("a user id");
         assert_eq!(
             join_target(&format!("/kem/v1/spaces/{SPACE}/members/me/accept")),
-            Some((space, MemberRef::Me))
+            JoinRoute::Join(space, MemberRef::Me)
         );
         assert_eq!(
             join_target(&format!("/kem/v1/spaces/{SPACE}/members/{USER}/confirm")),
-            Some((space, MemberRef::User(user)))
+            JoinRoute::Join(space, MemberRef::User(user))
         );
         for other in [
             format!("/kem/v1/spaces/{SPACE}/members/{USER}/revoke"),
             format!("/kem/v1/spaces/{SPACE}/members"),
             format!("/kem/v1/spaces/{SPACE}/policies"),
             format!("/kem/v1/spaces/{SPACE}/members/{USER}"),
-            "/kem/v1/spaces/nope/members/me/accept".to_owned(),
-            format!("/kem/v1/spaces/{SPACE}/members/nope/confirm"),
             format!("/kem/v1/spaces/{SPACE}/members/me/accept/more"),
         ] {
-            assert_eq!(join_target(&other), None, "{other}");
+            assert_eq!(join_target(&other), JoinRoute::Other, "{other}");
+        }
+    }
+
+    #[test]
+    fn the_parameters_are_read_as_the_router_decodes_them() {
+        let space: SpaceId = SPACE.parse().expect("a space id");
+        // `%6De` is `me` to the handler: it must be to the guard too.
+        assert_eq!(
+            join_target(&format!("/kem/v1/spaces/{SPACE}/members/%6De/accept")),
+            JoinRoute::Join(space, MemberRef::Me)
+        );
+        // So is an encoded digit of an id.
+        let encoded = SPACE.replacen('7', "%37", 1);
+        assert_eq!(
+            join_target(&format!("/kem/v1/spaces/{encoded}/members/me/accept")),
+            JoinRoute::Join(space, MemberRef::Me)
+        );
+        // What can't be read is refused, not passed on.
+        for unreadable in [
+            "/kem/v1/spaces/nope/members/me/accept".to_owned(),
+            format!("/kem/v1/spaces/{SPACE}/members/nope/confirm"),
+            format!("/kem/v1/spaces/{SPACE}/members/%zz/accept"),
+            format!("/kem/v1/spaces/{SPACE}/members/%FF/accept"),
+        ] {
+            assert_eq!(join_target(&unreadable), JoinRoute::Unreadable, "{unreadable}");
         }
     }
 
