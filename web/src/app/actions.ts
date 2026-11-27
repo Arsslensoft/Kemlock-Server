@@ -61,13 +61,31 @@ function worthRetrying(error: unknown): boolean {
  * delays run out. Only a page that stays open can do this; the tokens it holds are in this closure
  * and nowhere else.
  */
-export function keepRevoking(attempt: () => Promise<unknown>, delays: readonly number[] = REVOKE_RETRY_MS): void {
+export function keepRevoking(
+  attempt: () => Promise<unknown>,
+  delays: readonly number[] = REVOKE_RETRY_MS,
+  /** Says the tries are no longer wanted (a new session began): none is made after it. */
+  cancelled: () => boolean = () => false,
+  /** Called once when no more tries will be made, whatever the reason. */
+  finished: () => void = () => undefined,
+): void {
   const [next, ...rest] = delays;
-  if (next === undefined) return;
+  if (next === undefined) {
+    finished();
+    return;
+  }
   setTimeout(() => {
-    attempt().catch((error: unknown) => {
-      if (worthRetrying(error)) keepRevoking(attempt, rest);
-    });
+    if (cancelled()) {
+      finished();
+      return;
+    }
+    attempt().then(
+      () => finished(),
+      (error: unknown) => {
+        if (worthRetrying(error)) keepRevoking(attempt, rest, cancelled, finished);
+        else finished();
+      },
+    );
   }, next);
 }
 
@@ -95,8 +113,21 @@ function revokeInBackground(held: Tokens | undefined): void {
     },
   });
   const devices = createDevicesApi(detached);
+  // A new sign-in cancels the tries: the old tokens' revoke must not end the new session.
+  // This runs before the page's own session ends, so a sign-in counts only after it has been seen out.
+  let cancelled = false;
+  let out = session.getState().status === 'signed-out';
+  const stop = session.subscribe(() => {
+    if (session.getState().status === 'signed-out') out = true;
+    else if (out) cancelled = true;
+  });
   // The server refused the refresh token, or the tokens were dropped: nothing is left to end.
-  keepRevoking(() => (tokens ? devices.endSession() : Promise.resolve()));
+  keepRevoking(
+    () => (tokens ? devices.endSession() : Promise.resolve()),
+    REVOKE_RETRY_MS,
+    () => cancelled,
+    stop,
+  );
 }
 
 /**
