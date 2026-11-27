@@ -114,9 +114,10 @@ for _ in $(seq 1 200); do
 done
 
 # 4. The unchanged sync through oha: 304 without a database read. Done first, while the seeded
-# cursor is still current.
+# cursor is still current. One device of one account, so at the rate a device may make: 240
+# signed-in requests a minute (the per-device limit), within the account's share of the replay set.
 cursor="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$results/accounts.json','utf8')).accounts[0].cursor)")"
-oha -z "$oha_duration" -c 16 --no-tui --output-format json \
+oha -z "$oha_duration" -c 2 -q 3 --no-tui --output-format json \
   "http://127.0.0.1:9100/kem/v1/sync?since=$cursor" > "$results/oha-sync0.json"
 
 # 5. The standard load: k6 for syncs, puts and sockets, the Rust driver for sign-ins, and a
