@@ -407,6 +407,10 @@ async fn held_items_are_kept_per_space() {
         kemlock_domain::ItemId(Uuid::new_v4()),
         kemlock_domain::ItemId(Uuid::new_v4()),
     ];
+    // Only a space's own items can be held.
+    for item in items {
+        put(&store, draft(item, Owner::Space(space), None, 1)).await;
+    }
     store.hold_items(space, &items).await.expect("held");
     store
         .hold_items(space, &items[..1])

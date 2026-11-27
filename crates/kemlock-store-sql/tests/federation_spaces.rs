@@ -289,13 +289,16 @@ async fn the_held_items_of_a_space_travel_as_a_set_the_replica_replaces() {
     .expect("a space");
     let mut items = [ItemId::random(), ItemId::random(), ItemId::random()];
     items.sort();
-    // The replica holds the space's items (they are pulled before the home records).
+    // The home and the replica both hold the space's items (the replica pulls them before the
+    // home records); only a space's own items can be held.
     for item in items {
-        put(
-            &replica,
-            draft(item, kemlock_domain::Owner::Space(space), None, 1),
-        )
-        .await;
+        for store in [&home, &replica] {
+            put(
+                store,
+                draft(item, kemlock_domain::Owner::Space(space), None, 1),
+            )
+            .await;
+        }
     }
 
     // The home's snapshot says which items its key replacement left held.
