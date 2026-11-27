@@ -236,10 +236,13 @@ impl LargeBodies {
         }
     }
 
-    /// A place taken without a request, for a test that fills them.
+    /// A place taken without a request, for a test that fills them. Giving it back costs the
+    /// account neither a wait nor budget.
     #[doc(hidden)]
     pub async fn occupy(&self, account: [u8; 16], space: [u8; 16]) -> Result<LargeBody, Problem> {
-        self.take(account, space).await
+        let mut place = self.take(account, space).await?;
+        place.replaced();
+        Ok(place)
     }
 }
 

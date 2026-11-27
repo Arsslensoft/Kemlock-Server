@@ -1098,7 +1098,14 @@ async fn post_as(who: &Who, space: Uuid, request: Req<'static>) -> Reply {
 
 /// A space in which Ana, who could edit General, lost her grant, so General's key is marked and
 /// Sam (an owner, with manage on it) may replace it, and Lee, a member with view only, may not.
-async fn a_marked_collection_key(rig: &Rig, sam: &Who, ana: &Who, lee: &Who) -> (Uuid, Uuid) {
+/// General holds `items` live items by then (nothing is written once its key is marked).
+async fn a_marked_collection_key(
+    rig: &Rig,
+    sam: &Who,
+    ana: &Who,
+    lee: &Who,
+    items: usize,
+) -> (Uuid, Uuid, Chain, Vec<Uuid>) {
     let (space, collection, mut chain, _) = make(rig, sam).await;
     let general = *collection.as_bytes();
     let invite_ana = chain.invite(&sam.person, ana.person.id, Role::Member);
@@ -1139,6 +1146,10 @@ async fn a_marked_collection_key(rig: &Rig, sam: &Who, ana: &Who, lee: &Who) -> 
         )
         .await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+    let mut ids = Vec::new();
+    for _ in 0..items {
+        ids.push(made_item(sam, space, collection).await);
+    }
     let ungrant = chain.record(
         &sam.person,
         Body::Ungrant {
@@ -1149,7 +1160,7 @@ async fn a_marked_collection_key(rig: &Rig, sam: &Who, ana: &Who, lee: &Who) -> 
     );
     let reply = sam.post(&uri(space), request(&[&ungrant])).await;
     assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
-    (space, collection)
+    (space, collection, chain, ids)
 }
 
 #[tokio::test]
@@ -1161,7 +1172,7 @@ async fn a_body_over_8_mib_is_read_only_for_a_member_who_may_replace_a_marked_ke
     let ana = rig.person("ana@example.org", 3).await;
     let lee = rig.person("lee@example.org", 4).await;
     let (quiet, _, _, _) = make(&rig, &sam).await;
-    let (space, _) = a_marked_collection_key(&rig, &sam, &ana, &lee).await;
+    let (space, _, _, _) = a_marked_collection_key(&rig, &sam, &ana, &lee, 0).await;
 
     // Nobody signed in is refused before the body is read.
     let anon = Client::new(
@@ -1216,17 +1227,19 @@ async fn a_body_over_8_mib_is_read_only_for_a_member_who_may_replace_a_marked_ke
 #[tokio::test]
 async fn large_bodies_are_limited_for_the_server_each_space_and_each_account_and_wait_after_a_refusal()
  {
-    let places = ChainLargeBodies::new(2, 60);
+    // A request that finds no place waits for one; here, not long.
+    let places = ChainLargeBodies::new(2, 60).with_wait(std::time::Duration::from_millis(100));
     let rig = Rig::over_with(App::new(true), places.clone());
     let sam = rig.person("sam@example.org", 1).await;
     let ana = rig.person("ana@example.org", 3).await;
     let lee = rig.person("lee@example.org", 4).await;
-    let (space, _) = a_marked_collection_key(&rig, &sam, &ana, &lee).await;
+    let (space, _, _, _) = a_marked_collection_key(&rig, &sam, &ana, &lee, 0).await;
     let (other_space, other_account) = ([0x51u8; 16], [0x52u8; 16]);
 
     // The space has a large body in hand already: 429, and Sam's own turn is not spent.
     let busy = places
         .occupy(other_account, *space.as_bytes())
+        .await
         .expect("a place");
     let reply = post_as(&sam, space, padding(9)).await;
     assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
@@ -1236,14 +1249,22 @@ async fn large_bodies_are_limited_for_the_server_each_space_and_each_account_and
     // So has the account, in another space.
     let busy = places
         .occupy(*sam.id.as_bytes(), other_space)
+        .await
         .expect("a place");
     let reply = post_as(&sam, space, padding(9)).await;
     assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
     drop(busy);
 
-    // And so has the server: both of its places are taken by others.
-    let one = places.occupy([0x61; 16], [0x62; 16]).expect("a place");
-    let two = places.occupy([0x63; 16], [0x64; 16]).expect("a place");
+    // And so has the server: both of its places are taken by others, and Sam waits for one in
+    // vain.
+    let one = places
+        .occupy([0x61; 16], [0x62; 16])
+        .await
+        .expect("a place");
+    let two = places
+        .occupy([0x63; 16], [0x64; 16])
+        .await
+        .expect("a place");
     let reply = post_as(&sam, space, padding(9)).await;
     assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
     drop((one, two));
@@ -1261,6 +1282,61 @@ async fn large_bodies_are_limited_for_the_server_each_space_and_each_account_and
     // A small request is not held up by it.
     let reply = sam.get(&uri(space)).await;
     assert_eq!(reply.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn an_account_has_a_budget_of_large_bodies_an_hour() {
+    let places = ChainLargeBodies::new(2, 0).with_budget(1);
+    let rig = Rig::over_with(App::new(true), places);
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 3).await;
+    let lee = rig.person("lee@example.org", 4).await;
+    let (space, _, _, _) = a_marked_collection_key(&rig, &sam, &ana, &lee, 0).await;
+
+    // The one of the hour is read (it is no JSON), and counts, though nothing waits after it...
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::BAD_REQUEST);
+    // ...so the next is refused with a time to wait, before its body is read past 8 MiB.
+    let reply = post_as(&sam, space, padding(9)).await;
+    assert_eq!(reply.status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(reply.header("retry-after").is_some());
+}
+
+#[tokio::test]
+async fn a_key_replacement_that_lands_costs_the_account_neither_a_wait_nor_budget() {
+    let places = ChainLargeBodies::new(2, 60).with_budget(1);
+    let rig = Rig::over_with(App::new(true), places.clone());
+    let sam = rig.person("sam@example.org", 1).await;
+    let ana = rig.person("ana@example.org", 3).await;
+    let lee = rig.person("lee@example.org", 4).await;
+    // Seven items of 1 MB make the request more than 8 MiB.
+    let (space, general, mut chain, ids) =
+        a_marked_collection_key(&rig, &sam, &ana, &lee, 7).await;
+    let keys = chain.rotate_collection(
+        &sam.person,
+        *general.as_bytes(),
+        2,
+        &[&sam.person, &lee.person],
+    );
+    let mut body = request(&[&keys]);
+    body["writes"] = json!(
+        ids.iter()
+            .map(|id| {
+                let mut write = rewrite(space, general, *id, 1, 2);
+                write["item"]["ciphertext"] = json!(b64(&vec![0xAB_u8; 1_000_000]));
+                write
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(body.to_string().len() > 8 * 1024 * 1024);
+    let reply = sam.post(&uri(space), body).await;
+    assert_eq!(reply.status, StatusCode::CREATED, "{:?}", reply.json());
+
+    // It was what the places are for: no wait of a minute, and the one body of the hour is unspent.
+    places
+        .occupy(*sam.id.as_bytes(), [0x71; 16])
+        .await
+        .expect("the account doesn't wait");
 }
 
 #[tokio::test]
