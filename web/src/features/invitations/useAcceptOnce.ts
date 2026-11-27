@@ -1,28 +1,32 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import type { Accepted } from '@/api/bwInvitations';
 
 export type Outcome =
+  | { status: 'ready' }
   | { status: 'working' }
   | { status: 'done' }
   | { status: 'refused'; message: string }
   | { status: 'incomplete' };
 
 /**
- * Spends the token of a link once and reports what happened. A token works once, and React may run
- * an effect twice, so there is one trip to the server per page. `accept` is `undefined` when the
+ * Spends the token of a link once, when `start` is called (a button press, never the page opening:
+ * a mail scanner that runs the page's script must not accept for the person), and reports what
+ * happened. A token works once, so a second press does nothing. `accept` is `undefined` when the
  * link lacks something it needs.
  */
-export function useAcceptOnce(accept: (() => Promise<Accepted>) | undefined): Outcome {
-  const [outcome, setOutcome] = useState<Outcome>(accept ? { status: 'working' } : { status: 'incomplete' });
+export function useAcceptOnce(accept: (() => Promise<Accepted>) | undefined): {
+  outcome: Outcome;
+  start: () => void;
+} {
+  const [outcome, setOutcome] = useState<Outcome>(accept ? { status: 'ready' } : { status: 'incomplete' });
   const asked = useRef(false);
-  useEffect(() => {
+  function start() {
     if (!accept || asked.current) return;
     asked.current = true;
+    setOutcome({ status: 'working' });
     void accept().then((answer) =>
       setOutcome(answer.ok ? { status: 'done' } : { status: 'refused', message: answer.message }),
     );
-    // `accept` is rebuilt on every render; the link's own values decide, and they don't change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return outcome;
+  }
+  return { outcome, start };
 }

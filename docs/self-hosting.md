@@ -150,7 +150,8 @@ How the person accepts:
 
 - **With mail**, they get a link of the shape Vaultwarden mails
   (`/#/accept-organization/?organizationId=...&token=...`, `/#/accept-emergency/?id=...&token=...`).
-  Opening it accepts: the signed token in it is the proof, so they need not sign in, which an account
+  Opening it shows who invited them and a button; pressing the button accepts (a mail scanner that
+  only opens the link accepts nothing). The signed token in it is the proof, so they need not sign in, which an account
   made in a Bitwarden app can't do in the web vault. It works for five days. An account that can sign
   in to the web vault gets the usual space invitation instead, and accepts on its space page.
 - **Without mail**, the administrator who invited (and the grantor, for an emergency contact) can

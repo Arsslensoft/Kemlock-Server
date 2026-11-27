@@ -1,5 +1,13 @@
 {
   "invitation.working": "Accepting the invitation",
+  "invitation.unchecked": "This is what the link says. Accept only if you expect this invitation and know who sent it.",
+  "invitation.unknown": "Not stated in the link",
+  "invitation.fact.organization": "Organization",
+  "invitation.fact.inviter": "Invited by",
+  "invitation.fact.invitee": "Invited address",
+  "invitation.fact.grantor": "Named you as their contact",
+  "invitation.organization.accept": "Accept the invitation",
+  "invitation.emergency.accept": "Accept and become their emergency contact",
   "invitation.incomplete": "This link is incomplete. Open the one in the email exactly as it was sent.",
   "invitation.refused": "The invitation couldn't be accepted. The link may have expired (they last five days) or been used already; ask whoever invited you for a new one.",
   "invitation.organization.title": "Invitation to an organization",

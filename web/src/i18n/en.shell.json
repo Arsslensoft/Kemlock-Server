@@ -59,6 +59,8 @@
   "profile.error.changed": "Your account changed while this was being saved, so nothing was changed. Try again.",
 
   "confirmEmail.title": "New email address",
+  "confirmEmail.ask": "Someone asked to change the address of your account to this one. Confirm only if it was you.",
+  "confirmEmail.confirm": "Confirm the new address",
   "confirmEmail.working": "Confirming your new address",
   "confirmEmail.done": "Your address is now {email}. Every device was signed out, so sign in again with it.",
   "confirmEmail.signIn": "Sign in",

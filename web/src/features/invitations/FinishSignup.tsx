@@ -1,21 +1,19 @@
-import { getRouteApi } from '@tanstack/react-router';
 import { useState } from 'react';
 import { useT } from '@/i18n';
 import { AuthPage } from '@/ui/AuthPage';
 import { Button } from '@/ui/Button';
 import { Notice } from '@/ui/Notice';
-
-const route = getRouteApi('/finish-signup');
+import { useLinkParams } from './linkParams';
 
 /**
- * Where the link that proves a new address lands (`/finish-signup?email=…&token=…`, which Bitwarden
+ * Where the link that proves a new address lands (`/finish-signup#email=…&token=…`, which Bitwarden
  * clients and mails write as `/#/finish-signup/…`). The master password and the keys are made in an
  * app, never here, so the page says the address is proven and how to go on there; the token is the
  * verification code the app's registration asks for, and can be copied.
  */
 export default function FinishSignup() {
   const t = useT();
-  const { email, token } = route.useSearch();
+  const { email, token } = useLinkParams();
   const [copied, setCopied] = useState(false);
 
   async function copy() {

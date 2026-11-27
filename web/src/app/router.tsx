@@ -47,16 +47,6 @@ interface VaultSearch {
 interface TokenSearch {
   token?: string;
 }
-/** What an invitation or sign-up link carries; every key is optional so a short link still opens. */
-interface InvitationSearch {
-  organizationId?: string;
-  organizationUserId?: string;
-  organizationName?: string;
-  id?: string;
-  name?: string;
-  email?: string;
-  token?: string;
-}
 interface SsoSearch {
   code?: string;
   state?: string;
@@ -72,15 +62,6 @@ interface NewItemSearch {
 const nextSearch = z.object({ next: optionalString });
 const passwordSearch = z.object({ email: optionalString, next: optionalString });
 const tokenSearch = z.object({ token: optionalString });
-const invitationSearch = z.object({
-  organizationId: optionalString,
-  organizationUserId: optionalString,
-  organizationName: optionalString,
-  id: optionalString,
-  name: optionalString,
-  email: optionalString,
-  token: optionalString,
-});
 const ssoSearch = z.object({ code: optionalString, state: optionalString, error: optionalString });
 const vaultSearch = z.object({
   kind: optionalString,
@@ -146,27 +127,25 @@ const confirmEmail = createRoute({
 });
 
 /**
- * The links Bitwarden's mails carry, which accept an invitation or finish a sign-up on the token in
- * them alone: public, as `/confirm-email` is. Bitwarden writes them with the route in the hash
- * (`/#/accept-organization/?…`); `main.tsx` moves that into the path first.
+ * The links Bitwarden's mails carry: an invitation is accepted on a button press and a sign-up is
+ * finished on the token in the link, so they are public, as `/confirm-email` is. Bitwarden writes
+ * them with the route in the hash (`/#/accept-organization/?…`); `main.tsx` moves that into the path
+ * first and keeps the values in the fragment, which the page reads once and removes from the address.
  */
 const accept = {
   organization: createRoute({
     getParentRoute: () => rootRoute,
     path: '/accept-organization',
-    validateSearch: (search): InvitationSearch => invitationSearch.parse(search),
     component: lazyRouteComponent(() => import('@/features/invitations/AcceptOrganization')),
   }),
   emergency: createRoute({
     getParentRoute: () => rootRoute,
     path: '/accept-emergency',
-    validateSearch: (search): InvitationSearch => invitationSearch.parse(search),
     component: lazyRouteComponent(() => import('@/features/invitations/AcceptEmergency')),
   }),
   signup: createRoute({
     getParentRoute: () => rootRoute,
     path: '/finish-signup',
-    validateSearch: (search): InvitationSearch => invitationSearch.parse(search),
     component: lazyRouteComponent(() => import('@/features/invitations/FinishSignup')),
   }),
 };
