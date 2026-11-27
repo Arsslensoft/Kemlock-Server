@@ -310,6 +310,10 @@
           "expiresAt": {
             "type": "string"
           },
+          "heldBack": {
+            "description": "`true` when the account was getting so many requests that this one was held back among\nthem: it is stored and shown on the account's open devices like the rest, but its owner\nmay be slow to find it. Left out otherwise.",
+            "type": "boolean"
+          },
           "phrase": {
             "description": "Five words, shown beside the ones the approving device shows.",
             "type": "string"
@@ -563,7 +567,7 @@
             ]
           },
           "signOutOthers": {
-            "description": "End the sessions of every other device at once, and get new tokens for this one in the\nanswer. Defaults to false.",
+            "description": "End the sessions of every other device at once, and get new tokens for this one in the\nanswer. Defaults to true: a password changed because the old one leaked must end the\nsessions that leak opened. Send false to keep the other devices signed in.",
             "type": "boolean"
           },
           "ticket": {
@@ -1745,6 +1749,15 @@
       "EmergencyConfirmRequest": {
         "additionalProperties": false,
         "properties": {
+          "keyVersion": {
+            "description": "The key version of the root key in the box. A box for a version that is no longer the\naccount's is refused with `409 key-version-stale`; absent (an old client) is accepted.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "sealedKey": {
             "description": "The root key sealed to the contact's `kx1` key, base64url.",
             "type": "string"
@@ -1929,6 +1942,15 @@
             "format": "int64",
             "minimum": 0,
             "type": "integer"
+          },
+          "keyVersion": {
+            "description": "The key version of the root key in the box. A box for a version that is no longer the\naccount's is refused with `409 key-version-stale`; absent (an old client) is accepted.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -2774,6 +2796,15 @@
       "KeyCopyRequest": {
         "additionalProperties": false,
         "properties": {
+          "keyVersion": {
+            "description": "The account's key version the copy was made for. A copy for a version that is no longer\nthe account's is refused with `409 key-version-stale`; absent (an old client) is accepted.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "protection": {
             "description": "`\"secure-enclave\"`, `\"keystore\"`, `\"web-crypto\"`, `\"browser\"` or `\"software\"`.",
             "type": "string"
@@ -6317,6 +6348,15 @@
           "hideEmail": {
             "type": "boolean"
           },
+          "keyVersion": {
+            "description": "The account's key version the client sealed `meta` and `payload` for. A change for a version\nthat is no longer the account's is refused with `409 key-version-stale`; absent (an old\nclient) is accepted without the check.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "maxAccess": {
             "format": "int32",
             "minimum": 0,
@@ -7639,7 +7679,7 @@
                 }
               }
             },
-            "description": "The credential is registered already"
+            "description": "The credential is registered already, or `key-version-stale`: the PRF copy is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
@@ -7993,7 +8033,7 @@
                 }
               }
             },
-            "description": "Not 92 bytes, or for another key version than the account's"
+            "description": "Not 92 bytes"
           },
           "401": {
             "content": {
@@ -8028,6 +8068,16 @@
               }
             },
             "description": "No such passkey on this account"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
@@ -8090,7 +8140,7 @@
                 }
               }
             },
-            "description": "The password's records are replaced; the root key and its version stay. With `signOutOthers` the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null"
+            "description": "The password's records are replaced; the root key and its version stay. With `signOutOthers` (the default) the security stamp is replaced in the same write, every other session ends at once, and `tokens` are the device's new ones; without it the stamp stays and `tokens` is null"
           },
           "400": {
             "content": {
@@ -8568,7 +8618,7 @@
                 }
               }
             },
-            "description": "The id or the wrap is malformed, or the wrap is for another key version"
+            "description": "The id or the wrap is malformed"
           },
           "401": {
             "content": {
@@ -8602,7 +8652,7 @@
                 }
               }
             },
-            "description": "The account has a kit: replace it"
+            "description": "The account has a kit: replace it, or `key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
@@ -8708,6 +8758,16 @@
               }
             },
             "description": "The account has no kit"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
@@ -13956,6 +14016,16 @@
               }
             }
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)"
+          },
           "429": {
             "content": {
               "application/problem+json": {
@@ -15333,6 +15403,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`key-version-stale`: the wrap is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
@@ -18121,6 +18201,16 @@
             },
             "description": "A policy of one of the owner's spaces forbids it"
           },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`key-version-stale`: the sealed key (create) or `keyVersion` (edit) is for another key version than the account's (`currentKeyVersion`)"
+          },
           "413": {
             "content": {
               "application/problem+json": {
@@ -18433,6 +18523,16 @@
               }
             },
             "description": "No such Send of this account"
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDoc"
+                }
+              }
+            },
+            "description": "`key-version-stale`: the sealed key (create) or `keyVersion` (edit) is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
@@ -19235,22 +19335,7 @@
             "description": "A record was refused; the problem carries the reason and the seq"
           },
           "429": {
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDoc"
-                }
-              }
-            },
-            "description": "Too many tries: wait `retryAfter` seconds",
-            "headers": {
-              "Retry-After": {
-                "description": "The seconds to wait",
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
+            "description": "The account signed as many records of this space lately as one member who isn't an owner may (1,024 an hour, 4,096 a day)"
           },
           "500": {
             "content": {
@@ -21811,7 +21896,7 @@
             "description": "No such space, or the caller isn't an invited or confirmed member"
           },
           "409": {
-            "description": "recovery-not-enabled: the chain's accountRecovery policy is off; stale-recovery-key: keySeq isn't the record that set the chain's current recovery key (the problem carries `current`)"
+            "description": "recovery-not-enabled: the chain's accountRecovery policy is off; stale-recovery-key: keySeq isn't the record that set the chain's current recovery key (the problem carries `current`); key-version-stale: the box is for another key version than the account's (`currentKeyVersion`)"
           },
           "429": {
             "content": {
