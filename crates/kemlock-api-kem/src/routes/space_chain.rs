@@ -23,7 +23,8 @@
 //! their own, merged beside the spaces router.
 
 use crate::dto::decode;
-use crate::problem::{Problem, rate_limited};
+use super::large_bodies::{LargeBodies, LargeBody};
+use crate::problem::Problem;
 use crate::routes::spaces::{Caller, Env, mail_invitations, nonce_header};
 use crate::state::{Api, Crypto, Store};
 use axum::body::{Body, Bytes};
@@ -42,14 +43,15 @@ use kemlock_app::spaces::{
     StoredRecord, StoredSeal, invitees,
 };
 use kemlock_app::{AppError, b64url};
-use kemlock_crypto::space_chain::{KeyRef, NameTarget, Reason, SignedRecord};
+use kemlock_crypto::space_chain::{
+    Body as RecordBody, Id, KeyRef, NameTarget, Reason, Record, SignedRecord, State as ChainState,
+};
 use kemlock_domain::spaces::CollectionId;
 use kemlock_domain::spaces::CustomPermissions;
 use kemlock_domain::{ItemError, ItemId, Revision, SpaceId, UserId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use utoipa::{OpenApi, ToSchema};
 use uuid::Uuid;
@@ -75,124 +77,6 @@ const BODY_RATE: u64 = 256 * 1024;
 /// The longest a large body may go without a chunk.
 const CHUNK_WAIT: Duration = Duration::from_secs(15);
 
-/// How long an account waits after a large body that ended in a refusal (a `4xx` but a conflict).
-const COOLDOWN_SECS: i64 = 60;
-
-/// The most large bodies (above [`MAX_CHAIN_BODY_BYTES`]) a server reads and handles at once.
-const MAX_LARGE_BODIES: usize = 2;
-
-/// Who has a large body in hand, and who must wait: at most `max` at once on the server, one for
-/// each account and one for each space, and an account whose last large body was refused waits
-/// [`COOLDOWN_SECS`]. Owned by the router, so each router (and each test) has its own.
-#[derive(Clone, Debug)]
-pub struct LargeBodies(Arc<Mutex<Places>>);
-
-#[derive(Debug)]
-struct Places {
-    max: usize,
-    /// How long an account waits after a refused large body, in seconds.
-    cooldown: i64,
-    accounts: BTreeSet<[u8; 16]>,
-    spaces: BTreeSet<[u8; 16]>,
-    /// The accounts that wait, and until when (Unix seconds).
-    cooling: BTreeMap<[u8; 16], i64>,
-}
-
-impl Default for LargeBodies {
-    fn default() -> LargeBodies {
-        LargeBodies::new(MAX_LARGE_BODIES, COOLDOWN_SECS)
-    }
-}
-
-impl LargeBodies {
-    /// Room for `max` large bodies at once, and `cooldown` seconds of waiting for an account whose
-    /// large body was refused.
-    pub fn new(max: usize, cooldown: i64) -> LargeBodies {
-        LargeBodies(Arc::new(Mutex::new(Places {
-            max,
-            cooldown,
-            accounts: BTreeSet::new(),
-            spaces: BTreeSet::new(),
-            cooling: BTreeMap::new(),
-        })))
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Places> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Takes a place for `account` in `space` at `now` (Unix seconds), or answers `429`: the
-    /// account waits, or the server's places, the account's or the space's are taken.
-    pub fn take(&self, account: [u8; 16], space: [u8; 16], now: i64) -> Result<LargeBody, Problem> {
-        let mut places = self.lock();
-        places.cooling.retain(|_, until| *until > now);
-        if let Some(until) = places.cooling.get(&account) {
-            let wait = u64::try_from(*until - now).unwrap_or(1).max(1);
-            return Err(rate_limited(wait));
-        }
-        if places.accounts.len() >= places.max
-            || places.accounts.contains(&account)
-            || places.spaces.contains(&space)
-        {
-            return Err(rate_limited(5));
-        }
-        places.accounts.insert(account);
-        places.spaces.insert(space);
-        drop(places);
-        Ok(LargeBody {
-            places: self.clone(),
-            account,
-            space,
-            now,
-            refused: false,
-        })
-    }
-
-    /// Takes a place without a request, for a test that fills them.
-    #[doc(hidden)]
-    pub fn occupy(&self, account: [u8; 16], space: [u8; 16]) -> Result<LargeBody, Problem> {
-        self.take(account, space, 0)
-    }
-}
-
-/// A place among the large bodies, held until the request is answered.
-#[derive(Debug)]
-pub struct LargeBody {
-    places: LargeBodies,
-    account: [u8; 16],
-    space: [u8; 16],
-    now: i64,
-    refused: bool,
-}
-
-impl LargeBody {
-    /// The request ended in a refusal: the account waits before it sends another.
-    fn refused(&mut self) {
-        self.refused = true;
-    }
-}
-
-impl Drop for LargeBody {
-    fn drop(&mut self) {
-        let mut places = self.places.lock();
-        places.accounts.remove(&self.account);
-        places.spaces.remove(&self.space);
-        if self.refused {
-            places
-                .cooling
-                .insert(self.account, self.now.saturating_add(places.cooldown));
-        }
-    }
-}
-
-/// Whether an answer of `status` counts against the account that sent a large body: a refusal of
-/// the request, not a conflict (a retry after one is the client's own) or a wait.
-fn counts_against(status: StatusCode) -> bool {
-    status.is_client_error()
-        && status != StatusCode::CONFLICT
-        && status != StatusCode::TOO_MANY_REQUESTS
-}
-
 /// The raw body of an append, and the place among the large bodies it holds, if it is one.
 #[derive(Debug)]
 struct ChainBody {
@@ -200,10 +84,28 @@ struct ChainBody {
     large: Option<LargeBody>,
 }
 
+/// The collection keys the chain's state marks that `me` may replace, as the worker's
+/// `replace_marked` decides: a confirmed member entitled to the key, with edit on the collection.
+fn replaceable_marked(state: &ChainState, me: &Id) -> BTreeSet<Id> {
+    state
+        .keys()
+        .iter()
+        .filter_map(|key| match key {
+            KeyRef::Collection(id)
+                if state.key_marked(key)
+                    && state.entitled(key).contains(me)
+                    && state.access(me, id).is_some_and(|rights| rights.edit) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether `actor` may send more than the ordinary limit to `space` now: the chain's state has a
-/// collection key marked that the actor may replace, as the worker's `replace_marked` decides (a
-/// confirmed member entitled to the key, with edit on the collection). Nothing else needs a body
-/// that large: the items of a key replacement are the only thing that does.
+/// collection key marked that they may replace. Nothing else needs a body that large: the items of
+/// a key replacement are the only thing that does.
 async fn may_send_large<S, P, K, R>(env: &Env<S, P, K, R>, actor: &Actor, space: SpaceId) -> bool
 where
     S: Store,
@@ -214,15 +116,7 @@ where
     let Ok(Some((_, state))) = env.spaces.chain_state(space).await else {
         return false;
     };
-    let me = *actor.user.as_bytes();
-    state.keys().iter().any(|key| match key {
-        KeyRef::Collection(id) => {
-            state.key_marked(key)
-                && state.entitled(key).contains(&me)
-                && state.access(&me, id).is_some_and(|rights| rights.edit)
-        }
-        KeyRef::Space => false,
-    })
+    !replaceable_marked(&state, actor.user.as_bytes()).is_empty()
 }
 
 fn too_slow() -> Problem {
@@ -253,22 +147,13 @@ where
     K: TokenSigner + Clone + 'static,
     R: SpaceRepo + SpaceChainRepo + Clone + 'static,
 {
+    // A place taken is dropped, and counted against the account, whatever becomes of the body.
     let mut large: Option<LargeBody> = None;
-    let read = read_stream(env, places, actor, space, body, large_ok, &mut large).await;
-    match read {
-        Ok(bytes) => Ok(ChainBody {
-            bytes: Bytes::from(bytes),
-            large,
-        }),
-        Err(problem) => {
-            if let Some(place) = large.as_mut()
-                && counts_against(problem.status)
-            {
-                place.refused();
-            }
-            Err(problem)
-        }
-    }
+    let bytes = read_stream(env, places, actor, space, body, large_ok, &mut large).await?;
+    Ok(ChainBody {
+        bytes: Bytes::from(bytes),
+        large,
+    })
 }
 
 async fn read_stream<S, P, K, R>(
@@ -306,7 +191,7 @@ where
             if !large_ok || !may_send_large(env, actor, space).await {
                 return Err(Problem::payload_too_large());
             }
-            *large = Some(places.take(*actor.user.as_bytes(), *space.as_bytes(), env.api.now())?);
+            *large = Some(places.take(*actor.user.as_bytes(), *space.as_bytes()).await?);
         }
         if total > MAX_REPLACEMENT_BODY_BYTES {
             return Err(Problem::payload_too_large());
@@ -777,6 +662,7 @@ async fn append_read<S, P, K, R>(
     space: SpaceId,
     pending: Option<Uuid>,
     body: &ChainBody,
+    replaced: &mut bool,
 ) -> Result<(StatusCode, Json<HeadDto>), Problem>
 where
     S: Store,
@@ -786,23 +672,41 @@ where
 {
     let mut request = read_request(body)?;
     check_rewrites(env, actor.user, space, &mut request).await?;
+    // For a large body: the marked collection keys the caller may replace now, to tell afterwards
+    // whether the request replaced one.
+    let mut may_replace = BTreeSet::new();
+    if body.large.is_some()
+        && let Ok(Some((_, state))) = env.spaces.chain_state(space).await
+    {
+        may_replace = replaceable_marked(&state, actor.user.as_bytes());
+    }
+    let rotates = request
+        .records
+        .iter()
+        .filter_map(|record| Record::parse(&record.entry).ok())
+        .any(|record| match record.body {
+            RecordBody::Keys { rotate, .. } => rotate.iter().any(
+                |commitment| matches!(commitment.key, KeyRef::Collection(id) if may_replace.contains(&id)),
+            ),
+            _ => false,
+        });
     let invited = invitees(&request);
     let append = append_use_case(env);
     let head = match pending {
         None => append.execute(actor, space, request).await?,
         Some(pending) => append.answer(actor, space, pending, request).await?,
     };
+    *replaced = rotates;
     mail_invitations(env, actor.user, &invited, space).await;
     Ok((StatusCode::CREATED, Json(HeadDto::of(&head))))
 }
 
 impl ChainBody {
-    /// Notes how the request ended: a refusal makes the account wait before another large body.
-    fn settle<T>(&mut self, result: &Result<T, Problem>) {
-        if let (Some(place), Err(problem)) = (self.large.as_mut(), result)
-            && counts_against(problem.status)
-        {
-            place.refused();
+    /// Notes how the request ended. A large body counts against the account whatever came of it,
+    /// unless it was stored and replaced a marked collection key.
+    fn settle<T>(&mut self, result: &Result<T, Problem>, replaced: bool) {
+        if let (Some(place), Ok(_), true) = (self.large.as_mut(), result, replaced) {
+            place.replaced();
         }
     }
 }
@@ -823,8 +727,9 @@ where
     let space = space_id(&id)?;
     let actor = caller.actor();
     let mut body = read_chain_body(&env, &places, &actor, space, body, true).await?;
-    let result = append_read(&env, &actor, space, None, &body).await;
-    body.settle(&result);
+    let mut replaced = false;
+    let result = append_read(&env, &actor, space, None, &body, &mut replaced).await;
+    body.settle(&result, replaced);
     result
 }
 
@@ -847,8 +752,9 @@ where
     let pending: Uuid = pending.parse().map_err(|_| bad("the id isn't a UUID"))?;
     let actor = caller.actor();
     let mut body = read_chain_body(&env, &places, &actor, space, body, false).await?;
-    let result = append_read(&env, &actor, space, Some(pending), &body).await;
-    body.settle(&result);
+    let mut replaced = false;
+    let result = append_read(&env, &actor, space, Some(pending), &body, &mut replaced).await;
+    body.settle(&result, replaced);
     result
 }
 
@@ -1127,54 +1033,4 @@ struct SpaceChainDoc;
 /// The OpenAPI document of the space chain routes alone.
 pub fn openapi() -> utoipa::openapi::OpenApi {
     SpaceChainDoc::openapi()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn large_bodies_are_limited_on_the_server_for_each_account_and_for_each_space() {
-        let places = LargeBodies::new(2, COOLDOWN_SECS);
-        let first = places.take([1; 16], [10; 16], 0).expect("a place");
-        // The same account, or the same space, may not have a second one in hand.
-        assert!(places.take([1; 16], [11; 16], 0).is_err());
-        assert!(places.take([2; 16], [10; 16], 0).is_err());
-        let second = places.take([2; 16], [11; 16], 0).expect("a second place");
-        // The server has two places only.
-        assert!(places.take([3; 16], [12; 16], 0).is_err());
-        // A place comes back when its request is over, for that account and for another.
-        drop(first);
-        let third = places.take([3; 16], [10; 16], 0).expect("a place came back");
-        drop(second);
-        drop(third);
-        assert!(places.take([1; 16], [10; 16], 0).is_ok());
-    }
-
-    #[test]
-    fn an_account_whose_large_body_was_refused_waits_a_minute() {
-        let places = LargeBodies::new(2, COOLDOWN_SECS);
-        let mut body = places.take([1; 16], [10; 16], 100).expect("a place");
-        body.refused();
-        drop(body);
-        // Its place is free, but the account waits, and nobody else does.
-        assert!(places.take([1; 16], [10; 16], 101).is_err());
-        assert!(places.take([2; 16], [10; 16], 101).is_ok());
-        assert!(places.take([1; 16], [11; 16], 100 + COOLDOWN_SECS - 1).is_err());
-        assert!(places.take([1; 16], [11; 16], 100 + COOLDOWN_SECS).is_ok());
-        // A request that was answered goes without a wait.
-        let body = places.take([4; 16], [12; 16], 200).expect("a place");
-        drop(body);
-        assert!(places.take([4; 16], [12; 16], 201).is_ok());
-    }
-
-    #[test]
-    fn only_a_refusal_counts_against_an_account() {
-        assert!(counts_against(StatusCode::BAD_REQUEST));
-        assert!(counts_against(StatusCode::PAYLOAD_TOO_LARGE));
-        assert!(counts_against(StatusCode::UNPROCESSABLE_ENTITY));
-        assert!(!counts_against(StatusCode::CONFLICT));
-        assert!(!counts_against(StatusCode::CREATED));
-        assert!(!counts_against(StatusCode::INTERNAL_SERVER_ERROR));
-    }
 }

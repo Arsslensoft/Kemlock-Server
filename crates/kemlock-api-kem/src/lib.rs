@@ -53,8 +53,9 @@ pub use routes::sends::{
     AccessDto, AccessRequest, CreateSendRequest, SendDto, SendsApi, SendsDoc, UpdateSendRequest,
     sends_router,
 };
+pub use routes::large_bodies::LargeBodies as ChainLargeBodies;
 pub use routes::space_chain::{
-    LargeBodies as ChainLargeBodies, openapi as space_chain_openapi, router as space_chain_router,
+    openapi as space_chain_openapi, router as space_chain_router,
     router_with as space_chain_router_with,
 };
 pub use routes::space_recovery::{
