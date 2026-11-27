@@ -648,6 +648,11 @@ pub(crate) async fn put_policy<S: BwStore>(
         data: serde_json::to_string(&data.data).map_err(|e| BwError::Server(e.to_string()))?,
         revision_date: format_date(now),
     };
+    // Whether Require SSO is on lives in `space_policy_settings`, the one place the Kemlock API and
+    // the sign-in checks read it; the document only keeps what Bitwarden shows of it.
+    if ptype == REQUIRE_SSO {
+        SpaceRepo::set_require_sso(&app.store, org.id, data.enabled).await?;
+    }
     app.put_doc(org.id.0, KIND_POLICY, &ptype.to_string(), &policy)
         .await?;
     app.sync_members(org).await?;

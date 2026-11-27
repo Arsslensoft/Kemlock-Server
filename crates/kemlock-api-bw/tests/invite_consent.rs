@@ -616,3 +616,76 @@ async fn an_address_that_registers_with_the_invitation_token_is_accepted_with_it
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body["resetPasswordKey"].is_null(), "{body}");
 }
+
+/// Require SSO is kept in `space_policy_settings`: the Bitwarden route writes it there, what the
+/// Kemlock side writes shows in the Bitwarden policy, and the Bitwarden sign-in follows the table.
+#[tokio::test]
+async fn require_sso_is_one_setting_for_both_apis() {
+    use kemlock_app::spaces::SpaceRepo;
+
+    /// Whether the table says the space requires SSO.
+    async fn required(h: &Harness, space: kemlock_domain::SpaceId) -> bool {
+        SpaceRepo::require_sso_of(&h.store, &[space])
+            .await
+            .expect("a read")
+            .contains(&space)
+    }
+
+    /// The `enabled` the Bitwarden policy of type 4 shows `token`.
+    async fn shown(h: &Harness, token: &str, org: &str) -> Value {
+        h.json(
+            "GET",
+            &format!("/api/organizations/{org}/policies/4"),
+            Some(token),
+            None,
+        )
+        .await
+        .1["enabled"]
+            .clone()
+    }
+
+    let h = Harness::new().await;
+    let (eve, _) = h.signed_in("eve@example.com").await;
+    let (_bob, bob_id) = h.signed_in("bob@example.com").await;
+    let org = organization(&h, &eve).await;
+    let space = kemlock_domain::SpaceId(org.parse().expect("an organization id"));
+    h.configure_sso().await;
+    invite(&h, &eve, &org, "bob@example.com").await;
+    h.accept_in_space(&org, bob_id).await;
+    let (status, body) = confirm(&h, &eve, &org, bob_id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // The Bitwarden route writes the table.
+    assert!(!required(&h, space).await);
+    assert_eq!(put_policy(&h, &eve, &org, 3, true).await.0, StatusCode::OK);
+    assert_eq!(put_policy(&h, &eve, &org, 4, true).await.0, StatusCode::OK);
+    assert!(required(&h, space).await);
+    let (status, _) = h
+        .token(&Harness::password_fields("bob@example.com", HASH))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "bound by the Bitwarden route's write"
+    );
+
+    // The Kemlock side turns it off: the Bitwarden policy says so, and the member signs in.
+    SpaceRepo::set_require_sso(&h.store, space, false)
+        .await
+        .expect("a write");
+    assert_eq!(shown(&h, &eve, &org).await, json!(false));
+    let (status, body) = h
+        .token(&Harness::password_fields("bob@example.com", HASH))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // And on again: bound, and shown, though the Bitwarden policy was never written again.
+    SpaceRepo::set_require_sso(&h.store, space, true)
+        .await
+        .expect("a write");
+    assert_eq!(shown(&h, &eve, &org).await, json!(true));
+    let (status, _) = h
+        .token(&Harness::password_fields("bob@example.com", HASH))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

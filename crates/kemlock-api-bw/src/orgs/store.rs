@@ -240,6 +240,27 @@ impl<S: BwStore> App<S> {
                 policies.insert(ptype, doc);
             }
         }
+        // Require SSO is kept in `space_policy_settings`, which the Kemlock API, the console and the
+        // sign-in checks read and write; the document of this type only carries what Bitwarden shows
+        // of it, so whether it is on is the table's word.
+        let sso_on = SpaceRepo::require_sso_of(&self.store, &[id])
+            .await?
+            .contains(&id);
+        match policies.get_mut(&super::policy::REQUIRE_SSO) {
+            Some(doc) => doc.enabled = sso_on,
+            None if sso_on => {
+                policies.insert(
+                    super::policy::REQUIRE_SSO,
+                    PolicyDoc {
+                        id: Uuid::from_u128(id.0.as_u128() ^ 5).to_string(),
+                        enabled: true,
+                        data: "null".to_owned(),
+                        revision_date: crate::dates::format_date(OffsetDateTime::UNIX_EPOCH),
+                    },
+                );
+            }
+            None => {}
+        }
         Ok(Some(Org {
             id,
             name: String::from_utf8_lossy(&state.space.name).into_owned(),
