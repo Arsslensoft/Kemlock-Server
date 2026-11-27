@@ -202,6 +202,15 @@ impl From<FedError> for ApiError {
                 "The request can't be read",
                 Some(why.to_owned()),
             ),
+            FedError::CopyFromAnotherServer => ApiError::new(
+                StatusCode::CONFLICT,
+                "account-copy-from-another-server",
+                "The account is a copy from another server",
+                Some(
+                    "this account is a copy that came from another server: accept the offer as a re-homing to make the offering server its home"
+                        .to_owned(),
+                ),
+            ),
             FedError::KeyMismatch { .. } => ApiError::new(
                 StatusCode::CONFLICT,
                 "key-mismatch",
@@ -1695,6 +1704,10 @@ mod tests {
         assert_eq!(status(FedError::UnknownPeer), StatusCode::NOT_FOUND);
         assert_eq!(status(FedError::UnknownVault), StatusCode::NOT_FOUND);
         assert_eq!(status(FedError::Refused("x")), StatusCode::CONFLICT);
+        assert_eq!(
+            status(FedError::CopyFromAnotherServer),
+            StatusCode::CONFLICT
+        );
         assert_eq!(
             status(FedError::KeyMismatch { offered: vec![1] }),
             StatusCode::CONFLICT

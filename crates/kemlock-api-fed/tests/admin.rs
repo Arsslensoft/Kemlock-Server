@@ -899,3 +899,47 @@ async fn a_federation_write_that_got_past_the_step_up_check_is_audited() {
         ]
     );
 }
+
+#[tokio::test]
+async fn accepting_an_offer_for_an_account_copied_from_another_server_has_its_own_problem() {
+    use kemlock_federation::extra::{AccountStanding, FedAdminRepo as _, StoredOffer};
+    use kemlock_federation::message::OfferState;
+    let e = env(1, Arc::new(Dead));
+    let user = UserId::random();
+    let owner = format!("user:{}", user.0);
+    // This server holds the account as a copy of a third server's, and another server offers it.
+    let offering = ServerId::random();
+    e.replica
+        .store()
+        .set_account_standing(user, AccountStanding::Copy(ServerId::random()));
+    e.replica
+        .store()
+        .put_offer(&StoredOffer {
+            vault: kemlock_domain::Owner::User(user),
+            home: offering,
+            epoch: 1,
+            replicas: vec![e.replica.server_id()],
+            state: OfferState::Pending,
+            received_at: unix_now(),
+        })
+        .await
+        .expect("an offer");
+
+    let (status, body) = admin(
+        &e.app,
+        Method::POST,
+        &format!("/admin/v1/federation/offers/{owner}/accept"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        body["type"],
+        "urn:kemlock:problem:account-copy-from-another-server"
+    );
+    assert!(
+        body["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("re-homing"))
+    );
+}

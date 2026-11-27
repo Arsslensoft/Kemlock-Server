@@ -191,9 +191,7 @@ impl<S: FedStore> Replica<S> {
             && let AccountStanding::Copy(from) = self.store.account_standing(user).await?
             && from != offer.home
         {
-            return Err(FedError::Refused(
-                "this account is a copy that came from another server: accept the offer as a re-homing to make the offering server its home",
-            ));
+            return Err(FedError::CopyFromAnotherServer);
         }
         let federation = VaultFederation {
             epoch: offer.epoch,
@@ -803,10 +801,10 @@ mod tests {
                 .await,
             Ok(OfferState::Pending)
         );
-        assert!(matches!(
+        assert_eq!(
             replica.accept_offer(vault).await,
-            Err(FedError::Refused(_))
-        ));
+            Err(FedError::CopyFromAnotherServer)
+        );
         assert!(
             replica
                 .store
