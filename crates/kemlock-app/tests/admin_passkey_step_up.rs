@@ -310,6 +310,7 @@ async fn a_security_key_confirms_a_change_only_with_user_verification() {
     assert_eq!(fx.keys.credential(KEY), credential_blob(KEY, 1));
 }
 
+#[tokio::test]
 async fn a_passkey_still_needs_user_verification_beside_a_security_key() {
     let fx = fx();
     fx.keys.add(KEY);
