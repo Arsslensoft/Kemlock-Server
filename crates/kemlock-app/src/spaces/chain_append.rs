@@ -11,7 +11,7 @@
 //! tables from the chain in the same transaction (S2).
 
 use super::chain::{
-    AppendOutcome, ChainAppend, ChainHead, HomeGate, PendingChange, PendingExternal,
+    AppendOutcome, ChainAppend, ChainHead, ChainUsage, HomeGate, PendingChange, PendingExternal,
     SpaceChainRepo, StoredName, StoredRecord, StoredSeal,
 };
 use super::chain_project::{Batch, custom_of, id_of, permission_of, project, role_of, user_of};
@@ -81,6 +81,8 @@ pub enum AppendError {
     },
     /// The request itself is wrong (`400`).
     Invalid(&'static str),
+    /// The member has signed as many records lately as one member may (`429`).
+    Quota(&'static str),
     /// The records are fine but aren't the queued change they were sent to answer (`422`).
     Mismatch(&'static str),
     /// The request holds an item that isn't in a collection whose key one of its `keys` records
@@ -115,6 +117,18 @@ fn refuse(seq: Option<u64>, reason: Reason, detail: &'static str) -> AppendError
 
 /// How far a record's `at` may be from the server's clock (A6), in seconds.
 const CLOCK_SLACK: u64 = 600;
+
+/// The most records one member who isn't an Owner signs in an hour, and in a day. One member must
+/// not be able to fill a chain (a chain holds `Limits::CHAIN_RECORDS`) before its Owners notice.
+const MEMBER_RECORDS_PER_HOUR: u64 = 1_024;
+const MEMBER_RECORDS_PER_DAY: u64 = 4_096;
+const HOUR: u64 = 3_600;
+const DAY: u64 = 86_400;
+
+/// Past this many record bytes the server takes only an Owner's records and `remove` and `keys`
+/// records, as it does past `Limits::OPEN_RECORDS` records, so the chain's byte limit can't leave
+/// an Owner no room to remove a member or replace keys. Only the server applies this one.
+const BYTES_RESERVE: u64 = 4 * 1024 * 1024;
 
 /// Appends records to a space's chain.
 #[derive(Debug)]
@@ -246,6 +260,41 @@ where
         let gate = self.spaces.chain_home_gate(space).await?;
         let me = id_of(actor.user);
 
+        // A7 and N5: the limits of the chain as a whole, which a record's own checks can't see,
+        // and one member's share of it. The append is atomic against the head, so what is read
+        // here is what these records are added to.
+        let usage = if head.is_some() {
+            self.spaces
+                .chain_usage(
+                    space,
+                    actor.user,
+                    now_secs.saturating_sub(HOUR),
+                    now_secs.saturating_sub(DAY),
+                )
+                .await?
+        } else {
+            ChainUsage::default()
+        };
+        let requested = u64::try_from(request.records.len()).unwrap_or(u64::MAX);
+        if usage.records.saturating_add(requested) > Limits::CHAIN_RECORDS {
+            return Err(refuse(
+                Some(next_seq),
+                Reason::TooLarge,
+                "a chain holds at most 65,536 records",
+            ));
+        }
+        if head.is_some()
+            && !state.is_owner(&me)
+            && (usage.by_member_hour.saturating_add(requested) > MEMBER_RECORDS_PER_HOUR
+                || usage.by_member_day.saturating_add(requested) > MEMBER_RECORDS_PER_DAY)
+        {
+            return Err(AppendError::Quota(
+                "this account has signed as many records of this space lately as one member may: wait, or ask an owner",
+            ));
+        }
+        let chain_bytes = u64::try_from(Limits::CHAIN_BYTES).unwrap_or(u64::MAX);
+        let mut bytes = usage.bytes;
+
         let mut accepted: Vec<(Record, sc::Applied, &SignedRecord)> = Vec::new();
         // The members this request invites: they accept again before a confirm.
         let mut invited_here: BTreeSet<sc::Id> = BTreeSet::new();
@@ -272,6 +321,26 @@ where
                     at,
                     Reason::Invalid,
                     "the record's time is more than 10 minutes from the server's clock",
+                ));
+            }
+            // A7: the chain's byte limit, and its last megabytes kept for an Owner's records and
+            // for `remove` and `keys` records.
+            bytes = bytes.saturating_add(u64::try_from(signed.entry.len()).unwrap_or(u64::MAX));
+            if bytes > chain_bytes {
+                return Err(refuse(
+                    at,
+                    Reason::TooLarge,
+                    "a chain holds at most 64 MiB of records",
+                ));
+            }
+            if bytes > chain_bytes.saturating_sub(BYTES_RESERVE)
+                && !state.is_owner(&rec.by)
+                && !matches!(rec.kind(), sc::Kind::Remove | sc::Kind::Keys)
+            {
+                return Err(refuse(
+                    at,
+                    Reason::NotAllowed,
+                    "the chain is nearly full: it takes only an owner's records and removals",
                 ));
             }
             // A4.

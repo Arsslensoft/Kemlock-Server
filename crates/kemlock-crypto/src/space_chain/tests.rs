@@ -12,10 +12,13 @@ use super::{
         AnchorPerson, FirstContact, ItemRefusal, KeyRefusal, anchor_person, check_item_revision,
         open_key_in,
     },
-    model::{Body, CollectionPerm, Grantee, Id, KeyRef, Kind, Reason, Record, Role, SignedRecord},
+    model::{
+        Body, CollectionPerm, Grantee, Id, KeyRef, Kind, Policies, Reason, Record, Role,
+        SignedRecord,
+    },
     scenarios::{Case, Expect, cases, oversized, valid_chain, verdict},
     seals::{link, seal_hash},
-    state::{CollectionInfo, Member, State, Status},
+    state::{CollectionInfo, Head, Member, State, Status},
     testkit::{
         ADMIN, ANA, Account, Kit, LEE, NEWBIE, OWNER, finance, general, space_id, uid, world,
     },
@@ -747,4 +750,58 @@ fn the_state_is_what_the_server_would_derive() {
     assert!(s.recovery_key.is_none() && s.recovery_key_seq.is_none());
     assert!(s.policies.require_sso && !s.policies.account_recovery);
     assert!(s.home.is_some());
+}
+
+#[test]
+fn the_end_of_a_chain_is_kept_for_owners_and_removals() {
+    let policy = Body::Policies {
+        policies: Policies {
+            two_step: true,
+            ..Policies::default()
+        },
+    };
+    let (owner, admin) = (uid(OWNER), uid(ADMIN));
+
+    // Just before the reserve: an Admin's record is taken as usual.
+    let mut kit = world::<Gen>();
+    kit.state.head = Some(Head {
+        seq: Limits::OPEN_RECORDS - 2,
+        link: [7; 32],
+    });
+    kit.attempt::<Gen>(&admin, policy.clone())
+        .1
+        .expect("an Admin's record before the reserve");
+
+    // In the reserve: an Admin may only remove (or replace keys); an Owner may do anything.
+    kit.state.head = Some(Head {
+        seq: Limits::OPEN_RECORDS - 1,
+        link: [7; 32],
+    });
+    let refused = kit
+        .attempt::<Gen>(&admin, policy.clone())
+        .1
+        .expect_err("an Admin's policies in the reserve");
+    assert_eq!(refused.reason, Reason::NotAllowed);
+    assert_eq!(refused.seq, Some(Limits::OPEN_RECORDS));
+    let remove = kit.remove_body(&uid(ANA));
+    kit.attempt::<Gen>(&admin, remove.clone())
+        .1
+        .expect("an Admin's removal in the reserve");
+    kit.attempt::<Gen>(&owner, policy)
+        .1
+        .expect("an Owner's record in the reserve");
+
+    // In the last records: Owners only.
+    kit.state.head = Some(Head {
+        seq: Limits::OWNER_ONLY_FROM - 1,
+        link: [7; 32],
+    });
+    let refused = kit
+        .attempt::<Gen>(&admin, remove.clone())
+        .1
+        .expect_err("an Admin's removal in the last records");
+    assert_eq!(refused.reason, Reason::NotAllowed);
+    kit.attempt::<Gen>(&owner, remove)
+        .1
+        .expect("an Owner's removal in the last records");
 }

@@ -51,6 +51,12 @@ impl Limits {
     pub const CHAIN_RECORDS: u64 = 65_536;
     /// Record bytes in a chain.
     pub const CHAIN_BYTES: usize = 64 * 1024 * 1024;
+    /// From this `seq` on, a chain takes only an Owner's records and `remove` and `keys` records:
+    /// the last 1,024 records are kept so that no member can fill the chain and leave no room for
+    /// an Owner to remove them or replace keys.
+    pub const OPEN_RECORDS: u64 = Self::CHAIN_RECORDS - 1_024;
+    /// From this `seq` on, a chain takes only an Owner's records: the last 128.
+    pub const OWNER_ONLY_FROM: u64 = Self::CHAIN_RECORDS - 128;
     /// Records in one request to the append route.
     pub const REQUEST_RECORDS: usize = 16;
     /// `invite.grants` and `collection.grants`.

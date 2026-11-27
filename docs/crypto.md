@@ -2398,6 +2398,14 @@ unless all of these hold:
   tell them from the rest: the row's accepted time was written when the confirm landed, so it records
   no consent. It repairs nothing; an Owner or Admin who finds such a member (a confirmed member they
   never invited, or one whose invitation was never accepted) removes them with a `remove` record.
+- A13. The chain after the request is within "Limits": at most 65,536 records and 64 MiB of record
+  bytes (**too large**, `422`). Past 60 MiB the server takes only an Owner's records and `remove`
+  and `keys` records (**not allowed**, `422`), so the byte limit can't leave an Owner no room to
+  remove a member. This is A7's own rule, which a record can't be checked against alone: the server
+  adds the sizes up in the append.
+- A14. A member who isn't an Owner signs at most 1,024 records of the space in an hour and 4,096 in
+  a day, counted by the records' `at`. A request past either is refused whole (`429`
+  `space-chain-quota`). Owners have no quota: they are who removes a member who sends too many.
 
 **Items**
 
@@ -2501,6 +2509,18 @@ step 5: a record that takes the state beyond them is **invalid**.
 The record limit fits the largest record, a `keys` that replaces the space key and 256 collection
 keys with 2,001 names packed, about 170,000 bytes, and keeps a record with its two signatures, as raw
 bytes, inside a federation home record's 256 KiB payload.
+
+**The end of a chain.** A member must not be able to fill a chain to its cap and leave no room to
+remove them. So the last records are kept (a rule of "Authority", checked in step 6 of
+"Verification" by every verifier, and refused as **not allowed**): a record with `seq` 64,512 or
+more (`CHAIN_RECORDS - 1,024`) is taken only from an Owner, or when its kind is `remove` or `keys`;
+a record with `seq` 65,408 or more (`CHAIN_RECORDS - 128`) is taken only from an Owner. Records of
+an Owner are still bound by every other rule.
+
+The server also refuses (A13) a record that would take the chain past 65,536 records or 64 MiB of
+record bytes (**too large**), as a client would, and keeps the last 4 MiB for an Owner's records and
+`remove` and `keys` records. The server alone applies that byte reserve and the quota of A14: a
+client sees a chain as a whole and has no record of when each record was sent.
 
 ### Test cases
 

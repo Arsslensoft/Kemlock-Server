@@ -54,7 +54,7 @@ pub mod view;
 
 pub use access::SpaceAccess;
 pub use chain::{
-    AppendOutcome, CHAIN_REQUIRED, ChainAppend, ChainHead, ExternalChangeMode, ExternalSource,
+    AppendOutcome, CHAIN_REQUIRED, ChainAppend, ChainHead, ChainUsage, ExternalChangeMode, ExternalSource,
     HomeGate, PendingChange, PendingExternal, SpaceChainRepo, StoredName, StoredRecord, StoredSeal,
     chain_confirmed, chain_required, confirmed_of, ensure_unchained, pending_from_changes,
     replay_state,

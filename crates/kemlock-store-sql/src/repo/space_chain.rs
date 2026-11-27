@@ -15,7 +15,7 @@ use crate::tables::settings;
 use crate::tables::space_chain::{held, names, pending, records, seals};
 use kemlock_app::ports::StoreError;
 use kemlock_app::spaces::{
-    AppendOutcome, ChainAppend, ChainHead, ExternalChangeMode, ExternalSource, HomeGate,
+    AppendOutcome, ChainAppend, ChainHead, ChainUsage, ExternalChangeMode, ExternalSource, HomeGate,
     PendingChange, PendingExternal, SpaceChainRepo, StoredRecord, StoredSeal, pending_from_changes,
     replay_state,
 };
@@ -29,7 +29,8 @@ use kemlock_federation::ports::{ReplicaStore, VaultRepo};
 use sea_orm::ActiveValue::Set;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
-    ColumnTrait, ConnectionTrait, EntityTrait, QueryFilter, QueryOrder, TransactionTrait,
+    ColumnTrait, ConnectionTrait, DbBackend, EntityTrait, PaginatorTrait, QueryFilter, QueryOrder,
+    QuerySelect, TransactionTrait,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -313,6 +314,54 @@ impl SpaceChainRepo for SqlStore {
             }
             other => other,
         }
+    }
+
+    async fn chain_usage(
+        &self,
+        space: SpaceId,
+        member: UserId,
+        since_hour: u64,
+        since_day: u64,
+    ) -> Result<ChainUsage, StoreError> {
+        let db = self.reader();
+        let total = records::Entity::find()
+            .filter(records::Column::SpaceId.eq(space.0))
+            .count(db)
+            .await
+            .store()?;
+        let signed_since = |since: u64| {
+            records::Entity::find()
+                .filter(records::Column::SpaceId.eq(space.0))
+                .filter(records::Column::Signer.eq(member.0))
+                .filter(records::Column::At.gte(i64::try_from(since).unwrap_or(i64::MAX)))
+                .count(db)
+        };
+        let by_member_hour = signed_since(since_hour).await.store()?;
+        let by_member_day = signed_since(since_day).await.store()?;
+        // The entries' lengths are added up here, not in SQL: `SUM` comes back as a different
+        // type on each backend, and so does a length unless it is cast.
+        let length = match db.get_database_backend() {
+            DbBackend::Postgres => "CAST(OCTET_LENGTH(\"entry\") AS BIGINT)",
+            DbBackend::MySql => "CAST(LENGTH(`entry`) AS SIGNED)",
+            _ => "LENGTH(\"entry\")",
+        };
+        let sizes = records::Entity::find()
+            .select_only()
+            .expr(Expr::cust(length))
+            .filter(records::Column::SpaceId.eq(space.0))
+            .into_tuple::<i64>()
+            .all(db)
+            .await
+            .store()?;
+        let bytes = sizes.into_iter().fold(0u64, |total, size| {
+            total.saturating_add(u64::try_from(size).unwrap_or(0))
+        });
+        Ok(ChainUsage {
+            records: total,
+            bytes,
+            by_member_hour,
+            by_member_day,
+        })
     }
 
     async fn chain_home_gate(&self, space: SpaceId) -> Result<Option<HomeGate>, StoreError> {

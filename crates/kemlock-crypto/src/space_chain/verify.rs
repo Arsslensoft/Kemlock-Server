@@ -1028,6 +1028,19 @@ impl State {
         let perms = &me.custom;
         let has = |p: CustomPerm| perms.contains(&p);
 
+        // The end of the chain is kept for Owners ("Limits"): a member can't fill the chain to its
+        // cap and leave no room for a `remove` or a `keys` record.
+        let reserved = if rec.seq >= Limits::OWNER_ONLY_FROM {
+            role != Role::Owner
+        } else if rec.seq >= Limits::OPEN_RECORDS {
+            role != Role::Owner && !matches!(rec.kind(), Kind::Remove | Kind::Keys)
+        } else {
+            false
+        };
+        if reserved {
+            return Err(NO);
+        }
+
         // Rule 1: owners change Owners.
         if role != Role::Owner && self.touches_owner(next, changes) {
             return Err(NO);
